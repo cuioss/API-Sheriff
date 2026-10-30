@@ -1426,9 +1426,11 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Wraps {@code delegate} in a thread-safe memoizing supplier: the delegate runs at most once, on
-     * first {@link Supplier#get()}, and every later call returns the cached value. Used to defer OIDC
-     * discovery (and the discovery-dependent logout endpoint) to first request rather than boot.
+     * Wraps {@code delegate} in a thread-safe memoizing supplier: the delegate runs on
+     * {@link Supplier#get()} until it yields a value, and every later call returns that value without
+     * running it. Only a resolved value is cached: an attempt that throws leaves nothing behind, so the
+     * next call runs the delegate again. Used to defer OIDC discovery (and the discovery-dependent logout
+     * endpoint) to first request rather than boot.
      */
     private static <T> Supplier<T> memoize(Supplier<T> delegate) {
         AtomicReference<T> cache = new AtomicReference<>();

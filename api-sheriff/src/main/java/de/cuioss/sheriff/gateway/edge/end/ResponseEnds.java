@@ -66,7 +66,8 @@ public final class ResponseEnds {
      * failure answer ({@code TerminalDispatch.failRelay}), the problem document, the HTML error page and
      * the portal page, the reserved-path answer, the buffered asset, the redirect, the short-circuit, the
      * gRPC trailers-only status (through {@link de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper}),
-     * the WebSocket relay's answer to a failed upstream dial, written before any upgrade (through
+     * the WebSocket relay's answer to a failed upstream dial and its relay of an upstream's upgrade
+     * refusal, both written before any upgrade (through
      * {@link de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage}), and the admission {@code 503}.
      * <ul>
      *   <li><strong>HTTP/1.x, or a request body that has ended</strong> — the response is ended at once

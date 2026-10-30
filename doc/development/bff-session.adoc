@@ -299,9 +299,9 @@ below is the numbered decision of that record.
 Each of the following was read from the sources of the pinned engine, the JDK the build uses and
 the identity provider's documentation, or was a premise no source settled when the decision was
 taken. Each is accepted as a residual. Three have since been observed on the running stack, and
-<<observed-on-the-integration-stack>> holds their verdicts: the native image (entry 3), the key-id
-re-fetch (entry 5) and identity-provider support for client-secret mode (entry 7). The others were
-not observed on a running stack:
+<<observed-on-the-integration-stack>> holds their verdicts: the native image (entries 3 and 4), the
+key-id re-fetch (entry 5) and identity-provider support for client-secret mode (entry 7). The others
+were not observed on a running stack:
 
 * *`EdDSA`.* The engine's client-assertion signer supports the `RS`, `PS` and `ES` families only.
 * *No PAR path in the engine's flows.* Neither `AuthorizationCodeFlow.authorize` nor

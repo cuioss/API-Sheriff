@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A token naming a key id the gateway does not hold schedules at most one JWKS refresh per issuer per window (jwks.unknown_kid_refresh_window_seconds, 5-3600, default 30), claimed when the token arrives and never run on a request thread; the refresh loads a fresh library loader off to the side and publishes it only when it holds the triggering key id, the replaced loader keeps answering for its own keys until the key-rotation grace period ends, and a WARN rate-limited by the same window names the issuer and the gateway's own last load. The background refresh interval (jwks.refresh_interval_seconds, 60-86400, library default 600) and the grace period (jwks.key_rotation_grace_period_seconds, 0-3600, library default) are passed to the token library only when declared. All three keys are refused at boot on a file source; readiness is unchanged. AMENDED (A1): the refresh window and the grace deadline are measured on a monotonic clock, because both are durations the gateway enforces rather than instants it reports, so a wall-clock step neither lengthens the refresh blackout nor cuts the grace period short; the last-load instant in ApiSheriff-136 stays on the wall clock because it is reported as an instant.
+// summary: A token naming a key id the gateway does not hold schedules at most one JWKS refresh per issuer per window (jwks.unknown_kid_refresh_window_seconds, 5-3600, default 30), claimed when the token arrives and never run on a request thread; the refresh loads a fresh library loader off to the side and publishes it only when it holds the triggering key id, the replaced loader keeps answering for its own keys until the key-rotation grace period ends, and a WARN rate-limited by the same window names the issuer and the gateway's own last load. The refresh window and the grace deadline are measured on a monotonic clock, because both are durations the gateway enforces rather than instants it reports, so a wall-clock step neither lengthens the refresh blackout nor cuts the grace period short; the last-load instant in ApiSheriff-136 stays on the wall clock because it is reported as an instant. The background refresh interval (jwks.refresh_interval_seconds, 60-86400, library default 600) and the grace period (jwks.key_rotation_grace_period_seconds, 0-3600, library default) are passed to the token library only when declared. All three keys are refused at boot on a file source; readiness is unchanged.
 // tags: jwks, token-validation, key-rotation, configuration-surface, denial-of-service, log-amplification, readiness, boot-sequence
 // affects: api-sheriff, integration-tests, documentation
 // supersedes:
@@ -24,326 +24,155 @@
 
 Accepted
 
-== Context
+== Decision
 
-A gateway that validates tokens offline holds a copy of each issuer's signing keys and refreshes that
-copy on a timer. Between two refreshes the copy can be wrong in one direction that matters: the
-identity provider starts signing with a key the gateway has not fetched yet. Every token signed with
-that key names a key id the gateway does not know, and every such token is rejected -- on every
-bearer route, and at the callback of every BFF login, because both validate through the same key
-sets. With the token library's background refresh interval of 600 seconds, an identity provider that
-replaces its signing key abruptly, without publishing the new key ahead of use, takes the gateway's
-authenticated surface down for up to ten minutes. Nothing is broken on either side; the gateway is
-simply early.
+=== The question
 
-The obvious repair is to fetch the key set when an unknown key id arrives. That repair has a cost
-that decides its shape. The key id sits in the token header and is read before any signature is
-checked, so any caller, holding no credential, can present tokens that name arbitrary key ids. A
-gateway that fetches for each of them hands that caller three levers at once: outbound requests to
-the identity provider at the caller's own rate, request threads parked on the identity provider's
-latency, and -- if the fetched key set simply replaces the held one -- a way to disturb which keys
-the gateway accepts.
+A gateway that validates tokens offline holds a copy of each issuer's signing keys and refreshes that copy on a timer. Between two refreshes the copy can be wrong in one direction that matters: the identity provider starts signing with a key the gateway has not fetched yet. Every token signed with that key names a key id the gateway does not know, and the gateway rejects every such token. This holds on every bearer route and at the callback of every BFF login, because both validate through the same key sets. The token library's background refresh interval is 600 seconds. An identity provider that replaces its signing key abruptly, without publishing the new key ahead of use, therefore takes the gateway's authenticated surface down for up to ten minutes. Nothing is broken on either side. The gateway is simply early.
+
+The obvious repair is to fetch the key set when an unknown key id arrives. The cost of that repair decides its shape. The key id sits in the token header, and the gateway reads it before it checks any signature. Any caller, holding no credential, can therefore present tokens that name arbitrary key ids. A gateway that fetches for each of them hands that caller three levers:
+
+* outbound requests to the identity provider at the caller's own rate,
+* request threads parked on the identity provider's latency,
+* a way to disturb which keys the gateway accepts, if the fetched key set simply replaces the held one.
 
 Three structural facts constrain the answer:
 
-* *The gateway already owns each issuer's loader.* The library loader of every issuer is wrapped in
-  a gateway-owned loader that records whether a key set is loaded and retries a failed load
-  (link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
-  Amendment A1]). Every read through that wrapper is non-fetching, and readiness reads its state.
+* *The gateway already owns each issuer's loader.* `RetryingJwksLoader` wraps the library loader of every issuer. It records whether a key set is loaded and retries a failed load (link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027 Amendment A1]). Every read through that wrapper is non-fetching, and readiness reads its state.
+* *The library offers no public re-fetch.* The only way to fetch a key set again outside the library's own timer is to build a fresh library loader and load it. A fresh loader knows the identity provider's current keys and none of the previous ones.
+* *The cadence is the library's unless the gateway exposes it.* The refresh interval and the key-rotation grace period are knobs of the library's loader configuration. The gateway configuration exposes such a knob only by deliberate decision (link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]). Left unexposed, a deployment can neither shorten the window of exposure nor lengthen the tolerance for the previous key.
 
-* *The library offers no public re-fetch.* The only way to fetch a key set again outside the
-  library's own timer is to build a fresh library loader and load it. A fresh loader knows the
-  identity provider's current keys and none of the previous ones.
+*The decision:* an unknown key id may schedule a refresh, never perform one, and at most one per issuer per window. A refresh earns the right to replace the held keys only by holding the key that was asked for.
 
-* *The cadence is the library's unless the gateway exposes it.* The library's refresh interval and
-  its key-rotation grace period are knobs of its loader configuration, which the gateway surface
-  exposes only by deliberate decision
-  (link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]).
-  Left unexposed, a deployment can neither shorten the window of exposure nor lengthen the tolerance
-  for the previous key.
+=== Three keys on the issuer's `jwks` block
 
-== Decision
+An issuer's `jwks` block carries three keys. The link:../configuration.adoc#_jwks_key_rotation[configuration reference] holds their defaults and ranges.
 
-*An unknown key id may schedule a refresh, never perform one, and at most one per issuer per window;
-a refresh earns the right to replace the held keys only by holding the key that was asked for.*
+* `refresh_interval_seconds` is the interval of the library's background re-fetch of the key set.
+* `key_rotation_grace_period_seconds` is how long a replaced key set keeps verifying the tokens its keys signed. `0` drops it at once.
+* `unknown_kid_refresh_window_seconds` is the per-issuer window within which an unknown key id schedules at most one refresh.
 
-=== 1. Three keys on the issuer's `jwks` block
+The first two are the library's knobs under neutral names (link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a2[ADR-0011 Amendment A2]). `TokenValidatorProducer` passes them to the library's loader configuration only when they are declared. An omitted key therefore keeps the library's own default, and the gateway holds no second copy of it (link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]). `RetryingJwksLoader` is timed by the values read back from the built configuration. The time it keeps a replaced key set and the time the library would are thus the same number by construction. The third key is the gateway's own and has no library counterpart.
 
-[cols="2,1,1,3", options="header"]
-|===
-| Key | Default | Range | Meaning
+The configuration validator enforces the ranges at boot. The schema declares the keys as plain integers and enforces no range. The validator names the issuer and the admitted range and never the JWKS URL. The library accepts every non-negative value for its two knobs, so it accepts every value the gateway admits. The lower bound of the window, 5 seconds, is the security-relevant number, because it is the floor of the refresh bound below.
 
-| `refresh_interval_seconds`
-| `600` (the token library's)
-| `60`-`86400`
-| The interval of the library's background re-fetch of the key set.
+The boot refuses each of the three keys on a `source: file` issuer, whatever value it holds. A file source is read once and never re-fetched, so the key would parse and never act. A key that parses without acting is refused rather than ignored.
 
-| `key_rotation_grace_period_seconds`
-| `300` (the token library's)
-| `0`-`3600`
-| How long a replaced key set keeps verifying the tokens its keys signed. `0` drops it at once.
+=== The lookup never fetches
 
-| `unknown_kid_refresh_window_seconds`
-| `30`
-| `5`-`3600`
-| The per-issuer window within which an unknown key id schedules at most one refresh.
-|===
+The gateway answers a key lookup from the key sets held at that moment: the current loader first, then a replaced loader whose grace deadline has not passed. The lookup performs no request and waits for none. A key id neither loader holds yields a rejection for that token. This keeps the property `RetryingJwksLoader` is built on: no request thread and no readiness probe causes network activity. It also means the request that triggers a refresh is itself always rejected.
 
-The first two are the library's knobs under neutral names
-(link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a2[ADR-0011
-Amendment A2]). They are passed to the library's loader configuration only when declared, so an
-omitted key keeps the library's own default and the gateway holds no second copy of it
-(link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
-The gateway-owned loader is timed by the values read back from the built configuration, so the time
-it keeps a replaced key set and the time the library would are the same number by construction. The
-third key is the gateway's own and has no library counterpart.
+=== One claim per issuer per window, made when the token arrives
 
-The ranges are enforced by the configuration validator at boot, not by the schema, which declares
-the keys as plain integers; the validator names the issuer and the admitted range and never the JWKS
-URL. The library accepts every non-negative value for its two knobs, so every value the gateway
-admits is one the library accepts. The lower bound of the window, 5 seconds, is the security-relevant
-number: it is the floor of the bound in section 3.
+When a lookup misses and the issuer's key set is loaded, the lookup tries to claim the issuer's window. The claim is a single compare-and-set on the next-allowed reading of a monotonic clock. The claim that succeeds logs the record described below and schedules one refresh, unless the refresh of an earlier window is still running. Every other lookup inside the window does neither.
 
-Each of the three keys declared on a `source: file` issuer is a boot refusal, whatever value it
-holds. A file source is read once and never re-fetched, so the key would parse and never act, and a
-key that parses without acting is refused rather than ignored.
+The lookup makes the claim at trigger time, not at completion. The bound of one refresh per issuer per window therefore holds whatever the outcome of the fetch, the request rate and the number of distinct key ids. It does not depend on anything the caller chooses. One in-flight flag additionally keeps a refresh from starting while the previous one is still running. A claim made in that state logs its record and schedules nothing.
 
-=== 2. The lookup never fetches
+=== A refresh is loaded off to the side and published only when it holds the triggering key id
 
-A key lookup is answered from the key sets held at that moment: the current loader first, then a
-replaced loader whose grace deadline has not passed. It performs no request and waits for none. A
-key id neither holds yields a rejection for that token. This keeps the property the gateway-owned
-loader is built on -- no request thread and no readiness probe causes network activity -- and it
-means the request that triggers a refresh is itself always rejected.
+The refresh builds a fresh library loader and loads it without publishing it. The current loader keeps answering until the outcome is known. Three outcomes discard the fresh loader and leave the held key sets untouched:
 
-=== 3. One claim per issuer per window, made when the token arrives
+* the load fails,
+* the load completes exceptionally,
+* the load yields a key set that does not hold the key id that triggered it.
 
-When a lookup misses and the issuer's key set is loaded, the lookup tries to claim the issuer's
-window with a single compare-and-set on the next-allowed reading of a monotonic clock
-(<<amendment-a1,Amendment A1>>). The claim that succeeds logs the record of section 6 and schedules
-one refresh, unless the refresh of an earlier window is still running; every other lookup inside the
-window does neither.
+Only a fresh loader that holds that key id is published.
 
-The claim is made at trigger time, not at completion. The bound of one refresh per issuer per window
-therefore holds whatever the outcome of the fetch, the request rate and the number of distinct key
-ids, and it does not depend on anything the caller chooses. One in-flight flag additionally keeps a
-refresh from starting while the previous one is still running: a claim made in that state logs its
-record and schedules nothing.
+This condition makes the refresh safe to offer to uncredentialed callers. A token naming an invented key id costs one bounded fetch and changes nothing. It can neither replace the held keys nor shorten a grace period. A discarded refresh also never starts the failed-load retry, which belongs to an issuer that has no key set at all.
 
-=== 4. A refresh is loaded off to the side and published only when it holds the triggering key id
+=== The replaced loader is retained for the grace period
 
-The refresh builds a fresh library loader and loads it without publishing it. The current loader
-keeps answering until the outcome is known. Three outcomes discard the fresh loader and leave the
-held key sets untouched: the load fails, it completes exceptionally, or it yields a key set that
-does not hold the key id that triggered it. Only a fresh loader that holds that key id is published.
+A fresh library loader knows only the keys the identity provider serves at that moment. Publishing it alone would at once reject every token signed with the previous key. The gateway would trade one outage for another and void the grace period the same configuration makes tunable. The gateway therefore keeps the replaced loader as a second, non-fetching lookup until the key-rotation grace period has passed, and then drops and closes it. At most one replaced loader exists per issuer: a second replacement inside the grace period closes the older one. A grace period of zero closes the replaced loader at once.
 
-The condition is what makes the refresh safe to offer to uncredentialed callers. A token naming an
-invented key id costs one bounded fetch and changes nothing; it can neither replace the held keys
-nor shorten a grace period. A discarded refresh also never starts the failed-load retry, which
-belongs to an issuer that has no key set at all.
+[[amendment-a1]]
+=== The window and the grace deadline are measured on a monotonic clock
 
-=== 5. The replaced loader is retained for the grace period
+Both timing bounds of this decision are durations the gateway enforces, each counted from a moment it observed itself. Neither is an instant the gateway reports. A wall clock can step, through a time synchronisation correction, an operator setting it, or a virtual machine resuming. A duration read across a step is wrong by the size of the step:
 
-A fresh library loader knows only the keys the identity provider serves at that moment. Publishing it
-alone would reject, at once, every token signed with the previous key -- the gateway would trade one
-outage for another and void the grace period the same configuration makes tunable. The replaced
-loader is therefore kept as a second, non-fetching lookup until the key-rotation grace period has
-passed, measured on the same monotonic clock as the window (<<amendment-a1,Amendment A1>>), and is
-then dropped and closed. At most one replaced loader exists per issuer: a second
-replacement inside the grace period closes the older one. A grace period of zero closes the replaced
-loader at once.
+* *A backward step would lengthen the refresh blackout.* A window read from the wall clock ends at an instant. Moving that clock back moves the end of the window away by the step. No unknown key id could claim a refresh for that much longer, so the gateway would pick up an abrupt key change correspondingly later.
+* *A forward step would cut the grace period short.* A replaced loader timed on the wall clock answers until an instant. Moving that clock forward brings the deadline closer by the step. The gateway would reject tokens signed with the previous key before the configured grace period has passed. A forward step of more than the grace period would end it at once.
 
-=== 6. A rate-limited record, and what its instant means
+`RetryingJwksLoader` therefore reads the window and the grace deadline from a monotonic nanosecond clock and compares two readings by their difference, so a wrap of the counter can neither open nor close either bound. A wall-clock step in either direction moves neither of them. The bound of one refresh per issuer per window, the grace period an operator configures and the scheduled retirement of a replaced loader all keep the length they were declared with.
 
-The lookup that claims the window logs `WARN ApiSheriff-136` with the issuer's configured name and
-one instant. Lookups inside a claimed window log at `DEBUG` only. The record is thus bounded by the
-same window as the refresh, which is what a record reachable by an uncredentialed caller requires
-(link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]).
-It never carries the key id, the JWKS URL or key material.
+=== A rate-limited record, and what its instant means
 
-The instant is the last time the gateway's own loader observed a load of the issuer's key set
-succeed: the first load, a retry after a failed load, or a refresh of this decision. The library's
-background refresh replaces keys inside a loader without the wrapper observing it, so the instant is
-not the age of the keys in service, and the record says so in its own text rather than leaving the
-reader to assume it.
+The lookup that claims the window logs `WARN ApiSheriff-136` with the issuer's configured name and one instant. Lookups inside a claimed window log at `DEBUG` only. The window that bounds the refresh thus bounds the record too, as a record reachable by an uncredentialed caller requires (link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]). The record never carries the key id, the JWKS URL or key material.
 
-A `file` source schedules no refresh. Its unknown key ids are still reported, limited to one record
-per 30 seconds per issuer.
+The instant is the last time `RetryingJwksLoader` observed a load of the issuer's key set succeed: the first load, a retry after a failed load, or a refresh of this decision. The library's background refresh replaces keys inside a loader without the wrapper observing it. The instant is therefore not the age of the keys in service. The record says so in its own text and does not leave the reader to assume it.
 
-=== 7. Refresh and retry are mutually exclusive per issuer; readiness is unchanged
+The instant is reported, not enforced: an operator compares it with other timestamps. It therefore stays on the wall clock and still reads as a point in time. It is the one time value of this decision that is an instant.
 
-A refresh is claimed only while the issuer's key set is loaded. The failed-load retry -- its pending
-attempt included -- exists only while it is not. The two therefore never run for one issuer at the
-same time, and the exclusion follows from the state they are each conditioned on; no separate guard
-checks for a pending retry, because no state reaches one while a refresh can be claimed.
+A `file` source schedules no refresh. The gateway still reports its unknown key ids, limited to one record per 30 seconds per issuer.
 
-Readiness keeps reading the same per-issuer state with the same three values. A refresh never moves
-an issuer out of the loaded state, so readiness stays `UP` through a key change and through a
-stalled one. A stalled rotation is visible through the record of section 6, not through readiness.
+=== Refresh and retry are mutually exclusive per issuer, and readiness is unchanged
 
-== Consequences
+A refresh is claimed only while the issuer's key set is loaded. The failed-load retry, its pending attempt included, exists only while it is not. The two therefore never run for one issuer at the same time. The exclusion follows from the state each is conditioned on. No separate guard checks for a pending retry, because no state reaches one while a refresh can be claimed.
 
-=== Positive
+Readiness keeps reading the same per-issuer state with the same three values. A refresh never moves an issuer out of the loaded state, so readiness stays `UP` through a key change and through a stalled one. The record shows a stalled rotation. Readiness does not.
 
-* An abrupt signing-key change at the identity provider is followed within about one window instead
-  of one background refresh interval, on bearer routes and on BFF logins alike, with no restart.
-
-* The cost an uncredentialed caller can impose through invented key ids is bounded per issuer by a
-  number the operator sets and the validator floors: at most `floor(t / window) + 1` refreshes over
-  an interval `t`.
-
-* A flood of invented key ids cannot change which keys the gateway accepts.
-* Tokens signed with the previous key stay valid for the grace period across an on-demand refresh.
-* The refresh cadence and the rotation tolerance are tunable per issuer, and a deployment that
-  declares nothing behaves as before.
-
-* No request thread and no readiness probe performs or awaits a JWKS request.
-
-=== Negative
-
-* The request that triggers a refresh is rejected, and so is every token signed with the new key
-  until the refresh has loaded it. A client must retry.
-
-* The wrapper holds up to three library loaders for one issuer for a time: the current one, a
-  replaced one inside its grace period, and one loading. A replaced loader is closed only at its
-  grace deadline, and keeps its own background refresh until then.
-
-* The window is a second timing parameter beside the refresh interval, and its default of 30 seconds
-  is a compromise between pick-up latency and the cost bound, not a derived value.
-
-* The instant in the record is easy to misread as the age of the keys. The record's text and the
-  log catalogue state what it is.
-
-=== Risks
-
-* *A caller presenting invented key ids can win the window.* A refresh triggered by an invented key
-  id is discarded even when the key set it fetched holds a newly rotated key. While such a caller
-  keeps claiming an issuer's window ahead of legitimate tokens, the new key is picked up only by a
-  window that a token signed with it claims, or by the background refresh. The worst case is the
-  behaviour without this decision -- pick-up at the next background refresh -- and never the
-  acceptance of an invalid token or the loss of a valid key. It is accepted because the alternative,
-  publishing whatever a refresh fetched, is the unconditional swap rejected below. Closing this
-  residual exactly requires the token library to expose which key ids a loaded key set holds, which
-  token-sheriff 0.9.6 does not: a loader only answers a lookup for a named key id.
-
-* *One refresh is one library load, not always one request.* Against an identity provider that does
-  not answer, the HTTP client beneath the library retries the fetch itself within that one load. The
-  per-window bound counts refreshes; the in-flight flag keeps them from overlapping.
-
-* *The integration proof runs a shortened window.* The native-image suite declares a 5-second window
-  and a 300-second grace period and observes one gateway and one issuer. It does not prove the
-  30-second default, the end of the grace period, or a refresh whose fetch fails; those are covered
-  at unit level with a controlled clock.
-
-== Alternatives Considered
+== Alternatives rejected
 
 === Fetch on the request thread
 
-The lookup that meets an unknown key id would fetch the key set and answer from the result, so the
-first token signed with a new key would already be accepted.
+The lookup that meets an unknown key id would fetch the key set and answer from the result. The first token signed with a new key would already be accepted.
 
-Rejected because it couples the gateway's request threads to the identity provider's latency at the
-exact point an uncredentialed caller controls. Even rate-limited, the requests arriving while a fetch
-is in flight must either wait for it -- parking threads on a remote endpoint -- or be rejected, which
-is the behaviour of the chosen design without the benefit. It would also end the invariant that no
-read of the wrapper causes network activity, which readiness relies on.
+*Rejected because* it couples the gateway's request threads to the identity provider's latency at the exact point an uncredentialed caller controls. Even with a rate limit, the requests arriving while a fetch is in flight must do one of two things. They wait for it, which parks threads on a remote endpoint. Or they are rejected, which is the behaviour of the chosen design without the benefit. It would also end the invariant that no read of the wrapper causes network activity, which readiness relies on.
 
 === Replace the held key set with whatever a refresh fetched
 
-Every completed refresh would be published, without asking whether it holds the triggering key id.
-A refresh triggered by an invented key id during a genuine rotation would then pick the new key up.
+The gateway would publish every completed refresh, without asking whether it holds the triggering key id. A refresh triggered by an invented key id during a genuine rotation would then pick the new key up.
 
-Rejected because it gives every uncredentialed caller a way to make the gateway replace its loader
-once per window. Each replacement retires the previous loader, and at most one retired loader is
-kept, so a steady flood would roll the retired slot forward and end the grace period of a genuine
-rotation early -- the caller would be choosing when valid tokens stop being accepted. Conditioning
-publication on the triggering key id removes that lever at the price of the first risk above.
+*Rejected because* it gives every uncredentialed caller a way to make the gateway replace its loader once per window. Each replacement retires the previous loader, and the gateway keeps at most one retired loader. A steady flood would roll the retired slot forward and end the grace period of a genuine rotation early. The caller would be choosing when valid tokens stop being accepted. Conditioning publication on the triggering key id removes that lever at the price of the invented-key-id risk under Consequences.
 
 === Change the token library
 
-The library would fetch on an unknown key id itself, with its own bound, or expose a public re-fetch
-on a loaded loader, so the gateway would need no second loader and no retained one.
+The library would fetch on an unknown key id itself, with its own bound, or expose a public re-fetch on a loaded loader. The gateway would then need no second loader and no retained one.
 
-Rejected for this decision because the gateway already owns the loader seam and can deliver the
-behaviour inside it, under gateway configuration and gateway logging, without a release dependency.
-It also keeps the bound a property the gateway states and tests rather than one it inherits. A
-library-side re-fetch would simplify section 5 and remains compatible with this decision: the window,
-the claim and the record would stay as they are.
+*Rejected for this decision because* the gateway already owns the loader seam and can deliver the behaviour inside it, under gateway configuration and gateway logging, without a release dependency. It also keeps the bound a property the gateway states and tests rather than one it inherits. A library-side re-fetch would simplify the retained-loader mechanism and remains compatible with this decision: the window, the claim and the record would stay as they are.
 
 === Signal a stalled rotation through readiness
 
-An issuer whose tokens keep naming an unknown key id would take readiness `DOWN`, so an orchestrator
-would notice.
+An issuer whose tokens keep naming an unknown key id would take readiness `DOWN`, so an orchestrator would notice.
 
-Rejected because readiness answers whether the gateway can validate tokens, and it can: the held
-keys verify every token they signed. Taking it `DOWN` on unknown key ids would let an uncredentialed
-caller remove a healthy gateway from rotation by presenting invented key ids, and removing the
-gateway does nothing to make the identity provider publish its key. The condition is reported where
-an operator can act on it, in the log.
+*Rejected because* readiness answers whether the gateway can validate tokens, and it can: the held keys verify every token they signed. Taking it `DOWN` on unknown key ids would let an uncredentialed caller remove a healthy gateway from rotation by presenting invented key ids. Removing the gateway does nothing to make the identity provider publish its key. The gateway reports the condition where an operator can act on it, in the log.
 
-The unifying principle: work an uncredentialed caller can trigger is bounded by something the caller
-does not choose, and it changes held security state only when it produces what was asked for.
+The unifying principle: work an uncredentialed caller can trigger is bounded by something the caller does not choose, and it changes held security state only when it produces what was asked for.
 
-[[amendment-a1]]
-== Amendment A1: the refresh window and the grace deadline are measured on a monotonic clock
+== Consequences
 
-*Both timing bounds of this decision are durations, so they are measured on a clock that only moves
-forward; the decision itself stands.* The window of section 3 and the grace deadline of section 5
-were read from the wall clock as instants. Neither is an instant the gateway reports: each is a
-duration the gateway enforces, counted from a moment it observed itself. A wall clock can step --
-through a time synchronisation correction, an operator setting it, or a virtual machine resuming --
-and a duration read across a step is wrong by the size of the step.
+=== Properties of the design
 
-*A backward step lengthens the refresh blackout.* A claimed window ends at an instant on the wall
-clock. Moving that clock back moves the end of the window away by the step, so no unknown key id may
-claim a refresh for that much longer, and an abrupt key change at the identity provider is picked up
-correspondingly later.
+* The gateway follows an abrupt signing-key change at the identity provider within about one window instead of one background refresh interval, on bearer routes and on BFF logins alike, with no restart.
+* An operator-set number, floored by the validator, bounds per issuer the cost an uncredentialed caller can impose through invented key ids: at most `floor(t / window) + 1` refreshes over an interval `t`.
+* A flood of invented key ids cannot change which keys the gateway accepts.
+* Tokens signed with the previous key stay valid for the grace period across an on-demand refresh.
+* The refresh cadence and the rotation tolerance are tunable per issuer, and a deployment that declares nothing behaves as before.
+* No request thread and no readiness probe performs or awaits a JWKS request.
 
-*A forward step cuts the grace period short.* A replaced loader answers until an instant on the wall
-clock. Moving that clock forward brings the deadline closer by the step, so tokens signed with the
-previous key are rejected before the configured grace period has passed. A forward step of more than
-the grace period ends it at once.
+=== Accepted costs
 
-The window and the grace deadline are therefore read from a monotonic nanosecond clock, and two
-readings are compared by their difference, so a wrap of the counter cannot open or close either
-bound. A wall-clock step in either direction moves neither of them. The bound of one refresh per
-issuer per window, the grace period an operator configures and the scheduled retirement of a replaced
-loader all keep the length they were declared with.
+* The gateway rejects the request that triggers a refresh, and every token signed with the new key until the refresh has loaded it. A client must retry.
+* The wrapper holds up to three library loaders for one issuer for a time: the current one, a replaced one inside its grace period, and one loading. The gateway closes a replaced loader only at its grace deadline, and that loader keeps its own background refresh until then.
+* The window is a second timing parameter beside the refresh interval. Its default of 30 seconds is a compromise between pick-up latency and the cost bound, not a derived value.
+* The instant in the record is easy to misread as the age of the keys. The record's text and the log catalogue state what it is.
 
-*The record keeps its wall-clock instant.* The instant `WARN ApiSheriff-136` carries (section 6) is
-reported, not enforced: an operator compares it with other timestamps, so it stays on the wall clock
-and still reads as a point in time. It is the one time value of this decision that is an instant.
+=== Risks
 
-This amendment supersedes one statement above: that the claim of section 3 is a compare-and-set on
-the next-allowed instant. Sections 3 and 5 are worded for the current behaviour. Nothing else
-changes: the configuration keys, their ranges and defaults, the record, readiness and the exclusion
-of refresh and retry are as decided.
+* *A caller presenting invented key ids can win the window.* The gateway discards a refresh triggered by an invented key id even when the key set it fetched holds a newly rotated key. While such a caller keeps claiming an issuer's window ahead of legitimate tokens, the gateway picks up the new key only through a window that a token signed with it claims, or through the background refresh. The worst case is the behaviour without this decision, pick-up at the next background refresh. It is never the acceptance of an invalid token or the loss of a valid key. The risk is accepted because the alternative, publishing whatever a refresh fetched, is the unconditional swap rejected above. Closing this residual exactly requires the gateway to read which key ids a loaded key set holds. Token-sheriff 0.9.6, the version this decision was made against, exposed no such read: a loader only answered a lookup for a named key id. The current `JwksLoader` declares `getKeyIds()`. The refresh does not read it.
+* *One refresh is one library load, not always one request.* Against an identity provider that does not answer, the HTTP client beneath the library retries the fetch itself within that one load. The per-window bound counts refreshes, and the in-flight flag keeps them from overlapping.
+* *The integration proof runs a shortened window.* The native-image suite declares a 5-second window and a 300-second grace period and observes one gateway and one issuer. It does not prove the 30-second default, the end of the grace period, or a refresh whose fetch fails. Unit tests with a controlled clock cover those.
 
-== References
+== Links
 
-* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
-  -- the neutral JWKS configuration surface; its Amendment A2 records the two library knobs this
-  decision exposes
-
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
-  -- upstream defaults are kept, not restated: an omitted cadence key passes nothing to the library
-
-* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
-  -- Amendment A1: the gateway-owned loader, its non-fetching reads and the readiness contract this
-  decision keeps
-
-* link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]
-  -- an omitted key is a nullable component of the configuration model
-
-* link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]
-  -- the rule a record reachable by an uncredentialed caller follows
-
-* link:../configuration.adoc#_jwks_key_rotation[Configuration reference] -- the three keys, their
-  boot refusals and the operator view of a key change
-
-* link:../security-threat-model.adoc#gw-07-jwks-refresh[Security threat model] -- the bound, what a
-  flood cannot do, and the accepted residual
-
-* link:../LogMessages.adoc#apisheriff-136[Log messages] -- `ApiSheriff-136`
-* link:../development/integration-test-topology.adoc#stub-idp-rig[Integration test topology] -- the
-  key-rotation variant of the stub identity-provider rig
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]: the neutral JWKS configuration surface; its Amendment A2 records the two library knobs this decision exposes
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]: upstream defaults are kept, not restated, so an omitted cadence key passes nothing to the library
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]: Amendment A1 records the gateway-owned loader, its non-fetching reads and the readiness contract this decision keeps
+* link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]: an omitted key is a nullable component of the configuration model
+* link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]: the rule a record reachable by an uncredentialed caller follows
+* link:../configuration.adoc#_jwks_key_rotation[Configuration reference]: the three keys, their defaults, ranges and boot refusals, and the operator view of a key change
+* link:../security-threat-model.adoc#gw-07-jwks-refresh[Security threat model]: the bound, what a flood cannot do, and the accepted residual
+* link:../LogMessages.adoc#apisheriff-136[Log messages]: `ApiSheriff-136`
+* link:../development/integration-test-topology.adoc#stub-idp-rig[Integration test topology]: the key-rotation variant of the stub identity-provider rig
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java`: the window, the claim, the off-to-the-side refresh, the retained loader and the record
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java`: the pass-through of the declared cadence keys
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/TokenValidationRules.java`: the ranges and the refusals on a file source

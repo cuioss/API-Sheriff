@@ -210,8 +210,9 @@ public class SheriffMetrics {
      * event's {@link EventCategory#slug() category slug} and the {@link EventType} name as the
      * {@code event} label.
      * <p>
-     * The edge records at two sites only: the pipeline's rendered {@code GatewayException} failure and
-     * the over-ceiling reserved-path body rejection. Three directly-rendered rejections are
+     * The edge records at four sites: the pipeline's rendered {@code GatewayException} failure, the
+     * pre-trust internal failure, the over-ceiling reserved-path body rejection and the source block.
+     * Three directly-rendered rejections are
      * <em>not</em> counted here: a request method the gateway cannot parse ({@code 405}), a reserved
      * path carved out on a gateway without an active session runtime ({@code 404}), and the withheld
      * client-JWKS path ({@code 404}). They surface only through the {@code 4xx} bucket of

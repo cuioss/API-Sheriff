@@ -18,7 +18,7 @@ Accepted
 
 == Decision
 
-The gateway validates every request before routing: path canonicalisation, url-parameter validation
+The gateway validates every request before route selection: path canonicalisation, url-parameter validation
 and header validation. Each check is fail-closed and echoes no offending value. The pipeline is tuned
 to defend an upstream against traffic the gateway forwards. Two legitimate request classes do not fit
 it.
@@ -31,7 +31,7 @@ it.
   a multi-kilobyte budget. A bearer token with its `Bearer ` prefix routinely exceeds the `strict`
   preset's 1024-character value cap. Both fail the pre-route floor on every request.
 
-The pre-route floor (`BasicChecksStage`) runs before route selection, so routing decides on
+The pre-route floor (`BasicChecksStage`) runs before route selection, so route selection decides on
 canonical, validated input. At that point no route or anchor exists to scope a relaxation to. That
 is a structural property of the pipeline, not a shortcut.
 
@@ -151,8 +151,8 @@ the cap's protection on every other header to solve a problem confined to two. A
 the header it applies to, or it is a removal.
 
 *Make the cookie-header cap per-anchor.* The natural containment. Rejected because it cannot be built
-at this position: no anchor exists before route selection. Moving the header check after routing
-would route on unvalidated input, a worse exposure than the raised cap.
+at this position: no anchor exists before route selection. Moving the header check after route selection
+would select a route on unvalidated input, a worse exposure than the raised cap.
 
 *Reject the cookie-mode variant instead of relaxing anything.* Rejected because the cookie-based BFF
 answers a real deployment need. The relaxation it requires is bounded and reviewable.
@@ -218,7 +218,7 @@ limit is structural and stated.
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode and the reserved-path model] -- the structure these relaxations serve.
 * link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- A security bound is re-asserted at every later stage] -- the principle the post-route handling of the carve-outs applies.
 * link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- the post-route position of the url-parameter validation.
-* link:../architecture/tls-and-inbound-security.adoc#_inbound_security_filter[Architecture -- Inbound Security Filter] -- the pipeline's position ahead of routing.
+* link:../architecture/tls-and-inbound-security.adoc#_inbound_security_filter[Architecture -- Inbound Security Filter] -- the pipeline's position ahead of route selection.
 * link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] and link:../configuration.adoc#_preset_limits[Preset limits] -- the keys, their bounds and the preset numbers.
 * link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] and link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the sealed cookie the cookie budget bounds.
 * `ReservedPathHandler`, `BasicChecksStage`, `ThoroughChecksStage`, `SecurityPostures` -- the implementation; `GatewayEdgeRouteTest`, `ThoroughChecksStageTest`, `LimitRulesTest`, `DeclaredLimitBoundaryIT` -- the tests.

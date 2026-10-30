@@ -95,8 +95,8 @@ over-broad security exception.
 *Make the opt-in per-route.* This is the natural scope: only the route in front of the upstream that
 needs it would relax. Rejected because it cannot be honoured where the check lives. The framing gate
 runs before route selection, so no route exists to consult. Implementing it would mean either
-deferring framing validation until after routing, which routes on input whose message boundaries are
-not settled, a strictly worse exposure. Or it would mean a per-route key that silently behaves
+deferring framing validation until after route selection, which selects a route on input whose message
+boundaries are not settled, a strictly worse exposure. Or it would mean a per-route key that silently behaves
 gateway-wide, a surface that misstates its blast radius.
 
 *Leave the rejection unconditional and require clients to use another method.* This is the strictest
@@ -170,7 +170,7 @@ to. A key cannot be scoped to information its stage does not yet have.
 * link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- A security bound is re-asserted at every later stage] -- the principle the gate's self-re-assertion applies.
 * link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths and the header-value relaxations] -- the other pre-route relaxation, gateway-wide for the same reason.
 * link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- the stage map that places the framing gate ahead of route selection.
-* link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060 -- Dispatch framing] -- the dispatch-side refusal of an undeclared body on a bodyless method.
+* link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060 -- Dispatch framing] -- the dispatch-side rejection of an undeclared body on a bodyless method.
 * link:../architecture/README.adoc[Architecture] -- the inbound pipeline's stages and the framing gate's position.
 * link:../configuration.adoc[Configuration Reference] -- the `security_defaults.allow_get_with_content_length_body` key and its exact boundary.
 * link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class the framing gate closes.

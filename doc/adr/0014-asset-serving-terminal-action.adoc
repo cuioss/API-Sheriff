@@ -1,151 +1,105 @@
-= ADR-0014 -- Asset Serving as a Second Terminal Action
-:toc:
-:toclevels: 2
+= ADR-0014: Asset serving and redirect are terminal actions beside upstream, and a route carries exactly one
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A route resolves exactly one terminal action: upstream, asset or redirect. Assets serve from a directory or from an upstream reached through the shared topology model and the SSRF controls, with the path canonicalized and confined before the source is touched, authorization enforced before source resolution, and every response passing a gateway-owned envelope. The upstream source uses a dedicated bounded JDK client rather than the Vert.x data plane. A redirect is answered at the gateway with a mandatory status and a boot-reviewed location, and match.path declares an exact route that precedes every prefix route.
+// tags: terminal-action, asset-serving, redirect, routing, ssrf, path-traversal, response-envelope
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
 
 == Status
 
-Accepted. Amended by <<amendment-a1>> (redirect as a third terminal action and exact-path routes).
-
-== Context
-
-A route in API Sheriff has one terminal action: proxy the request to an `upstream`. Some
-deployments also need the gateway to *serve assets* directly -- a static bundle from a mounted
-directory, or a file fetched from a backend and re-served under gateway governance -- without
-standing up and securing a separate static-file server behind the proxy. Two forces shape how
-this should be added:
-
-* *Do not fork the data plane.* The gateway already has a hardened upstream client
-  (link:../adr/0008-data-plane-transport.adoc[ADR-0008]): fixed-topology upstream resolution, a
-  scheme allowlist, an `EgressPolicy`, `followRedirects(NEVER)`, a circuit breaker, and bounded
-  size/timeout. A "fetch a file from upstream" feature that grew its own HTTP client would
-  duplicate -- and inevitably drift from -- those SSRF controls. GW-05 in the
-  link:../security-threat-model.adoc[threat model] (SSRF via proxy/upstream control) is only
-  closed if every outbound fetch rides the same controlled path.
-* *File paths are a traversal surface.* Serving files introduces a path-traversal class the
-  threat model currently rates covered only for config-path handling. Encoded traversal,
-  encoded slashes, mixed/double encoding, `%00`, overlong sequences, backslashes, and `..;/`
-  are all spellings of the same escape; a control that blocks one spelling but not the class is
-  the Gravitee double-patch cautionary tale.
+Accepted
 
 == Decision
 
-Add *asset serving* as a second terminal action alongside `upstream`, with a two-source model:
+=== The question
 
-* `source: directory` -- serve from a local directory / volume mount (no classpath-embedded
-  resources; out of scope). Resolve the confined path under the configured directory root and
-  stream the file with bounded size.
-* `source: upstream` -- serve from an upstream target *reusing the existing upstream model*
-  (resolved `base_url` + `upstream.path` + remainder), the shared data-plane client, the circuit
-  breaker, `upstream_defaults`, and the SSRF controls -- *no parallel fetch stack*.
+A route's one terminal action was to proxy to an `upstream`. Some deployments need the gateway to serve assets directly, without standing up and securing a separate static-file server. Two forces shape how:
 
-Two cross-cutting rules govern both sources:
+* *Do not fork the outbound controls.* The gateway has a hardened upstream path (link:0008-data-plane-transport.adoc[ADR-0008]) with fixed-topology resolution, a scheme allowlist, an `EgressPolicy` and `followRedirects(NEVER)`. GW-05 in the link:../security-threat-model.adoc[threat model] closes only if every outbound fetch keeps those controls.
+* *File paths are a traversal surface.* Encoded traversal, encoded slashes, mixed or double encoding, `%00`, overlong sequences, backslashes and `..;/` are spellings of one escape. A control that blocks one spelling but not the class is the Gravitee double-patch cautionary tale.
 
-* *Canonicalize-and-confine, before the source is touched.* The request path is canonicalized
-  through `cui-http`'s `URLPathValidationPipeline` (percent-decoding, `..`/dot-segment and
-  duplicate-slash collapse, unconditional traversal/`%00`/overlong/backslash rejection), then
-  the normalized path is confined to the configured root/prefix and any escape is rejected. The
-  confinement is proven against a generator-driven adversarial corpus that closes the *class*,
-  not a single spelling.
-* *Auth before source resolution.* Access is enforced before the source is resolved, so an
-  unauthorized request never causes a directory read or an upstream fetch.
+Two further routing needs do not fit a two-action model. Moving an address required an upstream that answers with a `3xx`, so the gateway proxied a request whose only purpose was to be sent elsewhere. And a route could be declared only as a `path_prefix`, so one address could not be claimed without claiming everything below it.
 
-Both sources serve through a single *gateway-owned response envelope*: a fixed content-type map
-(the gateway sets the type, never the source), `X-Content-Type-Options: nosniff`, governed
-caching that forces `no-store` for `access: authenticated` regardless of source, stripped
-`Set-Cookie`, and GET/HEAD-only enforcement. For the `upstream` source the envelope is what lets
-the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-Cookie`, and force
-`no-store` on an authenticated asset even when the upstream sent `Cache-Control: public`.
+*The decision:* a route resolves exactly one terminal action: `upstream` (proxy), `asset` or `redirect`. The configuration validator enforces this on the resolved route.
+
+=== Two asset sources
+
+* `source: directory` serves from a local directory or volume mount, with the confined path resolved under the configured root and a bounded size. Classpath-embedded resources are out of scope.
+* `source: upstream` serves from an upstream target through the shared topology model: the resolved `base_url`, the configured path and the confined remainder.
+
+[[_shipped_surface_reconciliation]]
+=== What the upstream source shares with the data plane
+
+`UpstreamAssetSource` keeps the shared topology model and the GW-05 SSRF controls: a scheme allowlist, `followRedirects(NEVER)`, a bounded response byte cap and the gateway-owned envelope. It runs its bounded buffered fetch through a dedicated JDK `HttpClient` with a 5 s connect and 10 s read timeout. It does not use the streaming Vert.x client pool or the upstream guard, so the circuit breaker does not cover this leg.
+
+=== Two rules govern both sources
+
+* *Canonicalize and confine before the source is touched.* `cui-http`'s `URLPathValidationPipeline` canonicalizes the request path: percent-decoding, dot-segment and duplicate-slash collapse, and unconditional rejection of traversal, `%00`, overlong sequences and backslashes. `PathConfinement` then confines the normalized path to the configured root or prefix and rejects any escape. A generator-driven adversarial corpus proves the confinement against the class, not one spelling.
+* *Authorization before source resolution.* The gateway enforces access before it resolves the source, so an unauthorized request never causes a directory read or an upstream fetch.
+
+=== One gateway-owned response envelope
+
+Both sources serve through `AssetResponseEnvelope`: a fixed content-type map (the gateway sets the type, never the source), `X-Content-Type-Options: nosniff`, `no-store` forced for `access: authenticated` regardless of source, a stripped `Set-Cookie`, and GET and HEAD only. For the upstream source this lets the gateway override a hostile `Content-Type`, strip an upstream `Set-Cookie` and force `no-store` on an authenticated asset that the upstream marked `Cache-Control: public`.
+
+=== The forward policy does not reach an asset route
+
+Asset routes carry no `forward` block, which under the three-mode model (link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]) would resolve forward-all. It does not matter. The edge computes the forward projection for every route, but the asset branch takes the terminal action without consuming it: the confined path and the request method alone resolve the source, and no client header or query parameter is carried into it. A `source: upstream` fetch is the gateway's own request. An asset route's exposure is bounded by authorization before source resolution, the confinement and the envelope, never by a forward list, so no asset descriptor needs a `forward` block to hold its posture.
+
+[[amendment-a1]]
+=== Redirect and exact routes
+
+* *`redirect` is a terminal action.* The gateway answers a redirect route with the configured `status` (`301`, `302`, `303`, `307` or `308`) and `Location`, and never contacts an upstream. The status is mandatory, because browsers cache `301` and `308` and permanence should be an explicit operator choice. The `location` is written verbatim and reviewed for open-redirect spellings at boot. An external target requires the explicit `allow_external` opt-in. `keep_query` carries the raw inbound query string.
+* *`match.path` declares an exact route.* A route's matcher declares exactly one of `path_prefix` or `path`. An exact `path` is compared as an un-normalized string against the canonical request path, so `/a` and `/a/` are distinct addresses.
+* *Exact routes precede prefix routes.* The route table orders every exact route before every prefix route, and prefix routes keep the longest-prefix rule. Two exact routes on one `path` collide at boot unless host, method or a header matcher distinguishes them. An exact route never collides with a prefix route of the same string.
+* *`base_url` is mandatory only with a proxy route.* A route that declares neither `asset` nor `redirect` is a proxy route, and an endpoint declares `base_url` exactly when it carries one. A declared alias must still resolve.
+
+== Alternatives rejected
+
+=== A parallel fetch stack of its own design for assets
+
+An asset fetch that grew its own client and controls.
+
+*Rejected because* it would duplicate, and inevitably drift from, the SSRF controls. GW-05 closes only if every outbound fetch keeps the same controls. The shipped JDK client is narrower than this alternative: it shares the topology model and carries the same scheme, redirect and size controls, and only the transport and the upstream guard differ.
+
+=== Serve classpath-embedded resources
+
+*Out of scope.* The gateway serves from a mounted directory or an upstream, so an asset is deployment material and not part of the artifact.
+
+=== Standing up an upstream that answers `3xx` for a moved address
+
+*Rejected because* the gateway would proxy a request whose only purpose is to be sent somewhere else, and an operator would run and secure a server for that alone.
 
 == Consequences
 
-* The upstream asset source inherits every ADR-0008 / GW-05 control for free; there is one
-  outbound path to audit, not two. A hostile or compromised upstream cannot dictate the
-  gateway's response metadata.
-* Path traversal is closed for the whole asset surface by canonicalize-then-contain plus the
-  adversarial corpus; the threat-model path-traversal entry (GW-11) records the surface as
-  reopened and re-closed.
-* Asset serving gets a declared home through the `asset` anchor `type`
-  (link:0013-anchor-type-access-axes.adoc[ADR-0013]); an asset surface's audience is boot-enforced
-  like any other anchor.
-* A route still carries exactly one terminal action -- originally `upstream` or `asset`, never
-  both; <<amendment-a1>> adds `redirect` as the third.
-* Classpath-embedded resources and any parallel outbound HTTP stack are explicitly out of scope.
-* *The forward policy does not reach an asset route, and the three-mode model
-  (link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036])
-  therefore changes nothing here.* Asset routes carry no `forward` block, which under that model
-  would ordinarily resolve forward-all. It does not matter either way: the edge computes the
-  forward projection for every route, but the asset branch takes the terminal action *without
-  consuming it* -- the source is resolved from the confined path and the request method alone, and
-  no client header or query parameter is carried into it. An `source: upstream` fetch is likewise
-  the gateway's own request, not a relay of the client's. The consequence is worth stating rather
-  than deriving: an asset route's exposure is bounded by auth-before-source-resolution, the
-  confinement, and the gateway-owned response envelope -- never by a forward list -- so no asset
-  descriptor needs a `forward` block added to hold its posture.
+=== Properties of the design
 
-[[_shipped_surface_reconciliation]]
-=== Shipped-surface reconciliation
+* A hostile or compromised upstream cannot dictate the gateway's response metadata.
+* Canonicalize-then-confine plus the adversarial corpus closes path traversal for the whole asset surface (GW-11 in the threat model).
+* Asset serving has a declared home through the `asset` anchor `type` (link:0013-anchor-type-access-axes.adoc[ADR-0013]), and an asset surface's audience is boot-enforced like any other anchor.
+* An address move or a canonical-path redirect needs no upstream and consumes no forward projection. A redirect's exposure is bounded by authentication and the boot review of its `location`.
+* The route-table builder and the configuration validator share one proxy-route predicate, so the conditional `base_url` rule cannot drift between them.
+* A single address can be claimed without shadowing the paths below it, and an exact route can sit inside a prefix route's namespace to override one address.
 
-The `source: upstream` bullet in the Decision section above originally called for sharing the Vert.x
-data-plane client, circuit breaker, and `upstream_defaults` with proxy routes. The shipped
-`UpstreamAssetSource` keeps the shared topology model (`base_url` / alias + `asset.path` + confined
-sub-path) and the GW-05 SSRF controls (scheme allowlist, `followRedirects(NEVER)`, bounded response
-byte cap, and the gateway-owned `AssetResponseEnvelope`), but executes the bounded buffered fetch
-through a dedicated JDK `HttpClient` (5 s connect / 10 s read timeout) rather than the streaming
-Vert.x `UpstreamClientPool` and `UpstreamGuards`.
+=== Accepted costs
 
-[[amendment-a1]]
-== Amendment A1 -- redirect as a third terminal action and exact-path routes
+* The upstream asset source is a second outbound client to audit. A failing asset origin does not trip a circuit breaker, and its fetch is buffered and bounded rather than streamed.
 
-=== Context
+== Links
 
-Two routing needs did not fit the two-action model. Moving an address -- an old path to a new
-one, or a bare path to its canonical form -- required standing up an upstream that answers with a
-`3xx`, so the gateway proxied a request whose only purpose was to be sent somewhere else. And a
-route could only be declared as a `path_prefix`, so a single address (`/`, `/favicon.ico`, a moved
-page) could not be claimed without also claiming everything below it on a segment boundary.
-
-=== Decision
-
-* *`redirect` is a third terminal action.* A route resolves *exactly one* of `upstream` (proxy),
-  `asset` or `redirect`. A redirect route is answered at the gateway with the configured `status`
-  (`301`, `302`, `303`, `307` or `308`, mandatory -- `301` and `308` are cached by browsers, so
-  permanence is an explicit operator choice) and `Location`, and never contacts an upstream. The
-  `location` is written verbatim and is reviewed for open-redirect spellings at boot; an external
-  target requires the explicit `allow_external` opt-in. `keep_query` carries the raw inbound
-  query string.
-* *`match.path` declares an exact route.* A route's matcher declares exactly one of `path_prefix`
-  or `path`. An exact `path` is compared as an un-normalized string against the canonical request
-  path, so `/a` and `/a/` are distinct addresses.
-* *Exact routes precede prefix routes.* The route table orders every exact route before every
-  prefix route; prefix routes keep the longest-prefix rule. First match wins, so for the same
-  address an exact route is always selected over a prefix route. Two exact routes on the same
-  `path` collide at boot unless host, method or a header matcher distinguishes them; an exact
-  route never collides with a prefix route of the same string.
-* *`base_url` is mandatory only with a proxy route.* A route that declares neither `asset` nor
-  `redirect` is a proxy route; an endpoint must declare `base_url` exactly when it carries one.
-  Asset-only and redirect-only endpoints boot without it, and a declared alias must still resolve.
-
-=== Consequences
-
-* An address move or a canonical-path redirect needs no upstream and no forward-policy
-  consumption; the redirect answer carries the gateway's stage headers like any other
-  gateway-authored response.
-* The terminal-action invariant is enforced on the resolved route as "exactly one of three", and
-  the route-table builder and the configuration validator share one proxy-route predicate, so the
-  conditional `base_url` rule cannot drift between assembly and validation.
-* A single address can be claimed without shadowing the paths below it, and an exact route can
-  sit inside a prefix route's namespace to override one address of it.
-* The forward-policy statement above holds for redirect routes too: a redirect route consumes no
-  forward projection, and its exposure is bounded by authentication and the boot-time review of
-  its `location`.
-
-== References
-
-* link:../adr/0008-data-plane-transport.adoc[ADR-0008] -- the upstream client and SSRF controls
-  the `upstream` source reuses.
-* link:0013-anchor-type-access-axes.adoc[ADR-0013] -- the `asset` anchor `type` this action
-  classifies, and the access axis the envelope's caching keys on.
-* link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] -- the anchor policy floor asset routes
-  inherit.
-* link:../security-threat-model.adoc[Threat Model] -- the path-traversal class and GW-05 this
-  decision reopens and closes.
+* link:0008-data-plane-transport.adoc[ADR-0008]: the upstream client and SSRF controls
+* link:0013-anchor-type-access-axes.adoc[ADR-0013]: the `asset` anchor `type`, and the access axis the envelope's caching keys on
+* link:0007-anchor-scoped-policy.adoc[ADR-0007]: the anchor policy floor asset routes inherit
+* link:0028-Operator_content-type_mappings_extend_the_built-in_asset_map_add-only_and_a_colliding_entry_is_refused_at_boot.adoc[ADR-0028]: the operator's add-only extension of the content-type map
+* link:../security-threat-model.adoc[Threat Model]: the path-traversal class and GW-05
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/asset/AssetResponseEnvelope.java`: the envelope
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/asset/UpstreamAssetSource.java` and `DirectoryAssetSource.java`: the two sources

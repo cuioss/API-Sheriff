@@ -16,7 +16,7 @@ The upstream client is split by plane (link:../adr/0008-data-plane-transport.ado
   the edge: request and response bodies are piped as streams in both directions, and the transport
   natively provides HTTP trailers (gRPC), raw upgrade streams (WebSocket) and upstream HTTP/2. One
   shared client and connection pool is built once at boot per *distinct upstream target*
-  (`edge.assembly.UpstreamTarget`: scheme + host + port + forced HTTP/2, with shared outbound TLS
+  (`edge.assembly.UpstreamTarget`: scheme + host + port + forced HTTP/2, with shared egress TLS
   trust options). Every client not forced to HTTP/2 closes its connections abortively (`SO_LINGER
   0`), so a connection closed after resetting an upstream request or evicting an idle connection
   ends in a TCP `RST` and holds no local port in `TIME_WAIT`. The forced-HTTP/2 (gRPC) client leaves

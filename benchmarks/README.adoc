@@ -43,7 +43,7 @@ closes its aspect list to the eight comparable aspects so that is unreachable.
 
 == The aspect matrix
 
-The first eight aspects exist route-for-route on both gateways and are the *comparable set*: the
+The first eight aspects exist route-for-route on both gateways and are the *comparable set* (`bearer` has no valid APISIX side for now, see the methodology): the
 first six ride the single static fairness backend and measure pure gateway overhead, and the next
 two (`ws`, `grpc`) ride protocol-appropriate backends instead — see the fairness caveat below the
 table. The final `passthrough` aspect is *API-Sheriff-only* — the opaque L4 relay has no APISIX
@@ -314,6 +314,19 @@ API Sheriff, APISIX and Keycloak all mount the same certificate bundle, so every
 certificate and the load generator needs no per-target trust handling. TLS termination cost is
 therefore common to both sides.
 
+Same auth realm and tokens::
+Both gateways take tokens from the same Keycloak `benchmark` realm. The `bearer` aspect mints one
+token from that realm before the measured window and replays it, whichever gateway the run targets.
+API Sheriff validates it offline against the realm's JWKS through its `benchmark-keycloak` issuer.
+`apisix.yaml` configures the same for APISIX, `openid-connect` with `use_jwks` set, but the plugin
+takes the key-set address from Keycloak's discovery document. Under the stack's static `KC_HOSTNAME`
+that address is `https://localhost:1443/...`, which the APISIX container cannot reach, so this lane
+cannot validate tokens
+(link:../doc/adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]).
+Until that follow-up work lands, the `bearer` row has no valid APISIX side: a rejected request fails
+the script's HTTP-200 check rather than counting as a fast result. A side that fell back to token
+introspection would fold a Keycloak network call into its number only.
+
 Identical routes, one upstream (six HTTP aspects)::
 Every *HTTP* benchmarked route on *both* gateways targets the same fast static nginx backend
 (`nginx-static`). This is the *fairness invariant*: pointing one gateway's `graphql` / `upload`
@@ -574,11 +587,12 @@ Then run the comparison from `benchmarks/`:
 
 [source,bash]
 ----
-# Full matrix against both gateways
+# Full matrix against both gateways. Until the APISIX bearer side is restored (see above), the
+# run stops at bearer on the APISIX side and the later aspects are not measured there.
 scripts/run-comparison.sh --target both
 
 # A named aspect subset
-scripts/run-comparison.sh --target both --aspects bearer,http2
+scripts/run-comparison.sh --target both --aspects http2,ws
 
 # One side only
 scripts/run-comparison.sh --target apisix

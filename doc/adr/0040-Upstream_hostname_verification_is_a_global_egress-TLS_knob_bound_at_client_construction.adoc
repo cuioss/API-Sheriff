@@ -56,7 +56,7 @@ egress-TLS principle below.*
 
 This applies the neutral-name rule of
 link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
-to the outbound direction, as
+to the egress direction, as
 link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
 applies it to the inbound one.
 
@@ -178,7 +178,7 @@ operator with a private-CA upstream can reach. It does not solve the problem, an
 disables a control that was working.
 
 *Name `jwks_verify_hostname` only once it has a reader.* Declare only the key this record binds.
-Rejected because the outbound vocabulary is defined once, across every egress leg. A key named later
+Rejected because the egress vocabulary is defined once, across every egress leg. A key named later
 risks a different name, and the keys' peerhood, which the prefixes express, is visible only when the
 peers exist together. The cost was one declared key with no reader until ADR-0041 bound it; the schema
 description, the model documentation and this record said so while it lasted.

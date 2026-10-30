@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: gateway.yaml is API Sheriff's own configuration language, so the JWKS issuer surface exposes egress and TLS trust as framework-neutral names (allowed_egress_hosts, tls_profile) that carry no trust material; exactly one mapping component binds a logical trust-profile name to concrete runtime trust anchors, and config stays neutral while startup diagnostics name the concrete runtime key. AMENDED (A1): an absent or empty allowed_egress_hosts no longer preserves the no-exemption default — the gateway derives the single host of jwks.url as the egress allowance, a non-empty list stays authoritative and host-exact and is never merged with that host, blank and host:port entries and a hostless jwks.url are refused at boot, and the accepted trade-off is that the jwks.url host is exempt from the private-address check in every deployment while certificate trust is unchanged; tls_profile and the mapping seam are unchanged. AMENDED (A2): two of the deferred knobs, refreshIntervalSeconds and keyRotationGracePeriod, are now exposed as the neutral per-issuer keys jwks.refresh_interval_seconds and jwks.key_rotation_grace_period_seconds, bounded at boot, refused on a file source and passed to the library only when declared so an omitted key keeps the library default; every other deferred knob, maxRetiredKeySets included, stays deferred.
+// summary: The gateway configuration is API Sheriff's own configuration language, so the JWKS issuer surface exposes egress and TLS trust as framework-neutral names (allowed_egress_hosts, tls_profile) that carry no trust material. Exactly one mapping component binds a logical trust-profile name to concrete runtime trust anchors, and the configuration stays neutral while startup diagnostics name the concrete runtime key. An absent or empty allowed_egress_hosts derives the single host of jwks.url as the egress allowance, a non-empty list stays authoritative and host-exact and is never merged with that host, blank and host:port entries and a hostless jwks.url are refused at boot, and the accepted trade-off is that the jwks.url host is exempt from the private-address check in every deployment while certificate trust is unchanged. Two library knobs are exposed as neutral per-issuer keys, jwks.refresh_interval_seconds and jwks.key_rotation_grace_period_seconds, bounded at boot, refused on a file source and passed to the library only when declared. Every other loader knob, maxRetiredKeySets included, stays deferred.
 // tags: configuration-surface, jwks, token-validation, tls-trust, layering, secrets-handling, boot-sequence, portability
 // affects: api-sheriff
 // supersedes:
@@ -24,365 +24,137 @@
 
 Accepted
 
-== Context
-
-`gateway.yaml` is API Sheriff's own configuration language. Its `token_validation.issuers[]`
-entries are bound to a token-sheriff `HttpJwksLoaderConfig`, whose builder exposes roughly
-seventeen knobs. The gateway surface deliberately exposes only a small subset of them, so every
-knob promoted from that builder into `gateway.yaml` is a distinct architectural decision, not a
-mechanical pass-through.
-
-Two of those knobs are not optional refinements but preconditions for the gateway working at all
-in its ordinary deployment shapes:
-
-* *Egress.* token-sheriff's `EgressPolicy.secureDefault()` refuses a JWKS URL that resolves to a
-  loopback, link-local, site-local, any-local, multicast, or unique-local address. Without a
-  widening mechanism, API Sheriff can validate tokens only from a public-internet IdP. It cannot
-  reach a Kubernetes ClusterIP IdP (10.96.0.0/12), any Docker-network deployment, or an on-prem
-  IdP on RFC1918. That is backwards for a gateway, whose normal position is inside the same
-  private network as the identity provider it trusts.
-
-* *TLS trust.* The JWKS client verifies the IdP's server certificate against the JVM default trust
-  store. An IdP fronted by an internal or corporate CA -- or a cluster-internal IdP using the
-  cluster's own authority -- therefore fails PKIX path building. The key set never loads and every
-  bearer request is rejected, a trust failure that presents as a token failure.
-
-Both must therefore be configurable for production, not merely for tests. That settles *whether*
-to expose them. It leaves open *how*, and the how is the substance of this ADR.
-
-The choice point is a layering question. Trust anchors are held by the runtime the gateway is
-built on, in that runtime's own named-TLS-configuration surface. The obvious expedient is to let
-`gateway.yaml` reference that runtime construct directly. Doing so would make the product's
-configuration language depend on the identity of the framework underneath it: a user's
-`gateway.yaml` would encode a runtime concept, and a change of runtime would invalidate documents
-operators wrote, reviewed, and committed. A configuration language that leaks its implementation
-substrate is not a configuration language; it is an implementation detail with a YAML syntax.
-
-A second, orthogonal question follows. Trust *material* -- store paths, passwords, rotation --
-must live somewhere. Putting it in `gateway.yaml` would place secrets in the document operators
-edit and commit, and would oblige API Sheriff to re-implement key-store loading, format handling,
-and reload semantics that the runtime already implements.
-
 == Decision
 
-*`gateway.yaml` names intent in API Sheriff's own vocabulary; the deployment supplies material;
-exactly one component maps between them.*
+=== The question
 
-Three mechanisms realise this.
+The `token_validation.issuers[]` entries of the gateway configuration bind to a token-sheriff `HttpJwksLoaderConfig`. Its builder exposes about seventeen knobs. The gateway exposes a small subset, so every promoted knob is a decision, not a pass-through.
 
-=== 1. The issuer surface exposes egress and trust as neutral keys
+Two knobs are preconditions for the gateway working in its ordinary deployment shapes:
+
+* *Egress.* `EgressPolicy.secureDefault()` refuses a JWKS URL that resolves to a loopback, link-local, site-local, any-local, multicast or unique-local address. Without a widening mechanism the gateway validates tokens only from a public-internet identity provider. It cannot reach a Kubernetes ClusterIP identity provider, a Docker-network deployment or an on-prem identity provider on RFC 1918 addresses. A gateway normally sits inside the same private network as the identity provider it trusts.
+* *TLS trust.* The JWKS client verifies the identity provider's certificate against the JVM default trust store. An identity provider behind an internal or corporate CA, or a cluster-internal one under the cluster's own authority, fails PKIX path building. The key set never loads, and every bearer request is rejected. A trust failure then presents as a token failure.
+
+Both must be configurable for production. This record settles how.
+
+Two questions follow. Trust anchors live in the runtime's own named-TLS surface. If the gateway configuration referenced that surface, the product's configuration language would depend on the framework beneath it, and a change of runtime would invalidate documents operators wrote and committed. Trust material (store paths, passwords, rotation) must also live somewhere. In the gateway configuration it would put secrets in a committed document and force the gateway to re-implement key-store loading.
+
+*The decision:* the gateway configuration names intent in API Sheriff's own vocabulary, the deployment supplies material, and exactly one component maps between them.
+
+=== The issuer surface exposes egress and trust as neutral keys
 
 `token_validation.issuers[].jwks` carries two production capabilities:
 
-* `allowed_egress_hosts` -- a host-exact SSRF egress allowlist. Absent or empty preserves
-  `EgressPolicy.secureDefault()`; each entry exempts exactly one host, with no wildcard or suffix
-  form.
+* `allowed_egress_hosts`: a host-exact SSRF egress allowance. It has no wildcard or suffix form.
+* `tls_profile`: the name of a logical trust profile. Absent means the JVM default trust store.
 
-* `tls_profile` -- the name of a logical trust profile used to verify the IdP's certificate.
-  Absent means the JVM default trust store, preserving prior behaviour exactly.
+Neither key, nor the JSON schema that validates them, names a runtime, a TLS registry, a truststore path or a password. `tls_profile` is a name in API Sheriff's vocabulary and carries no trust material.
 
-NOTE: The default of `allowed_egress_hosts` stated above -- absent or empty preserving
-`EgressPolicy.secureDefault()` -- is superseded by <<amendment-a1,Amendment A1>>: absent or empty now
-derives the host of `jwks.url` as the single exempted host. The host-exact rule for a declared list
-stands. The text above is kept as the original decision.
+[[amendment-a1]]
+=== An absent `allowed_egress_hosts` derives the `jwks.url` host
 
-Neither key, nor the JSON schema that validates them, mentions any runtime, TLS registry,
-truststore path, or password. `tls_profile` is a name in API Sheriff's vocabulary and carries no
-trust material.
+The `http` issuer's allowance has two forms:
 
-=== 2. Exactly one component knows the runtime binding
+* *Absent or empty derives the allowance.* `TokenValidatorProducer` passes exactly one host to the loader's egress allowance: the host of the issuer's own `jwks.url`, spelled as the URL spells it, with any port dropped. The issuer's key endpoint is then reachable wherever it resolves.
+* *A declared list is authoritative.* A non-empty list is passed entry by entry, and the `jwks.url` host is never merged into it. A list naming another host keeps the `jwks.url` host refused whenever it resolves to a private address. Declaring the list pins the allowance, so a later `jwks.url` edit to another host fails closed instead of moving the exemption.
 
-A single mapping component translates a logical `tls_profile` name into the runtime's named TLS
-configuration and thence into an `SSLContext`, which it hands to the JWKS loader builder. It is
-the only place in the codebase that knows the mapping exists. Every other collaborator --
-including the producer that assembles the validator -- deals only in the logical name and the
-resulting `SSLContext`. Confining the binding to one seam is what makes `gateway.yaml` portable:
-the runtime underneath can change and only that component follows.
+The boot refuses a blank or whitespace-only entry and a `host:port` entry, naming the entry. It admits a bare IPv6 literal. An `http` issuer that declares no list and whose `jwks.url` names no host has nothing to derive from. It fails startup with a configuration error that names the issuer and never echoes the URL. A derived allowance never collapses into an empty one.
 
-=== 3. Config neutral, diagnostics concrete
+No dedicated key restores the no-exemption posture for an `http` issuer. An operator who wants a narrower allowance declares an explicit list. A key whose only purpose is to switch the derivation off was not added, because the explicit list already expresses every narrower posture that still loads a key set.
 
-The neutrality rule is scoped deliberately, not applied uniformly:
+The derivation is not a local reversal of an upstream tightening. `EgressPolicy.secureDefault()` is unchanged, and the gateway does not replace or relax it. The gateway passes one host through the library's own `allowedEgressHost` seam, the seam a declared list uses. The posture of link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022] is therefore not engaged: no upstream default changed and none is being worked around.
 
-* `gateway.yaml` and its JSON schema *never* name the runtime.
-* Startup errors and user-facing documentation *do* name the concrete runtime key.
+The field contract is in link:../configuration.adoc#_token_validation[the configuration reference].
 
-An operator who names an unbound profile needs the exact knob to set, not an abstraction. The
-startup diagnostic therefore reads, in substance, ``jwks.tls_profile 'X' is not configured --
-define it via quarkus.tls.X.trust-store.*``. Neutrality protects the *configuration contract*;
-it is not a reason to make failures harder to diagnose.
+=== Exactly one component knows the runtime binding
 
-=== 4. Unresolvable means refuse to start
+`JwksTrustProfileResolver` translates a logical `tls_profile` name into the runtime's named TLS configuration and then into an `SSLContext`, which it hands to the loader builder. It is the only place that knows the mapping exists. Every other collaborator, including the producer that assembles the validator, deals only in the logical name and the resulting `SSLContext`. Confining the binding to one seam keeps the gateway configuration portable: when the runtime changes, only that component follows.
 
-A named-but-unbound profile fails startup, consistent with the existing configuration posture of
-refusing to serve on invalid configuration. It never falls back to default trust. The validator is
-assembled eagerly at boot so the failure surfaces at startup rather than on the first bearer
-request.
+=== Configuration neutral, diagnostics concrete
 
-== Consequences
+The neutrality rule has a deliberate scope:
 
-=== Positive
+* The gateway configuration and its JSON schema never name the runtime.
+* Startup errors and user-facing documentation do name the concrete runtime key.
 
-* API Sheriff can validate tokens against the IdP deployments it will actually be placed next to:
-  cluster-internal, Docker-network, and on-prem behind an internal CA.
+An operator who names an unbound profile needs the exact key to set. Neutrality protects the configuration contract. It is not a reason to make failures harder to diagnose.
 
-* Trust-store passwords never appear in `gateway.yaml`. The document operators edit, review, and
-  commit stays secret-free.
+=== An unresolvable profile refuses to start
 
-* API Sheriff does not re-implement key-store loading, format handling, or rotation; it consumes
-  the runtime's result rather than growing a second, weaker implementation.
+The boot refuses a named-but-unbound profile on an `http`-sourced issuer. It never falls back to default trust. `TokenValidatorProducer.onStartup` forces the validator into existence at boot, so the failure surfaces at startup and not on the first bearer request. A `source: file` issuer opens no TLS connection and never resolves the profile, so it boots with an unbound name, and that name governs nothing (link:../configuration.adoc#_jwks_verify_hostname_profile_collision[configuration reference]).
 
-* The same `gateway.yaml` moves across environments that bind one profile name to different
-  anchors, with no edit.
+[[amendment-a2]]
+=== Two refresh knobs are exposed; the rest stay deferred
 
-* A change of runtime invalidates one component, not every user's configuration.
-* Both widenings are opt-in and default-preserving: an issuer that omits them behaves exactly as
-  it did before either existed, so the secure default is never widened by accident.
+A knob is promoted under one discipline: a neutral key named for what API Sheriff means, with a default that preserves current behaviour. `jwks.refresh_interval_seconds` and `jwks.key_rotation_grace_period_seconds` are promoted under it:
 
-NOTE: For `allowed_egress_hosts` the last consequence above is superseded by
-<<amendment-a1,Amendment A1>>: an `http` issuer that omits the key now has the `jwks.url` host
-exempted. It still holds for `tls_profile`.
+* *Neutral names.* Both keys use the gateway configuration's snake-case vocabulary and state their unit. Neither the keys nor the schema name the library or its builder.
+* *Current behaviour is preserved.* The gateway passes a key to the loader configuration only when it is declared. An omitted key leaves the builder untouched, so the library's own default applies and the gateway keeps no second copy of it.
+* *Bounded at boot, by the gateway.* A value outside its range is a boot refusal naming the issuer, the key and the range. The ranges are the gateway's: the library admits every non-negative value, and the gateway refuses values the library would take.
+* *Refused where they cannot act.* Either key on a `source: file` issuer is a boot refusal. A file source is read once and never refreshed, so the key would parse and change nothing.
 
-=== Negative
+The link:../configuration.adoc#_jwks_key_rotation[configuration reference] holds the ranges and defaults. link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063] records the third, gateway-owned key exposed with them, the bounded refresh it governs, and why the grace period needs a gateway-side counterpart once the gateway replaces a loader itself.
 
-* Configuring a private-network IdP behind an internal CA requires editing *two* places -- the
-  profile name in `gateway.yaml` and the binding in deployment configuration. The indirection is
-  the cost of portability and secret separation.
+Every other loader knob stays deferred, and link:../configuration.adoc#_jwks_deferred_knobs[the configuration reference lists them]. Several are production-significant, so their absence is a known gap and not an oversight. Exposing one is a separate decision under the same discipline.
 
-* The binding is not visible in `gateway.yaml`, so a reader of that document alone cannot tell
-  which anchors a profile resolves to. The startup diagnostic and the configuration documentation
-  are the compensating mechanisms.
+== Alternatives rejected
 
-=== Risks
+=== Reference the runtime's named TLS configuration directly from the gateway configuration
 
-* *Operator confusion between the two knobs.* `allowed_egress_hosts` answers "may I connect to
-  this address?" and `tls_profile` answers "do I trust the certificate I get back?". A
-  private-network IdP behind an internal CA needs both, and configuring only one yields a failure
-  that looks like the other. Mitigated by documenting the pair together and by their distinct,
-  specific error messages.
+The gateway configuration would carry the runtime's own configuration name, which removes the mapping component. This is the simplest option.
 
-* *Egress widening is a real attack-surface increase.* Each `allowed_egress_hosts` entry exempts a
-  host from an SSRF guard. Mitigated by host-exactness (no wildcard or suffix form), so the
-  widening cannot be broadened by a typo, and by defaulting to no exemption at all.
+*Rejected because* it makes the product's configuration language depend on the identity of the framework beneath it. A change of runtime would break documents the product told operators to write. The mapping component is a small, bounded price for keeping the contract independent of its substrate.
 
-NOTE: The mitigation "defaulting to no exemption at all" is superseded by
-<<amendment-a1,Amendment A1>>, which defaults to exempting the `jwks.url` host and records the
-resulting trade-off as an accepted risk. Host-exactness stands.
+=== Carry trust material inline in the gateway configuration
 
-== Alternatives Considered
+The gateway configuration would hold the truststore path and password, which makes the document self-contained and removes the two-place edit.
 
-=== Reference the runtime's named TLS configuration directly from gateway.yaml
-
-`gateway.yaml` would carry the runtime's own configuration name, removing the mapping component
-entirely. This is the simplest option and was seriously considered.
-
-Rejected on layering. It makes the product's configuration language depend on the identity of the
-framework beneath it. A user's `gateway.yaml` would encode a runtime concept, so a change of
-runtime would break documents the product told operators to write. The mapping component is a
-small, bounded price for keeping the configuration contract independent of its substrate.
-
-=== Carry trust material inline in gateway.yaml
-
-`gateway.yaml` would hold the truststore path and password directly, making the document
-self-contained and removing the two-place edit.
-
-Rejected on two counts. It places secrets in a document intended to be reviewed and committed, and
-it obliges API Sheriff to re-implement key-store loading, format support, and rotation that the
-runtime already provides -- a second implementation that would inevitably be weaker than the first.
+*Rejected because* it places secrets in a document meant to be reviewed and committed. It also obliges API Sheriff to re-implement key-store loading, format support and rotation the runtime already provides. That second implementation would be weaker than the first.
 
 === Fall back to default trust when a profile does not resolve
 
-An unresolvable profile would log a warning and continue on the JVM default trust store, making
-misconfiguration non-fatal.
+An unresolvable profile would log a warning and continue on the JVM default trust store.
 
-Rejected as the most dangerous option. It either defers the failure to an obscure JWKS fetch error
-later, or -- when the IdP happens to chain to a public CA -- quietly succeeds against anchors the
-operator never intended to trust. A trust decision that silently degrades is worse than one that
-refuses to start.
+*Rejected as the most dangerous option.* It either defers the failure to an obscure JWKS fetch error, or it succeeds quietly against anchors the operator never intended to trust when the identity provider happens to chain to a public CA. A trust decision that silently degrades is worse than one that refuses to start.
 
-=== Expose the whole HttpJwksLoaderConfig builder
+=== Expose the whole `HttpJwksLoaderConfig` builder
 
-Every builder knob would be surfaced in `gateway.yaml` mechanically.
+Every builder knob would appear in the gateway configuration mechanically.
 
-Rejected because it makes the gateway's configuration surface a mirror of a dependency's API. Each
-promotion should be a deliberate decision about what API Sheriff means, with its own naming,
-defaulting, and documentation; a mechanical pass-through forfeits that and freezes the dependency's
-vocabulary into the product's contract.
+*Rejected because* it makes the configuration surface a mirror of a dependency's API. Each promotion should be a deliberate decision about what API Sheriff means, with its own naming, defaulting and documentation. A mechanical pass-through forfeits that and freezes the dependency's vocabulary into the product's contract.
 
-The unifying principle: `gateway.yaml` is the product's configuration language. Its keys are chosen
-for what API Sheriff means, not for what its dependencies or its runtime happen to call things.
+The unifying principle: the gateway configuration is the product's configuration language. Its keys are chosen for what API Sheriff means, not for what its dependencies or its runtime call things.
 
-== Deferred knobs
+== Consequences
 
-The following `HttpJwksLoaderConfig` knobs remain unexposed. Recording them is part of this
-decision, because several are production-significant and their absence is a known gap rather than
-an oversight:
+=== Properties of the design
 
-[cols="1,3", options="header"]
-|===
-| Knob | Note
+* The gateway validates tokens against the identity providers it is placed next to: cluster-internal, Docker-network and on-prem behind an internal CA.
+* Trust-store passwords never appear in the gateway configuration, so the committed document stays secret-free.
+* API Sheriff consumes the runtime's key-store result and grows no second implementation.
+* The same gateway configuration moves across environments that bind one profile name to different anchors, with no edit.
+* A change of runtime invalidates one component, not every user's configuration.
+* An issuer that omits `tls_profile` keeps the JVM default trust store, so that widening is never made by accident.
+* A private-network identity provider loads its key set from the one `jwks.url` declaration.
 
-| `connectTimeoutSeconds`, `readTimeoutSeconds`
-| Production-significant. A slow or black-holed IdP currently cannot be bounded from configuration.
+=== Accepted costs
 
-| `retryConfig`
-| Production-significant. Retry behaviour on a failed JWKS fetch is not configurable.
+* *The derived entry exempts the `jwks.url` host in every deployment*, not only one whose identity provider lives on a private network. In a public-identity-provider deployment, a hostname that resolves to an internal address through a DNS change, a split-horizon resolver or a poisoned cache is dialled. The exemption is bounded to the one host the operator named as the key endpoint, and it widens nothing else. Certificate trust is untouched, so chain validation and hostname verification still refuse an endpoint that cannot prove it is that host. The threat analysis is under link:../security-threat-model.adoc#gw-05[GW-05] and link:../security-threat-model.adoc#bff-07[BFF-07].
+* A private-network identity provider behind an internal CA needs an edit in two places: the profile name in the gateway configuration and the binding in deployment configuration. The indirection is the cost of portability and secret separation.
+* A reader of the gateway configuration alone cannot tell which anchors a profile resolves to. The startup diagnostic and the configuration documentation compensate.
 
-| `refreshIntervalSeconds`
-| *No longer deferred -- exposed by <<amendment-a2,Amendment A2>>* as
-  `jwks.refresh_interval_seconds`. The original note, kept as the record of the decision: the knob
-  was production-significant and effectively fixed at 600 seconds, so deployments could not tune key
-  refresh cadence.
+=== Risks
 
-| `keyRotationGracePeriod`
-| *No longer deferred -- exposed by <<amendment-a2,Amendment A2>>* as
-  `jwks.key_rotation_grace_period_seconds`. The original note, kept as the record of the decision:
-  tolerance for IdP key rotation was not configurable, which matters for IdPs that rotate
-  aggressively.
+* *Operator confusion between the two keys.* `allowed_egress_hosts` answers "may I connect to this address?". `tls_profile` answers "do I trust the certificate I get back?". A private-network identity provider behind an internal CA needs a trust profile, and a missing one yields a failure that can look like the other. Documenting the pair together and their distinct error messages mitigate this.
+* *Egress widening is a real attack-surface increase.* Each allowance entry exempts a host from an SSRF guard. Host-exactness mitigates this: a typo cannot broaden the widening.
 
-| `maxRetiredKeySets`
-| Production-significant, and still deferred. The other half of the tolerance for IdP key rotation
-  is not configurable.
+== Links
 
-| `wellKnownUri`
-| Discovery-based issuer configuration; the gateway requires an explicit JWKS URL instead.
-
-| `allowLoopbackEgress`
-| Deliberately not exposed. `allowed_egress_hosts` covers the legitimate cases host-exactly; a
-  blanket loopback opening is a broader widening than any known deployment needs.
-
-| `tlsVersions`
-| Protocol-version selection for the JWKS client; the runtime's defaults apply.
-
-| `parserConfig`
-| JWKS parsing limits.
-|===
-
-Exposing any of these is a separate decision and should follow the same discipline: a neutral key
-named for what API Sheriff means, with a default that preserves current behaviour.
-
-[[amendment-a1]]
-== Amendment A1: an absent allowed_egress_hosts derives the jwks.url host
-
-*The no-exemption default for `allowed_egress_hosts` is superseded.* The original decision made the
-key opt-in: an `http` issuer that omitted it kept `EgressPolicy.secureDefault()` in full, so an
-identity provider on a private network loaded no key set until the operator restated its host in a
-second place. In the deployment shapes this ADR names as ordinary -- cluster-internal, Docker-network,
-on-prem -- that second declaration is always the host `jwks.url` already names, and forgetting it
-presents as a token failure. The key keeps its name and its neutral vocabulary; its default changes.
-
-This amendment supersedes three statements above, for `allowed_egress_hosts` only: the Decision
-bullet "Absent or empty preserves `EgressPolicy.secureDefault()`", the Risks clause "defaulting to no
-exemption at all", and the Positive consequence "Both widenings are opt-in and default-preserving".
-Everything this ADR decides about `tls_profile`, the mapping seam, config neutrality and the
-refuse-to-start posture is unchanged.
-
-* *Absent or empty derives the allowance.* The gateway passes exactly one host to the JWKS loader's
-  egress allowance: the host of the issuer's own `jwks.url`, spelled as the URL spells it, with any
-  port dropped. The issuer's key endpoint is then reachable wherever it resolves.
-
-* *A declared list is authoritative.* A non-empty list is passed as declared, entry by entry,
-  host-exact with no wildcard or suffix form, and the `jwks.url` host is never merged into it. A list
-  naming a different host keeps the `jwks.url` host refused whenever it resolves to a private address.
-  Declaring the list is how an operator pins the allowance, so that a later `jwks.url` edit to another
-  host fails closed instead of silently moving the exemption.
-
-* *Unusable declarations are boot refusals.* A blank or whitespace-only entry and a `host:port` entry
-  of an `http` issuer are refused at boot, naming the entry; a bare IPv6 literal is admitted. An
-  `http` issuer that declares no list and whose `jwks.url` names no host has nothing to derive from
-  and fails startup with a configuration error that names the issuer and never echoes the URL. This
-  is the posture of section 4 applied to the new default: a derived allowance never silently
-  collapses into an empty one.
-
-*The accepted trade-off.* The derived entry exempts the `jwks.url` host from the private-address
-check in *every* deployment, not only one whose identity provider lives on a private network. In a
-public-IdP deployment, a public IdP hostname that resolves to an internal address -- through a DNS
-change, a split-horizon resolver or a poisoned cache -- was refused before this amendment and is now
-dialled. The exemption is bounded to the one host the operator already named as the key endpoint,
-and it widens nothing else: certificate trust is untouched, so chain validation and hostname
-verification still refuse an endpoint that cannot prove it is that host. The trade-off is accepted
-in exchange for a private-network identity provider working from the one declaration the
-configuration already carries.
-
-*The residual.* No dedicated key restores the no-exemption posture for an `http` issuer. An operator
-who wants a narrower allowance declares an explicit list, which is authoritative. A key whose only
-purpose is to switch the derivation off was not added: the explicit list already expresses every
-narrower posture that still loads a key set.
-
-*This is not a local reversal of an upstream tightening.* token-sheriff's
-`EgressPolicy.secureDefault()` is unchanged, and the gateway does not replace or relax it. It passes
-one host through the library's own `allowedEgressHost` seam -- the same seam a declared list has
-always used -- so the posture of
-link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
-is not engaged: no upstream default changed and none is being worked around.
-
-The operator-facing contract is in
-link:../configuration.adoc#_token_validation[the configuration reference], and the threat analysis
-of the trade-off is recorded under GW-05 and BFF-07 of
-link:../security-threat-model.adoc#gw-05[the security threat model].
-
-[[amendment-a2]]
-== Amendment A2: the refresh interval and the key-rotation grace period are exposed
-
-*Two rows of the deferred-knobs table are overtaken; the decision of this ADR stands.* The table
-recorded `refreshIntervalSeconds` and `keyRotationGracePeriod` as production-significant gaps and
-prescribed the discipline for closing one: a neutral key named for what API Sheriff means, with a
-default that preserves current behaviour. Both knobs are now exposed under that discipline, as keys
-of `token_validation.issuers[].jwks`:
-
-[cols="2,2,1,1", options="header"]
-|===
-| Key | Library knob | Range | Omitted
-
-| `refresh_interval_seconds`
-| `refreshIntervalSeconds`
-| `60`-`86400`
-| the library default, 600 seconds
-
-| `key_rotation_grace_period_seconds`
-| `keyRotationGracePeriod`
-| `0`-`3600`
-| the library default
-|===
-
-* *Neutral names.* Both keys are spelled in `gateway.yaml`'s own snake-case vocabulary and state
-  their unit. Neither the keys nor the schema name the library or its builder.
-
-* *Current behaviour is preserved.* A key is passed to the library's loader configuration only when
-  it is declared. An omitted key leaves the builder untouched, so the library's own default applies
-  and the gateway keeps no second copy of it. An issuer that declares neither key behaves as it did
-  before either existed.
-
-* *Bounded at boot, by the gateway.* A value outside its range is a boot refusal naming the issuer,
-  the key and the range, in line with section 4. The ranges are the gateway's: the library admits
-  every non-negative value for both knobs, so every value the gateway admits is one the library
-  accepts, and the gateway refuses values the library would take.
-
-* *Refused where they cannot act.* Either key on a `source: file` issuer is a boot refusal. A file
-  source is read once and never refreshed, so the key would parse and change nothing.
-
-This amendment supersedes one statement above: the table's note that the refresh interval is
-"effectively fixed at 600 seconds". It supersedes nothing else. `maxRetiredKeySets` and every other
-row of the table stay deferred, and the discipline for exposing them is unchanged.
-
-The two keys were exposed together with a third, gateway-owned one that has no library counterpart,
-and with the bounded refresh it governs. That decision, and the reason the key-rotation grace period
-needs a gateway-side counterpart once the gateway replaces a loader itself, is recorded in
-link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063].
-
-== References
-
-* link:../configuration.adoc[Configuration reference] -- the `token_validation` surface, the
-  `allowed_egress_hosts` and `tls_profile` field contracts, and the trust-profile mapping,
-  worked example, and failure mode
-
-* link:../security-threat-model.adoc[Security threat model] -- GW-05 and BFF-07, which record the
-  egress guard, the derived allowance of Amendment A1 and its accepted trade-off
-
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
-  -- the posture on upstream security defaults, which Amendment A1 does not engage
-
-* link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]
-  -- the bounded refresh on an unknown key id, and the two keys Amendment A2 exposes
-
-* link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
-  runtime-specific assembly at the boundary rather than in the framework-agnostic core
+* link:../configuration.adoc#_token_validation[Configuration reference]: the `token_validation` surface, the `allowed_egress_hosts` and `tls_profile` field contracts, the trust-profile mapping, the worked example and the failure modes
+* link:../configuration.adoc#_jwks_deferred_knobs[Configuration reference]: the loader knobs that stay deferred
+* link:../security-threat-model.adoc[Security threat model]: GW-05 and BFF-07, which record the egress guard, the derived allowance and its accepted trade-off
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]: the posture on upstream security defaults, which the derived allowance does not engage
+* link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]: the bounded refresh on an unknown key id and the two refresh keys
+* link:0005-module-structure.adoc[ADR-0005]: the framework-bound edge seam that keeps runtime-specific assembly at the boundary
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java`: the egress allowance and the loader configuration
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/JwksTrustProfileResolver.java`: the single trust-profile seam

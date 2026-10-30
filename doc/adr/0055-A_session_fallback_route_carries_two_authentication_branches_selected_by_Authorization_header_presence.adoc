@@ -1,13 +1,15 @@
 = ADR-0055: A session_fallback route carries two authentication branches selected by Authorization header presence
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A require: bearer route may declare auth.session_fallback: true and then carries two authentication branches, chosen per request by one input only, whether an Authorization header is present; with the header (any scheme, any value, empty included) the route is exactly a bearer route including the ADR-0049 scope check and a failed bearer is a terminal 401 never rescued by a session cookie, without it the route is exactly a require: session route including the ADR-0018 CSRF defence; one resolver feeds both the CSRF gate and authentication, the validated client token is forwarded through the mediated-bearer seam rather than ADR-0037 header re-admission, the key is refused at boot outside a bearer posture or without an oidc block, and a route-bounded counter records the branch; token-shape sniffing, fallback on a failed bearer and headers_allow re-admission are rejected.
+// summary: A require: bearer route may declare auth.session_fallback: true and then carries two authentication branches, chosen per request by one input only, whether an Authorization header is present; with the header (any scheme, any value, empty included) the route is exactly a bearer route including the ADR-0049 scope check and a failed bearer is terminal and never rescued by a session cookie, answered as the unrouted 404 by default per ADR-0073, without it the route is exactly a require: session route including the ADR-0018 CSRF defence; one resolver feeds both the CSRF gate and authentication, the validated client token is forwarded through the mediated-bearer seam rather than ADR-0037 header re-admission, the key is refused at boot outside a bearer posture or without an oidc block, and a route-bounded counter records the branch; token-shape sniffing, fallback on a failed bearer and headers_allow re-admission are rejected.
 // tags: auth, bearer, bff, session, csrf, scopes
 // affects: api-sheriff
 // supersedes:
@@ -20,157 +22,100 @@
 
 == Status
 
-Proposed
-
-[NOTE]
-====
-*Amended for untrusted callers.*
-link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-overrides the terminal `401` of the BEARER branch. A failed bearer is still terminal: no login
-redirect, no session lookup, no `Set-Cookie`. On the shipped default the gateway answers it as an
-unrouted address, `404` with no `WWW-Authenticate` challenge, and meters the true event
-(`TOKEN_MISSING` or `TOKEN_INVALID`). A CSRF refusal on the SESSION branch is answered the same way.
-The SESSION branch keeps its own login negotiation, the redirect for a navigation and the `401` for
-everything else, because a browser must reach the login. The branch rule and every other statement
-below stand. With `security_defaults.uniform_not_found: false` the BEARER branch answers `401` again.
-====
-
-== Context
-
-A route carries one authentication posture: `none`, `bearer` or `session`. A backend path that must
-serve two kinds of caller -- API clients presenting their own bearer token, and browsers logged in
-through the gateway's BFF session -- therefore needs two routes on one prefix, told apart by an
-`Authorization` header matcher, often under two anchors. Every such path is declared twice, the pair
-depends on the matcher semantics staying exactly right, and nothing in the configuration says that
-the two routes are one resource.
-
-Folding the pair into one route moves the choice between the two mechanisms inside the gateway, and
-that choice is the security question. Whenever one route accepts two credentials, the rule that
-picks between them is an attack surface:
-
-* If the rule can be steered by what a client sends, an attacker can pick the weaker or more ambient
-  branch. The classic form is *fallback on failure*: an invalid bearer token is retried as a session,
-  so a cross-site request carrying garbage in `Authorization` rides the victim's cookie.
-* If the CSRF gate and the authentication stage each decide the branch on their own, they can
-  disagree. A request can then be authenticated on the session branch after the CSRF gate judged it
-  to be a bearer request and skipped the check.
-* If the combined route accepts anything that neither a plain bearer route nor a plain session route
-  would accept, the fold has created a new posture with its own, unreviewed acceptance rules.
-
-The question this ADR settles is how the branch is chosen, and what each branch is allowed to be,
-so that none of the three happens.
+Accepted
 
 == Decision
 
-*A `require: bearer` route may declare `auth.session_fallback: true`. It then carries two
-authentication branches, and the branch is chosen per request from one input only: whether the
-request carries an `Authorization` header.*
+=== The question
 
-* *Selection by presence, never by content.* A request that carries an `Authorization` header --
-  any scheme, any value, an empty value included -- takes the BEARER branch. A request without one
-  takes the SESSION branch. The resolver (`AuthBranch.resolve`) never reads the credential, so no
-  value a client sends can move a request onto the session branch. The only way onto it is to send
-  no `Authorization` at all, which gains nothing a `require: session` route does not already offer.
-* *The BEARER branch is exactly a bearer route.* Offline validation, the `403 insufficient_scope`
-  check over the route's `neededScopes` (ADR-0049), and a `401` with `WWW-Authenticate: Bearer` for a
-  missing, malformed, non-`Bearer` or empty credential. A failed bearer is terminal (RFC 6750 §3.1):
-  no login redirect, no session lookup, no `Set-Cookie`, and a valid session cookie sent alongside it
-  never rescues it.
-* *The SESSION branch is exactly a session route.* The fixed CSRF defence on unsafe methods
-  (ADR-0018), session resolution and transparent refresh, a login redirect for a navigation and a
-  `401` for everything else, a login requesting the route's `neededScopes`, and `token_relay`.
-* *One resolver for both decisions.* The edge resolves the branch once, directly after the per-route
-  thorough checks, and runs the CSRF defence for the SESSION branch only. The authentication stage
-  dispatches on the same resolver, so the CSRF gate and authentication cannot disagree. A plain
-  `require: session` route keeps its CSRF defence unchanged, because its branch is always SESSION.
-* *The validated client token is forwarded through the mediated-bearer seam.* On the BEARER branch
-  the validated token is recorded as the request's mediated bearer, which the forward policy writes
-  last, exactly as it writes a session's token. It is not re-admitted through
-  `forward.headers_allow: [Authorization]` (ADR-0037), so the route needs no forward-list entry for it,
-  and the upstream receives the token that was validated, not whatever inbound header crossed.
-  `token_relay` governs the SESSION branch only; the BEARER branch always forwards. The browser
-  `Cookie` is treated alike on both branches: the gateway's own cookies, the session cookie among
-  them, never reach the upstream, and the browser's other cookies cross only as the route's
-  `cookies` policy admits them (see
-  link:../configuration.adoc#_never_forward_set[the never-forward set]). A plain
-  `require: bearer` route is unchanged: it records no mediated bearer.
-* *Refused where it cannot act, visible where it does.* The key rides the `auth` block's wholesale
-  cascade (ADR-0007). The boot refuses `session_fallback: true` on a posture other than
-  `require: bearer`, and on a gateway without an `oidc` block, with two fixed detail texts on the
-  existing configuration-error record. The route stays held to `token_validation` for its bearer
-  posture, so it needs both backing blocks. The anchor floor keeps comparing `require` only. The
-  per-route boot posture line reports the flag for every route, and a counter
-  `sheriff_auth_branch_total{route,branch}` records the selected branch once per request, on
-  `session_fallback` routes only.
+A route carries one authentication posture: `none`, `bearer` or `session`. An upstream path serving API clients with their own bearer token and browsers logged in through the BFF therefore needs two routes on one prefix, told apart by an
+`Authorization` header matcher, often under two anchors. Every such path is declared twice, and the pair depends on the matcher semantics. Nothing in the configuration says the two routes are one resource.
+
+Folding the pair into one route moves the choice between the mechanisms inside the gateway. Whenever one route accepts two credentials, the rule that picks between them is an attack surface:
+
+* If what a client sends can steer the rule, an attacker picks the weaker or more ambient branch. The classic form is *fallback on failure*: the gateway retries an invalid bearer token as a session, so a cross-site request with garbage in
+  `Authorization` rides the victim's cookie.
+* If the CSRF gate and the authentication stage each decide the branch, they can disagree. A request can be authenticated on the session branch after the CSRF gate judged it a bearer request and skipped the check.
+* If the combined route accepts anything a plain bearer route or a plain session route would not, the fold creates a new posture with unreviewed acceptance rules.
+
+This record settles how the branch is chosen and what each branch may be.
+
+=== Two branches, chosen by header presence
+
+A `require: bearer` route may declare `auth.session_fallback: true`. It then carries two authentication branches. One input alone chooses the branch per request: whether the request carries an `Authorization` header.
+
+* *Selection by presence, never by content.* A request with an `Authorization` header, any scheme, any value, an empty value included, takes the BEARER branch. A request without one takes the SESSION branch. The resolver (`AuthBranch.resolve`) never reads the
+  credential, so no value a client sends can move a request onto the session branch. The only way onto it is to send no `Authorization` at all, which gains nothing a `require: session` route does not offer.
+* *The BEARER branch is exactly a bearer route.* It validates offline, applies the `403 insufficient_scope` check over the route's `neededScopes` (ADR-0049), and rejects a missing, malformed, non-`Bearer` or empty credential. A failed bearer is terminal (RFC 6750 §3.1): no login
+  redirect, no session lookup, no `Set-Cookie`, and a valid session cookie sent alongside never rescues it.
+* *The SESSION branch is exactly a session route.* It applies the fixed CSRF defence on unsafe methods (ADR-0018), session resolution and transparent refresh, a login redirect for a navigation and a `401` for everything else, a login requesting the route's `neededScopes`, and `token_relay`.
+* *One resolver for both decisions.* The edge calls `AuthBranch.resolve` directly after the post-route stage and runs the CSRF defence for the SESSION branch only. The authentication stage calls the same pure resolver again for the same request, so the two cannot disagree. A plain `require: session` route keeps its CSRF defence,
+  because its branch is always SESSION.
+* *The validated client token crosses through the mediated-bearer seam.* On the BEARER branch the gateway records the validated token as the mediated bearer, which the forward policy writes last, as it writes a session's token. The route needs no `forward.headers_allow: [Authorization]` entry (ADR-0037), and the
+  upstream receives the token that was validated, not whatever inbound header crossed. `token_relay` governs the SESSION branch only, and the BEARER branch always forwards. `Cookie` is treated alike on both branches: the gateway's own cookies never reach the upstream, and the others cross only as the route's `cookies`
+  policy block admits them (link:../configuration.adoc#_never_forward_set[the never-forward set]). A plain `require: bearer` route records no mediated bearer.
+* *Refused where it cannot act, visible where it does.* The key rides the `auth` block's whole-block replacement (ADR-0007). The boot refuses `session_fallback: true` on a posture other than `require: bearer` and on a gateway without an `oidc` block, with two fixed detail texts on the existing configuration-error record. The route
+  still needs `token_validation` for its bearer posture, so it needs both backing blocks. The anchor floor keeps comparing `require` only. The per-route boot posture line reports the flag for every route. A counter `sheriff_auth_branch_total{route,branch}` records the selected branch once per request, on `session_fallback` routes only.
+
+=== The answers before the trust boundary
+
+The BEARER branch's terminal rejection and the SESSION branch's CSRF rejection both lie before the trust boundary of
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]. On the shipped default the gateway answers a failed bearer as an unrouted address: `404`, with no `WWW-Authenticate` challenge, metering the true event (`TOKEN_MISSING` or `TOKEN_INVALID`). A CSRF rejection is answered the same way.
+With `security_defaults.uniform_not_found: false` the BEARER branch answers `401` with `WWW-Authenticate: Bearer`. The SESSION branch keeps its own login negotiation either way, because a browser must reach the login.
+
+== Alternatives rejected
+
+=== Select the branch from the token's shape
+
+Inspect `Authorization` and take the BEARER branch only for something that looks like a `Bearer` JWT.
+
+*Rejected because* selection then depends on attacker-controlled content. A `Basic` credential or a malformed value would fall through to the session branch and ride the cookie. Every change to the heuristic would change which requests are exposed to CSRF.
+
+=== Fall back to the session on a failed bearer
+
+Try the bearer and, on failure, retry with the session cookie.
+
+*Rejected because* this is the downgrade above. An invalid token plus an ambient cookie would authenticate, and the CSRF decision would come after authentication rather than before it. RFC 6750 makes a failed bearer terminal.
+
+=== Reuse `forward.headers_allow: [Authorization]` for the bearer branch
+
+Re-admit the inbound header instead of recording the validated token.
+
+*Rejected in favour of the mediated-bearer seam both branches share.* It forwards whatever crossed, not the validated token. It ties a security property to a forward-list entry an operator can remove or mistype. It also conflicts with `token_relay: false`, whose boot rule refuses that re-admission.
+
+All three let the credential's content or a forward-list entry decide which security mechanism applies. The decision keeps the choice structural: a credential's presence decides the branch, and each branch is an existing, reviewed posture.
 
 == Consequences
 
-=== Positive
+=== Properties of the design
 
-* One route serves both callers. A shared backend path is declared once, and the configuration says
-  that it is one resource with two ways in.
-* No downgrade by construction. Because selection reads presence rather than content, the set of
-  requests that can reach the session branch is exactly the set that sends no credential. That is
-  the population a `require: session` route already serves.
-* No new acceptance rules. A request is admitted on a `session_fallback` route only if a plain bearer
-  route or a plain session route would admit it, so the existing reviews of both postures carry
-  over unchanged.
-* The CSRF gate and the authentication stage share one decision, so the class of defect in which
-  they disagree cannot occur.
-* The branch in use is observable: at boot through the posture line, at runtime through the
-  counter.
+* One route serves both callers. The configuration declares a shared upstream path once and says it is one resource with two ways in.
+* No downgrade by construction. Selection reads presence, so the requests that can reach the session branch are exactly those that send no credential: the population a `require: session` route already serves.
+* No new acceptance rules. The route admits a request only if a plain bearer route or a plain session route would, so the reviews of both postures carry over.
+* The CSRF gate and the authentication stage share one decision, so they cannot disagree.
+* The branch in use is observable: at boot through the posture line, at runtime through the counter.
 
-=== Negative
+=== Accepted costs
 
-* A bearer client that omits its header by mistake is treated as a browser. It receives a login
-  redirect for a navigation-shaped request, or a session `401`, instead of a bearer `401`. The
-  counter's `session` series is the signal to watch on a route expected to serve mostly API clients.
-* The route needs both an `oidc` block and a `token_validation` block, so a bearer-only gateway cannot
-  use the key.
+* A bearer client that omits its header by mistake is treated as a browser. It gets a login redirect for a navigation-shaped request, or a session `401`. The counter's `session` series is the signal on a route expected to serve mostly API clients.
+* The route needs both an `oidc` block and a `token_validation` block, so a bearer-only gateway cannot use the key.
 
 === Risks
 
-* The branch rule depends on browsers never attaching `Authorization` by themselves and on
-  cross-origin scripts needing a CORS preflight to set it. Both are platform guarantees rather than
-  gateway controls. A gateway CORS policy that allow-lists the `authorization` request header for an
-  untrusted origin would weaken the second; the CORS policy stays a separate operator decision.
-* The counter's `route` label is bounded only because route ids are config-fixed, as for every other
-  per-route meter.
+* The branch rule depends on browsers never attaching `Authorization` by themselves and on cross-origin scripts needing a CORS preflight to set it. These are platform guarantees, not gateway controls. A gateway CORS policy that allow-lists the `authorization` request header for an untrusted origin would weaken the second. CORS stays a separate operator decision.
+* The counter's `route` label is bounded only because route ids are fixed by configuration, as for every other per-route meter.
 
-== Alternatives Considered
+== Links
 
-*Select the branch from the token's shape.* The gateway could inspect `Authorization` and take the
-BEARER branch only for something that looks like a `Bearer` JWT, sending everything else to the
-session. That makes selection depend on attacker-controlled content: a `Basic` credential or a
-malformed value would fall through to the session branch and ride the cookie, and every change to
-the shape heuristic would change which requests are exposed to CSRF. Rejected.
-
-*Fall back to the session on a failed bearer.* A route could try the bearer and, on failure, retry
-with the session cookie. That is exactly the downgrade the Context describes. An invalid token plus
-an ambient cookie would authenticate, and the CSRF decision would have to be made after
-authentication, not before it. RFC 6750 makes a failed bearer a terminal `401`. Rejected.
-
-*Reuse `forward.headers_allow: [Authorization]` for the bearer branch.* The route could re-admit the
-inbound header instead of recording the validated token. That forwards whatever crossed, not the
-token that was validated, ties a security property to a forward-list entry an operator can remove
-or mistype, and would conflict with `token_relay: false`, whose boot rule refuses exactly that
-re-admission. Rejected in favour of the mediated-bearer seam that both branches share.
-
-All three alternatives let either the credential's content or a forward-list entry decide which
-security mechanism applies. The decision keeps that choice structural: whether a credential is
-present decides the branch, and each branch is an existing, already reviewed posture.
-
-== References
-
-* link:0007-anchor-scoped-policy.adoc[ADR-0007]: the wholesale `auth` cascade the key rides
-* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the fixed CSRF model, now keyed on the SESSION branch
+* link:0007-anchor-scoped-policy.adoc[ADR-0007]: the whole-block `auth` replacement the key rides
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the fixed CSRF model, keyed on the SESSION branch
 * link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]: the `Authorization` re-admission path this decision does not use
-* link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]: the bearer branch enforces `neededScopes`
-* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]: the uniform `404` that answers a failed bearer and a CSRF refusal before the trust boundary
+* link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]: the `neededScopes` the BEARER branch enforces
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]: the uniform `404` that answers a failed bearer and a CSRF rejection before the trust boundary
 * link:../security-threat-model.adoc#bff-16[Threat model BFF-16] (authentication-branch downgrade) and link:../security-threat-model.adoc#bff-11[BFF-11] (CSRF on the cookie-authenticated API)
 * link:../configuration.adoc#_auth_session_fallback[Configuration: `auth.session_fallback`]: the key contract and branch table
 * link:../user/bff-session.adoc#session-fallback[Server-Session BFF: Serving API clients and browsers on one route]: the operator view
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/AuthBranch.java`: the branch resolver
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/AuthenticationStage.java`: the branch dispatch and the mediated bearer on the BEARER branch
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java`: the CSRF gate on the resolved branch and the counter
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java`: the two boot refusals
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/AuthRules.java`: the two boot refusals

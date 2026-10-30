@@ -316,10 +316,12 @@ GraalVM's default target -- `quarkus.native.additional-build-args` carries no `-
 A CPU below either baseline -- an x86-64 CPU without AVX2, or an older AArch64 core such as
 Graviton 1 or the Raspberry Pi 4 -- cannot start the published image, and neither can an amd64 image
 forced onto an arm64 host under emulation: the process exits at once with *"The current machine does
-not support all of the following CPU features that are required by the image"*. On such a host, and
-to run local changes, build the image locally -- see
+not support all of the following CPU features that are required by the image"*. A default local
+build does not serve a CPU below either baseline: it compiles for the same GraalVM default target as
+the published image, not for the host it runs on. An arm64 host that would otherwise force an amd64
+image, and anyone running local changes, can build the image locally -- see
 link:doc/user/compose-sample.adoc[Route B -- a locally built image] in the compose sample. The
-decision and the declined `-march=compatibility` alternative are recorded in
+decision and the undecided `-march=compatibility` alternative are recorded in
 link:doc/adr/0070-The_gateway_image_is_one_index_over_per-architecture_natively_built_and_tested_images.adoc[ADR-0070].
 
 == External Resources

@@ -1,10 +1,12 @@
 = ADR-0036: Forward filtering is a three-mode policy inside an authorised route
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The forward block -- declarable at endpoint and route, the nearest declared one taken whole per ADR-0067 -- resolves one of three postures per dimension — a positive-list when headers_allow / query_allow is declared, a negative-list when headers_deny / query_deny is declared, and forward-all when neither is — with both lists for one dimension refused at boot; deny-by-default lives at the URL layer rather than at the forward stage, and the absent-versus-declared-empty distinction the three modes rest on is carried by a @Nullable list per ADR-0033.
+// summary: The forward block -- declarable at endpoint and route, the nearest declared one taken whole per ADR-0067 -- resolves one of three forward modes per dimension: a positive-list when headers_allow / query_allow is declared, a negative-list when headers_deny / query_deny is declared, and forward-all when neither is. The boot refuses both lists for one dimension. Deny-by-default lives at the URL layer rather than at the forward stage, and a @Nullable list per ADR-0033 carries the absent-versus-declared-empty distinction the three modes rest on.
 // tags: forward-policy, request-pipeline, zero-trust, configuration-model, null-safety, precedence, boot-validation
 // affects: api-sheriff
 // supersedes:
@@ -12,290 +14,242 @@
 
 == Status
 
-Proposed. Amended by <<amendment-a1>> (the `forward` block is declarable at the endpoint as well as
-on the route).
-
-== Context
-
-The forward stage decides which client headers and query parameters reach the
-upstream. Its original shape offered one posture: an allow-list, with an absent
-list meaning "nothing crosses". That was described throughout the documentation
-as the gateway's deny-by-default posture, and the description was the problem.
-
-Two distinct failures followed from it.
-
-**The posture was attributed to the wrong layer.** Deny-by-default is a real
-property of this gateway, but it is enforced at the URL layer: a request that
-matches no route is stamped `NO_ROUTE` and reaches no upstream at all. By the
-time the forward stage runs, the request has already been matched to a route and
-authorised for it. Calling the forward stage the seat of deny-by-default
-described the same guarantee twice while leaving the actual mechanism — route
-matching — under-documented, and it made the forward stage look like a security
-boundary whose loosening would breach the gateway's premise. It is not. The
-boundary held either way; only the enumeration burden moved.
-
-**The enumeration burden fell on the operator for no security gain.** Under an
-allow-list-only model, an operator putting a normal REST backend behind the
-gateway had to enumerate `Accept`, `Accept-Encoding`, `Accept-Language`,
-`Content-Type`, `Range` and every conditional validator before the backend
-behaved the way it does when addressed directly. None of those is a credential.
-The route was already authorised, so the enumeration was not deciding *whether*
-the client reached the backend, only *which of its own headers* survived the
-trip. In practice this produced two bad outcomes: operators wrote long,
-copy-pasted allow-lists that drifted from what the backend needed, or they gave
-up and allow-listed broadly — which is the permissive posture the model was
-trying to avoid, reached by a path that also hid the intent.
-
-A third constraint emerged from the configuration model itself. Once more than
-one posture exists, the configuration has to distinguish *"the operator declared
-no list"* from *"the operator declared a list naming nothing"*. Those select
-different behaviour — the first is a mode selector, the second is a mode with an
-empty membership — and a model that normalises absent to empty cannot express
-the difference at all.
+Accepted
 
 == Decision
 
-**The `forward` block resolves one of three modes per dimension, independently,
-inside a route the request is already authorised for.**
+=== The question
 
-Headers and query parameters are two dimensions, each resolving its own posture
-from what the route declares:
+The forward stage decides which client headers and query parameters reach the upstream. It once
+offered one mode: an allow-list, with an absent list meaning "nothing crosses". The documentation
+called this the gateway's deny-by-default posture. This record settles where that guarantee lives
+and how an operator states what crosses inside an authorised route.
 
-* **Positive-list** — `headers_allow` / `query_allow` declared: only the named
-  entries cross.
-* **Negative-list** — `headers_deny` / `query_deny` declared: everything crosses
-  except the named entries.
-* **Forward-all** — neither declared for that dimension: every client entry
-  crosses.
+Three facts force the decision:
 
-Each mode selects among the *client-controlled* entries only. Every mode is
-additionally bounded by the gateway-owned sets described below — which no list
-re-admits — and the gateway-understood protocol headers cross without being
-named. So "everything" and "every client entry" above mean everything the
-gateway does not itself own; no mode decides about `Cookie`, which crosses only
-as the route's `cookies` block admits it
-(link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]),
-and forward-all is not a way to reach an upstream with a spoofed
-`X-Forwarded-For`.
+* *The guarantee sat at the wrong layer in the documentation.* The URL layer enforces
+  deny-by-default: a request that matches no route gets `NO_ROUTE` and reaches no upstream. The
+  forward stage runs after route selection and authorisation. Loosening it moves the enumeration
+  burden and leaves the boundary where it was.
+* *The enumeration burden bought no security.* An operator with a normal REST upstream had to list
+  `Accept`, `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Range` and every conditional
+  validator. None of them is a credential. Operators wrote long lists that drifted from what the
+  upstream needed, or they listed broadly and hid the permissive intent.
+* *Several modes need absence as a state.* "The operator declared no list" and "the operator
+  declared a list naming nothing" select different behaviour. A model that normalises absent to
+  empty cannot express the difference.
 
-The dimensions do not have to agree. A route may run a positive-list on headers
-and forward-all on query in one block, because the two answer different
-questions.
+=== Three forward modes per dimension
 
-**Declaring both lists for one dimension is refused at boot.** The two are
-mutually exclusive, not composable: a route naming both an allow-list and a
-deny-list for headers has not expressed a stricter policy, it has expressed an
-ambiguous one, and the resolution any implementation picked would be a guess at
-intent. The configuration validator rejects it before the gateway serves
-traffic, so the failure is a startup error the operator sees rather than a
-routing behaviour they have to infer.
+The `forward` block resolves one forward mode for headers and one for query parameters, each from
+its own keys:
 
-**Deny-by-default is documented where it lives — the URL layer.** The forward
-stage's own documentation, and the architecture and threat-model text describing
-it, state that a request matching no route reaches no upstream, and that the
-forward block chooses a posture *within* an authorised route.
+* *Positive-list:* `headers_allow` or `query_allow` is declared. Only the named entries cross.
+* *Negative-list:* `headers_deny` or `query_deny` is declared. Everything crosses except the named
+  entries.
+* *Forward-all:* neither key is declared for that dimension. Every client entry crosses.
 
-The *authorization boundary* is unchanged by this decision — route matching
-enforced it before and enforces it unchanged after, so no request reaches an
-upstream it could not reach previously. What does change is *forwarding
-exposure* inside that boundary: a route that relied on the old allow-list-only
-default now sends an authorised request's headers and query parameters upstream
-that it previously withheld. Relocating where deny-by-default is documented and
-broadening the default forward posture are two separate changes, and only the
-first is purely a documentation correction. The second is a real behavioural
-change, recorded as the first entry under Risks below.
+The dimensions need not agree. A route may run a positive-list on headers and forward-all on query
+in one block, because the two answer different questions.
 
-**Two gateway-owned sets bound every mode, and forward-all is safe because of
-them.** A permissive baseline is only defensible if the names that must never
-cross are withheld structurally rather than by operator diligence. The
-request-direction never-forward set is applied on every mode — no
-`headers_allow` re-admits it, with one deliberate carve-out — and the
-regenerated forwarding headers are skipped on the client copy under every mode,
-so forward-all is not a way to smuggle a spoofed `X-Forwarded-For` through.
-Those sets and their membership rule are ADR-0037's subject; this decision
-depends on them existing.
+Each mode selects among client-controlled entries only. "Everything" means everything the gateway
+does not own itself:
 
-**Absent is not empty, and the type model carries the distinction.** The four
-list components of the `forward` record are `@Nullable List<String>`. `null`
-means the operator declared no list for that dimension; a declared empty list
-means the list exists and names nothing — `query_allow: []` is a positive-list
-admitting nothing, which is the opposite of an absent `query_allow`. The
-canonical constructor therefore deliberately does *not* normalise `null` to
-`List.of()`; doing so would erase the very distinction the three modes are built
-on and silently convert every "admit nothing" route into a forward-all route.
-Absence is modelled as a `@Nullable` type rather than a stored `Optional`,
-following link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]:
-this is a stored position, so it takes the declaration-site vocabulary.
-`set_headers` is normalised the ordinary way — absent becomes empty — precisely
-because it carries no mode semantics and so has no distinction to lose.
+* The gateway-owned header sets bound every mode, and no list re-admits a member, with one
+  deliberate exception. Forward-all is safe only because these sets withhold the dangerous names
+  structurally. They and their membership rule are the subject of
+  link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037].
+* The gateway-understood protocol headers cross without being named.
+* No mode decides about `Cookie`. It crosses only as the `cookies` policy block admits it.
+* The client copy skips the regenerated forwarding headers in every mode. Forward-all therefore
+  cannot carry a spoofed `X-Forwarded-For` to an upstream.
 
-**The application order is pinned, and it encodes a precedence rule.** The stage
-merges, in order: the mode copy and the never-forward strip, then the
-gateway-understood protocol set, then `set_headers`, then the regenerated
-forwarding headers, then the mediated session bearer. Two sentences explain
-every step of that order:
+=== The boot refuses both lists for one dimension
 
-1. **Operator configuration beats client input.** `set_headers` is merged after
-   everything sourced from the request, so an operator's explicit value is never
-   silently overridden by whatever the client happened to send.
-2. **Gateway-owned transport truth beats operator configuration.** Regeneration
-   and the mediated bearer are merged after `set_headers`, with the mediated
-   bearer last, so the upstream sees the gateway's own account of the connection
-   and only the mediated credential.
+The two lists are mutually exclusive. A route that names both has not expressed a stricter policy.
+It has expressed an ambiguous one, and any resolution would guess at intent. `ForwardingRules`
+reports the conflict, so the boot refuses before the gateway serves traffic. The operator sees a
+boot refusal rather than a routing behaviour to infer.
 
-The order is only meaningful if the map it merges into treats field names the
-way HTTP does. The outbound map is keyed case-insensitively, matching RFC 9110
-field-name semantics, so a later stage replaces an earlier stage's value however
-either spelled the field. Without that, an inbound lower-cased `content-type`
-and an operator's `Content-Type` both reach the upstream as separate headers and
-the precedence rule above does not hold — it only *appears* to hold, because a
-lookup by either spelling finds a plausible value.
+=== Declarable at endpoint and route
 
-== Consequences
+[[amendment-a1]]
+The block is declarable on a route and on an endpoint, and it follows the rule of every policy block
+(link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]).
+A route runs its own `forward` block when it declares one, else its endpoint's. The winning block is
+taken whole. A route block therefore replaces the endpoint block entirely: a route naming only
+`headers_allow` drops an endpoint `query_deny`. With neither declared, both dimensions are
+forward-all.
 
-=== Positive
+The block has no anchor or gateway policy scope. Forward filtering is upstream-specific, and the
+endpoint is the policy scope that owns the upstream.
 
-* An operator states a posture rather than enumerating HTTP mechanics. The
-  common case — a normal backend behind an authorised route — needs no `forward`
-  block at all.
-* The negative-list expresses the intent that was previously inexpressible:
-  "everything except these", which is what an operator withholding one internal
-  header actually means.
-* The documentation now names the layer that enforces deny-by-default, so a
-  reader looking for that guarantee finds the mechanism rather than a restatement.
-* The two dimensions are independent, so a route does not have to over-constrain
-  query parameters to constrain headers.
-* An ambiguous route fails at boot rather than resolving to a guess.
+The boot applies both of its refusals at each policy scope:
 
-=== Negative
+* An endpoint block that declares both lists of one dimension is refused, as a route block is.
+* A `token_relay: false` route whose effective block re-admits `Authorization` through
+  `headers_allow` is refused, whether the block is the route's or the endpoint's.
 
-* Three modes are more surface than one. A reader must know which posture a
-  route resolves before predicting what crosses, and that depends on which lists
-  are absent — a property that is invisible in the declared YAML precisely
-  because absence is what selects the mode.
-* Forward-all makes the gateway-owned sets load-bearing. Under an allow-list-only
-  model an omission from those sets was masked by the operator's enumeration;
-  under forward-all an omission crosses. The sets are now a security surface in
-  their own right.
-* The `@Nullable` list shape means every consumer must distinguish `null` from
-  empty. A consumer that treats them alike reintroduces exactly the bug the model
-  exists to prevent, and does so silently.
+The endpoint and route blocks live in one endpoint file with one owner. A route that replaces its
+endpoint's block therefore gets no boot WARN.
 
-=== Risks
+=== Deny-by-default is documented where it lives
 
-* **A configuration that declares no forward block now means forward-all.** This
-  is a behavioural change for any existing route that relied on the old
-  allow-list-only default, and — critically — it is invisible to a search for
-  identifiers, because the route expresses its posture by *omission*. Every
-  fixture, example and test configuration therefore has to be reviewed for what
-  it does not say, which no identifier-scoped sweep can find.
-* **A normalisation added later re-collapses the model.** A well-intentioned
-  `null`-to-empty normalisation anywhere in the config pipeline turns every
-  declared-empty positive-list into forward-all. The distinction is asserted by
-  tests at the record and at the stage, because it is the kind of invariant a
-  reasonable-looking refactor destroys.
-* **A case-sensitive outbound map breaks precedence quietly.** The failure is a
-  duplicate header reaching the upstream, not an exception, and a test asserting
-  `get("Content-Type")` passes while the duplicate crosses. The tests assert the
-  *cardinality* of each field name for this reason.
+The forward stage's documentation, and the architecture and threat-model text about it, state two
+facts. A request that matches no route reaches no upstream. The `forward` block chooses a forward
+mode inside an authorised route.
 
-== Alternatives Considered
+The authorization boundary is unchanged: no request reaches an upstream it could not reach before.
+Forwarding exposure inside that boundary did change. A route that relied on the old allow-list-only
+default now sends an authorised request's headers and query parameters upstream. Relocating the
+documentation is a correction. Broadening the default is a behavioural change, recorded under
+<<_consequences>>.
+
+=== Absent is not empty
+
+The four list components of `ForwardConfig` are `@Nullable List<String>`:
+
+* `null` means the operator declared no list for that dimension.
+* A declared empty list exists and names nothing. `query_allow: []` is a positive-list that admits
+  nothing, which is the opposite of an absent `query_allow`.
+
+The canonical constructor deliberately does not normalise `null` to `List.of()`. Normalising would
+erase the distinction and silently turn every "admit nothing" route into a forward-all route. Absence
+is a `@Nullable` type rather than a stored `Optional`, following
+link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033].
+`set_headers` normalises absent to empty, because it carries no mode semantics and has no distinction
+to lose.
+
+=== The application order encodes a precedence rule
+
+`ForwardPolicyStage` merges in this order:
+
+. the mode copy, the never-forward strip and, where `not_modified` requires it, the withheld
+  conditional validators;
+. the rebuilt `Cookie`;
+. the gateway-understood protocol set;
+. `set_headers`;
+. the regenerated forwarding headers;
+. the mediated session bearer.
+
+Two rules explain every step:
+
+. *Operator configuration beats client input.* `set_headers` merges after everything sourced from
+  the request, so a client value never overrides an operator's explicit one.
+. *Gateway-owned transport truth beats operator configuration.* Regeneration and the mediated bearer
+  merge after `set_headers`, with the bearer last. The upstream therefore sees the gateway's account
+  of the connection and only the mediated credential.
+
+The order needs a map that treats field names the way HTTP does. The outbound map is keyed
+case-insensitively, matching RFC 9110 field-name semantics. A later step therefore replaces an earlier
+value however either step spelled the field. Otherwise an inbound `content-type` and an operator's
+`Content-Type` both reach the upstream, and a lookup by either spelling still finds a plausible value.
+
+=== The boundary with ADR-0047
+
+This record owns which client entries cross.
+link:0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047] owns the form in
+which the query is validated and forwarded, and the spelling the query lists compare. The two records
+stay apart. `query_allow` and `query_deny` select a pair under the forward mode this record defines,
+and they compare the spelling ADR-0047 defines.
+
+== Alternatives rejected
 
 === Keep the allow-list-only model and document it better
 
-Leave the single posture in place and fix only the claim that it is where
-deny-by-default lives.
+Leave the single mode in place and fix only the claim about where deny-by-default lives.
 
-*Rejected because* it corrects the description while preserving the cost that
-motivated the review. The operator still enumerates `Accept` and `Content-Type`
-to make an ordinary backend work, and still has no way to say "everything except
-this one header". Accurate documentation of an awkward model is an improvement
-worth having, but it is not the improvement that was needed.
+*Rejected because* it corrects the description and keeps the cost that motivated the review. The
+operator still lists `Accept` and `Content-Type` to make an ordinary upstream work. The operator still
+cannot say "everything except this one header".
 
 === Add a negative-list and let the two compose
 
-Allow both `headers_allow` and `headers_deny` on one dimension, applying the
-allow-list first and subtracting the deny-list.
+Allow both `headers_allow` and `headers_deny` on one dimension. Apply the allow-list first, then
+subtract the deny-list.
 
-*Rejected because* the composition has no unambiguous reading. Subtracting a
-deny-list from an allow-list is either a no-op (when the lists are disjoint) or
-a way of writing the allow-list with extra steps, and the case where it is
-neither — a name on both lists — is exactly where two operators would predict
-different behaviour. Refusing the combination at boot converts a silent
-ambiguity into a startup error.
+*Rejected because* the composition has no unambiguous reading. With disjoint lists the subtraction does
+nothing. With overlapping lists it is the allow-list written with extra steps. A name on both lists is
+exactly where two operators would predict different behaviour. A boot refusal turns that silent
+ambiguity into a visible error.
 
 === Make forward-all an explicit opt-in keyword
 
 Require `forward: all` rather than inferring forward-all from two absent lists.
 
-*Considered seriously, and rejected on the migration.* An explicit keyword is
-more legible in isolation: a reader sees the posture without reasoning about
-absence. But the absent state has to mean *something*, and every candidate
-meaning is worse. Keeping absent as the old deny-all preserves the enumeration
-burden for exactly the routes that need it least — the ones whose authors never
-wrote a forward block. Making absent an error forces a `forward` block onto every
-route in every existing configuration. The chosen reading makes the common case
-free, at the documented cost that the mode is selected by omission.
+*Considered seriously, and rejected on the migration.* An explicit keyword is more legible in isolation.
+But the absent state must still mean something, and every candidate meaning is worse:
+
+* Absent as the old deny-all keeps the enumeration burden on the routes that need it least, whose
+  authors never wrote a forward block.
+* Absent as an error forces a `forward` block onto every route of every existing configuration.
+
+The chosen reading makes the common case free. Its documented cost is that omission selects the mode.
 
 === Model the absent list as an empty list plus a separate mode enum
 
-Normalise `null` to `List.of()` and carry an explicit `headers_mode` enum
-alongside it.
+Normalise `null` to `List.of()` and carry an explicit `headers_mode` enum beside it.
 
-*Rejected because* it stores the same fact twice and creates a state space where
-the two can disagree. A `headers_mode: allow` with an empty list and a
-`headers_mode: none` with a populated one are both representable and neither has
-a meaning; the validator would then exist to forbid states the type model should
-not have admitted. The `@Nullable` list has exactly the three states the
-behaviour has.
+*Rejected because* it stores one fact twice and lets the two copies disagree. `headers_mode: allow` with
+an empty list and `headers_mode: none` with a populated list are both representable. Neither has a
+meaning, and a validator would have to forbid states the type model should not admit. The `@Nullable`
+list has exactly the three states the behaviour has.
 
-The rejected options fall into two classes: those that keep the enumeration
-burden, and those that add a second representation of the mode. The decision
-keeps one representation and moves the burden to the gateway.
+The rejected options fall into two classes: those that keep the enumeration burden, and those that add a
+second representation of the mode. The decision keeps one representation and moves the burden to the
+gateway.
 
-== Generalisation
+== Consequences
 
-When a configuration surface has a default that is *stricter than necessary at
-the layer it sits in*, the cost is paid in operator effort that buys no safety —
-and it is usually invisible, because the effort shows up as long configuration
-files rather than as incidents. Before loosening such a default, establish which
-layer actually enforces the guarantee. If the answer is "a different one", the
-loosening is a documentation correction with a behavioural convenience attached,
-not a weakening; if the answer is "this one", it is a real trade and must be
-argued as such.
+=== Properties of the design
 
-A three-state configuration knob whose third state is *absence* needs the type
-model to carry absence natively. The moment absent is normalised to empty for
-tidiness, the third state is gone and the loss is silent — the configuration
-still parses, the routes still resolve, and they resolve to the wrong posture.
-Where a distinction selects behaviour, it belongs in the type, and a test should
-fail if a later normalisation removes it.
+* An operator states a forward mode rather than enumerating HTTP mechanics. A normal upstream behind an
+  authorised route needs no `forward` block.
+* The negative-list expresses "everything except these", which is what an operator withholding one
+  internal header means.
+* A reader looking for the deny-by-default guarantee finds the mechanism that enforces it.
+* A route need not over-constrain query parameters to constrain headers.
+* An ambiguous route gets a boot refusal rather than a guessed behaviour.
 
-[[amendment-a1]]
-== Amendment A1 -- The `forward` block is declarable at endpoint and route
+=== Accepted costs
 
-The Decision above speaks of "the route" because the block was declarable on a route only. It is
-now declarable on the endpoint too, and resolved by the rule every policy block follows
-(link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]):
-a route runs its own `forward` block when it declares one, else its endpoint's, and the winning block
-is taken *whole*. A route block therefore replaces the endpoint block wholesale -- a route naming only
-`headers_allow` drops an endpoint `query_deny` -- and with neither declared both dimensions are
-forward-all, exactly as before. There is no anchor or gateway scope: forward filtering is
-upstream-specific, and the endpoint is the scope that owns the upstream.
+* Three modes are more surface than one. A reader must know which mode a route resolves, and absence
+  selects the mode, which the declared YAML cannot show.
+* Forward-all makes the gateway-owned header sets load-bearing. Under an allow-list-only model the
+  operator's enumeration masked an omission from those sets. Under forward-all the omitted name crosses.
+  The sets are therefore a security surface of their own.
+* Every consumer of a `@Nullable` list must distinguish `null` from empty. A consumer that treats them
+  alike silently reintroduces the bug the model prevents.
 
-Nothing else in this decision changes. The three modes, the per-dimension independence, the
-absent-versus-empty distinction and the gateway-owned bounds apply to the resolved block unchanged.
-Both boot refusals apply at each scope: an endpoint block declaring both lists of one dimension is
-refused exactly as a route block is, and a `token_relay: false` route whose *resolved* block -- the
-endpoint's included -- re-admits `Authorization` through `headers_allow` is refused. The endpoint and
-route blocks live in one endpoint file with one owner, so a route replacing its endpoint's block is
-not announced by a boot WARN.
+=== Risks
 
-== References
+* *A configuration with no `forward` block means forward-all.* This changes behaviour for any route that
+  relied on the old allow-list-only default. A search for identifiers cannot find it, because the route
+  expresses its mode by omission. A review of fixtures and examples must check what they do not say.
+* *A later normalisation re-collapses the model.* A `null`-to-empty normalisation anywhere in the
+  configuration pipeline turns every declared-empty positive-list into forward-all. Tests assert the
+  distinction at the record and at the stage.
+* *A case-sensitive outbound map breaks precedence quietly.* The failure is a duplicate header at the
+  upstream, not an exception, and a test of `get("Content-Type")` still passes. The tests therefore
+  assert the cardinality of each field name.
 
-* link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033] — the `@Nullable`-over-stored-`Optional` rule the forward lists follow
-* link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037] — the gateway-owned sets that make the forward-all baseline safe
-* link:0008-data-plane-transport.adoc[ADR-0008] — the data-plane transport the forward stage feeds
-* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067] — the resolution rule and the endpoint scope Amendment A1 records
-* `doc/architecture/routing-and-forwarding.adoc` — the request pipeline and the layer that enforces deny-by-default
-* `doc/configuration.adoc` — the `forward` block's operator-facing reference
+=== The rule for similar surfaces
+
+A default that is stricter than its layer needs costs operator effort and buys no safety. That cost shows
+up as long configuration files rather than as incidents. Before loosening such a default, establish which
+layer enforces the guarantee. If another layer does, the loosening corrects the documentation and adds a
+convenience. If this layer does, it is a real trade and needs its own argument.
+
+A three-state setting whose third state is absence needs a type that carries absence. Where a distinction
+selects behaviour, it belongs in the type, and a test fails when a later normalisation removes it.
+
+== Links
+
+* link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]: the `@Nullable`-over-stored-`Optional` rule the forward lists follow
+* link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]: the gateway-owned header sets that make forward-all safe
+* link:0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]: the query's validated and forwarded form, and the spelling the query lists compare
+* link:0008-data-plane-transport.adoc[ADR-0008]: the data-plane transport the forward stage feeds
+* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]: the resolution rule and the endpoint policy scope
+* `ForwardPolicyStage`, `ForwardConfig`, `ForwardingRules`: the stage, the type and the boot rules
+* link:../architecture/routing-and-forwarding.adoc[Routing and forwarding]: the request pipeline and the layer that enforces deny-by-default
+* link:../configuration.adoc[Configuration Reference]: the `forward` block's operator-facing reference

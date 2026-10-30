@@ -1,291 +1,160 @@
-= ADR-0007 -- Anchors: Namespace-Scoped Policy Inheritance
-:toc:
-:toclevels: 2
+= ADR-0007: An anchor owns a URL namespace and carries policy blocks its routes resolve at boot
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: An anchor is a named policy scope in the gateway configuration that owns a URL namespace; anchor prefixes are pairwise disjoint, a route declares exactly one anchor, and the boot refuses a route outside its declared anchor, an undeclared route inside any anchor, a broader route swallowing an uncovered anchor namespace, and a member whose effective auth weakens the anchor's auth floor. Policy blocks resolve by one declared rule through PolicyBlock, nearest declared scope wins whole, and anchors vanish before the request path. An anchor's security_headers block replaces the global block once a route is selected, CORS stays global and pre-auth, and a rejection before the trust boundary carries the global block.
+// tags: configuration-model, anchors, namespace, policy-resolution, boot-validation, wholesale-replacement, security-headers
+// affects: api-sheriff, documentation
+// supersedes:
+// end-adr-metadata
 
 == Status
 
-Accepted. Amended by <<amendment-a1>> (`security_headers` apply after route selection; CORS stays
-global and pre-auth) and by <<amendment-a2>> (the inheritance chain is one declared rule resolved by
-`PolicyBlock`, with a fixed scope set per block). Amended for untrusted callers by ADR-0073 -- see
-<<amendment-adr-0073>>.
-
-== Context
-
-The configuration model (link:../configuration.adoc[Configuration Model]) groups routes into
-endpoint files sharing one `base_url` alias and an endpoint-level `auth` default. That is the
-only grouping mechanism: there is no policy level *above* the endpoint, and no formal owner of
-a URL namespace. Two problems follow as the route population grows:
-
-* *Duplication.* A deployment-wide invariant like "every call under `/api` must present a valid
-  bearer token from the configured IdP" must be restated in every endpoint file whose routes
-  live under `/api` -- and equally for the security-filter profile and response-header posture
-  of a surface like `/bff`.
-* *No namespace guarantee.* Nothing prevents a new endpoint file from placing a route under
-  `/api` with a weaker posture. The invariant lives in the operator's head, not in the model --
-  a fail-open risk for a security gateway.
-
-The obvious alternative -- keep duplicating everything per endpoint (the KrakenD position) --
-is maximally explicit but scales poorly for hand-authored files and leaves the fail-open risk
-unaddressed: with duplication the policy floor exists in N places, and one omission is an open
-endpoint.
-
-=== Research findings
-
-How comparable products bundle endpoints and inherit configuration:
-
-* *Kong* -- plugins attach at global / service / route / consumer scope; the most specific
-  scope wins and *replaces the whole plugin config* -- no merging. Tags are metadata only and
-  never carry policy.
-* *APISIX* -- named *Plugin Config* objects bundle plugin settings and are referenced by ID
-  from routes; route-level config overrides the referenced bundle per plugin, wholesale.
-  Grouping by *named reference*, not by URL.
-* *Traefik* -- no inheritance; named middlewares composed as an explicit ordered list per
-  router, entrypoints may prepend a default chain.
-* *Kubernetes Gateway API (GEP-713 policy attachment)* -- hierarchical policies with separate
-  *defaults* and *overrides* semantics; widely criticised for a discoverability problem
-  ("why does my route behave this way?") that required extra status machinery to mitigate.
-* *Azure API Management* -- global -> product -> API -> operation policy scopes; the child
-  policy places an explicit `<base/>` element marking where the parent chain executes -- the
-  child *sees and controls* its inheritance.
-* *NGINX* -- server/location directive inheritance; array directives (`add_header`,
-  `proxy_set_header`) silently *replace* rather than merge at lower levels -- the canonical
-  cautionary tale for implicit merge expectations.
-* *KrakenD* -- deliberately no inheritance; everything flat per endpoint, viable because
-  configs are typically machine-generated.
-* *OpenAPI* -- global `security` requirement overridden per operation *by replacement*.
-
-Three lessons condense out:
-
-. *Nobody deep-merges.* Every surviving design overrides at whole-block granularity. The model
-  already commits to this for endpoint -> route `auth` ("whole block replaces, no merge").
-. *Grouping is usually by named reference, not URL prefix* -- but reference-based grouping
-  cannot express "nothing may appear under `/api` without this posture". For a security
-  gateway, binding policy to a *namespace the anchor owns* buys boot-time namespace
-  enforcement, which the reference model cannot.
-. *Keep the hierarchy shallow and the effective result visible.* Gateway API shows where deep
-  attachment models end up; the existing boot-time materialization (`RouteTable` carries the
-  *effective* auth and methods) is the right antidote and must absorb any new layer.
+Accepted
 
 == Decision
 
-* *Introduce anchors*: named policy scopes declared in `gateway.yaml`, each *owning* a URL
-  path namespace (`path_prefix`) and optionally carrying policy blocks (`auth`,
-  `security_filter`, `security_headers`, `allowed_methods`).
-* *Anchor prefixes are pairwise disjoint* (no anchor prefix is a prefix of another); overlap
-  fails the boot.
-* *Exactly one anchor per route.* Membership is *declared* at the endpoint level (`anchor:`)
-  and may be overridden per route -- never derived silently. A route exposed on two surfaces
-  (e.g. the same upstream under `/api` with bearer and under `/bff` with session) is two
-  routes, one per anchor. Multi-anchor membership is rejected by construction -- it would
-  reintroduce the merge-order ambiguity every surveyed product avoids.
-* *Namespace enforcement at boot.* When an `anchors` block is configured: every enabled
-  route's `match.path_prefix` must fall inside its *declared* anchor's `path_prefix`, and
-  every route whose path falls inside *any* anchor's namespace must declare that anchor.
-  A mismatch (declared anchor vs. actual path) or an undeclared squatter fails the boot.
-  When no `anchors` block is configured, nothing changes.
-* *Namespace coverage at boot (the mirror of the squatter rule).* The two directions above are
-  *declaration*-scoped: they judge a route by where its own match key sits, so a route sitting
-  outside and *above* an anchor is judged by neither, while request-time selection still lets it
-  serve addresses inside the namespace. A prefix route whose namespace *strictly contains* an
-  anchor's `path_prefix`, and which does not declare that anchor, therefore also fails the boot --
-  unless a prefix route declared at the anchor's own `path_prefix` covers the namespace, in which
-  case longest-prefix selection gives every address inside it to that member and the broader route
-  is not a bypass. Covering means matching the whole namespace, not naming it: a candidate that
-  narrows on a non-path `match` dimension (`match.methods`, `match.host`, `match.headers`) serves
-  only part of it, leaving the complement to the enclosing route, so it is not accepted as coverage.
-  The rule became load-bearing with exact (`match.path`) routes: an anchor whose
-  only member is `path: /admin` claims exactly one address, leaving `/admin/` and `/admin/x` to the
-  enclosing route and its weaker posture. Exact routes are not judged by it (an exact route serves
-  one address, which is the squatter rule's case). `protocol: grpc` routes *are* judged by it --
-  the exemption below is scoped to the two declaration-scoped directions and does not reach this
-  one.
-* *gRPC routes are exempt from the two declaration-scoped containment directions -- and from those
-  two only.* A `protocol: grpc`
-  route rides the service-rooted `/{package}.{Service}/{Method}` path, whose service
-  component (e.g. `de.cuioss.sheriff.api.integration.grpc.Echo`) is a *single opaque path
-  segment* -- dots, no slashes. No non-root anchor `path_prefix` can contain such a path on
-  a segment boundary, and a stock gRPC client (grpc-java, k6's gRPC client) dials the real
-  service path and cannot be told to prepend a gateway namespace prefix -- so neither the
-  containment check (route inside its declared anchor) nor the squatter check (undeclared
-  route inside any anchor namespace) can ever be satisfied for a bare gRPC service path.
-  Those two are therefore skipped for `protocol: grpc` routes.
-  The *coverage mirror* is not, and the difference is the direction each rule reads. The two
-  skipped directions judge a route by where its own match key sits, which is exactly what the
-  service-rooted path argument is about; the coverage rule judges what the route's `path_prefix`
-  *contains*, and nothing constrains a gRPC route's declared match key to a bare service path.
-  Route selection is protocol-blind -- the route table looks a request path up on the path alone
-  and the matcher carries no protocol dimension -- so a gRPC route declaring a broad `path_prefix`
-  answers plain HTTP requests inside a swallowed anchor namespace with *its* auth posture and
-  *its* `security_headers` block. Exempting it there would reopen the exact bypass the coverage
-  rule was added to close, so the coverage rule applies to `grpc` routes exactly as it does to
-  `http` and `websocket` ones.
-  Only the path-prefix *geometry* of the two declaration-scoped directions is exempt: a gRPC route
-  still *declares* an anchor for its ADR-0013
-  type/access classification and its auth floor, and every other anchor rule --
-  declared-anchor existence, pairwise-disjoint anchor prefixes, the non-weakenable auth
-  floor, and the ADR-0013 access→auth matrix -- stays enforced for gRPC routes unchanged.
-  `websocket` and `http` routes keep full containment enforcement (a `/ws`-nested WebSocket
-  surface still validates its namespace membership).
-* *Inheritance chain and semantics*: `gateway` defaults -> `anchor` -> `endpoint` -> `route`,
-  with *wholesale block replacement at every step, never a merge* -- the one rule the model
-  already has, extended by one rung.
-* *The auth floor cannot be weakened.* If an anchor declares `auth.require` of `bearer` or
-  `session`, a member endpoint/route whose *effective* auth resolves to `require: none` fails
-  the boot. Overriding between non-`none` postures (e.g. anchor `bearer`, route `session`) is
-  a replacement, not a weakening, and is allowed. Non-auth overrides that relax anchor limits
-  follow the existing convention: replacement plus a boot-log WARN.
-* *Endpoint `auth` becomes optional for anchored endpoints* whose anchor declares `auth`; the
-  existing "every endpoint file declares an `auth` block" rule applies unchanged to endpoints
-  without an anchor-provided posture. Every route still has a non-ambiguous effective auth --
-  resolvable from route, endpoint, or anchor -- or the boot fails.
-* *Anchors vanish at runtime.* They are resolved during `RouteTable` assembly into the same
-  materialized per-route effective values that already exist (effective auth, effective
-  `allowed_methods`, now effective filter/headers). The request pipeline never sees an anchor;
-  there is no runtime lookup, and the boot log can print the effective posture per route --
-  the discoverability answer to the Gateway API lesson.
+=== The question
+
+The configuration model groups routes into endpoint files that share one `base_url` alias and an endpoint-level `auth` default. No policy scope sits above the endpoint, and nothing owns a URL namespace. As the route population grows, two problems follow:
+
+* *Duplication.* An invariant like "every call under `/api` presents a valid bearer token from the configured identity provider" must be restated in every endpoint file under `/api`. The same holds for the inbound-filter profile and the response-header posture of a surface like `/bff`.
+* *No namespace guarantee.* Nothing stops a new endpoint file from placing a route under `/api` with a weaker posture. The invariant lives in the operator's head, which is a fail-open risk for a security gateway.
+
+*The decision:* an anchor is a named policy scope declared in the gateway configuration. It owns a URL path namespace (`path_prefix`) and may carry policy blocks. The boot enforces the namespace, and anchors are gone by the time a request arrives.
+
+=== Namespace ownership
+
+* *Prefixes are pairwise disjoint.* No anchor prefix is a prefix of another. The boot refuses an overlap.
+* *Exactly one anchor per route.* A route declares membership at the endpoint level (`anchor:`) and may override it per route, and the gateway never derives it. A route exposed on two surfaces, such as one upstream under `/api` with bearer and under `/bff` with session, is two routes.
+* *Namespace enforcement.* When an `anchors` block is configured, every enabled route's `match.path_prefix` must fall inside its declared anchor's `path_prefix`, and every route whose path falls inside any anchor's namespace must declare that anchor. The boot refuses a mismatch and an undeclared squatter. Without an `anchors` block nothing changes.
+* *Namespace coverage, the mirror of the squatter rule.* The two rules above judge a route by where its own match key sits. A route outside and above an anchor is judged by neither, while route selection still lets it serve addresses inside the namespace. The boot therefore refuses a prefix route whose namespace strictly contains an anchor's `path_prefix` and which does not declare that anchor, unless a prefix route declared at the anchor's own `path_prefix` covers the namespace. Longest-prefix selection then gives every address inside it to that member. Covering means matching the whole namespace: a candidate that narrows on `match.methods`, `match.host` or `match.headers` serves only part of it, so the boot does not accept it as coverage. This rule became load-bearing with exact routes: an anchor whose only member is `path: /admin` claims one address and leaves `/admin/` and `/admin/x` to the enclosing route. The rule does not judge exact routes, because an exact route serves one address, which is the squatter rule's case.
+
+=== gRPC routes and the two containment directions
+
+A `protocol: grpc` route is exempt from the containment rule and the squatter rule, and from those two only. It rides the service-rooted `/{package}.{Service}/{Method}` path, whose service component is a single opaque path segment. No non-root anchor prefix can contain such a path on a segment boundary, and a stock gRPC client cannot be told to prepend a gateway namespace prefix.
+
+The coverage rule still applies to a gRPC route, because it reads the other way. The exempt rules judge a route by where its match key sits, which is what the service-rooted argument is about. The coverage rule judges what the route's `path_prefix` contains, and nothing constrains a gRPC route's match key to a bare service path. Route selection is protocol-blind, so a gRPC route with a broad `path_prefix` answers plain HTTP requests inside a swallowed namespace with its own auth posture and `security_headers` block. Exempting it would reopen the bypass the coverage rule closes.
+
+Only the path-prefix geometry is exempt. A gRPC route still declares an anchor for its link:0013-anchor-type-access-axes.adoc[ADR-0013] classification and its auth floor, and every other anchor rule stays enforced. `websocket` and `http` routes keep full containment enforcement.
+
+=== The auth floor cannot be weakened
+
+If an anchor declares `auth.require` of `bearer` or `session`, the boot refuses a member whose effective auth resolves to `require: none`. Overriding between non-`none` postures, such as anchor `bearer` and route `session`, is a replacement, not a weakening, and the boot allows it. A non-auth override that relaxes an anchor limit is a replacement announced by a boot WARN, as described below.
+
+Endpoint `auth` is optional for an anchored endpoint whose anchor declares `auth`. An endpoint without an anchor-provided posture must still declare it. Every route has a non-ambiguous effective auth from route, endpoint or anchor, or the boot refuses it.
+
+[[amendment-a2]]
+=== One declared rule, resolved by `PolicyBlock`
+
+*One rule, declared once per block.* Every policy block is a `PolicyBlock` descriptor naming the policy scopes it is declarable at, along the chain `gateway -> anchor -> endpoint -> route`. The nearest declared scope wins and replaces every broader declaration whole, never merged. `null` and an empty list both count as not declared. With no scope declaring the block, its fallback applies: a value, no block or a boot refusal. The route-table builder and the configuration validator both resolve through the descriptors.
+
+The live inventory is `PolicyBlock.ALL`, and link:../user/anchors.adoc#_policy_block_scopes[its operator-facing scope table] is the list a contract test binds to the descriptors. link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067] records why each set stops where it does and the two field-level fallbacks kept as exceptions.
+
+*The override WARN is derived, not listed.* A block whose descriptor opts in is announced when the route's anchor declares it and the route's endpoint or the route itself declares it too. The Override WARN column of the live scope table marks the blocks that opt in. The auth floor stays a boot refusal.
+
+=== Anchors vanish at runtime
+
+`RouteTable` assembly resolves anchors into the materialized per-route effective values. The request pipeline never sees an anchor and performs no runtime lookup, and the boot log can print the effective posture per route.
+
+[[amendment-a1]]
+=== `security_headers` apply after route selection; CORS stays global and pre-auth
+
+An anchor's `security_headers` block must take effect on the wire, and a CORS preflight must be answered before authentication, which runs after route selection. The stage therefore splits in two positions:
+
+* *Stage 0* keeps CORS: the preflight short-circuit and the `Access-Control-Allow-*` headers of an actual request. It also seeds the gateway-owned response security headers (`Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`) from the global block.
+* *Stage 2a* runs after route selection and before the verb gate. It removes every gateway-owned security-header name from the response and seeds the selected route's resolved block.
+
+*Pre-route responses keep the global block.* A stage-1 rejection, a `404` for an unrouted path and the CORS preflight carry the global block, because no anchor is known yet. Every other response after stage 2a carries the route's block.
+
+*The anchor block replaces the global block whole.* An anchor block declaring only `frame_deny` drops the global `Strict-Transport-Security` for its routes. An operator who wants both declares both on the anchor.
+
+*CORS is global only.* It is evaluated before route selection, so an anchor cannot scope it. The bundled schema accepts `cors` in the global `security_headers` block only, so the boot refuses an anchor-level `cors` block.
+
+Stage 2a never touches CORS headers or other accumulated non-security headers, such as `Allow` or `WWW-Authenticate`.
+
+[[amendment-adr-0073]]
+=== A rejection before the trust boundary carries the global block
+
+On the shipped default, a rejection raised after route selection and before the trust boundary is answered as the unrouted `404` (link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]). The gateway restores the response headers the request had before its route was selected, so that answer carries the global block, as an unrouted `404` does. The verb gate's rejection is one such case. With `security_defaults.uniform_not_found: false`, those rejections carry the route's block.
+
+== Alternatives rejected
+
+=== Keep duplicating everything per endpoint
+
+KrakenD has no inheritance and keeps everything flat per endpoint, which is viable because its configurations are typically machine-generated.
+
+*Rejected because* it scales poorly for hand-authored files and leaves the fail-open risk open: the policy floor exists in N places, and one omission is an open endpoint.
+
+=== Group by named reference instead of URL prefix
+
+APISIX bundles plugin settings in named Plugin Config objects that routes reference by ID. Traefik composes named middlewares as an explicit ordered list per router. Most surveyed products group this way.
+
+*Rejected because* reference-based grouping cannot express "nothing may appear under `/api` without this posture". For a security gateway, binding policy to a namespace the anchor owns buys boot-time namespace enforcement, which the reference model cannot.
+
+=== Merge a nearer block into a broader one
+
+Key-level merging would let a nearer block override only the keys it declares.
+
+*Rejected because* nobody who survived does it. Kong's most specific scope replaces the whole plugin configuration, APISIX overrides per plugin wholesale, and OpenAPI overrides `security` by replacement. NGINX's array directives silently replace rather than merge at lower levels, the canonical cautionary tale for implicit merge expectations. Whole-block replacement is the rule the model already had.
+
+=== Hierarchical policies with separate defaults and overrides
+
+The Kubernetes Gateway API (GEP-713) attaches hierarchical policies with separate defaults and overrides semantics.
+
+*Rejected because* it was widely criticised for a discoverability problem ("why does my route behave this way?") that needed extra status machinery. The hierarchy stays shallow here, and the boot log prints the effective result.
+
+=== A child that places its parent's policy explicitly
+
+Azure API Management's child policy places a `<base/>` element marking where the parent chain executes, so the child sees and controls its inheritance.
+
+*Not adopted.* This design comes from the survey, and no reason for not adopting it is on record.
+
+=== Allow a route to belong to several anchors
+
+A route exposed on two surfaces would declare both.
+
+*Rejected because* it reintroduces the merge-order ambiguity every surveyed product avoids. The two surfaces need different auth anyway, so two routes cost little.
 
 == Consequences
 
-* Namespace invariants become *structural*: "everything under `/api` presents a bearer token"
-  is declared once and enforced at boot; a forgotten declaration is a refused boot, not an
-  open endpoint. This inverts the fail-open risk of the duplication alternative.
-* Endpoint files shed repeated posture blocks and keep locality: overrides are declared in the
-  endpoint file, and the materialized result is visible in the boot log.
-* One more rung in a still-shallow chain (four levels, one override rule). The complexity
-  ceiling observed in Gateway API is avoided by forbidding merge, forbidding multi-membership,
-  and erasing anchors before runtime.
-* The same-upstream-two-surfaces case costs one extra route entry per surface -- accepted; the
-  two surfaces need different auth anyway.
-* Namespace enforcement had to land *before* the request pipeline froze route selection --
-  retrofitting it into an existing pipeline is substantially harder -- and it did.
+=== Properties of the design
 
-[[amendment-a1]]
-== Amendment A1 -- `security_headers` apply after route selection; CORS stays global and pre-auth
+* Namespace invariants become structural. "Everything under `/api` presents a bearer token" is declared once and enforced at boot, and a forgotten declaration is a boot refusal, not an open endpoint.
+* Endpoint files shed repeated posture blocks and keep locality: an override is declared in the endpoint file, and the boot log shows the result.
+* The boot validator and the route table cannot resolve a block differently, because there is one resolution.
+* A contract test binds a block's descriptor scopes, both bundled schemas and the user-documentation scope table, so a scope added in one place and not the others fails the build.
+* Anchor-scoped response headers take effect on routed responses, so the posture the boot log prints is the one served.
+* A browser preflight never reaches route selection, authentication or an upstream.
 
-=== Context
+=== Accepted costs
 
-The Decision above materializes an anchor's `security_headers` block onto every member route, but
-the response headers were seeded by stage 0 of the request pipeline -- *before* route selection --
-from the global block alone. The per-route effective block was carried on the route and never
-applied, so an anchor declaring `frame_deny` changed nothing on the wire. The block could not simply
-move behind route selection either: stage 0 also owns CORS, and a CORS preflight must be answered
-before authentication, which runs after route selection.
+* The chain has one more rung, four levels with one override rule. Forbidding merge and multi-membership and erasing anchors before runtime keep the complexity below what the Gateway API reached.
+* The same upstream on two surfaces costs one extra route entry per surface.
+* A configuration that places `cors` under an anchor is a boot refusal. The fix is to move the block to the global `security_headers`.
 
-=== Decision
+=== Risks
 
-* *The stage splits in two positions.* Stage 0 keeps CORS -- the preflight short-circuit and the
-  `Access-Control-Allow-*` headers of an actual request -- and seeds the gateway-owned response
-  security headers (`Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`) from
-  the *global* block. A new stage 2a runs immediately after route selection and before the verb gate:
-  it removes every gateway-owned security-header name from the response and seeds the selected
-  route's resolved block (the anchor's block when its anchor declares one, otherwise the global
-  block).
-* *Pre-route responses keep the global block.* Everything answered before a route is selected -- a
-  stage-1 rejection, a `404` for an unrouted path, the CORS preflight -- carries the global block,
-  because no anchor is known yet. Every response after stage 2a, the verb gate's `405` included,
-  carries the route's block.
-* *The anchor block replaces the global block wholesale.* There is no key-by-key merge: `security_headers`
-  is resolved by the one rule every policy block follows (<<amendment-a2>>), so an anchor block
-  declaring only `frame_deny` drops the global `Strict-Transport-Security` for its routes. An operator
-  who wants both declares both on the anchor.
-* *CORS is global only.* It is evaluated before route selection, so an anchor cannot scope it. The
-  bundled `gateway.schema.json` therefore accepts `cors` in the global `security_headers` block only;
-  an anchor-level `cors` block fails the boot at schema load instead of being silently ignored, and
-  the configuration validator's CORS rule checks the global block alone.
-* CORS headers and every non-security header already accumulated on the response (for example
-  `Allow` or `WWW-Authenticate`) are never touched by stage 2a.
+* A boot rule that enumerates declarations instead of resolving the block must be widened by hand when a block gains a scope. link:../development/README.adoc#_adding_a_policy_block[The contributor guide] lists that obligation.
 
-=== Consequences
+== Links
 
-* Anchor-scoped response headers take effect on routed responses, closing the gap between the
-  materialized posture printed in the boot log and the headers actually served.
-* A browser preflight still never reaches route selection, authentication or an upstream, and its
-  outcome is unchanged.
-* A configuration that placed `cors` under an anchor -- previously accepted and ignored -- is now a
-  refused boot; the fix is to move the block to the global `security_headers`.
-
-[[amendment-a2]]
-== Amendment A2 -- One declared rule, resolved by `PolicyBlock`, with a fixed scope set per block
-
-=== Context
-
-The Decision states one chain -- gateway defaults -> anchor -> endpoint -> route, wholesale replacement
-at every step -- but the chain was implemented once per block: seven hand-written resolutions in the
-route-table builder, and a second copy of five of them in the configuration validator. Each copy
-named its own subset of the four scopes, so which scopes a block was read at was a property of
-whichever copy a reader happened to call, not a declaration. A boot refusal and the posture the route
-ran could disagree, and nothing tied a block's schema keys to the scopes its resolution read.
-
-=== Decision
-
-* *One rule, declared once per block.* Every policy block is a `PolicyBlock` descriptor naming the
-  scopes it is declarable at. The nearest declared scope wins and replaces every broader declaration
-  wholesale; `null` and an empty list both count as not declared; with no scope declaring the block,
-  its fallback applies (a value, no block, or a boot error). The route-table builder and the
-  configuration validator both resolve through the descriptors.
-* *The scope set of each block, as this amendment decides it.* The live inventory is
-  `PolicyBlock.ALL`; its operator-facing scope table
-  (link:../user/anchors.adoc#_policy_block_scopes[Anchors -- Where each policy block is declarable])
-  is the list a contract test binds to the descriptors:
-+
-[cols="2,3", options="header"]
-|===
-| Block | Declarable at
-
-| `auth` | anchor, endpoint, route
-| `allowed_methods` | gateway, anchor, endpoint
-| `security_filter` | anchor, endpoint, route
-| `security_headers` | gateway, anchor
-| `upstream_defaults` | gateway, endpoint
-| `forward` | endpoint, route
-| `websocket` | route
-|===
-+
-`security_filter` and `forward` gain the endpoint scope; every other block keeps the scopes it had.
-The reasons each set stops where it does, and the two field-level fallbacks kept as documented
-exceptions, are recorded in
-link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067].
-Blocks added later -- `cookies`
-(link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037])
--- appear in the live scope table, not here.
-* *The override WARN is derived, not listed.* "Non-auth overrides that relax anchor limits follow the
-  existing convention" is made precise: a block whose descriptor opts in is announced when the route's
-  anchor declares it and the route's endpoint or the route itself declares it too. Each descriptor
-  declares its own opt-in; the blocks that opt in are the ones the Override WARN column of
-  link:../user/anchors.adoc#_policy_block_scopes[the live scope table] marks, which lists `cookies`
-  beside `allowed_methods` and `security_filter`. The auth floor stays a boot refusal, as decided
-  above.
-
-=== Consequences
-
-* The boot validator and the route table cannot resolve a block differently: there is one resolution.
-* A block's descriptor scopes, both bundled schemas and the user-documentation scope table are bound
-  together by a contract test, so a scope added in one place and not the others fails the build.
-* A boot rule that enumerates declarations instead of resolving the block still has to be widened by
-  hand when a block gains a scope; the development guide lists that obligation.
-
-[[amendment-adr-0073]]
-== Amendment -- the header block of a rejection before the trust boundary
-
-link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-overrides one statement of <<amendment-a1>>: that the verb gate's `405`, like every response after
-stage 2a, carries the route's `security_headers` block. On the shipped default a rejection raised
-after route selection and before the trust boundary is answered as the unrouted `404`. The gateway
-restores the response headers the request had before its route was selected, so that answer carries
-the *global* block, as an unrouted `404` does. The verb gate is one such rejection; the others are
-listed in ADR-0073. With `security_defaults.uniform_not_found: false` those rejections carry the
-route's block again. Every other response after stage 2a is unchanged.
-
-== References
-
-* https://developer.konghq.com/gateway/entities/plugin/[Kong -- plugin scopes and precedence]
-* https://apisix.apache.org/docs/apisix/terminology/plugin-config/[APISIX -- Plugin Config objects]
-* https://doc.traefik.io/traefik/middlewares/overview/[Traefik -- middleware composition]
-* https://gateway-api.sigs.k8s.io/geps/gep-713/[Kubernetes Gateway API -- GEP-713 policy attachment]
-* https://learn.microsoft.com/en-us/azure/api-management/api-management-howto-policies[Azure APIM -- policy scopes and `<base/>`]
-* link:../configuration.adoc[Configuration Model] -- the wholesale-replacement convention this
-  decision extends
-* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]
-  -- the one resolution rule and the per-block scope decisions Amendment A2 records
-* link:../user/anchors.adoc#_policy_block_resolution[Anchors -- Policy-block resolution] -- the
-  operator-facing rule and scope table
+* link:../configuration.adoc[Configuration Model]: the whole-block replacement convention this decision extends
+* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]: the one resolution rule and the per-block scope decisions
+* link:0013-anchor-type-access-axes.adoc[ADR-0013]: the anchor's type and access axes
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]: the header block of a rejection before the trust boundary
+* link:../user/anchors.adoc#_policy_block_resolution[Anchors, policy-block resolution]: the operator-facing rule and scope table
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/AnchorRules.java`: the namespace rules and the auth floor
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/PolicyBlock.java`: the descriptors
+* https://developer.konghq.com/gateway/entities/plugin/[Kong, plugin scopes and precedence]
+* https://apisix.apache.org/docs/apisix/terminology/plugin-config/[APISIX, Plugin Config objects]
+* https://doc.traefik.io/traefik/middlewares/overview/[Traefik, middleware composition]
+* https://gateway-api.sigs.k8s.io/geps/gep-713/[Kubernetes Gateway API, GEP-713 policy attachment]
+* https://learn.microsoft.com/en-us/azure/api-management/api-management-howto-policies[Azure APIM, policy scopes and `<base/>`]

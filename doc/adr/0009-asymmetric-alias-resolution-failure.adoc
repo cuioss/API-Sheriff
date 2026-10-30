@@ -1,7 +1,9 @@
 = ADR-0009: Asymmetric alias-resolution failure: enabled-endpoint aliases abort boot, additional aliases defer to the validator
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // summary: TopologyResolver aborts boot on an unresolvable enabled-endpoint base_url alias but silently skips an unresolvable additional (passthrough-SNI) alias, leaving ConfigValidator the single authoritative reporter of alias-resolvability violations.
@@ -14,79 +16,53 @@
 
 Accepted
 
-== Context
-
-The topology resolver runs early in the boot pipeline and turns configured aliases
-into a resolved topology before the configuration validator runs. Two structurally
-distinct classes of alias reach it: the `base_url` aliases of enabled endpoints,
-which are required for routing, and additional aliases contributed by other features
-(the `tls.passthrough_sni` keys). Any alias may be unresolvable against the topology.
-
-The architecture must decide *where* an unresolvable-alias violation is detected and
-reported. Because resolution runs before the configuration validator, a resolver that
-aborts on every unresolvable alias makes any validator rule covering the same alias
-class unreachable: the boot aborts at the resolver with a generic, un-aggregated
-message, and the validator's precise rule can never fire. The question this record
-settles is which stage owns the resolvability judgement for each alias class.
-
 == Decision
 
-Resolution applies an asymmetric failure policy keyed to the alias class:
+The topology resolver runs before the configuration validator and turns configured aliases into a resolved topology. Two classes of alias reach it: the `base_url` aliases of enabled endpoints, which routing requires, and the additional aliases of the `tls.passthrough_sni` keys. Any alias may be unresolvable. The record settles which stage owns the resolvability judgement for each class.
 
-* An unresolvable *enabled-endpoint `base_url`* alias *throws*, aborting boot.
-  Routing cannot proceed without it and no validator rule owns this class, so
-  failing fast at the resolver is correct.
-* An unresolvable *additional* alias (`passthrough_sni`) is *skipped silently*.
-  Resolution records only what resolves and defers the resolvability judgement to
-  the configuration validator, which owns the passthrough-alias-resolvable rule and
-  reports it alongside every other configuration violation in one aggregated pass.
+*The decision:* resolution applies an asymmetric failure policy keyed to the alias class.
 
-The governing principle: a validation concern owned by the configuration validator
-must not be pre-empted by an earlier pipeline stage throwing on the same condition.
-The validator is the single authoritative reporter of configuration-validation
-violations; the resolver supplies structured facts and does not adjudicate
-validator-owned rules.
+* An unresolvable *enabled-endpoint `base_url`* alias aborts boot. `TopologyResolver` collects the failure and ends its pass with one `TopologyResolutionException` carrying every failure of the pass. Routing cannot proceed without the alias, and no validator rule owns this class.
+* An unresolvable *additional* alias is *skipped silently*. Resolution records only what resolves. `EdgeRules.validatePassthroughAliasResolvable` owns the rule and reports it with every other configuration violation in one aggregated pass.
+
+A disabled endpoint's alias is exempt from resolution. An unresolvable placeholder or a malformed URL is collected from either class, because no validator rule owns those.
+
+The governing principle: an earlier pipeline stage must not pre-empt a validation concern the configuration validator owns by throwing on the same condition. The validator is the single reporter of configuration-validation violations. The resolver supplies structured facts and does not adjudicate validator-owned rules.
+
+== Alternatives rejected
+
+=== Symmetric throw
+
+The resolver would abort on any unresolvable alias. This is uniform and simple.
+
+*Rejected because* it makes the validator's passthrough-alias rule unreachable dead code and aborts boot with a less precise, non-aggregated message. It destroys single-reporter ownership and degrades diagnostics.
+
+=== Symmetric skip
+
+The resolver would never throw, and the validator would own all alias resolvability.
+
+*Rejected because* it defers routing-critical enabled-endpoint failures to a later stage and lets boot proceed further into an unroutable state before failing. Enabled-endpoint aliases are structurally required and have no validator rule, so failing at resolution is correct for them.
+
+Both alternatives force one uniform policy on two alias classes whose ownership differs.
 
 == Consequences
 
-=== Positive
+=== Properties of the design
 
-* Every configuration-validation violation for additional aliases surfaces through
-  one reporter, collected in a single pass with precise messages; the validator rule
-  stays live rather than becoming dead code.
-* Routing-critical failures still fail fast at resolution time, preserving the
-  fail-fast-at-startup property (see xref:0004-topology-indirection.adoc[ADR-0004])
-  for the enabled-endpoint class.
+* Every violation for additional aliases surfaces through one reporter, in a single pass with precise messages. The validator rule stays live.
+* Routing-critical failures still fail at resolution, which keeps the boot-refusal property of link:0004-topology-indirection.adoc[ADR-0004] for the enabled-endpoint class.
 
-=== Negative
+=== Accepted costs
 
-* Resolution's failure behaviour is deliberately non-uniform across alias classes; a
-  reader must know the class distinction to predict whether an unresolvable alias
-  throws or is skipped. The asymmetry is intentional.
+* Resolution's failure behaviour is deliberately non-uniform. A reader must know the class distinction to predict whether an unresolvable alias aborts or is skipped.
 
 === Risks
 
-* A future alias class added to the resolver inherits neither policy automatically.
-  Its author must decide which stage owns its resolvability and wire the throw-or-skip
-  accordingly.
+* A future alias class inherits neither policy automatically. Its author must decide which stage owns its resolvability and wire the abort or the skip accordingly.
 
-== Alternatives Considered
+== Links
 
-* *Symmetric throw* -- the resolver aborts on any unresolvable alias. Uniform and
-  simple, but it renders the validator's passthrough-alias-resolvable rule unreachable
-  dead code and aborts boot with a less precise, non-aggregated message. Rejected
-  because it destroys single-reporter ownership and degrades diagnostics.
-* *Symmetric skip* -- the resolver never throws and the validator owns all
-  alias-resolvability. This would defer even routing-critical enabled-endpoint failures
-  to a later stage, letting boot proceed further into an unroutable state before
-  failing. Rejected because enabled-endpoint aliases are structurally required and have
-  no validator rule; fail-fast is correct for them.
-
-Both alternatives fall in one class: they force a single uniform policy across two
-alias classes whose ownership genuinely differs. The asymmetry is the point.
-
-== References
-
-* xref:0004-topology-indirection.adoc[ADR-0004 -- Topology Indirection] -- establishes
-  fail-fast-at-startup for aliases; this record refines it for the additional-alias class.
-* xref:../configuration.adoc[Configuration Model] -- Configuration Validation Rules and `tls.passthrough_sni`.
+* link:0004-topology-indirection.adoc[ADR-0004]: the topology model; this record refines its boot refusal for the additional-alias class
+* link:../configuration.adoc[Configuration Model]: the validation rules and `tls.passthrough_sni`
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/topology/TopologyResolver.java`: the two policies
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/EdgeRules.java`: the passthrough-alias rule
