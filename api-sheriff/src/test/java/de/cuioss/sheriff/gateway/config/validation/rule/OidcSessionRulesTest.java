@@ -56,8 +56,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * browser-guarantee warning on the derived session {@code Set-Cookie} header, and the
  * {@code cookie_name} refusal.
  * <p>
- * Every case drives the full default validator, so a rule dropped from its registration fails here as
- * surely as a rule whose body is removed. The class-level test logger captures every logger, so the
+ * Every case except the empty-rule-set control {@code shouldAttributeTheRefusalToTheRule} drives the full
+ * default validator, so a rule dropped from its registration fails here as surely as a rule whose body is
+ * removed. The class-level test logger captures every logger, so the
  * budget-warning assertions read the warning wherever it is emitted.
  */
 @EnableGeneratorController
