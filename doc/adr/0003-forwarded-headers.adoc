@@ -40,7 +40,7 @@ Fixed precedence makes the highest-precedence family authoritative. Each trusted
 
 === The trust model comes first
 
-`forwarded.trusted_proxies` is a CIDR allowlist. Trust starts at the unspoofable TCP peer. The resolver walks the appended chain right to left and accepts entries only from allow-listed hops. The first entry from a non-trusted hop is the real client. If the immediate peer is not trusted, the gateway ignores forwarding headers and uses `remote_addr`. The boot refuses a set of ranges that trusts everyone (link:0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]).
+`forwarded.trusted_proxies` is a CIDR allowlist. Trust starts at the unspoofable TCP peer. The resolver walks the appended chain right to left and accepts entries only from allow-listed hops. The first entry from a non-trusted hop is the real client. If the immediate peer is not trusted, the gateway takes no client address from its headers. Where the gateway keys on the source, it uses the TCP peer (`SourceKeys`), and the regenerated set carries no `X-Forwarded-For`. The boot refuses a set of ranges that trusts everyone (link:0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]).
 
 The right-to-left walk belongs to the resolver. The immediate-peer gate is gateway code, `TcpPeerGate`, because the transport-agnostic resolver consumes only a header accessor and never sees the peer. The gateway checks the peer before it consults the resolver. Without that gate, a direct client sending `X-Forwarded-For: 1.2.3.4` would have its spoofed entry honored.
 

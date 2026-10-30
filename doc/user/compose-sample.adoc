@@ -74,14 +74,15 @@ restate any of it.
 [[_route_b_a_locally_built_image]]
 === Route B -- a locally built image
 
-You need Route B in exactly four cases: the pin is still `0.2.4` or earlier, which predates the
+You need Route B in exactly three cases: the pin is still `0.2.4` or earlier, which predates the
 sample's BFF configuration and refuses it at boot; your host is an arm64 machine and the pin is still
-a tag that predates the two-platform lane (`0.2.4` or earlier, which is `linux/amd64` only); your host's
-CPU is below the baseline the published image is compiled for -- an x86-64 CPU without AVX2, or an
-older AArch64 core such as Graviton 1 or the Raspberry Pi 4, as listed in
-link:../../README.adoc#_known_limitations[the README's Known Limitations]; or you want to run the
-sample against local changes. A local build compiles for the host it runs on, so it starts where the
-published image does not.
+a tag that predates the two-platform lane (`0.2.4` or earlier, which is `linux/amd64` only); or you
+want to run the sample against local changes.
+
+Route B does not serve a CPU below the baseline the published image is compiled for -- an x86-64 CPU
+without AVX2, or an older AArch64 core such as Graviton 1 or the Raspberry Pi 4, as listed in
+link:../../README.adoc#_known_limitations[the README's Known Limitations]. The commands below set no
+`-march`, so a default local build compiles for that same baseline, not for the host it runs on.
 
 To run the sample against your own build, produce the image and point the sample at it:
 

@@ -81,7 +81,7 @@ An operator who names an unbound profile needs the exact key to set. Neutrality 
 
 === An unresolvable profile refuses to start
 
-The boot refuses a named-but-unbound profile. It never falls back to default trust. `TokenValidatorProducer.onStartup` forces the validator into existence at boot, so the failure surfaces at startup and not on the first bearer request.
+The boot refuses a named-but-unbound profile on an `http`-sourced issuer. It never falls back to default trust. `TokenValidatorProducer.onStartup` forces the validator into existence at boot, so the failure surfaces at startup and not on the first bearer request. A `source: file` issuer opens no TLS connection and never resolves the profile, so it boots with an unbound name, and that name governs nothing (link:../configuration.adoc#_jwks_verify_hostname_profile_collision[configuration reference]).
 
 [[amendment-a2]]
 === Two refresh knobs are exposed; the rest stay deferred

@@ -1023,8 +1023,11 @@ supplies that client's trust through the same fail-closed resolution core as the
 relaxed posture and a named profile are reported at boot by `WARN ApiSheriff-125` /
 `ApiSheriff-126`, and the relaxation together with a profile is *refused at boot* naming both keys.
 An explicit-posture fitness function now stands guard over every leg: it fails the build when
-production code constructs an egress TLS client without, in the same class, calling that client's
-posture method, so a seventh leg cannot land unbound the way the sixth once sat unenumerated. The
+production code calls a mapped egress TLS-client construction target without, in the same class,
+calling that target's posture method, so a seventh leg of a mapped client family cannot land unbound
+the way the sixth once sat unenumerated. The construction targets are a fixed map in the test, so a
+client built through an API the map does not name passes unchecked, and the change that introduces a
+new client family extends the map. The
 *fail-closed-on-empty-SNI* rule and *full-ClientHello reassembly before routing* remain unpinned (see
 Gaps), which is why this entry stays PARTIAL -- the verdict is unchanged and only its reason has
 narrowed, from three outstanding items to two.
@@ -1032,7 +1035,7 @@ narrowed, from three outstanding items to two.
 *The six TLS-terminating egress legs, re-derived from source.* Every claim in this entry is scoped
 by this enumeration, which is taken from the client-construction sites rather than copied from an
 earlier list. It is hand-written and can drift like the list it replaces; the fitness function above
-is the guard that does not depend on it being complete.
+guards the mapped client families without depending on it being complete.
 
 [cols="1,2,2", options="header"]
 |===

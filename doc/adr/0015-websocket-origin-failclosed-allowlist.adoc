@@ -39,7 +39,7 @@ Each entry is a full origin string (`scheme://host[:port]`). Matching compares s
 
 === Fail-closed, no "any origin" default
 
-The handshake `Origin` must match a listed origin, or the gateway rejects the upgrade before any upstream dial.
+On a route that lists origins, the handshake `Origin` must match a listed origin, or the gateway rejects the upgrade before any upstream dial. An absent `Origin` is rejected the same way. A `require: none` route may omit the list (next section), and such a route runs no origin check, so it is not origin-guarded.
 
 [[amendment-a1]]
 === The boot check covers bearer and session routes

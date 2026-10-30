@@ -25,7 +25,7 @@ API Sheriff scales with a virtual-thread-per-request model (link:../architecture
 
 *The decision:* API Sheriff compiles and runs on Java 25. Java 21 is not a target.
 
-* `maven.compiler.release` is `25`. Java 22 to 25 language features are permitted.
+* `maven.compiler-plugin.release` is `25`. Java 22 to 25 language features are permitted.
 * Both shipping paths run on Java 25. In JVM mode the container base image is pinned to a JDK 25 runtime line. In native mode the distroless image from `Dockerfile.native` contains no JVM, and the JEP 491 behaviour comes from the Mandrel or GraalVM builder pinned to the JDK 25 line.
 * The CI matrix builds and tests on Java 25 and every newer GA release it lists, as `.github/project.yml` declares (`maven-build.java-versions` is the matrix, `maven-build.java-version` the primary JDK). The 25 leg is primary: it produces the released artifacts and the Sonar and coverage analysis. A newer leg is a forward-compatibility guard. It must stay green and does not ship.
 * Local development requires JDK 25 or newer. A newer toolchain compiles `--release 25` correctly.

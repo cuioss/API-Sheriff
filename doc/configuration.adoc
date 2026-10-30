@@ -1351,17 +1351,20 @@ and the loopback health probe. The hostname keys are separate per leg rather tha
 because each leg is dialled by a different client and an operator relaxing one has no reason to relax
 another.
 
-*A seventh leg cannot land unbound.* A fitness function (`EgressTlsPostureArchTest`, in the
+*A seventh leg of a mapped client family cannot land unbound.* A fitness function
+(`EgressTlsPostureArchTest`, in the
 link:adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
 four-leg shape) fails the build whenever production code
 calls an egress TLS-client construction target without, in the same class, calling that target's
 posture method -- `setVerifyHost` on the Vert.x options, `sslContext` or `sslParameters` on a JDK
 client builder, `verifyHostname` on the identity-provider and JWKS builders. It reads calls, not
 values, so a relaxation still satisfies it; whether a relaxation is legitimate stays with the keys on
-this page. Two limits are stated with it: co-occurrence is read per class, so a class pinning one
-client of a family and building a second without its posture is not caught; and a JVM start-up flag
+this page. Three limits are stated with it: co-occurrence is read per class, so a class pinning one
+client of a family and building a second without its posture is not caught; a JVM start-up flag
 that disables hostname verification beneath every JDK-client leg is invisible to it (see
-link:security-threat-model.adoc#gw-06[GW-06]).
+link:security-threat-model.adoc#gw-06[GW-06]); and the construction targets are a fixed map in the
+test, so a client built through an API the map does not name passes unchecked, and the change that
+introduces a new client family extends the map.
 
 [[_egress_tls_hostname_scope]]
 ==== What disabling hostname verification does and does not do

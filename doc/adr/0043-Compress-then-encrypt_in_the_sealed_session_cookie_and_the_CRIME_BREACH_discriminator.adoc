@@ -29,8 +29,8 @@ Accepted
 === The question
 
 In the cookie-based BFF the sealed session cookie is the session. No server-side store exists, so every
-component a later request needs travels in that cookie. The payload carries three credentials and six
-small identity and bookkeeping fields. The credentials are the mediated access token, the refresh token
+component a later request needs travels in that cookie. The payload carries three credentials, six
+small identity and bookkeeping fields and two scope sets. The credentials are the mediated access token, the refresh token
 where the identity provider granted one, and the raw ID token kept for the logout `id_token_hint`.
 
 That set must fit one cookie. RFC 6265 section 6.1 obliges a user agent to keep only about 4096 bytes for
@@ -49,7 +49,7 @@ plaintext next to a secret in one compression context reads the secret from the 
 
 === The payload is deflated before it is sealed
 
-The pipeline encodes the nine fields as length-prefixed raw UTF-8, deflates them, seals with AES-256-GCM and
+The pipeline encodes the eleven fields as length-prefixed raw UTF-8, deflates them, seals with AES-256-GCM and
 base64url-encodes once for transport. `SealedSessionCookieCodec` implements it. The decision applies here and only
 here, because both halves of the CRIME/BREACH discriminator answer no.
 
@@ -57,8 +57,8 @@ here, because both halves of the CRIME/BREACH discriminator answer no.
 
 *Can an attacker force additional seals? No, not without already holding the session.*
 
-The gateway writes the sealed value on exactly two events: a completed login, and a token refresh that rotates
-the material. Both are outcomes of authentication, not of a request an unauthenticated party can drive.
+The gateway writes the sealed value on exactly three events: a completed login, a token refresh that rotates
+the material, and the merge of a widening. The login and the refresh are outcomes of authentication, not of a request an unauthenticated party can drive. This record has not assessed the merge of a widening against that statement.
 
 * An attacker who triggers a login authenticates as themselves and seals their own payload. That teaches nothing
   about a victim's.
@@ -72,7 +72,7 @@ increases the count.
 === Half two: chosen-plaintext influence
 
 *Can an attacker vary the plaintext next to the secret? No.* The identity provider issues or the gateway mints each
-of the nine components. None is echoed from the request that produced it.
+of the eleven components. None is echoed from the request that produced it.
 
 [cols="2,2,3"]
 |===
@@ -117,6 +117,16 @@ of the nine components. None is echoed from the request that produced it.
 | The gateway
 | No. 32 bytes of `SecureRandom`, base64url-encoded. It is incompressible by construction, so it sets a floor on any
   compression level. It also guarantees two sessions of one subject never deflate identically.
+
+| `activeScopes`
+| The identity provider, or the gateway's own request when the token or refresh response names no scope
+| Not assessed by this record. The set holds the scopes the session's access token was granted
+  (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
+
+| `grantedScopes`
+| The identity provider, or the gateway's own request when the token names no scope
+| Not assessed by this record. The set holds the scopes the identity provider is known to grant the session
+  (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 |===
 
 No request populates a field, so a probe string has no place to go. Attacker-varied bytes sharing a compression
@@ -227,4 +237,4 @@ stays no on both, the decision stands.
 * link:../development/declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]: the index of declared limits with an asserting test, including the cookie size budget
 * link:../variants/03-bff-cookie.adoc[Variant 3]: the operator-facing description of the variant
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java`: the packaging pipeline, the bounded inflate and the seal-time budget check
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionPayload.java`: the nine components and the length-prefixed framing
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionPayload.java`: the eleven components and the length-prefixed framing

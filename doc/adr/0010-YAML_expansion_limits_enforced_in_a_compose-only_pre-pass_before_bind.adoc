@@ -57,7 +57,7 @@ An expansion-bomb guard must sit at the pipeline stage where the engine counts t
 
 === Properties of the design
 
-* The alias-bomb defence is armed, not merely configured. The nesting and string-length caps hold on both paths, so the two defences are independent.
+* The alias-bomb defence is armed, not merely configured. The nesting cap holds on both paths. `MAX_CONFIG_FILE_BYTES` (512 KiB) bounds every file before either pass, so it is what bounds a document and its longest string. `MAX_YAML_STRING_LENGTH` (1 MiB) sits above it: SnakeYAML applies that constant as a code-point budget over the whole stream on both paths, Jackson as its per-string limit on the bind path, and neither can trip on an accepted snapshot.
 * The guard fires before any binding work, so a hostile document never reaches substitution, schema validation or model construction.
 * The pre-pass opens no deserialization surface.
 * A tripped limit joins the aggregate boot refusal, which keeps the "report all violations in one pass" contract.

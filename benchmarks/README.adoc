@@ -315,11 +315,17 @@ certificate and the load generator needs no per-target trust handling. TLS termi
 therefore common to both sides.
 
 Same auth realm and tokens::
-Both gateways accept tokens from the same Keycloak `benchmark` realm. The `bearer` aspect mints one
-token from that realm before the measured window and replays it, whichever gateway the run targets,
-and each side validates it offline against the realm's JWKS: API Sheriff through its
-`benchmark-keycloak` issuer, APISIX through `openid-connect` with `use_jwks` set. A side that fell
-back to token introspection would fold a Keycloak network call into its number only.
+Both gateways take tokens from the same Keycloak `benchmark` realm. The `bearer` aspect mints one
+token from that realm before the measured window and replays it, whichever gateway the run targets.
+API Sheriff validates it offline against the realm's JWKS through its `benchmark-keycloak` issuer.
+`apisix.yaml` configures the same for APISIX, `openid-connect` with `use_jwks` set, but the plugin
+takes the key-set address from Keycloak's discovery document. Under the stack's static `KC_HOSTNAME`
+that address is `https://localhost:1443/...`, which the APISIX container cannot reach, so this lane
+cannot validate tokens
+(link:../doc/adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]).
+Until that follow-up work lands, the `bearer` row has no valid APISIX side: a rejected request fails
+the script's HTTP-200 check rather than counting as a fast result. A side that fell back to token
+introspection would fold a Keycloak network call into its number only.
 
 Identical routes, one upstream (six HTTP aspects)::
 Every *HTTP* benchmarked route on *both* gateways targets the same fast static nginx backend

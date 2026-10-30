@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: ghcr.io/cuioss/api-sheriff is published as one image index over a linux/amd64 and a linux/arm64 image, each built natively on a runner of its own architecture (GraalVM cannot cross-compile and an emulated native build does not fit the time budget), each run through the full integration-test suite, scanned, pushed as a plain manifest under a leg-local tag and smoked by digest on its own architecture; a join reached only when both legs are green assembles the index from exactly those two digests, signs the index digest plus both platform digests under the published identity and only then writes the release tags, so a failed leg publishes no release tag; no -march is configured, so amd64 keeps GraalVM's x86-64-v3 default and arm64 gets GraalVM's AArch64 default, -march=compatibility is considered and declined, and CPUs below either baseline are served by a locally built image; a dry-run dispatch proves the lane without a release
+// summary: ghcr.io/cuioss/api-sheriff is published as one image index over a linux/amd64 and a linux/arm64 image, each built natively on a runner of its own architecture (GraalVM cannot cross-compile and an emulated native build does not fit the time budget), each run through the full integration-test suite, scanned, pushed as a plain manifest under a leg-local tag and smoked by digest on its own architecture; a join reached only when both legs are green assembles the index from exactly those two digests, signs the index digest plus both platform digests under the published identity and only then writes the release tags, so a failed leg publishes no release tag; no -march is configured, so amd64 keeps GraalVM's x86-64-v3 default and arm64 gets GraalVM's AArch64 default, a default local build compiles for the same default target, so it does not serve CPUs below either baseline, and -march=compatibility stays undecided because the reason recorded against it rested on the opposite premise; a dry-run dispatch proves the lane without a release
 // tags: release, container-image, multi-arch, image-index, native-image, cpu-baseline, signing, cosign, supply-chain, image-artifact, rejected-alternatives
 // affects: api-sheriff-parent, api-sheriff, integration-tests, documentation
 // supersedes:
@@ -82,7 +82,7 @@ The published image does not serve the hosts below either baseline:
 * x86-64 CPUs without AVX2, BMI2 or FMA: Intel cores before Haswell, AMD cores before Excavator, and low-end Atom-class parts that omit AVX2;
 * AArch64 cores older than the arm64 default, such as the Cortex-A72 of Graviton 1 and the Raspberry Pi 4.
 
-Route B, a locally built image, serves them (link:../user/compose-sample.adoc[the compose sample]), because a build on such a host compiles for that host. The same applies to an amd64 image forced onto an arm64 host with `--platform linux/amd64`, which the index no longer requires.
+A default local build does not serve them either. Route B (link:../user/compose-sample.adoc[the compose sample]) sets no `-march`, so its build compiles for the same GraalVM default target as the published image, not for the host it runs on. Route B does replace an amd64 image forced onto an arm64 host with `--platform linux/amd64`, because a build on that host compiles for arm64. The index no longer requires that case.
 
 The decision keeps the default, so no cost of a broader target was measured, and this record claims no performance figure in either direction.
 
@@ -134,7 +134,7 @@ This means one signature per release.
 
 This lowers amd64 to the baseline x86-64 instruction set and arm64 to the plain Armv8-A one, so the published image would also run on the hosts listed above.
 
-*Declined because* it trades code-generation quality on every supported host for a population of old or low-end CPUs that a locally built image already serves. The cost would fall on every deployment and the benefit only on those few, and those few already have a working route. Measuring the cost on this gateway's workload would be the first step of a reversal, not a step this decision needs.
+*Undecided.* The reason recorded against it was that it trades code-generation quality on every supported host for a population of old or low-end CPUs that a locally built image already serves, so those few already have a working route. That premise does not hold: a default local build compiles for the same default target and does not serve them. No other reason is recorded, so this option remains undecided. No cost of it on this gateway's workload has been measured.
 
 === Run the integration suite on arm64 on every pull request
 
@@ -158,7 +158,7 @@ The rejected options share one flaw: each either publishes something other than 
 
 * A release costs two native builds and two full integration-test runs instead of one. The legs run in parallel, so the wall time grows less than the compute.
 * A failure on one architecture blocks the release for both. An arm64-only defect withholds a release from amd64 consumers too. That is the price of the no-half-release rule, paid deliberately.
-* Hosts below either CPU baseline still cannot run the published image and need a local build.
+* Hosts below either CPU baseline still cannot run the published image, and a default local build does not serve them either.
 
 === Risks
 
