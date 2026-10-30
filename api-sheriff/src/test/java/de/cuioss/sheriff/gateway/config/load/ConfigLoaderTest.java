@@ -15,13 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.load;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
@@ -37,6 +31,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
+
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
@@ -250,7 +245,7 @@ class ConfigLoaderTest {
             GatewayConfig gateway = loader(Map.of()).load(IGNORE_DEFAULTED).gateway();
 
             assertEquals(new ThreatClassificationConfig(true, 40, 120,
-                    new ThreatClassificationConfig.Weights(8, 0, 3, 4, 20)), gateway.threatClassification(),
+                            new ThreatClassificationConfig.Weights(8, 0, 3, 4, 20)), gateway.threatClassification(),
                     "every snake_case key binds to its record component");
         }
 

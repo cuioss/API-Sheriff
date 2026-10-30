@@ -15,17 +15,15 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertRefused;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
+
 
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;

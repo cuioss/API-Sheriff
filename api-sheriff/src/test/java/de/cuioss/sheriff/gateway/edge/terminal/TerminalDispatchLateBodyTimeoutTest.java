@@ -15,13 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge.terminal;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -37,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -376,10 +371,10 @@ class TerminalDispatchLateBodyTimeoutTest {
             HttpConnection connection = clientConnection.get();
 
             int nextStatus = Awaits.connect(http2Client
-                    .request(io.vertx.core.http.HttpMethod.POST, frontServer.actualPort(), LoopbackHost.ADDRESS,
-                            "/" + ROUTE_ID + HEAD_ONLY)
-                    .compose(HttpClientRequest::send)
-                    .compose(response -> response.body().map(body -> response.statusCode())),
+                            .request(io.vertx.core.http.HttpMethod.POST, frontServer.actualPort(), LoopbackHost.ADDRESS,
+                                    "/" + ROUTE_ID + HEAD_ONLY)
+                            .compose(HttpClientRequest::send)
+                            .compose(response -> response.body().map(body -> response.statusCode())),
                     "a second stream to be answered after the first one was reset");
 
             assertAll("a late request-body timeout on an HTTP/2 stream",
@@ -400,7 +395,7 @@ class TerminalDispatchLateBodyTimeoutTest {
          */
         private Http2Answer trickleUntilStreamReset() throws Exception {
             HttpClientRequest request = Awaits.connect(http2Client.request(io.vertx.core.http.HttpMethod.POST,
-                    frontServer.actualPort(), LoopbackHost.ADDRESS, "/" + ROUTE_ID + HEAD_ONLY),
+                            frontServer.actualPort(), LoopbackHost.ADDRESS, "/" + ROUTE_ID + HEAD_ONLY),
                     "the HTTP/2 upload to open");
             CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
             request.exceptionHandler(streamEnd::complete);

@@ -16,13 +16,14 @@
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
-import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;

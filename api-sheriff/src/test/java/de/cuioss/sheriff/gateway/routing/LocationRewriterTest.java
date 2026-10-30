@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.routing;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import org.junit.jupiter.api.DisplayName;

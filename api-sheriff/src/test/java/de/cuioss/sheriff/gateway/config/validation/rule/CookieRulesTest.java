@@ -15,14 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
-import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.topologyWith;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.singleRefusalAt;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.Map;
+
 
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;

@@ -16,11 +16,10 @@
 package de.cuioss.sheriff.gateway.routing;
 
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
+
 
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;

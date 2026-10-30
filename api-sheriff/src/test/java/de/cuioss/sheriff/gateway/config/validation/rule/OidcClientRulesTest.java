@@ -15,14 +15,10 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
-import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.topologyWith;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.validGateway;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.nio.file.FileSystemException;
@@ -30,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.List;
+
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
