@@ -171,11 +171,12 @@ import org.junit.jupiter.params.provider.MethodSource;
 @DisplayName("Documented sets stay bound to their authoritative source")
 class DocumentedSetsContractTest {
 
-    private static final Path CONFIGURATION_ADOC = RepositoryRoot.holding("doc").resolve("doc/configuration.adoc");
-    private static final Path USER_README_ADOC = RepositoryRoot.holding("doc").resolve("doc/user/README.adoc");
-    private static final Path BFF_COOKIE_ADOC = RepositoryRoot.holding("doc").resolve("doc/user/bff-cookie.adoc");
-    private static final Path ARCHITECTURE_ADOC = RepositoryRoot.holding("doc").resolve("doc/architecture/observability-and-errors.adoc");
-    private static final Path THREAT_MODEL_ADOC = RepositoryRoot.holding("doc").resolve("doc/security-threat-model.adoc");
+    private static final Path REPOSITORY_ROOT = RepositoryRoot.holding("doc");
+    private static final Path CONFIGURATION_ADOC = REPOSITORY_ROOT.resolve("doc/configuration.adoc");
+    private static final Path USER_README_ADOC = REPOSITORY_ROOT.resolve("doc/user/README.adoc");
+    private static final Path BFF_COOKIE_ADOC = REPOSITORY_ROOT.resolve("doc/user/bff-cookie.adoc");
+    private static final Path ARCHITECTURE_ADOC = REPOSITORY_ROOT.resolve("doc/architecture/observability-and-errors.adoc");
+    private static final Path THREAT_MODEL_ADOC = REPOSITORY_ROOT.resolve("doc/security-threat-model.adoc");
 
     /**
      * Anchor for the {@code oidc_discovery} value table of {@code doc/configuration.adoc}: the bullet that
