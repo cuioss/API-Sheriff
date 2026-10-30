@@ -1673,3 +1673,24 @@ or accepted, and an accepted one names the reason it is safe to keep.
   checks no client credential, authorization code or PKCE verifier -- only the `htu` and `htm` of each
   DPoP proof -- and signs with a key generated when the rig starts (<<stub-idp-rig>>).
 |===
+
+[[upstream-path-integration-endpoints]]
+== `route.upstream.path` in the Integration Endpoints
+
+link:../adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004] makes a declared
+`route.upstream.path` append to the alias base path. When that rule replaced the earlier replace
+semantics, every in-repo configuration moved with it in one change, so its effective upstream URI on
+the integration topology stayed identical:
+
+* `integration-tests/.../endpoints/httpbin.yaml` -- the six routes `minimal-mode`, `graphql`,
+  `upload-small`, `upload-large`, `deny-list` and `forward-all` declare `/<x>`. With the `/anything`
+  alias base they reach `/anything/<x>`.
+* `integration-tests/.../endpoints/grpc.yaml` -- the values did not change. The alias base path is
+  empty, so append equals replace. Only the formula in its comment changed.
+* `integration-tests/.../endpoints/origin-headers.yaml` -- written under append, so it restates no
+  alias base path. Both its routes declare `route.upstream.path` (`/response-headers`, `/redirect-to`)
+  behind `HTTPBIN_ROOT`, the deliberately base-path-free sibling of `UPSTREAM`. With an empty alias base
+  append equals replace there too, so the declared path is the whole effective upstream base.
+
+At that change no other test resource, deployment sample, WebSocket, asset, BFF or secure endpoint
+declared `route.upstream.path`.

@@ -1,86 +1,65 @@
-= ADR-0001 -- Java 25 Compile and Runtime Baseline
-:toc:
-:toclevels: 2
+= ADR-0001: API Sheriff compiles and runs on Java 25, and Java 21 is not a target
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: API Sheriff compiles and runs on Java 25; the 25 CI leg ships and newer GA releases run as forward-compatibility legs that must stay green; compiling at 21 for a 25-only runtime is rejected.
+// tags: java, baseline, runtime, ci, virtual-threads
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
 
 == Status
 
-Accepted.
-
-Supersedes the earlier *proposed* form of this ADR, which kept the compile target at Java 21
-and raised only the *runtime* to Java 25 ("compile low, run high"). That split is dropped: the
-project compiles *and* runs on Java 25.
-
-== Context
-
-API Sheriff scales with a *virtual-thread-per-request* model (see
-link:../architecture/runtime-and-dependencies.adoc#_threading_model[Architecture -- Threading Model]). The value of
-virtual threads for a gateway is highest when blocking work -- downstream HTTP calls, TLS,
-filtering -- does not pin the carrier platform thread.
-
-Two JDK facts drive this decision:
-
-* *JEP 491 (JDK 24+)* removes carrier-thread pinning on `synchronized` blocks and methods.
-  Before JDK 24, a virtual thread that blocked inside `synchronized` pinned its carrier,
-  throttling throughput under load. This is exactly the kind of hidden pin a gateway hits in
-  third-party and JDK library code.
-* *Java 25 is the current LTS* (released September 2025) and includes the JEP 491 behaviour.
-
-The earlier form of this ADR separated the *compile target* (source language level and
-bytecode version) from the *runtime* the container/native image executes on, and raised only
-the runtime, out of caution about toolchain / CI-image / parent-POM readiness at release 25.
-
-That caution no longer applies. API Sheriff *ships and runs a Java 25 image only* -- there is
-no Java 21 (or any pre-25) deployment target for this product, and none is planned. Compiling
-at 21 for a 25-only runtime is indirection that buys nothing: it forbids Java 22-25 language
-features, splits the local/CI toolchain story ("develop on 21, ship on 25"), and keeps a
-version around that plays no role in the delivered artifact. The parent POM
-(`de.cuioss:cui-java-parent:1.5.1`) and Quarkus 3.37.2 support a Java 25 *compile* baseline, so
-the readiness gap the original ADR waited for is closed.
+Accepted
 
 == Decision
 
-*Compile and run API Sheriff on Java 25. Java 21 is not a target for this project.*
+API Sheriff scales with a virtual-thread-per-request model (link:../architecture/runtime-and-dependencies.adoc#_threading_model[Architecture, Threading Model]). Virtual threads help a gateway most when blocking work does not pin the carrier platform thread. Two JDK facts follow from that:
 
-* `maven.compiler.release` is set to `25`. Java 22-25 language features are permitted from now
-  on (records, sealed types, pattern matching are already in use; virtual threads,
-  structured concurrency where it helps).
-* Both shipping paths run on Java 25. *JVM mode*: the container base image is pinned to a JDK 25
-  runtime line. *Native mode*: the `Dockerfile.native` (distroless) image contains no JVM;
-  the JEP 491 behaviour comes from the *Mandrel/GraalVM builder*, pinned to the JDK 25 line.
-* *CI build/test matrix* compiles and runs the test suites on *Java 25 and Java 26*, and adds
-  each newer GA release as it appears (Java 27 GA is expected September 2026; add it then).
-  The 25 leg is the *primary* leg -- it produces the released/deployed artifacts and the
-  Sonar/coverage analysis; the 26 (and later) leg is a *forward-compatibility* guard that must
-  stay green but does not ship. Configured in `.github/project.yml`
-  (`maven-build.java-versions` = the matrix, `maven-build.java-version` = the primary/deploy
-  JDK).
-* Local development requires a JDK 25 or newer (a JDK 26 toolchain compiles `--release 25`
-  correctly).
+* *JEP 491 (JDK 24 and later)* removes carrier-thread pinning on `synchronized` blocks and methods. Before JDK 24, a virtual thread that blocked inside `synchronized` pinned its carrier. A gateway hits that hidden pin in third-party and JDK library code.
+* *Java 25 is an LTS release* and includes the JEP 491 behaviour.
+
+*The decision:* API Sheriff compiles and runs on Java 25. Java 21 is not a target.
+
+* `maven.compiler.release` is `25`. Java 22 to 25 language features are permitted.
+* Both shipping paths run on Java 25. In JVM mode the container base image is pinned to a JDK 25 runtime line. In native mode the distroless image from `Dockerfile.native` contains no JVM, and the JEP 491 behaviour comes from the Mandrel or GraalVM builder pinned to the JDK 25 line.
+* The CI matrix builds and tests on Java 25 and every newer GA release it lists, as `.github/project.yml` declares (`maven-build.java-versions` is the matrix, `maven-build.java-version` the primary JDK). The 25 leg is primary: it produces the released artifacts and the Sonar and coverage analysis. A newer leg is a forward-compatibility guard. It must stay green and does not ship.
+* Local development requires JDK 25 or newer. A newer toolchain compiles `--release 25` correctly.
+
+== Alternatives rejected
+
+=== Compile at Java 21 and run on Java 25
+
+An earlier proposed form of this record separated the compile target from the runtime and raised only the runtime, out of caution about toolchain, CI-image and parent-POM readiness at release 25.
+
+*Rejected because* API Sheriff ships and runs a Java 25 image only, and no earlier deployment target exists or is planned. Compiling at 21 for a 25-only runtime buys nothing. It forbids Java 22 to 25 language features, splits the toolchain story into "develop on 21, ship on 25", and keeps a version that plays no role in the delivered artifact. The parent POM and Quarkus support a Java 25 compile baseline, so the readiness gap that form waited for is closed.
 
 == Consequences
 
-Positive:
+=== Properties of the design
 
-* Full virtual-thread throughput under load without auditing every dependency for
-  `synchronized`-based pinning, and without a compile/runtime version split to reason about.
-* One toolchain story end to end: the version you build with is the version you ship on.
-* Java 22-25 language features become available for the pipeline and config code.
-* The forward-compatibility matrix leg surfaces JDK-26+ regressions (deprecations, behavioural
-  changes, native-image breakage) before the next LTS forces the issue.
+* Virtual threads reach full throughput under load without an audit of every dependency for `synchronized`-based pinning, and no compile and runtime split needs reasoning about.
+* One toolchain runs end to end: the version you build with is the version you ship on.
+* Java 22 to 25 language features are available to the pipeline and configuration code.
+* The forward-compatibility legs surface regressions of newer JDKs (deprecations, behavioural changes, native-image breakage) before the next LTS forces the issue.
 
-Negative / to watch:
+=== Accepted costs
 
-* Every build/CI/native stage needs a JDK 25 (or newer) available -- there is no longer a
-  Java 21 fallback leg. Contributors on an older JDK must upgrade.
-* Native-image builds depend on a Mandrel/GraalVM distribution for the JDK 25 line for the
-  target platform; verify it is published before pinning, and re-verify when the Mandrel pin
-  advances.
-* The 26+ matrix leg can go red on a JDK the project does not yet ship on; treat such failures
-  as forward-compat signal (pin/skip with a tracked issue) rather than release blockers, but
-  keep the leg present.
+* Every build, CI and native stage needs JDK 25 or newer, and no Java 21 fallback leg exists. A contributor on an older JDK must upgrade.
+* Native-image builds depend on a Mandrel or GraalVM distribution for the JDK 25 line on the target platform. Verify that it is published before pinning, and re-verify when the Mandrel pin advances.
+* A forward-compatibility leg can go red on a JDK the project does not ship on. Treat such a failure as a signal, pin or skip it with a tracked issue, and keep the leg present. It is not a release blocker.
 
-== Revisit When
+=== When this is revisited
 
-* A new LTS (Java 29, expected 2027) becomes the deploy baseline -- raise the primary
-  `java-version` and the Mandrel pin, and re-anchor the matrix.
-* A dropped dependency or native-image constraint forces a specific JDK ceiling.
+* A new LTS (Java 29, expected 2027) becomes the deploy baseline. The primary `java-version` and the Mandrel pin then rise, and the matrix re-anchors.
+* A dropped dependency or a native-image constraint forces a specific JDK ceiling.
+
+== Links
+
+* link:../architecture/runtime-and-dependencies.adoc#_threading_model[Architecture, Threading Model]: the virtual-thread model this baseline serves
+* `.github/project.yml`: the CI matrix and the primary JDK
+* `api-sheriff/src/main/docker/Dockerfile.native`: the native image

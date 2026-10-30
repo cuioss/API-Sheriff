@@ -1,180 +1,119 @@
-= ADR-0008 -- Data-Plane Transport, Resilience, and Conditional-Request Posture
-:toc:
-:toclevels: 2
+= ADR-0008: The data plane runs on the Vert.x client, the control plane on cui-http, and the gateway caches no proxied response
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: The data plane streams over the shared Vert.x HttpClient and the control plane stays on cui-http; gateway-side response caching is rejected, not_modified means end-to-end conditional pass-through with both halves gated together under every forward mode, resilience uses SmallRye Fault Tolerance's programmatic API under a fixed gateway breaker (ADR-0064), and retry is stream-aware.
+// tags: data-plane, transport, vertx, resilience, conditional-requests, not-modified, smallrye-fault-tolerance
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
 
 == Status
 
-Accepted.
-
-== Context
-
-link:0006-body-streaming-vs-httpresult.adoc[ADR-0006] split the gateway's HTTP surface into
-two planes -- control plane materializes (`HttpResult<T>`), data plane streams -- but never
-named the *client* on each side. Two governing texts consequently contradicted each other:
-the Architecture "Downstream Client" section said upstream calls use `cui-http`'s
-`HttpHandler` ("one pooled JDK `HttpClient` per upstream tuple"), while ADR-0006's decision
-is written in Vert.x vocabulary ("pipe the client `ReadStream` to the *upstream
-`WriteStream`*"), presupposing a Vert.x upstream leg. The request pipeline inherited both.
-
-Source verification (local `cui-http` checkout) sharpened this into a type-level fact rather
-than a preference: the `cui-http` client adapters are materializing *by construction*.
-`ResilientHttpAdapter<T>` and `ETagAwareHttpAdapter<T>` implement `HttpAdapter<T>` returning
-`CompletableFuture<HttpResult<T>>` -- a typed, fully-deserialized body. Retry works *because*
-the request body is a re-serializable `T` held in memory; the ETag adapter is a whole-response
-in-memory cache that issues its own conditional requests and serves cached bodies on `304`,
-with a `cacheKeyHeaderFilter` designed to *exclude* headers such as `Authorization` from the
-cache key. Neither can carry a streamed body; neither was designed for a multi-user proxy
-path.
-
-Meanwhile the delivered configuration model already promises per-route `304` behaviour:
-`upstream_defaults.not_modified.enabled`, default *enabled*, materialized into
-`ResolvedRoute` -- with semantics specified in a single vague sentence. The obvious (wrong)
-implementation would have been the ETag adapter on the data plane.
-
-The protocol surfaces impose their own transport requirements: gRPC requires HTTP
-*trailers* (`grpc-status` lives there) -- the JDK `HttpClient` exposes none; WebSocket
-proxying requires the raw upgrade stream; upstream HTTP/2 multiplexing is expected. All three
-are native to the Vert.x client that already runs the gateway's edge.
+Accepted
 
 == Decision
 
-* *Data-plane transport is the Vert.x `HttpClient`.* Proxied request and response bodies are
-  piped as streams with backpressure in both directions (ADR-0006), directly between the edge
-  and upstream Vert.x streams. One shared client (and connection pool) per *distinct upstream
-  target tuple* (resolved host + timeouts + TLS context), options assembled once at boot from
-  `upstream` config -- the same dedup lever previously assigned to `HttpHandler`.
-* *Control plane stays on `cui-http`.* `HttpHandler`, `ResilientHttpAdapter`,
-  `ETagAwareHttpAdapter`, and `HttpResult<T>` serve the gateway's own small, bounded JSON
-  calls (OIDC discovery, JWKS, token exchange, revocation) -- consumed chiefly *inside*
-  `token-sheriff-validation`/`token-sheriff-client`. ADR-0006's plane split, with the client
-  now named per plane. `cui-http`'s data-plane role remains the parts it is genuinely built
-  for: the inbound security pipelines and the forwarded-header resolver.
-* *Gateway-side response caching on the data plane is REJECTED* -- including ETag
-  revalidation-from-cache (serving a cached body on upstream `304`). A shared response cache
-  keyed by anything less than the full authorization context is a cross-user data leak; keyed
-  by the full context it is memory-unbounded per user; either way it materializes proxied
-  bodies (the ADR-0006 anti-pattern) and adds a cache-poisoning surface. `ETagAwareHttpAdapter`
-  is control-plane only, permanently.
-* *`not_modified.enabled` means end-to-end conditional pass-through*, nothing more. It gates
-  *both halves of one exchange* -- the validators the client sends and the validators the
-  upstream answers with -- because forwarding a validator whose answer is then stripped
-  makes the gateway ask a question it discards the answer to (see Amendment A1 for the
-  request-half membership):
-** *enabled* (default) -- the `304` validators `If-None-Match` and `If-Modified-Since` cross to
-   the upstream, and upstream `304` responses plus the validator response headers (`ETag`,
-   `Last-Modified`) relay untouched. `304` carries no body -- fully streaming-compatible, zero
-   gateway state.
-** *disabled* -- those two validators are withheld from `GET` and `HEAD` (on every other
-   method they cross: `If-None-Match` is a `412` write precondition there, and `If-Modified-Since`
-   is ignored) and the response-direction `ETag` /
-   `Last-Modified` are stripped, deliberately forcing full `200` exchanges -- the hardening
-   knob for upstreams whose ETags are inconsistent across nodes or leak inode/version
-   information.
-* *Resilience uses SmallRye Fault Tolerance's programmatic API*
-  (`quarkus-smallrye-fault-tolerance`) -- the Quarkus-native mechanism, applied without
-  annotations or CDI interception on the hot path: one guard per route, assembled at boot
-  from `upstream.retry` / `upstream.circuit_breaker` (attempt count, breaker `failures` /
-  `reset_ms`), invoked around the dispatch call in the framework-bound *edge* layer -- the
-  ADR-0005 boundary stays intact, the framework-agnostic core carries only the resolved
-  policy values. Breaker state transitions surface as WARN LogRecords and metrics. (The breaker
-  half of this point is amended by <<_amendment_a2>>: the breaker is a fixed policy of the gateway
-  and `upstream.circuit_breaker` is removed.)
-* *Retry is stream-aware gateway policy, enforced before the guard*: an attempt is retried
-  only when the method is idempotent *and zero request-body bytes have been sent upstream*.
-  No replay buffering in the initial release. Timeouts are transport options on the shared
-  Vert.x client (connect/read per upstream tuple), not fault-tolerance timeouts.
-* *The whole-second timeout rule is dropped.* `connect_timeout_ms`/`read_timeout_ms` were
-  restricted to multiples of 1000 ms only because `cui-http`'s `HttpHandler` builder takes
-  whole seconds; the Vert.x client takes milliseconds natively. The delivered
-  `ConfigValidator` rule and its documentation entries are removed (pre-1.0: break freely).
+link:0006-body-streaming-vs-httpresult.adoc[ADR-0006] split the gateway's HTTP surface into two planes but did not name the client on each side. The configuration model also promises per-route `304` behaviour through `upstream_defaults.not_modified.enabled`, default enabled. The record settles the client per plane, what `not_modified` means, and where resilience lives.
+
+=== The client per plane
+
+*The data-plane transport is the Vert.x `HttpClient`.* Proxied request and response bodies are piped as streams with backpressure in both directions, directly between the edge and upstream Vert.x streams. One shared client and connection pool serves each distinct upstream target (`EgressClients`). gRPC needs HTTP trailers, WebSocket proxying needs the raw upgrade stream, and upstream HTTP/2 multiplexing is expected. All three are native to this client.
+
+*The control plane stays on `cui-http`.* `HttpHandler`, `ResilientHttpAdapter`, `ETagAwareHttpAdapter` and `HttpResult<T>` serve the gateway's own small, bounded JSON calls, chiefly inside `token-sheriff-validation` and `token-sheriff-client`. On the data plane, `cui-http` supplies the inbound security pipelines and the forwarded-header resolver.
+
+=== `not_modified` is end-to-end conditional pass-through
+
+`not_modified.enabled` gates both halves of one exchange: the validators the client sends and the validators the upstream answers with. Forwarding a validator whose answer is then stripped makes the gateway ask a question it discards the answer to.
+
+* *Enabled (the default).* The `304` validators `If-None-Match` and `If-Modified-Since` cross to the upstream. Upstream `304` responses and the validator response headers (`ETag`, `Last-Modified`) relay untouched. A `304` carries no body, so the exchange is streaming-compatible and needs no gateway state.
+* *Disabled.* The gateway withholds those two validators from `GET` and `HEAD` and strips the response-direction `ETag` and `Last-Modified`, which forces full `200` exchanges. This is the hardening setting for upstreams whose ETags are inconsistent across nodes or leak inode or version information.
 
 [[_amendment_a1]]
-=== Amendment A1 -- the request half is the protocol set's gated tier, and it carries the two `304` validators
+The validators are the gated tier of the gateway-understood protocol set, the names that cross without an operator entry (link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]). They reach the upstream under every link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[forward mode], and the toggle decides whether that tier is admitted at all. With the toggle off, the gateway removes them from the client's headers of a `GET` or `HEAD` after the mode copy. A forward-all, negative-list or positive-list route therefore carries none of them upstream there, and no route forwards a validator whose answering `ETag` the response half strips.
 
-The decision above is unchanged in substance; the *mechanism* of its request half was restated
-by
-link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037],
-and this amendment records the difference so the original wording is not read as current.
+Only `GET` and `HEAD` are answered `304` (RFC 9110 sections 13.1.2 and 13.1.3). On every other method the two cross in either state: `If-None-Match` is a write precondition answered `412`, and the origin ignores `If-Modified-Since`, which is defined only for `GET` and `HEAD`. `If-Match`, `If-Unmodified-Since` and `If-Range` always cross with the unconditional tier. `set_headers` is operator configuration and stays ungated.
 
-*What changed.* This ADR originally described the request half as making `If-None-Match` and
-`If-Modified-Since` "implicitly part of the route's effective `forward.headers_allow`". That
-description needs two corrections:
+=== Upstream identity headers do not reach the client
 
-* *The two are the whole gated set, not an arbitrary subset.* RFC 9110 §13 defines
-  `If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since` and `If-Range`. Only
-  the first two are answered by a `304`, so only they ride the toggle. The other three cross with
-  the protocol set's unconditional tier whatever the toggle says, because withholding them would
-  change the request rather than discard an answer: without `If-Match` or
-  `If-Unmodified-Since` a conditional write becomes unconditional (a lost update), and without
-  `If-Range` a `Range` request is answered with a `206` slice of a newer representation instead
-  of the full `200`.
-* *The mechanism is not the allow-list.* Since
-  link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] a
-  route resolves one of three forward modes, and `headers_allow` is only one of them. The
-  validators are now the *gated tier of the gateway-understood protocol set* -- names that cross
-  without an operator entry -- so they reach the upstream under every mode, and the toggle
-  decides whether that tier is admitted at all.
+Every path that relays upstream response headers strips the upstream identity headers `Server` and `X-Powered-By`: the HTTP relay, the gRPC relay and the upstream asset action. A route keeps them with `keep_identity_headers: true`. link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037] records the set and the opt-out.
 
-*The toggle withholds the validators under every forward mode.* With the flag *off*, the
-gateway removes the two `304` validators from the client's headers of a `GET` or `HEAD` after
-the mode copy. A forward-all, negative-list or positive-list route therefore carries none of
-them upstream there, and no route forwards a validator whose answering `ETag` the response half
-strips. Only `GET` and `HEAD` are answered `304` (RFC 9110 §13.1.2, §13.1.3); on every other
-method the two cross in either state: `If-None-Match` is a write precondition answered `412`,
-and the origin ignores `If-Modified-Since`, which is defined only for `GET` and `HEAD`.
-The two halves are one decision in every mode, so `headers_deny` is no longer needed to withhold
-the validators under a permissive posture. `set_headers` is operator configuration and stays
-ungated. ADR-0037 records why narrowing forward-all for this class of client headers is deliberate.
+=== Resilience
+
+*Resilience uses SmallRye Fault Tolerance's programmatic API* (`quarkus-smallrye-fault-tolerance`), without annotations or CDI interception on the hot path. `UpstreamGuards` builds the guards at boot in the edge layer, and the dispatch call runs inside its guard. Breaker state transitions surface as WARN records and metrics.
 
 [[_amendment_a2]]
-=== Amendment A2 -- the breaker is not assembled from `upstream.circuit_breaker`
+The breaker is a fixed policy of the gateway, and one guard serves every route dialing the same upstream target with the same retry setting. link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064] records that policy and removes the `upstream.circuit_breaker` block. ADR-0064 also lists the upstream timeout and retry keys that parse and act on nothing, and it leaves them open.
 
-The decision above says the guard is assembled from `upstream.circuit_breaker` (`failures` /
-`reset_ms`). It never was: the breaker every route runs is a fixed policy of the gateway, and the
-two keys parsed and acted on nothing.
-link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]
-records that policy as the decision -- a rolling window of 20 calls, a failure ratio of 0.5, an open
-delay of 5 s that is also the `Retry-After` of the open circuit's `503`, and two successful trials
-to close -- removes the `upstream.circuit_breaker` block, and records that one guard serves every
-route dialing the same upstream target with the same retry setting rather than one guard per
-route. The timeout and retry keys this decision also names are not settled by that amendment; see
-ADR-0064, "What this decision does not settle".
+*Retry is stream-aware gateway policy.* The retry predicate retries a failed attempt only when the method is idempotent *and zero request-body bytes have been sent upstream*.
+  No replay buffering in the initial release. Timeouts are transport options on the shared
+  Vert.x client (connect/read per upstream tuple), not fault-tolerance timeouts.
+
+*No whole-second timeout rule applies.* That rule existed only because the `cui-http` `HttpHandler` builder takes whole seconds. The Vert.x client takes milliseconds.
+
+== Alternatives rejected
+
+=== `HttpHandler` and the `cui-http` adapters on the data plane
+
+The Architecture "Downstream Client" section once said upstream calls use `HttpHandler`, with one pooled JDK `HttpClient` per upstream tuple.
+
+*Rejected because* the `cui-http` client adapters are materializing by construction, a type-level fact. `ResilientHttpAdapter<T>` and `ETagAwareHttpAdapter<T>` implement `HttpAdapter<T>`, which returns `CompletableFuture<HttpResult<T>>`, a fully deserialized body. Neither can carry a streamed body, and neither was designed for a multi-user proxy path. The JDK `HttpClient` also exposes no HTTP trailers, and `grpc-status` lives there. `cui-http`'s `RetryConfig` presupposes a replayable materialized body, so it is unusable on the data plane.
+
+=== Gateway-side response caching, including ETag revalidation from cache
+
+The ETag adapter on the data plane would serve a cached body on an upstream `304`.
+
+*Rejected because* a shared response cache keyed by anything less than the full authorization context is a cross-user data leak. Keyed by the full context, it is memory-unbounded per user. Either way it materializes proxied bodies and adds a cache-poisoning surface. The adapter also uses a `cacheKeyHeaderFilter` designed to exclude headers such as `Authorization` from the cache key. `ETagAwareHttpAdapter` is control-plane only, permanently.
+
+=== The validators as part of the route's effective `forward.headers_allow`
+
+*Rejected because* `headers_allow` is one of three forward modes, so that mechanism would not reach the other two (link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
+
+=== Gate all five RFC 9110 section 13 validators on the toggle
+
+*Rejected because* only `If-None-Match` and `If-Modified-Since` are answered by a `304`. Withholding the other three would change the request rather than discard an answer. Without `If-Match` or `If-Unmodified-Since` a conditional write becomes unconditional, a lost update. Without `If-Range` a `Range` request is answered with a `206` slice of a newer representation instead of the full `200`.
+
+=== Name the validators in `headers_deny` to withhold them under a permissive mode
+
+*Rejected because* the two halves are one decision in every mode, so the toggle carries it. link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037] records why narrowing forward-all for this class of client headers is deliberate.
+
+=== Fault-tolerance annotations on the hot path
+
+*Not adopted.* The original record applies the programmatic API "without annotations or CDI interception on the hot path" and gives no further reason.
+
+=== A hand-rolled breaker
+
+*Not adopted.* The original record names the same policy as a small gateway-side component only as the fallback if the shipped SmallRye surface lacked a needed hook. It gives no other reason against it.
+
+=== Replay buffering for retry
+
+*Not adopted.* The original record says only "No replay buffering in the initial release" and gives no further reason.
 
 == Consequences
 
-* gRPC and WebSocket get trailers, upgrade streams, and h2 natively -- no transport swap was
-  needed to add them.
-* `cui-http`'s retry/backoff (`RetryConfig`) goes unused on the data plane -- it was unusable
-  there anyway (retry presupposes a replayable materialized body). The breaker was already
-  specified as gateway-side; it now has a concrete, Quarkus-supported home instead of a
-  hand-rolled state machine.
-* `HttpHandler` becomes nearly invisible in API Sheriff's own code (it lives behind the
-  token-sheriff libraries). "Standardize on cui-http" remains true for what cui-http is best
-  at -- inbound security filtering, forwarded-header resolution, control-plane calls -- and
-  stops being over-generalized to opaque byte relay.
-* One additional Quarkus extension dependency (`quarkus-smallrye-fault-tolerance`, version from
-  the Quarkus BOM), adopted under the usual explicit dependency-approval rule.
-* Millisecond-precision timeouts become legal configuration; existing configs remain valid
-  (whole seconds are a subset).
-* The exact SmallRye FT programmatic surface (`Guard`/`TypedGuard`, `CircuitBreakerMaintenance`
-  state callbacks) is used as the shipped extension version provides it; were a needed hook
-  missing, the fallback would be the same policy expressed as a small gateway-side component --
-  the *decision* (per-route guards in the edge layer, stream-aware retry gate) is unchanged
-  either way.
+=== Properties of the design
 
-== References
+* gRPC and WebSocket get trailers, upgrade streams and HTTP/2 natively, with no transport swap.
+* The breaker has a Quarkus-supported home.
+* `HttpHandler` is nearly invisible in API Sheriff's own code, because it lives behind the token-sheriff libraries. `cui-http` stays the standard for inbound security filtering, forwarded-header resolution and control-plane calls, and is not generalized to opaque byte relay.
 
-* link:0005-module-structure.adoc[ADR-0005] -- the edge/core boundary the guards respect
-* link:0006-body-streaming-vs-httpresult.adoc[ADR-0006] -- the plane split this ADR completes
-* link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] --
-  the three forward modes the conditional validators now cross under
-* link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037] --
-  the gateway-owned header sets, and the `not_modified` decision Amendment A1 records
-* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064] --
-  the fixed breaker policy Amendment A2 records
-* https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus -- SmallRye Fault Tolerance]
-  (programmatic API)
-* https://vertx.io/docs/vertx-core/java/#_making_requests[Vert.x HttpClient] -- streams,
-  trailers, upgrade support
-* `cui-http` sources: `ResilientHttpAdapter`, `ETagAwareHttpAdapter` (materializing adapter
-  contracts; cache-key header filtering)
+=== Accepted costs
+
+* `quarkus-smallrye-fault-tolerance` is one more Quarkus extension dependency, with its version from the Quarkus BOM.
+* The exact SmallRye programmatic surface (`Guard`, `TypedGuard`, `CircuitBreakerMaintenance` state callbacks) is used as the shipped extension version provides it.
+
+== Links
+
+* link:0006-body-streaming-vs-httpresult.adoc[ADR-0006]: the plane split this record completes
+* link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]: the three forward modes the validators cross under
+* link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]: the gateway-owned header sets, the identity set and the `not_modified` decision
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: the platform-mechanism rule SmallRye Fault Tolerance is used under
+* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]: the fixed breaker policy and the open upstream keys
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamGuards.java`: the guard
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/ForwardPolicyStage.java`: the request half of `not_modified`
+* https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus, SmallRye Fault Tolerance]
+* https://vertx.io/docs/vertx-core/java/#_making_requests[Vert.x HttpClient]

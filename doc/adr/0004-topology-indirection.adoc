@@ -1,110 +1,47 @@
-= ADR-0004 -- Topology Indirection: Single-URL Alias with Env Override
-:toc:
-:toclevels: 2
+= ADR-0004: A topology entry is one URL per alias, overridden by an in-file placeholder, and a route's upstream path appends to the alias base path
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: A topology entry is a single URL per alias, decomposed once on read; the environment overrides it only through a visible in-file ${VAR:-default} placeholder; a declared route.upstream.path is appended to the alias base path on exactly one slash; split components, a convention-named environment override and replace semantics are rejected.
+// tags: topology, alias, configuration-model, placeholders, upstream-path
+// affects: api-sheriff, integration-tests
+// supersedes:
+// end-adr-metadata
 
 == Status
 
-Accepted; the *override channel* is superseded by link:#_amendment_a1[Amendment A1] below
-(in-file `${VAR:-default}` placeholder instead of the convention-named env var), and the
-*`route.upstream.path` semantics* are superseded by link:#_amendment_a2[Amendment A2] (append to
-the alias base path instead of replacing it). The single-URL-per-alias model is unchanged.
-
-== Context
-
-Endpoint (route) configuration should be *portable* -- movable between dev, staging, and production
-without edits -- while the concrete backend locations differ per environment. The chosen structure
-(see link:../configuration.adoc[Configuration Model]) abstracts every backend host behind an alias
-(`APP1`, `KEYCLOAK`, ...) referenced by the endpoint files, and binds each alias to a real location
-in a separate `topology.properties`, overridable by an environment variable
-(`TOPOLOGY_<ALIAS>=https://...`).
-
-One design question remained: should a topology entry be a *single URL*
-(`https://app1.example.com:8443/ctx`) or *split components* (scheme / host / port / path)? We
-researched what the majority of widely-used systems do for human-authored, env-overridden config.
-
-=== Research findings
-
-* *No landslide, but a clean axis.* Machine-generated / service-discovery data planes (Envoy xDS,
-  Kubernetes, APISIX admin API, HAProxy runtime) favour *split components* -- easy to populate and
-  diff programmatically. Human-authored declarative surfaces (Traefik `url`, Spring Cloud Gateway
-  `uri`, Nginx `proxy_pass`, Kong's `url` shorthand) favour a *single URL* -- the compact,
-  copy-pasteable form. API Sheriff's topology is the *human-authored, env-overridden* surface, so
-  the single-URL camp applies.
-* *12-factor precedent.* Config treats a backing service's location as *one atomic resource handle*
-  (`DATABASE_URL`, `REDIS_URL`, ...), not a family of `_HOST`/`_PORT`/`_SCHEME` vars. This is the
-  strongest precedent and points at one URL per alias.
-* *Kong's hybrid.* Kong stores `protocol`/`host`/`port`/`path` as separate fields but accepts a
-  write-only `url` that is *decomposed on write*. URLs win for input ergonomics; components win for
-  validation/partial-update -- so accept the URL at the boundary and decompose once.
-* *Trade-offs.* One env var beats four coordinated ones (atomic change, no half-applied override).
-  A single URL validates in one shot (`java.net.URI`) and then yields the components anyway;
-  assembling a URL from parts is strictly more error-prone (default ports, IPv6 brackets, trailing
-  slashes). The only real argument for splitting is partial override (change only the port), which
-  is rare and cheap to work around.
+Accepted
 
 == Decision
 
-* *A topology entry is a single URL per alias.* `topology.properties`:
-  `APP1=https://app1.internal:8443/app1`.
-* *Environment variable `TOPOLOGY_<ALIAS>` overrides the file and takes precedence.*
-  Precedence, highest first: `TOPOLOGY_<ALIAS>` env var -> `topology.properties`.
-  *(Superseded by link:#_amendment_a1[Amendment A1]: the same precedence, expressed as a
-  visible in-file placeholder instead of a convention-named lookup.)*
-* *Decompose-on-read (Kong model).* On load, each resolved URL is validated and decomposed once into
-  `{scheme, host, port, base-path}`; the rest of the gateway works with the structured components. A
-  declared `route.upstream.path` *replaces* the alias-derived base path (it does not append to it),
-  and the forward URI is `stripTrailingSlash(effective base path) + <request-path remainder after
-  the matched prefix>`, where the effective base path is the `route.upstream.path` when declared and
-  the alias-derived base path otherwise (see link:../configuration.adoc[Configuration -- `upstream`]).
-  *(Superseded by link:#_amendment_a2[Amendment A2]: `route.upstream.path` now appends to the
-  alias-derived base path.)*
-* *No component split initially.* Per-component overrides (e.g. `TOPOLOGY_APP1_PORT`) are *not*
-  implemented now. They may be added later as a narrow escape hatch (mirroring Kong: full URL as the
-  ergonomic default, components as fine-grained override) only if a real partial-override need appears.
-* *Endpoint files never contain a concrete host* -- only the alias and an alias-relative path. Moving
-  a deployment changes only the topology (file or env), never the endpoint files.
+Endpoint configuration should move between dev, staging and production without edits, while the concrete upstream locations differ per environment. The configuration model (link:../configuration.adoc[Configuration Model]) abstracts every upstream host behind an alias (`APP1`, `KEYCLOAK`, ...) that endpoint files reference, and binds each alias in `topology.properties`. The record settles the shape of a topology entry, how the environment overrides one, and how a route's path joins it.
 
-== Consequences
+*The decision:* a topology entry is a single URL per alias. An endpoint file never contains a concrete host, only the alias and an alias-relative path. Moving a deployment changes only the topology.
 
-* Relocating a backend is a one-line change (`TOPOLOGY_APP1=...`), with no edit to portable endpoint
-  files -- the intended "move a deployment by editing topology only" property.
-* Matches the dominant human-authored idiom (12-factor, Traefik, Spring, Nginx, Kong shorthand),
-  minimizing surprise and parsing risk.
-* Validation is single-shot and fail-fast at startup (an unresolved alias or malformed URL fails the
-  boot).
-* Partial override (port only) requires restating the whole URL until/unless the component escape
-  hatch is added -- an accepted, low-cost trade.
+=== One URL, decomposed on read
+
+`topology.properties` holds `APP1=https://app1.internal:8443/app1`. On load, `TopologyResolver` validates each resolved URL and decomposes it once into `{scheme, host, port, base-path}`. The rest of the gateway works with the structured components.
 
 [[_amendment_a1]]
-== Amendment A1 (2026-07-15) -- Override channel becomes an in-file placeholder
+=== The override channel is an in-file placeholder
 
-The *single-URL-per-alias* decision above is unchanged. What A1 supersedes is the *override
-channel*: the convention-named environment variable (`TOPOLOGY_<ALIAS>` wins over the file),
-which was implemented as an invisible Java-class-level lookup a reader cannot discover from
-the artifact. It is replaced by the unified in-file substitution mechanism decided with the
-anchors work: every override point is a visible shell-style placeholder in the artifact it
-affects --
+Every override point is a visible shell-style placeholder in the artifact it affects:
 
 [source,properties]
 ----
 APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
 ----
 
-`${VAR}` is a required substitution (unset fails the boot); `${VAR:-default}` expresses "file
-value as default, environment wins" -- the role the convention override played. The familiar
-`TOPOLOGY_<ALIAS>` variable *names* survive as a sample-config convention; the *mechanism* is
-the placeholder, resolved once before schema validation. Everything else in this ADR
-(one URL per alias, decompose-on-read, no component split, no concrete host in endpoint
-files) stands. The mechanism is implemented, and the operator guide's
-link:../user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology and
-endpoint enablement section] documents it.
+`${VAR}` is a required substitution, and an unset variable is a boot refusal. `${VAR:-default}` keeps the file value as the default and lets the environment win. `TOPOLOGY_<ALIAS>` survives as a naming convention in the sample configuration. The mechanism is the placeholder, resolved once before schema validation. The operator guide's link:../user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology and endpoint enablement section] documents it.
 
 [[_amendment_a2]]
-== Amendment A2 (2026-09-15) -- `route.upstream.path` appends to the alias base path
+=== `route.upstream.path` appends to the alias base path
 
-The Decision above made a declared `route.upstream.path` *replace* the alias-derived base path. A2
-supersedes that one bullet: `route.upstream.path` is now *appended* to the alias base path, joined
-on exactly one `/`.
+A declared `route.upstream.path` is appended to the alias base path, joined on exactly one `/`. Aliases carry environments and routes carry paths.
 
 ----
 effective base path = stripTrailingSlashes(alias base path) + "/" + stripLeadingSlashes(route.upstream.path)
@@ -112,62 +49,54 @@ effective base path = stripTrailingSlashes(alias base path) + "/" + stripLeading
 forward URI         = stripTrailingSlash(effective base path) + <request-path remainder after the match key>
 ----
 
-The two `*Slashes` helpers are plural on purpose: `RouteTableBuilder` strips *all* trailing slashes
-from the alias base path and *all* leading slashes from `route.upstream.path` before joining, so an
-alias ending `/anything//` and an `upstream.path` of `//graphql` still join to `/anything/graphql`
-rather than to a doubled seam. `RouteTableBuilderTest.shouldJoinOnExactlyOneSlash` is the assertion
-that covers exactly that pair.
+`RouteTableBuilder` strips all trailing slashes from the alias base path and all leading slashes from `route.upstream.path`, so an alias ending `/anything//` and an `upstream.path` of `//graphql` join to `/anything/graphql`. `RouteTableBuilderTest.shouldJoinOnExactlyOneSlash` covers that pair. A blank or absent `route.upstream.path` keeps the alias base path unchanged.
 
-A blank or absent `route.upstream.path` keeps the alias base path unchanged, exactly as before.
+== Alternatives rejected
 
-=== Why append
+=== Split a topology entry into components
 
-Replace semantics made a route restate the environment-specific part of the location. With the
-integration alias `UPSTREAM=http://go-httpbin:8080/anything`, every benchmark-aspect route had to
-spell `upstream.path: /anything/<aspect>` -- the `/anything` segment belongs to the environment the
-alias describes, yet it was repeated in the portable endpoint file, which is exactly the coupling this
-ADR exists to remove. Under append, *aliases carry environments and routes carry paths*: the route
-says `/<aspect>` and the alias supplies the base.
+An entry could be split into scheme, host, port and path.
 
-The replace-justification recorded in the code was re-checked against every in-repo usage and did
-not hold. The gRPC routes ride `GRPC_ECHO=http://grpc-echo:9000`, whose base path is empty, so append
-and replace produce the same URI for them; they never needed replace. The benchmark aspect routes
-were the only other users, and they are the ones replace forced into restating the alias base.
+Machine-generated and service-discovery data planes (Envoy xDS, Kubernetes, APISIX admin API, HAProxy runtime) favour split components, which are easy to populate and diff programmatically. Human-authored declarative surfaces (Traefik `url`, Spring Cloud Gateway `uri`, Nginx `proxy_pass`, Kong's `url` shorthand) favour a single URL. The topology is a human-authored, environment-overridden surface.
 
-=== Migration
+*Rejected because* one variable beats four coordinated ones: the change is atomic and no override is half-applied. A single URL validates in one shot through `java.net.URI` and then yields the components anyway. Assembling a URL from parts is strictly more error-prone (default ports, IPv6 brackets, trailing slashes). The twelve-factor precedent treats a backing service's location as one atomic resource handle (`DATABASE_URL`, `REDIS_URL`). Kong stores components but accepts a write-only `url` decomposed on write, the model this record follows. The only real argument for splitting is partial override, which is rare and cheap to work around.
 
-Every in-repo configuration was migrated in the same change so its *effective upstream URI stays
-identical* on the integration topology:
+=== Per-component override keys
 
-* `integration-tests/.../endpoints/httpbin.yaml` -- the six routes declaring
-  `upstream.path: /anything/<x>` (`minimal-mode`, `graphql`, `upload-small`, `upload-large`,
-  `deny-list`, `forward-all`) now declare `/<x>`; with the `/anything` alias base they still reach
-  `/anything/<x>`.
-* `integration-tests/.../endpoints/grpc.yaml` -- values unchanged: the alias base path is empty, so
-  append equals replace. Only the formula in its comment was updated.
-* `integration-tests/.../endpoints/origin-headers.yaml` -- authored under append in this same change
-  rather than migrated, so it restates no alias base path to drop. Both its routes declare
-  `route.upstream.path` (`/response-headers`, `/redirect-to`) behind `HTTPBIN_ROOT`, the deliberately
-  base-path-free sibling of `UPSTREAM`; with an empty alias base append equals replace there too, so
-  the declared path *is* the whole effective upstream base.
-* Apart from those three files, no test resource, deployment sample, WebSocket, asset, BFF or secure
-  endpoint declares `route.upstream.path`, so nothing else changes.
+Keys such as `TOPOLOGY_APP1_PORT` would give a narrow escape hatch next to the full URL.
 
-=== Consequences
+*Not implemented.* They may be added later only if a real partial-override need appears.
 
-* Moving a backend to a different context path is again a topology-only change, even for routes that
-  declare `route.upstream.path`.
-* The benchmark overlay shifts the path of the six migrated routes, and that is accepted.
-  `docker-compose.benchmark.yml` repoints `TOPOLOGY_UPSTREAM=http://nginx-static:8080` -- no base path
-  -- so that the `/proxy` route (which declares no `upstream.path` and is the proxied-static fairness
-  baseline shared with the other gateways) keeps its exact upstream URI. One alias value cannot keep
-  both route groups identical on that overlay: the six migrated routes now reach nginx-static at
-  `/<x>` instead of `/anything/<x>`. nginx-static answers every path from its single `location /`
-  block with the same fixed `200 OK`, so the response bytes and the measured work are unchanged; the
-  overlay is therefore left as it is rather than trading away the baseline route's exact URI.
+=== A convention-named environment override
 
-== References
+`TOPOLOGY_<ALIAS>` could win over the file by convention.
 
-* https://12factor.net/config[The Twelve-Factor App -- Config]
-* https://developer.konghq.com/gateway/entities/service/[Kong Service entity -- `url` shorthand decomposed into protocol/host/port/path]
+*Rejected because* it is an invisible Java-class-level lookup that a reader cannot discover from the artifact. The placeholder expresses the same precedence in the file it affects.
+
+=== `route.upstream.path` replaces the alias base path
+
+*Rejected because* replace semantics made a route restate the environment-specific part of the location. With the integration alias `UPSTREAM=http://go-httpbin:8080/anything`, every benchmark-aspect route had to spell `upstream.path: /anything/<aspect>`. The `/anything` segment belongs to the environment the alias describes, yet the portable endpoint file repeated it, which is the coupling this record exists to remove.
+
+The replace justification recorded in the code did not hold against the in-repo usages. The gRPC routes ride `GRPC_ECHO=http://grpc-echo:9000`, whose base path is empty, so append and replace produce the same URI for them. The benchmark-aspect routes were the only other users.
+
+== Consequences
+
+=== Properties of the design
+
+* Relocating an upstream is a one-line change with no edit to portable endpoint files, also for a route that declares `route.upstream.path`.
+* The design matches the dominant human-authored idiom, which minimizes surprise and parsing risk.
+* Validation is single-shot and runs at boot. An unresolved alias or a malformed URL is a boot refusal (see link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] for the additional-alias class).
+
+=== Accepted costs
+
+* A partial override, such as the port only, restates the whole URL.
+* The benchmark overlay shifts the path of six integration routes. `docker-compose.benchmark.yml` repoints `TOPOLOGY_UPSTREAM=http://nginx-static:8080`, with no base path, so the `/proxy` route keeps its exact upstream URI as the proxied-static fairness baseline shared with the other gateways. One alias value cannot keep both route groups identical on that overlay: the six routes reach nginx-static at `/<x>` instead of `/anything/<x>`. nginx-static answers every path from one `location /` block with the same fixed `200 OK`, so the response bytes and the measured work are unchanged.
+
+== Links
+
+* link:../configuration.adoc[Configuration Model]: the `upstream` and topology contract
+* link:../development/integration-test-topology.adoc#upstream-path-integration-endpoints[Integration-test topology, `route.upstream.path` in the integration endpoints]: what each in-repo endpoint declares under append
+* link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]: who reports an unresolvable alias
+* https://12factor.net/config[The Twelve-Factor App, Config]
+* https://developer.konghq.com/gateway/entities/service/[Kong Service entity, `url` shorthand decomposed into protocol, host, port and path]
 * https://doc.traefik.io/traefik/routing/services/[Traefik services `url`], https://docs.spring.io/spring-cloud-gateway/docs/current/reference/html/[Spring Cloud Gateway `uri`]

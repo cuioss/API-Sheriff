@@ -1,101 +1,82 @@
-= ADR-0016 -- gRPC Trailers-Only Rejection Status Mapping
-:toc:
-:toclevels: 2
+= ADR-0016: A gateway rejection on a gRPC route is a trailers-only response carrying the mapped gRPC status
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: Gateway-generated rejections on a protocol grpc route are trailers-only gRPC responses whose status is mapped from the HTTP status the same cause renders on an HTTP route, and a rejection before the trust boundary is the unrouted HTTP 404 on the shipped default (ADR-0073); a problem+json body, an HTTP status with no gRPC status and closing the stream are rejected.
+// tags: grpc, error-contract, trailers-only, trust-boundary
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
 
 == Status
 
-Accepted. Amended for untrusted callers by ADR-0073 -- see <<amendment-adr-0073>>.
-
-== Context
-
-The gateway's standard rejection envelope is an `application/problem+json` (RFC 9457) response
-(link:../architecture/observability-and-errors.adoc#_error_contract[error contract]). That envelope is unusable on a
-`protocol: grpc` route: a gRPC client's runtime does not surface an arbitrary HTTP response body
-to the caller -- it surfaces the *gRPC status* carried in the response *trailers* (`grpc-status`,
-`grpc-message`). A gateway that answered a rejected gRPC request with a problem+json *body* would
-produce, at the client, an opaque "malformed response" / `INTERNAL` error that hides the real
-reason (unauthenticated, method not allowed, upstream down).
-
-Two facts constrain the answer:
-
-* *A rejection may occur before the upstream is reached* (auth failure, verb gate, security
-  filter) -- so the gateway must be able to *originate* a gRPC-shaped rejection, not merely relay
-  one from the upstream.
-* *Whether the upstream actually speaks h2 is unknowable at boot.* The upstream dial is forced to
-  HTTP/2, but negotiation can still fail at dispatch (a remote capability, not config); that
-  failure needs a defined gRPC status too.
+Accepted
 
 == Decision
 
-Gateway-generated rejections on a `protocol: grpc` route are emitted as *trailers-only* gRPC
-responses -- an HTTP/2 response whose HEADERS frame carries `grpc-status` (and `grpc-message`)
-with *no DATA frame and no body* (the gRPC "Trailers-Only" case). The gateway maps the same
-rejection it would render as an HTTP status on an HTTP route onto the canonical gRPC status,
-defined *doc-first* in the link:../architecture/observability-and-errors.adoc#_grpc_error_contract[error contract] in the
-same PR as the code:
+The gateway's standard rejection envelope is an `application/problem+json` response (link:../architecture/observability-and-errors.adoc#_error_contract[error contract]). A gRPC client's runtime does not surface an arbitrary HTTP response body. It surfaces the gRPC status in the response trailers (`grpc-status`, `grpc-message`). Two facts constrain the answer:
 
-[cols="1,1,2"]
+* A rejection may occur before the upstream is reached, so the gateway must originate a gRPC-shaped rejection, not merely relay one.
+* The gateway cannot know at boot whether the upstream speaks HTTP/2. The upstream dial is forced to HTTP/2, but negotiation can still fail at dispatch.
+
+*The decision:* a gateway-generated rejection on a `protocol: grpc` route is a trailers-only gRPC response: HTTP `200`, `content-type: application/grpc`, a HEADERS frame carrying `grpc-status` and `grpc-message`, no DATA frame and no body. `GrpcStatusMapper` maps the rejection by the HTTP status the same cause renders on an HTTP route:
+
+[cols="1,1,2", options="header"]
 |===
-| gRPC status | code | Gateway rejection (HTTP status the same cause renders on an HTTP route)
+| gRPC status | Code | HTTP status of the same cause on an HTTP route
 
-| `INVALID_ARGUMENT`  | 3  | `400` -- security-filter violation
-| `UNAUTHENTICATED`   | 16 | `401` -- missing/invalid bearer token
-| `PERMISSION_DENIED` | 7  | `403` -- valid credentials lacking a scope; failed CSRF check
-| `NOT_FOUND`         | 5  | `404` -- no route matched
-| `UNIMPLEMENTED`     | 12 | `405` -- method not in the route's effective `allowed_methods`
-| `UNAVAILABLE`       | 14 | `502` / `503` -- upstream connection failure / circuit open; *also* an HTTP/2 negotiation failure at the forced-h2 dispatch
-| `DEADLINE_EXCEEDED` | 4  | `504` -- upstream timeout
+| `INVALID_ARGUMENT`   | 3  | `400`: inbound-filter violation
+| `UNAUTHENTICATED`    | 16 | `401`: missing or invalid bearer token
+| `PERMISSION_DENIED`  | 7  | `403`: valid credentials lacking an OAuth scope; failed CSRF check
+| `NOT_FOUND`          | 5  | `404`: no route matched
+| `UNIMPLEMENTED`      | 12 | `405`: method not in the route's effective `allowed_methods`
+| `RESOURCE_EXHAUSTED` | 8  | `413`: body over the body cap
+| `UNAVAILABLE`        | 14 | `502` and `503`: upstream connection failure or open circuit; also an HTTP/2 negotiation failure at the forced HTTP/2 dispatch
+| `DEADLINE_EXCEEDED`  | 4  | `504`: upstream timeout
 |===
 
-The trailers carry the category name only, never internal detail -- the same no-leak rule the
-problem+json contract enforces for HTTP routes. The `429` (rate limiting) has no mapping: every
-`429` the gateway sends answers a source blocked by per-source detection before route selection, so
-no route -- and no `protocol: grpc` -- is known when it is written, and it is always the
-`rate-limiting` problem document
-(link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
+Any other status maps to `UNKNOWN` (2). The trailers carry the category name only, never internal detail, the same no-leak rule the problem document enforces.
+
+The `429` has no mapping. Every `429` the gateway sends answers a source blocked by per-source detection before route selection, so no route and no `protocol: grpc` is known when it is written. It is always the `rate-limiting` problem document (link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
+
+[[amendment-adr-0073]]
+A rejection raised before the trust boundary does not get a trailers-only answer on the shipped default. A trailers-only status names the address as a gRPC route, and that is the disclosure link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073] closes. Every rejection of the link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#_the_closed_set[ADR-0073 closed set] raised after route selection and before the trust boundary gets the answer of an unrouted address: the HTTP `404`, never a `grpc-status` trailer. These are the verb gate, the `allowed_paths` check, the post-route-stage inbound filter, the declared-`Content-Length` fast-reject, the CSRF check and the missing or invalid bearer token. A gRPC client surfaces the HTTP `404` as `UNIMPLEMENTED`.
+
+A pre-route-floor inbound-filter violation and `PARAMETER_LIMIT_EXCEEDED`, which only the pre-route floor raises today, are outside that rule. They are raised before route selection, so they are already identical whether a route exists or not. The table holds for every rejection past the trust boundary, such as `PERMISSION_DENIED` for a missing OAuth scope and `UNAVAILABLE` and `DEADLINE_EXCEEDED` at dispatch. It holds for every row when `security_defaults.uniform_not_found` is `false`.
+
+== Alternatives rejected
+
+=== An `application/problem+json` body on the gRPC route
+
+*Rejected because* a gRPC client cannot use it. It surfaces as an opaque malformed-response or `INTERNAL` error that hides the real reason.
+
+=== Only the HTTP status code, with no gRPC status
+
+*Rejected because* a gRPC client keys on the trailers, not the HTTP status line. The caller would see `UNKNOWN`.
+
+=== Close the stream or connection on rejection
+
+*Rejected because* it is indistinguishable from a network failure and loses the reason entirely.
 
 == Consequences
 
-* A gRPC client receives a rejection its runtime can surface as a first-class `StatusRuntimeException`
-  with the correct code, instead of an opaque parse/`INTERNAL` failure.
-* The forced-h2 upstream failure mode has a defined contract (`UNAVAILABLE`), so a backend that
-  cannot negotiate h2 fails predictably rather than as an ambiguous transport error.
-* The mapping lives once in the architecture error contract and is unit-tested per row; the
-  processor and the doc cannot drift because the doc is authored in the same PR and governs.
+=== Properties of the design
 
-== Rejected alternatives
+* A gRPC client receives a rejection its runtime surfaces as a first-class `StatusRuntimeException` with the correct code.
+* The forced HTTP/2 failure has a defined contract, `UNAVAILABLE`, so an upstream that cannot negotiate HTTP/2 fails predictably.
+* The error contract governs the mapping, and unit tests cover it per row.
 
-* *Answer with an `application/problem+json` body on the gRPC route* -- unusable by a gRPC client;
-  it surfaces as an opaque malformed-response error. Rejected.
-* *Relay only the HTTP status code with no gRPC status* -- a gRPC client keys on the trailers, not
-  the HTTP status line; the caller would see `UNKNOWN`. Rejected.
-* *Close the stream / connection on rejection* -- indistinguishable from a network failure and
-  loses the reason entirely. Rejected.
+=== Accepted costs
 
-[[amendment-adr-0073]]
-== Amendment -- rejections before the trust boundary
+* On the shipped default a gRPC client that fails before the trust boundary sees `UNIMPLEMENTED`, not the cause. That is the price of closing the disclosure.
 
-link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-overrides the trailers-only answer for a rejection raised before the trust boundary. On the shipped
-default, every rejection of the
-link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#_the_closed_set[ADR-0073 closed set]
-that is raised after route selection and before the trust boundary gets the answer of an unrouted
-address: the HTTP `404`, never a `grpc-status` trailer. Today these are the verb gate, the
-`allowed_paths` check, the stage-3 security filter, the declared-`Content-Length` fast-reject, the
-CSRF check and the missing or invalid bearer token. A trailers-only status names the address as a
-gRPC route, and that is the disclosure ADR-0073 closes. A gRPC client surfaces the HTTP `404` as
-`UNIMPLEMENTED`. A stage-1 security-filter violation and `PARAMETER_LIMIT_EXCEEDED`, which only
-stage 1 raises today, are outside this amendment: they are raised before route selection, so they
-are already identical whether a route exists or not. The mapping
-table above still holds for every rejection past the trust boundary -- `PERMISSION_DENIED` for a
-missing scope, `UNAVAILABLE` and `DEADLINE_EXCEEDED` at dispatch -- and for every row when
-`security_defaults.uniform_not_found` is `false`.
+== Links
 
-== References
-
-* link:../architecture/observability-and-errors.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)]
-  -- the doc-first mapping table this decision records.
-* link:../architecture/observability-and-errors.adoc#_error_contract[Architecture -- Error Contract] -- the HTTP-route
-  problem+json envelope this decision translates for gRPC.
-* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-  -- the uniform `404` that answers a pre-trust rejection on a gRPC route.
+* link:../architecture/observability-and-errors.adoc#_grpc_error_contract[Architecture, gRPC rejections (trailers-only)]: the governing mapping table
+* link:../architecture/observability-and-errors.adoc#_error_contract[Architecture, Error Contract]: the problem document this decision translates for gRPC
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]: the uniform `404` that answers a pre-trust rejection on a gRPC route
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/GrpcStatusMapper.java`: the mapping
