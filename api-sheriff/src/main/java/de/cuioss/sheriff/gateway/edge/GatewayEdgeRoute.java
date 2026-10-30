@@ -498,34 +498,19 @@ public class GatewayEdgeRoute {
                 ? declaredDetection : EnumerationDetectionConfig.defaults();
         // Per-source threat classification: an omitted block resolves to the defaults as well, so the
         // threat score is kept unless the operator disables it. It observes only — no answer changes.
-        ThreatClassificationConfig declaredThreat = gatewayConfig.threatClassification();
-        ThreatClassificationConfig threat = declaredThreat != null
-                ? declaredThreat : ThreatClassificationConfig.defaults();
+        ThreatClassificationConfig threat = threatClassificationOf(gatewayConfig);
         // The source is resolved once, by one stage, whenever either consumer runs, so the threat score
         // does not depend on enumeration detection being enabled.
-        this.sourceKeys = detection.effectiveEnabled() || threat.effectiveEnabled()
-                ? new SourceKeys(new SourceKeyResolver(declaredHosts(routes)), peerGate,
-                new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()))
-                : null;
-        ThreatClassifier threatClassifier = threat.effectiveEnabled()
-                ? new ThreatClassifier(threat, new ThreatAlerts(new ThreatAlertDocument(gatewayJson), sheriffMetrics,
-                Clock.systemUTC()), System::nanoTime)
-                : null;
-        // A recon trip is one more input to the threat score, never an ALERT of its own; without threat
-        // classification it has already been counted and logged by the gate, and nothing else follows.
-        Consumer<SourceTrip> reconTripObserver = threatClassifier != null
-                ? threatClassifier::admitReconTrip
-                : _ -> {
-                    // no threat score to raise
-                };
+        this.sourceKeys = sourceKeysFor(detection, threat, routes, peerGate, resolverConfig);
+        ThreatClassifier threatClassifier = threatClassifierFor(threat, gatewayJson, sheriffMetrics);
         this.sourceGate = detection.effectiveEnabled()
                 ? new SourceGate(detection, gatewayEventCounter, sheriffMetrics, gatewayJson,
-                edgeAdmission::heldShareExhausted, reconTripObserver)
+                edgeAdmission::heldShareExhausted, reconTripObserverFor(threatClassifier))
                 : null;
         this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
                 rejectionReporter, uniformNotFound,
                 sourceGate != null ? sourceGate : ErrorResponseWriter.ReconFeed.NONE,
-                threatClassifier != null ? threatClassifier : ErrorResponseWriter.ThreatFeed.NONE);
+                threatFeedOf(threatClassifier));
         this.reservedBodyReader = new ReservedBodyReader(reservedPathRegistry, hardening.reservedBodyMaxBytes(),
                 gatewayEventCounter, rejectionReporter, errorResponseWriter);
         this.reservedPathHandler = new ReservedPathHandler(reservedPathRegistry, bffRuntime, portalEndpoint,
@@ -781,6 +766,70 @@ public class GatewayEdgeRoute {
         } catch (RuntimeException unexpected) {
             errorResponseWriter.renderUnexpected(ctx, request, unexpected);
         }
+    }
+
+    /**
+     * The {@code threat_classification} block the gateway runs with: the declared one, or its defaults
+     * when the document omits the block, so the threat score is kept unless the operator disables it.
+     */
+    private static ThreatClassificationConfig threatClassificationOf(GatewayConfig gatewayConfig) {
+        ThreatClassificationConfig declared = gatewayConfig.threatClassification();
+        return declared != null ? declared : ThreatClassificationConfig.defaults();
+    }
+
+    /**
+     * The one stage that resolves the source of a request, built whenever enumeration detection or
+     * threat classification runs. The resolver gets a forwarding-header counter of its own, so a
+     * malformed forwarding header of a trusted proxy is not counted twice on
+     * {@code sheriff_security_events_total}.
+     *
+     * @return the stage, or {@code null} when neither consumer is enabled
+     */
+    private static @Nullable SourceKeys sourceKeysFor(EnumerationDetectionConfig detection,
+            ThreatClassificationConfig threat, List<Route> routes, TcpPeerGate peerGate,
+            ForwardedResolverConfig resolverConfig) {
+        if (!detection.effectiveEnabled() && !threat.effectiveEnabled()) {
+            return null;
+        }
+        return new SourceKeys(new SourceKeyResolver(declaredHosts(routes)), peerGate,
+                new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()));
+    }
+
+    /**
+     * The per-source threat classifier, with a threat ledger of its own whose trip raises one ALERT per
+     * episode.
+     *
+     * @return the classifier, or {@code null} when threat classification is disabled
+     */
+    private static @Nullable ThreatClassifier threatClassifierFor(ThreatClassificationConfig threat,
+            GatewayJson gatewayJson, SheriffMetrics sheriffMetrics) {
+        if (!threat.effectiveEnabled()) {
+            return null;
+        }
+        return new ThreatClassifier(threat, new ThreatAlerts(new ThreatAlertDocument(gatewayJson), sheriffMetrics,
+                Clock.systemUTC()), System::nanoTime);
+    }
+
+    /**
+     * The observer a recon trip is handed to. A recon trip is one more input to the threat score, never
+     * an ALERT of its own; without threat classification it has already been counted and logged by the
+     * gate, and nothing else follows.
+     */
+    private static Consumer<SourceTrip> reconTripObserverFor(@Nullable ThreatClassifier threatClassifier) {
+        if (threatClassifier == null) {
+            return _ -> {
+                // no threat score to raise
+            };
+        }
+        return threatClassifier::admitReconTrip;
+    }
+
+    /**
+     * The feed the error writer hands every handled rejection to: the classifier when threat
+     * classification runs, the inert feed otherwise.
+     */
+    private static ErrorResponseWriter.ThreatFeed threatFeedOf(@Nullable ThreatClassifier threatClassifier) {
+        return threatClassifier != null ? threatClassifier : ErrorResponseWriter.ThreatFeed.NONE;
     }
 
     /**
