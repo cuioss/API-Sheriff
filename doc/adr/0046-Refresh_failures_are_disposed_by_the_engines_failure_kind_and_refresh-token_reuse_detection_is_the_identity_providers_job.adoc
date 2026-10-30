@@ -149,9 +149,11 @@ serialises untracked refreshes to one in flight, only until the saturating windo
 
 === `on_failure` answers the request, not the session
 
-The coordinator's outcome reaches `SessionAuthenticationStage` as a sealed result with three members: *mediate*, *session ended*
-(clear the cookie, then respond) and *request failed* (respond and keep the cookie, because the session is live). The stage answers
-both failure members through the effective `on_failure` value:
+The coordinator's outcome reaches `SessionAuthenticationStage` as a sealed result with four members: *mediate*, *session ended*
+(clear the cookie, then respond), *request failed* (respond and keep the cookie, because the session is live) and *no session*
+(respond and keep the cookie). The last one means the refresh leader resolved no session from this request's own cookie. The
+coordinator destroyed nothing, and the browser may already hold a cookie a step-up has just re-issued. The stage answers all three
+failure members through the effective `on_failure` value:
 
 * `reauthenticate`, the default also when the key is omitted, re-drives the login negotiation for navigations and answers `401`
   problem+json otherwise.

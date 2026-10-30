@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emitter type from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether a caller without a credential of its own can make that reason occur again: a reason such a caller can repeat is latched to one WARN per reason per emitter and DEBUG thereafter, and only a reason whose repeat needs a fresh credential from the identity provider is recorded at WARN unconditionally. A signature that verifies does not make a reason unrepeatable, so every back-channel logout rejection is latched.
+// summary: A rejection on the back-channel logout path, reachable without a credential, is recorded through one emitter type from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and a WARN record's level is chosen by whether a caller without a credential of its own can make that reason occur again: a reason such a caller can repeat is latched to one WARN per reason per emitter and DEBUG thereafter, and only a reason whose repeat needs a fresh credential from the identity provider is recorded at WARN unconditionally. A signature that verifies does not make a reason unrepeatable, so every back-channel logout rejection is latched. The pushed-authorization and sealed-cookie refusals apply the same rule through their own latches, and the callback's rejections stay at DEBUG with no WARN record.
 // tags: security, logging, secure-logging, log-flooding, denial-of-service, bff, back-channel-logout, unauthenticated-surface, observability, closed-vocabulary
 // affects: api-sheriff
 // supersedes:
@@ -45,14 +45,26 @@ is unrepeatable only when a repeat needs a fresh credential from the identity pr
 
 === The decision
 
-A rejection on a reserved path reachable without a credential is recorded through one emitter type, from a closed enumerated vocabulary. Its level depends on whether a caller
-without a credential of its own can make the reason occur again. `LogoutRejection` and `LogoutRejectionLog` realise this on the back-channel logout path. Three coupled mechanisms
-carry it.
+A rejection on the back-channel logout path is recorded through one emitter type, from a closed enumerated vocabulary. Its level depends on whether a caller without a credential
+of its own can make the reason occur again. `LogoutRejection` and `LogoutRejectionLog` realise this. Three coupled mechanisms carry it.
+
+=== Where the rule applies
+
+The back-channel logout path is the only path that uses `LogoutRejectionLog`. Two other records apply the same level rule through a latch and a closed reason set of their own:
+
+* `PushedAuthorizationRequests` records `ApiSheriff-132` for a refused push, reachable through login initiation.
+* `SealedSessionCookieCodec` records `ApiSheriff-113` for a cookie that fails to unseal.
+
+`BoundTokenEndpointClient` records `ApiSheriff-134` on every occurrence, under the second arm of mechanism (2).
+
+`CallbackEndpoint` does not apply the rule. It records a rejection ahead of the code exchange at `DEBUG` only, so the failure mode "silence is indistinguishable from absence" still
+holds on the callback. A CSRF rejection is also `DEBUG` only, and its event counter carries the signal.
 
 === (1) The reason vocabulary is closed and carries no value
 
 Every reason is a member of a fixed enumeration, and each member's only payload is a fixed lower-case token. It holds no token material, `sub`, `sid` or raw offending value. The
-structured log record's single placeholder accepts a member of that enumeration and nothing else. The type carries the constraint, not a review convention.
+emitter's one recording method accepts a member of that enumeration and nothing else, and it is the only production code that uses the `ApiSheriff-112` record. The type of that method
+carries the constraint, not a review convention.
 
 The closure is the load-bearing half. A bounded-but-open vocabulary, a string the caller is asked to keep short, works until someone needs one more detail. The parameter then admits it.
 
@@ -136,8 +148,8 @@ the vocabulary in the type system, and applies the level in one emitter type.
 
 === Properties of the design
 
-* The unauthenticated path is observable. At the default log level an operator can tell a delivery that never arrived from one that was rejected, and can tell which rejection.
-* Construction bounds the log volume an anonymous caller can drive, at one line per reason per emitter.
+* The back-channel logout path is observable. At the default log level an operator can tell a delivery that never arrived from one that was rejected, and can tell which rejection.
+* Construction bounds the log volume an anonymous caller can drive on that path, at one line per reason per emitter.
 * The record cannot leak identity-bearing or attacker-supplied data, because no parameter can carry it. Secure logging is a property of the type, not of each call site.
 * The first occurrence of every reason reaches the default log level, including those that describe a real integration problem: a misconfigured audience, a clock outside the replay window, a token missing required
   claims.
@@ -151,6 +163,7 @@ the vocabulary in the type system, and applies the level in one emitter type.
 * The closed vocabulary is a maintenance obligation. A rejection whose reason is not in the set cannot carry a reason until a deliberate change extends the set.
 * The record is coarser than a free-text one. An operator learns the reason class, not the offending value.
 * Latch state is per process and per assembled runtime. A restart re-arms every latch, and two runtimes in one process each emit their own first `WARN`.
+* A rejected callback leaves no `WARN`. An operator who needs to know why a login callback failed raises the level to `DEBUG`.
 
 === Risks
 

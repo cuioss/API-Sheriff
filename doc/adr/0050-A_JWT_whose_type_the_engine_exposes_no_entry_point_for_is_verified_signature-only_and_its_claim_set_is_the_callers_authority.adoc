@@ -31,8 +31,9 @@ same identity provider mints it, the same keys sign it, and the same JWKS publis
 boundary as a bearer token. Its claim set differs: its specification prescribes other mandatory claims and the absence of some the exposed
 types require.
 
-The OIDC back-channel logout token forces the question. It carries `iss`, `aud`, `iat`, `jti` and `events`, plus `sub` and/or `sid`. It has
-no `exp`. It need not carry `sub`. `azp` is not part of its claim set. Each of these collides with the ID-token rules.
+The OIDC back-channel logout token forces the question. It carries `iss`, `aud`, `iat`, `exp`, `jti` and `events`, plus `sub` and/or `sid`. It
+need not carry `sub`. `azp` is not part of its claim set. It must not carry `nonce`. The first two collide with the ID-token rules, so the
+ID-token entry point rejects a valid `sid`-only token.
 
 The engine's pipeline already separates signature verification from claim validation. Only the public entry points fuse them. This record
 settles how the gateway uses that separation.
@@ -49,14 +50,15 @@ collaborators the bearer path uses:
 . Run the engine's signature validator: the cryptographic check against that issuer's JWKS.
 . Run the engine's token builder, which maps the verified body into claims and validates nothing.
 
-The path allocates nothing per request, because construction resolves the per-issuer collaborators once. It increments the same shared
+Construction resolves the per-issuer collaborators once, so a request allocates none of them. The path increments the same shared
 security-event counter as the bearer path, so a rejection here counts exactly as one there.
 
 === The caller owns everything the omitted stage enforced
 
 Issuer equality, audience, freshness and the token's own required claims move to the component that knows the token's specification. That
 component becomes the single authority over its type's claim set. This is the property the decision buys: one place to read the back-channel
-logout claim rules, and one place a specification revision lands.
+logout claim rules, and one place a specification revision lands. For the logout token that component is `LogoutTokenValidator`. It also judges
+the `typ` header value the verifier returns beside the claims.
 
 === The trust boundary does not move
 
@@ -66,8 +68,8 @@ about a different token type.
 
 === The verifier is signature-only by construction
 
-Its returned value carries the mapped claims and no claim verdict, so a caller cannot mistake it for a validated token. The name states what the
-type states.
+Its returned value carries the mapped claims and the `typ` header value, and no verdict on either, so a caller cannot mistake it for a validated
+token. The name states what the type states.
 
 === The gateway sanitizes the issuer before it reaches a diagnostic
 

@@ -55,7 +55,7 @@ The mapping is the engine's single origin mapping, `token-sheriff-client`'s `bac
 endpoint on the issuer's own origin. The value goes to the one client configuration every scoped variant reuses (ADR-0048), so all scope sets share it.
 
 JWKS stays on `token_validation.issuers[].jwks.url`, which names the reachable key-set address directly. The 0.9.8 discovery-issuer enforcement in the validation library has no effect here. The
-gateway sets the issuer identifier identically on the issuer configuration and the loader. Every JWKS source is a direct `jwks.url`, never well-known discovery: `RetryingJwksLoader` reports its
+gateway sets the issuer identifier identically on the issuer configuration and the loader. Every JWKS source is a direct `jwks.url` or a file, never well-known discovery: `RetryingJwksLoader` reports its
 delegate's JWKS type, and no production source is of the well-known kind.
 
 === Boot rules for the origin
