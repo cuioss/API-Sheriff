@@ -1,13 +1,15 @@
 = ADR-0043: Compress-then-encrypt in the sealed session cookie and the CRIME/BREACH discriminator
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The cookie-mode session payload is deflated before it is sealed, because the two conditions that make compress-then-encrypt dangerous — attacker-forced sample count and attacker-chosen plaintext adjacent to a secret — are both absent from this construction, and both are named here so a future change that reintroduces either knows it has reversed the decision.
+// summary: The cookie-based BFF deflates its session payload before it seals it, because the two conditions that make compress-then-encrypt dangerous — attacker-forced sample count and attacker-chosen plaintext adjacent to a secret — are both absent from this construction, and both are named here so a future change that reintroduces either knows it has reversed the decision.
 // tags: compression, side-channels, cookie-session, sealed-wire-format, bff, crime, breach
 // affects: api-sheriff
 // supersedes:
@@ -22,239 +24,207 @@
 
 Accepted
 
-== Context
-
-In cookie session mode the sealed cookie *is* the session: there is no server-side store, so every
-component the gateway needs on a later request has to travel in the cookie the browser holds. The
-payload carries three credentials — the mediated access token, the refresh token where the
-authorization server granted one, and the raw ID token retained for the RP-initiated logout
-`id_token_hint` — plus six small identity and bookkeeping fields.
-
-That set has to fit in one cookie. RFC 6265 section 6.1 obliges a user agent to keep only ~4096
-bytes for the *whole* `Set-Cookie` header — name, value and attributes together — and a browser
-that decides otherwise does not report the fact: it drops the header silently, and the session then
-simply never exists. So the budget is not a soft target that degrades gracefully when exceeded; it
-is a cliff, and the failure on the far side of it is invisible from the server.
-
-Two structural facts set the size the packaging has to defeat. JWTs are already base64 text, so
-their entropy per byte is low and a naive encoding wastes the difference. And an earlier wire format
-armoured every field with base64 *inside* the plaintext and then base64url-encoded the sealed value
-again for transport, compounding two ~33 % expansions over material that was base64 to begin with.
-A session holding all three tokens could not fit the browser-safe budget at all under that shape.
-
-The architectural choice point is therefore: *what may be done to the plaintext before it is
-sealed?* Length-prefixed raw UTF-8 framing removes the inner armouring, which is pure gain and
-carries no security question. Compression is different. Compressing before encrypting is the
-construction behind CRIME and BREACH, where an attacker who can (a) force many samples and (b) place
-chosen plaintext next to a secret in the same compression context reads the secret out of the
-*length* of the results, one byte at a time. A blanket "never compress before encrypting" rule is
-easy to state and would be safe; it would also leave cookie mode unable to carry a refreshing
-session, which is a real capability lost for a threat that may not reach this construction.
-
-Settling that question needs the two enabling conditions checked against *this* payload rather than
-against the general shape of the attack — and, because a future change can quietly restore either
-condition, the check has to be written down where the next reader of the codec will find it.
-
 == Decision
 
-*The cookie-mode session payload is deflated before it is sealed.* The pipeline is: encode the nine
-fields as length-prefixed raw UTF-8, deflate, seal with AES-256-GCM, base64url-encode once for
-transport. Compress-then-encrypt is adopted *here and only here*, on the strength of both halves of
-the CRIME/BREACH discriminator being answered in the negative.
+=== The question
 
-=== Half one — sample count: can an attacker force additional seals?
+In the cookie-based BFF the sealed session cookie is the session. No server-side store exists, so every
+component a later request needs travels in that cookie. The payload carries three credentials and six
+small identity and bookkeeping fields. The credentials are the mediated access token, the refresh token
+where the identity provider granted one, and the raw ID token kept for the logout `id_token_hint`.
 
-No, not without already holding the session.
+That set must fit one cookie. RFC 6265 section 6.1 obliges a user agent to keep only about 4096 bytes for
+the whole `Set-Cookie` header: name, value and attributes together. A browser that decides otherwise drops
+the header silently, and the session never exists. The budget is therefore a cliff, and the server cannot
+see the failure.
 
-The sealed value is written on exactly two events: a completed login, and a token refresh that
-rotates the material. Both are *outcomes of authentication*, not of a request an unauthenticated
-party can drive. An attacker who can trigger a login is authenticating as themselves and seals their
-own payload, which teaches them nothing about a victim's. An attacker who can trigger a *victim's*
-refresh must first be able to make requests carrying the victim's session cookie — at which point
-they hold the session and have no reason to attack its length.
+Two facts set the size to defeat. JWTs are already base64 text, so their entropy per byte is low. An earlier
+wire format also armoured every field with base64 inside the plaintext and base64url-encoded the sealed value
+again, compounding two expansions of about 33 %. A session with all three tokens could not fit.
 
-The compression-oracle attacks need thousands of samples of *the same secret* under attacker-varied
-input. This construction admits one seal per session change, all of them behind authentication. The
-sample count is not merely small; the attacker has no lever that increases it.
+This record settles what may be done to the plaintext before it is sealed. Length-prefixed raw UTF-8 framing
+removes the inner armouring, which raises no security question. Compression does raise one. Compressing before
+encrypting is the construction behind CRIME and BREACH. An attacker who can force many samples and place chosen
+plaintext next to a secret in one compression context reads the secret from the result lengths, byte by byte.
 
-=== Half two — chosen-plaintext influence: can an attacker vary the plaintext next to the secret?
+=== The payload is deflated before it is sealed
 
-No. Every one of the nine payload components is either issued by the authorization server or minted
-by the gateway; none is echoed from the request that produced it.
+The pipeline encodes the nine fields as length-prefixed raw UTF-8, deflates them, seals with AES-256-GCM and
+base64url-encodes once for transport. `SealedSessionCookieCodec` implements it. The decision applies here and only
+here, because both halves of the CRIME/BREACH discriminator answer no.
+
+=== Half one: sample count
+
+*Can an attacker force additional seals? No, not without already holding the session.*
+
+The gateway writes the sealed value on exactly two events: a completed login, and a token refresh that rotates
+the material. Both are outcomes of authentication, not of a request an unauthenticated party can drive.
+
+* An attacker who triggers a login authenticates as themselves and seals their own payload. That teaches nothing
+  about a victim's.
+* An attacker who triggers a victim's refresh must already send the victim's session cookie. That attacker holds
+  the session and has no reason to attack its length.
+
+Compression-oracle attacks need thousands of samples of the same secret under attacker-varied input. This
+construction admits one seal per session change, all behind authentication. The attacker has no lever that
+increases the count.
+
+=== Half two: chosen-plaintext influence
+
+*Can an attacker vary the plaintext next to the secret? No.* The identity provider issues or the gateway mints each
+of the nine components. None is echoed from the request that produced it.
 
 [cols="2,2,3"]
 |===
 | Component | Who controls it | Can an attacker vary it within a session whose secrets they do not hold?
 
 | `accessToken`
-| The authorization server
-| No. Minted by the IdP for the authenticated subject. Its claim set follows the realm's client and
-  mapper configuration, which is operator-controlled, not request-controlled.
+| The identity provider
+| No. The IdP mints it for the authenticated subject. The realm's client and mapper configuration set its claims,
+  and the operator controls that configuration, not the request.
 
 | `refreshToken`
-| The authorization server
+| The identity provider
 | No. Opaque IdP-issued material, present only when the IdP granted one.
 
 | `idToken`
-| The authorization server
-| No. A JWT the IdP signs, retained because a stateless gateway has nowhere else to keep the
+| The identity provider
+| No. A JWT the IdP signs. The gateway keeps it because a stateless gateway has nowhere else to keep the
   `id_token_hint` logout needs.
 
 | `sub`
-| The authorization server
+| The identity provider
 | No. The subject identifier of the authenticated principal.
 
 | `sid`
-| The authorization server
+| The identity provider
 | No. The IdP's session identifier, absent when the IdP mints none.
 
 | `acr`
-| The authorization server
+| The identity provider
 | No. The authentication context class the IdP reports.
 
 | `authTime`
-| The authorization server
-| No. The IdP's authentication instant, carried as epoch seconds.
+| The identity provider
+| No. The IdP's authentication instant, as epoch seconds.
 
 | `loginInstant`
 | The gateway
-| No. The gateway's own clock at the moment the session was created. An attacker able to influence
-  *when* a victim logs in still cannot choose the value, and one second of drift is not chosen
-  plaintext.
+| No. The gateway's own clock when the session was created. An attacker who influences when a victim logs in still
+  cannot choose the value, and one second of drift is not chosen plaintext.
 
 | `sessionNonce`
 | The gateway
-| No. 32 bytes of `SecureRandom`, base64url-encoded. Incompressible by construction — it is a fixed
-  floor on what any compression level can achieve, and it is the one component that guarantees two
-  sessions of the same subject never deflate identically.
+| No. 32 bytes of `SecureRandom`, base64url-encoded. It is incompressible by construction, so it sets a floor on any
+  compression level. It also guarantees two sessions of one subject never deflate identically.
 |===
 
-There is no field a request populates, so there is no place to put a probe string. The condition
-CRIME and BREACH require — attacker-varied bytes sharing a compression context with the secret — is
-absent, and it is absent structurally rather than by a validation that could be relaxed later.
+No request populates a field, so a probe string has no place to go. Attacker-varied bytes sharing a compression
+context with the secret are absent structurally, not by a validation a later change could relax.
 
-=== The claim is scoped, deliberately
+=== The claim is scoped
 
-This ADR does not establish that compress-then-encrypt is safe. It establishes that it is safe for
-*this* payload, on *these* two grounds, and the grounds are stated so that a change removing either
-one is recognisable as reversing the decision rather than as an unrelated feature. See
-<<_what_would_reverse_this_decision>>.
+This record does not establish that compress-then-encrypt is safe. It establishes that it is safe for this payload,
+on these two grounds. A change that removes either ground reverses the decision
+(<<_what_would_reverse_this_decision>>).
+
+== Alternatives rejected
+
+=== Refuse compression outright
+
+A blanket rule, never compress before encrypting, is simple, needs no threat model and cannot be got wrong later.
+
+*Rejected because* the cookie-based BFF could then not carry a refreshing session. The three-token payload does not fit
+the browser-safe budget without compression. The cost is a real capability. The benefit is a rule the two structural
+properties above already satisfy.
+
+=== Raise the cookie size budget
+
+A larger `max_cookie_size` lets the seal-time check pass and changes nothing in the browser.
+
+*Rejected because* the failure moves from a loud server-side rejection to a silent client-side drop. The gateway then
+believes it established a session the browser never kept. That converts a diagnosable failure into an undiagnosable one.
+
+=== Split the session across several cookies
+
+The budget is per cookie, so chunks reassembled on read could carry a large session.
+
+*Rejected because* it is a structural cost paid to avoid a bounded threat analysis. It multiplies the state the browser
+must keep consistent. It introduces a partial-arrival failure with no clean answer. It also interacts badly with the
+`__Host-` prefix discipline the session cookie relies on.
+
+=== Drop the ID token from the payload
+
+The seal holds the ID token only to supply `id_token_hint` on logout. Dropping it would reclaim many bytes and remove a
+credential from the browser.
+
+*Rejected because* it degrades logout. Without the hint the IdP cannot reliably identify the session to end, so the round
+trip becomes best-effort. It trades a security-relevant behaviour for bytes the packaging supplies without that trade. It
+stays the first thing to reconsider if the payload ever stops fitting.
+
+=== The server-session BFF
+
+Keeping the session server-side removes the size question and is the right answer for a deployment that can hold state.
+
+*Rejected as out of scope here.* It is a different variant with different operational properties, not an alternative
+packaging for this one. The cookie-based BFF exists for deployments that will not hold session state. The server-session
+BFF stays the standing recommendation for an operator whose token set does not fit after packaging.
+
+The alternatives fall into two classes. The first is a rule that costs a capability to avoid an analysis. The rest shrink
+or relocate the payload. Only compression addresses the size without giving up a property the design relies on.
 
 == Consequences
 
-=== Positive
+=== Properties of the design
 
-* A session carrying access + refresh + ID tokens fits a single browser-safe cookie, which is what
-  makes cookie mode viable for a deployment whose authorization server issues refresh tokens. Without
-  the packaging the same session exceeds the budget and the browser drops it silently.
-* The compression cost is paid once per session change — login, refresh, logout — never per request,
-  so `BEST_COMPRESSION` is affordable and is what the codec asks for. Unsealing inflates, which is
-  per request, but inflation is cheap relative to the AES-GCM operation already on that path.
-* Inflation runs only on bytes the GCM tag has already authenticated, so this is not
-  untrusted-input decompression. The expansion is nonetheless bounded, so a corrupt-but-authenticated
-  buffer — the one class that survives the tag — cannot drive an unbounded allocation, and a
-  malformed stream takes the ordinary "no session" rejection rather than raising.
+* A session with access, refresh and ID tokens fits one browser-safe cookie. This makes the cookie-based BFF viable for an
+  identity provider that issues refresh tokens.
+* The compression cost falls once per session change, never per request, so the codec can ask for `BEST_COMPRESSION`.
+  Unsealing inflates per request, and inflation is cheap beside the AES-GCM operation on that path.
+* Inflation runs only on bytes the GCM tag has authenticated, so this is not untrusted-input decompression. The expansion is
+  still bounded, so a corrupt-but-authenticated buffer cannot drive an unbounded allocation. A malformed stream takes the
+  ordinary "no session" path rather than raising.
 
-=== Negative
+=== Accepted costs
 
-* *The compressed length is visible.* The sealed value's size is observable to anyone who can see the
-  cookie — the browser, any intermediary that logs header sizes, and the client itself — and after
-  compression that size is a function of the payload's *content*, not only of its field lengths. The
-  sealed size is therefore a weak signal about the token set: a session whose seal is markedly
-  smaller than another's carries less material, most legibly a session with no refresh token versus
-  one with. Whether that signal is *actionable* is the question worth answering precisely, and the
-  answer is no: it distinguishes classes of session (roughly, how many tokens and how large a claim
-  set) rather than any bit of a secret, it is a single observation per session rather than a series
-  an attacker can drive, and the same distinction is available more directly to anyone in a position
-  to make it — a client that can read the cookie's length already holds the cookie. The residual is
-  real and is recorded rather than dismissed; it is not a path to token material.
-* The wire format is a clean break with no migration path. A value sealed under an earlier format
-  version is refused at an explicit version gate before a cipher is constructed, so pre-existing
-  cookie sessions end at the change and the browser re-authenticates.
-* The payload is no longer human-readable at rest even to an operator holding the key, since it must
-  be inflated before it can be framed. This is a diagnostic cost, not a security property.
+* *The compressed length is visible.* Anyone who can see the cookie can observe the sealed size: the browser, an intermediary
+  that logs header sizes, and the client. After compression that size depends on the payload's content. A markedly smaller seal
+  carries less material, most legibly no refresh token. The signal is not actionable. It distinguishes classes of session, not
+  a bit of a secret. It is one observation per session, not a series an attacker can drive. A client that can read the cookie's
+  length already holds the cookie. This record keeps the residual, and it is no path to token material.
+* *The wire format has no migration path.* An explicit version gate refuses a value sealed under an earlier format before it
+  constructs a cipher. Earlier cookie sessions end at the change, and the browser re-authenticates.
+* *The payload is not readable at rest, even with the key,* until it is inflated. This is a diagnostic cost, not a security
+  property.
 
-=== Risks
+[[_what_would_reverse_this_decision]]
+=== What would reverse this decision
 
-* [[_what_would_reverse_this_decision]]*What would reverse this decision.* Either of the following
-  restores one of the two enabling conditions and makes compress-then-encrypt unsafe here. Neither
-  is hypothetical enough to leave unwritten:
-+
---
-. *A payload component an attacker can influence.* Adding any field populated from the request — a
-  returned URL, a client-supplied correlation id, a header echo, an IdP claim that a downstream party
-  can set — puts chosen plaintext into the compression context next to three credentials. The
-  chosen-plaintext half of the discriminator fails and the deflate step must be removed in the same
-  change.
-. *A route that re-seals on demand.* Any path that produces a fresh seal without a completed
-  authentication or a due refresh — a "refresh my cookie" endpoint, a re-seal on every request, a
-  re-seal triggered by a client-supplied parameter — hands the attacker the sample count the attack
-  needs. The sample-count half fails, and it fails for a construction whose other half may still
-  hold, which is exactly the case a reader is most likely to wave through.
---
-+
-The test for both is the same and is worth stating as one question: *can a party who does not hold
-this session cause a seal, or choose bytes inside one?* While the answer stays no on both, the
-decision stands.
-* *A future component may be incompressible in a way that changes the arithmetic.* The session nonce
-  already is. If the payload grows another high-entropy field, compression buys less and a session
-  that fits today may stop fitting, surfacing as a seal-time budget failure rather than as a silent
-  browser drop — a loud failure, but a capability regression.
-* The deflate step is easy to read as an optimisation and therefore easy to move, generalise, or
-  reuse. It is not an optimisation; it is a security-relevant construction whose safety rests on the
-  two properties above, and it belongs to this payload alone.
+Either of these restores an enabling condition and makes compress-then-encrypt unsafe here:
 
-== Alternatives Considered
+. *A payload component an attacker can influence.* A field populated from the request puts chosen plaintext into the compression
+  context next to three credentials. Examples are a returned URL, a client-supplied correlation id, a header echo, or an IdP claim
+  a downstream party can set. The deflate step must go in the same change.
+. *A route that re-seals on demand.* A path that produces a fresh seal without a completed authentication or a due refresh hands
+  the attacker the sample count. Examples are a "refresh my cookie" endpoint, a re-seal on every request, or a re-seal a client
+  parameter triggers. The other half may still hold, which is the case a reader most likely waves through.
 
-*Refuse compression outright.* A blanket rule — never compress before encrypting — is simple, needs
-no threat model, and cannot be got wrong by a later change. It would also make cookie mode incapable
-of carrying a refreshing session at all: the three-token payload does not fit the browser-safe budget
-without it, so the capability would be lost to a threat that does not reach this construction.
-Rejected because the cost is a real capability and the benefit is a rule that is already satisfied by
-the two structural properties named above.
+Both reduce to one question: can a party who does not hold this session cause a seal, or choose bytes inside one? While the answer
+stays no on both, the decision stands.
 
-*Raise the cookie size budget.* Configuring a larger `max_cookie_size` makes the seal-time check pass
-without changing what the browser does. The failure does not disappear; it moves from a loud
-server-side rejection to a silent client-side drop, which is strictly worse — the gateway then
-believes it established a session the browser never kept. Rejected because it converts a diagnosable
-failure into an undiagnosable one.
+=== Other risks
 
-*Split the session across several cookies.* The budget is per cookie, so a large session could be
-carried in chunks reassembled on read. It multiplies the state the browser must keep consistent,
-introduces a partial-arrival failure mode with no clean answer, and interacts badly with the
-`__Host-` prefix discipline the session cookie relies on. Rejected as a structural cost paid to avoid
-a bounded threat analysis.
+* *A future high-entropy component changes the arithmetic.* The session nonce already is one. Another such field means compression
+  buys less, and a session that fits today may stop fitting. That surfaces as a seal-time budget failure rather than a silent browser
+  drop: a loud failure, but a capability regression.
+* *The deflate step reads like an optimisation*, so a later change may move, generalise or reuse it. It is a security-relevant
+  construction whose safety rests on the two properties above, and it belongs to this payload alone.
 
-*Drop the ID token from the payload.* The ID token exists in the seal only to supply the
-`id_token_hint` on RP-initiated logout. Dropping it would reclaim significant bytes and remove a
-credential from the browser. It would also degrade logout: without the hint the IdP cannot reliably
-identify the session to end, so the round trip becomes best-effort. Rejected because it trades a
-security-relevant behaviour for bytes that the packaging supplies without that trade — but it remains
-the first thing to reconsider if the payload ever stops fitting.
+== Links
 
-*Server mode.* Keeping the session server-side removes the size question entirely and is the right
-answer for a deployment that can hold state. It is a different variant with different operational
-properties, not an alternative packaging for this one; cookie mode exists precisely for deployments
-that will not hold session state. Rejected as out of scope here, and recorded as the standing
-recommendation for an operator whose token set does not fit after packaging.
-
-The alternatives fall into two classes, and the distinction is the useful part: the first is a rule
-that costs a capability to avoid an analysis, and the rest shrink or relocate the payload. Only
-compression addresses the size problem without giving up a property the design already relies on.
-
-== References
-
-* link:../development/bff-cookie.adoc[BFF Cookie Mode -- the stateless sealed-cookie session] --
-  the contributor view of the variant this payload belongs to.
-* link:../development/cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness -- What
-  the Integration Lane Cannot Observe] -- why the browser-side half of the budget cannot be proven
-  from the Java integration suite, and where it is proven instead.
-* link:../development/declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage] --
-  the index that records which declared limit, including the cookie size budget, has an asserting
-  test behind it.
-* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF with a sealed cookie session] -- the
-  operator-facing description of the variant.
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java` --
-  the packaging pipeline, the bounded inflate, and the seal-time budget check.
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionPayload.java` -- the
-  nine components and the length-prefixed framing the table above enumerates.
+* link:../development/bff-cookie.adoc[BFF Cookie Mode]: the contributor view of the variant this payload belongs to
+* link:../development/cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness]: why the Java integration suite cannot prove the browser-side half of the budget, and where it is proven instead
+* link:../development/declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]: the index of declared limits with an asserting test, including the cookie size budget
+* link:../variants/03-bff-cookie.adoc[Variant 3]: the operator-facing description of the variant
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java`: the packaging pipeline, the bounded inflate and the seal-time budget check
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionPayload.java`: the nine components and the length-prefixed framing
