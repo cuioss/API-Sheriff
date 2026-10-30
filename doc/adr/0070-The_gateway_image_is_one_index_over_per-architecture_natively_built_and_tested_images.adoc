@@ -31,7 +31,7 @@ A release lane that publishes such an image has to answer three questions togeth
 * *How is each architecture's image built?* GraalVM native-image cannot cross-compile, so the build runs on a machine of the target architecture. A native build under QEMU emulation is possible but runs several times slower than a native one, and the native compile is already the dominant term of the lane's time budget.
 * *Which guarantees survive the split?* The lane's guarantees are per-image. The image pushed is the image the integration-test suite ran against. Its pushed digest is unique. The pulled image is identical to the tested one. The scan runs at HIGH and CRITICAL before any push. An SBOM describes the image, and its digest is signed. Each of these has to hold for each architecture. The multi-architecture artifact must not weaken any of them. In particular it must not become possible to publish one architecture's release while the other's failed.
 
-The CPU baseline inside each architecture is a second choice. A higher baseline lets the compiler use newer instructions on every host, and a lower one serves more, older hosts. The choice is made at build time and fixed in the executable. It is thus a property of the published artifact, and it decides which operators can run the published image and which have to build their own.
+The CPU baseline inside each architecture is a second choice. A higher baseline lets the compiler use newer instructions on every host, and a lower one serves more, older hosts. The choice is made at build time and fixed in the executable. It is thus a property of the published artifact, and it decides which operators can run the published image and which cannot.
 
 *The decision:* the published image is one image index over two natively built, fully integration-tested per-architecture images, `linux/amd64` and `linux/arm64`. Release tags name only the index, and the lane writes them only after both architectures passed every check. No `-march` is configured, so each architecture keeps GraalVM's default target.
 
@@ -142,7 +142,7 @@ This would move the arm64 proof from release time to review time.
 
 *Not adopted here because* it doubles the cost of the most expensive pull-request lane for a platform whose image is built by the same configuration as the amd64 one. It remains the natural next step if an arm64-only defect ever reaches a release.
 
-The rejected options share one flaw: each either publishes something other than what was tested, or lets a release reach consumers in a shape that is not complete.
+The rejected options, which exclude the undecided `-march=compatibility`, share one flaw: each either publishes something other than what was tested, or lets a release reach consumers in a shape that is not complete.
 
 == Consequences
 

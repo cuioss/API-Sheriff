@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A protocol websocket route carries websocket.allowed_origins, a per-route allowlist of full origins matched exactly with no wildcards; the handshake Origin must match a listed origin or the upgrade is rejected before any upstream dial, and an absent or empty list on a route whose effective auth is require bearer or require session is a boot refusal. A session route declares its own list and does not reuse session.csrf.trusted_origins, and CORS allowed_origins stays a separate trust decision.
+// summary: A protocol websocket route carries websocket.allowed_origins, a per-route allowlist of full origins matched exactly with no wildcards; on a route that lists origins the handshake Origin must match one or the upgrade is rejected before any upstream dial, and an absent or empty list on a route whose effective auth is require bearer or require session is a boot refusal. A session route declares its own list and does not reuse session.csrf.trusted_origins, and CORS allowed_origins stays a separate trust decision.
 // tags: websocket, origin, cswsh, csrf, fail-closed, boot-validation
 // affects: api-sheriff
 // supersedes:
