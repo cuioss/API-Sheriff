@@ -163,6 +163,17 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-30 — `PLAN-V02-48` landed (#544, `6f06e7b2`) as part 1 of two: nine deliverables met, three met with residuals, four named items NOT done; `PLAN-V02-52`
+  staged for them and held until #546 lands.** 50 ADR records were rewritten in place to the skeleton (ordinals, filenames and anchors kept; all 24 `Proposed`
+  among them became `Accepted`, each with its evidence in the PR report) and nine more reworded. I re-measured the corpus from `main`: **72 records, 13,123 lines,
+  mean 182.3** (before 17,328 and 240.7), the PR's figures. `0036` and `0047` stay apart, the boundary stated in both. The operator cut four items at the spec's own
+  split guard: the `0022` relocation, the `0030` relocation, the `oidc_discovery` record and the amendment-citation rewrite with the invisible anchors removed. They
+  are now `PLAN-V02-52`; until it ships about 56 files cite an amendment label the rendered record no longer shows, a known inconsistency, not a defect. The landing
+  is `complete: true` with `effort=low`, which answers Open Defect 18. Code review closed by operator override with partial coverage (40 of 50 records unread), so
+  CodeRabbit's `Merge Risk: Moderate` text about "material timeout and security-contract inaccuracies" at the merged head is carried as a lead into
+  `PLAN-V02-52` D5. CI green at both PR heads, merge group and `main`; the PR-attached benchmark was still running when read (Watch). The operator answered
+  "hold until #546 lands" to the overlap prompt: `PLAN-V02-52` shares two files with the running `PLAN-V02-49` (`doc/development/test-corpus-integrity.adoc`,
+  `ResponseStage.java` by a glob) and four test sources by citation. Slots: `PLAN-V02-49` alone is running, in PR #546.
 - **2026-10-30 — `PLAN-V02-07` landed (#537, `996f36bd`), six of six deliverables (four met, two with non-consequential residuals); `PLAN-V02-48` and `PLAN-V02-49`
   emitted.** The per-source threat score is on `main`: its own `SourceLedger` instance, weights by `EventCategory` (`UPSTREAM`, `RATE_LIMITING`, `CONFIGURATION` fixed
   at 0), one WARN ALERT (`ApiSheriff-143`) per threat episode carrying an ECS 8.17.0-shaped document, `ApiSheriff-144` for ledger overflow, a new
@@ -518,9 +529,18 @@ doc-only or build-light plan for the second and third slots.
     **Update 2026-10-30:** the `PLAN-V02-07` landing (`plan-v02-07-threat-classification-001`) is `complete: false` for the same key, so two in a row. Routed to
     `lessons-routing` as `api-sheriff-api-sheriff-0-2-0-077`; the plan's own residue says the model was self-reported and no effort was stamped. Stays open here as
     informational until a landing carries `effort` again or plan-marshall answers.
+    **ANSWERED 2026-10-30:** the `PLAN-V02-48` landing carries `effort=low` and is `complete: true`. The gap was intermittent. Strike at the next compaction.
 
 ## Watches
 
+- **THE `PLAN-V02-48` PR BENCHMARK WAS UNOBSERVED, AND CODERABBIT'S MERGE-RISK TEXT NAMES INACCURACIES IT DOES NOT LOCATE** (added 2026-10-30, `PLAN-V02-48` landing).
+  The PR-attached Performance Benchmark run for #544's head (`41091771555`) was `in_progress` when I read it. The change is ADR prose, Javadoc and one contract test,
+  so a measurement cannot have moved; still read the run's conclusion at the next analyze before calling it green. Separately, CodeRabbit's final summary on #544 says
+  the documentation refresh "retains material timeout and security-contract inaccuracies" and attaches to no thread. It is third-party text and unverified; `PLAN-V02-52`
+  D5 re-reads the timeout and security-contract statements in the rewritten records against the code. If that finds nothing, strike this Watch.
+- **THE APISIX `bearer` BENCHMARK LANE HAS NO VALID SIDE, SO `run-comparison.sh --target both` STOPS THERE** (added 2026-10-30, `PLAN-V02-48` landing).
+  `benchmarks/README.adoc` line 46 says so ("`bearer` has no valid APISIX side for now"), and the comparison is deliberately wired into no workflow. No owner; low. It
+  matters only if a gateway-versus-APISIX comparison is wanted for the 0.2.0 notes.
 - **THE THREAT ALERT'S ECS SHAPE IS ASSERTED BY FIELD NAME, NOT VALIDATED AGAINST AN ECS SCHEMA** (added 2026-10-30, `PLAN-V02-07` landing). The spec's verify-first
   clause asked that the field set be scoped against the actual ECS schema and "validate against a real consumer". ADR-0078 pins `ThreatAlertDocument.ECS_VERSION` at
   `8.17.0` and the tests assert the document's fields; I found no test that checks the document against an ECS schema artifact or a SIEM consumer. The field names are the

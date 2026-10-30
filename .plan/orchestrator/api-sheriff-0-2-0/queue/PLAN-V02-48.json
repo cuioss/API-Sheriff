@@ -2,10 +2,10 @@
   "id": "PLAN-V02-48",
   "slug": "adr-corpus-cleanup-part-2",
   "workstream": "WS-02",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-v02-48-adr-corpus-cleanup-part-2",
+  "pr": "544",
+  "landing": "landings/PLAN-V02-48.md",
   "seq": 48
 }
