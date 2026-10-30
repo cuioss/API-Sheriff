@@ -74,7 +74,7 @@ The label is bounded. Its value is the name of an `EventType` constant, so its c
 
 === HTML eligibility
 
-All three members classify as `HTML_ELIGIBLE` in `ErrorPageClassifier` and negotiate the HTML error page of link:0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053].
+`NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED` and `METHOD_NOT_ALLOWED` classify as `HTML_ELIGIBLE` in `ErrorPageClassifier` and negotiate the HTML error page of link:0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053]. `PRE_TRUST_INTERNAL_FAILURE` classifies as `KEEP_SHAPE`.
 
 * *`PASSTHROUGH_HOST_SMUGGLED`.* An unrouted address answers a browser navigation with the HTML page. A smuggled host answering that navigation with a problem document would make the two `404`s distinguishable by body shape. Eligibility follows from wire identity.
 * *`METHOD_NOT_ALLOWED`.* A `405` is reachable by navigation, for instance a link to an address that serves `POST` only. A browser shown a JSON document has no page to read.

@@ -26,7 +26,7 @@ Accepted
 link:0007-anchor-scoped-policy.adoc[ADR-0007] made the anchor the owner of a URL namespace and the carrier of a non-weakenable policy floor. It left two facts implicit: what an anchor is (a plain reverse proxy, a Backend-For-Frontend surface or a static-asset surface) and who may reach it. Those facts were inferred from `auth.require`, the presence of an `oidc` block and the terminal action behind the route. That costs a security gateway twice:
 
 * *Fail-open by omission.* An anchor's intended audience lives in the operator's head. A surface meant to require authentication that is configured with `require: none` reads as a deliberate public surface. There is no declared expectation for the validator to contradict, so the boot succeeds and the surface is open.
-* *Overloaded auth semantics.* Tying the kind of surface to the auth mechanism couples anchor classification to OAuth and OIDC. A deployment that fronts a network-authenticated backend, or serves public assets, has no natural place to state its posture.
+* *Overloaded auth semantics.* Tying the kind of surface to the auth mechanism couples anchor classification to OAuth and OIDC. A deployment that fronts a network-authenticated upstream, or serves public assets, has no natural place to state its posture.
 
 *The decision:* every anchor carries two required, orthogonal axes.
 

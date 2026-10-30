@@ -82,7 +82,7 @@ A `require: session` WebSocket route could reuse that set, since the origin chec
 
 * CSWSH (GW-09) is closed for bearer and session WebSocket routes by construction: an unlisted origin cannot complete the handshake, and an empty allowlist is a loud boot refusal.
 * The configuration surface grows one field with self-contained, boot-validated semantics. CORS and the WebSocket `Origin` check stay independent and separately auditable.
-* The rejection comes before the upstream is contacted, so a hijack attempt never reaches the upstream. It is observable as a handshake-time WARN (`ApiSheriff-105`).
+* The rejection comes before the upstream is contacted, so a hijack attempt never reaches it. It is observable as a handshake-time WARN (`ApiSheriff-105`).
 
 === Accepted costs
 
