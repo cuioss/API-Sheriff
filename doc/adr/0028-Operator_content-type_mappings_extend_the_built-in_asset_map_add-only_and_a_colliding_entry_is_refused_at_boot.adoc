@@ -15,177 +15,95 @@
 
 == Status
 
-Proposed
-
-== Context
-
-The gateway serves assets under a gateway-owned response envelope, and one of that envelope's
-defining properties is that the *gateway* sets the response `Content-Type` — never the backing
-source. The type is derived from the served filename's extension through a map the gateway owns, so
-a hostile or misconfigured upstream cannot dictate how a browser interprets the bytes it receives.
-That property, and the `nosniff` header that closes the sniffing bypass beside it, are what make the
-asset action safe to point at a directory mount or an upstream the gateway does not control.
-
-A gateway-owned map is by construction finite, and a finite map meets extensions it does not carry.
-An unmapped extension falls back to a generic default type, which is safe but not useful: a
-deployment serving a font, an archive format, or a domain-specific media type the gateway never
-anticipated gets a download prompt instead of the behaviour the format calls for. The map cannot be
-made complete by enumeration — the set of media types is open-ended — so the deployment needs some
-way to name what the gateway does not know.
-
-The structural choice point is what shape that operator surface takes, and the shape matters far
-more than it appears to. A content-type map reads like a lookup table of formatting preferences,
-and the obvious surface for a lookup table is an overlay: the operator's entries merge over the
-built-in defaults, last writer wins. That is the ergonomic answer and it is the wrong one, because
-the values in this particular table are security decisions wearing the costume of formatting
-decisions.
-
-The concrete failure the shape has to prevent: `svg` is mapped to `image/svg+xml` deliberately. SVG
-is an executable document format, and the difference between serving it as `image/svg+xml` and
-serving it as `text/html` is the difference between a rendered image and script executing in the
-gateway's own origin. Under an overlay surface, a single line in operator configuration converts
-every served `.svg` under the gateway's origin into a stored-XSS delivery mechanism — and it does so
-through a key that looks entirely innocuous in review, in a block whose stated purpose is filling
-gaps. The same shape applies to any built-in whose value is a containment decision rather than a
-convenience.
-
-The question this record settles is therefore not "should the map be configurable" but *in which
-direction* an operator may move a security-relevant default that the gateway already decided.
+Accepted
 
 == Decision
 
-*The built-in asset content-type map is immutable. The operator block extends it and never overlays
-it: a declared mapping is honoured only for an extension the built-in map does not carry, and an
-entry naming a built-in extension is refused fail-closed at boot.*
+=== The question
 
-Three mechanisms together make the property structural rather than asserted.
+The gateway-owned asset envelope sets the response `Content-Type` from the served filename's extension, through a map the gateway owns. A hostile or misconfigured upstream therefore cannot dictate how a browser interprets the bytes.
 
-=== Built-in precedence at the lookup, not merge-time
+A finite map meets extensions it does not carry. An unmapped extension falls back to a generic default, which is safe but not useful: a deployment serving a font, an archive format or a domain-specific media type gets a download prompt. The set of media types is open-ended, so the deployment needs a way to name what the gateway does not know.
 
-Resolution consults the built-in map first and returns its answer whenever one exists; the operator
-map is reached only for an extension the built-in map does not carry. There is no merged map — the
-two maps are never combined into a single structure whose provenance is lost. Precedence is a
-property of the lookup order, so it holds for every extension without an exception list, and it
-cannot be inverted by the order in which configuration was assembled.
+The obvious surface for a lookup table is an overlay: operator entries merge over the built-ins, and the last writer wins. That is wrong here, because the values in this table are security decisions. `svg` maps to `image/svg+xml` deliberately. SVG is an executable document format, and the difference between `image/svg+xml` and `text/html` is the difference between a rendered image and script executing in the gateway's own origin. Under an overlay, one line of operator configuration turns every served `.svg` into a stored-XSS delivery mechanism, through a key that looks innocuous in review.
 
-The operator map is passed to the resolution explicitly rather than held in mutable static state, so
-the resolution has no assigned-after-initialisation field and the native-image build has no
-build-time-snapshot hazard to reason about.
+This record settles in which direction an operator may move a security-relevant default the gateway already decided.
 
-=== A colliding entry is a configuration error, refused at boot
+*The decision:* the built-in asset content-type map is immutable. The operator block extends it and never overlays it. The gateway honours a declared mapping only for an extension the built-in map does not carry, and the boot refuses an entry naming a built-in extension.
 
-Lookup precedence alone would make a colliding entry *inert*, and an inert entry is a worse outcome
-than a refused one: the operator writes a mapping, the gateway starts, and the mapping silently does
-nothing. The operator's mental model and the gateway's behaviour diverge with no signal at all, and
-the divergence surfaces as an unexplained content type long after the configuration was written.
+=== Built-in precedence at the lookup, not at merge time
 
-The boot-time configuration validator therefore refuses a `content_types` entry naming a built-in
-extension, naming the offending extension and stating that built-in mappings are immutable. The
-built-in extension set is exposed for exactly this check, so the validator and the runtime lookup
-read the same source of truth and cannot disagree about which extensions are built in. This follows
-the validator's standing fail-closed posture: a configuration that cannot mean what it says does not
-start.
+`AssetResponseEnvelope.contentTypeFor` consults the built-in map first and returns its answer whenever one exists. It reaches the operator map only for an extension the built-in map does not carry. The two maps are never combined into one structure whose provenance is lost, so precedence holds for every extension without an exception list.
 
-=== Extension keys are normalised before either check sees them
+The caller passes the operator map explicitly, so the resolution holds no mutable static state and the native-image build has no build-time-snapshot hazard to reason about.
 
-Declared extension keys are lowercased at the model boundary, so a key's case can never decide
-whether the boot refusal or the runtime lookup recognises it. Without that normalisation, `SVG`
-would pass the collision check and then miss the built-in lookup — reintroducing the override the
-refusal exists to prevent, through a spelling.
+=== A colliding entry is a boot refusal
 
-An absent or empty block resolves every extension exactly as an unconfigured gateway does.
+Lookup precedence alone would make a colliding entry inert, and an inert entry is worse than a refused one: the operator writes a mapping, the gateway starts, and the mapping does nothing. `AssetDefaultsRules.validateAssetContentTypesAddOnly` therefore refuses a `content_types` entry naming a built-in extension and names the offending extension. `AssetResponseEnvelope.builtInExtensions` exposes the built-in set for this check, so the validator and the lookup read one source of truth.
+
+=== Keys are normalised and values are bounded
+
+`AssetDefaultsConfig` lowercases declared extension keys at the model boundary, so a key's case cannot decide whether the refusal or the lookup recognises it. Otherwise `SVG` would pass the collision check, miss the built-in lookup and reintroduce the override through a spelling.
+
+The gateway serves a mapping's value verbatim as the `Content-Type` header, so `AssetDefaultsRules.validateAssetContentTypeValues` refuses a value that is not a well-formed `type/subtype` media type.
+
+An absent or empty block resolves every extension as an unconfigured gateway does.
+
+== Alternatives rejected
+
+=== Merge the operator map over the built-in defaults, last writer wins
+
+The conventional shape for a defaults-plus-overrides block, understood by any operator and needing no special rule.
+
+*Rejected because* it makes every gateway-decided content type a deployment-time decision, including the containment decisions. One line remapping `svg` turns a served asset into script running in the gateway's origin, and it looks unremarkable in a block whose purpose is naming unmapped formats. The surface cannot tell the two kinds of value apart, so admitting the useful override admits the dangerous one.
+
+=== Allow override except for an explicit deny-list of security-relevant extensions
+
+This keeps override ergonomics for the values that are formatting preferences and protects the others.
+
+*Rejected because* the deny-list is the thing nobody maintains. It must be correct at the moment every new built-in is added, by an author thinking about a media type rather than an override surface, and an omission fails silently. It also has no principled boundary: whether a type is "active" depends on how the browser and the serving context treat it, which the gateway cannot enumerate once.
+
+=== Allow override and mitigate at the response with `nosniff` and a `Content-Security-Policy`
+
+This admits the full override surface and relies on the envelope's other controls to bound the damage.
+
+*Rejected because* those controls answer a different question. `nosniff` stops the browser from disagreeing with the declared type, and it is silent when the declared type is itself the attack: an explicitly declared `text/html` is honoured as declared. A policy header narrows what the document may do, but it is a second control over a self-inflicted wound.
+
+=== Ship no built-in map and require the operator to declare every mapping
+
+With no defaults there is no override question, and the surface is uniform.
+
+*Rejected because* it moves the security decision onto every deployment. The safe values are safe because the gateway chose them, and a surface where each deployment must arrive at `image/svg+xml` independently will produce deployments that do not.
+
+The rejected options divide into two kinds. One hands a security decision to the deployment, by overlay, by omission or behind a list nobody maintains. The other keeps the decision but relies on a downstream control to blunt contradicting it. The chosen position keeps the decision where it was made, and lets the deployment add only where the gateway had no decision. A table can hold decisions and preferences that look identical at the configuration surface. Where they cannot be told apart at the point of override, the safe surface is additive.
 
 == Consequences
 
-=== Positive
+=== Properties of the design
 
-* Every gateway-decided content type is a fixed property of the gateway, independent of deployment.
-  A reviewer reading the built-in map is reading the shipped behaviour, with no configuration able
-  to contradict it.
-* The stored-XSS lever that an overlay surface would create does not exist, and it does not exist
-  structurally rather than by operator discipline or documentation.
-* The stated problem is fully solved: an unmapped extension can be named, which is the entire
-  capability the deployment needed.
-* An operator's misunderstanding of the surface is answered at boot with a message naming the
-  offending key, rather than as a silently ignored line.
+* Every gateway-decided content type is a fixed property of the gateway. A reviewer reading the built-in map reads the shipped behaviour.
+* The stored-XSS lever an overlay surface would create does not exist, structurally.
+* An unmapped extension can be named, which is the capability the deployment needed.
+* The boot answers an operator's misunderstanding with a message naming the offending key.
 
-=== Negative
+=== Accepted costs
 
-* An operator who genuinely disagrees with a built-in mapping has no configuration path at all — the
-  only route is a change to the gateway. This is intended, but it is a real constraint and it will
-  be met by a deployment whose disagreement is legitimate.
-* Every extension added to the built-in map narrows the operator surface: a mapping a deployment
-  previously supplied for itself becomes a boot refusal on upgrade. Growing the built-in map is
-  therefore a breaking change to configurations that anticipated it, not a pure addition.
-* The map is now two maps with an ordering rule between them, which is more to understand than one
-  merged map at the point where someone reads the resolution.
+* An operator who disagrees with a built-in mapping has no configuration path, and the only route is a change to the gateway. This is intended, and a deployment with a legitimate disagreement will meet it.
+* Every extension added to the built-in map narrows the operator surface: a mapping a deployment supplied for itself becomes a boot refusal on upgrade. Growing the map is a breaking change to configurations that anticipated it.
+* There are two maps with an ordering rule between them, which is more to understand than one merged map.
 
 === Risks
 
-* *A built-in mapping that is wrong is now unfixable in the field.* Immutability cuts both ways: an
-  incorrect built-in value cannot be worked around by the deployment that discovers it, and the
-  correction has to travel through a release.
-* *Add-only reads as add-only only while the built-in map is the sole authority.* Any second
-  resolution path that consults the operator map without the built-in-first ordering — a new asset
-  source, a differently-shaped serving path — reintroduces the override silently, because the
-  operator entry it honours is a perfectly valid entry that passed boot validation.
-* *The refusal is only as good as the built-in extension set it reads.* A built-in mapping added
-  through a structure the validator does not consult would be overridable while appearing protected.
+* *A wrong built-in mapping is unfixable in the field.* The correction has to travel through a release.
+* *A second resolution path could bypass the order.* Any path that consults the operator map without built-in-first ordering, such as a new asset source, reintroduces the override silently, because the entry it honours passed boot validation.
+* *The refusal is only as good as the set it reads.* A built-in mapping added through a structure the validator does not consult would be overridable while appearing protected.
 
-== Alternatives Considered
+== Links
 
-*Merge the operator map over the built-in defaults, last writer wins.* The conventional shape for a
-defaults-plus-overrides configuration block, immediately understood by any operator and requiring no
-special rule. Rejected because it makes every gateway-decided content type a deployment-time
-decision, including the ones that are containment decisions rather than formatting ones. A single
-line remapping `svg` turns a served asset into script running in the gateway's origin, and the line
-looks unremarkable in the block whose declared purpose is naming unmapped formats. The surface
-cannot distinguish the two kinds of value, so admitting the useful override necessarily admits the
-dangerous one.
-
-*Allow override except for an explicit deny-list of security-relevant extensions.* This preserves
-override ergonomics for the values that are genuinely formatting preferences while protecting the
-ones that are not. Rejected because the deny-list is exactly the thing nobody maintains. It must be
-correct at the moment every new built-in is added, by an author who is thinking about a media type
-rather than about an override surface; the failure of an omission is silent and only reachable
-through a deployment that exercises it. It also has no principled boundary: whether a type is
-"active" depends on how the browser and the serving context treat it, which is not a property the
-gateway can enumerate once.
-
-*Allow override and mitigate at the response instead — keep `nosniff` and add a
-`Content-Security-Policy`.* This admits the full override surface and relies on the envelope's other
-controls to bound the damage. Rejected because those controls answer a different question. `nosniff`
-prevents the *browser* from disagreeing with the declared type; it is silent when the declared type
-is itself the attack, since an explicitly declared `text/html` is honoured precisely as declared. A
-policy header narrows what the document may do, but it is a second control layered over a
-self-inflicted wound rather than a reason to inflict it.
-
-*Ship no built-in map and require the operator to declare every mapping.* With no defaults there is
-no override question, and the surface becomes uniform. Rejected because it moves the security
-decision wholesale onto every deployment: the safe values are safe because the gateway chose them,
-and a surface where each deployment must independently arrive at `image/svg+xml` will produce
-deployments that do not. It converts a closed question into an open one for every operator.
-
-The rejected options divide into two kinds. One kind hands a security decision to the deployment —
-by overlay, by omission, or behind a list nobody maintains. The other kind keeps the decision but
-relies on a downstream control to blunt the consequences of contradicting it. The chosen position
-keeps the decision where it was made, and lets the deployment add only where the gateway had no
-decision at all.
-
-== Generalisation
-
-When a component ships defaults and then opens them to configuration, the diagnostic question is not
-"are these values configurable" but *which of these values are decisions and which are preferences*.
-A table can hold both, and they look identical at the configuration surface. Where the two kinds are
-mixed and cannot be reliably told apart at the point of override, the safe surface is additive: the
-configuration may name what the component has no position on, and may not restate what it does. An
-attempt to restate is an error worth reporting, not an entry worth ignoring — an ignored entry
-leaves the operator believing something the component does not do.
-
-== References
-
-* link:0014-asset-serving-terminal-action.adoc[ADR-0014 -- Asset serving as a second terminal action] -- establishes the gateway-owned response envelope and the fixed content-type map this record opens, add-only. Not superseded; the envelope's other properties are unchanged.
-* link:0013-anchor-type-access-axes.adoc[ADR-0013 -- Anchor type and access axes] -- the `asset` anchor type whose routes this map serves.
-* link:../configuration.adoc[Configuration Reference] -- the `asset_defaults.content_types` key contract and the boot refusal's operator-facing message.
-* link:../user/README.adoc[Operator guide] -- the add-only rule and its security rationale as operators meet them.
-* link:../security-threat-model.adoc[Threat Model] -- the stored-XSS class the immutability of the built-in map closes for the asset surface.
+* link:0014-asset-serving-terminal-action.adoc[ADR-0014]: the gateway-owned response envelope and the fixed content-type map this record opens, add-only
+* link:0013-anchor-type-access-axes.adoc[ADR-0013]: the `asset` anchor type whose routes this map serves
+* link:../configuration.adoc[Configuration Reference]: the `asset_defaults.content_types` key contract and the boot refusal's message
+* link:../user/README.adoc[Operator guide]: the add-only rule as operators meet it
+* link:../security-threat-model.adoc[Threat Model]: the stored-XSS class the immutable built-in map closes for the asset surface
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/asset/AssetResponseEnvelope.java`: the lookup and the built-in set
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/AssetDefaultsRules.java`: the two boot refusals

@@ -1,124 +1,100 @@
-= ADR-0015 -- WebSocket Origin Fail-Closed Exact-Match Allowlist
-:toc:
-:toclevels: 2
+= ADR-0015: A WebSocket upgrade is admitted by a per-route, exact-match origin allowlist that fails closed
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A protocol websocket route carries websocket.allowed_origins, a per-route allowlist of full origins matched exactly with no wildcards; the handshake Origin must match a listed origin or the upgrade is rejected before any upstream dial, and an absent or empty list on a route whose effective auth is require bearer or require session is a boot refusal. A session route declares its own list and does not reuse session.csrf.trusted_origins, and CORS allowed_origins stays a separate trust decision.
+// tags: websocket, origin, cswsh, csrf, fail-closed, boot-validation
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
 
 == Status
 
-Accepted. Amended: the allowlist is mandatory on session WebSocket routes as well -- see
-<<amendment-a1>>.
-
-== Context
-
-A `protocol: websocket` route proxies a browser-initiated upgrade. Unlike an XHR/`fetch` call,
-a cross-origin WebSocket connection is *not* restrained by the browser's Same-Origin Policy: the
-browser will happily open a socket to any origin and attach the ambient credentials
-(cookies, and -- for a bearer route -- whatever the page chooses to send). The *only* defence
-against a malicious page opening an authenticated socket to the gateway is a *server-side `Origin`
-check* on the handshake. An accept-any-origin upgrader is a cross-site WebSocket hijacking (CSWSH)
-hole -- the class behind Nginx-UI CVE-2026-34403 and Dozzle CVE-2026-44985, and GW-09 in the
-link:../security-threat-model.adoc[threat model].
-
-Three forces shape how the check is configured:
-
-* *A bearer WebSocket route has no existing origin allowlist to reuse.* The BFF variants already
-  carry `session.csrf.trusted_origins`, the origins allowed to make unsafe-method calls to session
-  routes. A `require: session` WS route could reuse that set, since the WS Origin check and the CSRF
-  posture are the same trust decision there. A *bearer* WS route has no such set, so the field has
-  to exist per route in any case. The reuse is not built: a session route declares the per-route
-  field like a bearer route does (<<amendment-a1>>).
-* *CORS `allowed_origins` is a different trust decision.* `security_headers.cors.allowed_origins`
-  governs what the *browser* is told it may do with an XHR/`fetch` response (the preflight answer);
-  it is gateway/anchor-scoped and is about response-header emission. The WS `Origin` check is a
-  *per-route handshake admission* decision made *before* the upstream is dialled. Overloading the
-  CORS field would couple two unrelated postures and force a route-level CORS override that does
-  not otherwise exist.
-* *Fail-open is the dangerous default.* An authenticated socket whose allowlist is absent or empty,
-  if treated as "any origin", is exactly the CSWSH hole -- and silently, since nothing rejects.
+Accepted
 
 == Decision
 
-Introduce an `allowed_origins` field inside the per-route `websocket` block,
-`security_headers`-adjacent but scoped *per route* on bearer and session WebSocket routes, with
-*fail-closed exact-match* semantics defined *doc-first* in
-link:../configuration.adoc#_allowed_origins[`configuration.adoc`] (schema, field reference,
-validation-rules summary) before the implementing code:
+=== The question
 
-* *Exact match, no wildcards.* Each entry is a full origin string (`scheme://host[:port]`).
-  Matching compares scheme and port exactly and the host *case-insensitively* (RFC 6454 web-origin
-  model; RFC 3986 §3.2.2 case-insensitive host comparison). There
-  are no wildcards, suffix forms, or regular expressions -- every permitted origin is listed in
-  full.
-* *Fail-closed, no "any origin" default.* The handshake `Origin` must exactly match a listed
-  origin or the upgrade is rejected *before* any upstream dial. An *absent or empty*
-  `websocket.allowed_origins` on a bearer or session WebSocket route *fails the boot* -- there is
-  deliberately no accept-any default.
-* *Bearer and session.* The fail-closed boot check is enforced on a `protocol: websocket` route
-  whose effective auth is `require: bearer` or `require: session`. A `require: none` route may omit
-  the allowlist. A declared allowlist is enforced at the handshake on every route, whatever its
-  auth posture, and every declared entry is held to the exact-match rule. A socket is never
-  authenticated on the ambient session cookie alone.
+A `protocol: websocket` route proxies a browser-initiated upgrade. The browser's Same-Origin Policy does not restrain a cross-origin WebSocket connection: the browser opens a socket to any origin and attaches ambient credentials. The only defence against a malicious page opening an authenticated socket is a server-side `Origin` check on the handshake. An accept-any-origin upgrader is a cross-site WebSocket hijacking (CSWSH) hole, the class behind Nginx-UI CVE-2026-34403 and Dozzle CVE-2026-44985, and GW-09 in the link:../security-threat-model.adoc[threat model].
+
+Three forces shape how the check is configured:
+
+* *A bearer WebSocket route has no origin allowlist to reuse.* The field has to exist per route in any case.
+* *CORS `allowed_origins` is a different trust decision.* It governs what the browser may do with an XHR or `fetch` response, and it is about response-header emission. The WebSocket `Origin` check is a per-route handshake admission made before the upstream is dialled.
+* *Fail-open is the dangerous default.* An authenticated socket whose allowlist is absent or empty, if treated as "any origin", is the CSWSH hole, and nothing would reject it.
+
+*The decision:* the per-route `websocket` block carries an `allowed_origins` field with fail-closed, exact-match semantics. link:../configuration.adoc#_allowed_origins[`configuration.adoc`] defines the field.
+
+=== Exact match, no wildcards
+
+Each entry is a full origin string (`scheme://host[:port]`). Matching compares scheme and port exactly and the host case-insensitively (RFC 6454, RFC 3986 section 3.2.2). There are no wildcards, suffix forms or regular expressions, and the boot refuses a wildcard entry.
+
+=== Fail-closed, no "any origin" default
+
+The handshake `Origin` must match a listed origin, or the gateway rejects the upgrade before any upstream dial.
+
+[[amendment-a1]]
+=== The boot check covers bearer and session routes
+
+The boot refuses a `protocol: websocket` route whose effective auth is `require: bearer` or `require: session` and whose `websocket.allowed_origins` is absent or empty. The refusal names the route and its effective auth posture. A `session_fallback` route is a bearer-posture route (link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]) and is covered as one.
+
+A session route's credential is a cookie the browser attaches to the upgrade on its own, and the handshake `Origin` tells the gateway which page opened the socket. A session route without an allowlist would have no origin check at all. The route declares the list explicitly, so one field and one boot rule cover both authenticated postures, and `session.csrf.trusted_origins` keeps its one meaning: the CSRF check on unsafe methods.
+
+A `require: none` route may omit the list, unless its effective `cookies` block forwards a cookie (link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]). A declared allowlist is enforced at the handshake on every route, whatever its auth posture, and every entry is held to the exact-match rule.
+
+The session cookie is `SameSite=Lax` in both session modes (link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]). The attribute and the allowlist are separate controls, and neither replaces the other.
+
+== Alternatives rejected
+
+=== Accept any origin by default
+
+*Rejected outright.* It is the CSWSH hole itself.
+
+=== Reuse `security_headers.cors.allowed_origins`
+
+*Rejected because* it couples two unrelated trust decisions and would require inventing a route-level CORS override.
+
+=== Wildcard or suffix matching
+
+*Rejected because* it broadens the allowlist into the over-permissive matching that produces origin-confusion bugs.
+
+=== Derive the allowlist from the route's `match.host`
+
+*Rejected because* the calling page's origin and the gateway host are unrelated.
+
+=== Reuse `session.csrf.trusted_origins` on a session route
+
+A `require: session` WebSocket route could reuse that set, since the origin check and the CSRF posture look like one trust decision there. This was the first form of the decision for session routes.
+
+*Rejected because* a bearer route needs the per-route field anyway, so reuse would give one check two sources. It would also give `session.csrf.trusted_origins` two meanings. An origin trusted for CSRF and meant to open a socket is written in both places instead.
 
 == Consequences
 
-* CSWSH (GW-09) is closed for bearer and session WebSocket routes by construction: an unlisted
-  origin cannot complete the handshake, and a misconfigured (empty) allowlist fails the boot loudly
-  rather than admitting every origin.
-* A session WebSocket route carries its own list. `session.csrf.trusted_origins` is not read for
-  the WebSocket check, so an origin trusted for CSRF and meant to open a socket is written in both
-  places.
-* The configuration surface grows one field with self-contained, boot-validated semantics; CORS
-  and the WS Origin check stay independent and separately auditable.
-* The rejection is emitted before the upstream is contacted, so a hijack attempt never reaches the
-  backend and is observable as a handshake-time WARN (see
-  link:../LogMessages.adoc[Log Messages]).
+=== Properties of the design
 
-== Rejected alternatives
+* CSWSH (GW-09) is closed for bearer and session WebSocket routes by construction: an unlisted origin cannot complete the handshake, and an empty allowlist is a loud boot refusal.
+* The configuration surface grows one field with self-contained, boot-validated semantics. CORS and the WebSocket `Origin` check stay independent and separately auditable.
+* The rejection comes before the upstream is contacted, so a hijack attempt never reaches the backend. It is observable as a handshake-time WARN (`ApiSheriff-105`).
 
-* *Accept-any-origin default* -- the CSWSH hole itself; rejected outright.
-* *Reuse `security_headers.cors.allowed_origins`* -- couples two unrelated trust decisions and
-  would require inventing a route-level CORS override; rejected.
-* *Wildcard / suffix matching* -- broadens the allowlist into the exact class of over-permissive
-  matching that produces origin-confusion bugs; rejected in favour of exact match.
-* *Derive the allowlist from the route `match.host`* -- the calling page's origin and the gateway
-  host are unrelated; rejected.
+=== Accepted costs
 
-[[amendment-a1]]
-== Amendment A1 -- the allowlist is mandatory on session WebSocket routes
+* A session WebSocket route carries its own list, so an origin trusted for both uses is written twice.
 
-*This record is amended, not superseded.* The exact-match and fail-closed semantics stand. One
-point of the original decision is replaced: which routes the boot check covers.
+== Links
 
-The original decision scoped the boot check to bearer routes and named a different posture for
-`require: session` routes: reuse `session.csrf.trusted_origins` as the WebSocket allowlist. That
-reuse is not built, and it is no longer the decision. A session WebSocket route declares
-`websocket.allowed_origins` explicitly, and the boot check that holds a bearer route to a non-empty
-list holds a session route to it on the same terms.
-
-* *The rule.* A `protocol: websocket` route whose effective auth is `require: bearer` or
-  `require: session` and whose `websocket.allowed_origins` is absent or empty fails the boot. The
-  refusal names the route and its effective auth posture. A `session_fallback` route is a
-  bearer-posture route
-  (link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055])
-  and is covered as one. A `require: none` route may omit the list.
-* *Why the session leg needs it.* A session route's credential is a cookie the browser attaches to
-  the upgrade on its own. The handshake `Origin` is what tells the gateway which page opened the
-  socket, so a session route without an allowlist would have no origin check at all.
-* *An explicit list, not an inherited one.* Declaring `websocket.allowed_origins` on a session
-  route was already the way to get the check on such a route. It is now required. One field and
-  one boot rule cover both authenticated postures, and `session.csrf.trusted_origins` keeps its one
-  meaning, the CSRF check on unsafe methods.
-* *A breaking boot refusal.* A configuration with a `require: session` WebSocket route and no
-  `websocket.allowed_origins` does not boot. The remedy is to declare the exact origins that may
-  open the socket.
-* *The cookie half.* The session cookie is `SameSite=Lax` in both session modes
-  (link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]).
-  The attribute and the allowlist are separate controls and neither replaces the other.
-
-== References
-
-* link:../configuration.adoc#_allowed_origins[Configuration -- `websocket.allowed_origins`] -- the
-  doc-first field definition (schema, field reference, validation rules).
-* link:../security-threat-model.adoc#gw-09[Threat Model -- GW-09] -- the CSWSH class this decision
-  closes.
-* link:0007-anchor-scoped-policy.adoc[ADR-0007] -- the anchor/route policy resolution the auth
-  floor rides on.
+* link:../configuration.adoc#_allowed_origins[Configuration, `websocket.allowed_origins`]: the field definition
+* link:../security-threat-model.adoc#gw-09[Threat Model, GW-09]: the CSWSH class this decision closes
+* link:0007-anchor-scoped-policy.adoc[ADR-0007]: the policy resolution the auth floor rides on
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the session cookie attribute
+* link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]: the bearer-posture `session_fallback` route
+* link:../LogMessages.adoc[Log Messages]: `ApiSheriff-105`
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ProtocolRules.java`: the boot check
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/OriginValidationStage.java`: the handshake check
