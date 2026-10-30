@@ -21,7 +21,6 @@ import java.util.List;
 
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import lombok.experimental.UtilityClass;
 
 /**
  * The assertions the boot-validation tests make about the {@link ConfigError}s a validator reports.
@@ -37,14 +36,16 @@ import lombok.experimental.UtilityClass;
  * String message = singleRefusalAt(errors, "/oidc/login/path").message();
  * }
  * <p>
- * Thread-safe: the class is stateless. Import its members with a star static import, because a named
- * static import of an {@code @UtilityClass} member does not resolve under javac.
+ * Thread-safe: the class is stateless.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-@UtilityClass
-public class ValidationAsserts {
+public final class ValidationAsserts {
+
+    private ValidationAsserts() {
+        // static members only
+    }
 
     /**
      * Asserts that at least one error matches both fragments.
@@ -53,7 +54,7 @@ public class ValidationAsserts {
      * @param pointerContains a fragment of the expected JSON pointer
      * @param messageContains a fragment of the expected message
      */
-    public void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
+    public static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
         assertTrue(errors.stream()
                         .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
                 () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
@@ -67,7 +68,7 @@ public class ValidationAsserts {
      * @param pointer         the exact JSON pointer
      * @param messageContains a fragment of the expected message
      */
-    public void assertRefused(List<ConfigError> errors, String pointer, String messageContains) {
+    public static void assertRefused(List<ConfigError> errors, String pointer, String messageContains) {
         assertTrue(errors.stream()
                         .anyMatch(error -> pointer.equals(error.pointer()) && error.message().contains(messageContains)),
                 () -> "expected an error at " + pointer + " containing '" + messageContains + "', but got: " + errors);
@@ -82,7 +83,7 @@ public class ValidationAsserts {
      * @param pointer         the exact JSON pointer
      * @param messageContains a fragment of the expected message
      */
-    public void assertSingleRefusal(List<ConfigError> errors, String file, String pointer, String messageContains) {
+    public static void assertSingleRefusal(List<ConfigError> errors, String file, String pointer, String messageContains) {
         assertEquals(1, errors.size(), errors::toString);
         ConfigError error = errors.getFirst();
         assertAll(
@@ -99,7 +100,7 @@ public class ValidationAsserts {
      * @param pointer the exact JSON pointer
      * @return the refusal; the assertion fails unless there is exactly one at the pointer
      */
-    public ConfigError singleRefusalAt(List<ConfigError> errors, String pointer) {
+    public static ConfigError singleRefusalAt(List<ConfigError> errors, String pointer) {
         List<ConfigError> refusals = errors.stream().filter(error -> pointer.equals(error.pointer())).toList();
         assertEquals(1, refusals.size(), () -> "expected exactly one refusal at " + pointer + ", got: " + errors);
         return refusals.getFirst();
@@ -114,7 +115,7 @@ public class ValidationAsserts {
      * @param pointer the exact JSON pointer
      * @return the refusal; the assertion fails unless there is exactly one at the file and pointer
      */
-    public ConfigError singleRefusalAt(List<ConfigError> errors, String file, String pointer) {
+    public static ConfigError singleRefusalAt(List<ConfigError> errors, String file, String pointer) {
         List<ConfigError> refusals = errors.stream()
                 .filter(error -> file.equals(error.file()) && pointer.equals(error.pointer())).toList();
         assertEquals(1, refusals.size(),

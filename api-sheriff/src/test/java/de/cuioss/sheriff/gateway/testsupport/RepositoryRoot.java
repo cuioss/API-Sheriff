@@ -21,9 +21,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 
-
-import lombok.experimental.UtilityClass;
-
 /**
  * Finds the repository root for the contract tests that read a document or a build file of the tree.
  * <p>
@@ -42,8 +39,11 @@ import lombok.experimental.UtilityClass;
  * @author API Sheriff Team
  * @since 1.0
  */
-@UtilityClass
-public class RepositoryRoot {
+public final class RepositoryRoot {
+
+    private RepositoryRoot() {
+        // static members only
+    }
 
     /**
      * Returns the nearest ancestor of the working directory holding every probe.
@@ -51,7 +51,7 @@ public class RepositoryRoot {
      * @param probes the files or directories the root must hold, relative to it
      * @return the repository root; the calling test fails when no ancestor holds every probe
      */
-    public Path holding(String... probes) {
+    public static Path holding(String... probes) {
         Path start = Path.of(System.getProperty("user.dir"));
         for (Path candidate = start; candidate != null; candidate = candidate.getParent()) {
             Path root = candidate;

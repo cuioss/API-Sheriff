@@ -15,8 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.edge.relay;
 
-import lombok.experimental.UtilityClass;
-
 /**
  * Test-only bridge to the package-private {@link ResponseStage.GrpcStreamIdleBound#timeoutMillis()}, so a
  * test outside this package can assert the bound the gRPC dispatch builds without the production accessor
@@ -26,8 +24,11 @@ import lombok.experimental.UtilityClass;
  *
  * @since 1.0
  */
-@UtilityClass
-public class GrpcStreamIdleBounds {
+public final class GrpcStreamIdleBounds {
+
+    private GrpcStreamIdleBounds() {
+        // static members only
+    }
 
     /**
      * @param bound the stream-idle bound to read

@@ -46,7 +46,6 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.test.generator.Generators;
-import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -64,16 +63,16 @@ import org.jspecify.annotations.Nullable;
  * EndpointConfig endpoint = ConfigFixtures.endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
  * }
  * <p>
- * A test that uses the fixtures unqualified imports them with a star static import, because a named static
- * import of an {@code @UtilityClass} member does not resolve under javac.
- * <p>
  * Thread-safe: the class is stateless and every call returns a fresh builder or an immutable record.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-@UtilityClass
-public class ConfigFixtures {
+public final class ConfigFixtures {
+
+    private ConfigFixtures() {
+        // static members only
+    }
 
     /**
      * The gateway document every edge fixture starts from.
@@ -86,7 +85,7 @@ public class ConfigFixtures {
      *
      * @return a builder carrying {@code version: 1} and the disabled detection block, nothing else
      */
-    public GatewayConfig.GatewayConfigBuilder gateway() {
+    public static GatewayConfig.GatewayConfigBuilder gateway() {
         return GatewayConfig.builder().version(1)
                 .enumerationDetection(EnumerationDetectionConfig.builder().enabled(false).build());
     }
@@ -97,7 +96,7 @@ public class ConfigFixtures {
      *
      * @return a builder carrying {@code version: 1} only
      */
-    public GatewayConfig.GatewayConfigBuilder validGateway() {
+    public static GatewayConfig.GatewayConfigBuilder validGateway() {
         return GatewayConfig.builder().version(1);
     }
 
@@ -118,7 +117,7 @@ public class ConfigFixtures {
      * @param pathPrefix the {@code match.path_prefix}
      * @return the seeded builder
      */
-    public Route.RouteBuilder route(String id, String pathPrefix) {
+    public static Route.RouteBuilder route(String id, String pathPrefix) {
         return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
@@ -133,7 +132,7 @@ public class ConfigFixtures {
      *
      * @return the seeded builder
      */
-    public Route.RouteBuilder baseRoute() {
+    public static Route.RouteBuilder baseRoute() {
         return route(Generators.letterStrings(3, 12).next(), "/api");
     }
 
@@ -142,7 +141,7 @@ public class ConfigFixtures {
      *
      * @return the upstream {@code http://backend:8080}
      */
-    public ResolvedUpstream backendUpstream() {
+    public static ResolvedUpstream backendUpstream() {
         return new ResolvedUpstream("http", "backend", 8080, "");
     }
 
@@ -155,7 +154,7 @@ public class ConfigFixtures {
      * @param name the anchor name
      * @return the seeded builder
      */
-    public AnchorConfig.AnchorConfigBuilder anchorSeed(String name) {
+    public static AnchorConfig.AnchorConfigBuilder anchorSeed(String name) {
         return AnchorConfig.builder().name(name).pathPrefix("/" + name).type(AnchorType.PROXY)
                 .access(AccessLevel.AUTHENTICATED);
     }
@@ -166,7 +165,7 @@ public class ConfigFixtures {
      * @param id the endpoint id
      * @return the seeded builder
      */
-    public EndpointConfig.EndpointConfigBuilder endpointSeed(String id) {
+    public static EndpointConfig.EndpointConfigBuilder endpointSeed(String id) {
         return EndpointConfig.builder().id(id).enabled(true);
     }
 
@@ -177,7 +176,7 @@ public class ConfigFixtures {
      * @param alias the {@code base_url} topology alias, or {@code null} for an endpoint without proxy routes
      * @return the seeded builder
      */
-    public EndpointConfig.EndpointConfigBuilder openEndpointSeed(String id, @Nullable String alias) {
+    public static EndpointConfig.EndpointConfigBuilder openEndpointSeed(String id, @Nullable String alias) {
         return endpointSeed(id).baseUrl(alias).auth(auth(Require.NONE));
     }
 
@@ -189,7 +188,7 @@ public class ConfigFixtures {
      * @param anchorName the anchor
      * @return the seeded builder
      */
-    public EndpointConfig.EndpointConfigBuilder anchoredEndpointSeed(String id, String alias, String anchorName) {
+    public static EndpointConfig.EndpointConfigBuilder anchoredEndpointSeed(String id, String alias, String anchorName) {
         return endpointSeed(id).baseUrl(alias).anchor(anchorName);
     }
 
@@ -199,7 +198,7 @@ public class ConfigFixtures {
      * @param id the route id
      * @return the seeded builder
      */
-    public RouteConfig.RouteConfigBuilder routeConfigSeed(String id) {
+    public static RouteConfig.RouteConfigBuilder routeConfigSeed(String id) {
         return RouteConfig.builder().id(id).match(MatchConfig.builder().pathPrefix("/" + id).build());
     }
 
@@ -211,7 +210,7 @@ public class ConfigFixtures {
      * @param methods the {@code match.methods}
      * @return the declaration
      */
-    public RouteConfig prefixRoute(String id, String prefix, HttpMethod... methods) {
+    public static RouteConfig prefixRoute(String id, String prefix, HttpMethod... methods) {
         return RouteConfig.builder().id(id).match(match(prefix, methods)).build();
     }
 
@@ -221,7 +220,7 @@ public class ConfigFixtures {
      * @param profile the profile
      * @return the block
      */
-    public SecurityFilterConfig filter(String profile) {
+    public static SecurityFilterConfig filter(String profile) {
         return SecurityFilterConfig.builder().profile(profile).build();
     }
 
@@ -230,7 +229,7 @@ public class ConfigFixtures {
      *
      * @return the block
      */
-    public SecurityHeadersConfig headers() {
+    public static SecurityHeadersConfig headers() {
         return SecurityHeadersConfig.builder().frameDeny(true).build();
     }
 
@@ -240,7 +239,7 @@ public class ConfigFixtures {
      * @param cookieName the listed cookie
      * @return the block
      */
-    public CookiesConfig cookies(String cookieName) {
+    public static CookiesConfig cookies(String cookieName) {
         return new CookiesConfig(new CookieAllow.Named(List.of(cookieName)), null, null);
     }
 
@@ -251,7 +250,7 @@ public class ConfigFixtures {
      * @param notModifiedEnabled the not-modified toggle
      * @return the block
      */
-    public UpstreamDefaultsConfig upstreamDefaults(boolean retryEnabled, boolean notModifiedEnabled) {
+    public static UpstreamDefaultsConfig upstreamDefaults(boolean retryEnabled, boolean notModifiedEnabled) {
         return UpstreamDefaultsConfig.builder()
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
@@ -264,7 +263,7 @@ public class ConfigFixtures {
      * @param require the posture
      * @return the block
      */
-    public AuthConfig auth(Require require) {
+    public static AuthConfig auth(Require require) {
         return AuthConfig.builder().require(require).build();
     }
 
@@ -274,7 +273,7 @@ public class ConfigFixtures {
      * @param aliases the aliases; none yields the empty topology
      * @return the topology
      */
-    public ResolvedTopology topologyWith(String... aliases) {
+    public static ResolvedTopology topologyWith(String... aliases) {
         Map<String, ResolvedUpstream> map = new HashMap<>();
         for (String alias : aliases) {
             map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
@@ -289,7 +288,7 @@ public class ConfigFixtures {
      * @param methods    the {@code methods}; none matches every method
      * @return the matcher
      */
-    public MatchConfig match(String pathPrefix, HttpMethod... methods) {
+    public static MatchConfig match(String pathPrefix, HttpMethod... methods) {
         return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
     }
 
@@ -300,7 +299,7 @@ public class ConfigFixtures {
      * @param methods the {@code match.methods}
      * @return the declaration
      */
-    public RouteConfig routeConfig(String id, HttpMethod... methods) {
+    public static RouteConfig routeConfig(String id, HttpMethod... methods) {
         return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
     }
 
@@ -313,7 +312,7 @@ public class ConfigFixtures {
      * @param routes         the routes
      * @return the endpoint
      */
-    public EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods, RouteConfig... routes) {
+    public static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods, RouteConfig... routes) {
         return EndpointConfig.builder()
                 .id(id)
                 .enabled(true)
@@ -334,7 +333,7 @@ public class ConfigFixtures {
      * @param require the auth floor, or {@code null} for none
      * @return the anchor
      */
-    public AnchorConfig anchor(String name, String prefix, @Nullable Require require) {
+    public static AnchorConfig anchor(String name, String prefix, @Nullable Require require) {
         return matrixAnchor(name, prefix, AnchorType.PROXY,
                 require == null ? AccessLevel.PUBLIC : AccessLevel.AUTHENTICATED, require);
     }
@@ -349,7 +348,7 @@ public class ConfigFixtures {
      * @param require the auth floor, or {@code null} for none
      * @return the anchor
      */
-    public AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
+    public static AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
             @Nullable Require require) {
         return AnchorConfig.builder()
                 .name(name)
@@ -366,7 +365,7 @@ public class ConfigFixtures {
      * @param anchorConfig the anchor
      * @return the gateway
      */
-    public GatewayConfig gatewayWithAnchorAndIssuer(AnchorConfig anchorConfig) {
+    public static GatewayConfig gatewayWithAnchorAndIssuer(AnchorConfig anchorConfig) {
         return validGateway()
                 .anchors(Map.of(anchorConfig.name(), anchorConfig))
                 .tokenValidation(new TokenValidationConfig(List.of(
@@ -380,7 +379,7 @@ public class ConfigFixtures {
      * @param anchors the anchors by name
      * @return the gateway
      */
-    public GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
+    public static GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
         return validGateway().anchors(anchors).build();
     }
 
@@ -394,7 +393,7 @@ public class ConfigFixtures {
      * @param routes     the routes
      * @return the endpoint
      */
-    public EndpointConfig anchoredEndpoint(String id, String alias, @Nullable String anchorName,
+    public static EndpointConfig anchoredEndpoint(String id, String alias, @Nullable String anchorName,
             @Nullable AuthConfig auth, RouteConfig... routes) {
         return EndpointConfig.builder()
                 .id(id)
@@ -415,7 +414,7 @@ public class ConfigFixtures {
      * @param methods    the {@code match.methods}
      * @return the declaration
      */
-    public RouteConfig anchoredRoute(String id, String prefix, @Nullable String anchorName, HttpMethod... methods) {
+    public static RouteConfig anchoredRoute(String id, String prefix, @Nullable String anchorName, HttpMethod... methods) {
         return RouteConfig.builder()
                 .id(id)
                 .anchor(anchorName)
@@ -433,7 +432,7 @@ public class ConfigFixtures {
      * @param methods    the {@code match.methods}
      * @return the declaration
      */
-    public RouteConfig assetRoute(String id, String prefix, @Nullable String anchorName, AssetConfig asset,
+    public static RouteConfig assetRoute(String id, String prefix, @Nullable String anchorName, AssetConfig asset,
             HttpMethod... methods) {
         return RouteConfig.builder()
                 .id(id)
@@ -449,7 +448,7 @@ public class ConfigFixtures {
      * @param root the directory
      * @return the asset block
      */
-    public AssetConfig directoryAsset(String root) {
+    public static AssetConfig directoryAsset(String root) {
         return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory(root).build();
     }
 
@@ -460,7 +459,7 @@ public class ConfigFixtures {
      * @param jwks the JWKS block
      * @return the issuer
      */
-    public IssuerConfig issuer(String name, IssuerConfig.Jwks jwks) {
+    public static IssuerConfig issuer(String name, IssuerConfig.Jwks jwks) {
         return IssuerConfig.builder().name(name).issuer("https://" + name + ".example").jwks(jwks).build();
     }
 
@@ -469,7 +468,7 @@ public class ConfigFixtures {
      *
      * @return the name
      */
-    public String issuerName() {
+    public static String issuerName() {
         return Generators.letterStrings(4, 10).next().toLowerCase(Locale.ROOT);
     }
 }
