@@ -566,7 +566,7 @@ class WebSocketRelayStageTest {
      * itself. On an HTTP/2 request whose body is still open that rule ends the response and then resets
      * the stream with {@code NO_ERROR}; a bare end would leave the stream half-open, so no reset would
      * ever arrive. Driven over a relay-only server whose route dials a closed port, so the dial-failure
-     * branch is reached directly.
+     * branch is reached directly, or an upstream refusing the upgrade, so the relayed refusal is.
      */
     @Nested
     @DisplayName("pre-upgrade failure answer — ended through the one end rule")
@@ -575,7 +575,35 @@ class WebSocketRelayStageTest {
         @Test
         @DisplayName("HTTP/2 with an open body: the dial-failure 502 arrives whole, then a NO_ERROR reset")
         void dialFailureAnswerOnAnOpenHttp2BodyIsFollowedByANoErrorReset() throws Exception {
-            HttpServer relayServer = startRelayOnlyServer(deadPort, UNOBSERVED_ADMISSION_RELEASE);
+            assertAnsweredWholeThenResetNoError(deadPort, 502);
+        }
+
+        /**
+         * The upstream answers the handshake itself, with a status other than {@code 101}: the relay
+         * relays that status verbatim, and the answer passes the same end rule as the dial failure's.
+         */
+        @Test
+        @DisplayName("HTTP/2 with an open body: an upstream's refusal of the upgrade is relayed whole, then a NO_ERROR reset")
+        void relayedUpstreamRefusalOnAnOpenHttp2BodyIsFollowedByANoErrorReset() throws Exception {
+            int refusal = 403;
+            HttpServer refusingUpstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.response().setStatusCode(refusal).end())
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the upgrade-refusing stub upstream to start listening");
+            try {
+                assertAnsweredWholeThenResetNoError(refusingUpstream.actualPort(), refusal);
+            } finally {
+                Awaits.teardown(refusingUpstream.close(), "the upgrade-refusing stub upstream to close");
+            }
+        }
+
+        /**
+         * Opens an HTTP/2 upgrade attempt whose body stays open against a relay-only server dialing
+         * {@code upstreamTargetPort}, and asserts the answer arrives whole with {@code expectedStatus} and
+         * the stream is then reset with {@code NO_ERROR}.
+         */
+        private void assertAnsweredWholeThenResetNoError(int upstreamTargetPort, int expectedStatus) throws Exception {
+            HttpServer relayServer = startRelayOnlyServer(upstreamTargetPort, UNOBSERVED_ADMISSION_RELEASE);
             HttpClient http2Client = vertx.createHttpClient(new HttpClientOptions()
                     .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
             try {
@@ -588,11 +616,11 @@ class WebSocketRelayStageTest {
 
                 Awaits.connect(request.setChunked(true).write(Generators.letterStrings(8, 16).next()),
                         "the first part of the body to be sent, leaving the body open");
-                int status = Awaits.connect(answered, "the dial-failure answer to arrive whole");
+                int status = Awaits.connect(answered, "the pre-upgrade answer to arrive whole");
                 Throwable reset = Awaits.connect(streamEnd, "the relay's answer to reset the open stream");
 
-                assertAll("the dial-failure answer to an open HTTP/2 body",
-                        () -> assertEquals(502, status, "an unreachable upstream is answered 502"),
+                assertAll("the pre-upgrade answer to an open HTTP/2 body",
+                        () -> assertEquals(expectedStatus, status, "the answer the relay writes before any upgrade"),
                         () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, reset).getCode(),
                                 "the stream must be reset with NO_ERROR after the answer"));
             } finally {

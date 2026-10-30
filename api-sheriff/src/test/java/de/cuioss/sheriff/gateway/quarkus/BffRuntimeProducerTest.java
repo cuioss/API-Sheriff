@@ -906,20 +906,6 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("producing the view first builds no runtime and resolves nothing; the runtime then records into it")
-        void theViewIsTheOneTheRuntimeRecordsInto() {
-            BffRuntimeProducer producer = producer(serverModeOidc());
-
-            DiscoveryStatus before = producer.discoveryStatus();
-            producer.bffRuntime();
-            DiscoveryStatus after = producer.discoveryStatus();
-
-            assertAll("one view per producer, whichever producer method runs first",
-                    () -> assertSame(before, after, "the readiness probe and the runtime share one view"),
-                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, after.state()));
-        }
-
-        @Test
         @DisplayName("a bearer-only gateway gets the inert view")
         void bearerOnlyGetsTheInertView() {
             RecordingProducer producer = new RecordingProducer(GatewayConfig.builder().version(1).build(),
@@ -2669,6 +2655,32 @@ class BffRuntimeProducerTest {
                     () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
                             "the login is what fetched the discovery document"),
                     () -> assertEquals(DiscoveryStatus.State.RESOLVED, producer.discoveryStatus().state()));
+        }
+
+        /**
+         * The readiness probe may obtain the view before anything builds the runtime, so the instance read
+         * first has to be the one a later login records into. Read through that first instance, the case
+         * fails when the runtime's discovery supplier stops recording, and when the two producer methods
+         * stop sharing one view.
+         */
+        @Test
+        @DisplayName("producing the view first builds no runtime and resolves nothing; the runtime then records into it")
+        void theViewIsTheOneTheRuntimeRecordsInto() {
+            BffRuntimeProducer producer = stubProducer(stubOidc().build());
+            DiscoveryStatus view = producer.discoveryStatus();
+            DiscoveryStatus.State beforeTheRuntime = view.state();
+            int discoveriesBeforeTheRuntime = stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size();
+            BffRuntime runtime = producer.bffRuntime();
+
+            BffRuntime.ReservedHttpResponse answer = login(runtime, "/");
+
+            assertAll("one view per producer, whichever producer method runs first",
+                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, beforeTheRuntime,
+                            "producing the view resolves nothing"),
+                    () -> assertEquals(0, discoveriesBeforeTheRuntime, "producing the view asks the stub for nothing"),
+                    () -> assertEquals(302, answer.status(), "precondition: the login went through"),
+                    () -> assertEquals(DiscoveryStatus.State.RESOLVED, view.state(),
+                            "the view read before the runtime existed shows what the runtime's login recorded"));
         }
 
         @Test

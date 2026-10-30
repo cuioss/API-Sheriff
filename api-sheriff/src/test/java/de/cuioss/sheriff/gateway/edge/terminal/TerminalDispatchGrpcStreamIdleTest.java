@@ -45,6 +45,7 @@ import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
 import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
+import de.cuioss.sheriff.gateway.edge.relay.GrpcStreamIdleBounds;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
 import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
@@ -223,7 +224,7 @@ class TerminalDispatchGrpcStreamIdleTest {
     void onBuildsTheFixedFiveMinuteBound() {
         ResponseStage.GrpcStreamIdleBound bound = ResponseStage.GrpcStreamIdleBound.on(vertx);
 
-        assertEquals(TimeUnit.MINUTES.toMillis(5), bound.timeoutMillis(),
+        assertEquals(TimeUnit.MINUTES.toMillis(5), GrpcStreamIdleBounds.timeoutOf(bound),
                 "the stream-idle bound of every gRPC call is the fixed five minutes, reached by no configuration");
     }
 

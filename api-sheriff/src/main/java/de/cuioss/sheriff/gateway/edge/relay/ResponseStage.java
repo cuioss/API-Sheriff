@@ -475,13 +475,13 @@ public final class ResponseStage {
 
         /**
          * The timeout this bound ends a call after: {@link #STREAM_IDLE_TIMEOUT_MILLIS} for a bound built
-         * by {@link #on}. Public so a test outside this package can assert the bound the gRPC dispatch
-         * builds.
+         * by {@link #on}. Read by the test bridge in this package, which lets a test outside it assert the
+         * bound the gRPC dispatch builds.
          *
          * @return the stream-idle timeout in milliseconds
          * @since 1.0
          */
-        public long timeoutMillis() {
+        long timeoutMillis() {
             return timeoutMillis;
         }
 
