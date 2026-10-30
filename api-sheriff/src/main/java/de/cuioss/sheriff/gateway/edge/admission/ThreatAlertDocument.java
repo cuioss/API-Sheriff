@@ -226,7 +226,7 @@ public final class ThreatAlertDocument {
         breakdown.put("host", key.host());
         breakdown.put("contributions", contributionsByTag(trip.contributions()));
         breakdown.put("categories", contributionsByCategory(trip.contributions()));
-        document.put("api_sheriff", Map.of("threat", breakdown));
+        document.put(EVENT_MODULE, Map.of("threat", breakdown));
         return document;
     }
 
