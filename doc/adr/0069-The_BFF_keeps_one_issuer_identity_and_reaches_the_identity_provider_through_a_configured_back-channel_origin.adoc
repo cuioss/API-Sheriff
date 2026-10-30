@@ -185,7 +185,7 @@ the digest pinned in both compose files:
   `BffCookieRefreshIT`), refresh-token reuse (`BffRefreshReuseIT`), logout (`BffLogoutIT`), back-channel logout (`BffBackchannelLogoutIT`), FAPI controls (`BffFapiControlsIT`, `BffGeneratedKeysIT`, `BffClientSecretModeIT`),
   scope parity (`BffSessionScopeParityIT`), TLS relaxation (`BffTlsRelaxationIT`) and bearer validation (`BearerValidationIT`), plus the stub-rig suites under the `htu` check.
 * *Playwright* (the demo end-to-end suite): 28 passed, 14 session-server and 14 session-cookie, without `--host-resolver-rules`.
-* *The compose sample* came up healthy from empty volumes and passed its readiness gate, with the documented local image override because the published gateway image is amd64-only and the host was arm64. A password-grant
+* *The compose sample* came up healthy from empty volumes and passed its readiness gate, with the documented local image override, because the gateway image published at the time of this run was amd64-only and the host was arm64. A password-grant
   token carried `iss=https://localhost:1443/realms/sample`, exactly the configured issuer, while readiness implies the JWKS loaded from `keycloak:8443`.
 * *Falsification of the `htu` case.* The unit-level proof that both token-request proofs of a re-targeted code exchange name the URL actually contacted compiles against token-sheriff 0.9.7 and goes red at its assertion. On
   0.9.8 it is green.
