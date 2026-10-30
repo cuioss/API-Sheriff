@@ -53,7 +53,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * Standing guard that every outbound TLS client this gateway constructs is handed its TLS posture
+ * Standing guard that every egress TLS client this gateway constructs is handed its TLS posture
  * <strong>explicitly</strong>, at the construction site, rather than inheriting a library default.
  * <p>
  * <strong>Why an implicit default is a defect here.</strong> Each outbound leg's hostname-verification
@@ -64,7 +64,7 @@ import org.junit.jupiter.api.Test;
  * reviewer can hold in place by reading is the <em>next</em> leg: a seventh client built without its
  * posture would pass every existing test. This rule is that standing check.
  * <p>
- * <strong>The property.</strong> Every call to an outbound TLS-client construction target is
+ * <strong>The property.</strong> Every call to an egress TLS-client construction target is
  * accompanied, in the calling class, by a call to that target's posture method. The map below is the
  * rule's single source:
  * <ul>
@@ -200,11 +200,11 @@ class EgressTlsPostureArchTest {
             };
 
     @Test
-    @DisplayName("Every outbound TLS client is constructed with an explicit TLS posture")
-    void everyOutboundTlsClientCarriesAnExplicitPosture() {
+    @DisplayName("Every egress TLS client is constructed with an explicit TLS posture")
+    void everyEgressTlsClientCarriesAnExplicitPosture() {
         ArchRule rule = classes()
                 .that(IN_PRODUCTION_SELECTION)
-                .should(passAnExplicitPostureToEveryOutboundTlsClientItConstructs())
+                .should(passAnExplicitPostureToEveryEgressTlsClientItConstructs())
                 .because("a client built without its posture inherits the library's TLS default, and an "
                         + "upstream default change would then move the gateway's hostname or trust "
                         + "posture silently (ADR-0022)");
@@ -363,8 +363,8 @@ class EgressTlsPostureArchTest {
      *
      * @return the condition the main rule and every control are checked against
      */
-    private static ArchCondition<JavaClass> passAnExplicitPostureToEveryOutboundTlsClientItConstructs() {
-        return new ArchCondition<>("pass an explicit TLS posture to every outbound TLS client it constructs") {
+    private static ArchCondition<JavaClass> passAnExplicitPostureToEveryEgressTlsClientItConstructs() {
+        return new ArchCondition<>("pass an explicit TLS posture to every egress TLS client it constructs") {
             @Override
             public void check(JavaClass javaClass, ConditionEvents events) {
                 violationsOf(javaClass).forEach(events::add);
@@ -414,7 +414,7 @@ class EgressTlsPostureArchTest {
     private static ArchRule ruleAgainst(String fullyQualifiedName) {
         return classes()
                 .that().haveFullyQualifiedName(fullyQualifiedName)
-                .should(passAnExplicitPostureToEveryOutboundTlsClientItConstructs())
+                .should(passAnExplicitPostureToEveryEgressTlsClientItConstructs())
                 .allowEmptyShould(true);
     }
 

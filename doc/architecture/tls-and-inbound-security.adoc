@@ -187,7 +187,7 @@ the transport-level and gate-level enforcement table.
 *One operator-relaxable leg.* The gateway-wide
 `security_defaults.allow_get_with_content_length_body` (default `false`) relaxes only the
 declared-`Content-Length` check on `GET` (for upstreams such as Elasticsearch `_search`,
-link:../adr/0026-The_framing_gate_relaxes_only_a_declared-Content-Length_body_on_GET_behind_an_explicit_gateway-wide_opt-in.adoc[ADR-0026]).
+link:../adr/0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029]).
 A `GET` whose body is signalled without a declared `Content-Length`, any `Transfer-Encoding` on a
 bodyless method, `HEAD` on every leg, and the CL+TE and `Connection`-header checks remain
 unconditionally rejected. Because the gate runs before route selection, the knob is gateway-wide.

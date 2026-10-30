@@ -314,6 +314,13 @@ API Sheriff, APISIX and Keycloak all mount the same certificate bundle, so every
 certificate and the load generator needs no per-target trust handling. TLS termination cost is
 therefore common to both sides.
 
+Same auth realm and tokens::
+Both gateways accept tokens from the same Keycloak `benchmark` realm. The `bearer` aspect mints one
+token from that realm before the measured window and replays it, whichever gateway the run targets,
+and each side validates it offline against the realm's JWKS: API Sheriff through its
+`benchmark-keycloak` issuer, APISIX through `openid-connect` with `use_jwks` set. A side that fell
+back to token introspection would fold a Keycloak network call into its number only.
+
 Identical routes, one upstream (six HTTP aspects)::
 Every *HTTP* benchmarked route on *both* gateways targets the same fast static nginx backend
 (`nginx-static`). This is the *fairness invariant*: pointing one gateway's `graphql` / `upload`

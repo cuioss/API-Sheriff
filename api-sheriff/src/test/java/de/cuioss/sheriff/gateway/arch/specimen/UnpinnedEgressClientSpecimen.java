@@ -21,7 +21,7 @@ import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 
 /**
  * Standing <strong>negative control</strong> for {@code EgressTlsPostureArchTest}: a class that
- * constructs two outbound TLS clients and passes neither its posture, so the rule has known violations
+ * constructs two egress TLS clients and passes neither its posture, so the rule has known violations
  * to detect.
  * <p>
  * It builds a JDK {@link HttpClient} through {@link HttpClient#newBuilder()} without calling
