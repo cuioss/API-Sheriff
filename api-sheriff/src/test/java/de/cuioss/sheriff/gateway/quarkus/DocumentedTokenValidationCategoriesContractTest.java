@@ -33,6 +33,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+
 import de.cuioss.sheriff.token.commons.events.EventCategory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
