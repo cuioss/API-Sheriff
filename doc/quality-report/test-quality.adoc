@@ -37,7 +37,7 @@ is accurate rather than optimistic.
 The stage's primary documented job — emitting `Strict-Transport-Security`,
 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` — has zero assertions on the
 stage's *emission from configuration* anywhere in the corpus; the test covers only the CORS
-half (4 tests). (The nosniff/frame-deny literals do appear in `WebSocketRelayStageTest:388-391`
+half (4 tests). (The nosniff/frame-deny literals do appear in `WebSocketRelayStageTest:381-384`
 and `GrpcStatusMapperTest:176,183`, but only as fixture-supplied stage-0 header maps proving
 relay paths *carry* them — never as assertions that the stage produces them;
 `Strict-Transport-Security` has zero test hits of any kind.) Also untested:
@@ -174,7 +174,7 @@ generator misuse.
 [cols="1,4"]
 |===
 |Severity |LOW — Confidence HIGH — Category: hygiene
-|Location |`WebSocketRelayStageTest:466,1853`; `TokenRefreshCoordinatorTest:281,429`; (bounded polling in `TlsEdgeProducerTest:213`, `GatewayEdgeRouteTest:761-786` is fine)
+|Location |`WebSocketRelayStageTest:459,1846`; `TokenRefreshCoordinatorTest:281,429`; (bounded polling in `TlsEdgeProducerTest:213`, `GatewayEdgeRouteTest:761-786` is fine)
 |===
 
 Every `Thread.sleep` carries a NOSONAR rationale. The fixed sleeps (400 ms against a 250 ms
@@ -453,8 +453,8 @@ coupling that is genuinely unusual rigor.
 === Unit-test counts and run time
 
 Measured on 2026-10-30 on the developer build host, not in CI, by
-`clean verify -Pcoverage -pl api-sheriff -am`, which took 7 minutes 37 seconds for the whole build.
-The surefire reports sum to 292 seconds of test time; the executions overlap, so that figure is not
+`clean verify -Pcoverage -pl api-sheriff -am`, which took 12 minutes 43 seconds for the whole build.
+The surefire reports sum to 416 seconds of test time; the executions overlap, so that figure is not
 elapsed time.
 
 [cols="3,1,1",options="header"]
