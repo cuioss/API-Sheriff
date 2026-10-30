@@ -15,15 +15,16 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
+import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -31,11 +32,9 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
@@ -48,7 +47,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -65,47 +66,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ProtocolRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
-
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
-            RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .auth(auth(Require.NONE))
-                .allowedMethods(allowedMethods)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
 
     @Nested
     @DisplayName("Fail-closed WebSocket allowlist (ADR-0015)")
@@ -141,44 +101,6 @@ class ProtocolRulesTest {
             return auth(Require.BEARER);
         }
 
-        @Test
-        @DisplayName("Should reject a bearer WebSocket route with no websocket block (fail-closed)")
-        void shouldRejectBearerWebSocketRouteWithAbsentAllowedOrigins() {
-            GatewayConfig gateway = gatewayWithIssuer();
-            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes", "must declare a non-empty allowed_origins allowlist");
-        }
-
-        @Test
-        @DisplayName("Should reject a bearer WebSocket route with an empty allowed_origins allowlist")
-        void shouldRejectBearerWebSocketRouteWithEmptyAllowedOrigins() {
-            GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of()).build();
-            EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", websocket, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes", "fail-closed");
-        }
-
-        @ParameterizedTest(name = "wildcard entry \"{0}\" is rejected")
-        @ValueSource(strings = {"*", "https://*.example.com"})
-        @DisplayName("Should reject wildcard entries in allowed_origins")
-        void shouldRejectWildcardAllowedOrigin(String wildcard) {
-            GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of(wildcard)).build();
-            EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", websocket, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes", "wildcards are not permitted");
-        }
-
         @ParameterizedTest(name = "idle_timeout_seconds = {0} is rejected")
         @ValueSource(ints = {0, -1, -300})
         @DisplayName("Should reject a non-positive idle_timeout_seconds")
@@ -192,32 +114,6 @@ class ProtocolRulesTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
             assertHasError(errors, "/endpoint/routes", "idle_timeout_seconds must be a positive integer");
-        }
-
-        @Test
-        @DisplayName("Should accept a bearer WebSocket route with exact origins and a positive idle timeout")
-        void shouldAcceptBearerWebSocketRouteWithExactOrigins() {
-            GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com"))
-                    .idleTimeoutSeconds(60).build();
-            EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", websocket, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should not require allowed_origins for a public (require: none) WebSocket route")
-        void shouldNotRequireAllowedOriginsForPublicWebSocketRoute() {
-            GatewayConfig gateway = validGateway().build();
-            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, null));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertTrue(errors.isEmpty(),
-                    () -> "a public (require: none) WebSocket route may omit allowed_origins; got: " + errors);
         }
 
         @Test
@@ -327,8 +223,9 @@ class ProtocolRulesTest {
         private static final String ALLOWLIST_KEY = "allowed_origins";
         private static final String ORIGIN = "https://app.example.com";
 
-        /** The violations of one WebSocket route that name the allowlist key. */
-        private List<ConfigError> allowlistErrors(Require require, String routeId, @Nullable WebSocketConfig websocket) {
+        /** Every violation the validator reports for one WebSocket route under this gateway. */
+        private List<ConfigError> allErrors(GatewayConfig gateway, Require require, String routeId,
+                @Nullable WebSocketConfig websocket) {
             RouteConfig route = RouteConfig.builder()
                     .id(routeId)
                     .protocol(Protocol.WEBSOCKET)
@@ -340,9 +237,23 @@ class ProtocolRulesTest {
                     .auth(auth(require))
                     .routes(List.of(route))
                     .build();
-            return validator.validate(validGateway().build(), List.of(endpoint), topologyWith("LIVE")).stream()
+            return validator.validate(gateway, List.of(endpoint), topologyWith("LIVE"));
+        }
+
+        /** The violations of one WebSocket route that name the allowlist key. */
+        private List<ConfigError> allowlistErrors(Require require, String routeId, @Nullable WebSocketConfig websocket) {
+            return allErrors(validGateway().build(), require, routeId, websocket).stream()
                     .filter(error -> ROUTES_POINTER.equals(error.pointer()) && error.message().contains(ALLOWLIST_KEY))
                     .toList();
+        }
+
+        /** A gateway backing both authenticated postures, so a clean route reports no violation at all. */
+        private static GatewayConfig gatewayBackingEveryPosture() {
+            return validGateway()
+                    .tokenValidation(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
+                    .oidc(OidcConfig.builder().redirectUri("https://gw.example.com/auth/callback").build())
+                    .build();
         }
 
         private static WebSocketConfig allowing(String... origins) {
@@ -384,7 +295,10 @@ class ProtocolRulesTest {
         @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
         @DisplayName("Should accept an authenticated WebSocket route that declares an exact origin")
         void shouldAcceptPopulatedAllowlist(Require require) {
-            List<ConfigError> errors = allowlistErrors(require, "socket", allowing(ORIGIN));
+            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of(ORIGIN))
+                    .idleTimeoutSeconds(60).build();
+
+            List<ConfigError> errors = allErrors(gatewayBackingEveryPosture(), require, "socket", websocket);
 
             assertEquals(List.of(), errors);
         }
@@ -398,17 +312,23 @@ class ProtocolRulesTest {
         @DisplayName("Should accept a require: none WebSocket route without an allowlist (matched control)")
         void shouldAcceptUnauthenticatedRouteWithoutAllowlist() {
             assertAll("a require: none route may omit the allowlist",
-                    () -> assertEquals(List.of(), allowlistErrors(Require.NONE, "socket", null),
+                    () -> assertEquals(List.of(), allErrors(validGateway().build(), Require.NONE, "socket", null),
                             "no websocket block"),
-                    () -> assertEquals(List.of(), allowlistErrors(Require.NONE, "socket", allowing()),
+                    () -> assertEquals(List.of(), allErrors(validGateway().build(), Require.NONE, "socket", allowing()),
                             "an empty allowed_origins"));
         }
 
-        @ParameterizedTest(name = "require: {0}")
-        @EnumSource(Require.class)
+        static Stream<Arguments> wildcardOriginsOnEveryPosture() {
+            return Stream.of(Require.values()).flatMap(require -> Stream.of(
+                    Arguments.of(require, "*"),
+                    Arguments.of(require, "https://*.example.com")));
+        }
+
+        @ParameterizedTest(name = "require: {0}, origin: {1}")
+        @MethodSource("wildcardOriginsOnEveryPosture")
         @DisplayName("Should hold a declared origin to the exact-match rule whatever the route's posture")
-        void shouldRefuseWildcardOriginOnEveryPosture(Require require) {
-            List<ConfigError> errors = allowlistErrors(require, "socket", allowing("https://*.example.com"));
+        void shouldRefuseWildcardOriginOnEveryPosture(Require require, String origin) {
+            List<ConfigError> errors = allowlistErrors(require, "socket", allowing(origin));
 
             assertEquals(1, errors.size(), () -> "exactly one per-entry refusal, got: " + errors);
             assertTrue(errors.getFirst().message().contains("wildcards are not permitted"),

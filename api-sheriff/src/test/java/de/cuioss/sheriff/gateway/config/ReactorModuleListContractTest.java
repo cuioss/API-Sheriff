@@ -38,6 +38,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Element;
@@ -88,9 +89,6 @@ import org.xml.sax.SAXException;
  */
 @DisplayName("AGENTS.md and CLAUDE.md list exactly the modules the root pom.xml declares")
 class ReactorModuleListContractTest {
-
-    /** The working directory the runner started in — the module root under surefire. */
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
     /**
      * The repository-root marker, and one of the two documents this contract asserts over.
@@ -276,7 +274,7 @@ class ReactorModuleListContractTest {
      * @throws Exception when the document or the root POM cannot be read or parsed
      */
     private static void assertListsTheReactorModules(String documentName, String anchor) throws Exception {
-        Path root = repoRoot();
+        Path root = RepositoryRoot.holding(AGENTS_MD);
         Path pom = root.resolve(ROOT_POM);
         List<String> reactor;
         try (Reader reader = Files.newBufferedReader(pom)) {
@@ -475,28 +473,5 @@ class ReactorModuleListContractTest {
         factory.setXIncludeAware(false);
         factory.setExpandEntityReferences(false);
         return factory.newDocumentBuilder();
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory that holds the regular
-     * file {@link #AGENTS_MD}.
-     * <p>
-     * The search walks up rather than taking a fixed one-level hop because the working directory is
-     * not the same everywhere: surefire runs with the module as its working directory, but an IDE
-     * runner or an aggregator invocation may use another. A genuinely unresolvable root fails naming
-     * the directory the walk started from rather than surfacing later as a
-     * {@code NoSuchFileException} on a path nobody asked for.
-     *
-     * @return the repository root
-     */
-    private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
-            if (Files.isRegularFile(candidate.resolve(AGENTS_MD))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root from the working directory " + MODULE
-                + ": no ancestor of it holds " + AGENTS_MD + ", which is this contract's root marker and"
-                + " one of the documents it asserts over");
     }
 }

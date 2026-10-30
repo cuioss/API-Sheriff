@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -115,13 +116,6 @@ class TerminalActionRulesRedirectTest {
                 new ResolvedTopology(Map.of()));
     }
 
-    private static void assertRefused(List<ConfigError> errors, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(error -> ROUTES_POINTER.equals(error.pointer())
-                                && error.message().contains(messageContains)),
-                () -> "expected a routes error containing '" + messageContains + "', but got: " + errors);
-    }
-
     @Nested
     @DisplayName("Open-redirect review without allow_external")
     class GatewayPathReview {
@@ -180,7 +174,7 @@ class TerminalActionRulesRedirectTest {
 
             List<ConfigError> errors = validate(redirectRoute(id, redirect(location, false, false)).build());
 
-            assertRefused(errors, "route '%s' redirect location".formatted(id));
+            assertRefused(errors, ROUTES_POINTER, "route '%s' redirect location".formatted(id));
         }
 
         @Test
@@ -191,7 +185,7 @@ class TerminalActionRulesRedirectTest {
             List<ConfigError> errors = validate(
                     redirectRoute(id, redirect("/home\r\nSet-Cookie: stolen=1", false, false)).build());
 
-            assertRefused(errors, "printable ASCII");
+            assertRefused(errors, ROUTES_POINTER, "printable ASCII");
             assertTrue(errors.stream().noneMatch(error -> error.message().contains("\r")
                             || error.message().contains("\n")),
                     () -> "a refusal must render control characters escaped: " + errors);
@@ -207,7 +201,7 @@ class TerminalActionRulesRedirectTest {
                     validate(redirectRoute(routeId(), redirect(location, false, false)).build());
 
             assertAll(
-                    () -> assertRefused(withKeepQuery, "'#' fragment"),
+                    () -> assertRefused(withKeepQuery, ROUTES_POINTER, "'#' fragment"),
                     () -> assertTrue(withoutKeepQuery.isEmpty(),
                             () -> "a fragment without keep_query is harmless, got: " + withoutKeepQuery));
         }
@@ -229,7 +223,7 @@ class TerminalActionRulesRedirectTest {
             List<ConfigError> errors =
                     validate(redirectRoute(id, redirect("/" + "a".repeat(1024), false, false)).build());
 
-            assertRefused(errors, "route '%s' redirect location".formatted(id));
+            assertRefused(errors, ROUTES_POINTER, "route '%s' redirect location".formatted(id));
         }
     }
 
@@ -262,25 +256,10 @@ class TerminalActionRulesRedirectTest {
             // The location itself is a reviewed, fixed value; the QUERY is attacker-supplied, so the
             // pair is what leaks (?code=...&state=... would land in the partner's access log).
             assertAll(
-                    () -> assertRefused(errors,
+                    () -> assertRefused(errors, ROUTES_POINTER,
                             "route '%s' declares both keep_query and allow_external".formatted(id)),
                     () -> assertTrue(errors.stream().noneMatch(error -> error.message().contains(location)),
                             () -> "the pair refusal names the route and the keys, never the target: " + errors));
-        }
-
-        @Test
-        @DisplayName("Should admit either flag on its own — only the combination is refused")
-        void shouldAdmitEitherFlagAlone() {
-            List<ConfigError> keepQueryOnly =
-                    validate(redirectRoute(routeId(), redirect("/moved", true, false)).build());
-            List<ConfigError> allowExternalOnly = validate(
-                    redirectRoute(routeId(), redirect("https://" + externalHost() + "/cb", false, true)).build());
-
-            assertAll(
-                    () -> assertTrue(keepQueryOnly.isEmpty(),
-                            () -> "keep_query alone keeps the query same-origin: " + keepQueryOnly),
-                    () -> assertTrue(allowExternalOnly.isEmpty(),
-                            () -> "allow_external alone carries no request data: " + allowExternalOnly));
         }
 
         @ParameterizedTest(name = "refuses {0}")
@@ -302,7 +281,7 @@ class TerminalActionRulesRedirectTest {
 
             List<ConfigError> errors = validate(redirectRoute(id, redirect(location, false, true)).build());
 
-            assertRefused(errors, "route '%s' redirect location".formatted(id));
+            assertRefused(errors, ROUTES_POINTER, "route '%s' redirect location".formatted(id));
         }
 
         @Test
@@ -340,7 +319,7 @@ class TerminalActionRulesRedirectTest {
 
             List<ConfigError> errors = validate(route);
 
-            assertRefused(errors, "route '%s' declares both a redirect and an asset terminal action".formatted(id));
+            assertRefused(errors, ROUTES_POINTER, "route '%s' declares both a redirect and an asset terminal action".formatted(id));
         }
 
         @Test
@@ -353,7 +332,7 @@ class TerminalActionRulesRedirectTest {
 
             List<ConfigError> errors = validate(route);
 
-            assertRefused(errors, "route '%s' declares both a redirect terminal action and an upstream block"
+            assertRefused(errors, ROUTES_POINTER, "route '%s' declares both a redirect terminal action and an upstream block"
                     .formatted(id));
         }
 
@@ -366,7 +345,7 @@ class TerminalActionRulesRedirectTest {
 
             List<ConfigError> errors = validate(route);
 
-            assertRefused(errors, "its protocol is '%s'".formatted(protocol.name().toLowerCase(Locale.ROOT)));
+            assertRefused(errors, ROUTES_POINTER, "its protocol is '%s'".formatted(protocol.name().toLowerCase(Locale.ROOT)));
         }
 
         @Test
@@ -454,7 +433,7 @@ class TerminalActionRulesRedirectTest {
             List<ConfigError> errors = validateAnchored(AnchorType.ASSET, route);
 
             assertAll(
-                    () -> assertRefused(errors, "no asset terminal action and no redirect terminal action"),
+                    () -> assertRefused(errors, ROUTES_POINTER, "no asset terminal action and no redirect terminal action"),
                     () -> assertFalse(errors.isEmpty(), "the missing terminal action must fail the boot"),
                     () -> assertEquals(1, errors.stream()
                                     .filter(error -> error.message().contains("route '%s'".formatted(id)))

@@ -15,13 +15,14 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -30,7 +31,6 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
-import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -62,16 +62,8 @@ class TokenValidationRulesJwksEgressTest {
 
     private final ConfigValidator validator = new ConfigValidator();
 
-    private static String issuerName() {
-        return Generators.letterStrings(4, 10).next().toLowerCase(Locale.ROOT);
-    }
-
     private static String pointer(int index) {
         return POINTER_PREFIX + index + POINTER_SUFFIX;
-    }
-
-    private static IssuerConfig issuer(String name, IssuerConfig.Jwks jwks) {
-        return IssuerConfig.builder().name(name).issuer("https://" + name + ".example").jwks(jwks).build();
     }
 
     private static IssuerConfig httpIssuer(String name, List<String> allowedEgressHosts) {
@@ -95,16 +87,6 @@ class TokenValidationRulesJwksEgressTest {
                 .build());
     }
 
-    private static void assertSingleRefusal(List<ConfigError> errors, String messageContains) {
-        assertEquals(1, errors.size(), errors::toString);
-        ConfigError error = errors.getFirst();
-        assertAll(
-                () -> assertEquals(GATEWAY_FILE, error.file()),
-                () -> assertEquals(pointer(0), error.pointer()),
-                () -> assertTrue(error.message().contains(messageContains),
-                        () -> "expected the refusal to contain '" + messageContains + "': " + error.message()));
-    }
-
     @Nested
     @DisplayName("a blank entry names no host")
     class BlankEntry {
@@ -114,7 +96,7 @@ class TokenValidationRulesJwksEgressTest {
         void refusesBlankOrWhitespaceOnlyEntry(String entry) {
             List<ConfigError> errors = egressErrors(httpIssuer(issuerName(), List.of(entry)));
 
-            assertSingleRefusal(errors, BLANK);
+            assertSingleRefusal(errors, GATEWAY_FILE, pointer(0), BLANK);
         }
 
         @Test
@@ -135,7 +117,7 @@ class TokenValidationRulesJwksEgressTest {
 
             List<ConfigError> errors = egressErrors(httpIssuer(name, List.of(entry)));
 
-            assertSingleRefusal(errors, HOST_EXACT);
+            assertSingleRefusal(errors, GATEWAY_FILE, pointer(0), HOST_EXACT);
             String message = errors.getFirst().message();
             assertAll(
                     () -> assertTrue(message.contains(entry), () -> "the entry must be echoed: " + message),
@@ -153,7 +135,7 @@ class TokenValidationRulesJwksEgressTest {
         void echoesControlCharactersEscaped() {
             List<ConfigError> errors = egressErrors(httpIssuer(issuerName(), List.of("keycloak\r\nforged:8443")));
 
-            assertSingleRefusal(errors, HOST_EXACT);
+            assertSingleRefusal(errors, GATEWAY_FILE, pointer(0), HOST_EXACT);
             String message = errors.getFirst().message();
             assertAll(
                     () -> assertTrue(message.contains("keycloak\\u000D\\u000Aforged:8443"),

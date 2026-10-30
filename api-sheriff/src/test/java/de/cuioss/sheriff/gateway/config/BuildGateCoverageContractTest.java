@@ -29,6 +29,7 @@ import java.util.Set;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -88,9 +89,6 @@ import org.junit.jupiter.api.Test;
  */
 @DisplayName("build.map covers every file class declared gate-requiring")
 class BuildGateCoverageContractTest {
-
-    /** The working directory the runner started in — the module root under surefire. */
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
     /**
      * The repository-root marker, and the file this contract asserts over. It is tracked in git, so
@@ -267,7 +265,7 @@ class BuildGateCoverageContractTest {
      * @throws IOException when the file cannot be read
      */
     private static JsonNode javaBuildMap() throws IOException {
-        Path marshalJson = repoRoot().resolve(MARSHAL_JSON);
+        Path marshalJson = RepositoryRoot.holding(MARSHAL_JSON).resolve(MARSHAL_JSON);
         JsonNode entries = MAPPER.readTree(Files.readString(marshalJson)).path("build").path("map").path("java");
         if (!entries.isArray()) {
             return fail(marshalJson + ": build.map.java is absent or is not an array, so the file-to-build"
@@ -275,29 +273,5 @@ class BuildGateCoverageContractTest {
                     + " rather than relaxing this check");
         }
         return entries;
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory that actually holds
-     * {@link #MARSHAL_JSON}.
-     * <p>
-     * The search walks up rather than taking a fixed one-level hop because the working directory is
-     * not the same everywhere: surefire runs with the module as its working directory, but an IDE
-     * runner or an aggregator invocation may use another. Probing for the marker resolves the root
-     * from a property of the tree instead of from an assumption about the runner, and a genuinely
-     * unresolvable root then fails naming the directory it started from rather than surfacing later
-     * as a {@code NoSuchFileException} on a path nobody asked for.
-     *
-     * @return the repository root
-     */
-    private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
-            if (Files.isRegularFile(candidate.resolve(MARSHAL_JSON))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root from the working directory " + MODULE
-                + ": no ancestor of it holds " + MARSHAL_JSON + ", which is this contract's root marker"
-                + " and the file it asserts over");
     }
 }

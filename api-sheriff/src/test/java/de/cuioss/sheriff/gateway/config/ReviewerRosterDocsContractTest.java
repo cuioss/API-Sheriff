@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -34,6 +33,7 @@ import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -77,9 +77,6 @@ import org.junit.jupiter.api.Test;
  */
 @DisplayName("The development docs name the review bots .plan/marshal.json configures, in their roles")
 class ReviewerRosterDocsContractTest {
-
-    /** The working directory the runner started in — the module root under surefire. */
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
     /** The configuration carrying the authoritative roster, relative to the repository root. */
     private static final String MARSHAL_JSON = ".plan/marshal.json";
@@ -308,24 +305,6 @@ class ReviewerRosterDocsContractTest {
     }
 
     private static String read(String relativePath) throws IOException {
-        return Files.readString(repoRoot().resolve(relativePath));
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory that holds every file this
-     * contract reads, so the guard does not depend on the directory a runner starts in.
-     *
-     * @return the repository root
-     */
-    private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
-            if (Files.isRegularFile(candidate.resolve(MARSHAL_JSON))
-                    && Files.isRegularFile(candidate.resolve(LOOPBACK_DOC))
-                    && Files.isRegularFile(candidate.resolve(GUIDE_INDEX))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root from the working directory " + MODULE
-                + ": no ancestor of it holds " + MARSHAL_JSON + ", " + LOOPBACK_DOC + " and " + GUIDE_INDEX);
+        return Files.readString(RepositoryRoot.holding(MARSHAL_JSON, LOOPBACK_DOC, GUIDE_INDEX).resolve(relativePath));
     }
 }

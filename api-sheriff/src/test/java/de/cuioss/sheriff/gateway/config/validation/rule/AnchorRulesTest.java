@@ -15,18 +15,17 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
-import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -36,8 +35,6 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
@@ -67,93 +64,6 @@ import org.junit.jupiter.params.provider.MethodSource;
 class AnchorRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
-
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
-
-    private static AnchorConfig anchor(String name, String prefix, @Nullable Require require) {
-        // The ADR-0007 anchor rules (prefix disjointness, namespace membership, auth floor) are
-        // orthogonal to the ADR-0013 access->auth matrix, so these fixtures stay matrix-consistent
-        // by construction: an anchor with no auth floor is access: public (public + no auth block is
-        // matrix-clean), while an anchor carrying a floor is access: authenticated (a non-'none'
-        // floor is what access: authenticated requires).
-        return AnchorConfig.builder()
-                .name(name)
-                .pathPrefix(prefix)
-                .type(AnchorType.PROXY)
-                .access(require == null ? AccessLevel.PUBLIC : AccessLevel.AUTHENTICATED)
-                .auth(require == null ? null : auth(require))
-                .build();
-    }
-
-    private static AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
-            @Nullable Require require) {
-        return AnchorConfig.builder()
-                .name(name)
-                .pathPrefix(prefix)
-                .type(type)
-                .access(access)
-                .auth(require == null ? null : auth(require))
-                .build();
-    }
-
-    private static GatewayConfig gatewayWithAnchorAndIssuer(AnchorConfig anchorConfig) {
-        return validGateway()
-                .anchors(Map.of(anchorConfig.name(), anchorConfig))
-                .tokenValidation(new TokenValidationConfig(List.of(
-                        IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
-                .build();
-    }
-
-    private static GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
-        return validGateway().anchors(anchors).build();
-    }
-
-    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName,
-            @Nullable AuthConfig auth, RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .anchor(anchorName)
-                .auth(auth)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static RouteConfig anchoredRoute(String id, String prefix, String anchorName, HttpMethod... methods) {
-        return RouteConfig.builder()
-                .id(id)
-                .anchor(anchorName)
-                .match(match(prefix, methods))
-                .build();
-    }
 
     /** An exact ({@code match.path}) route — the AS-2 matcher form the coverage rule reasons about. */
     private static RouteConfig exactRoute(String id, String path, @Nullable String anchorName) {
@@ -587,8 +497,8 @@ class AnchorRulesTest {
         }
 
         @ParameterizedTest
-        @EnumSource(value = AnchorType.class, names = {"PROXY", "ASSET"})
-        @DisplayName("Rule public+auth: Should reject an access: public anchor declaring an auth block for any non-bff type")
+        @EnumSource(value = AnchorType.class, names = "ASSET")
+        @DisplayName("Rule public+auth: Should reject an access: public anchor declaring an auth block on the asset type too")
         void shouldRejectPublicAnchorDeclaringAuthBlock(AnchorType type) {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
                     "open", matrixAnchor("open", "/open", type, AccessLevel.PUBLIC, Require.BEARER)));

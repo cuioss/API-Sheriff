@@ -15,33 +15,25 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AccessLevel;
-import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
-import de.cuioss.sheriff.gateway.config.model.AnchorType;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -63,78 +55,6 @@ class AuthRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
 
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static RouteConfig route(String id, HttpMethod... methods) {
-        return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
-
-    private static AnchorConfig anchor(String name, String prefix, @Nullable Require require) {
-        // The ADR-0007 anchor rules (prefix disjointness, namespace membership, auth floor) are
-        // orthogonal to the ADR-0013 access->auth matrix, so these fixtures stay matrix-consistent
-        // by construction: an anchor with no auth floor is access: public (public + no auth block is
-        // matrix-clean), while an anchor carrying a floor is access: authenticated (a non-'none'
-        // floor is what access: authenticated requires).
-        return AnchorConfig.builder()
-                .name(name)
-                .pathPrefix(prefix)
-                .type(AnchorType.PROXY)
-                .access(require == null ? AccessLevel.PUBLIC : AccessLevel.AUTHENTICATED)
-                .auth(require == null ? null : auth(require))
-                .build();
-    }
-
-    private static GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
-        return validGateway().anchors(anchors).build();
-    }
-
-    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName,
-            @Nullable AuthConfig auth, RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .anchor(anchorName)
-                .auth(auth)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static RouteConfig anchoredRoute(String id, String prefix, String anchorName, HttpMethod... methods) {
-        return RouteConfig.builder()
-                .id(id)
-                .anchor(anchorName)
-                .match(match(prefix, methods))
-                .build();
-    }
-
     @Nested
     @DisplayName("Each enforced rule")
     class RuleViolations {
@@ -145,7 +65,7 @@ class AuthRulesTest {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
                     .auth(auth(Require.BEARER))
-                    .routes(List.of(route("r", HttpMethod.GET)))
+                    .routes(List.of(routeConfig("r", HttpMethod.GET)))
                     .build();
 
             List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
@@ -160,7 +80,7 @@ class AuthRulesTest {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
                     .auth(auth(Require.SESSION))
-                    .routes(List.of(route("r", HttpMethod.GET)))
+                    .routes(List.of(routeConfig("r", HttpMethod.GET)))
                     .build();
 
             List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
@@ -179,7 +99,7 @@ class AuthRulesTest {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
                     .auth(auth(Require.BEARER))
-                    .routes(List.of(route("r", HttpMethod.GET)))
+                    .routes(List.of(routeConfig("r", HttpMethod.GET)))
                     .build();
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -267,8 +187,8 @@ class AuthRulesTest {
         @DisplayName("Should refuse scopes on an endpoint whose routes all resolve require: none")
         void shouldRefuseScopesOnUnauthenticatedEndpoint() {
             List<ConfigError> errors = validator.validate(validGateway().build(),
-                    List.of(scopedEndpoint(List.of("orders.read"), route("a", HttpMethod.GET),
-                            route("b", HttpMethod.GET))),
+                    List.of(scopedEndpoint(List.of("orders.read"), routeConfig("a", HttpMethod.GET),
+                            routeConfig("b", HttpMethod.GET))),
                     topologyWith("ORDERS"));
 
             assertHasError(errors, "/endpoint/scopes", SCOPES_MESSAGE);
@@ -283,7 +203,7 @@ class AuthRulesTest {
                     .auth(auth(Require.BEARER)).build();
 
             List<ConfigError> errors = validator.validate(validGateway().build(),
-                    List.of(scopedEndpoint(List.of("orders.read"), route("open", HttpMethod.GET), secured)),
+                    List.of(scopedEndpoint(List.of("orders.read"), routeConfig("open", HttpMethod.GET), secured)),
                     topologyWith("ORDERS"));
 
             assertTrue(errors.stream().noneMatch(error -> error.message().contains(SCOPES_MESSAGE)),
@@ -294,7 +214,7 @@ class AuthRulesTest {
         @DisplayName("Should accept an unauthenticated endpoint that declares no scopes")
         void shouldAcceptUnscopedUnauthenticatedEndpoint() {
             List<ConfigError> errors = validator.validate(validGateway().build(),
-                    List.of(scopedEndpoint(List.of(), route("a", HttpMethod.GET))), topologyWith("ORDERS"));
+                    List.of(scopedEndpoint(List.of(), routeConfig("a", HttpMethod.GET))), topologyWith("ORDERS"));
 
             assertTrue(errors.stream().noneMatch(error -> error.message().contains(SCOPES_MESSAGE)),
                     () -> "an empty scopes list is not a declaration, got: " + errors);

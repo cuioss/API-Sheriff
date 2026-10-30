@@ -24,7 +24,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -39,6 +38,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.Scope;
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -199,7 +199,7 @@ class PolicyBlockSchemaContractTest {
     @DisplayName("the user-doc scope table lists every block exactly at its descriptor's scopes")
     void userDocScopeTableAgreesWithEveryDescriptor() throws Exception {
         ScopeTable table = parseScopeTable(scopeTableLines(Files.readAllLines(
-                repoRoot().resolve(SCOPE_TABLE_DOCUMENT), StandardCharsets.UTF_8)));
+                RepositoryRoot.holding(SCOPE_TABLE_DOCUMENT).resolve(SCOPE_TABLE_DOCUMENT), StandardCharsets.UTF_8)));
 
         List<String> mismatches = tableMismatches(table.rows());
 
@@ -217,7 +217,7 @@ class PolicyBlockSchemaContractTest {
     @DisplayName("a scope table with a widened row and a dropped row is refused")
     void tamperedScopeTableIsRefused() throws Exception {
         ScopeTable shipped = parseScopeTable(scopeTableLines(Files.readAllLines(
-                repoRoot().resolve(SCOPE_TABLE_DOCUMENT), StandardCharsets.UTF_8)));
+                RepositoryRoot.holding(SCOPE_TABLE_DOCUMENT).resolve(SCOPE_TABLE_DOCUMENT), StandardCharsets.UTF_8)));
         List<List<String>> tamperedRows = new ArrayList<>();
         for (List<String> row : shipped.rows()) {
             String key = blockKey(row);
@@ -377,22 +377,6 @@ class PolicyBlockSchemaContractTest {
             row.forEach(cell -> lines.add(CELL_SEPARATOR + " " + cell));
         }
         return lines;
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory holding the scope-table
-     * document. Walks up because the working directory differs between surefire (the module) and an
-     * IDE or aggregator run.
-     */
-    private static Path repoRoot() {
-        for (Path candidate = Path.of(System.getProperty("user.dir")); candidate != null;
-             candidate = candidate.getParent()) {
-            if (Files.isRegularFile(candidate.resolve(SCOPE_TABLE_DOCUMENT))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root: no ancestor of " + System.getProperty("user.dir")
-                + " holds " + SCOPE_TABLE_DOCUMENT);
     }
 
     /**

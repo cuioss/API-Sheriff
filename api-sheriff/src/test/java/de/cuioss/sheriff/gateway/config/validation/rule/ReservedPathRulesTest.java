@@ -15,24 +15,20 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
-import de.cuioss.sheriff.gateway.config.model.PortalConfig;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
@@ -51,8 +47,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * form those three paths are held to, and the client JWKS path rule that refuses a non-canonical
  * {@code oidc.client_authentication.jwks_path} or one another reserved OIDC endpoint already claims.
  * <p>
- * Every case drives the full default validator, so a rule dropped from its registration fails here as
- * surely as a rule whose body is removed.
+ * Every rule case drives the full default validator, so a rule dropped from its registration fails here as
+ * surely as a rule whose body is removed. The one other case, {@code shouldCoverEveryOtherReservedKind},
+ * reads the registry instead: it pins the enum the rule cases run over.
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — reserved OIDC path rules")
@@ -106,34 +103,6 @@ class ReservedPathRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
 
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
-
-    /** The single refusal recorded at exactly {@code pointer}; fails when there is none or more than one. */
-    private static ConfigError singleRefusalAt(List<ConfigError> errors, String pointer) {
-        List<ConfigError> refusals = errors.stream().filter(error -> pointer.equals(error.pointer())).toList();
-        assertEquals(1, refusals.size(), () -> "expected exactly one refusal at " + pointer + ", got: " + refusals);
-        return refusals.getFirst();
-    }
-
     /**
      * Asserts that a reserved path holding a backslash, a control character or whitespace is refused
      * once at {@code pointer}, that the refusal names that restriction, and that the message echoes no
@@ -169,7 +138,6 @@ class ReservedPathRulesTest {
     class BffOidcFoldRules {
 
         private static final String USER_INFO_PATH_POINTER = "/oidc/user_info/path";
-        private static final String LOGIN_PATH_POINTER = "/oidc/login/path";
 
         private static GatewayConfig gatewayWithOidc(OidcConfig oidc) {
             return validGateway().oidc(oidc).build();
@@ -239,52 +207,6 @@ class ReservedPathRulesTest {
             assertHasError(errors, "/oidc/user_info/path", "must be an absolute gateway path");
         }
 
-        @ParameterizedTest(name = "user_info path \"{0}\" is rejected for its query or fragment")
-        @ValueSource(strings = {"/session/userinfo?x=1", "/session/userinfo#part", "/session/userinfo?",
-                "/session/userinfo#"})
-        @DisplayName("Should reject a user_info path carrying a query or a fragment, at its own pointer in gateway.yaml")
-        void shouldRejectUserInfoPathWithQueryOrFragment(String path) {
-            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
-                    .build());
-
-            List<ConfigError> refusals = errorsAt(validator.validate(gateway, List.of(), topologyWith()),
-                    USER_INFO_PATH_POINTER);
-
-            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
-            ConfigError refusal = refusals.getFirst();
-            assertAll(path,
-                    () -> assertEquals("gateway.yaml", refusal.file()),
-                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
-                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
-        }
-
-        @ParameterizedTest(name = "user_info path #{index} is rejected for its backslash, control character or whitespace")
-        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
-                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
-        @DisplayName("Should reject a user_info path carrying a backslash, a control character or whitespace")
-        void shouldRejectUserInfoPathWithBackslashControlOrWhitespace(String path) {
-            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
-                    .build());
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertBackslashControlOrWhitespaceRefusal(errors, USER_INFO_PATH_POINTER);
-        }
-
-        @Test
-        @DisplayName("Should refuse a CR/LF in the user_info path without echoing it raw into the boot log")
-        void shouldRenderUserInfoPathControlCharactersEscaped() {
-            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .userInfo(OidcConfig.UserInfo.builder().path(FORGED_LINE_PATH).build())
-                    .build());
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertForgedLineEchoedEscaped(errors, USER_INFO_PATH_POINTER);
-        }
-
         @ParameterizedTest(name = "user_info path \"{0}\" is accepted")
         @ValueSource(strings = {"/session/userinfo", "/userinfo", "/"})
         @DisplayName("Should accept a plain absolute user_info path")
@@ -299,51 +221,6 @@ class ReservedPathRulesTest {
                     () -> path + " carries no query and no fragment and must not be refused, got: " + errors);
         }
 
-        @ParameterizedTest(name = "login path \"{0}\" is rejected for its query or fragment")
-        @ValueSource(strings = {"/session/login?x=1", "/session/login#part", "/session/login?", "/session/login#"})
-        @DisplayName("Should reject a login path carrying a query or a fragment, at its own pointer in gateway.yaml")
-        void shouldRejectLoginPathWithQueryOrFragment(String path) {
-            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .login(OidcConfig.Login.builder().path(path).build())
-                    .build());
-
-            List<ConfigError> refusals = errorsAt(validator.validate(gateway, List.of(), topologyWith()),
-                    LOGIN_PATH_POINTER);
-
-            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
-            ConfigError refusal = refusals.getFirst();
-            assertAll(path,
-                    () -> assertEquals("gateway.yaml", refusal.file()),
-                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
-                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
-        }
-
-        @ParameterizedTest(name = "login path #{index} is rejected for its backslash, control character or whitespace")
-        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
-                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
-        @DisplayName("Should reject a login path carrying a backslash, a control character or whitespace")
-        void shouldRejectLoginPathWithBackslashControlOrWhitespace(String path) {
-            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .login(OidcConfig.Login.builder().path(path).build())
-                    .build());
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertBackslashControlOrWhitespaceRefusal(errors, LOGIN_PATH_POINTER);
-        }
-
-        @Test
-        @DisplayName("Should refuse a CR/LF in the login path without echoing it raw into the boot log")
-        void shouldRenderLoginPathControlCharactersEscaped() {
-            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .login(OidcConfig.Login.builder().path(FORGED_LINE_PATH).build())
-                    .build());
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertForgedLineEchoedEscaped(errors, LOGIN_PATH_POINTER);
-        }
-
         @ParameterizedTest(name = "login path \"{0}\" is accepted")
         @ValueSource(strings = {"/session/login", "/login", "/"})
         @DisplayName("Should accept a plain absolute login path")
@@ -354,7 +231,7 @@ class ReservedPathRulesTest {
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
-            assertTrue(errorsAt(errors, LOGIN_PATH_POINTER).isEmpty(),
+            assertTrue(errors.isEmpty(),
                     () -> path + " carries no query and no fragment and must not be refused, got: " + errors);
         }
 
@@ -371,17 +248,6 @@ class ReservedPathRulesTest {
             assertHasError(errors, "/oidc/login/path", "must be an absolute gateway path");
         }
 
-        @Test
-        @DisplayName("Should accept an absolute login path")
-        void shouldAcceptAbsoluteLoginPath() {
-            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .login(OidcConfig.Login.builder().path("/session/login").build())
-                    .build());
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
     }
 
     /**
@@ -774,45 +640,6 @@ class ReservedPathRulesTest {
                     () -> "the refusal names gateway.yaml, got: " + errors);
         }
 
-        @ParameterizedTest(name = "step_up path \"{0}\" is refused for its query or fragment")
-        @ValueSource(strings = {"/auth/step-up?x=1", "/auth/step-up#part", "/auth/step-up?", "/auth/step-up#"})
-        @DisplayName("Should refuse a path carrying a query or a fragment, naming the restriction")
-        void shouldRefusePathWithQueryOrFragment(String path) {
-            List<ConfigError> refusals = validateStepUpPath(path).stream()
-                    .filter(error -> POINTER.equals(error.pointer())).toList();
-
-            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
-            ConfigError refusal = refusals.getFirst();
-            assertAll(path,
-                    () -> assertEquals("gateway.yaml", refusal.file()),
-                    () -> assertTrue(refusal.message().contains(MESSAGE),
-                            () -> "the refusal keeps its leading wording: " + refusal.message()),
-                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
-                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
-        }
-
-        @ParameterizedTest(name = "step_up path #{index} is refused for its backslash, control character or whitespace")
-        @ValueSource(strings = {BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH,
-                TAB_SEGMENT_PATH, LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH})
-        @DisplayName("Should refuse a path carrying a backslash, a control character or whitespace")
-        void shouldRefusePathWithBackslashControlOrWhitespace(String path) {
-            List<ConfigError> errors = validateStepUpPath(path);
-
-            assertBackslashControlOrWhitespaceRefusal(errors, POINTER);
-        }
-
-        @Test
-        @DisplayName("Should refuse a CR/LF in the path without echoing it raw into the boot log")
-        void shouldRenderControlCharactersEscaped() {
-            List<ConfigError> errors = validateStepUpPath("step-up\r\nX-Forged: 1");
-
-            assertHasError(errors, POINTER, MESSAGE);
-            assertTrue(errors.stream().filter(error -> POINTER.equals(error.pointer()))
-                            .noneMatch(error -> error.message().indexOf('\n') >= 0
-                                    || error.message().indexOf('\r') >= 0),
-                    () -> "a control character is escaped in the refusal, got: " + errors);
-        }
-
         @Test
         @DisplayName("Should not refuse an omitted step-up path or step_up block")
         void shouldAcceptOmittedPath() {
@@ -827,29 +654,6 @@ class ReservedPathRulesTest {
                             List.of(), topologyWith()))));
         }
 
-        @Test
-        @DisplayName("Should refuse a portal.path equal to the step-up path")
-        void shouldRefusePortalCollision() {
-            String stepUpPath = "/auth/step-up";
-            GatewayConfig gateway = validGateway().oidc(oidcWithStepUpPath(stepUpPath))
-                    .portal(PortalConfig.builder().path(stepUpPath).title("Applications").build()).build();
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertHasError(errors, PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
-        }
-
-        @Test
-        @DisplayName("Should accept a portal.path next to the step-up path")
-        void shouldAcceptPortalNextToStepUpPath() {
-            GatewayConfig gateway = validGateway().oidc(oidcWithStepUpPath("/auth/step-up"))
-                    .portal(PortalConfig.builder().path("/auth").title("Applications").build()).build();
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertTrue(errors.stream().noneMatch(error -> PortalRules.PORTAL_PATH_POINTER.equals(error.pointer())),
-                    () -> "a path that is not the reserved one does not collide, got: " + errors);
-        }
     }
 
     /**
@@ -862,12 +666,17 @@ class ReservedPathRulesTest {
      * Every refused value starts with a single {@code /} and carries no query, fragment, backslash,
      * control character or whitespace, so the shape check admits it and the canonical-form check is
      * the only rule that can refuse it. The values are literals: each is the spelling the rule names.
+     * <p>
+     * The shape refusals these keys share — a query or fragment, a backslash, a control character or
+     * whitespace, and a CR/LF that must not reach the boot log raw — run over the same keys here, so a
+     * restriction cannot hold for one reserved path and lapse for another.
      */
     @Nested
     @DisplayName("Reserved paths must be canonical")
     class ReservedPathCanonicalForm {
 
         private static final String CANONICAL_REFUSAL = "must be a canonical gateway path";
+        private static final String SHAPE_REFUSAL = "must be an absolute gateway path starting with a single '/'";
 
         /** The three operator-declared reserved paths, each with the key, pointer and fixture it needs. */
         enum ReservedPathKey {
@@ -909,6 +718,18 @@ class ReservedPathRulesTest {
             return cases.build();
         }
 
+        static Stream<Arguments> pathsWithQueryOrFragment() {
+            return Stream.of(ReservedPathKey.values()).flatMap(reservedPath -> Stream.of("?x=1", "#part", "?", "#")
+                    .map(suffix -> Arguments.of(reservedPath, reservedPath.canonicalPath + suffix)));
+        }
+
+        static Stream<Arguments> pathsWithBackslashControlOrWhitespace() {
+            return Stream.of(ReservedPathKey.values()).flatMap(reservedPath -> Stream
+                    .of(BACKSLASH_AUTHORITY_PATH, BACKSLASH_SEGMENT_PATH, TAB_AUTHORITY_PATH, TAB_SEGMENT_PATH,
+                            LINE_BREAK_AUTHORITY_PATH, SPACE_PATH, NO_BREAK_SPACE_PATH)
+                    .map(path -> Arguments.of(reservedPath, path)));
+        }
+
         private List<ConfigError> refusalsAt(ReservedPathKey reservedPath, String path) {
             return validator.validate(reservedPath.gatewayDeclaring(path), List.of(), topologyWith()).stream()
                     .filter(error -> reservedPath.pointer.equals(error.pointer()))
@@ -931,6 +752,42 @@ class ReservedPathRulesTest {
                             () -> "the canonical-form refusal echoes no configured value: " + message));
         }
 
+        @ParameterizedTest(name = "{0}: {1}")
+        @MethodSource("pathsWithQueryOrFragment")
+        @DisplayName("Should refuse a path carrying a query or a fragment, at its own pointer in gateway.yaml")
+        void shouldRefuseAPathWithQueryOrFragment(ReservedPathKey reservedPath, String path) {
+            List<ConfigError> refusals = refusalsAt(reservedPath, path);
+
+            assertEquals(1, refusals.size(), () -> path + " must yield exactly one refusal, got: " + refusals);
+            ConfigError refusal = refusals.getFirst();
+            assertAll(path,
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(SHAPE_REFUSAL),
+                            () -> "the refusal keeps its leading wording: " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(QUERY_OR_FRAGMENT_REFUSAL),
+                            () -> "the refusal names the query and fragment restriction: " + refusal.message()));
+        }
+
+        @ParameterizedTest(name = "{0}: path #{index}")
+        @MethodSource("pathsWithBackslashControlOrWhitespace")
+        @DisplayName("Should refuse a path carrying a backslash, a control character or whitespace")
+        void shouldRefuseAPathWithBackslashControlOrWhitespace(ReservedPathKey reservedPath, String path) {
+            List<ConfigError> errors = validator.validate(reservedPath.gatewayDeclaring(path), List.of(),
+                    topologyWith());
+
+            assertBackslashControlOrWhitespaceRefusal(errors, reservedPath.pointer);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ReservedPathKey.class)
+        @DisplayName("Should refuse a CR/LF in the path without echoing it raw into the boot log")
+        void shouldRenderControlCharactersEscaped(ReservedPathKey reservedPath) {
+            List<ConfigError> errors = validator.validate(reservedPath.gatewayDeclaring(FORGED_LINE_PATH), List.of(),
+                    topologyWith());
+
+            assertForgedLineEchoedEscaped(errors, reservedPath.pointer);
+        }
+
         @ParameterizedTest(name = "{0}")
         @EnumSource(ReservedPathKey.class)
         @DisplayName("Should accept the canonical /bff/* form of each reserved path (matched control)")
@@ -946,8 +803,7 @@ class ReservedPathRulesTest {
             List<ConfigError> refusals = refusalsAt(reservedPath, "//bff/session");
 
             assertEquals(1, refusals.size(), () -> "one defect is reported once, got: " + refusals);
-            assertTrue(refusals.getFirst().message().contains("must be an absolute gateway path starting with a single '/'"),
-                    () -> refusals.getFirst().message());
+            assertTrue(refusals.getFirst().message().contains(SHAPE_REFUSAL), () -> refusals.getFirst().message());
         }
     }
 }

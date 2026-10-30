@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -80,9 +81,6 @@ import org.junit.jupiter.api.io.TempDir;
 @DisplayName("Every decision record in doc/adr keeps its body within the length ceiling")
 class AdrRecordLengthContractTest {
 
-    /** The working directory the runner started in — the module root under surefire. */
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
-
     /**
      * The repository-root marker, and the directory this contract asserts over. It is tracked in
      * git, so it resolves in a fresh checkout exactly as it does locally.
@@ -112,7 +110,7 @@ class AdrRecordLengthContractTest {
     @Test
     @DisplayName("No decision record in doc/adr has a body longer than the ceiling")
     void noDecisionRecordExceedsTheBodyCeiling() throws Exception {
-        Path adrDirectory = repoRoot().resolve(ADR_DIRECTORY);
+        Path adrDirectory = RepositoryRoot.holding(ADR_DIRECTORY).resolve(ADR_DIRECTORY);
 
         BodyMeasures measures = bodyMeasures(adrDirectory);
 
@@ -303,28 +301,5 @@ class AdrRecordLengthContractTest {
                 + " it, and split a record that still cannot fit into a new record at the next free ordinal."
                 + " Never summarise away a rejected alternative. Do NOT delete this test or raise the ceiling"
                 + " to make the build green.";
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory that holds the directory
-     * {@link #ADR_DIRECTORY}.
-     * <p>
-     * The search walks up rather than taking a fixed one-level hop because the working directory is
-     * not the same everywhere: surefire runs with the module as its working directory, but an IDE
-     * runner or an aggregator invocation may use another. A genuinely unresolvable root fails naming
-     * the directory the walk started from rather than surfacing later as a
-     * {@code NoSuchFileException} on a path nobody asked for.
-     *
-     * @return the repository root
-     */
-    private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
-            if (Files.isDirectory(candidate.resolve(ADR_DIRECTORY))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root from the working directory " + MODULE
-                + ": no ancestor of it holds the directory " + ADR_DIRECTORY + ", which is this contract's"
-                + " root marker and the directory it asserts over");
     }
 }

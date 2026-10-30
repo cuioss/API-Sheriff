@@ -845,6 +845,28 @@ class ConfigModelContractTest {
         }
 
         @Test
+        @DisplayName("Should resolve an omitted allow_get_with_content_length_body to false")
+        void shouldResolveOmittedKnobToFalse() {
+            SecurityDefaultsConfig securityDefaults = SecurityDefaultsConfig.builder().profile("strict").build();
+
+            assertFalse(securityDefaults.effectiveAllowGetWithContentLengthBody(),
+                    "an omitted knob must resolve fail-closed, preserving every framing rejection "
+                            + "the gateway made before the key existed");
+        }
+
+        @Test
+        @DisplayName("Should resolve an explicitly declared value")
+        void shouldResolveDeclaredKnob() {
+            assertAll(
+                    () -> assertTrue(SecurityDefaultsConfig.builder().profile("strict")
+                            .allowGetWithContentLengthBody(true).build()
+                            .effectiveAllowGetWithContentLengthBody(), "declared true resolves true"),
+                    () -> assertFalse(SecurityDefaultsConfig.builder().profile("strict")
+                            .allowGetWithContentLengthBody(false).build()
+                            .effectiveAllowGetWithContentLengthBody(), "declared false resolves false"));
+        }
+
+        @Test
         @DisplayName("security_defaults.uniform_not_found resolves an omitted key and an omitted block to on")
         void uniformNotFoundDefaultsToOn() {
             assertAll("the trust-boundary branch is the secure default",
@@ -1482,23 +1504,6 @@ class ConfigModelContractTest {
     class NewFields {
 
         @Test
-        void endpointConfigExposesAnchorAndOptionalAuth() {
-            EndpointConfig cfg = EndpointConfig.builder()
-                    .id("orders")
-                    .enabled(true)
-                    .baseUrl("orders-service")
-                    .anchor("api")
-                    .auth(auth())
-                    .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
-                    .build();
-            assertEquals("orders", cfg.id());
-            assertTrue(cfg.enabled());
-            assertEquals("api", cfg.anchor());
-            assertEquals(auth(), cfg.auth());
-            assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
-        }
-
-        @Test
         void endpointConfigEnabledDefaultsToFalseWhenUnsetOnTheRecord() {
             EndpointConfig cfg = EndpointConfig.builder().id("orders").baseUrl("orders-service")
                     .auth(auth()).build();
@@ -1506,39 +1511,9 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void routeConfigExposesAnchorOverride() {
-            RouteConfig cfg = RouteConfig.builder().id("r").anchor("bff").match(matchConfig()).build();
-            assertEquals("bff", cfg.anchor());
-        }
-
-        @Test
-        void routeConfigExposesWebSocketBlock() {
-            RouteConfig cfg = RouteConfig.builder().id("ws").protocol(Protocol.WEBSOCKET)
-                    .match(matchConfig()).websocket(webSocketConfig()).build();
-            assertEquals(webSocketConfig(), cfg.websocket());
-            assertEquals(List.of("https://app.example.com"),
-                    cfg.websocket().allowedOrigins());
-            assertEquals(300, cfg.websocket().idleTimeoutSeconds());
-        }
-
-        @Test
         void routeConfigWebSocketDefaultsToAbsent() {
             RouteConfig cfg = RouteConfig.builder().id("http").match(matchConfig()).build();
             assertNull(cfg.websocket(), "a non-WebSocket route carries no websocket block");
-        }
-
-        @Test
-        void anchorConfigExposesEveryPolicyBlock() {
-            AnchorConfig cfg = anchorConfig();
-            assertEquals("api", cfg.name());
-            assertEquals("/api", cfg.pathPrefix());
-            assertEquals(AnchorType.PROXY, cfg.type());
-            assertEquals(AccessLevel.AUTHENTICATED, cfg.access());
-            assertEquals(auth(), cfg.auth());
-            assertNotNull(cfg.securityFilter());
-            assertNotNull(cfg.securityHeaders());
-            assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
-            assertEquals(cookiesConfig(), cfg.cookies());
         }
 
         @Test
@@ -1580,12 +1555,6 @@ class ConfigModelContractTest {
                     () -> assertEquals(Boolean.TRUE, upstreamConfig().rewriteLocation()),
                     () -> assertNull(UpstreamConfig.builder().build().rewriteLocation(),
                             "the record applies no default; absent stays null and resolves to off at assembly"));
-        }
-
-        @Test
-        void gatewayConfigExposesAnchors() {
-            GatewayConfig cfg = GatewayConfig.builder().version(1).anchors(Map.of("api", anchorConfig())).build();
-            assertEquals(Map.of("api", anchorConfig()), cfg.anchors());
         }
     }
 

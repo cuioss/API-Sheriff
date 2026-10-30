@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -56,8 +57,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * a canonical {@code portal.path}, no collision with a reserved OIDC path or an enabled exact route, and
  * an origin-relative {@code catalog.entry}.
  * <p>
- * Every case drives the full default validator, so a rule dropped from its registration fails here as
- * surely as a rule whose body is removed. Errors are filtered to the two portal pointers, because the
+ * Every rule case drives the full default validator, so a rule dropped from its registration fails here as
+ * surely as a rule whose body is removed; the one other case, {@code everyReservedPathCoversOnePathPerReservedKind},
+ * reads the registry instead, because it pins the parameter list the rule cases run over. Errors are filtered to the two portal pointers, because the
  * fixtures are deliberately minimal and other rules may report unrelated gaps in them. The refused
  * spellings are literals on purpose: each is a specific shape the rule exists to refuse, so the exact
  * string is the contract under test.
@@ -117,12 +119,6 @@ class PortalRulesTest {
                 .filter(error -> PortalRules.PORTAL_PATH_POINTER.equals(error.pointer())
                         || PortalRules.CATALOG_ENTRY_POINTER.equals(error.pointer()))
                 .toList();
-    }
-
-    private static void assertRefused(List<ConfigError> errors, String pointer, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(error -> pointer.equals(error.pointer()) && error.message().contains(messageContains)),
-                () -> "expected an error at " + pointer + " containing '" + messageContains + "', but got: " + errors);
     }
 
     @Nested
@@ -221,18 +217,6 @@ class PortalRulesTest {
         @Test
         void acceptsAnyPathWithoutOidcBlock() {
             assertEquals(List.of(), portalErrors(gateway(portal(CALLBACK), null), List.of()));
-        }
-
-        /**
-         * The client JWKS path is reserved without being declared, so the portal is refused on the
-         * default path by an {@code oidc} block that never names it. The same path is the eighth row
-         * of {@link #refusesEveryReservedPathKind}; it is stated here once more, by name, as the
-         * counterpart of the declared-path case below.
-         */
-        @Test
-        void refusesTheDefaultClientJwksPath() {
-            assertRefused(portalErrors(gateway(portal(DEFAULT_CLIENT_JWKS), oidc()), List.of()),
-                    PortalRules.PORTAL_PATH_POINTER, "reserved OIDC path");
         }
 
         /**

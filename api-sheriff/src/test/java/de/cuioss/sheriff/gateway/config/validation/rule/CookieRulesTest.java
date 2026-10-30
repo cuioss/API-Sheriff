@@ -15,12 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
@@ -38,8 +39,6 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
@@ -92,11 +91,6 @@ class CookieRulesTest {
         return new CookiesConfig(CookieAllow.ALL, null, null);
     }
 
-    private static ResolvedTopology topology() {
-        return new ResolvedTopology(Map.of(ALIAS,
-                new ResolvedUpstream("https", ALIAS.toLowerCase(Locale.ROOT) + ".internal", 443, "")));
-    }
-
     private static RouteConfig.RouteConfigBuilder route() {
         return RouteConfig.builder().id(ROUTE_ID)
                 .match(MatchConfig.builder().pathPrefix("/" + ANCHOR + "/" + ROUTE_ID).methods(List.of(HttpMethod.GET))
@@ -118,20 +112,12 @@ class CookieRulesTest {
     }
 
     private List<ConfigError> validate(GatewayConfig gateway, EndpointConfig endpoint) {
-        return validator.validate(gateway, List.of(endpoint), topology());
+        return validator.validate(gateway, List.of(endpoint), topologyWith(ALIAS));
     }
 
     /** Validates one cookies block declared on the route, under a plain anchor and gateway. */
     private List<ConfigError> validateRouteCookies(CookiesConfig cookies) {
         return validate(gateway(anchor().build()).build(), endpoint(route().cookies(cookies).build()).build());
-    }
-
-    private static ConfigError singleRefusalAt(List<ConfigError> errors, String file, String pointer) {
-        List<ConfigError> refusals = errors.stream()
-                .filter(error -> file.equals(error.file()) && pointer.equals(error.pointer())).toList();
-        assertEquals(1, refusals.size(),
-                () -> "expected exactly one refusal at " + file + pointer + ", got: " + errors);
-        return refusals.getFirst();
     }
 
     private static void assertBootsClean(List<ConfigError> errors) {

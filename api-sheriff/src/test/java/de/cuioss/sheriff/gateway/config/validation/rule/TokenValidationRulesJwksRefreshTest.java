@@ -15,13 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.stream.Stream;
@@ -32,7 +32,6 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
-import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -97,14 +96,6 @@ class TokenValidationRulesJwksRefreshTest {
     }
 
     private final ConfigValidator validator = new ConfigValidator();
-
-    private static String issuerName() {
-        return Generators.letterStrings(4, 10).next().toLowerCase(Locale.ROOT);
-    }
-
-    private static IssuerConfig issuer(String name, IssuerConfig.Jwks jwks) {
-        return IssuerConfig.builder().name(name).issuer("https://" + name + ".example").jwks(jwks).build();
-    }
 
     private static IssuerConfig httpIssuer(String name, RefreshKey key, int value) {
         IssuerConfig.Jwks.JwksBuilder builder = IssuerConfig.Jwks.builder().source("http").url(JWKS_URL);
@@ -206,12 +197,6 @@ class TokenValidationRulesJwksRefreshTest {
             List<ConfigError> errors = refreshErrors(fileIssuer(name, key, key.minimum));
 
             assertSingleRefusal(errors, key, name);
-        }
-
-        @ParameterizedTest(name = "admits the same {0} on an http issuer (matched control)")
-        @EnumSource(RefreshKey.class)
-        void admitsTheSameKeyOnAnHttpIssuer(RefreshKey key) {
-            assertEquals(List.of(), refreshErrors(httpIssuer(issuerName(), key, key.minimum)));
         }
 
         @Test

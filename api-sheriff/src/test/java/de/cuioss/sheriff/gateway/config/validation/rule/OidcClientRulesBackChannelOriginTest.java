@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Stream;
 import java.util.Map;
 import java.util.Set;
 
@@ -36,6 +37,9 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for the {@code oidc.back_channel_origin} / {@code oidc.back_channel_allow_insecure_http} boot
@@ -147,31 +151,36 @@ class OidcClientRulesBackChannelOriginTest {
     @DisplayName("refused shapes, each on /oidc/back_channel_origin")
     class RefusedShape {
 
-        @Test
-        @DisplayName("a blank value is refused as blank")
-        void refusesABlankValue() {
-            assertSingleRefusal("\t \t", null, ORIGIN_POINTER, "oidc.back_channel_origin is declared but blank");
+        private static final String NOT_AN_HTTP_URI =
+                "oidc.back_channel_origin must be an absolute http or https URI naming a host";
+
+        /**
+         * The name, the origin as a format string over a generated host, port and two generated letter
+         * strings, the opt-in, and the refusal.
+         */
+        static Stream<Arguments> refusedShapes() {
+            return Stream.of(
+                    Arguments.of("a blank value is refused as blank", "\t \t", null,
+                            "oidc.back_channel_origin is declared but blank"),
+                    Arguments.of("a relative value is refused", "/%1$s", null, NOT_AN_HTTP_URI),
+                    Arguments.of("an ftp origin is refused", "ftp://%1$s:%2$d", null, NOT_AN_HTTP_URI),
+                    Arguments.of("a value that is no well-formed URI is refused as such", "https://%1$s:%2$d/ a b", null,
+                            "oidc.back_channel_origin is not a well-formed URI"),
+                    Arguments.of("an origin carrying a path is refused", "https://%1$s:%2$d/realms", null,
+                            "oidc.back_channel_origin must not carry a path"),
+                    Arguments.of("an origin carrying a query is refused", "https://%1$s:%2$d?%3$s=%4$s", null,
+                            "oidc.back_channel_origin must not carry a query"),
+                    Arguments.of("an origin carrying a fragment is refused", "https://%1$s:%2$d#%3$s", null,
+                            "oidc.back_channel_origin must not carry a fragment"),
+                    Arguments.of("a malformed value is reported once, not judged against the opt-in as well",
+                            "ftp://%1$s:%2$d", true, NOT_AN_HTTP_URI));
         }
 
-        @Test
-        @DisplayName("a relative value is refused")
-        void refusesARelativeValue() {
-            assertSingleRefusal("/" + host(), null, ORIGIN_POINTER,
-                    "oidc.back_channel_origin must be an absolute http or https URI naming a host");
-        }
-
-        @Test
-        @DisplayName("an ftp origin is refused")
-        void refusesAnFtpScheme() {
-            assertSingleRefusal("ftp://" + host() + ":" + port(), null, ORIGIN_POINTER,
-                    "oidc.back_channel_origin must be an absolute http or https URI naming a host");
-        }
-
-        @Test
-        @DisplayName("a value that is no well-formed URI is refused as such")
-        void refusesAnUnparseableValue() {
-            assertSingleRefusal("https://" + host() + ":" + port() + "/ a b", null, ORIGIN_POINTER,
-                    "oidc.back_channel_origin is not a well-formed URI");
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("refusedShapes")
+        void refusesTheShape(String name, String origin, @Nullable Boolean allowInsecureHttp, String refusal) {
+            assertSingleRefusal(origin.formatted(host(), port(), letters(), letters()), allowInsecureHttp, ORIGIN_POINTER,
+                    refusal);
         }
 
         @Test
@@ -186,33 +195,6 @@ class OidcClientRulesBackChannelOriginTest {
                     "the password of the user-info must never reach the boot log");
         }
 
-        @Test
-        @DisplayName("an origin carrying a path is refused")
-        void refusesAPath() {
-            assertSingleRefusal("https://" + host() + ":" + port() + "/realms", null, ORIGIN_POINTER,
-                    "oidc.back_channel_origin must not carry a path");
-        }
-
-        @Test
-        @DisplayName("an origin carrying a query is refused")
-        void refusesAQuery() {
-            assertSingleRefusal("https://" + host() + ":" + port() + "?" + letters() + "=" + letters(), null,
-                    ORIGIN_POINTER, "oidc.back_channel_origin must not carry a query");
-        }
-
-        @Test
-        @DisplayName("an origin carrying a fragment is refused")
-        void refusesAFragment() {
-            assertSingleRefusal("https://" + host() + ":" + port() + "#" + letters(), null, ORIGIN_POINTER,
-                    "oidc.back_channel_origin must not carry a fragment");
-        }
-
-        @Test
-        @DisplayName("a malformed value is reported once, not judged against the opt-in as well")
-        void reportsAShapeRefusalOnceUnderTheOptIn() {
-            assertSingleRefusal("ftp://" + host() + ":" + port(), true, ORIGIN_POINTER,
-                    "oidc.back_channel_origin must be an absolute http or https URI naming a host");
-        }
     }
 
     @Nested
