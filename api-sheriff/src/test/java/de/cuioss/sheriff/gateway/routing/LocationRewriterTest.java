@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -132,7 +133,7 @@ class LocationRewriterTest {
         @Test
         @DisplayName("maps onto a root exact match key")
         void mapsOntoRootExactMatchKey() {
-            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", true);
+            var rootRewriter = new LocationRewriter(ConfigFixtures.backendUpstream(), "/", true);
 
             assertEquals("/", rootRewriter.rewrite("http://backend:8080/"));
             assertEquals("http://backend:8080/login", rootRewriter.rewrite("http://backend:8080/login"),
@@ -209,7 +210,7 @@ class LocationRewriterTest {
          * separator lands at the front of a gateway-relative value.
          */
         private final LocationRewriter rootRewriter =
-                new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", false);
+                new LocationRewriter(ConfigFixtures.backendUpstream(), "/", false);
 
         /**
          * The origin-change arm, and the one the mapping would <em>manufacture</em>: each value below is
@@ -304,6 +305,8 @@ class LocationRewriterTest {
         void mapsOrdinaryAbsoluteUriOntoRoot() {
             assertEquals("/login", rootRewriter.rewrite("http://backend:8080/login"),
                     "the refusal must be driven by the separator, not by the value being absolute");
+            assertEquals("/", rootRewriter.rewrite("http://backend:8080/"),
+                    "the upstream root maps onto the root match key");
         }
 
         /**
@@ -389,7 +392,7 @@ class LocationRewriterTest {
     class EmptyBasePath {
 
         private final LocationRewriter rewriter =
-                new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/app/", false);
+                new LocationRewriter(ConfigFixtures.backendUpstream(), "/app/", false);
 
         @ParameterizedTest(name = "{0} -> {1}")
         @CsvSource({
@@ -422,18 +425,9 @@ class LocationRewriterTest {
         }
 
         @Test
-        @DisplayName("keeps the path as-is under a root match key")
-        void keepsPathUnderRootMatchKey() {
-            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", false);
-
-            assertEquals("/login", rootRewriter.rewrite("http://backend:8080/login"));
-            assertEquals("/", rootRewriter.rewrite("http://backend:8080/"));
-        }
-
-        @Test
         @DisplayName("never emits a scheme-relative mapping")
         void neverEmitsSchemeRelativeMapping() {
-            var rootRewriter = new LocationRewriter(new ResolvedUpstream("http", "backend", 8080, ""), "/", false);
+            var rootRewriter = new LocationRewriter(ConfigFixtures.backendUpstream(), "/", false);
             String location = "http://backend:8080//evil.example/steal";
 
             assertEquals(location, rootRewriter.rewrite(location),

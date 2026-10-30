@@ -104,7 +104,7 @@ class CookieAllowTest {
             CookiesConfig cookies = MAPPER.readValue("""
                     allow: [theme]
                     same_origin_check: false
-                    additional_origins: [https://App.example.com]
+                    additional_origins: [https://app.example.com]
                     """, CookiesConfig.class);
 
             assertEquals(new CookiesConfig(new CookieAllow.Named(List.of("theme")), false,

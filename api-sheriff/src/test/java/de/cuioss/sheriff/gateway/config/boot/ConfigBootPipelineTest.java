@@ -34,15 +34,13 @@ import de.cuioss.sheriff.gateway.config.PolicyBlock.Scope;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.DefaultedPlaceholder;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
-import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
-import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -340,17 +338,14 @@ class ConfigBootPipelineTest {
     }
 
     private static GatewayConfig gatewayWithAnchorFilter(SecurityFilterConfig filter) {
-        AnchorConfig anchor = AnchorConfig.builder().name("uploads").pathPrefix("/uploads").type(AnchorType.PROXY)
-                .access(AccessLevel.AUTHENTICATED).securityFilter(filter).build();
-        return GatewayConfig.builder().version(1).anchors(Map.of(anchor.name(), anchor)).build();
+        AnchorConfig anchor = ConfigFixtures.anchorSeed("uploads").securityFilter(filter).build();
+        return ConfigFixtures.validGateway().anchors(Map.of(anchor.name(), anchor)).build();
     }
 
     private static EndpointConfig endpointWithFilters(SecurityFilterConfig endpointFilter,
             SecurityFilterConfig routeFilter) {
-        RouteConfig route = RouteConfig.builder().id("uploads-proxied")
-                .match(MatchConfig.builder().pathPrefix("/uploads").build()).securityFilter(routeFilter).build();
-        return EndpointConfig.builder().id("uploads").enabled(true).securityFilter(endpointFilter)
-                .routes(List.of(route)).build();
+        RouteConfig route = ConfigFixtures.routeConfigSeed("uploads-proxied").securityFilter(routeFilter).build();
+        return ConfigFixtures.endpointSeed("uploads").securityFilter(endpointFilter).routes(List.of(route)).build();
     }
 
     @Test

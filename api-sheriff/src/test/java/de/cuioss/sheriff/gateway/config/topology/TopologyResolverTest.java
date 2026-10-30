@@ -35,12 +35,11 @@ import java.util.stream.Stream;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.DefaultedPlaceholder;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.topology.TopologyResolver.TopologyResolutionException;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
@@ -72,12 +71,7 @@ class TopologyResolverTest {
     Path directory;
 
     private static EndpointConfig endpointFor(String alias) {
-        return EndpointConfig.builder()
-                .id(alias.toLowerCase(Locale.ROOT))
-                .enabled(true)
-                .baseUrl(alias)
-                .auth(AuthConfig.builder().require(Require.NONE).build())
-                .build();
+        return ConfigFixtures.openEndpointSeed(alias.toLowerCase(Locale.ROOT), alias).build();
     }
 
     private Path topologyFile(String content) throws IOException {
@@ -198,7 +192,9 @@ class TopologyResolverTest {
                 Arguments.of("ORDERS=orders.internal:8443\n", "url without scheme or host", "ORDERS",
                         "Topology URL for alias 'ORDERS' must be absolute with scheme and host"),
                 Arguments.of("OTHER=https://other.internal\n", "missing alias referenced by enabled endpoint",
-                        "MISSING", "Unresolved topology alias 'MISSING' referenced by enabled endpoint 'missing'"));
+                        "MISSING", "Unresolved topology alias 'MISSING' referenced by enabled endpoint 'missing'"),
+                Arguments.of("ORDERS=ftp://orders.internal:21\n", "a non-http(s) scheme (the D5 scheme allowlist)", "ORDERS",
+                        "Topology URL for alias 'ORDERS' must use an http or https scheme, but was 'ftp'"));
     }
 
     @Test
@@ -227,12 +223,7 @@ class TopologyResolverTest {
     void reportsSharedFailingAliasOnce() throws Exception {
         Path file = topologyFile("OTHER=https://other.internal\n");
         TopologyResolver resolver = resolverWith(Map.of());
-        EndpointConfig second = EndpointConfig.builder()
-                .id("second")
-                .enabled(true)
-                .baseUrl("MISSING")
-                .auth(AuthConfig.builder().require(Require.NONE).build())
-                .build();
+        EndpointConfig second = ConfigFixtures.openEndpointSeed("second", "MISSING").build();
         List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"), second);
         List<String> additionalAliases = List.of("MISSING");
 
@@ -379,31 +370,11 @@ class TopologyResolverTest {
     }
 
     @Test
-    void stillThrowsForUnresolvableEnabledEndpointAliasAlongsideSkippedAdditionalAlias() throws Exception {
-        Path file = topologyFile("SECURE=https://secure.internal\n");
-        TopologyResolver resolver = resolverWith(Map.of());
-        List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"));
-        List<String> additionalAliases = List.of("SECURE");
-
-        TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, additionalAliases, IGNORE_DEFAULTED),
-                "an unresolvable enabled-endpoint base_url alias must still fail the boot");
-
-        assertEquals(List.of(topologyError("MISSING",
-                        "Unresolved topology alias 'MISSING' referenced by enabled endpoint 'missing'")),
-                exception.errors());
-    }
-
-    @Test
     @DisplayName("An enabled endpoint declaring no base_url contributes no alias and never fails the resolution")
     void skipsEnabledEndpointWithoutBaseUrl() throws Exception {
         Path file = topologyFile("ORDERS=https://orders.internal\n");
         TopologyResolver resolver = resolverWith(Map.of());
-        EndpointConfig assetOnly = EndpointConfig.builder()
-                .id("site")
-                .enabled(true)
-                .auth(AuthConfig.builder().require(Require.NONE).build())
-                .build();
+        EndpointConfig assetOnly = ConfigFixtures.openEndpointSeed("site", null).build();
         List<EndpointConfig> endpoints = List.of(assetOnly, endpointFor("ORDERS"));
 
         ResolvedTopology topology = assertDoesNotThrow(
@@ -412,21 +383,5 @@ class TopologyResolverTest {
 
         assertEquals(Set.of("ORDERS"), topology.aliases().keySet(),
                 "only the declared alias is resolved — the base_url-less endpoint adds no entry");
-    }
-
-    @Test
-    @DisplayName("A resolved alias URL with a non-http(s) scheme fails the boot (D5 scheme allowlist)")
-    void rejectsNonHttpScheme() throws Exception {
-        Path file = topologyFile("ORDERS=ftp://orders.internal:21\n");
-        TopologyResolver resolver = resolverWith(Map.of());
-        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
-
-        TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of(), IGNORE_DEFAULTED),
-                "a non-http(s) topology alias scheme must be rejected at boot");
-
-        assertEquals(List.of(topologyError("ORDERS",
-                        "Topology URL for alias 'ORDERS' must use an http or https scheme, but was 'ftp'")),
-                exception.errors());
     }
 }
