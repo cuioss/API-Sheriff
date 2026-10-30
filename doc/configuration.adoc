@@ -144,7 +144,7 @@ file-and-JSON-pointer error before any immutable value object is built:
 | The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
   `management`, `security_headers`, `security_defaults`, `allowed_methods`, `anchors`,
   `upstream_defaults`, `asset_defaults`, `forwarded`, `edge_hardening`, `enumeration_detection`,
-  `token_validation`, `cookies` and `oidc`.
+  `threat_classification`, `token_validation`, `cookies` and `oidc`.
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
@@ -429,6 +429,19 @@ enumeration_detection:             # OPTIONAL per-source scan detection. Omit th
                                    #   forwarded.trusted_proxies first.
   block_seconds: 60                # how long a source stays blocked under block. Minimum 1.
   delay_millis: 2000               # how long rejection answers are held under delay. 1..10000.
+
+threat_classification:             # OPTIONAL per-source threat score. Omit the block, or any key,
+                                   #   to take the defaults shown: classification RUNS, and its
+                                   #   ALERT (ApiSheriff-143) changes no answer -- observe only.
+  enabled: true                    # false builds no classifier at all
+  threshold: 100                   # weighted score at which a source raises its ALERT. Minimum 1.
+  window_seconds: 300              # a full threshold drains in this many seconds. Minimum 1.
+  weights:                         # weight per rejection category. Minimum 0 each.
+    input_validation: 10           #   malformed or injection-shaped requests
+    routing: 1                     #   unrouted addresses and wrong methods
+    authentication: 2              #   missing or invalid bearer tokens
+    authorization: 2               #   missing scopes, CSRF and origin refusals
+    recon_trip: 50                 #   a trip of enumeration_detection; refused when it is disabled
 
 token_validation:                  # offline bearer validation (routes with auth.require: bearer)
   issuers:                         # one entry per accepted identity provider
@@ -4603,6 +4616,110 @@ that is not counted, which `sheriff_source_untracked_total` and the WARN `ApiShe
 operator view -- reading the trip and choosing an action -- is in
 link:user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
 sources and enumeration detection].
+
+[[_threat_classification]]
+=== `threat_classification`
+
+Per-source threat classification, declarable only in `gateway.yaml`. The gateway keeps a weighted
+score per source over the rejections it answers that carry a weight, before and after the trust
+boundary, each under its true event; *Fixed at zero* below lists the rejections that do not. A source
+whose score reaches the threshold raises one *ALERT*: the WARN `ApiSheriff-143`
+with an ECS-shaped JSON document a SIEM can ingest, counted on `sheriff_threat_alerts_total`.
+Classification *only observes*: an ALERT changes no answer, status, header or timing. The block and
+every key are optional, and an omitted block or key takes its default, so classification runs on
+every gateway. The mechanism is described in
+link:architecture/tls-and-inbound-security.adoc#_threat_classification[Architecture -- Per-Source
+Threat Classification], the document in
+link:architecture/observability-and-errors.adoc#_threat_alert_document[the threat ALERT document],
+and the decision in
+link:adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078].
+
+[cols="1,1,3", options="header"]
+|===
+| Key | Default | Meaning
+
+| `enabled`
+| `true`
+| Whether classification runs. `false` builds no classifier: nothing is scored, logged or counted.
+
+| `threshold`
+| `100`
+| The score at which a source raises its ALERT (minimum `1`).
+
+| `window_seconds`
+| `300`
+| The time in seconds a full threshold takes to drain (minimum `1`). The score drains continuously
+  at `threshold / window_seconds` per second, `0.33` per second with the defaults.
+
+| `weights.input_validation`
+| `10`
+| The weight of an input-validation rejection: a path, parameter, header or body the route refuses
+  (minimum `0`). One malformed request scores a tenth of the default threshold, so a single mistake
+  never alerts, while an injection scanner at one request per second alerts within about 11 seconds.
+
+| `weights.routing`
+| `1`
+| The weight of a routing rejection: an unrouted address or a method the route does not allow
+  (minimum `0`).
+
+| `weights.authentication`
+| `2`
+| The weight of an authentication rejection: a missing or invalid bearer token (minimum `0`). It is
+  low so that the expired-token `401`s of many clients behind one address stay below the drain rate.
+
+| `weights.authorization`
+| `2`
+| The weight of an authorization rejection: a missing scope, a CSRF or a WebSocket-origin refusal
+  (minimum `0`).
+
+| `weights.recon_trip`
+| `50`
+| The weight a trip of <<_enumeration_detection,`enumeration_detection`>> adds to the tripped
+  source's score (minimum `0`). A recon trip is an input to the score, never an ALERT of its own.
+|===
+
+*Fixed at zero.* An upstream failure (`upstream`), the `429` of a blocked source (`rate-limiting`)
+and a boot event (`configuration`) carry no weight, and the block offers no key for them. An upstream
+failure describes the upstream, not the caller. A blocked source is answered before admission and
+never reaches the score, and counting it would extend a block by the requests it refuses. A boot event
+is not a request. A body that stopped arriving (`INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`), an
+unexpected internal failure before the trust boundary (`PRE_TRUST_INTERNAL_FAILURE`), a success or
+informational event, which is no rejection, a category whose weight is set to `0`, and a static
+resource -- an asset route or a browser-ambient fetch -- carry no weight either, except a
+security-filter violation or an exceeded parameter limit (`SECURITY_FILTER_VIOLATION`,
+`PARAMETER_LIMIT_EXCEEDED`), which is scored on a static resource as on any other path.
+Three answered rejections never reach the score at all: the rejections of a reserved path (a fixed
+public set), the refusal of a streaming body after dispatch has begun, and the `405` of a request
+method the gateway cannot parse. There is no `action` key: classification only observes.
+
+*Boot refusals.* `LimitRules.validateThreatClassification` refuses, naming the key:
+
+* a `threshold` or `window_seconds` below `1`;
+* a weight below `0`;
+* an enabled block in which no weight above `0` can act, because it could never alert -- set
+  `enabled: false` instead;
+* a declared `weights.recon_trip` while `enumeration_detection` is disabled, because no recon trip can
+  then occur and the key could never act -- remove the key or enable `enumeration_detection`. An
+  omitted `recon_trip` is never refused.
+
+An unknown key inside the block, such as `action` or `rate_limiting`, is refused by the schema.
+
+*What a source is.* Exactly what it is for <<_enumeration_detection,`enumeration_detection`>>: the
+address -- the trusted forwarder's client address, otherwise the TCP peer, an IPv6 address as its
+`/64` -- and the host folded to the declared `match.host` set. The gateway resolves it once per
+request and both features read it, so classification keys on the same source with
+`enumeration_detection` switched off.
+
+*Scope -- single node.* The scores live in the memory of one gateway instance. They are not shared
+between instances and are cleared by a restart. A source spreading its requests over several
+instances is scored per instance; correlating the ALERTs of all instances is the SIEM's job. An
+instance tracks at most 65,536 sources, so it raises at most one ALERT per tracked source per
+episode. A rejection it cannot score at that bound is counted on `sheriff_threat_untracked_total`
+and reported once by the WARN `ApiSheriff-144`. Clients behind one NAT share a score, and a looping
+misbehaving client scores as a scanner does; neither has a wire effect. The operator view -- reading
+the ALERT and tuning the weights -- is in
+link:user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes -- Threat
+classification].
 
 === `rate_limit`
 

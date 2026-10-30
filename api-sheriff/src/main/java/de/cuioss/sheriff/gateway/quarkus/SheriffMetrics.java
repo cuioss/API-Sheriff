@@ -58,6 +58,10 @@ import org.jspecify.annotations.Nullable;
  *       keyed by the configured action ({@code block}, {@code delay} or {@code observe});</li>
  *   <li>{@value #SOURCE_UNTRACKED_TOTAL} — the recon events the detection substrate could not count
  *       because its ledger was at the bound on tracked sources (cardinality overflow);</li>
+ *   <li>{@value #THREAT_ALERTS_TOTAL} — the per-source threat-classification ALERTs, one per
+ *       threat-ledger trip;</li>
+ *   <li>{@value #THREAT_UNTRACKED_TOTAL} — the rejections the threat classification could not score
+ *       because its ledger was at the bound on tracked sources (cardinality overflow);</li>
  *   <li>{@value #UNIFORM_NOT_FOUND_OVERRUNS_TOTAL} — the uniform {@code 404} answers whose processing
  *       ran past the first step of the response-timing floor and were released on a later step.</li>
  * </ul>
@@ -114,6 +118,16 @@ public class SheriffMetrics {
      * bound on tracked sources — the cardinality overflow.
      */
     public static final String SOURCE_UNTRACKED_TOTAL = "sheriff_source_untracked_total";
+    /**
+     * Counter of per-source threat-classification ALERTs — one per threat-ledger trip, so at most one
+     * per source and episode.
+     */
+    public static final String THREAT_ALERTS_TOTAL = "sheriff_threat_alerts_total";
+    /**
+     * Counter of rejections the threat classification left unscored because its ledger was at the
+     * bound on tracked sources — the cardinality overflow.
+     */
+    public static final String THREAT_UNTRACKED_TOTAL = "sheriff_threat_untracked_total";
     /**
      * Counter of uniform {@code 404} answers released after the first step of the response-timing
      * floor — an answer whose processing ran past the floor. A non-zero value means some path answered
@@ -275,6 +289,24 @@ public class SheriffMetrics {
      */
     public void recordSourceUntracked() {
         registry.counter(SOURCE_UNTRACKED_TOTAL).increment();
+    }
+
+    /**
+     * Counts one threat-classification ALERT against {@link #THREAT_ALERTS_TOTAL}: a source's threat
+     * ledger reached its threshold. The meter carries no label; the source the ALERT concerns is never a
+     * label value.
+     */
+    public void recordThreatAlert() {
+        registry.counter(THREAT_ALERTS_TOTAL).increment();
+    }
+
+    /**
+     * Counts one rejection the threat classification could not score against
+     * {@link #THREAT_UNTRACKED_TOTAL}: its ledger was at the bound on tracked sources and could not make
+     * room, so the source was left untracked. The meter carries no label.
+     */
+    public void recordThreatUntracked() {
+        registry.counter(THREAT_UNTRACKED_TOTAL).increment();
     }
 
     /**

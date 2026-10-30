@@ -614,6 +614,12 @@ class ConfigModelContractTest {
                             EnumerationDetectionConfig.defaults(),
                             EnumerationDetectionConfig.builder().action(EnumerationDetectionConfig.Action.BLOCK)
                                     .build()),
+                    voCase("ThreatClassificationConfig", ThreatClassificationConfig.defaults(),
+                            ThreatClassificationConfig.defaults(),
+                            ThreatClassificationConfig.builder().threshold(50).build()),
+                    voCase("ThreatClassificationConfig.Weights", ThreatClassificationConfig.Weights.defaults(),
+                            ThreatClassificationConfig.Weights.defaults(),
+                            ThreatClassificationConfig.Weights.builder().inputValidation(20).build()),
                     voCase("RateLimitConfig", new RateLimitConfig(100, 200),
                             new RateLimitConfig(100, 200),
                             new RateLimitConfig(1, 1)));
@@ -674,7 +680,7 @@ class ConfigModelContractTest {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
                     List.of(HttpMethod.GET), CookiesConfig.NONE, Map.of("api", anchorConfig()), null, null, null,
-                    null, null, null, null, null, portalConfig());
+                    null, null, null, null, null, null, portalConfig());
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
                     .cookies(CookiesConfig.NONE).anchors(Map.of("api", anchorConfig())).portal(portalConfig())
                     .build();
@@ -797,7 +803,7 @@ class ConfigModelContractTest {
         void gatewayConfigNormalizesAllAbsentComponents() {
             // Positional on purpose: the canonical constructor's null normalization is the subject.
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null);
+                    null, null, null, null, null, null, null);
             assertNull(cfg.metadata());
             assertNull(cfg.tls());
             assertNull(cfg.management());
@@ -813,6 +819,7 @@ class ConfigModelContractTest {
             assertNull(cfg.oidc());
             assertNull(cfg.edgeHardening());
             assertNull(cfg.enumerationDetection(), "an omitted enumeration_detection block declares none");
+            assertNull(cfg.threatClassification(), "an omitted threat_classification block declares none");
             assertNull(cfg.egressTls());
             assertNull(cfg.portal(), "an omitted portal block keeps the portal off");
         }
@@ -966,6 +973,115 @@ class ConfigModelContractTest {
                     () -> assertTrue(block.at("/properties/enabled/default").asBoolean(false)),
                     () -> assertEquals(Set.of("enabled", "threshold", "window_seconds", "action", "block_seconds",
                             "delay_millis"), propertyNames(block)));
+        }
+
+        @Test
+        @DisplayName("an omitted threat_classification block, and an empty one, resolve to the documented defaults")
+        void threatClassificationResolvesDefaults() {
+            ThreatClassificationConfig omittedBlock = ThreatClassificationConfig.defaults();
+            ThreatClassificationConfig emptyBlock = ThreatClassificationConfig.builder().build();
+            ThreatClassificationConfig.Weights emptyWeights = ThreatClassificationConfig.Weights.builder().build();
+
+            assertAll("the shipped default classifies with the documented threshold, window and weights",
+                    () -> assertTrue(omittedBlock.effectiveEnabled(), "classification runs when nothing is declared"),
+                    () -> assertTrue(emptyBlock.effectiveEnabled()),
+                    () -> assertEquals(100, emptyBlock.effectiveThreshold()),
+                    () -> assertEquals(300, emptyBlock.effectiveWindowSeconds()),
+                    () -> assertEquals(ThreatClassificationConfig.Weights.defaults(), emptyBlock.effectiveWeights(),
+                            "an omitted weights block resolves to every default weight"),
+                    () -> assertEquals(10, emptyWeights.effectiveInputValidation()),
+                    () -> assertEquals(1, emptyWeights.effectiveRouting()),
+                    () -> assertEquals(2, emptyWeights.effectiveAuthentication()),
+                    () -> assertEquals(2, emptyWeights.effectiveAuthorization()),
+                    () -> assertEquals(50, emptyWeights.effectiveReconTrip()),
+                    () -> assertEquals(omittedBlock, new ThreatClassificationConfig(true, 100, 300,
+                            new ThreatClassificationConfig.Weights(10, 1, 2, 2, 50))));
+        }
+
+        @Test
+        @DisplayName("declared threat_classification members are returned as declared")
+        void threatClassificationReturnsDeclaredMembers() {
+            ThreatClassificationConfig.Weights weights = new ThreatClassificationConfig.Weights(7, 0, 3, 4, 25);
+            ThreatClassificationConfig cfg = new ThreatClassificationConfig(false, 40, 120, weights);
+
+            assertAll("no default overrides a declared value",
+                    () -> assertFalse(cfg.effectiveEnabled()),
+                    () -> assertEquals(40, cfg.effectiveThreshold()),
+                    () -> assertEquals(120, cfg.effectiveWindowSeconds()),
+                    () -> assertEquals(weights, cfg.effectiveWeights()),
+                    () -> assertEquals(7, weights.effectiveInputValidation()),
+                    () -> assertEquals(0, weights.effectiveRouting(), "a declared 0 is not replaced by the default"),
+                    () -> assertEquals(3, weights.effectiveAuthentication()),
+                    () -> assertEquals(4, weights.effectiveAuthorization()),
+                    () -> assertEquals(25, weights.effectiveReconTrip()));
+        }
+
+        @Test
+        @DisplayName("a partially declared weights block resolves each omitted member to its own default")
+        void threatClassificationResolvesOmittedWeightMembers() {
+            ThreatClassificationConfig cfg = ThreatClassificationConfig.builder()
+                    .weights(ThreatClassificationConfig.Weights.builder().inputValidation(40).build()).build();
+            ThreatClassificationConfig.Weights weights = cfg.effectiveWeights();
+
+            assertAll("a declared member replaces only itself",
+                    () -> assertEquals(40, weights.effectiveInputValidation()),
+                    () -> assertEquals(ThreatClassificationConfig.Weights.DEFAULT_ROUTING, weights.effectiveRouting()),
+                    () -> assertEquals(ThreatClassificationConfig.Weights.DEFAULT_AUTHENTICATION,
+                            weights.effectiveAuthentication()),
+                    () -> assertEquals(ThreatClassificationConfig.Weights.DEFAULT_AUTHORIZATION,
+                            weights.effectiveAuthorization()),
+                    () -> assertEquals(ThreatClassificationConfig.Weights.DEFAULT_RECON_TRIP,
+                            weights.effectiveReconTrip()));
+        }
+
+        @Test
+        @DisplayName("the threat_classification builders match the canonical constructors")
+        void threatClassificationBuildersMatchConstructors() {
+            // Positional on purpose: the canonical constructor is the subject the builder is compared to.
+            ThreatClassificationConfig.Weights weightsViaCtor = new ThreatClassificationConfig.Weights(1, 2, 3, 4, 5);
+            ThreatClassificationConfig.Weights weightsViaBuilder = ThreatClassificationConfig.Weights.builder()
+                    .inputValidation(1).routing(2).authentication(3).authorization(4).reconTrip(5).build();
+            ThreatClassificationConfig viaCtor = new ThreatClassificationConfig(true, 80, 200, weightsViaCtor);
+            ThreatClassificationConfig viaBuilder = ThreatClassificationConfig.builder().enabled(true).threshold(80)
+                    .windowSeconds(200).weights(weightsViaBuilder).build();
+            GatewayConfig gateway = GatewayConfig.builder().version(1).threatClassification(viaCtor).build();
+
+            assertAll(
+                    () -> assertEquals(weightsViaCtor, weightsViaBuilder),
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals(viaCtor, gateway.threatClassification(),
+                            "the gateway document carries the block as declared"));
+        }
+
+        @Test
+        @DisplayName("the schema declares threat_classification with its weights and no action or fixed-zero key")
+        void schemaDeclaresThreatClassification() throws Exception {
+            JsonNode schema;
+            try (InputStream in = ConfigModelContractTest.class.getResourceAsStream("/schema/gateway.schema.json")) {
+                assertNotNull(in, "the bundled gateway schema is on the classpath");
+                schema = new ObjectMapper().readTree(in);
+            }
+            JsonNode block = schema.at("/properties/threat_classification");
+            JsonNode weights = block.at("/properties/weights");
+
+            assertAll("the model block and the schema block agree",
+                    () -> assertFalse(block.isMissingNode(), "the schema declares the block"),
+                    () -> assertFalse(block.path("additionalProperties").asBoolean(true),
+                            "the block refuses an unknown key"),
+                    () -> assertFalse(weights.path("additionalProperties").asBoolean(true),
+                            "the weights block refuses an unknown key"),
+                    () -> assertEquals(Set.of("enabled", "threshold", "window_seconds", "weights"),
+                            propertyNames(block)),
+                    () -> assertEquals(Set.of("input_validation", "routing", "authentication", "authorization",
+                            "recon_trip"), propertyNames(weights)),
+                    () -> assertTrue(block.at("/properties/enabled/default").asBoolean(false)),
+                    () -> assertEquals(100, block.at("/properties/threshold/default").asInt()),
+                    () -> assertEquals(300, block.at("/properties/window_seconds/default").asInt()),
+                    () -> assertEquals(10, weights.at("/properties/input_validation/default").asInt()),
+                    () -> assertEquals(1, weights.at("/properties/routing/default").asInt()),
+                    () -> assertEquals(2, weights.at("/properties/authentication/default").asInt()),
+                    () -> assertEquals(2, weights.at("/properties/authorization/default").asInt()),
+                    () -> assertEquals(50, weights.at("/properties/recon_trip/default").asInt()));
         }
 
         private static Set<String> textValues(JsonNode array) {

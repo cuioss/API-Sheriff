@@ -52,7 +52,10 @@ link:../../README.adoc#_known_limitations[Known Limitations].
 | link:endpoint-routes.adoc[Endpoint Route Configuration (`endpoints/*.yaml`)]
 | Authoring endpoint files: the route schema, the asset terminal action and its
   canonicalize-and-confine path safety, route ordering and the reserved gateway paths, what each
-  omitted block resolves to, and the edge-hardening transport bounds and admission budgets.
+  omitted block resolves to, and the edge-hardening transport bounds and admission budgets. It also
+  carries the operator view of scanning sources: enumeration detection and its actions, and
+  link:endpoint-routes.adoc#_threat_classification_operator_note[threat classification] -- reading
+  the ALERT, tuning its weights and threshold, its false positives, and forwarding it to a SIEM.
 
 | link:protocol-routes.adoc[Protocol Routes -- WebSocket and gRPC]
 | A task-oriented guide for configuring `protocol: websocket` and `protocol: grpc` routes --

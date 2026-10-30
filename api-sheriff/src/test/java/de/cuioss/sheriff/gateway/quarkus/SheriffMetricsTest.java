@@ -101,7 +101,39 @@ class SheriffMetricsTest {
             assertEquals("sheriff_auth_branch_total", SheriffMetrics.AUTH_BRANCH_TOTAL);
             assertEquals("sheriff_source_trips_total", SheriffMetrics.SOURCE_TRIPS_TOTAL);
             assertEquals("sheriff_source_untracked_total", SheriffMetrics.SOURCE_UNTRACKED_TOTAL);
+            assertEquals("sheriff_threat_alerts_total", SheriffMetrics.THREAT_ALERTS_TOTAL);
+            assertEquals("sheriff_threat_untracked_total", SheriffMetrics.THREAT_UNTRACKED_TOTAL);
             assertEquals("sheriff_uniform_not_found_overruns_total", SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL);
+        }
+
+        @Test
+        @DisplayName("recordThreatAlert counts sheriff_threat_alerts_total without a label")
+        void recordThreatAlertCountsWithoutLabel() {
+            metrics.recordThreatAlert();
+            metrics.recordThreatAlert();
+
+            var counter = registry.get(SheriffMetrics.THREAT_ALERTS_TOTAL).counter();
+            assertAll("sheriff_threat_alerts_total",
+                    () -> assertEquals(2.0, counter.count(), 0.0),
+                    () -> assertTrue(counter.getId().getTags().isEmpty(),
+                            "the source an ALERT concerns never becomes a label"),
+                    () -> assertNull(registry.find(SheriffMetrics.THREAT_UNTRACKED_TOTAL).counter(),
+                            "an ALERT moves no overflow series"));
+        }
+
+        @Test
+        @DisplayName("recordThreatUntracked counts sheriff_threat_untracked_total without a label")
+        void recordThreatUntrackedCountsWithoutLabel() {
+            metrics.recordThreatUntracked();
+            metrics.recordThreatUntracked();
+            metrics.recordThreatUntracked();
+
+            var counter = registry.get(SheriffMetrics.THREAT_UNTRACKED_TOTAL).counter();
+            assertAll("sheriff_threat_untracked_total",
+                    () -> assertEquals(3.0, counter.count(), 0.0),
+                    () -> assertTrue(counter.getId().getTags().isEmpty(), "the overflow meter carries no label"),
+                    () -> assertNull(registry.find(SheriffMetrics.SOURCE_UNTRACKED_TOTAL).counter(),
+                            "the threat overflow is counted apart from the recon overflow"));
         }
 
         @Test

@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -23,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
@@ -46,11 +48,17 @@ import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.config.model.ThreatClassificationConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
+import de.cuioss.sheriff.gateway.detection.SourceTrip;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.edge.admission.SourceGate;
+import de.cuioss.sheriff.gateway.edge.admission.SourceKeys;
+import de.cuioss.sheriff.gateway.edge.admission.ThreatAlertDocument;
+import de.cuioss.sheriff.gateway.edge.admission.ThreatAlerts;
+import de.cuioss.sheriff.gateway.edge.admission.ThreatClassifier;
 import de.cuioss.sheriff.gateway.edge.assembly.AssetSources;
 import de.cuioss.sheriff.gateway.edge.assembly.DispatchPath;
 import de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler;
@@ -210,16 +218,29 @@ import org.jspecify.annotations.Nullable;
  * {@link ResponseDelay.Hold} the edge stashes beside it ({@link ResponseDelay#HOLD_KEY}); when that
  * sub-budget is full the answer is a {@code 503} instead, written no earlier than the floor's release.
  * <p>
- * <strong>Per-source enumeration detection.</strong> Unless {@code enumeration_detection} is disabled
- * — an omitted block runs it with its defaults — the constructor builds a {@link SourceGate} over the
- * recon ledger, keying sources through a {@link SourceKeyResolver} holding the declared
- * {@code match.host} set and through the {@code forwarded} block's {@link TcpPeerGate} trust decision.
- * {@code handle} asks the gate, after the retired-connection check and before admission, to resolve and
- * stash the request's source and to answer a blocked source {@code 429} with {@code Retry-After} — and,
- * under {@code delay}, a tripped source whose share of the held-answer sub-budget is used up; the
- * {@link ErrorResponseWriter} feeds the gate every reported rejection under its true event. Under the
- * default {@code observe} action a trip changes no answer. A disabled block builds no ledger and no
- * gate.
+ * <strong>The source key.</strong> Whenever {@code enumeration_detection} or
+ * {@code threat_classification} is enabled — an omitted block runs with its defaults — the constructor
+ * builds one {@link SourceKeys} stage, keying sources through a {@link SourceKeyResolver} holding the
+ * declared {@code match.host} set and through the {@code forwarded} block's {@link TcpPeerGate} trust
+ * decision. {@code handle} resolves and stashes the request's source through it after the
+ * retired-connection check and before admission, so both per-source consumers read the same key and
+ * neither depends on the other being enabled. With both blocks disabled no source is resolved.
+ * <p>
+ * <strong>Per-source enumeration detection.</strong> Unless {@code enumeration_detection} is disabled,
+ * the constructor builds a {@link SourceGate} over the recon ledger. {@code handle} asks the gate,
+ * after the source was stashed and before admission, to answer a blocked source {@code 429} with
+ * {@code Retry-After} — and, under {@code delay}, a tripped source whose share of the held-answer
+ * sub-budget is used up; the {@link ErrorResponseWriter} feeds the gate every reported rejection under
+ * its true event. Under the default {@code observe} action a trip changes no answer. A disabled block
+ * builds no ledger and no gate.
+ * <p>
+ * <strong>Per-source threat classification.</strong> Unless {@code threat_classification} is disabled,
+ * the constructor builds a {@link ThreatClassifier} with a threat ledger of its own, whose trip raises
+ * one ALERT per episode through {@link ThreatAlerts}. The {@link ErrorResponseWriter} hands it every
+ * rejection {@code handleGatewayRejection} reports, under its true event, and the classifier scores the
+ * ones that carry a weight ({@code ThreatWeights} lists the exact sets); the {@link SourceGate} hands it
+ * every recon trip as one more weighted input. The classifier only observes: no answer, status, header or timing changes. A
+ * disabled block builds no classifier, and a recon trip then raises nothing beyond its own record.
  * <p>
  * <strong>Negotiated HTML error pages.</strong> With {@code portal.error_pages} on, the three
  * gateway-originated error writers — the problem renderer, a failed OIDC callback and a
@@ -260,6 +281,11 @@ public class GatewayEdgeRoute {
     private final RedirectStage redirectStage;
 
     private final EdgeAdmission edgeAdmission;
+    /**
+     * The source-key stage; {@code null} when both {@code enumeration_detection} and
+     * {@code threat_classification} are disabled.
+     */
+    private final @Nullable SourceKeys sourceKeys;
     /** The per-source gate; {@code null} when {@code enumeration_detection} is disabled. */
     private final @Nullable SourceGate sourceGate;
     private final ConnectionRetirement connectionRetirement;
@@ -470,14 +496,21 @@ public class GatewayEdgeRoute {
         EnumerationDetectionConfig declaredDetection = gatewayConfig.enumerationDetection();
         EnumerationDetectionConfig detection = declaredDetection != null
                 ? declaredDetection : EnumerationDetectionConfig.defaults();
+        // Per-source threat classification: an omitted block resolves to the defaults as well, so the
+        // threat score is kept unless the operator disables it. It observes only — no answer changes.
+        ThreatClassificationConfig threat = threatClassificationOf(gatewayConfig);
+        // The source is resolved once, by one stage, whenever either consumer runs, so the threat score
+        // does not depend on enumeration detection being enabled.
+        this.sourceKeys = sourceKeysFor(detection, threat, routes, peerGate, resolverConfig);
+        ThreatClassifier threatClassifier = threatClassifierFor(threat, gatewayJson, sheriffMetrics);
         this.sourceGate = detection.effectiveEnabled()
-                ? new SourceGate(detection, new SourceKeyResolver(declaredHosts(routes)), peerGate,
-                new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()), gatewayEventCounter,
-                sheriffMetrics, gatewayJson, edgeAdmission::heldShareExhausted)
+                ? new SourceGate(detection, gatewayEventCounter, sheriffMetrics, gatewayJson,
+                edgeAdmission::heldShareExhausted, reconTripObserverFor(threatClassifier))
                 : null;
         this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
                 rejectionReporter, uniformNotFound,
-                sourceGate != null ? sourceGate : ErrorResponseWriter.ReconFeed.NONE);
+                sourceGate != null ? sourceGate : ErrorResponseWriter.ReconFeed.NONE,
+                threatFeedOf(threatClassifier));
         this.reservedBodyReader = new ReservedBodyReader(reservedPathRegistry, hardening.reservedBodyMaxBytes(),
                 gatewayEventCounter, rejectionReporter, errorResponseWriter);
         this.reservedPathHandler = new ReservedPathHandler(reservedPathRegistry, bffRuntime, portalEndpoint,
@@ -524,8 +557,12 @@ public class GatewayEdgeRoute {
             connection.close();
             return;
         }
-        // The source is resolved and stashed here, on the event loop, and a blocked source is answered
-        // 429 before admission: no permit, no virtual thread and no timer is spent on it.
+        // The source is resolved and stashed here, on the event loop, for both per-source consumers, and a
+        // blocked source is answered 429 before admission: no permit, no virtual thread and no timer is
+        // spent on it.
+        if (sourceKeys != null) {
+            sourceKeys.resolveAndStash(ctx);
+        }
         if (sourceGate != null && sourceGate.answersBlocked(ctx)) {
             return;
         }
@@ -729,6 +766,70 @@ public class GatewayEdgeRoute {
         } catch (RuntimeException unexpected) {
             errorResponseWriter.renderUnexpected(ctx, request, unexpected);
         }
+    }
+
+    /**
+     * The {@code threat_classification} block the gateway runs with: the declared one, or its defaults
+     * when the document omits the block, so the threat score is kept unless the operator disables it.
+     */
+    private static ThreatClassificationConfig threatClassificationOf(GatewayConfig gatewayConfig) {
+        ThreatClassificationConfig declared = gatewayConfig.threatClassification();
+        return declared != null ? declared : ThreatClassificationConfig.defaults();
+    }
+
+    /**
+     * The one stage that resolves the source of a request, built whenever enumeration detection or
+     * threat classification runs. The resolver gets a forwarding-header counter of its own, so a
+     * malformed forwarding header of a trusted proxy is not counted twice on
+     * {@code sheriff_security_events_total}.
+     *
+     * @return the stage, or {@code null} when neither consumer is enabled
+     */
+    private static @Nullable SourceKeys sourceKeysFor(EnumerationDetectionConfig detection,
+            ThreatClassificationConfig threat, List<Route> routes, TcpPeerGate peerGate,
+            ForwardedResolverConfig resolverConfig) {
+        if (!detection.effectiveEnabled() && !threat.effectiveEnabled()) {
+            return null;
+        }
+        return new SourceKeys(new SourceKeyResolver(declaredHosts(routes)), peerGate,
+                new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()));
+    }
+
+    /**
+     * The per-source threat classifier, with a threat ledger of its own whose trip raises one ALERT per
+     * episode.
+     *
+     * @return the classifier, or {@code null} when threat classification is disabled
+     */
+    private static @Nullable ThreatClassifier threatClassifierFor(ThreatClassificationConfig threat,
+            GatewayJson gatewayJson, SheriffMetrics sheriffMetrics) {
+        if (!threat.effectiveEnabled()) {
+            return null;
+        }
+        return new ThreatClassifier(threat, new ThreatAlerts(new ThreatAlertDocument(gatewayJson), sheriffMetrics,
+                Clock.systemUTC()), System::nanoTime);
+    }
+
+    /**
+     * The observer a recon trip is handed to. A recon trip is one more input to the threat score, never
+     * an ALERT of its own; without threat classification it has already been counted and logged by the
+     * gate, and nothing else follows.
+     */
+    private static Consumer<SourceTrip> reconTripObserverFor(@Nullable ThreatClassifier threatClassifier) {
+        if (threatClassifier == null) {
+            return _ -> {
+                // no threat score to raise
+            };
+        }
+        return threatClassifier::admitReconTrip;
+    }
+
+    /**
+     * The feed the error writer hands every handled rejection to: the classifier when threat
+     * classification runs, the inert feed otherwise.
+     */
+    private static ErrorResponseWriter.ThreatFeed threatFeedOf(@Nullable ThreatClassifier threatClassifier) {
+        return threatClassifier != null ? threatClassifier : ErrorResponseWriter.ThreatFeed.NONE;
     }
 
     /**

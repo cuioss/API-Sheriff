@@ -871,6 +871,62 @@ instance and are cleared by a restart, so a source spreading its requests over s
 counted on each separately
 (link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
 
+[[_threat_classification_operator_note]]
+=== Threat classification: reading and forwarding the ALERT
+
+Enumeration detection counts the probes of one kind. Threat classification adds them up: it keeps a
+weighted score per source over the rejections the source receives that carry a weight, before and after
+authentication, and raises one *ALERT* when the score reaches a threshold. All keys, and which
+rejections carry no weight or never reach the score, are in
+link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`].
+
+*An ALERT changes nothing a client sees.* Classification runs on every gateway, also without a
+`threat_classification` block, and it only observes. No answer, status, header or timing changes
+because of a score or an ALERT. To slow or stop a probing source, use the `delay` or `block` action of
+<<_enumeration_detection_operator_note,enumeration detection>>.
+
+*Reading an ALERT.*
+
+* WARN `ApiSheriff-143` names the source and the host as `ApiSheriff-141` does, and ends with a JSON
+  document after `ECS alert:`. The document names the score, the threshold and the window, and breaks
+  the score down per rejection kind (`api_sheriff.threat.contributions`) and per category
+  (`api_sheriff.threat.categories`), so you can see what the source did: mostly malformed input, or
+  mostly wrong tokens. A `recon_trip` entry means enumeration detection tripped the same source. The
+  document never carries the requested path, the raw `Host` or a header. Every field is listed in
+  link:../architecture/observability-and-errors.adoc#_threat_alert_document[the threat ALERT
+  document].
+* A source raises one ALERT per episode, however long it keeps probing. It raises its next ALERT only
+  after it has stopped long enough for its score to drain to zero.
+* `sheriff_threat_alerts_total` on the management port counts the ALERTs.
+* `sheriff_threat_untracked_total` counts rejections from sources the gateway could not score because
+  it already tracks the maximum of 65,536 sources; WARN `ApiSheriff-144` reports the first of them.
+
+*Forwarding it to a SIEM.* The document uses the field names of the Elastic Common Schema (ECS),
+version `8.17.0`, so an ECS-aware pipeline can index it as it is: take the text after `ECS alert: `
+as the event. `event.kind` is `alert` and `event.dataset` is `api_sheriff.threat`, which is enough to
+route it. `source.ip` is present only for an IPv4 source; an IPv6 source appears as its `/64` prefix
+in `source.address`. A pipeline that normalizes to OCSF finds the mapping in the same document
+reference. The SIEM is also where the ALERTs of several gateway instances are correlated: each
+instance scores only the requests it sees.
+
+*Tuning.* `threshold` and `window_seconds` set how much weight a source may collect before it alerts:
+the score drains continuously, so a source stays below the line as long as it collects less than
+`threshold` per `window_seconds`. The weights say what one rejection of each kind is worth. Raise
+`threshold`, or lower a weight, when honest clients alert; set a weight to `0` to stop scoring that
+kind of rejection at all. `enabled: false` switches classification off completely.
+
+*Known false positives.* The score is kept per source address, as for enumeration detection:
+
+* Many clients behind one NAT, a mobile carrier or an untrusted load balancer share one score. Their
+  honest mistakes add up. The low `authentication` and `routing` weights keep the expired tokens and
+  stray links of such a population below the drain rate; list a load balancer in
+  `forwarded.trusted_proxies` so that each client is keyed by its own address.
+* A client stuck in a loop -- retrying a malformed request, or a request with an expired token --
+  scores as a scanner does and alerts.
+
+Neither case has a wire effect: an ALERT is a signal to look at, not a refusal
+(link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078]).
+
 [[_endpoint_scopes]]
 === Endpoint scopes (`endpoint.scopes`)
 

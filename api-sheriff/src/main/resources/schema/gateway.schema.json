@@ -389,6 +389,67 @@
         }
       }
     },
+    "threat_classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-source threat classification. The rejections the gateway answers that carry a weight - before and after the trust boundary - add the weight of their category to the threat score of the caller's source (the same source key enumeration_detection uses), and a recon trip of enumeration_detection adds weights.recon_trip. Weight 0, never scored: upstream, rate-limiting and configuration events, a dropped or stalled request body, an internal failure, a category whose weight is 0, and on a static resource every rejection except a security-filter violation or an exceeded parameter limit. Never fed to the score: the reserved-path rejections, the late refusal of a streaming request body, and the 405 of an unparseable request method. The first time a source's score reaches threshold within window_seconds, one WARN ALERT record carrying an ECS-shaped JSON document is logged and metered; the source raises no further ALERT until its score has drained to zero. Classification only observes: an ALERT changes no answer, status, header or timing. State is held per gateway node. Omitted resolves to every default below. An enabled block in which no weight above 0 can act, and a declared weights.recon_trip while enumeration_detection is disabled, are refused at boot (enforced in code).",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether classification runs at all. Defaults to true."
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "The threat score within window_seconds at which a source raises its ALERT. Defaults to 100."
+        },
+        "window_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 300,
+          "description": "The window, in seconds, over which a source's score drains by a full threshold. Defaults to 300."
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The weight each rejection category adds to a source's threat score. Every member is optional; an omitted member resolves to its default. upstream, rate_limiting and configuration carry no weight and are not keys.",
+          "properties": {
+            "input_validation": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10,
+              "description": "The weight of an input-validation rejection (a filter, whitelist, parameter-limit or body-size violation). Defaults to 10."
+            },
+            "routing": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 1,
+              "description": "The weight of a routing rejection (an unrouted address or a refused method). Defaults to 1."
+            },
+            "authentication": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 2,
+              "description": "The weight of an authentication rejection (a missing or invalid credential). Defaults to 2."
+            },
+            "authorization": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 2,
+              "description": "The weight of an authorization rejection (a missing scope, a CSRF or WebSocket origin refusal). Defaults to 2."
+            },
+            "recon_trip": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 50,
+              "description": "The weight a trip of the enumeration_detection ledger adds; the recon trip is an input to the score and never an ALERT of its own. Defaults to 50. Declared while enumeration_detection is disabled, it is refused at boot (enforced in code), because no recon trip can then occur."
+            }
+          }
+        }
+      }
+    },
     "token_validation": {
       "type": "object",
       "additionalProperties": false,

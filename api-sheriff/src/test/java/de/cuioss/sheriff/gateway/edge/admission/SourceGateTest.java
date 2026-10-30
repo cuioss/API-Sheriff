@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge.admission;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,6 +31,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -45,6 +47,7 @@ import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
 import de.cuioss.sheriff.gateway.detection.SourceLedger;
 import de.cuioss.sheriff.gateway.detection.SourceState;
+import de.cuioss.sheriff.gateway.detection.SourceTrip;
 import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
 import de.cuioss.sheriff.gateway.events.EventCategory;
@@ -73,16 +76,16 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
-import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The per-source gate in front of edge admission, driven over a live Vert.x server whose one handler
- * asks the gate first and answers {@code 200} only when the gate let the request through: a blocked
- * source is answered {@code 429} with {@code Retry-After} and the rate-limiting problem document, an
- * unblocked source and a tripped source under the default {@code observe} pass, and a trip is reported
- * as an event, on the trip meter and as the trip WARN. Under {@code delay} a tripped source whose share
- * of the held-answer sub-budget is used up gets the same {@code 429}, and a held rejection carries its
- * source for that share.
+ * stashes the source through {@link SourceKeys}, asks the gate and answers {@code 200} only when the
+ * gate let the request through: a blocked source is answered {@code 429} with {@code Retry-After} and
+ * the rate-limiting problem document, an unblocked source and a tripped source under the default
+ * {@code observe} pass, and a trip is reported as an event, on the trip meter and as the trip WARN, then
+ * handed to the recon-trip observer exactly once. Under {@code delay} a tripped source whose share of
+ * the held-answer sub-budget is used up gets the same {@code 429}, and a held rejection carries its
+ * source for that share. How the source is keyed is {@code SourceKeysTest}'s subject.
  */
 @EnableTestLogger
 @DisplayName("SourceGate — the per-source answer before admission")
@@ -95,11 +98,11 @@ class SourceGateTest {
     private static final int DELAY_MILLIS = 2_500;
     private static final long DELAY_NANOS = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
     private static final long DELAY_RETRY_AFTER_SECONDS = 3L;
-    private static final String FORWARDED_FOR = "X-Forwarded-For";
-    private static final String FORWARDED_CLIENT = "203.0.113.7";
 
     /** The sources the gate is told have used up their held-answer share. */
     private final Set<SourceKey> exhaustedShares = ConcurrentHashMap.newKeySet();
+    /** Every trip the gate handed its recon-trip observer. */
+    private final List<SourceTrip> observedTrips = new CopyOnWriteArrayList<>();
 
     private Vertx vertx;
     private HttpServer server;
@@ -114,10 +117,12 @@ class SourceGateTest {
         vertx = Vertx.vertx();
         eventCounter = new GatewayEventCounter();
         meterRegistry = new SimpleMeterRegistry();
+        SourceKeys sourceKeys = sourceKeys();
         Router router = Router.router(vertx);
         router.route().handler(ctx -> {
+            sourceKeys.resolveAndStash(ctx);
             boolean answered = gate.get().answersBlocked(ctx);
-            stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+            stashed.set(ctx.get(SourceKeys.SOURCE_KEY));
             if (!answered) {
                 ctx.response().setStatusCode(200).end(PASSED);
             }
@@ -200,6 +205,45 @@ class SourceGateTest {
     }
 
     @Test
+    @DisplayName("the recon-trip observer receives each trip exactly once, after it was reported")
+    void reconTripObserverReceivesEachTripOnce() {
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(2).build());
+        Map<String, Object> data = new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, loopbackKey()));
+
+        sourceGate.admit(feedContext(data), null, EventType.NO_ROUTE_MATCHED);
+        int beforeTrip = observedTrips.size();
+        for (int count = 0; count < 5; count++) {
+            sourceGate.admit(feedContext(data), null, EventType.NO_ROUTE_MATCHED);
+        }
+
+        assertAll("one trip, one observation",
+                () -> assertEquals(0, beforeTrip, "control: no observation below the threshold"),
+                () -> assertEquals(1, observedTrips.size(), "the episode's further rejections trip nothing"),
+                () -> assertEquals(loopbackKey(), observedTrips.getFirst().key()),
+                () -> assertEquals(1L, eventCounter.getCount(EventType.SOURCE_TRIPPED),
+                        "the trip was counted as before"));
+        LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                ApiSheriffLogMessages.WARN.SOURCE_TRIPPED.resolveIdentifierString());
+    }
+
+    @Test
+    @DisplayName("a request without a stashed source is neither answered nor admitted")
+    void requestWithoutAStashedSourceIsIgnored() {
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(1)
+                .action(EnumerationDetectionConfig.Action.BLOCK).blockSeconds(BLOCK_SECONDS).build());
+        sourceGate.ledger().admit(loopbackKey(), 1, EventType.NO_ROUTE_MATCHED);
+        Map<String, Object> data = new HashMap<>();
+
+        boolean answered = sourceGate.answersBlocked(feedContext(data));
+        OptionalLong hold = sourceGate.admit(feedContext(data), null, EventType.NO_ROUTE_MATCHED);
+
+        assertAll("no source, no decision",
+                () -> assertFalse(answered, "a blocked source exists, but the request names none"),
+                () -> assertTrue(hold.isEmpty()),
+                () -> assertEquals(1, sourceGate.ledger().trackedSources(), "nothing new was tracked"));
+    }
+
+    @Test
     @DisplayName("under delay a tripped source whose held-answer share is used up is answered the block-style 429")
     void trippedSourcePastItsShareUnderDelayIsAnswered429() throws Exception {
         SourceGate sourceGate = gate(delay());
@@ -259,13 +303,13 @@ class SourceGateTest {
     @DisplayName("under delay a tripped source's held rejection carries its source for the share; an untripped one does not")
     void delayHoldCarriesTheSourceForTheShare() {
         SourceGate sourceGate = gate(delay());
-        Map<String, Object> trippedData = new HashMap<>(Map.of(SourceGate.SOURCE_KEY, loopbackKey(),
+        Map<String, Object> trippedData = new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, loopbackKey(),
                 ResponseDelay.ADMITTED_AT_KEY, 0L));
         Map<String, Object> firstData = new HashMap<>(trippedData);
 
         OptionalLong first = sourceGate.admit(feedContext(firstData), null, EventType.NO_ROUTE_MATCHED);
         OptionalLong held = sourceGate.admit(feedContext(trippedData), null, EventType.NO_ROUTE_MATCHED);
-        OptionalLong failure = sourceGate.admit(feedContext(new HashMap<>(Map.of(SourceGate.SOURCE_KEY, loopbackKey(),
+        OptionalLong failure = sourceGate.admit(feedContext(new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, loopbackKey(),
                 ResponseDelay.ADMITTED_AT_KEY, 0L))), null, EventType.PRE_TRUST_INTERNAL_FAILURE);
 
         assertAll("the delay hold and the source it counts against",
@@ -283,7 +327,7 @@ class SourceGateTest {
     void untrippedRejectionCarriesNoSource() {
         SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(2)
                 .action(EnumerationDetectionConfig.Action.DELAY).delayMillis(DELAY_MILLIS).build());
-        Map<String, Object> data = new HashMap<>(Map.of(SourceGate.SOURCE_KEY, loopbackKey(),
+        Map<String, Object> data = new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, loopbackKey(),
                 ResponseDelay.ADMITTED_AT_KEY, 0L));
 
         OptionalLong hold = sourceGate.admit(feedContext(data), null, EventType.NO_ROUTE_MATCHED);
@@ -291,45 +335,6 @@ class SourceGateTest {
         assertAll("a rejection below the threshold",
                 () -> assertTrue(hold.isEmpty(), "an untripped source is not delayed"),
                 () -> assertNull(data.get(EdgeAdmission.HELD_SOURCE_KEY), "nothing counts against a share"));
-    }
-
-    @Test
-    @DisplayName("a trusted proxy's request is keyed by its forwarded client, an untrusted peer's by the peer")
-    void trustedProxyRequestIsKeyedByItsForwardedClient() throws Exception {
-        gate(EnumerationDetectionConfig.defaults(), List.of(LoopbackHost.ADDRESS + "/32"));
-        send(Map.of(FORWARDED_FOR, FORWARDED_CLIENT));
-        SourceKey trusted = stashed.get();
-        gate(EnumerationDetectionConfig.defaults());
-        send(Map.of(FORWARDED_FOR, FORWARDED_CLIENT));
-        SourceKey untrusted = stashed.get();
-
-        assertAll("the key follows the trust decision",
-                () -> assertEquals(new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST), trusted),
-                () -> assertEquals(loopbackKey(), untrusted, "an untrusted peer's header is never read"));
-    }
-
-    @ParameterizedTest(name = "[{0}]")
-    @ValueSource(strings = {"", "not-an-address", "999.0.0.1", "unknown"})
-    @DisplayName("a trusted proxy's request whose forwarding header names no client is keyed on the unknown source")
-    void trustedProxyRequestWithoutAClientIsKeyedOnTheUnknownSource(String forwardedFor) throws Exception {
-        gate(EnumerationDetectionConfig.defaults(), List.of(LoopbackHost.ADDRESS + "/32"));
-
-        Response response = send(Map.of(FORWARDED_FOR, forwardedFor));
-
-        assertAll("never the proxy's own address",
-                () -> assertEquals(200, response.status(), "the request is passed on"),
-                () -> assertEquals(new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST), stashed.get()));
-    }
-
-    @Test
-    @DisplayName("a trusted proxy's request with no forwarding header is keyed on the unknown source")
-    void trustedProxyRequestWithoutAHeaderIsKeyedOnTheUnknownSource() throws Exception {
-        gate(EnumerationDetectionConfig.defaults(), List.of(LoopbackHost.ADDRESS + "/32"));
-
-        send();
-
-        assertEquals(new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST), stashed.get(),
-                "the proxy's own address is never the key");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -356,26 +361,26 @@ class SourceGateTest {
                 .delayMillis(DELAY_MILLIS).build();
     }
 
+    /** The gate, its recon-trip observer recording every trip into {@link #observedTrips}. */
     private SourceGate gate(EnumerationDetectionConfig config) {
-        return gate(config, List.of());
-    }
-
-    /** The gate with the given trusted proxies, the resolver configured as the forward stage's. */
-    private SourceGate gate(EnumerationDetectionConfig config, List<String> trustedProxies) {
-        ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
-                ForwardedResolverConfig.builder().trustedProxies(Set.copyOf(trustedProxies))
-                        .securityConfig(SecurityConfiguration.defaults()).build(),
-                new SecurityEventCounter());
-        SourceGate built = new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(trustedProxies),
-                forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry), new GatewayJson(new ObjectMapper()),
-                exhaustedShares::contains);
+        SourceGate built = new SourceGate(config, eventCounter, new SheriffMetrics(meterRegistry),
+                new GatewayJson(new ObjectMapper()), exhaustedShares::contains, observedTrips::add);
         gate.set(built);
         return built;
     }
 
+    /** The source-key stage of a gateway without trusted proxies: every request is keyed on its TCP peer. */
+    private static SourceKeys sourceKeys() {
+        ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
+                ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                        .securityConfig(SecurityConfiguration.defaults()).build(),
+                new SecurityEventCounter());
+        return new SourceKeys(new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()), forwardedResolver);
+    }
+
     /**
      * A {@link RoutingContext} backed by a map for {@code get} and {@code put}, the only calls the
-     * rejection feed makes on it; every other call fails the test.
+     * gate makes on it; every other call fails the test.
      */
     private static RoutingContext feedContext(Map<String, Object> data) {
         return (RoutingContext) Proxy.newProxyInstance(RoutingContext.class.getClassLoader(),

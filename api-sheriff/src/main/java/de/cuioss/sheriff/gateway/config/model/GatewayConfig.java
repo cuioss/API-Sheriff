@@ -62,7 +62,11 @@ import org.jspecify.annotations.Nullable;
  *                         a tripped source), {@code null} when omitted —
  *                         {@link EnumerationDetectionConfig#defaults()} then applies: detection on, and
  *                         the {@code observe} action, which records a trip without changing any answer
- * @param egressTls       the global outbound-TLS settings — upstream hostname verification and the
+ * @param threatClassification the per-source threat-score settings (threshold, window and the weight
+ *                         per rejection category), {@code null} when omitted —
+ *                         {@link ThreatClassificationConfig#defaults()} then applies: classification on,
+ *                         observe only, so an ALERT is logged without changing any answer
+ * @param egressTls      the global outbound-TLS settings — upstream hostname verification and the
  *                         upstream trust-profile name (ADR-0040), {@code null} when omitted so
  *                         {@link EgressTlsConfig#defaults()} applies. Disjoint from {@code tls},
  *                         which is the server-side surface (ADR-0025)
@@ -90,6 +94,7 @@ Map<String, AnchorConfig> anchors,
 @Nullable OidcConfig oidc,
 @Nullable EdgeHardeningConfig edgeHardening,
 @Nullable EnumerationDetectionConfig enumerationDetection,
+@Nullable ThreatClassificationConfig threatClassification,
 @Nullable EgressTlsConfig egressTls,
 @Nullable PortalConfig portal) {
 

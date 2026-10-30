@@ -56,6 +56,7 @@ import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
+import de.cuioss.sheriff.gateway.config.model.ThreatClassificationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -214,6 +215,103 @@ class ConfigLoaderTest {
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("max_sessions_per_subject")),
                 () -> "expected an error pointing at the key, got: " + exception.errors());
+    }
+
+    /**
+     * The {@code threat_classification} block through the schema-validating loader: a declared block
+     * binds member for member, an omitted one stays absent, and the schema refuses an unknown key inside
+     * the block or its {@code weights} and a negative weight.
+     */
+    @Nested
+    class ThreatClassificationBlock {
+
+        private static String gatewayWithThreatClassification(String block) {
+            return """
+                    version: 1
+                    threat_classification:
+                    %s
+                    """.formatted(block.indent(2).stripTrailing());
+        }
+
+        @Test
+        void bindsADeclaredBlockMemberForMember() throws Exception {
+            writeConfig("gateway.yaml", gatewayWithThreatClassification("""
+                    enabled: true
+                    threshold: 40
+                    window_seconds: 120
+                    weights:
+                      input_validation: 8
+                      routing: 0
+                      authentication: 3
+                      authorization: 4
+                      recon_trip: 20
+                    """));
+
+            GatewayConfig gateway = loader(Map.of()).load(IGNORE_DEFAULTED).gateway();
+
+            assertEquals(new ThreatClassificationConfig(true, 40, 120,
+                    new ThreatClassificationConfig.Weights(8, 0, 3, 4, 20)), gateway.threatClassification(),
+                    "every snake_case key binds to its record component");
+        }
+
+        @Test
+        void leavesAnOmittedBlockAbsentAndAPartialBlockToItsDefaults() throws Exception {
+            writeConfig("gateway.yaml", "version: 1\n");
+            GatewayConfig omitted = loader(Map.of()).load(IGNORE_DEFAULTED).gateway();
+            writeConfig("gateway.yaml", gatewayWithThreatClassification("""
+                    weights:
+                      input_validation: 25
+                    """));
+            GatewayConfig partial = loader(Map.of()).load(IGNORE_DEFAULTED).gateway();
+
+            assertAll(
+                    () -> assertNull(omitted.threatClassification(), "control: nothing binds when undeclared"),
+                    () -> assertEquals(25, partial.threatClassification().effectiveWeights().effectiveInputValidation()),
+                    () -> assertEquals(ThreatClassificationConfig.Weights.DEFAULT_RECON_TRIP,
+                            partial.threatClassification().effectiveWeights().effectiveReconTrip(),
+                            "an omitted weight resolves to its default"),
+                    () -> assertEquals(ThreatClassificationConfig.DEFAULT_THRESHOLD,
+                            partial.threatClassification().effectiveThreshold()));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"action: block", "rate_limiting: 5", "upstream: 1",
+                "weights:\n  rate_limiting: 5", "weights:\n  upstream: 1", "weights:\n  configuration: 1"})
+        void schemaRefusesAnUnknownKey(String block) throws Exception {
+            writeConfig("gateway.yaml", gatewayWithThreatClassification(block));
+
+            ConfigLoader loader = loader(Map.of());
+            ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+            assertTrue(exception.errors().stream()
+                            .anyMatch(error -> error.pointer().contains("threat_classification")),
+                    () -> "expected an error inside the threat_classification block, got: " + exception.errors());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"input_validation", "routing", "authentication", "authorization", "recon_trip"})
+        void schemaRefusesANegativeWeight(String member) throws Exception {
+            writeConfig("gateway.yaml", gatewayWithThreatClassification("weights:\n  " + member + ": -1"));
+
+            ConfigLoader loader = loader(Map.of());
+            ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+            assertTrue(exception.errors().stream().anyMatch(error -> error.pointer().contains(member)),
+                    () -> "expected an error pointing at weights." + member + ", got: " + exception.errors());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"threshold: 0", "window_seconds: 0"})
+        void schemaRefusesAThresholdOrWindowBelowOne(String member) throws Exception {
+            writeConfig("gateway.yaml", gatewayWithThreatClassification(member));
+
+            ConfigLoader loader = loader(Map.of());
+            ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+            String key = member.substring(0, member.indexOf(':'));
+            assertTrue(exception.errors().stream().anyMatch(error -> error.pointer().contains(key)),
+                    () -> "expected an error pointing at " + key + ", got: " + exception.errors());
+        }
     }
 
     /**

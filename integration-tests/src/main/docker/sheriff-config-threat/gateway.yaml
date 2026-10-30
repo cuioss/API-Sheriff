@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the threat-classification gateway that ThreatClassificationIT starts as a
+# one-off `docker run` container. It is NOT a compose service: its point is a threat threshold far
+# below the shipped default. The whole IT suite reaches the compose gateways from one docker source
+# address and runs rejection corpora against them, so a threshold this low there would raise ALERTs
+# for every suite's own deliberate rejections. The compose stack runs threat classification with the
+# shipped defaults, which only observe and change no answer.
+#
+# It is a STANDALONE document, not an overlay of the shared sheriff-config directory: it is the
+# sheriff-config-enumeration/gateway.yaml document without its enumeration_detection block and with a
+# threat_classification block instead. The test mounts it as /app/sheriff-config/gateway.yaml together
+# with exactly one shared endpoint file, sheriff-config/endpoints/assets-secure.yaml, and no
+# topology.properties, so its route set is that single bearer-gated directory asset route and every
+# other address is unrouted. The test's probes carry an encoded path separator, which the pre-route
+# canonical-path guard refuses as SECURITY_FILTER_VIOLATION — an input_validation rejection.
+version: 1
+metadata:
+  config_version: "integration-test-threat"
+allowed_methods: ["GET"]
+# The strict preset is pinned for the same reason the base document pins it; the
+# max_authorization_header_value_length carve-out keeps the document the enumeration one is.
+security_defaults:
+  profile: strict
+  max_authorization_header_value_length: 8192
+# No enumeration_detection block: the recon ledger runs its shipped default, observe at a threshold of
+# 100, which the test's few dozen requests never reach, so no recon trip adds to the threat score.
+# EnumerationDetectionActivationWiringTest sweeps every sheriff-config* descriptor but the enumeration
+# one for that block, so declaring one here would turn it red.
+#
+# --- The point of this instance: a threat threshold a short scan crosses ---------------------------
+# ThreatClassificationActivationWiringTest pins all three values against ThreatClassificationIT's
+# sizing, which separates each of them from its default:
+#
+# threshold: 40 is crossed by the second malformed request at weight 25, and not by the first, so a
+# single malformed request stays benign. Three malformed requests reach 75 -- past 40, below the default
+# threshold of 100 -- so a deleted threshold leaves the scan below its bound without an ALERT.
+#
+# weights.input_validation: 25 is what carries the scan across the threshold: at the default weight of
+# 10 the same three requests reach 30, below 40, so a deleted weight leaves the scan without an ALERT.
+#
+# window_seconds: 600 drains the level at a fifteenth of a point per second, so nothing of the scan
+# drains away between its requests; the ALERT document carries it as api_sheriff.threat.window_seconds,
+# which the test reads back, so a deleted window turns the field-shape leg red.
+threat_classification:
+  threshold: 40
+  window_seconds: 600
+  weights:
+    input_validation: 25
+anchors:
+  # The bearer-gated asset surface the mounted assets-secure endpoint rides (ADR-0014). The test does
+  # not fetch it; the endpoint file names this anchor, so the document must declare it to boot.
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: integration-keycloak
+      issuer: https://localhost:1443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host. The container
+        # joins the compose network, where `keycloak` resolves to the bridge address the SSRF egress
+        # guard refuses unless that host is allowed.
+        #
+        # Keycloak serves the IT's self-signed certificate; the benchmark-idp profile binds the stack's
+        # trust store through the mounted benchmark-idp-trust.properties.
+        tls_profile: benchmark-idp

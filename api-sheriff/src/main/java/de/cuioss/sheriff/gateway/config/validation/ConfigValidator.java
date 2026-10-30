@@ -56,8 +56,8 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * configuration version, endpoint and route id uniqueness, base-URL resolvability),
  * {@link RouteMatchingRules} (route disjointness, header matchers, effective-method membership),
  * {@link AnchorRules} (the anchors), {@link AuthRules} (the {@code auth} blocks and endpoint scopes),
- * {@link LimitRules} (the security-filter profile, the edge limits, the enumeration detection and the
- * unenforced {@code rate_limit}), {@link TerminalActionRules}
+ * {@link LimitRules} (the security-filter profile, the edge limits, the enumeration detection, the
+ * threat classification and the unenforced {@code rate_limit}), {@link TerminalActionRules}
  * (upstream, asset or redirect), {@link EdgeRules} (forwarded trust and TLS passthrough),
  * {@link HeaderRules} (CORS, Content-Security-Policy and the security-header modes),
  * {@link OidcSessionRules} (the BFF session), {@link OidcClientRules} (the OIDC client),
@@ -264,6 +264,7 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateEnumerationDetection(gateway, errors),
+            (gateway, endpoints, topology, errors) -> LimitRules.validateThreatClassification(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateAuthorizationHeaderValueLength(gateway,
                     errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateRateLimitNotEnforced(endpoints),

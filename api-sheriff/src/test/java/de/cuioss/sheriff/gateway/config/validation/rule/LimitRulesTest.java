@@ -46,6 +46,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.ThreatClassificationConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.Generators;
@@ -64,6 +65,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for the inbound-limit rules the {@link ConfigValidator} runs through {@link LimitRules}: the
  * {@code edge_hardening} admission budget, the {@code enumeration_detection} bounds, the
+ * {@code threat_classification} bounds and inert-weight refusals, the
  * {@code security_defaults.max_authorization_header_value_length}
  * carve-out bound, and the fail-closed ADR-0024 {@code profile: minimal} refusal on effectively-authenticated
  * and BFF routes — plus the fail-closed default of the GET-body opt-in that shares the
@@ -888,6 +890,196 @@ class LimitRulesTest {
 
             assertEquals(4, errors.stream().filter(e -> e.pointer().startsWith(POINTER)).count(),
                     () -> "expected one refusal per member, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("threat_classification bounds")
+    class ThreatClassificationBounds {
+
+        private static final String POINTER = "/threat_classification/";
+        private static final String WEIGHTS_POINTER = POINTER + "weights";
+        private static final String NO_ACTING_WEIGHT = "no weight above 0 can act";
+        private static final String RECON_TRIP_INERT = "can never act because enumeration_detection is disabled";
+
+        private List<ConfigError> validate(ThreatClassificationConfig classification) {
+            return validate(classification, null);
+        }
+
+        private List<ConfigError> validate(ThreatClassificationConfig classification,
+                @Nullable EnumerationDetectionConfig detection) {
+            return validator.validate(validGateway().threatClassification(classification)
+                    .enumerationDetection(detection).build(), List.of(), topologyWith());
+        }
+
+        private static ThreatClassificationConfig withWeights(ThreatClassificationConfig.Weights weights) {
+            return ThreatClassificationConfig.builder().weights(weights).build();
+        }
+
+        private static ThreatClassificationConfig.Weights allZero(@Nullable Integer reconTrip) {
+            return new ThreatClassificationConfig.Weights(0, 0, 0, 0, reconTrip);
+        }
+
+        private static ThreatClassificationConfig.Weights singleWeight(String member, int value) {
+            ThreatClassificationConfig.Weights.WeightsBuilder builder = ThreatClassificationConfig.Weights.builder();
+            switch (member) {
+                case "input_validation" -> builder.inputValidation(value);
+                case "routing" -> builder.routing(value);
+                case "authentication" -> builder.authentication(value);
+                case "authorization" -> builder.authorization(value);
+                case "recon_trip" -> builder.reconTrip(value);
+                default -> throw new IllegalArgumentException("unknown weight member " + member);
+            }
+            return builder.build();
+        }
+
+        private static EnumerationDetectionConfig reconDisabled() {
+            return EnumerationDetectionConfig.builder().enabled(false).build();
+        }
+
+        @Test
+        @DisplayName("Should accept an omitted block, an empty block and the shipped defaults")
+        void shouldAcceptOmittedEmptyAndDefaults() {
+            List<ConfigError> omitted = validator.validate(validGateway().build(), List.of(), topologyWith());
+            List<ConfigError> empty = validate(ThreatClassificationConfig.builder().build());
+            List<ConfigError> defaults = validate(ThreatClassificationConfig.defaults());
+
+            assertAll("nothing in range is refused",
+                    () -> assertTrue(omitted.isEmpty(), () -> "omitted: " + omitted),
+                    () -> assertTrue(empty.isEmpty(), () -> "empty: " + empty),
+                    () -> assertTrue(defaults.isEmpty(), () -> "defaults: " + defaults));
+        }
+
+        @Test
+        @DisplayName("Should accept a threshold and window of exactly 1")
+        void shouldAcceptLowestThresholdAndWindow() {
+            List<ConfigError> errors = validate(ThreatClassificationConfig.builder().threshold(1).windowSeconds(1)
+                    .build());
+
+            assertTrue(errors.isEmpty(), () -> "1 is the lowest admitted value, but got: " + errors);
+        }
+
+        @ParameterizedTest(name = "threshold {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Should refuse a threshold below 1, naming its pointer and value")
+        void shouldRefuseThresholdBelowOne(int threshold) {
+            List<ConfigError> errors = validate(ThreatClassificationConfig.builder().threshold(threshold).build());
+
+            assertHasError(errors, POINTER + "threshold", "threshold must be at least 1 (was " + threshold + ")");
+        }
+
+        @ParameterizedTest(name = "window_seconds {0}")
+        @ValueSource(ints = {0, -300})
+        @DisplayName("Should refuse a window below 1 second")
+        void shouldRefuseWindowBelowOne(int windowSeconds) {
+            List<ConfigError> errors = validate(ThreatClassificationConfig.builder().windowSeconds(windowSeconds)
+                    .build());
+
+            assertHasError(errors, POINTER + "window_seconds",
+                    "window_seconds must be at least 1 (was " + windowSeconds + ")");
+        }
+
+        @ParameterizedTest(name = "weights.{0}")
+        @ValueSource(strings = {"input_validation", "routing", "authentication", "authorization", "recon_trip"})
+        @DisplayName("Should refuse a declared weight of -1, naming its pointer and value")
+        void shouldRefuseNegativeWeight(String member) {
+            List<ConfigError> errors = validate(withWeights(singleWeight(member, -1)));
+
+            assertHasError(errors, WEIGHTS_POINTER + "/" + member, "weights." + member + " must be at least 0 (was -1)");
+        }
+
+        @ParameterizedTest(name = "weights.{0}")
+        @ValueSource(strings = {"input_validation", "routing", "authentication", "authorization", "recon_trip"})
+        @DisplayName("Should accept a declared weight of 0 while another weight can act")
+        void shouldAcceptZeroWeight(String member) {
+            List<ConfigError> errors = validate(withWeights(singleWeight(member, 0)));
+
+            assertTrue(errors.isEmpty(), () -> "a zero weight beside acting defaults is legal, but got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse an enabled block whose every weight is 0")
+        void shouldRefuseAllZeroEnabledBlock() {
+            List<ConfigError> errors = validate(withWeights(allZero(0)));
+
+            assertHasError(errors, WEIGHTS_POINTER, NO_ACTING_WEIGHT);
+            assertEquals(1, errors.size(), () -> "expected exactly the all-zero refusal, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an all-zero block that is disabled")
+        void shouldAcceptAllZeroDisabledBlock() {
+            List<ConfigError> errors = validate(ThreatClassificationConfig.builder().enabled(false)
+                    .weights(allZero(0)).build());
+
+            assertTrue(errors.isEmpty(), () -> "a disabled block cannot alert anyway, but got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept a block in which only recon_trip acts while recon detection runs")
+        void shouldAcceptReconTripOnlyWithReconEnabled() {
+            List<ConfigError> errors = validate(withWeights(allZero(30)));
+
+            assertTrue(errors.isEmpty(), () -> "a recon trip can feed the score, but got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse a block in which only the defaulted recon_trip could act while recon detection is off")
+        void shouldRefuseOmittedReconTripAsOnlyWeightWithReconDisabled() {
+            List<ConfigError> errors = validate(withWeights(allZero(null)), reconDisabled());
+
+            assertAll(
+                    () -> assertHasError(errors, WEIGHTS_POINTER, NO_ACTING_WEIGHT),
+                    () -> assertTrue(errors.stream().noneMatch(e -> e.message().contains(RECON_TRIP_INERT)),
+                            () -> "an omitted recon_trip is never refused on its own, got: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should refuse a declared recon_trip while enumeration_detection is disabled")
+        void shouldRefuseDeclaredReconTripWithReconDisabled() {
+            List<ConfigError> errors = validate(withWeights(singleWeight("recon_trip", 50)), reconDisabled());
+
+            assertHasError(errors, WEIGHTS_POINTER + "/recon_trip", "weights.recon_trip 50 " + RECON_TRIP_INERT);
+            assertEquals(1, errors.size(), () -> "expected exactly the recon_trip refusal, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an omitted recon_trip while enumeration_detection is disabled")
+        void shouldAcceptOmittedReconTripWithReconDisabled() {
+            List<ConfigError> errors = validate(ThreatClassificationConfig.builder().build(), reconDisabled());
+
+            assertTrue(errors.isEmpty(), () -> "the caller weights still act, but got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept a declared recon_trip while enumeration_detection is enabled or omitted")
+        void shouldAcceptDeclaredReconTripWithReconRunning() {
+            ThreatClassificationConfig classification = withWeights(singleWeight("recon_trip", 50));
+
+            List<ConfigError> omitted = validate(classification);
+            List<ConfigError> enabled = validate(classification,
+                    EnumerationDetectionConfig.builder().enabled(true).build());
+
+            assertAll(
+                    () -> assertTrue(omitted.isEmpty(), () -> "omitted recon block: " + omitted),
+                    () -> assertTrue(enabled.isEmpty(), () -> "enabled recon block: " + enabled));
+        }
+
+        @Test
+        @DisplayName("Should report every refused member in one pass")
+        void shouldReportEveryViolationInOnePass() {
+            List<ConfigError> errors = validate(new ThreatClassificationConfig(true, 0, 0,
+                    new ThreatClassificationConfig.Weights(-1, -1, -1, -1, 5)), reconDisabled());
+
+            assertAll(
+                    () -> assertEquals(1, errors.stream().filter(e -> e.pointer().equals(POINTER + "threshold"))
+                            .count(), () -> "threshold: " + errors),
+                    () -> assertEquals(1, errors.stream().filter(e -> e.pointer().equals(POINTER + "window_seconds"))
+                            .count(), () -> "window_seconds: " + errors),
+                    () -> assertEquals(4, errors.stream().filter(e -> e.message().contains("must be at least 0"))
+                            .count(), () -> "negative weights: " + errors),
+                    () -> assertHasError(errors, WEIGHTS_POINTER + "/recon_trip", RECON_TRIP_INERT),
+                    () -> assertHasError(errors, WEIGHTS_POINTER, NO_ACTING_WEIGHT));
         }
     }
 }

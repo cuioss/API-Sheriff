@@ -99,6 +99,17 @@ import org.jspecify.annotations.Nullable;
  * the default {@code observe} action, and under {@code block}, the feed holds nothing and the answer is
  * rendered exactly as without it.
  * <p>
+ * <strong>The threat feed.</strong> After the recon feed and before rendering, every rejection
+ * {@link #handleGatewayRejection} handles is also handed to the {@link ThreatFeed}, under its TRUE
+ * event — the per-source threat score, which adds up the rejections that carry a weight before and
+ * after the trust boundary (the excluded events and categories weigh 0 and are never admitted, see
+ * {@code ThreatWeights}). The threat feed observes only: it returns nothing,
+ * so it can neither hold nor change an answer. An unexpected internal failure
+ * ({@link #renderUnexpected}) is never handed to it: an operator-side failure is not caller behaviour.
+ * Nor is a rejection answered without {@link #handleGatewayRejection}: a reserved-path rejection, the
+ * late refusal of a streaming body ({@code TerminalDispatch.lateBodyRefusal}) and the {@code 405} of a
+ * request method the gateway cannot parse.
+ * <p>
  * Every writer mutates the response on the request's event loop; the methods may be called from the
  * virtual thread. Thread-safe.
  *
@@ -128,6 +139,7 @@ public final class ErrorResponseWriter {
     private final RejectionReporter rejectionReporter;
     private final UniformNotFound uniformNotFound;
     private final ReconFeed reconFeed;
+    private final ThreatFeed threatFeed;
 
     /**
      * The per-source detection feed every reported rejection is admitted to — the producer side of the
@@ -158,6 +170,35 @@ public final class ErrorResponseWriter {
     }
 
     /**
+     * The per-source threat feed every rejection {@link ErrorResponseWriter#handleGatewayRejection}
+     * reports is handed to — the producer side of the threat score. The writer hands each rejection over
+     * under its TRUE event; which rejections count, under which source and with what weight is the
+     * feed's decision ({@code ThreatWeights}). The feed
+     * observes only: it returns nothing, so it never holds or changes an answer.
+     * <p>
+     * Declared here, beside {@link ReconFeed} and its one caller, so the writer depends on no
+     * implementation of it: the implementation lives with the per-source consumers
+     * ({@code edge.admission.ThreatClassifier}), which already depend on this package.
+     */
+    @FunctionalInterface
+    public interface ThreatFeed {
+
+        /** The feed of a gateway without threat classification: admits nothing. */
+        ThreatFeed NONE = (ctx, request, eventType) -> {
+            // threat classification disabled: no score is kept
+        };
+
+        /**
+         * Hands one reported rejection to the threat score.
+         *
+         * @param ctx       the rejected request
+         * @param request   the pipeline request, {@code null} for a rejection raised before one was built
+         * @param eventType the TRUE event of the rejection, never the one it is rendered as
+         */
+        void admit(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType);
+    }
+
+    /**
      * When a rendered answer is written: whether it waits for the uniform {@code 404}'s floor, and the
      * time the per-source feed holds it until. The floor's release time is deliberately not carried
      * here: it is computed on the event loop when the answer is armed ({@link #answerAt}).
@@ -173,8 +214,8 @@ public final class ErrorResponseWriter {
     }
 
     /**
-     * A writer without per-source detection ({@link ReconFeed#NONE}): the shape of a gateway whose
-     * {@code enumeration_detection} is disabled.
+     * A writer without per-source detection ({@link ReconFeed#NONE}, {@link ThreatFeed#NONE}): the shape
+     * of a gateway whose {@code enumeration_detection} and {@code threat_classification} are disabled.
      *
      * @param portalEndpoint    the application portal, whose {@code portal.error_pages} switch and
      *                          error-page renderer the negotiation consults
@@ -190,6 +231,9 @@ public final class ErrorResponseWriter {
     }
 
     /**
+     * A writer with the per-source recon feed and without threat classification
+     * ({@link ThreatFeed#NONE}).
+     *
      * @param portalEndpoint    the application portal, whose {@code portal.error_pages} switch and
      *                          error-page renderer the negotiation consults
      * @param gatewayJson       the serializer the RFC 9457 problem body is rendered through
@@ -203,12 +247,34 @@ public final class ErrorResponseWriter {
     public ErrorResponseWriter(PortalEndpoint portalEndpoint, GatewayJson gatewayJson,
             GrpcStatusMapper grpcStatusMapper, RejectionReporter rejectionReporter, boolean uniformNotFound,
             ReconFeed reconFeed) {
+        this(portalEndpoint, gatewayJson, grpcStatusMapper, rejectionReporter, uniformNotFound, reconFeed,
+                ThreatFeed.NONE);
+    }
+
+    /**
+     * @param portalEndpoint    the application portal, whose {@code portal.error_pages} switch and
+     *                          error-page renderer the negotiation consults
+     * @param gatewayJson       the serializer the RFC 9457 problem body is rendered through
+     * @param grpcStatusMapper  the mapper a rejected gRPC route's trailers-only status is written by
+     * @param rejectionReporter the accounting half {@link #handleGatewayRejection} reports through
+     * @param uniformNotFound   the resolved {@code security_defaults.uniform_not_found} switch: whether
+     *                          a pre-trust rejection is answered as the unrouted {@code 404}
+     * @param reconFeed         the per-source detection feed every reported rejection is admitted to,
+     *                          {@link ReconFeed#NONE} when detection is disabled
+     * @param threatFeed        the per-source threat feed every rejection {@link #handleGatewayRejection}
+     *                          reports is handed to, {@link ThreatFeed#NONE} when threat
+     *                          classification is disabled
+     */
+    public ErrorResponseWriter(PortalEndpoint portalEndpoint, GatewayJson gatewayJson,
+            GrpcStatusMapper grpcStatusMapper, RejectionReporter rejectionReporter, boolean uniformNotFound,
+            ReconFeed reconFeed, ThreatFeed threatFeed) {
         this.portalEndpoint = Objects.requireNonNull(portalEndpoint, "portalEndpoint");
         this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
         this.grpcStatusMapper = Objects.requireNonNull(grpcStatusMapper, "grpcStatusMapper");
         this.rejectionReporter = Objects.requireNonNull(rejectionReporter, "rejectionReporter");
         this.uniformNotFound = new UniformNotFound(uniformNotFound);
         this.reconFeed = Objects.requireNonNull(reconFeed, "reconFeed");
+        this.threatFeed = Objects.requireNonNull(threatFeed, "threatFeed");
     }
 
     /**
@@ -220,6 +286,8 @@ public final class ErrorResponseWriter {
      *   <li>It is admitted to the per-source detection ledger through the {@link ReconFeed}, under its
      *       TRUE event — never the one it is rendered as, so a {@code 401} or {@code 405} answered as the
      *       uniform {@code 404} counts as what it is.</li>
+     *   <li>It is handed to the per-source threat score through the {@link ThreatFeed}, under the same
+     *       TRUE event; the threat feed observes only and holds nothing.</li>
      *   <li>It is rendered. When the feed holds the answer — the source has tripped under the
      *       {@code delay} action — the answer, in whichever shape it takes, is released no earlier than
      *       the later of the uniform {@code 404}'s release time and the feed's, through the same
@@ -234,6 +302,7 @@ public final class ErrorResponseWriter {
             GatewayException rejected) {
         rejectionReporter.reportRejection(ctx, rejected);
         OptionalLong heldUntilNanos = reconFeed.admit(ctx, request, rejected.getEventType());
+        threatFeed.admit(ctx, request, rejected.getEventType());
         renderRejection(ctx, request, rejected, heldUntilNanos);
     }
 

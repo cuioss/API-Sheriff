@@ -88,8 +88,8 @@ to *run* the finished gateway).
   to its `/64`) and folded host, the soft 65,536-key bound, weighted admission with caller tags, the
   leaky bucket that approximates a sliding window, the `enumeration_detection` configuration and why
   `observe` is its default, the `CLEAR -> TRIPPED -> BLOCKED` state machine and query API, the raw
-  `SourceTrip` emit shape, threading, the single-node in-memory decision, and what it serves
-  `PLAN-V02-07` and deliberately does not.
+  `SourceTrip` emit shape, threading, the single-node in-memory decision, and its second consumer,
+  the per-source threat classification, with what the substrate serves it and deliberately does not.
 
 | link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split]
 | The Vert.x `NetServer` front architecture, the accept-time L4/L7 split, the internal-handoff
@@ -130,7 +130,7 @@ to *run* the finished gateway).
   inbound path, so a moved application context path must be reflected in `gateway.yaml`.
 
 | link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
-| Which declared gateway limit has a boundary assertion and which does not -- the thirty-three-file
+| Which declared gateway limit has a boundary assertion and which does not -- the thirty-four-file
   descriptor surface, the strict preset's resolved caps that appear in no yaml, one row per limit
   naming its enforcing component and its asserting test, the standing gap remainder, and the two
   report-only findings -- that the body-cap wiring guard's glob never reaches the `endpoints/` tree,

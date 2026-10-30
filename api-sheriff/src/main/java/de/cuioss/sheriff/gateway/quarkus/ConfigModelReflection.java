@@ -46,6 +46,7 @@ import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.config.model.ThreatClassificationConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
@@ -95,6 +96,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         EdgeHardeningConfig.class,
         EnumerationDetectionConfig.class,
         EnumerationDetectionConfig.Action.class,
+        ThreatClassificationConfig.class,
+        ThreatClassificationConfig.Weights.class,
         TokenValidationConfig.class,
         IssuerConfig.class,
         IssuerConfig.Jwks.class,

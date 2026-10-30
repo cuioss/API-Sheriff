@@ -1,0 +1,283 @@
+= ADR-0078: Per-source threat classification raises one ECS alert per episode from its own ledger
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: The gateway keeps a weighted threat score per source on a second ledger of the per-source detection substrate. It admits the rejections that ErrorResponseWriter.handleGatewayRejection renders and that carry a weight, before and after the trust boundary, under their true event with the weight of their event category, plus the recon ledger's trip as one more weighted input. Weight 0, never admitted: the upstream, rate-limiting and configuration categories, an event without a category, INBOUND_BODY_ABORTED, REQUEST_BODY_TIMEOUT, PRE_TRUST_INTERNAL_FAILURE, and on a static resource every rejection except SECURITY_FILTER_VIOLATION and PARAMETER_LIMIT_EXCEEDED. Never handed to the feed: the reserved-path rejections, the late refusal of a streaming body (TerminalDispatch.lateBodyRefusal) and the 405 of a request method the gateway cannot parse. The first threshold crossing of an episode raises exactly one WARN ApiSheriff-143 whose last substitution is an ECS 8.17.0 JSON document, mapped to OCSF in the documentation but not emitted as OCSF. The threat ledger only observes: no answer changes. The source key is resolved by its own stage, so the score does not depend on enumeration detection being enabled. None of the fixed zeros has a configuration key. The state is single-node; a SIEM owns cross-node correlation.
+// tags: edge, detection, threat-classification, ecs, siem, alerting, secure-defaults, observability
+// affects: api-sheriff, integration-tests, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]
+gives the gateway one per-source detection substrate and its first consumer, the recon ledger. That
+ledger counts one kind of behaviour: pre-trust probes for routes. A hostile source does more than
+that. It sends malformed and injection-shaped input, tries tokens, and keeps doing so after it has
+found a route. Each rejection is metered and logged on its own, so no single record says that one
+source is attacking.
+
+The question is how the gateway turns the rejections of one source into one signal a SIEM can act
+on. The signal must not punish clients that only share an address with the attacker, and it must not
+flood the log it is written to.
+
+=== A second consumer with its own ledger
+
+*The gateway keeps a weighted threat score per source on a second `SourceLedger`.*
+`edge.admission.ThreatClassifier` builds it from the top-level `threat_classification` block. The
+ledger has its own threshold and window. Nothing is shared with the recon ledger except the key
+derivation. The substrate's contract, and what it serves this consumer, are in
+link:../development/source-detection-substrate.adoc#_second_consumer[Per-Source Detection Substrate
+-- Second Consumer].
+
+*The action is fixed to `observe`.* The block has no `action` key. A score, a trip and an ALERT
+change no answer, status, header or timing. The substrate requires a positive block duration, so the
+classifier sets it to the window; under `observe` the ledger never reads it. Slowing or blocking a
+source stays the job of `enumeration_detection`.
+
+=== The feed: the rejections that carry a weight, before and after the trust boundary
+
+`ErrorResponseWriter.handleGatewayRejection` hands every rejection it renders to a second seam,
+`ErrorResponseWriter.ThreatFeed`, after the recon feed and before the answer is written. It hands
+over the true event, never the rendered one. A bearer `401` answered as the uniform `404` is scored
+as `TOKEN_MISSING`.
+
+The recon ledger counts pre-trust events only, because it detects enumeration. The threat score
+measures hostile behaviour. A malformed or injection-shaped request from an authenticated caller is
+still hostile, so the score also counts rejections after the trust boundary.
+
+`edge.admission.ThreatWeights` gives each rejection the weight of its `EventCategory`:
+
+[cols="2,1,4", options="header"]
+|===
+| Category | Default | Reason
+
+| `INPUT_VALIDATION` | `10` | The clearest probe signal. One malformed request scores a tenth of
+  the default threshold.
+| `ROUTING` | `1` | Crawlers and stale links also draw unrouted answers.
+| `AUTHENTICATION` | `2` | Expired tokens of a population behind one address must stay below the
+  drain rate.
+| `AUTHORIZATION` | `2` | As for `AUTHENTICATION`.
+| `UPSTREAM` | fixed `0` | An upstream failure describes the upstream, not the caller.
+| `RATE_LIMITING` | fixed `0` | `SOURCE_BLOCKED` is answered before admission and never reaches the
+  feed. Counting it would also extend a block by the requests the block rejects.
+| `CONFIGURATION` | fixed `0` | A boot event is not a request.
+|===
+
+The switch over `EventCategory` has no default arm, so a new category does not compile until it gets
+a weight. An event without a category is not a rejection and weighs `0`. These rejections carry
+weight `0` whatever their category:
+
+* `INBOUND_BODY_ABORTED` and `REQUEST_BODY_TIMEOUT` -- a body that stopped arriving is a network or
+  client condition;
+* `PRE_TRUST_INTERNAL_FAILURE` -- `renderUnexpected` answers it and does not feed it, because an
+  operator-side failure is not caller behaviour;
+* a static resource (`ReconEvents.isStaticResource`) -- an asset route's miss or a browser-ambient
+  fetch is a page's own reference, not a probe. The exclusion covers what such a reference can draw,
+  and no more: `SECURITY_FILTER_VIOLATION` and `PARAMETER_LIMIT_EXCEEDED`
+  (`ThreatWeights.STATIC_SCORED_EVENTS`) judge the content the caller sent, which no asset reference
+  produces, so they are scored on a static resource as on any other path. Otherwise injection-shaped
+  parameters or headers aimed at an asset route or at `/favicon.ico` would never be scored.
+
+The feed does not cover three answered rejections, because none of them is answered through
+`handleGatewayRejection`. The first is the late rejection of a streaming body after dispatch began
+(`TerminalDispatch.lateBodyRefusal`). The second is the rejections of the reserved paths, a fixed
+public set
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]).
+The third is the `405` of a request method the gateway cannot parse (`EdgeRequests.parseMethod`),
+answered before a pipeline request exists. A weight `0` is never admitted.
+
+=== Source keying independent of recon
+
+The recon ledger resolved the key inside `SourceGate`. The threat score would then have depended on
+`enumeration_detection.enabled`. *A source-key stage, `edge.admission.SourceKeys`, resolves the key
+once per request,* on the event loop before admission, and stashes it on the `RoutingContext`. The
+edge builds the stage whenever either consumer is enabled. The derivation is the one of ADR-0076,
+unchanged: the trusted forwarder's client address or the TCP peer, IPv6 reduced to its `/64`, the
+host folded to the declared `match.host` set. `SourceGate` reads the stashed key, so both consumers
+key a request on the same source.
+
+=== Two tiers: the recon trip is an input, the threat trip is the ALERT
+
+`SourceGate` hands every recon trip to `ThreatClassifier.admitReconTrip`. The classifier admits
+`weights.recon_trip` (default `50`) under the tag `SOURCE_TRIPPED` for the tripped key. The recon
+trip keeps its own record, `ApiSheriff-141`, and its meter, unchanged. It never raises an ALERT of its
+own. Only the threat ledger's trip does.
+
+=== One ALERT per episode
+
+The threat ledger's trip listener is `edge.admission.ThreatAlerts`. The substrate trips a key at most
+once per `CLEAR` period and re-arms it only after its level drained to zero. *Each trip is one
+episode, and each episode raises exactly one ALERT*, however long the source keeps probing. The ALERT
+is the WARN `ApiSheriff-143`, counted on `sheriff_threat_alerts_total`.
+
+=== The ALERT vocabulary: ECS, with an OCSF mapping
+
+The record's last substitution is a compact JSON document, rendered by
+`edge.admission.ThreatAlertDocument` through `GatewayJson`
+(link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]).
+Its field names are those of the *Elastic Common Schema, pinned at `8.17.0`*
+(`ThreatAlertDocument.ECS_VERSION`). The gateway's own breakdown lives under `api_sheriff.threat`.
+The field table is in
+link:../architecture/observability-and-errors.adoc#_threat_alert_document[Observability -- the
+threat ALERT document]. The fixed values are these:
+
+* `event.kind: alert`, `event.category: [intrusion_detection, web]`, `event.type: [info]`. The type
+  is `info`, not `denied`, because the ALERT rejects nothing.
+* `event.severity: 47`, medium on the 0 to 100 scale. It corresponds to OCSF `severity_id` 3.
+* `threat.framework: MITRE ATT&CK`, tactic `TA0043` Reconnaissance, technique `T1595` Active
+  Scanning.
+
+*The `source.ip` trap.* ECS types `source.ip` as an IP address. The key of an IPv6 source is its
+`/64` prefix, and an unresolvable source is `unknown`. Neither is a valid `ip` value, and a SIEM
+would reject the document or drop the field. `source.address` therefore always carries the key text,
+and `source.ip` appears only when that text is a whole IPv4 address. `url.domain` appears only for a
+declared host, never for `*`.
+
+*No request byte.* Every value is gateway-derived: canonical key texts, enum names, ledger numbers
+and constants. No path, raw `Host` or header can reach the document.
+
+*OCSF is mapped, not emitted.* The documentation maps the document to the OCSF Detection Finding
+class (`class_uid` 2004, `severity_id` 3). The gateway writes one vocabulary only.
+
+=== WARN, not ERROR
+
+The `2xx` range of link:../LogMessages.adoc[Log Messages] carries the gateway's own failures, which
+an operator must act on. An observed caller campaign with no wire effect is a security signal of the same class
+as `ApiSheriff-141`, so the ALERT is a WARN. The per-episode dedup bounds its volume.
+
+=== Defaults
+
+An omitted block resolves to every default. Classification is on, so every gateway raises the
+signal:
+
+[cols="1,1", options="header"]
+|===
+| Key | Default
+
+| `enabled` | `true`
+| `threshold` | `100`
+| `window_seconds` | `300`
+| `weights.input_validation` | `10`
+| `weights.routing` | `1`
+| `weights.authentication` | `2`
+| `weights.authorization` | `2`
+| `weights.recon_trip` | `50`
+|===
+
+The level drains at `threshold / window`, `0.33` per second. One malformed request never alerts. An
+injection scanner at one request per second alerts within about 11 seconds. The low
+`authentication` weight keeps the expired-token `401`s of a population behind one address below the
+drain rate.
+
+`LimitRules.validateThreatClassification` refuses at boot a `threshold` or `window_seconds` below `1`,
+a negative weight, an enabled block in which no weight can act, and a declared `weights.recon_trip`
+while `enumeration_detection` is disabled. The last two are keys that would parse without acting.
+
+=== Single node, SIEM boundary
+
+The score lives in one process and does not survive a restart, as the recon ledger's does. A source
+spread over several gateway instances is scored per instance. Correlating the ALERTs of all
+instances is the job of the SIEM they are forwarded to.
+
+== Alternatives rejected
+
+*A pre-trust-only feed, as for recon.* The threat ledger would count only what the recon ledger
+counts, with other weights. Rejected: an authenticated caller sending injection-shaped input is the
+threat this signal exists to name. Recon counts pre-trust events because it detects enumeration; the
+threat score measures behaviour.
+
+*Feeding at `RejectionReporter.reportRejection`.* It is where every rejection is metered. Rejected:
+it has no `PipelineRequest` in scope, so it cannot exclude static resources. `handleGatewayRejection`
+is the composition point the recon feed already uses.
+
+*A second ALERT on a recon trip.* A recon trip would raise its own ALERT besides `ApiSheriff-141`.
+Rejected: one scanner would raise two ALERTs for one campaign, and a SIEM would correlate them back
+into one. The recon trip is an input to the score instead.
+
+*An ALERT per trip of either ledger, or per request over the threshold.* Rejected: a scanner that
+keeps going would flood the log it is detected in. One ALERT per episode bounds the volume to one per
+tracked source per episode.
+
+*ERROR level.* Rejected: the `2xx` range is the gateway's own failures. Alerting keyed on ERROR would
+page an operator for a caller's behaviour that changed nothing.
+
+*Configurable `upstream` and `rate_limiting` weights, with default `0`.* Rejected: an upstream
+failure is not the caller's behaviour, and `SOURCE_BLOCKED` never reaches the feed. A `rate_limiting`
+key could never act. A key that parses without acting reads as a control in force; the project rule
+is that it must not exist.
+
+*An `action` key.* `delay` or `block` on the threat score. Rejected: the score covers rejections after
+the trust boundary, so a block could lock out an authenticated client behind a shared address for its
+honest mistakes. Enforcement stays with `enumeration_detection`, whose ADR-0076 settles the
+shared-address question.
+
+*Emitting OCSF, or both vocabularies.* Rejected: two vocabularies double the contract to keep stable
+and the bytes of every ALERT. One vocabulary with a documented mapping lets a pipeline that
+normalizes to OCSF convert the document without the gateway carrying both.
+
+*Emitting `source.ip` for every key.* Rejected for the trap above: an IPv6 `/64` prefix and `unknown`
+are not IP values.
+
+*A new JSON library for the document.* Rejected under ADR-0062: `GatewayJson` already serializes the
+gateway's own JSON.
+
+*Keying the score in `SourceGate`, as before.* Rejected: the score would depend on
+`enumeration_detection.enabled`, a hidden dependency an operator could not see from the block.
+
+*A store shared between gateway nodes.* Rejected for the reason ADR-0076 gives: a shared store is a
+new dependency and a new failure mode on the request path. The SIEM already receives every node's
+ALERTs.
+
+== Consequences
+
+* Every gateway raises a structured ALERT for a probing source by default. No answer changes.
+* The shared integration-test stack, whose suites reach the gateways from one address and run
+  rejection corpora, now raises ALERTs. No suite reads one as a failure, because nothing on the wire
+  changes. `ThreatClassificationIT` starts a one-off gateway with a declared threshold below the
+  default.
+* The ALERT volume is bounded: at most one per tracked source per episode, and the ledger tracks at
+  most 65,536 sources. A rejection the full ledger cannot score is counted on
+  `sheriff_threat_untracked_total`, and the first one per process is logged as WARN `ApiSheriff-144`.
+* The memory cost is a second ledger, bounded as the recon ledger is.
+* The design accepts these properties:
+** Every client behind a NAT or an untrusted load balancer shares one score. Their honest mistakes
+   add up and can alert. The low default weights keep the common cases below the drain rate.
+** A looping misbehaving client scores as a scanner does and alerts.
+** Neither has a wire effect. An ALERT is a signal for an operator or a SIEM to judge.
+** A distributed scan stays below the threshold per key and per node.
+** A restart clears every score.
+
+== Links
+
+* link:../architecture/tls-and-inbound-security.adoc#_threat_classification[Architecture -- Per-Source
+  Threat Classification]
+* link:../architecture/observability-and-errors.adoc#_threat_alert_document[Observability -- the
+  threat ALERT document] -- the field table and the OCSF mapping
+* link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`]
+* link:../user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes -- Threat
+  classification] -- the operator guide
+* link:../development/source-detection-substrate.adoc#_second_consumer[Per-Source Detection Substrate
+  -- Second Consumer]
+* link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]
+  -- the substrate and its first consumer
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+  -- the trust boundary and the true event behind the uniform `404`
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+  -- why the document is rendered through `GatewayJson`
+* link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-143` and `ApiSheriff-144`
+* `ThreatWeightsTest`, `ThreatClassifierTest`, `ThreatAlertsTest`, `ThreatAlertDocumentTest`,
+  `SourceKeysTest`, `SourceGateTest`, `ErrorResponseWriterTest`, `LimitRulesTest`,
+  `GatewayEdgeThreatClassificationTest`, `ThreatClassificationActivationWiringTest` and
+  `ThreatClassificationIT` -- the tests that pin the weights, the episode dedup, the document, the
+  boot refusals and the shipped behaviour
