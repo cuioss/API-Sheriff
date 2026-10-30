@@ -2,9 +2,9 @@
   "id": "PLAN-V02-07",
   "slug": "threat-classification",
   "workstream": "WS-03",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-07-threat-classification",
-  "pr": "",
-  "landing": "",
+  "pr": "537",
+  "landing": "landings/PLAN-V02-07.md",
   "seq": 7
 }
