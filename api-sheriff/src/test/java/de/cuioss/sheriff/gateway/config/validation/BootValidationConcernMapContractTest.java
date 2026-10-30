@@ -15,15 +15,10 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -34,6 +29,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -93,9 +90,6 @@ import org.junit.jupiter.api.Test;
  */
 @DisplayName("The boot-validation concern map and DEFAULT_RULES name the same rules under the same classes")
 class BootValidationConcernMapContractTest {
-
-    /** The working directory the runner started in — the module root under surefire. */
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
     /** The validator whose rule list is the authoritative set, relative to the repository root. */
     private static final String CONFIG_VALIDATOR_SOURCE =
@@ -605,25 +599,6 @@ class BootValidationConcernMapContractTest {
     }
 
     private static String read(String relativePath) throws IOException {
-        return Files.readString(repoRoot().resolve(relativePath));
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory that holds both files this
-     * contract reads. Probing for them rather than taking a fixed hop from the module keeps the guard
-     * independent of the directory a runner starts in, and an unresolvable root fails naming that
-     * directory.
-     *
-     * @return the repository root
-     */
-    private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
-            if (Files.isRegularFile(candidate.resolve(CONFIG_VALIDATOR_SOURCE))
-                    && Files.isRegularFile(candidate.resolve(CONCERN_MAP_DOC))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root from the working directory " + MODULE
-                + ": no ancestor of it holds both " + CONFIG_VALIDATOR_SOURCE + " and " + CONCERN_MAP_DOC);
+        return Files.readString(RepositoryRoot.holding(CONFIG_VALIDATOR_SOURCE, CONCERN_MAP_DOC).resolve(relativePath));
     }
 }

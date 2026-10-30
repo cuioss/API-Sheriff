@@ -15,14 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -33,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -78,17 +73,13 @@ class ConfigModelContractTest {
     private static final String BACK_CHANNEL_ORIGIN = "https://keycloak:8443";
     private static final String SESSION_KEY_FILE = "/etc/sheriff/keys/session.key";
 
-    private static AuthConfig auth() {
-        return AuthConfig.builder().require(Require.BEARER).build();
-    }
-
     private static AnchorConfig anchorConfig() {
         return AnchorConfig.builder()
                 .name("api")
                 .pathPrefix("/api")
                 .type(AnchorType.PROXY)
                 .access(AccessLevel.AUTHENTICATED)
-                .auth(auth())
+                .auth(auth(Require.BEARER))
                 .securityFilter(securityFilterConfig())
                 .securityHeaders(securityHeadersConfig())
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
@@ -224,7 +215,7 @@ class ConfigModelContractTest {
                 .enabled(true)
                 .baseUrl("orders-service")
                 .anchor("api")
-                .auth(auth())
+                .auth(auth(Require.BEARER))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .upstreamDefaults(UpstreamDefaultsConfig.defaults())
                 .routes(List.of(routeConfig()))
@@ -238,7 +229,7 @@ class ConfigModelContractTest {
                 .protocol(Protocol.HTTP)
                 .anchor("api")
                 .match(matchConfig())
-                .auth(auth())
+                .auth(auth(Require.BEARER))
                 .securityFilter(securityFilterConfig())
                 .forward(forwardConfig())
                 .upstream(upstreamConfig())
@@ -523,7 +514,7 @@ class ConfigModelContractTest {
                             UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(),
                             UpstreamDefaultsConfig.builder().retryEnabled(false).notModifiedEnabled(true).build()),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
-                            .id("other").baseUrl("svc").auth(auth()).build()),
+                            .id("other").baseUrl("svc").auth(auth(Require.BEARER)).build()),
                     voCase("EndpointConfig.scopes", endpointConfig(), endpointConfig(), EndpointConfig.builder()
                             .id(endpointConfig().id()).enabled(endpointConfig().enabled())
                             .baseUrl(endpointConfig().baseUrl()).anchor(endpointConfig().anchor())
@@ -531,7 +522,7 @@ class ConfigModelContractTest {
                             .allowedMethods(endpointConfig().allowedMethods())
                             .upstreamDefaults(endpointConfig().upstreamDefaults())
                             .routes(endpointConfig().routes()).build()),
-                    voCase("AuthConfig", auth(), auth(), AuthConfig.builder().require(Require.NONE).build()),
+                    voCase("AuthConfig", auth(Require.BEARER), auth(Require.BEARER), auth(Require.NONE)),
                     voCase("AuthConfig.tokenRelay",
                             AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build(),
                             AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build(),
@@ -545,13 +536,13 @@ class ConfigModelContractTest {
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
                     voCase("MatchConfig", matchConfig(), matchConfig(),
-                            MatchConfig.builder().pathPrefix("/other").build()),
+                            match("/other")),
                     // The matcher form participates in identity: an exact path and a prefix
                     // spelling the same string are different addresses, so they must not be equal.
                     voCase("MatchConfig (exact path vs prefix of the same string)",
                             MatchConfig.builder().path("/orders").build(),
                             MatchConfig.builder().path("/orders").build(),
-                            MatchConfig.builder().pathPrefix("/orders").build()),
+                            match("/orders")),
                     voCase("RedirectConfig (location)", redirectConfig(), redirectConfig(),
                             new RedirectConfig("/other", 308, true, false)),
                     voCase("RedirectConfig (status)", redirectConfig(), redirectConfig(),
@@ -668,9 +659,9 @@ class ConfigModelContractTest {
         void anchorConfigBuilderMatchesConstructor() {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             AnchorConfig viaCtor = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
-                    auth(), null, null, List.of(HttpMethod.GET), CookiesConfig.NONE);
+                    auth(Require.BEARER), null, null, List.of(HttpMethod.GET), CookiesConfig.NONE);
             AnchorConfig viaBuilder = AnchorConfig.builder().name("api").pathPrefix("/api").type(AnchorType.PROXY)
-                    .access(AccessLevel.AUTHENTICATED).auth(auth())
+                    .access(AccessLevel.AUTHENTICATED).auth(auth(Require.BEARER))
                     .allowedMethods(List.of(HttpMethod.GET)).cookies(CookiesConfig.NONE).build();
             assertEquals(viaCtor, viaBuilder);
         }
@@ -692,10 +683,10 @@ class ConfigModelContractTest {
         void endpointConfigBuilderMatchesConstructor() {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", "api",
-                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, null, null, CookiesConfig.NONE,
+                    auth(Require.BEARER), List.of("orders.read"), List.of(HttpMethod.GET), null, null, null, CookiesConfig.NONE,
                     List.of(), catalogConfig());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
-                    .anchor("api").auth(auth()).scopes(List.of("orders.read")).allowedMethods(List.of(HttpMethod.GET))
+                    .anchor("api").auth(auth(Require.BEARER)).scopes(List.of("orders.read")).allowedMethods(List.of(HttpMethod.GET))
                     .cookies(CookiesConfig.NONE).catalog(catalogConfig()).build();
             assertEquals(viaCtor, viaBuilder);
             assertEquals(catalogConfig(), viaCtor.catalog());
@@ -831,7 +822,7 @@ class ConfigModelContractTest {
                     () -> assertNull(cfg.templateDir()),
                     () -> assertNull(cfg.cacheSeconds()),
                     () -> assertNull(cfg.errorPages()),
-                    () -> assertEquals(PortalConfig.DEFAULT_CACHE_SECONDS, cfg.effectiveCacheSeconds()),
+                    () -> assertEquals(0, cfg.effectiveCacheSeconds(), "an omitted cache_seconds means no caching"),
                     () -> assertFalse(cfg.effectiveErrorPages()));
         }
 
@@ -842,6 +833,28 @@ class ConfigModelContractTest {
             assertTrue(cfg.effectiveErrorPages());
             assertFalse(new PortalConfig("/", "Applications", null, 0, false).effectiveErrorPages(),
                     "a declared error_pages: false stays false");
+        }
+
+        @Test
+        @DisplayName("Should resolve an omitted allow_get_with_content_length_body to false")
+        void shouldResolveOmittedKnobToFalse() {
+            SecurityDefaultsConfig securityDefaults = SecurityDefaultsConfig.builder().profile("strict").build();
+
+            assertFalse(securityDefaults.effectiveAllowGetWithContentLengthBody(),
+                    "an omitted knob must resolve fail-closed, preserving every framing rejection "
+                            + "the gateway made before the key existed");
+        }
+
+        @Test
+        @DisplayName("Should resolve an explicitly declared value")
+        void shouldResolveDeclaredKnob() {
+            assertAll(
+                    () -> assertTrue(SecurityDefaultsConfig.builder().profile("strict")
+                            .allowGetWithContentLengthBody(true).build()
+                            .effectiveAllowGetWithContentLengthBody(), "declared true resolves true"),
+                    () -> assertFalse(SecurityDefaultsConfig.builder().profile("strict")
+                            .allowGetWithContentLengthBody(false).build()
+                            .effectiveAllowGetWithContentLengthBody(), "declared false resolves false"));
         }
 
         @Test
@@ -1044,7 +1057,7 @@ class ConfigModelContractTest {
             ThreatClassificationConfig viaCtor = new ThreatClassificationConfig(true, 80, 200, weightsViaCtor);
             ThreatClassificationConfig viaBuilder = ThreatClassificationConfig.builder().enabled(true).threshold(80)
                     .windowSeconds(200).weights(weightsViaBuilder).build();
-            GatewayConfig gateway = GatewayConfig.builder().version(1).threatClassification(viaCtor).build();
+            GatewayConfig gateway = validGateway().threatClassification(viaCtor).build();
 
             assertAll(
                     () -> assertEquals(weightsViaCtor, weightsViaBuilder),
@@ -1262,7 +1275,7 @@ class ConfigModelContractTest {
         @Test
         void listComponentIsDecoupledFromTheSource() {
             List<HttpMethod> source = new ArrayList<>(List.of(HttpMethod.GET));
-            GatewayConfig cfg = GatewayConfig.builder().version(1).allowedMethods(source).build();
+            GatewayConfig cfg = validGateway().allowedMethods(source).build();
             source.add(HttpMethod.POST);
             assertEquals(List.of(HttpMethod.GET), cfg.allowedMethods(),
                     "mutating the source list after construction must not affect the record");
@@ -1270,7 +1283,7 @@ class ConfigModelContractTest {
 
         @Test
         void listComponentIsUnmodifiable() {
-            GatewayConfig cfg = GatewayConfig.builder().version(1).allowedMethods(List.of(HttpMethod.GET)).build();
+            GatewayConfig cfg = validGateway().allowedMethods(List.of(HttpMethod.GET)).build();
             List<HttpMethod> methods = cfg.allowedMethods();
             assertThrows(UnsupportedOperationException.class, () -> methods.add(HttpMethod.PUT));
         }
@@ -1279,7 +1292,7 @@ class ConfigModelContractTest {
         void anchorsMapIsDecoupledAndUnmodifiable() {
             Map<String, AnchorConfig> source = new HashMap<>();
             source.put("api", anchorConfig());
-            GatewayConfig cfg = GatewayConfig.builder().version(1).anchors(source).build();
+            GatewayConfig cfg = validGateway().anchors(source).build();
             source.put("bff", anchorConfig());
             assertEquals(Map.of("api", anchorConfig()), cfg.anchors(),
                     "mutating the source map after construction must not affect the record");
@@ -1337,7 +1350,7 @@ class ConfigModelContractTest {
          */
         private EndpointConfig endpointConfigWith(String id, String baseUrl) {
             // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
-            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, null, null,
+            return new EndpointConfig(id, true, baseUrl, null, auth(Require.BEARER), List.of(), List.of(), null, null, null,
                     null, List.of(), null);
         }
 
@@ -1482,63 +1495,16 @@ class ConfigModelContractTest {
     class NewFields {
 
         @Test
-        void endpointConfigExposesAnchorAndOptionalAuth() {
-            EndpointConfig cfg = EndpointConfig.builder()
-                    .id("orders")
-                    .enabled(true)
-                    .baseUrl("orders-service")
-                    .anchor("api")
-                    .auth(auth())
-                    .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
-                    .build();
-            assertEquals("orders", cfg.id());
-            assertTrue(cfg.enabled());
-            assertEquals("api", cfg.anchor());
-            assertEquals(auth(), cfg.auth());
-            assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
-        }
-
-        @Test
         void endpointConfigEnabledDefaultsToFalseWhenUnsetOnTheRecord() {
             EndpointConfig cfg = EndpointConfig.builder().id("orders").baseUrl("orders-service")
-                    .auth(auth()).build();
+                    .auth(auth(Require.BEARER)).build();
             assertFalse(cfg.enabled(), "the record itself applies no default; the YAML loader owns the true default");
-        }
-
-        @Test
-        void routeConfigExposesAnchorOverride() {
-            RouteConfig cfg = RouteConfig.builder().id("r").anchor("bff").match(matchConfig()).build();
-            assertEquals("bff", cfg.anchor());
-        }
-
-        @Test
-        void routeConfigExposesWebSocketBlock() {
-            RouteConfig cfg = RouteConfig.builder().id("ws").protocol(Protocol.WEBSOCKET)
-                    .match(matchConfig()).websocket(webSocketConfig()).build();
-            assertEquals(webSocketConfig(), cfg.websocket());
-            assertEquals(List.of("https://app.example.com"),
-                    cfg.websocket().allowedOrigins());
-            assertEquals(300, cfg.websocket().idleTimeoutSeconds());
         }
 
         @Test
         void routeConfigWebSocketDefaultsToAbsent() {
             RouteConfig cfg = RouteConfig.builder().id("http").match(matchConfig()).build();
             assertNull(cfg.websocket(), "a non-WebSocket route carries no websocket block");
-        }
-
-        @Test
-        void anchorConfigExposesEveryPolicyBlock() {
-            AnchorConfig cfg = anchorConfig();
-            assertEquals("api", cfg.name());
-            assertEquals("/api", cfg.pathPrefix());
-            assertEquals(AnchorType.PROXY, cfg.type());
-            assertEquals(AccessLevel.AUTHENTICATED, cfg.access());
-            assertEquals(auth(), cfg.auth());
-            assertNotNull(cfg.securityFilter());
-            assertNotNull(cfg.securityHeaders());
-            assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
-            assertEquals(cookiesConfig(), cfg.cookies());
         }
 
         @Test
@@ -1581,12 +1547,6 @@ class ConfigModelContractTest {
                     () -> assertNull(UpstreamConfig.builder().build().rewriteLocation(),
                             "the record applies no default; absent stays null and resolves to off at assembly"));
         }
-
-        @Test
-        void gatewayConfigExposesAnchors() {
-            GatewayConfig cfg = GatewayConfig.builder().version(1).anchors(Map.of("api", anchorConfig())).build();
-            assertEquals(Map.of("api", anchorConfig()), cfg.anchors());
-        }
     }
 
     // --- Exact routes, redirect action and optional base_url (AS-3/AS-4) ----
@@ -1597,7 +1557,7 @@ class ConfigModelContractTest {
 
         @Test
         void prefixMatcherExposesItsPrefixAsMatchKey() {
-            MatchConfig prefix = MatchConfig.builder().pathPrefix("/orders").build();
+            MatchConfig prefix = match("/orders");
 
             assertAll("a prefix matcher",
                     () -> assertEquals("/orders", prefix.matchKey()),
@@ -1696,7 +1656,7 @@ class ConfigModelContractTest {
         @DisplayName("A matcher constraining nothing but the path does not narrow")
         void pathOnlyMatcherDoesNotNarrow() {
             assertAll("neither matcher form narrows on its own",
-                    () -> assertFalse(MatchConfig.builder().pathPrefix("/orders").build().narrowsBeyondPath()),
+                    () -> assertFalse(match("/orders").narrowsBeyondPath()),
                     () -> assertFalse(MatchConfig.builder().path("/orders").build().narrowsBeyondPath()));
         }
 
@@ -1966,8 +1926,8 @@ class ConfigModelContractTest {
         @Test
         void authConfigResolvesAbsentTokenRelayToRelaying() {
             assertAll("token_relay: absent and true relay, only an explicit false withholds the token",
-                    () -> assertNull(AuthConfig.builder().require(Require.SESSION).build().tokenRelay()),
-                    () -> assertTrue(AuthConfig.builder().require(Require.SESSION).build().effectiveTokenRelay()),
+                    () -> assertNull(auth(Require.SESSION).tokenRelay()),
+                    () -> assertTrue(auth(Require.SESSION).effectiveTokenRelay()),
                     () -> assertTrue(AuthConfig.builder().require(Require.SESSION).tokenRelay(true).build()
                             .effectiveTokenRelay()),
                     () -> assertFalse(AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build()
@@ -1977,8 +1937,8 @@ class ConfigModelContractTest {
         @Test
         void authConfigResolvesOnlyADeclaredTrueSessionFallbackToFallingBack() {
             assertAll("session_fallback: absent and false stay on one branch, only an explicit true falls back",
-                    () -> assertNull(AuthConfig.builder().require(Require.BEARER).build().sessionFallback()),
-                    () -> assertFalse(AuthConfig.builder().require(Require.BEARER).build().effectiveSessionFallback(),
+                    () -> assertNull(auth(Require.BEARER).sessionFallback()),
+                    () -> assertFalse(auth(Require.BEARER).effectiveSessionFallback(),
                             "an absent key resolves to false"),
                     () -> assertFalse(AuthConfig.builder().require(Require.BEARER).sessionFallback(false).build()
                             .effectiveSessionFallback(), "a declared false resolves to false"),

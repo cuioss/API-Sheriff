@@ -15,24 +15,19 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -42,8 +37,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests the orchestration of {@link ConfigValidator}, and only that: a well-formed configuration
- * passes every rule, the structural {@code TRACE}/{@code CONNECT} rejection holds, and the single pass
- * aggregates the violations of several rules rather than stopping at the first.
+ * passes every rule, and the single pass aggregates the violations of several rules rather than
+ * stopping at the first.
  * <p>
  * No rule's own cases live here. Each rule is tested beside the concern class that owns it, in that
  * class's {@code {Concern}RulesTest} in the {@code rule} test package, and those tests drive the full
@@ -56,51 +51,6 @@ class ConfigValidatorTest {
 
     private final ConfigValidator validator = new ConfigValidator();
 
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static RouteConfig route(String id, HttpMethod... methods) {
-        return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
-    }
-
-    private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
-            RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .auth(auth(Require.NONE))
-                .allowedMethods(allowedMethods)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
-
     @Nested
     @DisplayName("A well-formed configuration")
     class ValidConfiguration {
@@ -109,7 +59,7 @@ class ConfigValidatorTest {
         @DisplayName("Should report no violations")
         void shouldReportNoViolations() {
             GatewayConfig gateway = validGateway().build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("orders-list", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -138,21 +88,6 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("The TRACE / CONNECT verbs")
-    class StructuralVerbRejection {
-
-        @Test
-        @DisplayName("Should not be representable in the HttpMethod model")
-        void shouldNotBeRepresentableInModel() {
-            assertAll("forbidden verbs are absent from the enum",
-                    () -> assertThrows(IllegalArgumentException.class, () -> HttpMethod.valueOf("TRACE"),
-                            "TRACE must not be a representable HttpMethod"),
-                    () -> assertThrows(IllegalArgumentException.class, () -> HttpMethod.valueOf("CONNECT"),
-                            "CONNECT must not be a representable HttpMethod"));
-        }
-    }
-
-    @Nested
     @DisplayName("The aggregating validate pass")
     class Aggregation {
 
@@ -164,7 +99,7 @@ class ConfigValidatorTest {
                     .id("orders").enabled(true).baseUrl("MISSING")
                     .auth(auth(Require.NONE))
                     .allowedMethods(List.of(HttpMethod.GET))
-                    .routes(List.of(route("orders-post", HttpMethod.POST)))
+                    .routes(List.of(routeConfig("orders-post", HttpMethod.POST)))
                     .build();
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));

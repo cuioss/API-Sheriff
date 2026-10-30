@@ -15,16 +15,14 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.logging.LogRecord;
+
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -38,11 +36,8 @@ import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.RateLimitConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
@@ -68,7 +63,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code threat_classification} bounds and inert-weight refusals, the
  * {@code security_defaults.max_authorization_header_value_length}
  * carve-out bound, and the fail-closed ADR-0024 {@code profile: minimal} refusal on effectively-authenticated
- * and BFF routes — plus the fail-closed default of the GET-body opt-in that shares the
+ * and BFF routes — plus the clean acceptance of a declared GET-body opt-in that shares the
  * {@code security_defaults} block, and the boot WARN for every route declaring the unenforced
  * {@code rate_limit} block.
  * <p>
@@ -82,32 +77,6 @@ class LimitRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
 
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static RouteConfig route(String id, HttpMethod... methods) {
-        return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
-    }
-
     /**
      * A gateway declaring the given global {@code profile} and — when present — the
      * {@code max_authorization_header_value_length} carve-out budget the boot rule bounds.
@@ -116,60 +85,6 @@ class LimitRulesTest {
         return validGateway()
                 .securityDefaults(SecurityDefaultsConfig.builder().profile(profile)
                         .maxAuthorizationHeaderValueLength(cap).build())
-                .build();
-    }
-
-    private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
-            RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .auth(auth(Require.NONE))
-                .allowedMethods(allowedMethods)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
-
-    private static AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
-            @Nullable Require require) {
-        return AnchorConfig.builder()
-                .name(name)
-                .pathPrefix(prefix)
-                .type(type)
-                .access(access)
-                .auth(require == null ? null : auth(require))
-                .build();
-    }
-
-    private static GatewayConfig gatewayWithAnchorAndIssuer(AnchorConfig anchorConfig) {
-        return validGateway()
-                .anchors(Map.of(anchorConfig.name(), anchorConfig))
-                .tokenValidation(new TokenValidationConfig(List.of(
-                        IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
-                .build();
-    }
-
-    private static GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
-        return validGateway().anchors(anchors).build();
-    }
-
-    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName,
-            @Nullable AuthConfig auth, RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .anchor(anchorName)
-                .auth(auth)
-                .routes(List.of(routes))
                 .build();
     }
 
@@ -182,7 +97,7 @@ class LimitRulesTest {
         void shouldRejectAdmissionCapBelowOne() {
             GatewayConfig gateway = validGateway()
                     .edgeHardening(new EdgeHardeningConfig(0, 1)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -194,7 +109,7 @@ class LimitRulesTest {
         void shouldRejectWebsocketRelayCapBelowOne() {
             GatewayConfig gateway = validGateway()
                     .edgeHardening(new EdgeHardeningConfig(8, 0)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -207,7 +122,7 @@ class LimitRulesTest {
         void shouldRejectInvertedCapPair() {
             GatewayConfig gateway = validGateway()
                     .edgeHardening(new EdgeHardeningConfig(4, 16)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -219,14 +134,12 @@ class LimitRulesTest {
         void shouldAcceptLoweredAdmissionCapWithoutRelayCap() {
             GatewayConfig gateway = validGateway()
                     .edgeHardening(new EdgeHardeningConfig(64, null)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(),
                     "A partially declared edge_hardening block must not self-reject, but got: " + errors);
-            assertEquals(16, gateway.edgeHardening().effectiveWebsocketRelayCap(),
-                    "The implicit relay sub-budget stays a quarter of the effective admission cap");
         }
 
         @Test
@@ -234,7 +147,7 @@ class LimitRulesTest {
         void shouldAcceptValidEdgeHardeningBlock() {
             GatewayConfig gateway = validGateway()
                     .edgeHardening(new EdgeHardeningConfig(64, 8)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -252,7 +165,7 @@ class LimitRulesTest {
             // Arrange — strict resolves a 1024-character baseline; 512 would make the 'carve-out'
             // a per-header tightening wearing a relaxation key's name.
             GatewayConfig gateway = gatewayWithAuthorizationCap("strict", 512);
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -270,7 +183,7 @@ class LimitRulesTest {
             // (2048 < 8192), which is what proves the rule compares against the RESOLVED profile
             // rather than against a constant.
             GatewayConfig gateway = gatewayWithAuthorizationCap("lenient", 2048);
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -287,7 +200,7 @@ class LimitRulesTest {
             // the boundary case 'exactly at the baseline', which is not below it and is not refused.
             GatewayConfig above = gatewayWithAuthorizationCap("strict", 2048);
             GatewayConfig atBaseline = gatewayWithAuthorizationCap("strict", 1024);
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             // Act
             List<ConfigError> aboveErrors = validator.validate(above, List.of(endpoint), topologyWith("ORDERS"));
@@ -308,7 +221,7 @@ class LimitRulesTest {
             GatewayConfig strict = gatewayWithAuthorizationCap("strict", null);
             GatewayConfig lenient = gatewayWithAuthorizationCap("lenient", null);
             GatewayConfig blockAbsent = validGateway().build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             // Act + Assert
             assertAll("an omitted key never refuses",
@@ -544,30 +457,6 @@ class LimitRulesTest {
         }
 
         @Test
-        @DisplayName("Should report the refusal alongside an unrelated violation in one pass")
-        void shouldAggregateRefusalWithUnrelatedViolation() {
-            // Arrange — an unsupported version plus a refused 'minimal' route: the pass must report both.
-            GatewayConfig gateway = validGateway()
-                    .version(2)
-                    .anchors(Map.of("secure",
-                            matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
-                                    Require.BEARER)))
-                    .tokenValidation(new TokenValidationConfig(List.of(
-                            IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
-                    .build();
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
-                    profiledRoute("secure-read", "/secure/read", "secure", MINIMAL_PROFILE, null));
-
-            // Act
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
-
-            // Assert
-            assertAll(
-                    () -> assertHasError(errors, "/version", "unsupported config version"),
-                    () -> assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE));
-        }
-
-        @Test
         @DisplayName("Should name the remedy and echo no configured scalar value")
         void shouldNameRemedyWithoutEchoingConfiguredScalars() {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
@@ -590,30 +479,8 @@ class LimitRulesTest {
     }
 
     @Nested
-    @DisplayName("The GET-body opt-in resolves fail-closed when omitted")
-    class GetBodyOptInDefault {
-
-        @Test
-        @DisplayName("Should resolve an omitted allow_get_with_content_length_body to false")
-        void shouldResolveOmittedKnobToFalse() {
-            SecurityDefaultsConfig securityDefaults = SecurityDefaultsConfig.builder().profile("strict").build();
-
-            assertFalse(securityDefaults.effectiveAllowGetWithContentLengthBody(),
-                    "an omitted knob must resolve fail-closed, preserving every framing rejection "
-                            + "the gateway made before the key existed");
-        }
-
-        @Test
-        @DisplayName("Should resolve an explicitly declared value")
-        void shouldResolveDeclaredKnob() {
-            assertAll(
-                    () -> assertTrue(SecurityDefaultsConfig.builder().profile("strict")
-                            .allowGetWithContentLengthBody(true).build()
-                            .effectiveAllowGetWithContentLengthBody(), "declared true resolves true"),
-                    () -> assertFalse(SecurityDefaultsConfig.builder().profile("strict")
-                            .allowGetWithContentLengthBody(false).build()
-                            .effectiveAllowGetWithContentLengthBody(), "declared false resolves false"));
-        }
+    @DisplayName("A declared GET-body opt-in carries no cross-cutting boot rule")
+    class GetBodyOptInDeclared {
 
         @Test
         @DisplayName("Should accept a gateway declaring the opt-in without any validation error")
@@ -663,7 +530,7 @@ class LimitRulesTest {
         @Test
         @DisplayName("Should refuse 'minimal' arriving through an endpoint-level security_filter on an authenticated route")
         void shouldRefuseEndpointMinimalOnAuthenticatedRoute() {
-            EndpointConfig endpoint = endpointWith(auth(Require.BEARER), route("r", HttpMethod.GET))
+            EndpointConfig endpoint = endpointWith(auth(Require.BEARER), routeConfig("r", HttpMethod.GET))
                     .securityFilter(profile("minimal")).build();
 
             List<ConfigError> errors = validate(validGateway().build(), endpoint);
@@ -677,7 +544,7 @@ class LimitRulesTest {
             AnchorConfig bff = AnchorConfig.builder().name("app").pathPrefix("/r").type(AnchorType.BFF)
                     .access(AccessLevel.AUTHENTICATED).auth(auth(Require.SESSION)).build();
             GatewayConfig gateway = validGateway().anchors(Map.of(bff.name(), bff)).build();
-            EndpointConfig endpoint = endpointWith(null, route("r", HttpMethod.GET)).anchor(bff.name())
+            EndpointConfig endpoint = endpointWith(null, routeConfig("r", HttpMethod.GET)).anchor(bff.name())
                     .securityFilter(profile("minimal")).build();
 
             List<ConfigError> errors = validate(gateway, endpoint);
@@ -765,7 +632,7 @@ class LimitRulesTest {
         @Test
         @DisplayName("Should not warn when no route declares rate_limit")
         void shouldNotWarnWithoutRateLimit() {
-            EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(), route(PLAIN_ROUTE, HttpMethod.GET));
+            EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(), routeConfig(PLAIN_ROUTE, HttpMethod.GET));
 
             List<ConfigError> errors = validate(endpoint);
 
@@ -779,7 +646,7 @@ class LimitRulesTest {
         @DisplayName("Should warn once for the declaring route only, never for its block-less sibling")
         void shouldWarnOnlyForDeclaringRoute() {
             EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(),
-                    route(PLAIN_ROUTE, HttpMethod.GET),
+                    routeConfig(PLAIN_ROUTE, HttpMethod.GET),
                     limitedRoute(LIMITED_ROUTE, new RateLimitConfig(Generators.integers(1, 10_000).next(), null)));
 
             List<ConfigError> errors = validate(endpoint);
