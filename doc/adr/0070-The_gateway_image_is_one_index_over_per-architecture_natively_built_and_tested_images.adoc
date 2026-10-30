@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: ghcr.io/cuioss/api-sheriff is published as one image index over a linux/amd64 and a linux/arm64 image, each built natively on a runner of its own architecture (GraalVM cannot cross-compile and an emulated native build does not fit the time budget), each run through the full integration-test suite, scanned, pushed as a plain manifest under a leg-local tag and smoked by digest on its own architecture; a join reached only when both legs are green assembles the index from exactly those two digests, writes the release tags and signs the index digest plus both platform digests under the unchanged identity, so a failed leg publishes no release tag; no -march is configured, so amd64 keeps GraalVM's x86-64-v3 default and arm64 gets GraalVM's AArch64 default, -march=compatibility is considered and declined, and CPUs below either baseline are served by a locally built image; a dry-run dispatch proves the lane without a release
+// summary: ghcr.io/cuioss/api-sheriff is published as one image index over a linux/amd64 and a linux/arm64 image, each built natively on a runner of its own architecture (GraalVM cannot cross-compile and an emulated native build does not fit the time budget), each run through the full integration-test suite, scanned, pushed as a plain manifest under a leg-local tag and smoked by digest on its own architecture; a join reached only when both legs are green assembles the index from exactly those two digests, signs the index digest plus both platform digests under the published identity and only then writes the release tags, so a failed leg publishes no release tag; no -march is configured, so amd64 keeps GraalVM's x86-64-v3 default and arm64 gets GraalVM's AArch64 default, -march=compatibility is considered and declined, and CPUs below either baseline are served by a locally built image; a dry-run dispatch proves the lane without a release
 // tags: release, container-image, multi-arch, image-index, native-image, cpu-baseline, signing, cosign, supply-chain, image-artifact, rejected-alternatives
 // affects: api-sheriff-parent, api-sheriff, integration-tests, documentation
 // supersedes:
@@ -17,274 +17,165 @@
 
 == Status
 
-Proposed
-
-== Context
-
-The gateway ships as a GraalVM native executable on a distroless base
-(link:0042-JVM_over_native_and_UBI-minimal_over_distroless_are_considered_and_declined.adoc[ADR-0042]).
-A native executable is machine code for one instruction-set architecture, and for one minimum
-level of that architecture. An image that carries it therefore runs on exactly the hosts that
-architecture and level describe, and nowhere else: not on another architecture, and not on an older
-CPU of the same architecture. Docker's emulation of a foreign architecture does not widen that set
-in practice, because the emulators do not provide the vector extensions a modern target assumes.
-
-A release lane that publishes such an image has to answer three questions together, and the
-answers constrain one another:
-
-* *Which hosts does one published tag serve?* A tag that names one image serves one architecture.
-  Serving more than one under the same tag needs an image index whose entries the registry and the
-  container runtime select per host.
-* *How is each architecture's image built?* GraalVM native-image cannot cross-compile: the
-  executable is built on a machine of the target architecture. A native build under QEMU emulation
-  is possible but runs several times slower than a native one, and the native compile is already
-  the dominant term of the lane's time budget.
-* *Which guarantees survive the split?* The lane's existing guarantees are per-image: the image
-  pushed is the image the integration-test suite ran against; its pushed digest is unique; the
-  pulled image is identical to the tested one; it is scanned at HIGH and CRITICAL before any push;
-  an SBOM describes it; its digest is signed. Every one of these has to hold for each architecture,
-  and the multi-architecture artifact must not weaken any of them — in particular it must not
-  become possible to publish one architecture's release while the other's failed.
-
-The second structural choice point is the CPU baseline inside each architecture. A higher baseline
-lets the compiler use newer instructions on every host; a lower one serves more, older hosts. The
-choice is made at build time and fixed in the executable, so it is a property of the published
-artifact, and it decides which operators can run the published image and which have to build their
-own.
+Accepted
 
 == Decision
 
-*The published image is one image index over two natively built, fully integration-tested
-per-architecture images, `linux/amd64` and `linux/arm64`. Release tags name only the index, and are
-written only after both architectures passed every check. No `-march` is configured, so each
-architecture keeps GraalVM's default target.*
+=== The question
+
+The gateway ships as a GraalVM native executable on a distroless base (link:0042-JVM_over_native_and_UBI-minimal_over_distroless_are_considered_and_declined.adoc[ADR-0042]). A native executable is machine code for one instruction-set architecture, and for one minimum level of that architecture. An image that carries it therefore runs only on the hosts that architecture and level describe. It runs neither on another architecture nor on an older CPU of the same architecture. Docker's emulation of a foreign architecture does not widen that set in practice, because the emulators do not provide the vector extensions a modern target assumes.
+
+A release lane that publishes such an image has to answer three questions together, and the answers constrain one another:
+
+* *Which hosts does one published tag serve?* A tag that names one image serves one architecture. Serving more than one under the same tag needs an image index whose entries the registry and the container runtime select per host.
+* *How is each architecture's image built?* GraalVM native-image cannot cross-compile, so the build runs on a machine of the target architecture. A native build under QEMU emulation is possible but runs several times slower than a native one, and the native compile is already the dominant term of the lane's time budget.
+* *Which guarantees survive the split?* The lane's guarantees are per-image. The image pushed is the image the integration-test suite ran against. Its pushed digest is unique. The pulled image is identical to the tested one. The scan runs at HIGH and CRITICAL before any push. An SBOM describes the image, and its digest is signed. Each of these has to hold for each architecture. The multi-architecture artifact must not weaken any of them. In particular it must not become possible to publish one architecture's release while the other's failed.
+
+The CPU baseline inside each architecture is a second choice. A higher baseline lets the compiler use newer instructions on every host, and a lower one serves more, older hosts. The choice is made at build time and fixed in the executable. It is thus a property of the published artifact, and it decides which operators can run the published image and which have to build their own.
+
+*The decision:* the published image is one image index over two natively built, fully integration-tested per-architecture images, `linux/amd64` and `linux/arm64`. Release tags name only the index, and the lane writes them only after both architectures passed every check. No `-march` is configured, so each architecture keeps GraalVM's default target.
 
 === One leg per architecture, each on its own architecture
 
-The image job of `.github/workflows/release.yml` (`publish-image`) is a two-leg matrix:
-`linux/amd64` on an amd64 runner and `linux/arm64` on an arm64 runner. Each leg builds natively,
-because native-image cannot cross-compile and an emulated build does not fit the time budget.
+The `publish-image` job of `.github/workflows/release.yml` is a two-leg matrix: `linux/amd64` on an amd64 runner and `linux/arm64` on an arm64 runner. Each leg builds natively, because native-image cannot cross-compile and an emulated build does not fit the time budget.
 
-Each leg keeps the single-image guarantees intact, for its own architecture:
+Each leg keeps the single-image guarantees intact for its own architecture:
 
-* The full `-Pintegration-tests` suite runs on the leg's runner. That run is the leg's one and only
-  image build, so the image the leg pushes is the image the suite ran against by construction.
-* An SBOM is generated per architecture, because the two images carry different executables over
-  different variants of the base image.
-* The HIGH and CRITICAL Trivy gate runs per architecture. The two base-image variants are separate
-  package sets that can carry different CVEs, so a clean scan of one says nothing about the other.
-* The leg pushes with `docker tag` and `docker push` under a leg-local tag,
-  `leg-<release-tag sha>-<arch>`, never under a release tag, asserts exactly one pushed digest, and
-  asserts that the digest addresses a plain image manifest rather than an index.
-* The leg pulls its digest back on its own runner and checks it: the pulled image ID equals the
-  tested ID, the version and revision labels match, the OS and architecture match the leg, and the
-  image answers its liveness probe. Only a host of the image's own architecture can boot it.
+* The full `-Pintegration-tests` suite runs on the leg's runner. That run is the leg's only image build, so the image the leg pushes is by construction the image the suite ran against.
+* The leg generates its own SBOM, because the two images carry different executables over different variants of the base image.
+* The HIGH and CRITICAL Trivy gate runs per architecture. The two base-image variants are separate package sets that can carry different CVEs, so a clean scan of one says nothing about the other.
+* The leg pushes with `docker tag` and `docker push` under a leg-local tag, `leg-<release-tag sha>-<arch>`, never under a release tag. It asserts exactly one pushed digest, and it asserts that the digest addresses a plain image manifest and not an index.
+* The leg pulls its digest back on its own runner and checks it. The pulled image ID equals the tested ID, the version and revision labels match, the OS and architecture match the leg, and the image answers its liveness probe. Only a host of the image's own architecture can boot it.
 
 A leg signs nothing and writes no release tag.
 
 === One join, the only writer of release tags
 
-A join job runs only when the matrix as a whole succeeded. It assembles the index with
-`docker buildx imagetools create` from exactly the two digests the legs handed over — no attestation
-entry, no third platform, no tag lookup — under a candidate tag, `leg-<release-tag sha>-index`.
-It reads that tag back from the registry and asserts that it resolves to an index listing exactly
-`linux/amd64` and `linux/arm64`, each pointing at its own leg's tested digest, and that pulling the
-index for `linux/amd64` yields the image the amd64 leg tested. It signs and verifies the three
-digests, and only then points `<version>` and `sha-<release-tag sha>` at the index digest and reads
-both back.
+The `join` job runs only when the matrix as a whole succeeded. It assembles the index with `docker buildx imagetools create` from exactly the two digests the legs handed over, under a candidate tag, `leg-<release-tag sha>-index`. It uses no attestation entry, no third platform and no tag lookup.
 
-*A failed or cancelled leg publishes no release tag.* The legs run with `fail-fast`, so a failing
-leg cancels the other, and a matrix that did not fully succeed leaves the join skipped. Either both
-architectures ship under the release tags or neither does. A failed run leaves at most a leg-local
-tag behind, which no consumer is pointed at, and so does a failure of the index assertions or of
-the signatures: the release tags are the join's last write.
+The join reads that tag back from the registry. It asserts that the tag resolves to an index listing exactly `linux/amd64` and `linux/arm64`, each pointing at its own leg's tested digest. It asserts that pulling the index for `linux/amd64` yields the image the amd64 leg tested. It signs and verifies the three digests. Only then does it point `<version>` and `sha-<release-tag sha>` at the index digest and read both back.
 
-The run/skip guard that keeps a guard-declined merge from re-pushing and re-signing an already
-released tag sits on the legs and on the join alike.
+*A failed or cancelled leg publishes no release tag.* The legs run with `fail-fast`, so a failing leg cancels the other, and a matrix that did not fully succeed leaves the join skipped. Either both architectures ship under the release tags or neither does. A failed run leaves at most a leg-local tag behind, which no consumer is pointed at. A failure of the index assertions or of the signatures leaves the same, plus the candidate tag, because the release tags are the join's last write. Only a failure of that last write or of its read-back can leave a release tag, and that tag names the index already signed and verified.
+
+The run/skip guard that keeps a guard-declined merge from re-pushing and re-signing an already released tag sits on the legs and on the join alike.
 
 === Three signatures per release
 
-Cosign keyless signing moves from the image job to the join and signs three digests: the index
-digest the release tags name, and both platform digests. A consumer can pull a platform digest
-directly, bypassing the index, and an unsigned platform digest would verify as nothing. All three
-are verified in the same job under the identity and issuer operators are given, which are
-unchanged:
+The join signs three digests with Cosign keyless signing: the index digest the release tags name, and both platform digests. A consumer can pull a platform digest directly, bypassing the index, and an unsigned platform digest would verify as nothing. The same job verifies all three under the identity and issuer operators are given:
 
 * identity regexp `^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$`
 * OIDC issuer `https://token.actions.githubusercontent.com`
 
-The join is a caller-local job of the same workflow file and is reached by the same two events as
-before, so the certificate SAN names the same single ref.
+The join is a caller-local job of the same workflow file, reached by the same two events as the legs, so the certificate SAN names that single ref.
 
 === The CPU baseline: GraalVM's default on both architectures
 
-No `-march` is configured anywhere — not in `quarkus.native.additional-build-args` in
-`api-sheriff/src/main/resources/application.properties`, and not in the `native` profiles of
-`api-sheriff/pom.xml` or `build-parent/pom.xml`. The shipped build arguments carry no
-architecture-specific flag, so the same configuration builds on both legs unchanged. Each
-architecture therefore compiles for GraalVM's default target:
+No `-march` is configured anywhere. Neither `quarkus.native.additional-build-args` in `api-sheriff/src/main/resources/application.properties` nor the `native` profiles of `api-sheriff/pom.xml` and `build-parent/pom.xml` carry one. The shipped build arguments carry no architecture-specific flag, so the same configuration builds on both legs unchanged. Each architecture therefore compiles for GraalVM's default target:
 
-* *amd64: `x86-64-v3`.* The executable needs AVX2, BMI2 and FMA. It runs on Intel cores from
-  Haswell on and AMD cores from Excavator on, including every current server and desktop part.
-* *arm64: GraalVM's AArch64 default, which GraalVM documents as `armv8.1-a`.* Graviton 2
-  (Neoverse N1, Armv8.2-A) and every later Graviton generation implement it, as does Apple Silicon.
-  Apple Silicon under Docker runs it: this project's own arm64 native images are built with the
-  same configuration on Apple Silicon hosts, and one of them brought the compose sample up healthy
-  on an arm64 host
-  (link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069],
-  "Verified on"). Graviton 2 is covered by instruction-set inclusion; no Graviton 2 host has booted
-  the image.
+* *amd64: `x86-64-v3`.* The executable needs AVX2, BMI2 and FMA. It runs on Intel cores from Haswell on and AMD cores from Excavator on, including every current server and desktop part.
+* *arm64: GraalVM's AArch64 default, which GraalVM documents as `armv8.1-a`.* Graviton 2 (Neoverse N1, Armv8.2-A) and every later Graviton generation implement it, as does Apple Silicon. Apple Silicon under Docker runs it. This project's own arm64 native images are built with the same configuration on Apple Silicon hosts, and one of them brought the compose sample up healthy on an arm64 host (link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069], "Verified on"). Instruction-set inclusion covers Graviton 2. No Graviton 2 host has booted the image.
 
-Each leg's native-image build log states the target machine on its `Graal compiler:` line. The
-lane's dry run (workflow run 39588321108, 2026-10-21) shows `target machine: x86-64-v3` on the
-amd64 leg and `target machine: armv8.1-a` on the arm64 leg, so both defaults are observed and not
-only documented.
+Each leg's native-image build log states the target machine on its `Graal compiler:` line. The lane's dry run (workflow run 39588321108, 2026-10-21) shows `target machine: x86-64-v3` on the amd64 leg and `target machine: armv8.1-a` on the arm64 leg. Both defaults are thus observed and not only documented.
 
-The hosts *below* either baseline are not served by the published image, and are named rather than
-left to be discovered:
+The published image does not serve the hosts below either baseline:
 
-* x86-64 CPUs without AVX2, BMI2 or FMA — Intel cores before Haswell, AMD cores before Excavator,
-  and low-end Atom-class parts that omit AVX2;
-* AArch64 cores older than the arm64 default, such as the Cortex-A72 of Graviton 1 and the
-  Raspberry Pi 4.
+* x86-64 CPUs without AVX2, BMI2 or FMA: Intel cores before Haswell, AMD cores before Excavator, and low-end Atom-class parts that omit AVX2;
+* AArch64 cores older than the arm64 default, such as the Cortex-A72 of Graviton 1 and the Raspberry Pi 4.
 
-They are served by Route B, a locally built image
-(link:../user/compose-sample.adoc[the compose sample]): a build on such a host compiles for that
-host. The same applies to an amd64 image forced onto an arm64 host with `--platform linux/amd64`,
-which the index no longer requires.
+Route B, a locally built image, serves them (link:../user/compose-sample.adoc[the compose sample]), because a build on such a host compiles for that host. The same applies to an amd64 image forced onto an arm64 host with `--platform linux/amd64`, which the index no longer requires.
 
-`-march=compatibility` was considered and *declined*; see Alternatives Considered. Because the
-decision keeps the default, no cost of a broader target was measured, and no performance figure is
-claimed in either direction.
+The decision keeps the default, so no cost of a broader target was measured, and this record claims no performance figure in either direction.
 
 === A dry run proves the lane without a release
 
-A `workflow_dispatch` input, `dry_run`, runs both legs, the join and the three signatures without
-a release: the release job refuses it on every ref, so no Maven publication, SCM tag or GitHub
-release can result. Every tag a dry run pushes is `dryrun-<run_id>-<attempt>[-<arch>]`, scoped to
-the run attempt and asserted before the push; the images carry the version label
-`dryrun-<run_id>`, which names the run rather than the attempt; signatures are verified under an
-identity derived from the dispatching ref, except that a dry run dispatched from `main` does not
-sign; and a cleanup job deletes, by the digests the run
-recorded, every package version the run created. It then fails, naming each one, on any version
-still carrying an exact tag of any attempt of the run. The tags are attempt-scoped because a leg
-pushes before it records its digest: a re-run pushing under an unchanged tag would move it off an
-earlier attempt's unrecorded version and leave that version unnamed, while an attempt-scoped tag
-stays on it. A dry run may be dispatched from a non-`main`
-ref, because it publishes nothing a consumer pulls by a release tag and its signatures do not
-satisfy the published identity. From `main` they would, so a dry run dispatched from `main` skips
-signing.
+A `workflow_dispatch` input, `dry_run`, runs both legs, the join and the three signatures without a release. The release job refuses it on every ref, so no Maven publication, SCM tag or GitHub release can result. A dry run may be dispatched from a non-`main` ref, because it publishes nothing a consumer pulls by a release tag and its signatures do not satisfy the published identity. From `main` they would, so a dry run dispatched from `main` skips signing. The link:../development/release-process.adoc#dry-run[release process] holds the tags, the cleanup and what a dry run never does.
 
-=== What this record does not change
+=== What this record leaves to other records
 
-The release trigger and the centrally owned version-changed decision
-(link:0035-A_release_is_cut_by_a_guarded_version-bump_merge_or_a_deliberate_dispatch_and_the_version-changed_decision_is_centrally_owned.adoc[ADR-0035])
-are unchanged. The release stays non-atomic: the Maven artifacts publish before the image lane
-runs, so a failed leg leaves a jars-only release with no release tag, recovered by re-running the
-image jobs (link:../development/release-process.adoc[Release process]). The native-on-distroless artifact and its trust-material
-posture (ADR-0042) are unchanged; each platform image is that same artifact for its architecture.
+The release trigger and the centrally owned version-changed decision belong to link:0035-A_release_is_cut_by_a_guarded_version-bump_merge_or_a_deliberate_dispatch_and_the_version-changed_decision_is_centrally_owned.adoc[ADR-0035]. The release stays non-atomic: the Maven artifacts publish before the image lane runs, so a failed leg leaves a jars-only release with no release tag, recovered by re-running the image jobs (link:../development/release-process.adoc[Release process]). The native-on-distroless artifact and its trust-material posture belong to ADR-0042, and each platform image is that same artifact for its architecture.
+
+== Alternatives rejected
+
+=== Build the arm64 image under QEMU on an amd64 runner
+
+This keeps one runner type and lets one job build both images.
+
+*Rejected because* an emulated native compile does not fit the lane's time budget, and because it could not test what it builds. The integration suite would run emulated or not at all, so "the published image is the tested image" would hold for one architecture only.
+
+=== Cross-compile the arm64 executable on the amd64 runner
+
+*Rejected because* GraalVM native-image does not support cross-compilation, so this option does not exist for this artifact.
+
+=== Build and push both platforms in one `docker buildx build --platform ... --push`
+
+This produces an index in one step.
+
+*Rejected because* the image would be built outside the integration-test harness, so what is pushed is no longer what was tested. Also, buildx's default attestations push a manifest list that wraps the image with provenance and SBOM entries, which changes what a pull by digest resolves to and what Cosign signs.
+
+=== Publish a separate tag per architecture and no index
+
+An example tag is `<version>-arm64`. This avoids the join.
+
+*Rejected because* every consumer then has to know its host's architecture to name the tag, and a deployment manifest stops being portable between hosts. There is also still no single artifact for a release to sign.
+
+=== Let each leg publish its own release tag as soon as it is green
+
+This is simpler, and amd64 consumers would not wait on arm64.
+
+*Rejected because* it makes a half release reachable: a release whose tags serve one architecture while the other failed, which no consumer can distinguish from a complete one.
+
+=== Sign only the index digest
+
+This means one signature per release.
+
+*Rejected because* a consumer who pins a platform digest, which is how one fixes an architecture deliberately, would hold an artifact no signature covers.
+
+=== `-march=compatibility` on both architectures
+
+This lowers amd64 to the baseline x86-64 instruction set and arm64 to the plain Armv8-A one, so the published image would also run on the hosts listed above.
+
+*Declined because* it trades code-generation quality on every supported host for a population of old or low-end CPUs that a locally built image already serves. The cost would fall on every deployment and the benefit only on those few, and those few already have a working route. Measuring the cost on this gateway's workload would be the first step of a reversal, not a step this decision needs.
+
+=== Run the integration suite on arm64 on every pull request
+
+This would move the arm64 proof from release time to review time.
+
+*Not adopted here because* it doubles the cost of the most expensive pull-request lane for a platform whose image is built by the same configuration as the amd64 one. It remains the natural next step if an arm64-only defect ever reaches a release.
+
+The rejected options share one flaw: each either publishes something other than what was tested, or lets a release reach consumers in a shape that is not complete.
 
 == Consequences
 
-=== Positive
+=== Properties of the design
 
-* One tag serves `linux/amd64` and `linux/arm64` hosts, including Apple Silicon and Graviton, and
-  each host pulls an image built and tested on its own architecture.
-* Every single-image guarantee — tested equals published, unique digest, pulled equals tested,
-  gating scan, SBOM, signature — holds per architecture, and the index adds the guarantee that it
-  points each platform at the image that platform's leg tested.
+* One tag serves `linux/amd64` and `linux/arm64` hosts, including Apple Silicon and Graviton, and each host pulls an image built and tested on its own architecture.
+* Every single-image guarantee (tested equals published, unique digest, pulled equals tested, gating scan, SBOM, signature) holds per architecture. The index adds the guarantee that it points each platform at the image that platform's leg tested.
 * There is no half release. A release tag names an index over both platforms or does not exist.
-* Every artifact a consumer can pull by digest is signed and verifiable under one published
-  identity.
-* The lane can be exercised end to end before a release depends on it, and a dry run leaves no
-  package version behind.
+* Every artifact a consumer can pull by digest is signed and verifiable under one published identity.
+* The lane can be exercised end to end before a release depends on it, and a dry run leaves no package version behind.
 
-=== Negative
+=== Accepted costs
 
-* A release costs two native builds and two full integration-test runs instead of one; the legs
-  run in parallel, so the wall time grows less than the compute.
-* A failure on one architecture blocks the release for both. An arm64-only defect withholds a
-  release from amd64 consumers too; that is the price of the no-half-release rule, paid
-  deliberately.
+* A release costs two native builds and two full integration-test runs instead of one. The legs run in parallel, so the wall time grows less than the compute.
+* A failure on one architecture blocks the release for both. An arm64-only defect withholds a release from amd64 consumers too. That is the price of the no-half-release rule, paid deliberately.
 * Hosts below either CPU baseline still cannot run the published image and need a local build.
 
 === Risks
 
-* *arm64 is proven at release time, not on every pull request.* The pull-request integration lane
-  runs on amd64 only, so a change that breaks arm64 alone surfaces at the next release or dry run,
-  not at review.
-* *Leg-local tags persist.* Each release leaves its `leg-<sha>-<arch>` tags on the two platform
-  manifests in the package. They name images that are part of a signed release, so they are
-  harmless, but they accumulate, and a version badge or tag listing has to ignore them.
-* *The arm64 target is the builder image's default, not a pinned setting.* The dry run observed
-  `armv8.1-a`, but should a builder-image update change the AArch64 default, the supported arm64
-  population changes with it; the build log line names the target, and nothing else asserts it.
-* *The runner label is an external dependency.* The arm64 leg needs GitHub's arm64 Linux runner;
-  losing access to it stops every release, not only arm64.
+* *arm64 is proven at release time, not on every pull request.* The pull-request integration lane runs on amd64 only, so a change that breaks arm64 alone surfaces at the next release or dry run, not at review.
+* *Leg-local tags persist.* Each release leaves its `leg-<sha>-<arch>` tags on the two platform manifests in the package. They name images that are part of a signed release, so they are harmless, but they accumulate, and a version badge or tag listing has to ignore them.
+* *The arm64 target is the builder image's default, not a pinned setting.* The dry run observed `armv8.1-a`, but a builder-image update could change the AArch64 default, and the supported arm64 population would change with it. The build log line names the target, and nothing else asserts it.
+* *The runner label is an external dependency.* The arm64 leg needs GitHub's arm64 Linux runner. Losing access to it stops every release, not only arm64.
 
-== Alternatives Considered
+== Links
 
-*Build the arm64 image under QEMU on an amd64 runner.* Keeps one runner type and lets one job
-build both images. Rejected because an emulated native compile does not fit the lane's time budget,
-and because it could not test what it builds: the integration suite would run emulated or not at
-all, so "the published image is the tested image" would hold for one architecture only.
-
-*Cross-compile the arm64 executable on the amd64 runner.* GraalVM native-image does not support
-cross-compilation, so this option does not exist for this artifact.
-
-*Build and push both platforms in one `docker buildx build --platform ... --push`.* Produces an
-index in one step. Rejected because the image would be built outside the integration-test harness,
-so what is pushed is no longer what was tested; and because buildx's default attestations push a
-manifest list that wraps the image with provenance and SBOM entries, which changes what a
-pull-by-digest resolves to and what Cosign signs.
-
-*Publish a separate tag per architecture* (for example `<version>-arm64`) and no index. Avoids the
-join. Rejected because every consumer then has to know its host's architecture to name the tag, a
-deployment manifest stops being portable between hosts, and there is still no single artifact for
-a release to sign.
-
-*Let each leg publish its own release tag as soon as it is green.* Simpler, and amd64 consumers
-would not wait on arm64. Rejected because it makes a half release reachable: a release whose tags
-serve one architecture while the other failed, which no consumer can distinguish from a complete
-one.
-
-*Sign only the index digest.* One signature per release, as before. Rejected because a consumer who
-pins a platform digest — which is how one fixes an architecture deliberately — would hold an
-artifact no signature covers.
-
-*`-march=compatibility` on both architectures.* Lowers amd64 to the baseline x86-64 instruction
-set and arm64 to the plain Armv8-A one, so the published image would also run on the hosts listed
-above. Declined because it trades code-generation quality on every supported host for a population
-of old or low-end CPUs that a locally built image already serves: the cost would fall on every
-deployment, the benefit only on those few, and those few already have a working route. Measuring
-the cost on this gateway's workload would be the first step of a reversal, not a step this decision
-needs.
-
-*Run the integration suite on arm64 on every pull request.* Would move the arm64 proof from release
-time to review time. Not adopted here: it doubles the cost of the most expensive pull-request lane
-for a platform whose image is built by the same configuration as the amd64 one. It remains the
-natural next step if an arm64-only defect ever reaches a release.
-
-The rejected options share one flaw: each either publishes something other than what was tested,
-or lets a release reach consumers in a shape that is not complete.
-
-== References
-
-* link:0035-A_release_is_cut_by_a_guarded_version-bump_merge_or_a_deliberate_dispatch_and_the_version-changed_decision_is_centrally_owned.adoc[ADR-0035]
-  — the release trigger and the version-changed guard the image jobs consume.
-* link:0042-JVM_over_native_and_UBI-minimal_over_distroless_are_considered_and_declined.adoc[ADR-0042]
-  — the native-on-distroless artifact each platform image is an instance of.
-* link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]
-  — the self-answering health check both platform images carry.
-* link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]
-  — its verification record of arm64 native images on Apple Silicon.
-* link:../development/release-process.adoc[Release process] — the operator procedure, including
-  recovery when the image lane fails.
-* link:../user/container-image.adoc[The container image] — the published tags and the signature
-  verification recipe.
-* link:../user/compose-sample.adoc[The compose sample] — Route B, the locally built image.
-* `.github/workflows/release.yml` — `publish-image`, `join` and `cleanup-dry-run`.
-* `api-sheriff/src/main/resources/application.properties` — `quarkus.native.additional-build-args`,
-  which carries no `-march`.
-* https://www.graalvm.org/latest/reference-manual/native-image/overview/BuildOptions/[GraalVM
-  Native Image build options] — `-march` and its per-architecture defaults.
+* link:0035-A_release_is_cut_by_a_guarded_version-bump_merge_or_a_deliberate_dispatch_and_the_version-changed_decision_is_centrally_owned.adoc[ADR-0035]: the release trigger and the version-changed guard the image jobs consume
+* link:0042-JVM_over_native_and_UBI-minimal_over_distroless_are_considered_and_declined.adoc[ADR-0042]: the native-on-distroless artifact each platform image is an instance of
+* link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]: the self-answering health check both platform images carry
+* link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]: its verification record of arm64 native images on Apple Silicon
+* link:../development/release-process.adoc[Release process]: the operator procedure, including recovery when the image lane fails
+* link:../user/container-image.adoc[The container image]: the published tags and the signature verification recipe
+* link:../user/compose-sample.adoc[The compose sample]: Route B, the locally built image
+* `.github/workflows/release.yml`: `publish-image`, `join` and `cleanup-dry-run`
+* `api-sheriff/src/main/resources/application.properties`: `quarkus.native.additional-build-args`, which carries no `-march`
+* https://www.graalvm.org/latest/reference-manual/native-image/overview/BuildOptions/[GraalVM Native Image build options]: `-march` and its per-architecture defaults
