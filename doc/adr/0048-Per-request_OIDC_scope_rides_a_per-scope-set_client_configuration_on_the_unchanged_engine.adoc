@@ -47,11 +47,15 @@ configuration at construction. This record settles how a gateway with per-reques
 The configuration carries the scope set, so the gateway builds one configuration per scope set and drives a flow over it. The engine stays unchanged.
 
 `ScopedEngineFlows` is the seam. It is built once per runtime over the collaborators the base configuration uses: the shared `TokenEndpointClient`, the access-token and ID-token
-validation bridges, the gateway's `response_mode=query` request builder and the client authentication. It also takes a factory that builds a `ClientConfiguration` for a scope list.
+validation bridges, the gateway's `response_mode=query` request builder, the client authentication and the one DPoP sender constraint. It also takes a factory that builds a
+`ClientConfiguration` for a scope list.
 
 * `authorize(metadata, scopes)` drives an `AuthorizationCodeFlow` whose configuration carries exactly `scopes`. The flow is cached under the canonical set (deduplicated, then
   sorted), so two requests for one set in a different order share one flow.
 * `refresh(metadata, refreshToken, scopes)` builds a `RefreshFlow` for that one call and never caches it.
+* `widen(metadata, scopes, silent)` builds an `AuthorizationCodeFlow` for that one call and never caches it. The set a session widening requests holds the session's granted scopes, so
+  the identity provider decides its size, as on the refresh leg
+  (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 === The factory pins the posture
 
