@@ -113,12 +113,6 @@ The agnostic set it protects at 0.1.0 is five packages:
 
 The framework set an agnostic package must never import is correspondingly wider than the Decision's list: `io.quarkus..`, `io.vertx..`, `io.smallrye..`, `io.netty..`, `org.jboss..`, `jakarta.enterprise..`, `jakarta.inject..`, `org.eclipse.microprofile..` and `io.micrometer..`. `io.smallrye..` is listed because the Fault-Tolerance guard is exactly the coupling that keeps `routing` out of the agnostic set, and leaving it unlisted would let an agnostic-core class acquire that same coupling unchecked. `io.netty..` and `org.jboss..` arrive transitively with the Quarkus and Vert.x stack and are framework by any reading of this ADR.
 
-==== What the reversal measures against
-
-* Five enforced agnostic packages, not six: `routing` is framework-coupled by resolution.
-* One deployable, and five reactor modules, two of which carry no Java.
-* A quality-gate test enforces the seam, not module compilation, so its strength is exactly the strength of that test.
-
 == Links
 
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: the decision that supersedes this one

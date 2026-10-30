@@ -58,8 +58,6 @@ import org.junit.jupiter.api.Test;
 @DisplayName("The documented token-validation categories stay bound to the library's EventCategory")
 class DocumentedTokenValidationCategoriesContractTest {
 
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
-
     private static final String OBSERVABILITY_ADOC = "doc/architecture/observability-and-errors.adoc";
 
     /** Opens the category list inside the {@code sheriff_token_validation_errors_total} row. */
@@ -78,7 +76,7 @@ class DocumentedTokenValidationCategoriesContractTest {
         String document = observabilityAdoc();
 
         // Act
-        Set<String> documented = categoriesBetween(document, CATEGORIES_START, CATEGORIES_END);
+        Set<String> documented = categoriesIn(document);
 
         // Assert
         assertEquals(enumNames(), documented,
@@ -90,13 +88,12 @@ class DocumentedTokenValidationCategoriesContractTest {
     void removingADocumentedCategoryIsDetected() throws Exception {
         // Arrange
         String document = observabilityAdoc();
-        Set<String> expected = new TreeSet<>(categoriesBetween(document, CATEGORIES_START, CATEGORIES_END));
+        Set<String> expected = new TreeSet<>(categoriesIn(document));
         String removed = enumNames().iterator().next();
         assertTrue(expected.remove(removed), () -> "control: " + removed + " must be documented to be removed");
 
         // Act
-        Set<String> documented = categoriesBetween(document.replace("`" + removed + "`", ""),
-                CATEGORIES_START, CATEGORIES_END);
+        Set<String> documented = categoriesIn(document.replace("`" + removed + "`", ""));
 
         // Assert
         assertEquals(expected, documented, "the extraction must see exactly the removal");
@@ -109,13 +106,12 @@ class DocumentedTokenValidationCategoriesContractTest {
         // Arrange
         String added = "not_an_event_category";
         String document = observabilityAdoc();
-        Set<String> expected = new TreeSet<>(categoriesBetween(document, CATEGORIES_START, CATEGORIES_END));
+        Set<String> expected = new TreeSet<>(categoriesIn(document));
         assertTrue(expected.add(added), () -> "control: " + added + " must not be documented already");
 
         // Act
-        Set<String> documented = categoriesBetween(
-                document.replace(CATEGORIES_START, CATEGORIES_START + " `" + added + "`,"),
-                CATEGORIES_START, CATEGORIES_END);
+        Set<String> documented = categoriesIn(
+                document.replace(CATEGORIES_START, CATEGORIES_START + " `" + added + "`,"));
 
         // Assert
         assertEquals(expected, documented, "the extraction must see exactly the addition");
@@ -127,7 +123,7 @@ class DocumentedTokenValidationCategoriesContractTest {
     void missingOpeningAnchorFailsNamingIt() {
         // Act
         AssertionError failure = assertThrows(AssertionError.class,
-                () -> categoriesBetween("`INVALID_SIGNATURE`; see", CATEGORIES_START, CATEGORIES_END));
+                () -> categoriesIn("`INVALID_SIGNATURE`; see"));
 
         // Assert
         assertTrue(failure.getMessage().contains(CATEGORIES_START), failure::getMessage);
@@ -138,8 +134,7 @@ class DocumentedTokenValidationCategoriesContractTest {
     void missingClosingAnchorFailsNamingIt() {
         // Act
         AssertionError failure = assertThrows(AssertionError.class,
-                () -> categoriesBetween(CATEGORIES_START + " `INVALID_SIGNATURE`",
-                        CATEGORIES_START, CATEGORIES_END));
+                () -> categoriesIn(CATEGORIES_START + " `INVALID_SIGNATURE`"));
 
         // Assert
         assertTrue(failure.getMessage().contains(CATEGORIES_END), failure::getMessage);
@@ -150,28 +145,29 @@ class DocumentedTokenValidationCategoriesContractTest {
     void emptySpanFailsNamingTheAnchors() {
         // Act
         AssertionError failure = assertThrows(AssertionError.class,
-                () -> categoriesBetween(CATEGORIES_START + " nothing" + CATEGORIES_END,
-                        CATEGORIES_START, CATEGORIES_END));
+                () -> categoriesIn(CATEGORIES_START + " nothing" + CATEGORIES_END));
 
         // Assert
         assertTrue(failure.getMessage().contains(CATEGORIES_START), failure::getMessage);
     }
 
-    private static Set<String> categoriesBetween(String document, String start, String end) {
-        int from = document.indexOf(start);
+    private static Set<String> categoriesIn(String document) {
+        int from = document.indexOf(CATEGORIES_START);
         if (from < 0) {
-            return fail("anchor not found in " + OBSERVABILITY_ADOC + ": " + start);
+            return fail("anchor not found in " + OBSERVABILITY_ADOC + ": " + CATEGORIES_START);
         }
-        int to = document.indexOf(end, from + start.length());
+        int to = document.indexOf(CATEGORIES_END, from + CATEGORIES_START.length());
         if (to < 0) {
-            return fail("closing anchor not found after '" + start + "' in " + OBSERVABILITY_ADOC + ": " + end);
+            return fail("closing anchor not found after '" + CATEGORIES_START + "' in " + OBSERVABILITY_ADOC + ": "
+                    + CATEGORIES_END);
         }
-        Matcher matcher = BACKTICKED.matcher(document.substring(from + start.length(), to));
+        Matcher matcher = BACKTICKED.matcher(document.substring(from + CATEGORIES_START.length(), to));
         Set<String> categories = new TreeSet<>();
         while (matcher.find()) {
             categories.add(matcher.group(1));
         }
-        assertFalse(categories.isEmpty(), () -> "no category named between '" + start + "' and '" + end + "'");
+        assertFalse(categories.isEmpty(),
+                () -> "no category named between '" + CATEGORIES_START + "' and '" + CATEGORIES_END + "'");
         return categories;
     }
 
@@ -185,11 +181,12 @@ class DocumentedTokenValidationCategoriesContractTest {
     }
 
     private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
+        Path workingDirectory = Path.of(System.getProperty("user.dir"));
+        for (Path candidate = workingDirectory; candidate != null; candidate = candidate.getParent()) {
             if (Files.isDirectory(candidate.resolve("doc"))) {
                 return candidate;
             }
         }
-        return fail("cannot resolve the repository root from the working directory " + MODULE);
+        return fail("cannot resolve the repository root from the working directory " + workingDirectory);
     }
 }
