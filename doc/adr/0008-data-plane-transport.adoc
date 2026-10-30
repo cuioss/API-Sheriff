@@ -83,15 +83,15 @@ The ETag adapter on the data plane would serve a cached body on an upstream `304
 
 === Fault-tolerance annotations on the hot path
 
-*Not adopted.* The original record applies the programmatic API "without annotations or CDI interception on the hot path" and gives no further reason.
+*Not adopted.* The decision applies the programmatic API "without annotations or CDI interception on the hot path" and records no further reason.
 
 === A hand-rolled breaker
 
-*Not adopted.* The original record names the same policy as a small gateway-side component only as the fallback if the shipped SmallRye surface lacked a needed hook. It gives no other reason against it.
+*Not adopted.* The decision names the same policy as a small gateway-side component only as the fallback if the shipped SmallRye surface lacked a needed hook. It records no other reason against it.
 
 === Replay buffering for retry
 
-*Not adopted.* The original record says only "No replay buffering in the initial release" and gives no further reason.
+*Not adopted.* The decision says only "No replay buffering in the initial release" and records no further reason.
 
 == Consequences
 

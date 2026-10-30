@@ -219,7 +219,7 @@ class DefaultProfileReadinessTest {
                         + "configured; payload: " + payload);
 
         // Assert — and it is UP for the right reason: the gateway's own probe reads the validator built
-        // from gateway.yaml's token_validation block, which the excluded probes observe nothing of.
+        // from gateway.yaml's token_validation block. The excluded probes observe none of that block.
         JsonObject gatewayCheck = checkNamed(payload, GATEWAY_READINESS_CHECK);
         assertEquals(UP, gatewayCheck.getString(STATUS),
                 "gateway-readiness is UP — the gateway's own validator resolved; payload: " + payload);

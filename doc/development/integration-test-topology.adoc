@@ -1688,8 +1688,8 @@ the integration topology stayed identical:
 * `integration-tests/.../endpoints/grpc.yaml` -- the values did not change. The alias base path is
   empty, so append equals replace. Only the formula in its comment changed.
 * `integration-tests/.../endpoints/origin-headers.yaml` -- written under append, so it restates no
-  alias base path. Both its routes declare `route.upstream.path` (`/response-headers`, `/redirect-to`)
-  behind `HTTPBIN_ROOT`, the deliberately base-path-free sibling of `UPSTREAM`. With an empty alias base
+  alias base path. Its routes declare `route.upstream.path` (`/response-headers`, `/redirect-to`,
+  `/status` and the `/anything/header-*` paths) behind `HTTPBIN_ROOT`, the deliberately base-path-free sibling of `UPSTREAM`. With an empty alias base
   append equals replace there too, so the declared path is the whole effective upstream base.
 
 At that change no other test resource, deployment sample, WebSocket, asset, BFF or secure endpoint

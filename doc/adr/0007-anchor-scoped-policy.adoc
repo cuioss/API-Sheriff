@@ -115,7 +115,7 @@ The Kubernetes Gateway API (GEP-713) attaches hierarchical policies with separat
 
 Azure API Management's child policy places a `<base/>` element marking where the parent chain executes, so the child sees and controls its inheritance.
 
-*Not adopted.* The original record lists this design in its survey and gives no reason for not adopting it.
+*Not adopted.* This design comes from the survey, and no reason for not adopting it is on record.
 
 === Allow a route to belong to several anchors
 
