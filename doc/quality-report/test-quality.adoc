@@ -2,7 +2,7 @@
 :toc: macro
 :toclevels: 2
 
-Review of all three test surfaces — `api-sheriff/src/test/java` (~101 files),
+Review of all three test surfaces — `api-sheriff/src/test/java` (249 files),
 `integration-tests/src` (~50 files), `benchmarks/src` — against the project's own testing
 doctrine (`doc/development/declared-limit-assertion-coverage.adoc`,
 `doc/development/test-corpus-integrity.adoc`) and the CLAUDE.md testing standard. See
@@ -37,7 +37,7 @@ is accurate rather than optimistic.
 The stage's primary documented job — emitting `Strict-Transport-Security`,
 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` — has zero assertions on the
 stage's *emission from configuration* anywhere in the corpus; the test covers only the CORS
-half (4 tests). (The nosniff/frame-deny literals do appear in `WebSocketRelayStageTest:246-249`
+half (4 tests). (The nosniff/frame-deny literals do appear in `WebSocketRelayStageTest:388-391`
 and `GrpcStatusMapperTest:176,183`, but only as fixture-supplied stage-0 header maps proving
 relay paths *carry* them — never as assertions that the stage produces them;
 `Strict-Transport-Security` has zero test hits of any kind.) Also untested:
@@ -150,16 +150,18 @@ for a *present-but-disallowed* claim) stands.
 [cols="1,4"]
 |===
 |Severity |LOW — Confidence HIGH — Category: generator
-|Location |corpus-wide; `@GeneratorsSource` in 4 of ~101 unit-test files
+|Location |corpus-wide; `@GeneratorsSource` in 10 of 249 unit-test files
 |===
 
-Against CLAUDE.md's "@GeneratorsSource preferred", it appears in only 4 files (10 occurrences:
-`RouteTableBuilderTest`, `ConfigValidatorTest`, `ConfigValidatorRouteDisjointnessTest`,
-`GatewayJsonTest`). `GatewayJsonTest` asserts the exact bytes `GatewayJson` renders over a mapper the
+Against CLAUDE.md's "@GeneratorsSource preferred", it appears in only 10 files (31 occurrences:
+`RouteMatchingRulesTest` 18, `RouteTest` 4, `AnchorRulesTest` 2, and one each in
+`RouteTableBuilderTest`, `RouteTableTest`, `GatewayJsonTest`, `HealthProbeTest`, `PortalCatalogTest`,
+`PortalNoticeTest` and `PortalRendererTest`). `GatewayJsonTest` asserts the exact bytes `GatewayJson` renders over a mapper the
 test constructs itself; `GatewayJsonWiringTest`, a `@QuarkusTest`, asserts the same corpus against
-the injected bean and that the platform mapper keeps its own rendering. Where used, it is used well: `@EnableGeneratorController` present in 13
-generator-touching files (seed reproducibility), and `RouteTableBuilderTest:1020-1102` proves
-prefix-ordering/disjointness laws generically over generated segments. Auth tests use the CUI
+the injected bean and that the platform mapper keeps its own rendering. Where used, it is used well: `@EnableGeneratorController` present in 89
+generator-touching files (seed reproducibility), and `RouteTableBuilderTest.PropertyBasedInvariants`,
+`RouteTableTest` and `RouteMatchingRulesTest` prove the prefix-ordering, segment-boundary and
+disjointness laws generically over generated segments. Auth tests use the CUI
 `TestTokenGenerators` (real generated tokens over offline JWKS). One deviation:
 `tls/PassthroughRelayTest.java:95` hand-rolls `new Random(42)` — seeded, trivial. Mitigating:
 most fixed values in this corpus are deliberate boundary/attack values (the OWASP attack
@@ -172,7 +174,7 @@ generator misuse.
 [cols="1,4"]
 |===
 |Severity |LOW — Confidence HIGH — Category: hygiene
-|Location |`WebSocketRelayStageTest:324,462`; `TokenRefreshCoordinatorTest:281,429`; (bounded polling in `TlsEdgeProducerTest:213`, `GatewayEdgeRouteTest:761-786` is fine)
+|Location |`WebSocketRelayStageTest:466,1853`; `TokenRefreshCoordinatorTest:281,429`; (bounded polling in `TlsEdgeProducerTest:213`, `GatewayEdgeRouteTest:761-786` is fine)
 |===
 
 Every `Thread.sleep` carries a NOSONAR rationale. The fixed sleeps (400 ms against a 250 ms
@@ -429,8 +431,9 @@ real-thread single-flight concurrency), `asset` (traversal/symlink/real-path esc
 at-cap/one-over/stat-underreport), `tls` (byte-level ClientHello fixture incl. fragmentation
 and overrun fail-closed; fail-closed boot matrix; port-probed edge producer), `forward`
 (three-mode × two-dimension matrix with spoofed-header and smuggle-through-allowlist
-negatives), `config` (validator: 128 tests; loader; route table with generated-segment law
-tests), `edge` (body ceiling at/over with keep-alive retirement), `auth`,
+negatives), `config` (validator: 902 tests, 893 of them in the per-concern rule test classes;
+loader; route table with generated-segment law tests), `edge` (body ceiling at/over with keep-alive
+retirement), `auth`,
 `http/ConnectionHeaders`, `events`, `quarkus` producers. `benchmarks` asserts values against
 known-number fixtures with explicit "absent never renders as 0" negatives.
 
@@ -446,6 +449,66 @@ benign-Host 200 control, 413 one-byte-over with one-byte-under control, 405 with
 `*ActivationWiringTest` family carries anti-vacuity floors (`COMMITTED_DESCRIPTOR_COUNT`,
 doctrine-note parsing that fails loud when markers are missing) — machine-checked note-to-test
 coupling that is genuinely unusual rigor.
+
+=== Unit-test counts and run time
+
+Measured on 2026-10-30 on the developer build host, not in CI, by
+`clean verify -Pcoverage -pl api-sheriff -am`, which took 7 minutes 37 seconds for the whole build.
+The surefire reports sum to 292 seconds of test time; the executions overlap, so that figure is not
+elapsed time.
+
+[cols="3,1,1",options="header"]
+|===
+| Surefire execution | Tests run | Skipped
+
+| `default-test`       | 5737 | 2
+| `quarkus-fork-tests` |  119 | 0
+| `isolated-fork-tests` | 1236 | 0
+| *Total*              | *7092* | *2*
+|===
+
+=== Test homes of the edge classes without a test of their own
+
+Seven edge classes have no test class of their own. Each is tested through the classes named here. The coverage
+is the whole unit lane's, from the merged JaCoCo report of that run. For the last three classes the
+named test classes were also run alone, and they reach less than the lane does: the remainder is
+reached by other tests, which this table does not name.
+
+[cols="2,4,1,1",options="header"]
+|===
+| Class | Test home | Lines | Branches
+
+| `TerminalDispatch`
+| `TerminalDispatchGrpcStreamIdleTest`, `TerminalDispatchLateBodyTimeoutTest`, and the relay start in
+  `GatewayEdgeRouteTest`
+| 216/225 | 56/68
+
+| `ConnectionRetirement`
+| `TerminalDispatchLateBodyTimeoutTest`
+| 27/27 | 9/10
+
+| `RejectionReporter`
+| `ErrorResponseWriterTest`, and the route latches in `GatewayEdgeRequestBodyIdleTimeoutTest`
+| 61/61 | 20/21
+
+| `ResponseEnds`
+| `WebSocketRelayStageTest.PreUpgradeFailureEnd`, `EarlyResponseEndTest`, `InboundStreamWindowTest`,
+  `GatewayEdgeEarlyResponseResetTest`
+| 19/19 | 11/14
+
+| `ReservedPathHandler`
+| `ReservedBodyCeilingTest`, `GatewayEdgeRouteBffWiringTest` (alone: 51/60 lines, 15/26 branches)
+| 59/60 | 23/26
+
+| `EdgeRequests`
+| `GatewayEdgeFramingCorpusTest`, `GatewayEdgeQueryHandoffTest` (alone: 65/78 lines, 36/50 branches)
+| 69/78 | 38/50
+
+| `EgressClients`
+| `GatewayEdgeRouteTest`, the egress-TLS hostname-verification and trust-profile cases (alone: 33/34
+  lines, 15/16 branches)
+| 34/34 | 16/16
+|===
 
 == Highest-value next assertions
 

@@ -2213,8 +2213,8 @@ to revisit this, and nothing else is.
 [[after-the-passes]]
 == Classified Rows Changed After the Passes
 
-The three passes record verdicts against the commits they read. Nine of the methods they classified
-have changed since -- fourteen classification rows between them, because the first pass and
+The three passes record verdicts against the commits they read. Ten of the methods they classified
+have changed since -- fifteen classification rows between them, because the first pass and
 <<unit-lane-audit>> each classified the five `edge/GatewayEdgeRouteTest` methods -- and each method is
 named here so that a verdict above is never read as a description of a method that no longer has that
 body. The migration to the uniform `404` changed the asserted status of further classified and
@@ -2298,6 +2298,14 @@ with the thing it wired: the sealing key is no longer an environment variable th
 but a key file the overlay names by path. `thePeerReadsTheSameSealingKeyFile` replaces the method and
 reads both sides together: it resolves the path the overlay names through each service's own mounts
 and asserts that both cookie services reach the one committed sealing-key file.
+
+=== One `keep` method removed
+
+`config/model/ConfigModelContractTest.anchorConfigExposesEveryPolicyBlock`, a shape (a) `keep` of
+<<unit-lane-audit>>, no longer exists. It read the values its own fixture had just set back through
+the record's generated accessors. The `AnchorConfig` case of `shouldHonorValueObjectContract` covers
+the record. The verdict on `routing/RouteTest.shouldCarryMaterializedEffectivePosture`, which cites
+this method as the precedent for its narrow scope, is unchanged.
 
 === Two unflagged tests that gained an assertion
 
