@@ -461,10 +461,10 @@ elapsed time.
 |===
 | Surefire execution | Tests run | Skipped
 
-| `default-test`       | 5737 | 2
+| `default-test`       | 5739 | 2
 | `quarkus-fork-tests` |  119 | 0
 | `isolated-fork-tests` | 1236 | 0
-| *Total*              | *7092* | *2*
+| *Total*              | *7094* | *2*
 |===
 
 === Test homes of the edge classes without a test of their own

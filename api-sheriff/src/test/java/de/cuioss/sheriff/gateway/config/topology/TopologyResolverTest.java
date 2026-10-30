@@ -367,6 +367,23 @@ class TopologyResolverTest {
     }
 
     @Test
+    @DisplayName("An unresolvable enabled-endpoint alias still fails alongside a resolvable additional alias")
+    void stillThrowsForUnresolvableEnabledEndpointAliasAlongsideSkippedAdditionalAlias() throws Exception {
+        Path file = topologyFile("SECURE=https://secure.internal\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"));
+        List<String> additionalAliases = List.of("SECURE");
+
+        TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
+                () -> resolver.resolve(file, endpoints, additionalAliases, IGNORE_DEFAULTED),
+                "an unresolvable enabled-endpoint base_url alias must still fail the boot");
+
+        assertEquals(List.of(topologyError("MISSING",
+                        "Unresolved topology alias 'MISSING' referenced by enabled endpoint 'missing'")),
+                exception.errors());
+    }
+
+    @Test
     @DisplayName("An enabled endpoint declaring no base_url contributes no alias and never fails the resolution")
     void skipsEnabledEndpointWithoutBaseUrl() throws Exception {
         Path file = topologyFile("ORDERS=https://orders.internal\n");

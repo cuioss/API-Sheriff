@@ -684,6 +684,23 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should let a route anchor override the endpoint anchor")
+        void shouldLetRouteAnchorOverrideEndpointAnchor() {
+            GatewayConfig config = validGateway().anchors(Map.of(
+                    "api", anchor("api", "/api", auth(Require.BEARER), null, null, null),
+                    "bff", anchor("bff", "/bff", auth(Require.SESSION), null, null, null))).build();
+            RouteConfig routeOnBff = RouteConfig.builder().id("r").anchor("bff").match(match("/bff/home")).build();
+            EndpointConfig endpoint = anchoredEndpointSeed("orders", "ORDERS", "api")
+                    .routes(List.of(routeOnBff)).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            Route resolved = find(table, "r");
+            assertEquals("bff", resolved.anchor(), "the per-route anchor override should win");
+            assertEquals(Require.SESSION, resolved.effectiveAuth().require());
+        }
+
+        @Test
         @DisplayName("Should throw when no route, endpoint, or anchor auth resolves")
         void shouldThrowWhenNoEffectiveAuthResolves() {
             GatewayConfig config = validGateway()
