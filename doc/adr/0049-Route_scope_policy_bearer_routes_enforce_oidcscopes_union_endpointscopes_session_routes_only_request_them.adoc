@@ -1,13 +1,15 @@
 = ADR-0049: Route scope policy: bearer routes enforce oidc.scopes union endpoint.scopes, session routes only request them
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Every route derives one scope set at boot, neededScopes = oidc.scopes ∪ endpoint.scopes, and each auth posture consumes it differently; a bearer route rejects a validated token missing any member (oidc.scopes included, so a client_credentials token lacking them is refused) with 403 insufficient_scope per RFC 6750 before upstream contact; a session route uses the set only to decide what its login requests and never pre-checks a live session, leaving insufficient scope to the upstream; a none route ignores it, and endpoint.scopes on an endpoint whose every route is none is a boot error; a bearer check on endpoint.scopes alone is rejected because request and check would read different sets, and a session pre-check with re-login is deferred until a live session can be widened; amended: the session half is superseded by ADR-0057, under which a session route compares a live session against the set and refreshes or widens it, while the bearer half and the neededScopes derivation stand.
+// summary: Every route derives one scope set at boot, neededScopes = oidc.scopes ∪ endpoint.scopes, and each auth posture consumes it differently; a bearer route rejects a validated token missing any member (oidc.scopes included, so a client_credentials token lacking them is rejected) with 403 insufficient_scope per RFC 6750 before upstream contact; a none route ignores it, and endpoint.scopes on an endpoint whose every route is none is a boot refusal; a bearer check on endpoint.scopes alone is rejected because request and check would read different sets. The session half of this record is superseded by ADR-0057, under which a session route compares a live session against the set and refreshes or widens it; the bearer half and the neededScopes derivation stand.
 // tags: auth, scopes, bearer, bff, oidc, insufficient-scope
 // affects: api-sheriff
 // supersedes:
@@ -20,157 +22,99 @@
 
 == Status
 
-Proposed
-
-[NOTE]
-====
-*Amended.* The session half of this decision is superseded by
+Accepted for the `neededScopes` derivation, the bearer check and the `require: none` rule. The session half is superseded by
 link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
 
-The live-session widening this ADR deferred its session pre-check on now exists. A session route --
-and the SESSION branch of a `session_fallback` route -- compares a live session against the route's
-`neededScopes` on every request, obtains a missing scope by a refresh or by widening the session,
-and refuses `403` when it cannot. The statements below that a session route "only requests" the set,
-that a live session "is never checked", and that insufficient scope on a session route is left to
-the upstream no longer describe the gateway. They are kept as the record of this decision.
+== Decision
 
-Unchanged and still in force: the boot derivation `neededScopes = oidc.scopes ∪ endpoint.scopes`, the
-bearer check with its `403 insufficient_scope` challenge, the `require: none` rule, and the boot
-refusal of `endpoint.scopes` on an endpoint whose every route is `none`.
-====
+=== The question
 
-[NOTE]
-====
-*Amended for untrusted callers.*
-link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-overrides the `401` a bearer route answers for a missing or invalid token. That rejection is raised
-before the trust boundary, so on the shipped default the gateway answers it as an unrouted address:
-`404`, no `WWW-Authenticate` challenge, and the true event (`TOKEN_MISSING` or `TOKEN_INVALID`)
-metered in `sheriff_errors_total`. The scope check of this record runs after the token validated. Its
-`403 insufficient_scope` challenge is past the trust boundary and stands unchanged. With
-`security_defaults.uniform_not_found: false` the bearer route answers `401` again.
-====
-
-== Context
-
-A gateway route carries OAuth scopes from two sources. The gateway-wide `oidc.scopes` are what every
-login asks the identity provider for. An endpoint can add more with `endpoint.scopes`, a list
-declared next to `auth` rather than inside it. At boot `RouteTableBuilder` combines the two into one
-set per route:
+A route carries OAuth scopes from two sources. The gateway-wide `oidc.scopes` are what every login asks the identity provider for. An endpoint can add more with `endpoint.scopes`, a list declared next to `auth`
+rather than inside it. At boot `RouteTableBuilder` combines them into one set per route:
 
 ----
 neededScopes(route) = oidc.scopes ∪ endpoint.scopes
 ----
 
-The set is additive. An endpoint cannot remove a gateway-wide scope, and a route that overrides
-`auth` still needs its endpoint's scopes.
+The set is additive. An endpoint cannot remove a gateway-wide scope, and a route that overrides `auth` still needs its endpoint's scopes.
 
-A single set still leaves open what it *means* on a route, because the three authentication postures
-relate to a token in different ways:
+The set's meaning depends on the authentication posture:
 
-* A *bearer* route receives a token minted elsewhere, often by a client the gateway never sees log
-  in, `client_credentials` callers included. The gateway can only inspect the token it is given.
-* A *session* route holds a token the gateway obtained itself, through a login it drove. The
-  gateway decided what that login requested, but the session outlives the route that started it and
-  is later presented to other routes.
+* A *bearer* route receives a token minted elsewhere, often by a client the gateway never sees log in, `client_credentials` callers included. The gateway can only inspect the token.
+* A *session* route holds a token the gateway obtained through a login it drove. The session outlives the route that started it.
 * A *none* route has no token.
 
-Scope handling can fail in three ways. It can *over-request*: every login asks for every scope any
-endpoint could need, so the token relayed everywhere is over-privileged. It can *under-check*: a
-route that needs a scope forwards a token lacking it and relies on an upstream that may not check.
-Or requesting and checking can *drift*: they read different sets, so a token obtained by the
-gateway's own login fails the gateway's own check, or a token the check accepts was never requested
-with the scopes the route declares. This ADR settles how each posture uses the one set so that none
-of the three happens where the gateway can prevent it.
+Scope handling can fail in three ways. It can *over-request*: every login asks for every scope any endpoint could need, so the token relayed everywhere is over-privileged. It can *under-check*: a route forwards a token
+lacking a needed scope and relies on an upstream that may not check. Or requesting and checking can *drift*: they read different sets. This record settles how each posture uses the one set.
 
-== Decision
+=== One set, used per posture
 
-*One scope set is derived per route at boot. A bearer route enforces it, a session route only
-requests it, and a none route ignores it.*
+The gateway derives one scope set per route at boot. A bearer route enforces it, and a none route ignores it.
 
-* *`require: bearer` enforces the full set.* `AuthenticationStage` compares the validated token's
-  scopes against `neededScopes`. A token missing any member is refused with `403` and the RFC 6750
-  challenge `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, before any
-  upstream is contacted. The challenge lists only the missing scopes, sorted and taken from boot
-  configuration, never from the token. The set includes `oidc.scopes`, so a bearer token lacking the
-  gateway-wide scopes is refused too, a `client_credentials` token among them. That tightening is
-  deliberate: the gateway-wide scopes are a requirement of every authenticated route, not a
-  default that only the gateway's own logins observe. An empty set skips the check.
-* *`require: session` uses the set only to decide what a login requests.* A navigation to a session
-  route without a session starts a login whose authorization request carries exactly that route's
-  `neededScopes`. A `/auth/login?returnUrl=` login requests the set of the route the return target
-  lands on (see ADR-0048 for how the per-request set reaches the engine). A *live* session is never
-  checked against a route's set. If its token lacks a scope a later route needs, the upstream answers
-  with its own insufficient-scope response.
-* *`require: none` does not use the set.* An endpoint that declares `endpoint.scopes` while every one
-  of its routes resolves to `require: none` is a configuration error and is refused at boot, because
-  the declared scopes could never take effect.
+* *`require: bearer` enforces the full set.* `AuthenticationStage` compares the validated token's scopes against `neededScopes`. It rejects a token missing any member with `403` and the RFC 6750 challenge
+  `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, before any upstream contact. The challenge lists only the missing scopes, sorted and taken from boot configuration, never from the token. The set
+  includes `oidc.scopes`, so a bearer token lacking the gateway-wide scopes is rejected too, a `client_credentials` token among them. That tightening is deliberate: the gateway-wide scopes are a requirement of every authenticated
+  route, not a default only the gateway's own logins observe. An empty set skips the check.
+* *`require: none` does not use the set.* The boot refuses an endpoint that declares `endpoint.scopes` while every route resolves to `require: none`, because the declared scopes could never take effect.
 
-The `auth` block has no scope list of its own. The schema refuses one, so there is exactly one place
-to declare endpoint scopes and one derivation that reads it.
+The `auth` block has no scope list of its own. The schema refuses one, so endpoint scopes have one declaration and one derivation.
+
+=== Where the check sits against the trust boundary
+
+The scope check runs after the token validated, so its `403 insufficient_scope` challenge lies past the trust boundary of
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]. A missing or invalid token is raised before that boundary. On the shipped default the gateway answers it as an unrouted
+address: `404`, no `WWW-Authenticate` challenge, and the true event (`TOKEN_MISSING` or `TOKEN_INVALID`) metered in `sheriff_errors_total`. With `security_defaults.uniform_not_found: false` the bearer route answers `401`.
+
+=== The superseded session half
+
+This record once let a session route use the set only to decide what its login requests, and it left a live session unchecked. ADR-0057 supersedes that half, because a live session can now be widened. A session route still requests its
+`neededScopes` at login (ADR-0048). ADR-0057 states everything it does with a live session.
+
+== Alternatives rejected
+
+=== Check bearer tokens against `endpoint.scopes` only
+
+Leave `oidc.scopes` out of the bearer check.
+
+*Rejected because* tokens without the gateway-wide scopes would pass, `client_credentials` tokens included. The set a login requests and the set a bearer route checks would differ, which is the drift the single derivation prevents. A caller could bypass
+the gateway-wide requirement by presenting a token minted elsewhere.
+
+=== Pre-check live sessions and re-login for missing scopes
+
+A session route compares the session's granted set against `neededScopes` and, on a shortfall, redirects to a new login for the wider set.
+
+*Deferred here, not rejected.* It needs a way to widen a live session: a new login replaces the session, and RFC 6749 §6 forbids a refresh grant from widening the original scope. Without that the pre-check could only reject, with no recovery. ADR-0057 settles this with a
+widening merge.
+
+=== Narrow the token per endpoint
+
+Relay each session route a token restricted to that route's scopes, through a scope-restricted refresh grant or RFC 8693 token exchange.
+
+*Out of scope for this decision.* It would remove session-wide scope growth, but it adds a token-endpoint round trip per route or per-route token caching, and it needs identity-provider support that cannot be assumed. Session-wide growth stays the accepted residual.
+
+All three move the check away from the single boot-derived set, or add a second mechanism next to it. The decision keeps one set and varies what each posture can do with it.
 
 == Consequences
 
-=== Positive
+=== Properties of the design
 
-* Bearer checks and login requests cannot drift apart. Both read the same boot-derived
-  `neededScopes`, so a token obtained through a login for a route passes that route's check by
-  construction, and no route checks a scope that no login would ever request.
-* Under-checking is closed on bearer routes. A token missing a needed scope never reaches the
-  upstream, and the refusal is a standards-conformant challenge a client can act on.
-* Login requests are minimized. An endpoint's extra scopes are requested only by logins for that
-  endpoint, not by every login.
-* A declaration that could never take effect, scopes on an endpoint with only `none` routes, fails
-  at boot instead of silently doing nothing.
+* Bearer checks and login requests cannot drift apart. Both read the same boot-derived `neededScopes`. A token obtained through a login for a route passes that route's check by construction, and no route checks a scope no login would request.
+* Under-checking is closed on bearer routes. A token missing a needed scope never reaches the upstream, and the rejection is a standards-conformant challenge a client can act on.
+* Login requests are minimized. Only logins for an endpoint request its extra scopes.
+* Scopes on an endpoint with only `none` routes get a boot refusal rather than silently doing nothing.
 
-=== Negative
+=== Accepted costs
 
-* *`client_credentials` callers must request the gateway-wide scopes.* A machine client whose token
-  was granted only its own scopes is refused on every bearer route of a gateway that declares
-  `oidc.scopes`. Operators have to register those scopes for such clients at the identity provider.
-* *Session routes do not enforce scopes at the gateway.* A session established on a route needing
-  fewer scopes reaches a route needing more with a token that lacks them, and the insufficient-scope
-  decision is left to the upstream.
+* *`client_credentials` callers must request the gateway-wide scopes.* A machine client granted only its own scopes is rejected on every bearer route of a gateway that declares `oidc.scopes`. Operators register those scopes for such clients at the identity provider.
 
 === Risks
 
-* *Session-wide scope growth is accepted.* The token relayed to every session route carries every
-  scope the session holds.
-  A session that logged in through a scoped endpoint therefore presents that endpoint's scopes to
-  every other session-route upstream. The exposure is limited by the identity provider granting only
-  the requested scopes and by `token_relay: false` on origins that need no token. It is tracked as
-  BFF-15 in the threat model.
+* *Session-wide scope growth is accepted.* The token relayed to every session route carries every scope the session holds. A session that logged in through a scoped endpoint presents that endpoint's scopes to every other session-route upstream. The identity provider granting only the requested
+  scopes and `token_relay: false` on origins that need no token limit the exposure. The threat model tracks it as BFF-15.
 
-== Alternatives Considered
+== Links
 
-*Check bearer tokens against `endpoint.scopes` only.* Leaving `oidc.scopes` out of the bearer check
-would let tokens without the gateway-wide scopes through, `client_credentials` tokens included. Then
-the set a login requests (`oidc.scopes ∪ endpoint.scopes`) and the set a bearer route checks
-(`endpoint.scopes`) would differ, which is exactly the drift the single derivation exists to prevent.
-The gateway-wide scopes would become a requirement that a caller can bypass by presenting a token
-minted elsewhere. Rejected.
-
-*Pre-check live sessions and re-login for missing scopes.* A session route could compare the
-session's granted set against `neededScopes` and, on a shortfall, redirect the browser to a new login
-that requests the wider set. That would close the session-side under-check. But it needs a way to
-widen a *live* session: a new login replaces the session rather than adding to it, and RFC 6749 §6
-forbids a refresh grant from widening the original scope. Without that mechanism the pre-check could
-only refuse, turning every scope mismatch into a hard failure with no recovery path. Deferred until
-widening a live session is designed, not rejected.
-
-*Narrow the token per endpoint.* The gateway could relay each session route a token restricted to
-that route's scopes, through a scope-restricted refresh grant or RFC 8693 token exchange. That would
-remove session-wide scope growth, but it adds a token-endpoint round trip per route or per-route
-token caching, and it needs identity-provider support that cannot be assumed. Out of scope for this
-decision. Session-wide growth remains the accepted residual above.
-
-All three alternatives move the check away from the single boot-derived set, or add a second
-mechanism next to it. The decision keeps one set and varies only what each posture is in a position
-to do with it: a bearer route can inspect the token it received, while a session route can only
-shape what its own login asks for.
-
-== References
-
+* link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]: the record that supersedes the session half
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]: the uniform `404` that answers a missing or invalid bearer token before the trust boundary
 * link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: how a login and a refresh carry the per-route scope set through the unchanged engine
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel posture every scoped login configuration carries
