@@ -403,3 +403,30 @@ _Relocated 2026-10-13 by `analyze`: the fix is confirmed on five consecutive run
    release track on 2026-07-27. Now `http/UpstreamIdentityHeaders.NAMES` (`server`, `x-powered-by`) is applied on the HTTP relay, the gRPC relay (leading headers and
    trailers) and the upstream asset action; a route opts out with `keep_identity_headers`, which the boot refuses on redirect, directory-asset and websocket routes.
    `ErrorContractIT` pins that gateway-originated errors carry no version string.
+
+## Open Defect 14 — `MtlsHandshakeIT` fails under `-Pjfr` only, issue #201 (settled 2026-10-30 by #538, a lane misconfiguration)
+
+14. **SETTLED 2026-10-30 by #538 (`7755b948`, `PLAN-V02-51` D1) — NOT a gateway fail-open; the `jfr` lane never supplied the mTLS properties.** Was: HIGH, SECURITY,
+    `MtlsHandshakeIT.noClientCertRejected` and `wrongCaClientCertRejected` observed a connection succeeding where a handshake rejection was expected, in the `-Pjfr` lane only.
+    Nine counted runs against `api-sheriff-mtls` (port 10444), three per lane configuration, every run executing all three methods: `-Pintegration-tests` 3/3, 3/3, 3/3;
+    `-Pjfr` with `-Dtest.mtls.port=10444` and both keystores 3/3, 3/3, 3/3; `-Pjfr` without them 3/3 (trusted), **0/3, 0/3 (the two rejection legs)**. The rejection legs pass whenever
+    the properties are supplied and fail whenever they are not, so the test fell back to the primary instance, which requires no client certificate. No production file changed;
+    `MtlsServerCustomizer` is untouched and the `jfr` exclusion of `MtlsHandshakeIT` stays, with its comment now stating the cause. `MtlsLaneSelectionContractTest` (no Docker) fails when a
+    failsafe lane that selects the test lacks a `test.mtls.*` property it reads or a published mTLS port; shown red by removing the exclusion (lane `jfr/default`, five properties named).
+    `TlsEdgeActivationWiringTest.failsafeWiresMtlsSystemProperties` was removed on purpose and replaced by that per-lane check (operator-accepted). Issue #201 was closed
+    2026-10-29 with the counts quoted, about ten hours before the guard reached `main`. The general shape stands: a defect invisible in one lane and visible in another is a
+    lane-selection question before it is a product question.
+
+## Open Defect 7 — the k6 benchmark scripts are an unguarded consumer of the shared gateway configuration (closed 2026-10-30 by #538)
+
+7. **CLOSED 2026-10-30 by #538 (`7755b948`, `PLAN-V02-51` D2).** Was: STRUCTURAL, `docker-compose.benchmark.yml` mounts the same `./src/main/docker/sheriff-config` as the IT suite, so a
+   behaviour change to a shared key could break a k6 script with no build turning red. Now `BenchmarkScriptConfigContractTest` (in the `integration-tests` surefire lane) binds every
+   file under `benchmarks/src/main/resources/k6-scripts/` to the mounted-configuration keys it depends on and resolves routes (longest prefix), upstreams, body caps, methods and scopes
+   the way the gateway does. Mechanism: a contract test, not a `benchmark-manifest.py` check. Shown red by renaming `/upload/small` (it named `upload_small.js`). The guard reads
+   only the forms the real scripts use and refuses the rest (see lesson `2026-10-30-05-001`); untested refusal branches are a Watch.
+
+## Open Defect 9 — `K6BenchmarkLogMessages` outside the catalogue guard (closed 2026-10-30 by #538)
+
+9. **CLOSED 2026-10-30 by #538 (`7755b948`, `PLAN-V02-51` D3).** Was: MEDIUM, `LogMessagesCatalogueTest` anchored on `ApiSheriffLogMessages` and walked `api-sheriff/target/classes` only, so the
+   benchmarks catalogue (incl. `K6Benchmark-211`) had no duplicate-id protection. Now the test derives the module set from the root `pom.xml` and checks duplicate identifiers and bands in
+   every reactor module; no module is named in it. Shown red by a planted duplicate `K6Benchmark-210` (it named both fields).

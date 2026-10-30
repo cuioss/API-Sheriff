@@ -163,6 +163,15 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-30 — `PLAN-V02-51` landed (#538, `7755b948`), three of three deliverables; Open Defects 14 (#201), 7 and 9 closed.** #201 is **settled as a
+  lane misconfiguration, not a gateway fail-open**, by nine counted runs (the two rejection legs pass 3/3 with the `test.mtls.*` properties and fail 0/3
+  without them); no production file changed, the `jfr` exclusion stays, and `MtlsLaneSelectionContractTest` guards it. `BenchmarkScriptConfigContractTest`
+  binds the k6 scripts to the gateway keys they use; `LogMessagesCatalogueTest` now covers every reactor module. 7 files (+4,401 / −231), all test code, a POM
+  comment and developer docs. The post-merge `main` runs at `7755b948` and the PR-attached benchmark are green. CI showed one
+  `Http2StreamAbuseIT.declaredBodyReachesTheUpstreamWithItsLength` failure on attempt 1 of the PR's integration run (green on attempt 2, same head); it is a Watch,
+  not a closed flake. Of four candidate lessons: one promoted (`2026-10-30-05-001`, guard readers are narrow allowlists), three routed to `lessons-routing`
+  (`-071` recurrence of `-049`/`-062`, `-072` recurrence of `-032`, `-073` new, related to `-040`/`-061`). The landing was `complete: false` (`effort` unknown; Open Defect 18).
+  `PLAN-V02-07` is now the only running plan; `PLAN-V02-48` and `PLAN-V02-49` stay behind it.
 - **2026-10-29 — `PLAN-V02-50` landed (#532, `9794fa41`), nine of nine deliverables (seven met, two with residuals).** The
   per-source detection substrate (`detection/`), its trip response, the HTTP/2 abuse bounds (`gw-08` is `COVERED`; `gw-02` stays
   `PARTIAL`, upstream reset pinned against HTTP/1.1 only), ADR-0076, ADR-0077, ADR-0073 Amendment A1 and the #528 residue are on
@@ -449,24 +458,7 @@ doc-only or build-light plan for the second and third slots.
 
 15. > ↪ Relocated to `settled.md` § "Open Defect 15 — snapshot deploy 401 after the Maven 3.10.0 bump (resolved 2026-10-03)" — resolved by cuioss-organization v0.35.0, verified on main
 
-14. **HIGH, SECURITY — OWNER: `PLAN-V02-11` (adopted 2026-08-09) — `MtlsHandshakeIT` fails 2/3 under `-Pjfr` only: FAIL-OPEN ON HANDSHAKE
-    REJECTION.** GitHub issue **[#201](https://github.com/cuioss/API-Sheriff/issues/201)**, verified
-    OPEN. Opened 2026-08-09 by `PLAN-V02-16` and **correctly not fixed there** — it sits outside that
-    plan's declared boundary, and reporting rather than absorbing is the standing rule. The same tree
-    passes 3/3 under `-Pintegration-tests`, so the defect is lane-conditional and was **invisible for
-    as long as the `-Pjfr` lane was unrunnable**. **This one must not sit unowned**: it is fail-open
-    behaviour on a security control. Candidate homes: `PLAN-V02-11` (which owns the *what are the
-    test lanes for* question and now has a concrete instance to answer it with) or `PLAN-V02-10`
-    (per-client TLS trust). **HOME DECIDED 2026-08-09: `PLAN-V02-11`; MOVED 2026-10-28 to `PLAN-V02-51` D1** — ADR-0075 (#534) declined it
-    ("neither detected nor fixed"), and the operator ruled one plan owns 14, 7 and 9. Issue #201 is still OPEN. The `jfr` profile's
-    exclusion comment in `integration-tests/pom.xml` (since #282) reads as a lane misconfiguration and not a gateway fail-open, but
-    nobody has run the test against `api-sheriff-mtls`; V02-51 D1 settles it with three runs per lane before closing or fixing.
-    Original reasoning for the earlier home: its question is *which lane owns which defect class*,
-    and #201 is a defect **invisible in one lane and visible in another** — the first
-    lane-conditional instance beside its two time-or-volume-conditional ones, and therefore new
-    information for that decision rather than extra scope. **It is admissible as D2's demonstrated
-    catch. Fixing the fail-open behaviour itself is a security fix belonging to whichever plan owns
-    mTLS handshake behaviour — say explicitly which you did.**
+14. > ↪ Relocated to `settled.md` § "Open Defect 14 — `MtlsHandshakeIT` fails under `-Pjfr` only, issue #201 (settled 2026-10-30 by #538, a lane misconfiguration)" — nine counted runs; the `jfr` lane never supplied the mTLS properties; no production change; guarded by `MtlsLaneSelectionContractTest`
 
 10. **CARRIED PAST THIS EPIC — `doc/plan/09-release-readiness.adoc` becomes actionable AT THE 1.0
     CUT.** Opened 2026-08-09 by `PLAN-V02-03` D3. The file is **not superseded**: its defining
@@ -498,36 +490,40 @@ doc-only or build-light plan for the second and third slots.
    on `api-sheriff-ws-admission`); what was missing was a demonstrated failure, which two committed negative controls now supply
    (relay sub-budget and general admission budget). Residue: the general-admission control cannot wait for gateway-side
    admission (Watch). Strike at the next compaction.
-7. **STRUCTURAL, an open operator decision never taken** — the k6 benchmark scripts are an unguarded
-   consumer of gateway posture. `docker-compose.benchmark.yml` overlays the base compose and mounts
-   the same `./src/main/docker/sheriff-config`, so the benchmark and the IT suite share one
-   `gateway.yaml`. A plan changing gateway behaviour updates the IT suite in lockstep, but nothing
-   requires it to update the k6 scripts. **The general shape, and it will recur**: a behavioural
-   default flip is the class where "we updated the tests" hides "we did not update the other
-   consumers". Enumerate the consumers of a default, not just its tests. Home: `PLAN-V02-11` until 2026-10-28, when ADR-0075
-   declined it; **now `PLAN-V02-51` D2**.
+7. > ↪ Relocated to `settled.md` § "Open Defect 7 — the k6 benchmark scripts are an unguarded consumer of the shared gateway configuration (closed 2026-10-30 by #538)" — `BenchmarkScriptConfigContractTest` binds each k6 script to the keys it depends on
 8. **Unverified Sonar claim** — PLAN-06's uncorroborated Sonar claim is still unverified with no
    recovered evidence, and needs an **operator live-gate check** rather than plan work. Carried
    rather than closed because "we could not recover the evidence" is not "the claim was false", and
    closing it would silently convert one into the other.
-9. **MEDIUM** — `K6BenchmarkLogMessages` sits outside the catalogue guard that shipped beside it.
-   PLAN-08A (#154) added `LogMessagesCatalogueTest`, but it anchors on
-   `ApiSheriffLogMessages.class.getProtectionDomain()` and therefore walks `api-sheriff/target/classes`
-   **only** — so the benchmarks module's catalogue, including PLAN-46's `K6Benchmark-211`, is not
-   machine-protected against a duplicate id. **The generalisable shape: a guard anchored on one
-   module's protection domain silently excludes every other module, and its green is
-   indistinguishable from coverage.** When adopting it, check whether the fix generalises to every
-   module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11` until 2026-10-28, when ADR-0075
-   declined it; **now `PLAN-V02-51` D3**.
+9. > ↪ Relocated to `settled.md` § "Open Defect 9 — `K6BenchmarkLogMessages` outside the catalogue guard (closed 2026-10-30 by #538)" — `LogMessagesCatalogueTest` derives the module set from the root `pom.xml`
+
+18. **LOW, informational** — the `PLAN-V02-51` landing message (`plan-v02-51-lane-conditional-guards-005`) is `complete: false`: `landing-check`
+    names the missing key `effort`, carried as `unknown`. Every other required fact drained, and the landing was reconciled in full. `PLAN-V02-50`'s landing
+    carried `effort=medium`, so this is intermittent, not a missing feature. The cost: the run's effort level is unrecorded in `landings/PLAN-V02-51.md`'s
+    metrics. Recorded 2026-10-30; no owner. Strike if the next landing carries `effort`; if two in a row do not, route it to `lessons-routing`.
 
 ## Watches
 
+- **`Http2StreamAbuseIT.declaredBodyReachesTheUpstreamWithItsLength` FAILED ONCE IN CI WITH NO PRODUCTION CHANGE ON THE BRANCH** (added 2026-10-30,
+  `PLAN-V02-51` landing). Run `40968785321` at head `917b4797`: attempt 1 failed at `Http2StreamAbuseIT.java:212` ("the h2 -> HTTP/1.1 framing of a
+  declared body (4 failures)", 358 tests, 1 failure); attempt 2 of the same head passed. `#538` changes no production file, so the failure sits on `PLAN-V02-50`'s
+  code or test. The plan files it under "the known HTTP/2 framing flake class"; that is a classification, not a root cause. **Treat a recurrence as a suspected
+  production defect**: reproduce under `-XX:ActiveProcessorCount=1`, and read it beside the `PROTOCOL_ERROR` Watch below (second failure of this class, in a
+  different method of the same class) and the framing-corpus memory. `main` at `7755b948` is green. No owner; stage a fix plan if it recurs.
+- **THE THREE NEW GUARD READERS HAVE UNTESTED REFUSAL BRANCHES** (added 2026-10-30, `PLAN-V02-51` landing). `MtlsLaneSelectionContractTest` (1,599 lines),
+  `BenchmarkScriptConfigContractTest` (2,048) and the widened `LogMessagesCatalogueTest` (+868) parse POM, glob, k6 and Java-source forms by hand; four code-review
+  rounds and two CodeRabbit rounds each found another input form misread, and the readers converged only after becoming narrow allowlists. The plan records the
+  remaining untested refusal branches (and `any()`/`none()` and reference-depth advisories) as notes in its decision log, not fixed. Informational: the size is a
+  maintenance cost, and a guard that refuses an input it should read fails loudly, not open. If a legitimate POM or script edit trips a refusal, widen the allowlist with a
+  specimen (lesson `2026-10-30-05-001`) rather than loosening the reader. No owner.
 - **`Http2StreamAbuseIT` RAPID-RESET `PROTOCOL_ERROR` CAUSE INFERRED, NOT REPRODUCED** (added 2026-10-29, `PLAN-V02-50` landing,
   residual D4.R2). CI once saw `rapidResetFloodEndsTheConnectionWithEnhanceYourCalm` end with `GOAWAY PROTOCOL_ERROR` instead of
   `ENHANCE_YOUR_CALM` (run at `4f69c4ef`). The plan fixed the raw test client (`3cc695db`: the `SETTINGS` acknowledgement could
   precede the client preface); that cause is inferred from RFC 9113 ordering. Later runs, including the `main` run at `9794fa41`,
   are green. If this IT recurs red, treat it as a suspected production defect and reproduce under `-XX:ActiveProcessorCount=1`
-  before classifying it as a flake; the plan's local notes hold a second candidate cause.
+  before classifying it as a flake; the plan's local notes hold a second candidate cause. **Recurrence note 2026-10-30:** the
+  same class failed again in `declaredBodyReachesTheUpstreamWithItsLength` (see the Watch above), so the class has now
+  shown two failures in two landings.
 - **UNIFORM-404 FLOOR MEASURED ON EIGHT PATHS ONLY** (added 2026-10-29, `PLAN-V02-50` landing, residual D8.R1). The declared-length
   fast-reject, a route-scoped filter violation, the cookie-forwarding same-origin refusal and the `protocol: grpc` route are
   caller-drivable pre-trust paths outside `EnumerationOracleIT`'s measurement. ADR-0073 A1 and `gw-16` state the scope as eight.
@@ -562,7 +558,8 @@ doc-only or build-light plan for the second and third slots.
   2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`; fixed 2026-10-29). The test is rewritten to a deterministic shape
   (a 4 MiB unread upstream body, an awaited condition) and the relay release path it exposed was fixed
   (`UpstreamAttemptReleaseOrderTest`). The `ActiveProcessorCount=1` confirmation is the plan's claim, not the orchestrator's;
-  `main` CI at `9794fa41` is green. Retire at the next green `main` run after a load-sensitive CI job. Other open flakes:
+  `main` CI at `9794fa41` and `7755b948` is green (its Maven Build, which runs the unit lane, passed).
+  Retire at the next green `main` run after a load-sensitive CI job. Other open flakes:
   `GatewayEdgeFramingCorpusTest` and `Http2EarlyResponseResetIT`.
 
 - > ↪ Relocated to `settled.md` § "Watch — superseded reviewer cuioss-review-bot (closed 2026-10-22 by #505)" — PR-Agent prose retired by #505 (PLAN-V02-43), guarded by ReviewerRosterDocsContractTest
