@@ -185,7 +185,7 @@ that is the one home for a range check.
 
 The rejected options fall into two kinds. One kind widens the escape hatch past the need: the
 wholesale skip, reaching the floor, keeping `default`. The other kind refuses to commit to a bound:
-warning instead of refusing, checking a weaker predicate, or keeping a misleading name. The chosen
+boot WARN instead of refusing, checking a weaker predicate, or keeping a misleading name. The chosen
 position is the narrowest disable that meets the operator's need, under a name that states what it
 keeps, with a closed list and a boot refusal on the one combination that is never deliberate.
 

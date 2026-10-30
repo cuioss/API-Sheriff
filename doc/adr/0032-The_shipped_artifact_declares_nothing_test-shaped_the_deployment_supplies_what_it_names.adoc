@@ -63,7 +63,7 @@ Deleting a branch without flipping the default it overrode is a regression, not 
 
 === A binding the deployment supplies fails loudly when absent
 
-Relocation is safe only because an unsupplied binding is a hard startup failure. link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011] owns that property for the JWKS trust surface, and it is a precondition of this decision. Without it, relocation would turn a visible test dependency into an invisible production misconfiguration.
+Relocation is safe only because an unsupplied binding is a boot refusal. link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011] owns that property for the JWKS trust surface, and it is a precondition of this decision. Without it, relocation would turn a visible test dependency into an invisible production misconfiguration.
 
 === Name-bearing configuration comes from a file source
 

@@ -32,7 +32,7 @@ Reported as `Input Validation`, they send the reader to path encoding, headers a
 
 === The category
 
-`EventCategory.ROUTING` carries the slug `routing`, the title `Routing` and the problem type `urn:api-sheriff:problem:routing`. It has three members:
+`EventCategory.ROUTING` carries the slug `routing`, the title `Routing` and the problem type `urn:api-sheriff:problem:routing`. It has four members:
 
 [cols="2,1,3", options="header"]
 |===
@@ -41,6 +41,7 @@ Reported as `Input Validation`, they send the reader to path encoding, headers a
 | `NO_ROUTE_MATCHED` | `404` | no route matches the address (deny-by-default route selection)
 | `PASSTHROUGH_HOST_SMUGGLED` | `404` | the `Host` of a terminated request names a `passthrough_sni` hostname
 | `METHOD_NOT_ALLOWED` | `405` | the method is outside the route's effective `allowed_methods`
+| `PRE_TRUST_INTERNAL_FAILURE` | `404` | an unexpected failure before the trust boundary, answered as the floored unrouted `404` so a failure on a routed address cannot be told from an absent one; the event itself has no HTTP mapping
 |===
 
 === The three readers of the slug
@@ -69,7 +70,7 @@ An unrouted address is counted under `event="NO_ROUTE_MATCHED"` and a smuggled p
 
 The label is bounded. Its value is the name of an `EventType` constant, so its cardinality is fixed at the enum. It never carries request-derived input: no path, no `Host`, no method string. The `route` label follows the same rule with its fixed `<no-route>` value.
 
-`SheriffMetrics` records the metric at two sites: a rejection raised in the pipeline, and the over-ceiling body of a reserved path. Three rejections are rendered directly and are not counted in it: the `405` for a request method the gateway cannot parse, the `404` for a reserved path on a gateway without an active session runtime, and the `404` of the client JWKS path in its withheld form. All three appear in the `4xx` bucket of `sheriff_requests_total` only. The two `404`s among them carry the routing problem document without being counted as routing errors.
+`SheriffMetrics` records the metric at four sites: a rejection raised in the pipeline, the pre-trust internal failure, the over-ceiling body of a reserved path, and a source block (`SOURCE_BLOCKED`), which is refused before route selection and so carries the `<no-route>` label. Three rejections are rendered directly and are not counted in it: the `405` for a request method the gateway cannot parse, the `404` for a reserved path on a gateway without an active session runtime, and the `404` of the client JWKS path in its withheld form. All three appear in the `4xx` bucket of `sheriff_requests_total` only. The two `404`s among them carry the routing problem document without being counted as routing errors.
 
 === HTML eligibility
 

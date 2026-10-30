@@ -216,7 +216,7 @@ tls:                               # TLS POLICY for the terminated listener. Neu
     enabled: false
     client_ca: /etc/sheriff/ca.pem
 
-egress_tls:                        # OUTBOUND-TLS policy for the legs the gateway DIALS (ADR-0040,
+egress_tls:                        # Egress-TLS policy for the legs the gateway DIALS (ADR-0040,
                                    #   ADR-0045). Disjoint from the `tls` block above, which governs
                                    #   the certificate the gateway PRESENTS to clients. Global rather
                                    #   than per route because these bind at egress client
