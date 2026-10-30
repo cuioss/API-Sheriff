@@ -63,7 +63,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code threat_classification} bounds and inert-weight refusals, the
  * {@code security_defaults.max_authorization_header_value_length}
  * carve-out bound, and the fail-closed ADR-0024 {@code profile: minimal} refusal on effectively-authenticated
- * and BFF routes — plus the fail-closed default of the GET-body opt-in that shares the
+ * and BFF routes — plus the clean acceptance of a declared GET-body opt-in that shares the
  * {@code security_defaults} block, and the boot WARN for every route declaring the unenforced
  * {@code rate_limit} block.
  * <p>
@@ -479,8 +479,8 @@ class LimitRulesTest {
     }
 
     @Nested
-    @DisplayName("The GET-body opt-in resolves fail-closed when omitted")
-    class GetBodyOptInDefault {
+    @DisplayName("A declared GET-body opt-in carries no cross-cutting boot rule")
+    class GetBodyOptInDeclared {
 
         @Test
         @DisplayName("Should accept a gateway declaring the opt-in without any validation error")

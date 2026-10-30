@@ -785,6 +785,7 @@ class ReservedPathRulesTest {
             List<ConfigError> errors = validator.validate(reservedPath.gatewayDeclaring(FORGED_LINE_PATH), List.of(),
                     topologyWith());
 
+            assertHasError(errors, reservedPath.pointer, SHAPE_REFUSAL);
             assertForgedLineEchoedEscaped(errors, reservedPath.pointer);
         }
 

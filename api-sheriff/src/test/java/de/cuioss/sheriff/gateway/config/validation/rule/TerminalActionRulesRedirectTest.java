@@ -431,7 +431,7 @@ class TerminalActionRulesRedirectTest {
             List<ConfigError> errors = validateAnchored(AnchorType.ASSET, route);
 
             assertAll(
-                    () -> assertRefused(errors, ROUTES_POINTER, "no asset terminal action and no redirect terminal action"),
+                    () -> assertRefused(errors, ROUTES_POINTER, "declares no asset terminal action and no redirect terminal action"),
                     () -> assertFalse(errors.isEmpty(), "the missing terminal action must fail the boot"),
                     () -> assertEquals(1, errors.stream()
                                     .filter(error -> error.message().contains("route '%s'".formatted(id)))

@@ -272,7 +272,9 @@ class ProtocolRulesTest {
                             refusal::message),
                     () -> assertTrue(refusal.message().contains("effective auth '" + posture + "'"),
                             refusal::message),
-                    () -> assertTrue(refusal.message().contains("non-empty " + ALLOWLIST_KEY), refusal::message));
+                    () -> assertTrue(refusal.message().contains("must declare a non-empty " + ALLOWLIST_KEY + " allowlist"),
+                            refusal::message),
+                    () -> assertTrue(refusal.message().contains("fail-closed"), refusal::message));
         }
 
         @ParameterizedTest(name = "require: {0}")
