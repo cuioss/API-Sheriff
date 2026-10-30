@@ -2,10 +2,10 @@
   "id": "PLAN-V02-51",
   "slug": "lane-conditional-guards",
   "workstream": "WS-05",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
   "plan_marshall_plan_id": "plan-v02-51-lane-conditional-guards",
-  "pr": "",
-  "landing": "",
+  "pr": "538",
+  "landing": "landings/PLAN-V02-51.md",
   "seq": 51
 }

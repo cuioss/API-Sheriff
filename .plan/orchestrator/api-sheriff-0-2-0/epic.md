@@ -163,6 +163,29 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-30 — `PLAN-V02-07` landed (#537, `996f36bd`), six of six deliverables (four met, two with non-consequential residuals); `PLAN-V02-48` and `PLAN-V02-49`
+  emitted.** The per-source threat score is on `main`: its own `SourceLedger` instance, weights by `EventCategory` (`UPSTREAM`, `RATE_LIMITING`, `CONFIGURATION` fixed
+  at 0), one WARN ALERT (`ApiSheriff-143`) per threat episode carrying an ECS 8.17.0-shaped document, `ApiSheriff-144` for ledger overflow, a new
+  `threat_classification` block with secure defaults, ADR-0078 (72 records now). **The ledger only observes**: no answer, status, header or timing changes, and the
+  block has no `action` member. The dedup the ALERT promises is one per **episode** (the substrate re-arms after the score drains to zero), and a recon trip is an
+  input to the score, never a second ALERT. 47 files (+5,205 / −269). Merged under an operator barrier override, not an unreviewed change: CodeRabbit reviewed clean at
+  the final head, but its rewritten summary lacks the participation marker the gate keys on (routed to `lessons-routing` as `-074`, with `-075` and `-076`). Verified
+  green on `main` at `996f36bd`: Maven Build, Integration Tests, Config Validation, Demo Client E2E, Scorecard and the PR benchmark (the landing reported the benchmark
+  as unobserved; it passed). The integration run passed at attempt 1 at all three PR heads, so the `Http2StreamAbuseIT` Watch has no recurrence. The landing was
+  `complete: false` again (`effort` unknown, second in a row): Open Defect 18 routed as `lessons-routing` `-077`. Spec surface and counts of `PLAN-V02-48`
+  (71 → 72 records) and `PLAN-V02-49` (dependency text, inventory predates #532 and #537) were corrected in place and two claim verdicts re-stamped. **Emitted both**: the
+  gate admits each against in-flight work (nothing is running), but the two share 8 declared paths with each other (V02-48's "repoint every inbound ADR reference" clause
+  against V02-49's test directories; real overlap is `doc/development/test-corpus-integrity.adoc`). Overlap prompt answered by the operator: **emit both**. Rows are `launched`
+  (`auto_emit` is on); `launched → running` stays with the operator, who confirmed the start of both the same day, so both are `running` (2 of 3 slots).
+- **2026-10-30 — `PLAN-V02-51` landed (#538, `7755b948`), three of three deliverables; Open Defects 14 (#201), 7 and 9 closed.** #201 is **settled as a
+  lane misconfiguration, not a gateway fail-open**, by nine counted runs (the two rejection legs pass 3/3 with the `test.mtls.*` properties and fail 0/3
+  without them); no production file changed, the `jfr` exclusion stays, and `MtlsLaneSelectionContractTest` guards it. `BenchmarkScriptConfigContractTest`
+  binds the k6 scripts to the gateway keys they use; `LogMessagesCatalogueTest` now covers every reactor module. 7 files (+4,401 / −231), all test code, a POM
+  comment and developer docs. The post-merge `main` runs at `7755b948` and the PR-attached benchmark are green. CI showed one
+  `Http2StreamAbuseIT.declaredBodyReachesTheUpstreamWithItsLength` failure on attempt 1 of the PR's integration run (green on attempt 2, same head); it is a Watch,
+  not a closed flake. Of four candidate lessons: one promoted (`2026-10-30-05-001`, guard readers are narrow allowlists), three routed to `lessons-routing`
+  (`-071` recurrence of `-049`/`-062`, `-072` recurrence of `-032`, `-073` new, related to `-040`/`-061`). The landing was `complete: false` (`effort` unknown; Open Defect 18).
+  `PLAN-V02-07` is now the only running plan; `PLAN-V02-48` and `PLAN-V02-49` stay behind it.
 - **2026-10-29 — `PLAN-V02-50` landed (#532, `9794fa41`), nine of nine deliverables (seven met, two with residuals).** The
   per-source detection substrate (`detection/`), its trip response, the HTTP/2 abuse bounds (`gw-08` is `COVERED`; `gw-02` stays
   `PARTIAL`, upstream reset pinned against HTTP/1.1 only), ADR-0076, ADR-0077, ADR-0073 Amendment A1 and the #528 residue are on
@@ -412,7 +435,7 @@ sufficient.
 |---|---|---|
 | structural refactor, then cookie policy | **V02-24 (shipped 2026-10-15, #465, ADR-0067) → V02-44 (route-type merge, running; concurrent with kidicap PLAN-32 #466 under the rebase rule) → V02-25 (decomposition, after V02-44 and PLAN-32); in parallel the validator slices V02-26 (shipped, #463) → V02-28 → V02-40 → V02-41 → (V02-12's second PR merged) → V02-42 → V02-43 (closes the split, writes the ADR) → V02-23 (re-grounded, after V02-25 and V02-43) → V02-27 (test simplification) → every other plan touching `edge/**` or `config/**`** | Operator decisions 2026-10-14 (inbox V02-23 `-001`, V02-26 landing): V02-23 paused and the edge and policy-block structure reworked first; the whole validator split finishes before V02-23. V02-24 makes a policy block a declaration. V02-25 (edge) and the validator slices (`config/validation/`) are disjoint from it and from each other. The slices edit `ConfigValidator` and `ConfigValidatorTest` and run serially, or at most two at once under the rebase rule. Held behind them: V02-05, -06, -07, -20, -45, -46; kidicap PLAN-20, -21, -26, -29. Edge hardening order after V02-25: V02-45 (request-body and HTTP/2 buffer bounds) and V02-06 D8 (`gw-08`) run one after the other, never together; then V02-46 (upstream close). |
 | oidc / `BffRuntimeProducer` | **V02-08 → V02-12 → V02-09** | All three write the `oidc` block and the BFF assembly point. V02-08 first: it is the larger reshaping and settles the RFC 9207 `iss` constraint V02-12 inherits. |
-| rejection taxonomy | **V02-13 → V02-06 → V02-07** | V02-13 re-cuts `EventCategory` and makes `renderProblem` content-negotiating at all five call sites. V02-06's uniform-404 branch edits those same sites; V02-07 weights the resulting taxonomy. |
+| ~~rejection taxonomy~~ | **DISCHARGED 2026-10-30** | V02-13 (#383), V02-06 (#528) and V02-07 (#537) have all shipped. |
 | sample vs. model | **V02-12 → V02-15** | V02-15 D5 defers the browser-vs-container issuer address to V02-12 rather than letting a sample become the de-facto specification. |
 | doc structure | **V02-03 before or after V02-17, chosen deliberately** | Both write `doc/development/**`. Landing prose into documents V02-03 is about to split wastes both. |
 | ADR-authoring exclusion | **V02-04 runs against none of** V02-06, V02-07, V02-11, V02-12 (V02-01 and V02-13 have shipped) | V02-04's spec forbids concurrency with any ADR-authoring plan. Also excluded: V02-09, whose ADR-0027 re-opening V02-04 is told not to pre-empt. |
@@ -449,24 +472,7 @@ doc-only or build-light plan for the second and third slots.
 
 15. > ↪ Relocated to `settled.md` § "Open Defect 15 — snapshot deploy 401 after the Maven 3.10.0 bump (resolved 2026-10-03)" — resolved by cuioss-organization v0.35.0, verified on main
 
-14. **HIGH, SECURITY — OWNER: `PLAN-V02-11` (adopted 2026-08-09) — `MtlsHandshakeIT` fails 2/3 under `-Pjfr` only: FAIL-OPEN ON HANDSHAKE
-    REJECTION.** GitHub issue **[#201](https://github.com/cuioss/API-Sheriff/issues/201)**, verified
-    OPEN. Opened 2026-08-09 by `PLAN-V02-16` and **correctly not fixed there** — it sits outside that
-    plan's declared boundary, and reporting rather than absorbing is the standing rule. The same tree
-    passes 3/3 under `-Pintegration-tests`, so the defect is lane-conditional and was **invisible for
-    as long as the `-Pjfr` lane was unrunnable**. **This one must not sit unowned**: it is fail-open
-    behaviour on a security control. Candidate homes: `PLAN-V02-11` (which owns the *what are the
-    test lanes for* question and now has a concrete instance to answer it with) or `PLAN-V02-10`
-    (per-client TLS trust). **HOME DECIDED 2026-08-09: `PLAN-V02-11`; MOVED 2026-10-28 to `PLAN-V02-51` D1** — ADR-0075 (#534) declined it
-    ("neither detected nor fixed"), and the operator ruled one plan owns 14, 7 and 9. Issue #201 is still OPEN. The `jfr` profile's
-    exclusion comment in `integration-tests/pom.xml` (since #282) reads as a lane misconfiguration and not a gateway fail-open, but
-    nobody has run the test against `api-sheriff-mtls`; V02-51 D1 settles it with three runs per lane before closing or fixing.
-    Original reasoning for the earlier home: its question is *which lane owns which defect class*,
-    and #201 is a defect **invisible in one lane and visible in another** — the first
-    lane-conditional instance beside its two time-or-volume-conditional ones, and therefore new
-    information for that decision rather than extra scope. **It is admissible as D2's demonstrated
-    catch. Fixing the fail-open behaviour itself is a security fix belonging to whichever plan owns
-    mTLS handshake behaviour — say explicitly which you did.**
+14. > ↪ Relocated to `settled.md` § "Open Defect 14 — `MtlsHandshakeIT` fails under `-Pjfr` only, issue #201 (settled 2026-10-30 by #538, a lane misconfiguration)" — nine counted runs; the `jfr` lane never supplied the mTLS properties; no production change; guarded by `MtlsLaneSelectionContractTest`
 
 10. **CARRIED PAST THIS EPIC — `doc/plan/09-release-readiness.adoc` becomes actionable AT THE 1.0
     CUT.** Opened 2026-08-09 by `PLAN-V02-03` D3. The file is **not superseded**: its defining
@@ -498,45 +504,60 @@ doc-only or build-light plan for the second and third slots.
    on `api-sheriff-ws-admission`); what was missing was a demonstrated failure, which two committed negative controls now supply
    (relay sub-budget and general admission budget). Residue: the general-admission control cannot wait for gateway-side
    admission (Watch). Strike at the next compaction.
-7. **STRUCTURAL, an open operator decision never taken** — the k6 benchmark scripts are an unguarded
-   consumer of gateway posture. `docker-compose.benchmark.yml` overlays the base compose and mounts
-   the same `./src/main/docker/sheriff-config`, so the benchmark and the IT suite share one
-   `gateway.yaml`. A plan changing gateway behaviour updates the IT suite in lockstep, but nothing
-   requires it to update the k6 scripts. **The general shape, and it will recur**: a behavioural
-   default flip is the class where "we updated the tests" hides "we did not update the other
-   consumers". Enumerate the consumers of a default, not just its tests. Home: `PLAN-V02-11` until 2026-10-28, when ADR-0075
-   declined it; **now `PLAN-V02-51` D2**.
+7. > ↪ Relocated to `settled.md` § "Open Defect 7 — the k6 benchmark scripts are an unguarded consumer of the shared gateway configuration (closed 2026-10-30 by #538)" — `BenchmarkScriptConfigContractTest` binds each k6 script to the keys it depends on
 8. **Unverified Sonar claim** — PLAN-06's uncorroborated Sonar claim is still unverified with no
    recovered evidence, and needs an **operator live-gate check** rather than plan work. Carried
    rather than closed because "we could not recover the evidence" is not "the claim was false", and
    closing it would silently convert one into the other.
-9. **MEDIUM** — `K6BenchmarkLogMessages` sits outside the catalogue guard that shipped beside it.
-   PLAN-08A (#154) added `LogMessagesCatalogueTest`, but it anchors on
-   `ApiSheriffLogMessages.class.getProtectionDomain()` and therefore walks `api-sheriff/target/classes`
-   **only** — so the benchmarks module's catalogue, including PLAN-46's `K6Benchmark-211`, is not
-   machine-protected against a duplicate id. **The generalisable shape: a guard anchored on one
-   module's protection domain silently excludes every other module, and its green is
-   indistinguishable from coverage.** When adopting it, check whether the fix generalises to every
-   module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11` until 2026-10-28, when ADR-0075
-   declined it; **now `PLAN-V02-51` D3**.
+9. > ↪ Relocated to `settled.md` § "Open Defect 9 — `K6BenchmarkLogMessages` outside the catalogue guard (closed 2026-10-30 by #538)" — `LogMessagesCatalogueTest` derives the module set from the root `pom.xml`
+
+18. **LOW, informational** — the `PLAN-V02-51` landing message (`plan-v02-51-lane-conditional-guards-005`) is `complete: false`: `landing-check`
+    names the missing key `effort`, carried as `unknown`. Every other required fact drained, and the landing was reconciled in full. `PLAN-V02-50`'s landing
+    carried `effort=medium`, so this is intermittent, not a missing feature. The cost: the run's effort level is unrecorded in `landings/PLAN-V02-51.md`'s
+    metrics. Recorded 2026-10-30; no owner. Strike if the next landing carries `effort`; if two in a row do not, route it to `lessons-routing`.
+    **Update 2026-10-30:** the `PLAN-V02-07` landing (`plan-v02-07-threat-classification-001`) is `complete: false` for the same key, so two in a row. Routed to
+    `lessons-routing` as `api-sheriff-api-sheriff-0-2-0-077`; the plan's own residue says the model was self-reported and no effort was stamped. Stays open here as
+    informational until a landing carries `effort` again or plan-marshall answers.
 
 ## Watches
 
+- **THE THREAT ALERT'S ECS SHAPE IS ASSERTED BY FIELD NAME, NOT VALIDATED AGAINST AN ECS SCHEMA** (added 2026-10-30, `PLAN-V02-07` landing). The spec's verify-first
+  clause asked that the field set be scoped against the actual ECS schema and "validate against a real consumer". ADR-0078 pins `ThreatAlertDocument.ECS_VERSION` at
+  `8.17.0` and the tests assert the document's fields; I found no test that checks the document against an ECS schema artifact or a SIEM consumer. The field names are the
+  published ECS names, so the likely cost of being wrong is a mapping tweak at the consumer. No owner; if an operator reports a SIEM rejecting the document, fix the field in
+  `ThreatAlertDocument` and add the schema check then. The OCSF mapping is documented only, by decision (ADR-0078).
+- **`Http2StreamAbuseIT.declaredBodyReachesTheUpstreamWithItsLength` FAILED ONCE IN CI WITH NO PRODUCTION CHANGE ON THE BRANCH** (added 2026-10-30,
+  `PLAN-V02-51` landing). Run `40968785321` at head `917b4797`: attempt 1 failed at `Http2StreamAbuseIT.java:212` ("the h2 -> HTTP/1.1 framing of a
+  declared body (4 failures)", 358 tests, 1 failure); attempt 2 of the same head passed. `#538` changes no production file, so the failure sits on `PLAN-V02-50`'s
+  code or test. The plan files it under "the known HTTP/2 framing flake class"; that is a classification, not a root cause. **Treat a recurrence as a suspected
+  production defect**: reproduce under `-XX:ActiveProcessorCount=1`, and read it beside the `PROTOCOL_ERROR` Watch below (second failure of this class, in a
+  different method of the same class) and the framing-corpus memory. `main` at `7755b948` is green. No owner; stage a fix plan if it recurs.
+  **2026-10-30, `PLAN-V02-07` landing:** no recurrence. The pull-request Integration Tests run passed at attempt 1 at all three heads of #537 (`929e0fdc`, `54a3af18`,
+  `5988f533`), as did the merge-group and the `main` push run at `996f36bd`. One more clean landing; not enough to close it.
+- **THE THREE NEW GUARD READERS HAVE UNTESTED REFUSAL BRANCHES** (added 2026-10-30, `PLAN-V02-51` landing). `MtlsLaneSelectionContractTest` (1,599 lines),
+  `BenchmarkScriptConfigContractTest` (2,048) and the widened `LogMessagesCatalogueTest` (+868) parse POM, glob, k6 and Java-source forms by hand; four code-review
+  rounds and two CodeRabbit rounds each found another input form misread, and the readers converged only after becoming narrow allowlists. The plan records the
+  remaining untested refusal branches (and `any()`/`none()` and reference-depth advisories) as notes in its decision log, not fixed. Informational: the size is a
+  maintenance cost, and a guard that refuses an input it should read fails loudly, not open. If a legitimate POM or script edit trips a refusal, widen the allowlist with a
+  specimen (lesson `2026-10-30-05-001`) rather than loosening the reader. No owner.
 - **`Http2StreamAbuseIT` RAPID-RESET `PROTOCOL_ERROR` CAUSE INFERRED, NOT REPRODUCED** (added 2026-10-29, `PLAN-V02-50` landing,
   residual D4.R2). CI once saw `rapidResetFloodEndsTheConnectionWithEnhanceYourCalm` end with `GOAWAY PROTOCOL_ERROR` instead of
   `ENHANCE_YOUR_CALM` (run at `4f69c4ef`). The plan fixed the raw test client (`3cc695db`: the `SETTINGS` acknowledgement could
   precede the client preface); that cause is inferred from RFC 9113 ordering. Later runs, including the `main` run at `9794fa41`,
   are green. If this IT recurs red, treat it as a suspected production defect and reproduce under `-XX:ActiveProcessorCount=1`
-  before classifying it as a flake; the plan's local notes hold a second candidate cause.
+  before classifying it as a flake; the plan's local notes hold a second candidate cause. **Recurrence note 2026-10-30:** the
+  same class failed again in `declaredBodyReachesTheUpstreamWithItsLength` (see the Watch above), so the class has now
+  shown two failures in two landings.
 - **UNIFORM-404 FLOOR MEASURED ON EIGHT PATHS ONLY** (added 2026-10-29, `PLAN-V02-50` landing, residual D8.R1). The declared-length
   fast-reject, a route-scoped filter violation, the cookie-forwarding same-origin refusal and the `protocol: grpc` route are
   caller-drivable pre-trust paths outside `EnumerationOracleIT`'s measurement. ADR-0073 A1 and `gw-16` state the scope as eight.
-  No owner; fold into the next plan that touches `edge/error/` or the oracle IT (`PLAN-V02-07` is the likely one).
+  No owner; fold into the next plan that touches `edge/error/` or the oracle IT. `PLAN-V02-07` landed (#537) and touched `ErrorResponseWriter` but not the oracle IT or
+  the floor, so this stays open; the threat feed changes no answer, which its `ErrorResponseWriterTest::threatFeedChangesNoAnswer` pins.
 - **FINAL-TREE INTEGRATION SUITE NOT RUN LOCALLY FOR #532** (added 2026-10-29, `PLAN-V02-50` landing, residual D4.R1). CI's
   integration lane (JDK 25 and 26, native image) and the post-merge `main` run are green, so this is informational; it is the
   same environmental block `PLAN-V02-11` reported. Retire it with the first plan that runs `-Pintegration-tests` locally to green.
 - **`gw-02` PARTIAL: UPSTREAM RESET PINNED AGAINST AN HTTP/1.1 UPSTREAM ONLY** (added 2026-10-29, `PLAN-V02-50` landing). The
-  threat model names the open clause. No owner; a later hardening plan, not `PLAN-V02-07`.
+  threat model names the open clause. No owner; a later hardening plan (`PLAN-V02-07` landed without touching it).
 - **LOW-BUDGET FIXTURE HEADER OVERSTATES ITS FIDELITY** (added 2026-10-28, inbox
   `plan-v02-11-resource-exhaustion-test-home-001` item 1). `integration-tests/src/main/docker/sheriff-config-ws-admission/gateway.yaml`
   says the overlay differs from the primary `gateway.yaml` in "exactly two" things; it also lacks
@@ -553,6 +574,10 @@ doc-only or build-light plan for the second and third slots.
   catch block that records an error and rethrows it. Not reproduced by the orchestrator. Check it on a clean `main` worktree
   before the next plan that runs the gate; if it reproduces, stage a fix plan. **Recurrence 2026-10-29:** `PLAN-V02-50` (candidate
   `-001`) reported the same unauthored-file rewrites on every gate round and reverted them each time; two plans in a row now.
+  **Recurrence 2026-10-30:** `PLAN-V02-07` hit it as well (three plans in a row) and paid a second cost: reverting the rewrite left the tree at a hash no build row carried, so
+  the freshness gate went stale and an extra non-mutating build (about 7 minutes) was needed to mint a matching row. Routed to `lessons-routing` as `-076`. The churn itself
+  is still unreproduced by the orchestrator and still has no fix plan; with three plans reporting it, check it on a clean `main` worktree before `PLAN-V02-48` and
+  `PLAN-V02-49` run the gate.
 - **HAND-MAINTAINED INVENTORIES NOT BOUND BY A TEST — NO OWNER** (added 2026-10-27, inbox
   `plan-v02-05-response-hygiene-012`). `DocumentedHeaderSetsContractTest` binds the identity set and both protocol tiers to
   their constants. The route-field inventory (`doc/configuration.adoc`, `endpoint.schema.json`) and the never-forward and
@@ -562,7 +587,8 @@ doc-only or build-light plan for the second and third slots.
   2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`; fixed 2026-10-29). The test is rewritten to a deterministic shape
   (a 4 MiB unread upstream body, an awaited condition) and the relay release path it exposed was fixed
   (`UpstreamAttemptReleaseOrderTest`). The `ActiveProcessorCount=1` confirmation is the plan's claim, not the orchestrator's;
-  `main` CI at `9794fa41` is green. Retire at the next green `main` run after a load-sensitive CI job. Other open flakes:
+  `main` CI at `9794fa41` and `7755b948` is green (its Maven Build, which runs the unit lane, passed).
+  Retire at the next green `main` run after a load-sensitive CI job. Other open flakes:
   `GatewayEdgeFramingCorpusTest` and `Http2EarlyResponseResetIT`.
 
 - > ↪ Relocated to `settled.md` § "Watch — superseded reviewer cuioss-review-bot (closed 2026-10-22 by #505)" — PR-Agent prose retired by #505 (PLAN-V02-43), guarded by ReviewerRosterDocsContractTest

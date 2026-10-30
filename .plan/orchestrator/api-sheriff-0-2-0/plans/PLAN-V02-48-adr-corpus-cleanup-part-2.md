@@ -77,8 +77,8 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
     `PLAN-V02-04` did. The ceiling stays enforced by `AdrRecordLengthContractTest`; the plan changes no ceiling.
     The corpus stood at 65 records, 15,289 lines and a mean of 235 per file on `main` at `f5826465`; `0072` (new in
     #527, Accepted, 226 lines), `0073` (new in #528, Accepted; amended in place by #532, Amendment A1), `0074` (new in #530),
-    `0075` (new in #534) and `0076` and `0077` (new in #532, 306 and 128 lines), all Accepted, are outside the 52 and make it
-    71 records on `main` at `9794fa41`. Measure the before figure from the branch base, count all six in both totals, and say so. The early records average about 136. Say where the
+    `0075` (new in #534), `0076` and `0077` (new in #532, 306 and 128 lines) and `0078` (new in #537, 283 lines), all Accepted, are outside the 52 and make it
+    72 records on `main` at `996f36bd`. Measure the before figure from the branch base, count all seven in both totals, and say so. The early records average about 136. Say where the
     result lands against that and why.
 12. **Documentation residue of `PLAN-V02-04`.** Four statements outside `doc/adr/` that the WebSocket pre-upgrade
     end-rule fix or the rebase left untrue. Re-read each at outline; one that no longer holds is dropped. (The two
@@ -136,9 +136,9 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
   - verdict: corroborated | checked_at: e087e5cec0ac2a48443e5df02882163bd38ecd53 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: adr-writing.adoc is 385 lines on main; AdrRecordLengthContractTest has MAX_BODY_LINES = 500 and a fixture control at 500 and 501
 - HYPOTHESIS: the verdict table of `PLAN-V02-04` deliverable 2 holds for every record named above — read it in the
   #521 body; refutation per record re-scopes that record (verify-at-outline)
-- OBSERVED: `doc/adr/` holds 71 records on `main` at `9794fa41` (the 65 left by #521 plus `0072`, `0073`, `0074`, `0075`, `0076` and `0077`, all Accepted), and
+- OBSERVED: `doc/adr/` holds 72 records on `main` at `996f36bd` (the 65 left by #521 plus `0072`, `0073`, `0074`, `0075`, `0076`, `0077` and `0078`, all Accepted), and
   `0027-*` is Superseded by `0074` — `git ls-tree --name-only origin/main doc/adr/`
-  - verdict: corroborated | checked_at: 9794fa41bba2d25a02add5457ece54e92a570512 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: git ls-tree on origin/main doc/adr/ lists 71 records (no duplicate ordinal); 0073 0074 0075 0076 0077 Accepted; 0027 is Superseded by 0074
+  - verdict: corroborated | checked_at: 996f36bd99f0600111bd5ffa20b6d3d8da83d243 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: git ls-tree on origin/main doc/adr/ lists 72 records (no duplicate ordinal); 0073 0074 0075 0076 0077 0078 Accepted; 0027 is Superseded by 0074; 0078 is 283 lines (#537)
 - OBSERVED: the destinations `doc/technical_aspects.adoc`, `doc/configuration.adoc`,
   `doc/development/README.adoc`, `doc/development/test-corpus-integrity.adoc` and `doc/user/tls-edge.adoc` exist on
   `main` at `6b8d88f4`
@@ -167,8 +167,8 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 
 - Depends on: `PLAN-V02-04` merged (#521, `f5826465`, done). It delivers the rubric, the skeleton, the term list and
   the ceiling guard this plan applies.
-- **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-07`, `PLAN-V02-11` and `PLAN-V02-50` (`PLAN-V02-20`, `PLAN-V02-06`, `PLAN-V02-09` and
-  `PLAN-V02-05` landed as #527, #528 and #526).
+- **Not concurrent with any plan that authors or re-opens an ADR.** None in this epic is left: `PLAN-V02-07`, `PLAN-V02-11` and `PLAN-V02-50` landed as #537, #534 and #532, and
+  `PLAN-V02-20`, `PLAN-V02-06`, `PLAN-V02-09` and `PLAN-V02-05` as #527, #528, #530 and #526. A plan in a sibling epic that writes an ADR is the remaining case.
   A relocation or merge here moves the ground under a record being written there, and the ceiling guard fails a
   concurrent plan that lands an over-long record.
 - Kidicap `PLAN-29` D6 owns `0008`'s timeout sentence; it is not settled here.

@@ -89,12 +89,14 @@ cut by area (`config/validation/`, then `config/` and `routing/`), not inside a 
 - OBSERVED: no test class named for `TerminalDispatch`, `RejectionReporter`, `ConnectionRetirement`, `ResponseEnds`,
   `ReservedPathHandler`, `EdgeRequests` or `EgressClients` — `git ls-tree -r --name-only 6b8d88f4 api-sheriff/src/test`
   finds no `{Class}Test.java` for any of them
-  - verdict: corroborated | checked_at: 6b8d88f4ac24a32b55f69f947342b115cd2bb20a | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: name searches for the seven classes find no Test.java at 6b8d88f4
+  - verdict: corroborated | checked_at: 996f36bd99f0600111bd5ffa20b6d3d8da83d243 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: at 996f36bd no {Class}Test.java exists for RejectionReporter, ConnectionRetirement, ResponseEnds, ReservedPathHandler, EdgeRequests or EgressClients; TerminalDispatch has only TerminalDispatchGrpcStreamIdleTest and TerminalDispatchLateBodyTimeoutTest; GrpcStreamIdleBound.timeoutMillis() is still public (ResponseStage.java:484)
 - OBSERVED: `GrpcStreamIdleBound.timeoutMillis()` is public and new in #520 — `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/ResponseStage.java`
 - OBSERVED: `LimitRulesTest` is unchanged by #520, and its class Javadoc is the #467 advisory — not in the diff
   `68481922..6b8d88f4`
 - HYPOTHESIS: the inventory's findings V1–V17, C1–C3 and R1–R2 still hold at the commit this plan starts from —
-  re-read each pair (verify-at-outline)
+  re-read each pair (verify-at-outline). The inventory predates #532 and #537, which added tests to `config/`, `config/validation/rule/`
+  and `edge/` (in #537: `LimitRulesTest` +192 lines, `ConfigLoaderTest` +98, `ConfigModelContractTest` +120 and `SourceGateTest` reworked), so a pair that
+  involves one of those classes is the likeliest to have moved
 - HYPOTHESIS: the HTTP/2 and marked-request cases of `TerminalDispatchLateBodyTimeoutTest` can be driven through
   `retireAfterLateBodyTimeout` and `failRelay` — `edge/terminal/TerminalDispatch.java` (verify-at-outline)
 
@@ -116,10 +118,11 @@ cut by area (`config/validation/`, then `config/` and `routing/`), not inside a 
 ## Dependencies and Sequencing
 
 - Depends on: `PLAN-V02-27` (#520), merged.
-- **Pairs with no plan whose tests sit in `config/`, `routing/` or `edge/`.** `PLAN-V02-05`, `-06`, `-07`, `-09` and
-  `-20` each add tests there; two plans editing the same classes collide on the test files. The constraint that held
-  for `PLAN-V02-27` holds here.
-- Disjoint from `PLAN-V02-48` by surface (tests against `doc/adr/`), but see the epic constraint that no plan runs
+- **Pairs with no plan whose tests sit in `config/`, `routing/` or `edge/`.** `PLAN-V02-05`, `-06`, `-07`, `-09`, `-20` and
+  `-50` all added tests there and have landed (#526, #528, #537, #530, #527, #532); two plans editing the same classes collide on the
+  test files. The constraint that held for `PLAN-V02-27` holds here for any plan that is still to come.
+- Shares one file with `PLAN-V02-48`, `doc/development/test-corpus-integrity.adoc` (a destination there, a count source here); otherwise the surfaces
+  are disjoint (tests against `doc/adr/`). A single shared file does not block a pairing. See also the epic constraint that no plan runs
   beside a corpus-wide ADR cleanup if it writes or re-opens an ADR.
 - Adjacent to the new test conventions from #424 and `doc/development/test-corpus-integrity.adoc`: read them first.
 
