@@ -176,7 +176,7 @@ needs no translation.
   (71 → 72 records) and `PLAN-V02-49` (dependency text, inventory predates #532 and #537) were corrected in place and two claim verdicts re-stamped. **Emitted both**: the
   gate admits each against in-flight work (nothing is running), but the two share 8 declared paths with each other (V02-48's "repoint every inbound ADR reference" clause
   against V02-49's test directories; real overlap is `doc/development/test-corpus-integrity.adoc`). Overlap prompt answered by the operator: **emit both**. Rows are `launched`
-  (`auto_emit` is on); `launched → running` stays with the operator.
+  (`auto_emit` is on); `launched → running` stays with the operator, who confirmed the start of both the same day, so both are `running` (2 of 3 slots).
 - **2026-10-30 — `PLAN-V02-51` landed (#538, `7755b948`), three of three deliverables; Open Defects 14 (#201), 7 and 9 closed.** #201 is **settled as a
   lane misconfiguration, not a gateway fail-open**, by nine counted runs (the two rejection legs pass 3/3 with the `test.mtls.*` properties and fail 0/3
   without them); no production file changed, the `jfr` exclusion stays, and `MtlsLaneSelectionContractTest` guards it. `BenchmarkScriptConfigContractTest`
