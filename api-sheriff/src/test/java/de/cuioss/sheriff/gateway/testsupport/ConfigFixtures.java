@@ -51,11 +51,10 @@ import org.jspecify.annotations.Nullable;
 /**
  * Pre-seeded fixtures for the configuration this module's tests build again and again.
  * <p>
- * Two families live here, and the return type says which one a method belongs to. A <em>seed</em>
- * ({@link #gateway()}, {@link #route(String, String)}, {@link #validGateway()}) returns a builder, never a
- * finished record: it holds only what every caller would otherwise write identically, so a test still
- * states, on its own line, the one field its behaviour depends on. A <em>leaf value</em> (every other
- * method) returns a finished record whose few inputs are all parameters, because the test reads it inside
+ * Two families live here, and the return type says which one a method belongs to. A <em>seed</em> returns
+ * a builder, never a finished record: it holds only what every caller would otherwise write identically,
+ * so a test still states, on its own line, the one field its behaviour depends on. A <em>leaf value</em>
+ * returns a finished record built from its parameters and fixed values, because the test reads it inside
  * another builder call or passes it straight to the validator:
  * {@snippet :
  * GatewayConfig config = ConfigFixtures.gateway().oidc(oidc).build();
@@ -455,7 +454,7 @@ public final class ConfigFixtures {
     /**
      * A token-validation issuer named after itself.
      *
-     * @param name the issuer name, also the host of its {@code issuer} URL
+     * @param name the issuer name; the host of its {@code issuer} URL is {@code <name>.example}
      * @param jwks the JWKS block
      * @return the issuer
      */

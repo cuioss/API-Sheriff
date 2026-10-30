@@ -27,8 +27,8 @@ import de.cuioss.sheriff.gateway.config.load.ConfigError;
  * <p>
  * Two match strengths are offered on purpose. {@link #assertHasError} matches a pointer <em>fragment</em>
  * and tolerates other errors, for a fixture that may report unrelated gaps; the others pin the exact
- * pointer, and {@link #singleRefusalAt} and {@link #assertSingleRefusal} also pin that the refusal is the
- * only one:
+ * pointer. {@link #singleRefusalAt} pins exactly one refusal at that pointer and tolerates errors at other
+ * pointers; only {@link #assertSingleRefusal} pins that the refusal is the only error in the result:
  * {@snippet :
  * List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
  *
