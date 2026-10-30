@@ -6,6 +6,9 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
 // summary: Every boot validation rule is a public static validateXxx method of a stateless {Concern}Rules @UtilityClass in config.validation.rule that owns one configuration block. ConfigValidator holds no rule body; it runs exactly one ordered DEFAULT_RULES list, one ValidationRule entry per rule, and that list is the only authority on the order violations are reported in. Helpers shared by two or more concern classes live once in RuleSupport, the ValidationRule seam is not widened, each concern's tests drive the full default validator, and the hand-written concern map in doc/development/boot-validation-rules.adoc is bound to the list by BootValidationConcernMapContractTest.
 // tags: configuration, validation, boot, pre-boot, package-structure, fitness-function
 // affects: api-sheriff, documentation
@@ -16,179 +19,105 @@
 
 Accepted
 
-== Context
+== Decision
 
-The gateway judges its configuration twice before it serves a request: at boot (pipeline step 7) and
-in the offline `--validate-config` check
-(link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]).
-What it judges there is whatever the bundled JSON Schemas cannot express: a relation between two keys,
-a value checked against another file, a posture resolved through the route, endpoint and anchor chain.
-Every new configuration block brings rules of that kind, so the rule set only grows.
+=== The question
+
+The gateway judges its configuration twice before it serves a request: at boot (pipeline step 7) and in the offline `--validate-config` check (link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]). What it judges there is whatever the bundled JSON Schemas cannot express: a relation between two keys, a value checked against another file, a posture resolved through the route, endpoint and anchor chain. Every new configuration block brings rules of that kind, so the rule set only grows.
 
 A rule set that grows inside one validator class has four failure modes, and they compound:
 
-* *One class owns every rule.* Rules for unrelated blocks -- anchors, the BFF session, the reserved
-  OIDC paths, TLS passthrough -- share one file and one set of private helpers. Nothing marks which
-  helper belongs to which rule, so a change to one rule has to be read against all of them, and the
-  class grows to thousands of lines.
-* *Order is decided in more than one place.* The operator reads violations in the order they are
-  reported, and several rules deliberately run after others. As soon as rules are grouped by any
-  mechanism that carries its own order -- a per-group list, a registration order, an annotation
-  priority -- the reported order becomes the product of two authorities, and neither of them states
-  it.
-* *A rule can be written and never run.* A rule method that is not wired into the run, or is wired
-  with the wrong arguments, compiles and passes a test that calls the method directly.
-* *The record of which class owns which rule decays.* A contributor adding a rule needs to know where
-  it goes. A page that answers that question is written by hand, and nothing in the build notices
-  when it stops matching the code.
+* *One class owns every rule.* Rules for unrelated blocks (anchors, the BFF session, the reserved paths, SNI passthrough) share one file and one set of private helpers. Nothing marks which helper belongs to which rule. A change to one rule has to be read against all of them, and the class grows to thousands of lines.
+* *Order is decided in more than one place.* The operator reads violations in the order they are reported, and several rules deliberately run after others. As soon as any mechanism that carries its own order groups the rules (a per-group list, a registration order, an annotation priority), the reported order becomes the product of two authorities, and neither of them states it.
+* *A rule can be written and never run.* A rule method that is not wired into the run, or is wired with the wrong arguments, compiles and passes a test that calls the method directly.
+* *The record of which class owns which rule decays.* A contributor adding a rule needs to know where it goes. A page that answers that question is written by hand, and nothing in the build notices when it stops matching the code.
 
-The validator also runs before the framework starts, so whatever organises the rules may not rely on
-framework mechanisms such as CDI discovery
-(link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[the narrowed pre-boot rule of ADR-0062]).
+The validator also runs before the framework starts, so whatever organises the rules may not rely on framework mechanisms such as CDI discovery (link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[the narrowed pre-boot rule of ADR-0062]).
 
-The question this record settles is where a rule body lives, which single place decides the order,
-and how the record of ownership stays true.
+This record settles where a rule body lives, which single place decides the order, and how the record of ownership stays true.
 
-== Decision
-
-*A boot validation rule lives in the concern class that owns the configuration block it judges.
-`ConfigValidator` holds no rule body and runs exactly one ordered list, which is the only authority on
-the order violations are reported in.*
+*The decision:* a boot validation rule lives in the concern class that owns the configuration block it judges. `ConfigValidator` holds no rule body and runs exactly one ordered list, which is the only authority on the order violations are reported in.
 
 === Concern classes
 
-A concern class is a stateless Lombok `@UtilityClass` named `{Concern}Rules` in the package
-`config.validation.rule`. It owns one configuration block -- the topology, the anchors, the `auth`
-blocks, the security headers, the reserved OIDC paths and so on -- and exposes each rule as a
-`public static validateXxx(...)` method with the narrowest parameter list the rule needs. A rule
-appends one `ConfigError` per violation to the list it is handed and returns; it never throws for a
-validation failure and never stops at the first problem, so the operator sees every violation in one
-attempt
-(link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]). A rule that logs declares its own
-logger in its concern class.
+A concern class is a stateless Lombok `@UtilityClass` named `{Concern}Rules` in the package `config.validation.rule`. It owns one configuration block, such as the topology, the anchors, the `auth` blocks, the security headers or the reserved paths. It exposes each rule as a `public static validateXxx(...)` method with the narrowest parameter list the rule needs. A rule appends one `ConfigError` per violation to the list it is handed and returns. It never throws for a validation failure and never stops at the first problem, so the operator sees every violation in one attempt (link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]). A rule that logs declares its own logger in its concern class.
 
-A concern class publishes no rule list of its own. Which classes exist and which rules each one owns
-is recorded in the concern map of
-link:../development/boot-validation-rules.adoc#_the_concern_map[Boot Validation Rules], and is not
-restated here.
+A concern class publishes no rule list of its own. The concern map of link:../development/boot-validation-rules.adoc#_the_concern_map[Boot Validation Rules] records which classes exist and which rules each one owns.
 
 === One ordered list
 
-`ConfigValidator` holds one list, `DEFAULT_RULES`, with one entry per rule. Each entry is a
-`ValidationRule` -- a function of the bound gateway document, the enabled endpoints, the resolved
-topology and the shared error list -- adapting one concern-class method, normally as one lambda.
-`validate` runs every entry in list order and returns the aggregated errors. A new rule is registered
-as one entry at the position that keeps the reported order; whole class lists are never concatenated
-into it.
+`ConfigValidator` holds one list, `DEFAULT_RULES`, with one entry per rule. Each entry is a `ValidationRule`, a function of the bound gateway document, the enabled endpoints, the resolved topology and the shared error list. It adapts one concern-class method, normally as one lambda. `validate` runs every entry in list order and returns the aggregated errors. A new rule is registered as one entry at the position that keeps the reported order. Whole class lists are never concatenated into it.
 
 === Shared helpers
 
-A helper used by two or more concern classes lives once, in `RuleSupport`: the reporting file and
-pointers, the CWE-117-safe echo of a configured value, and the route and anchor resolutions several
-concerns need. A helper used by one concern stays private to that class. No rule resolves a policy
-block or a route's anchor itself; it reads them through `PolicyBlock`
-(link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]),
-so boot validation and the route table cannot disagree.
+A helper used by two or more concern classes lives once, in `RuleSupport`: the reporting file and pointers, the CWE-117-safe echo of a configured value, and the route and anchor resolutions several concerns need. A helper used by one concern stays private to that class. No rule resolves a policy block or a route's anchor itself. It reads them through `PolicyBlock` (link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]), so boot validation and the route table cannot disagree.
 
 === The seam is not widened
 
-`ValidationRule` keeps its four-parameter shape. Every rule fits it, and a rule that needs fewer
-inputs takes fewer in its concern-class method and is adapted in its list entry. The interface
-changes only for a check this shape genuinely cannot express.
+`ValidationRule` keeps its four-parameter shape. Every rule fits it, and a rule that needs fewer inputs takes fewer in its concern-class method and is adapted in its list entry. The interface changes only for a check this shape genuinely cannot express.
 
 === Tests per concern drive the full validator
 
-A rule's tests live beside it in the test source tree's `config/validation/rule` package, named
-`{Concern}RulesTest`, and they drive `new ConfigValidator()` rather than the concern-class method. A
-rule that is written but missing from `DEFAULT_RULES`, or registered with the wrong arguments, then
-fails its own tests. `ConfigValidatorTest` holds only the orchestration cases: a well-formed
-configuration passes, the structural `TRACE`/`CONNECT` rejection, and single-pass aggregation across
-rules.
+A rule's tests live beside it in the test source tree's `config/validation/rule` package, named `{Concern}RulesTest`, and they drive `new ConfigValidator()` and not the concern-class method. A rule that is written but missing from `DEFAULT_RULES`, or registered with the wrong arguments, then fails its own tests. `ConfigValidatorTest` holds only the orchestration cases: a well-formed configuration passes, the structural `TRACE`/`CONNECT` rejection, and single-pass aggregation across rules.
 
 === The concern map is bound to the list
 
-The concern map is written by hand, so a test binds it to the code. `BootValidationConcernMapContractTest`
-reads `ConfigValidator.java` as text, slices `DEFAULT_RULES` into its entries, and takes the
-concern-class call in each entry as its registration. It fails the build when an entry registers no
-concern-class rule or more than one, when a registered rule is missing from the row of the class it
-is called through, and when a row names a rule that no entry registers through that row's class -- a
-rule moved, renamed or deleted, or listed under a second owner. Source text is read because the entries are lambdas, which name no method to
-reflection, and widening the class or the seam to expose them would change production code for a
-test. The test ships with a non-vacuity guard and matched negative controls over synthetic specimens,
-following
-link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030].
+The concern map is written by hand, so a test binds it to the code. `BootValidationConcernMapContractTest` reads `ConfigValidator.java` as text, slices `DEFAULT_RULES` into its entries, and takes the concern-class call in each entry as its registration. It fails the build in three cases:
+
+* an entry registers no concern-class rule or more than one;
+* a registered rule is missing from the row of the class it is called through;
+* a row names a rule that no entry registers through that row's class, which covers a rule moved, renamed or deleted, or listed under a second owner.
+
+The test reads source text because the entries are lambdas, which name no method to reflection, and widening the class or the seam to expose them would change production code for a test. The test ships with a non-vacuity guard and matched negative controls over synthetic specimens, following link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030].
+
+== Alternatives rejected
+
+=== Each concern class publishes its own rule list, and the validator concatenates them
+
+This keeps the registration next to the rule and shortens `ConfigValidator`. It also makes the reported order the product of two authorities: the order inside each class list and the order of the concatenation. A rule that must run after a rule of another concern cannot be placed without splitting a class list or reordering classes.
+
+*Rejected because* it gives order a second authority that no single place states.
+
+=== Annotation- or reflection-driven registration
+
+Rules would declare themselves and a scanner would collect them, so registering a rule could not be forgotten. The order would then be implicit in discovery order or in priority values spread across files. Discovery at that point needs either a framework mechanism the pre-boot path may not use or a hand-rolled scanner the project would have to maintain.
+
+*Rejected because* it hides the order and works against the pre-boot, framework-free constraint.
+
+=== Widen the `ValidationRule` seam
+
+A richer interface (a rule name, a concern, an order value, or a context object instead of four parameters) would let the validator and the contract test read metadata instead of source text. Every rule would carry members no caller needs, and an order value on the rule is a second order authority again.
+
+*Rejected because* no rule needs it. The seam changes only for a check the current shape cannot express.
+
+The rejected alternatives share one property: each spreads either the order or the registration over many places, where this decision keeps both in one list and lets a test hold the one record that has to be written by hand.
 
 == Consequences
 
-=== Positive
+=== Properties of the design
 
 * Each rule can be read with only its own configuration block and `RuleSupport` as context.
-* The reported order has one authority. Reordering, inserting or removing a rule is a change to one
-  list, visible in one diff.
-* A rule written but not run fails its own tests, because the tests run the list rather than the
-  method.
-* An entry that registers no concern-class rule or more than one, a rule registered without its row
-  in the concern map, and a row naming a rule not registered through its class all fail the build, so
-  the map names exactly the rules the list registers, each under the class it is called through. The
-  guard counts the concern-class calls in an entry and reads nothing else in it, so a rule body written
-  in place of that call fails it, while statements written beside the one call do not.
-* The validator stays framework-free: the list is plain Java, assembled at class initialisation, and
-  the validator can be constructed with a custom rule list for the offline check and for tests.
+* The reported order has one authority. Reordering, inserting or removing a rule is a change to one list, visible in one diff.
+* A rule written but not run fails its own tests, because the tests run the list and not the method.
+* An entry that registers no concern-class rule or more than one, a rule registered without its row in the concern map, and a row naming a rule not registered through its class all fail the build. The map therefore names exactly the rules the list registers, each under the class it is called through. The guard counts the concern-class calls in an entry and reads nothing else in it, so a rule body written in place of that call fails it, while statements written beside the one call do not.
+* The validator stays framework-free. The list is plain Java, assembled at class initialisation, and the validator can be constructed with a custom rule list for the offline check and for tests.
 
-=== Negative
+=== Accepted costs
 
-* Every rule is `public static` so that `ConfigValidator`, in another package, can call it. The
-  methods are reachable from the whole application, not only from the validator.
-* The list adapts each method with a lambda, so `DEFAULT_RULES` repeats the four-parameter shape once
-  per rule and is long.
-* Rule tests drive the whole default validator, so a refusal in one rule can make a fixture written
-  for another rule fail. Each test fixture has to be a document every other rule accepts.
+* Every rule is `public static` so that `ConfigValidator`, in another package, can call it. The methods are reachable from the whole application, not only from the validator.
+* The list adapts each method with a lambda, so `DEFAULT_RULES` repeats the four-parameter shape once per rule and is long.
+* Rule tests drive the whole default validator, so a refusal in one rule can make a fixture written for another rule fail. Each test fixture has to be a document every other rule accepts.
 
 === Risks
 
-* *The contract test reads source text.* A registration routed through a helper that is not a concern
-  class is not recognised as one; it fails the guard rather than passing unseen, but a reformatting of
-  the list or of the map table can break the extraction and needs the test to follow.
-* *The guard covers the rule column only.* It binds the rule names in both directions, but the
-  configuration-surface column of the map is prose that nothing checks, so a row can name the wrong
-  configuration block for its rules and still pass.
+* *The contract test reads source text.* A registration routed through a helper that is not a concern class is not recognised as one. It fails the guard and does not pass unseen, but a reformatting of the list or of the map table can break the extraction and needs the test to follow.
+* *The guard covers the rule column only.* It binds the rule names in both directions, but nothing checks the configuration-surface column of the map, which is prose. A row can name the wrong configuration block for its rules and still pass.
 
-== Alternatives Considered
+== Links
 
-*Each concern class publishes its own rule list, and the validator concatenates them.* This keeps the
-registration next to the rule and shortens `ConfigValidator`. It also makes the reported order the
-product of two authorities -- the order inside each class list and the order of the concatenation --
-so a rule that must run after a rule of another concern cannot be placed without splitting a class
-list or reordering classes. Rejected because it gives order a second authority that no single place
-states.
-
-*Annotation- or reflection-driven registration.* Rules would declare themselves and a scanner would
-collect them, so registering a rule could not be forgotten. The order would then be implicit in
-discovery order or in priority values spread across files, and discovery at that point either needs a
-framework mechanism the pre-boot path may not use or a hand-rolled scanner the project would have to
-maintain. Rejected because it hides the order and works against the pre-boot, framework-free
-constraint.
-
-*Widen the `ValidationRule` seam.* A richer interface -- a rule name, a concern, an order value, or a
-context object instead of four parameters -- would let the validator and the contract test read
-metadata instead of source text. Every rule would carry members no caller needs, and an order value on
-the rule is a second order authority again. Rejected because no rule needs it; the seam changes only
-for a check the current shape cannot express.
-
-The rejected alternatives share one property: each spreads either the order or the registration over
-many places, where this decision keeps both in one list and lets a test hold the one record that has
-to be written by hand.
-
-== References
-
-* link:../development/boot-validation-rules.adoc[Boot Validation Rules] -- the concern map, where a
-  new rule goes, and the constraints every rule keeps
-* link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] -- every violation reported in one pass
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
-  -- the control legs the concern-map contract test ships with
-* link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]
-  -- the offline check that runs this validator before the framework starts
-* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
-  -- the narrowed pre-boot rule the validation packages keep
-* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]
-  -- the one policy-block resolution every rule reads through
+* link:../development/boot-validation-rules.adoc[Boot Validation Rules]: the concern map, where a new rule goes, and the constraints every rule keeps
+* link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]: every violation reported in one pass
+* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]: the control legs the concern-map contract test ships with
+* link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]: the offline check that runs this validator before the framework starts
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: the narrowed pre-boot rule the validation packages keep
+* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]: the one policy-block resolution every rule reads through
