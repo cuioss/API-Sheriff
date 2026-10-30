@@ -1256,7 +1256,7 @@ only while `egress_tls.oidc_tls_profile` is omitted.
 === `egress_tls`
 
 Everything above this heading governs the certificate the gateway *presents*. This block governs the
-certificates it *accepts* -- outbound TLS policy for the upstreams and identity-provider
+certificates it *accepts* -- egress TLS policy for the upstreams and identity-provider
 back-channels it dials
 (link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040],
 link:adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]).
@@ -1354,7 +1354,7 @@ another.
 *A seventh leg cannot land unbound.* A fitness function (`EgressTlsPostureArchTest`, in the
 link:adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
 four-leg shape) fails the build whenever production code
-calls an outbound TLS-client construction target without, in the same class, calling that target's
+calls an egress TLS-client construction target without, in the same class, calling that target's
 posture method -- `setVerifyHost` on the Vert.x options, `sslContext` or `sslParameters` on a JDK
 client builder, `verifyHostname` on the identity-provider and JWKS builders. It reads calls, not
 values, so a relaxation still satisfies it; whether a relaxation is legitimate stays with the keys on

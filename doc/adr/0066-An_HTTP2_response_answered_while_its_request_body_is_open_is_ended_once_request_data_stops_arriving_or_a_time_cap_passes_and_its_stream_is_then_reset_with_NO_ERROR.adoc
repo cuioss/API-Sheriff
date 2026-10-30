@@ -21,8 +21,8 @@ Accepted
 An HTTP/2 server may answer a request before it has read the request body. An upstream does this when
 it decides from the headers alone. The gateway does it for every answer it writes itself to an
 upload: a problem document, an HTML error page, the portal page, a reserved-path answer, an asset, a
-redirect, a short-circuit, a gRPC trailers-only status, an admission `503`, a framing rejection and a
-reserved-body `413`. RFC 9113 §8.1 permits the server to send the complete response and then reset
+redirect, a short-circuit, a gRPC trailers-only status, an admission `503`, a framing rejection, a
+reserved-body `413`, the WebSocket relay's failed-dial answer and the upgrade refusal it relays. RFC 9113 §8.1 permits the server to send the complete response and then reset
 the stream with `NO_ERROR`. The reset asks the client to stop sending without signalling an error.
 
 A stream left half-open after a complete response puts the decision on the client. A client that
@@ -228,7 +228,7 @@ stream already judged quiet.
 a deployment choice. No operator decision makes a longer hold-back correct, and a configurable cap
 invites trading the property for latency per deployment.
 
-*Reset an admission-refused upload with `REFUSED_STREAM`.* Rejected. The one end rule resets every
+*Reset an admission-rejected upload with `REFUSED_STREAM`.* Rejected. The one end rule resets every
 answered stream whose body is open with `NO_ERROR` and rejects a reset code per case. A separate code
 for one answer would reopen that decision. `REFUSED_STREAM` also does not fit: RFC 9113 §8.7 uses it
 for a stream closed before any processing took place, and a stream answered with a written `503` has

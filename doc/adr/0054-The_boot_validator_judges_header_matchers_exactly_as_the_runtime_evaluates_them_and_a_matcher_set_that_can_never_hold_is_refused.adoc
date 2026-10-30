@@ -141,12 +141,12 @@ Rejected because this is the silent-failure class the matcher semantics exist to
 gateway, a route that never matches means its requests reach a different route with a different
 posture.
 
-*Warn instead of refusing.* Boot with a WARN that names the dead route. Rejected because an
+*Emit a boot WARN instead of refusing.* The boot WARN names the dead route. Rejected because an
 unsatisfiable matcher has no legitimate reading. Unlike a broad but deliberate setting, no deployment
-intends it, so a warning only delays the discovery the refusal forces.
+intends it, so a boot WARN only delays the discovery the refusal forces.
 
 *Let the runtime resolve overlaps by declaration order.* Drop the disjointness certificate and document
-that the first declared route wins. Rejected because the effective routing then depends on file layout
+that the first declared route wins. Rejected because the effective route selection then depends on file layout
 and declaration order across endpoint files. Operators cannot see that at a glance and reviewers
 cannot check it. The route model promises the opposite.
 
@@ -164,13 +164,13 @@ cannot check it. The route model promises the opposite.
 * Operators see their own spelling in every boot diagnostic, while the runtime works on one canonical
   form.
 * A dead route is a boot refusal with a message naming the route and the header, not a quiet gap in
-  routing.
+  route selection.
 
 *Negative.*
 
 * A `present: false` route that used to match requests carrying its header no longer does. This is the
   corrected contract, not a regression, but deployments that relied on the old behaviour change
-  routing.
+  route selection.
 * A configuration that used to boot with a contradictory matcher now fails to boot. The fix is to drop
   `value`, to declare `present: true`, or to remove the contradicting sibling matcher.
 * `Vary` no longer echoes the declared spelling. Field names are case-insensitive, so caches are

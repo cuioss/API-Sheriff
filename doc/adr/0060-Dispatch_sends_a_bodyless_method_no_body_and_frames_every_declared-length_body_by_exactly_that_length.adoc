@@ -195,7 +195,7 @@ upstream's. A gRPC call's `grpc-timeout` header is not honoured.
 
 Every rejection of this record takes the body stream's single abort claim. The first abort to claim
 the stream is the outcome; a later one changes nothing. Each rejection reaches the guard as a gateway
-rejection. The breaker skips it and records it as a success, and the retry predicate refuses it. A
+rejection. The breaker skips it and records it as a success, and the retry predicate does not retry it. A
 bodyless request never subscribes the inbound stream to an attempt, so it stays retryable for as long
 as no body byte has arrived.
 
@@ -206,7 +206,7 @@ per route. `sheriff_errors_total` counts both request-body bounds under
 
 == Alternatives rejected
 
-*Reject at headers time in the framing gate.* Refuse a `GET` or `HEAD` whose HTTP/2 stream did not
+*Reject at headers time in the framing gate.* Reject a `GET` or `HEAD` whose HTTP/2 stream did not
 end together with its headers. Rejected because a client may legally end the stream with an empty
 final DATA frame, so the check would reject conforming requests. It would also decide on absence,
 before the frames that tell a body from an empty end have arrived. The gate's position before route
@@ -328,10 +328,11 @@ for the property.
 * dropping a passed deadline, or leaving the clocks of an ended attempt running;
 * counting only one direction for the gRPC stream-idle bound.
 
-`TerminalDispatchGrpcStreamIdleTest` runs a call through the edge's wiring in `TerminalDispatch`. Two
-steps of that wiring are asserted by no test: that `dispatchGrpc` hands the watched request stream to
-the dispatch, and the fixed five-minute value it builds. `GrpcProxyIT` runs both without asserting
-either (see link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds]).
+`TerminalDispatchGrpcStreamIdleTest` runs a call through `TerminalDispatch.dispatchGrpc`, the overload
+that takes the bound. It covers the hand-off of the watched request stream to the dispatch, and it
+asserts the fixed five-minute value of `GrpcStreamIdleBound.on`. Only the public `dispatchGrpc`'s
+one-line hand-over of that bound to the overload is asserted by no test (see
+link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds]).
 
 == Links
 

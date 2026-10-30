@@ -94,7 +94,7 @@ behaviour cannot diverge.
 *Negative.*
 
 * The framework limit and the declared caps are coupled. Raising a cap above the shipped floor is a
-  two-part change, and doing only half of it is a boot refusal, not a warning.
+  two-part change, and doing only half of it is a boot refusal, not a boot WARN.
 * Every deployment inherits the shipped floor. It must be low enough to be safe and high enough that
   the common case is not a boot refusal.
 

@@ -168,7 +168,7 @@ the canonical path the floor produces. A request whose profile suppressed the fl
 to select a route with, and without a route there is no profile to read. The record states this
 because "make the off switch turn everything off" is the obvious next request.
 
-*Warn instead of refusing `minimal` on authenticated and BFF routes.* This keeps operator autonomy
+*Emit a boot WARN instead of refusing `minimal` on authenticated and BFF routes.* This keeps operator autonomy
 and breaks no configuration. Rejected because a boot WARN on a security posture is a signal nobody
 reads. The deployment serves weakened traffic in the meantime, and the combination has no legitimate
 use that would justify it.

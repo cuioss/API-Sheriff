@@ -107,8 +107,8 @@ noticed. Prose cannot enforce a relationship between two components that never r
 *Collapse validation into a single stage so no relationship exists.* This removes the failure class
 instead of managing it. Rejected because it cannot be built. Route selection must decide on validated
 input, and a route's declared posture must be applied to it. So at least one check must precede route
-selection and at least one must follow it. Deferring all validation until after routing means routing
-on unvalidated input, a strictly worse exposure.
+selection and at least one must follow it. Deferring all validation until after route selection means selecting a
+route on unvalidated input, a strictly worse exposure.
 
 *Make the later stage skip inputs an earlier stage already accepted.* This makes the first decision
 final and needs no shared derivation. Rejected because it discards per-route posture. A route stricter
@@ -122,7 +122,7 @@ write. This failure mode is precisely a stage or a component nobody thought abou
 as controls, but they detect a known instance; they do not prevent the class.
 
 The rejected options fall into two kinds. One kind removes the relationship by removing a capability
-the architecture needs: per-route posture, or validation ahead of routing. The other kind keeps the
+the architecture needs: per-route posture, or validation ahead of route selection. The other kind keeps the
 relationship and relies on someone remembering it. The chosen position keeps both stages and both
 capabilities, and makes the relationship a component with a name.
 
