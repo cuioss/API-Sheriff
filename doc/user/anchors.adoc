@@ -276,7 +276,7 @@ existed: the schema refused both keys there, so no existing endpoint document de
 
 An anchor's `security_headers` block sets the gateway-owned *response* security headers for every
 route under the anchor (decision:
-link:../adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]). It carries the same
+link:../adr/0007-anchor-scoped-policy.adoc#_security_headers_after_route_selection[ADR-0007]). It carries the same
 response-header keys as the global block -- `hsts`, `content_type_nosniff`, `frame_deny`,
 `content_security_policy` and `header_modes` -- and nothing else:
 

@@ -151,7 +151,7 @@ The framework-bound edge layer (`de.cuioss.sheriff.gateway.edge`) is split into 
 (link:../adr/0068-The_edge_is_split_into_acyclic_sub-packages_beneath_a_thin_GatewayEdgeRoute.adoc[ADR-0068]).
 `arch.EdgeSubPackageArchTest` enforces the top-down dependency DAG and forbids any sub-package from
 depending on the root
-(link:../adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]).
+(link:../development/test-corpus-integrity.adoc#fitness-function-shape[Comment-Only Invariants Become Fitness Functions]).
 Each class logs under its own class name (see link:../LogMessages.adoc[Log Messages]).
 
 image::../resources/diagrams/edge-package-layers.svg[Edge package layered dependency architecture and ArchUnit fitness function, align=center]

@@ -210,7 +210,8 @@ cause it. So the job reports the dirty set and the recipe attribution and leaves
 the author. A genuine Maven or tooling failure still turns the check red; only the dirty verdict is
 non-gating.
 
-The condition under which the ADR-0030 fitness-function shape becomes the right call is a fixed
+The condition under which the
+link:test-corpus-integrity.adoc#fitness-function-shape[fitness-function shape] becomes the right call is a fixed
 point that is *held* rather than merely observed: once drift is caught and corrected by the change
 that introduces it, a positively-phrased "the tree is clean after the rewriting gate" assertion
 stops being a blanket blocker and becomes an invariant worth asserting.

@@ -916,8 +916,7 @@ On the *control plane* (B4 -- OIDC discovery/JWKS/token), `token-sheriff-validat
 initial fetch and every refresh (DNS-rebinding-safe), and it is widened only host by host, through
 the library's own `allowedEgressHost` seam. The gateway feeds that seam from the per-issuer
 `token_validation.issuers[].jwks.allowed_egress_hosts` list in `gateway.yaml`, in one of two forms
-(link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a1[ADR-0011
-Amendment A1]):
+(link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#_derived_egress_allowance[ADR-0011]):
 
 * *Absent or empty -- derived.* The gateway passes exactly one host: the host of the issuer's own
   `jwks.url`, port dropped. An `http` issuer whose `jwks.url` names no host is refused at boot
@@ -936,7 +935,7 @@ nothing else: certificate trust is unchanged, so chain validation and hostname v
 deliberately in exchange for a private IdP working without a second declaration of a host the
 configuration already carries. `EgressPolicy.secureDefault()` itself is unchanged upstream; the
 gateway passes one host through the library's seam, so this is not a local reversal of an upstream
-tightening (link:adr/0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+tightening (link:technical_aspects.adoc#_upstream_security_default_changes[Adopting Upstream Security-Default Changes]).
 
 *Residual.* No dedicated key restores the no-exemption posture for an `http` issuer. An operator who
 wants a narrower allowance declares an explicit list, which is authoritative -- naming a host other
@@ -1224,7 +1223,7 @@ built in `BffRuntimeProducer` -- what `DiscoveryResolver`, `ParClient`, the toke
 by default, the client secret under `client_secret_basic` when one is configured) -- now receives
 `egress_tls.oidc_verify_hostname` on every build, so the posture is the gateway's and an upstream
 default change cannot move it
-(link:adr/0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+(link:technical_aspects.adoc#_upstream_security_default_changes[Adopting Upstream Security-Default Changes]).
 A named `egress_tls.oidc_tls_profile` supplies the leg's trust through the four fail-closed
 refusals the JWKS profiles use -- an unbound name, a `trust-all` profile, an anchor-free profile and
 unloadable material each fail boot naming `egress_tls.oidc_tls_profile`. The observables are the two
@@ -1916,7 +1915,7 @@ side. No gateway-product CVE is cited for this entry: the surface is new in API 
 entry is recorded from the parser behaviour before it ships rather than after.
 
 *Control.* The `redirect` terminal action
-(link:adr/0014-asset-serving-terminal-action.adoc#amendment-a1[ADR-0014 Amendment A1]) takes no
+(link:adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]) takes no
 target from the request: `location` is fixed configuration, written verbatim, with no placeholder --
 only the raw query is appended under `keep_query`. The configuration validator reviews every
 `location` *once, at boot*, and refuses the boot rather than serving a doubtful value:
@@ -2056,7 +2055,7 @@ tied to a single CVE; both are configuration-shaped, which is why the control is
 inherited.
 
 *Control.* Two decisions, each explicit rather than implied
-(link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]):
+(link:adr/0007-anchor-scoped-policy.adoc#_security_headers_after_route_selection[ADR-0007]):
 
 * *Origin precedence is `set` by default.* A gateway-owned header overwrites the origin's value
   unless the block's `header_modes` names that header `default`, and an omitted `header_modes` block
@@ -2275,7 +2274,8 @@ admission pool; a full sub-budget answers the held response `503` no earlier tha
 time, alike for every held answer, and one source tripped under `delay` is held to its share of the
 sub-budget. The floor is measured: `EnumerationOracleIT` probes eight pre-trust paths a caller can drive on
 the integration stack, the bearer-token paths among them, and asserts the overrun meter did not move
-(ADR-0073 Amendment A1 lists them). The true
+(link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+lists them). The true
 event is still reported -- the event counter, the WARN and INFO lines and
 `sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is not shown. One
 switch, `security_defaults.uniform_not_found`, governs the branch and the floor and is on by default
@@ -2565,7 +2565,8 @@ exactly when a key set is loaded, which also repairs the library's re-admission 
 status token and the bounded counts `issuers` / `issuers_loaded`, never an issuer name, URL or host --
 so an orchestrator holds traffic back from an instance that would reject every bearer token. A BFF
 deployment adds the fixed tokens `oidc=<mode>` and `oidc_discovery` (`not-attempted`, `resolved` or
-`failed`); they never change the verdict, and the payload still discloses no issuer, URL or cause.
+`failed`); they never change the verdict, and the payload still discloses no issuer, URL or cause
+(link:adr/0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]).
 A failed load is retried after 1 s, doubling per attempt and capped at 30 s (never above the refresh
 interval), driven by a scheduler only: neither bearer requests nor the readiness probe can trigger a
 fetch, and at most one attempt is in flight per issuer, so the retry cannot be turned into a fetch
@@ -4037,7 +4038,7 @@ outstanding hardening work (next section).
 | <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1 and HTTP/2, the h2->h1 declared-length framing included; the upstream reset is pinned against an HTTP/1.1 upstream only)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
-| <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED
+| <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on the mapped egress TLS clients) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
@@ -4048,10 +4049,10 @@ outstanding hardening work (next section).
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs; upstream `Server` / `X-Powered-By` stripped by default with a per-route opt-out; no version string on gateway errors | cui-http + token-sheriff mappers + gateway error contract + `UpstreamIdentityHeaders` (ADR-0037) | PARTIAL
-| <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
-| <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
+| <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014) | COVERED
+| <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007) | COVERED
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
-| <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` on the floor's release time when it is full, one tripped source held to its share; the floor measured against eight caller-drivable pre-trust paths, the bearer-token paths among them, and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 Amendment A1 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
+| <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` on the floor's release time when it is full, one tripped source held to its share; the floor measured against eight caller-drivable pre-trust paths, the bearer-token paths among them, and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED

@@ -323,7 +323,8 @@ were not observed on a running stack:
   that the gateway's bearer routes accept a bound token presented without a proof.
 * *Plain HTTP stays refused.* The engine refuses a non-`https` issuer and a non-`https` back-channel
   endpoint unless its insecure-HTTP flag is set. The gateway never sets it and gains no key that
-  would, in line with ADR-0022.
+  would, in line with
+  link:../technical_aspects.adoc#_upstream_security_default_changes[Adopting Upstream Security-Default Changes].
 * *An omitted `oidc.issuer`.* It resolves to the gateway's own origin for discovery and for the
   assertion audience alike, which cannot authenticate against any identity provider. This is
   existing behaviour and is unchanged.

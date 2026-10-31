@@ -203,8 +203,8 @@ the unrouted `404`
   counter and on `sheriff_errors_total{event}`, with its stack trace at `DEBUG` and no `WARN`, since
   any caller that can craft the failing input reaches it. It carries no per-source detection weight
   (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]): an operator-side
-  failure is not caller behaviour. Every other unexpected failure keeps the opaque `500` (ADR-0073
-  Amendment A1).
+  failure is not caller behaviour. Every other unexpected failure keeps the opaque `500`
+  (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#_pre_trust_internal_failure[ADR-0073]).
 
 [cols="1,3", options="header"]
 |===
@@ -236,7 +236,9 @@ the unrouted `404`
   (link:README.adoc#_edge_package_structure[Edge Package Structure], the `admission` row). Both values
   are fixed constants. The floor is measured: `EnumerationOracleIT` probes eight caller-drivable
   pre-trust paths on the integration stack, the bearer-token paths among them, and asserts that the
-  overrun meter does not move (ADR-0073 Amendment A1 lists them). Setting
+  overrun meter does not move
+  (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+  lists them). Setting
   `security_defaults.uniform_not_found: false` restores honest statuses and undelayed `404` responses
   (see link:../configuration.adoc#_security_defaults[Configuration -- `security_defaults`]).
 
@@ -409,8 +411,8 @@ which downgrades both health and metrics on that single port and logs `WARN ApiS
 the management port. Readiness (`GatewayReadinessCheck`; the token-validation extension's own health
 probes are excluded per ADR-0074) reflects the validated configuration and -- where a `token_validation`
 block is configured -- whether *every configured issuer has a loaded key set*
-(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
-Amendment A1]). While any issuer lacks a key set, readiness reports `DOWN` with `jwks: loading` or
+(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027]).
+While any issuer lacks a key set, readiness reports `DOWN` with `jwks: loading` or
 `jwks: unavailable` and bounded `issuers` / `issuers_loaded` counts; once every issuer has loaded keys,
 it reports `UP` with `jwks: ready` (retaining `UP` across subsequent refresh failures; see
 link:../configuration.adoc#_jwks_readiness[Key-set loading and readiness]). Failed initial loads retry
@@ -423,7 +425,8 @@ or not it configures `token_validation` and whether the probe is `UP` or `DOWN`.
 `resolved` when the most recent attempt produced it, and `failed` when the most recent attempt threw.
 A failed attempt is not memoised, so the next engine use tries again. The probe reads the datum from a
 *non-fetching* view and sends no network request of its own. A deployment without an active BFF
-runtime emits neither datum, and `oidc_discovery` never changes the `UP`/`DOWN` verdict.
+runtime emits neither datum, and `oidc_discovery` never changes the `UP`/`DOWN` verdict
+(link:../adr/0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]).
 
 Health payloads report *state tokens only, never cause* (never exposing issuer URLs, internal
 hostnames, TLS paths, or exception messages); full failure details are logged via `WARN ApiSheriff-116`.

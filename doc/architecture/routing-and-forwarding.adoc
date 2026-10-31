@@ -15,7 +15,7 @@ action*: a proxied `upstream`, a served `asset` (see
 link:terminal-actions-and-protocols.adoc#_asset_terminal_action[Asset Terminal Action]) or a
 gateway-answered `redirect` (see
 link:terminal-actions-and-protocols.adoc#_redirect_terminal_action[Redirect Terminal Action];
-link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014] + Amendment A1).
+link:../adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]).
 
 image::../resources/diagrams/route-matching-and-policy-resolution.svg[Route table matching order, the allowed_methods verb gate, terminal actions and nearest-scope policy block resolution, align=center]
 
@@ -32,7 +32,8 @@ The endpoint `base_url` alias is resolved only for an endpoint carrying at least
 validation cannot disagree about which endpoints owe a `base_url`.
 
 Only routes of *enabled* endpoints enter the table: an endpoint switched off by its resolved
-`enabled` value (file literal or `${ENDPOINT_<ID>_ENABLED:-...}` placeholder, ADR-0004 A1)
+`enabled` value (file literal or `${ENDPOINT_<ID>_ENABLED:-...}` placeholder,
+link:../adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004])
 contributes nothing and its paths fall through to `404` (see
 link:../configuration.adoc#_endpoint_identity[Configuration -- `endpoint`]).
 
@@ -180,7 +181,7 @@ route to declare a non-empty `websocket.allowed_origins`, enforced by `OriginVal
 
 The gateway owns four response security headers -- `Strict-Transport-Security`,
 `X-Content-Type-Options`, `X-Frame-Options` and `Content-Security-Policy` -- and applies them at two
-fixed positions (link:../adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]):
+fixed positions (link:../adr/0007-anchor-scoped-policy.adoc#_security_headers_after_route_selection[ADR-0007]):
 
 * *Stage 0* seeds the *global* block and owns CORS (`Access-Control-Allow-*` headers and the `204`
   preflight short-circuit, which stays global because preflights are answered before route selection

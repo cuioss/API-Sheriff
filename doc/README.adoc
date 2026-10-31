@@ -174,7 +174,7 @@ per-source detection substrate (link:development/source-detection-substrate.adoc
 
 | link:adr/0004-topology-indirection.adoc[ADR-0004]
 | Configuration layout: portable endpoint files reference `base_url` aliases resolved by
-  `topology.properties`; a single URL per alias. Amendment A1: env override expressed as a
+  `topology.properties`; a single URL per alias. An environment override is expressed as a
   visible in-file `${TOPOLOGY_<ALIAS>:-default}` placeholder, not a convention-named lookup.
 
 | link:adr/0005-module-structure.adoc[ADR-0005]
@@ -200,7 +200,7 @@ per-source detection substrate (link:development/source-detection-substrate.adoc
   conditional pass-through, gating both halves of the exchange on one flag -- with it off, the
   two `304` validators `If-None-Match` / `If-Modified-Since` are withheld from `GET` and `HEAD`
   and the `ETag` / `Last-Modified` that answer them are stripped, while `If-Match`,
-  `If-Unmodified-Since` and `If-Range` always cross (Amendment A1,
+  `If-Unmodified-Since` and `If-Range` always cross (see
   link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]);
   `cui-http`'s client stack is control-plane only.
 
@@ -222,9 +222,9 @@ per-source detection substrate (link:development/source-detection-substrate.adoc
   egress and TLS trust as framework-neutral names (`allowed_egress_hosts`, `tls_profile`) that carry
   no trust material; exactly one mapping component binds a logical trust-profile name to concrete
   runtime trust anchors, and config stays neutral while startup diagnostics name the concrete
-  runtime key. Amendment A1: an absent or empty `allowed_egress_hosts` derives the `jwks.url` host
+  runtime key. An absent or empty `allowed_egress_hosts` derives the `jwks.url` host
   as the egress allowance, while a declared list stays authoritative and is never merged with it.
-  Amendment A2: the library's refresh interval and key-rotation grace period are exposed as the
+  The library's refresh interval and key-rotation grace period are exposed as the
   neutral keys `jwks.refresh_interval_seconds` and `jwks.key_rotation_grace_period_seconds`
   (link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
   *(Status: accepted.)*
@@ -324,7 +324,9 @@ per-source detection substrate (link:development/source-detection-substrate.adoc
   nothing this gateway does. No `sheriff.token.issuers.*` projection is introduced and the extension
   dependency stays. Supersedes
   link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027],
-  whose live per-issuer key-set readiness (Amendment A1) carries forward unchanged.
+  whose live per-issuer key-set readiness
+  (link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[Readiness carries a live per-issuer key-set read])
+  carries forward unchanged.
   *(Status: accepted.)*
 |===
 
