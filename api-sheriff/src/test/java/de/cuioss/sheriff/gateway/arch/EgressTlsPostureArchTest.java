@@ -59,7 +59,8 @@ import org.junit.jupiter.api.Test;
  * <strong>Why an implicit default is a defect here.</strong> Each outbound leg's hostname-verification
  * and trust posture is a security property of the gateway. Where a construction site sets nothing, that
  * property rests on whatever the client library defaults to today, and an upstream default change moves
- * it silently (ADR-0022). The {@code egress_tls} legs are pinned for that reason (ADR-0040, ADR-0041,
+ * it silently ({@code doc/technical_aspects.adoc}, "Adopting Upstream Security-Default Changes"). The
+ * {@code egress_tls} legs are pinned for that reason (ADR-0040, ADR-0041,
  * ADR-0045), and the asset-origin JDK client pins the JVM default context for the same reason. What no
  * reviewer can hold in place by reading is the <em>next</em> leg: a seventh client built without its
  * posture would pass every existing test. This rule is that standing check.
@@ -84,7 +85,8 @@ import org.junit.jupiter.api.Test;
  * it negotiates no TLS (ADR-0017), and {@code TlsEdgeProducer} is kept as the matched near-miss proving
  * the rule does not reach it.
  * <p>
- * <strong>Four legs, per ADR-0030.</strong>
+ * <strong>Four legs, per "Comment-Only Invariants Become Fitness Functions" in
+ * {@code doc/development/test-corpus-integrity.adoc}.</strong>
  * <ol>
  *   <li><em>Non-vacuity</em> — the production selection resolves, and every mapped family that has a
  *       production site today resolves at least one construction call. A property rather than a frozen
@@ -207,7 +209,8 @@ class EgressTlsPostureArchTest {
                 .should(passAnExplicitPostureToEveryEgressTlsClientItConstructs())
                 .because("a client built without its posture inherits the library's TLS default, and an "
                         + "upstream default change would then move the gateway's hostname or trust "
-                        + "posture silently (ADR-0022)");
+                        + "posture silently (doc/technical_aspects.adoc, \"Adopting Upstream "
+                        + "Security-Default Changes\")");
 
         rule.check(PRODUCTION_CLASSES);
     }

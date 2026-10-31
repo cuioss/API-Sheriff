@@ -72,8 +72,9 @@ import org.xml.sax.InputSource;
  * and it is calibrated against the compiled catalogues of this module: for the host module it must
  * read exactly the records a reflection walk over the compiled classes collects.
  * <p>
- * <strong>Controls</strong> (ADR-0030). The populations are asserted non-empty as properties, never
- * as equality with today's membership, and the reader and both rules are driven with in-memory
+ * <strong>Controls</strong> ("Comment-Only Invariants Become Fitness Functions" in
+ * {@code doc/development/test-corpus-integrity.adoc}). The populations are asserted non-empty as
+ * properties, never as equality with today's membership, and the reader and both rules are driven with in-memory
  * specimen catalogues they must reject or accept.
  *
  * @author API Sheriff Team

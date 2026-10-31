@@ -1245,7 +1245,7 @@ class ConfigLoaderTest {
                                     bogus_key: true
                                 """,
                         "/anchors/api"),
-                // ADR-0007 Amendment A1: CORS is evaluated before route selection, so an anchor can never
+                // ADR-0007: CORS is evaluated before route selection, so an anchor can never
                 // scope it. The anchor security_headers schema therefore carries only the response
                 // security headers, and a cors block there fails the boot at load rather than being
                 // accepted and ignored.

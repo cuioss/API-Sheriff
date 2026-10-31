@@ -80,7 +80,8 @@ import org.xml.sax.SAXException;
  * reads source text, not bytecode: it sees a class that creates a Vert.x instance itself, not one
  * that is handed an instance by a helper.
  * <p>
- * <strong>Controls</strong> (ADR-0030). The populations every rule selects are asserted non-empty
+ * <strong>Controls</strong> ("Comment-Only Invariants Become Fitness Functions" in
+ * {@code doc/development/test-corpus-integrity.adoc}). The populations every rule selects are asserted non-empty
  * before the rule runs. Each detector is driven with a deliberately wrong specimen it must reject and
  * a correct one it must accept. Real near-misses are asserted to keep their near-miss property and
  * to stay unselected. The specimens are strings in this file, and this file is excluded from the

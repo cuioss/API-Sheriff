@@ -68,7 +68,8 @@ import org.junit.jupiter.api.Test;
  * exists, without this file being edited. Both are written as methods over a root so the specimen
  * root can be run through exactly the same rule as production.
  * <p>
- * <strong>Four legs, per ADR-0030.</strong>
+ * <strong>Four legs, per "Comment-Only Invariants Become Fitness Functions" in
+ * {@code doc/development/test-corpus-integrity.adoc}.</strong>
  * <ol>
  *   <li><em>Non-vacuity</em> — at least two slices resolve, at least one sub-package of the root is
  *       declared, every declared sub-package still resolves to at least one class other than its

@@ -1138,8 +1138,8 @@ class LoopbackEphemeralBindArchTest {
         }
 
         /**
-         * The non-vacuity leg for the per-site exemption (ADR-0030 fitness-function shape). The
-         * same condition, run <em>without</em> any exemption against {@code TlsEdgeProducerTest} and
+         * The non-vacuity leg for the per-site exemption (the fitness-function shape of
+         * {@code doc/development/test-corpus-integrity.adoc}). The same condition, run <em>without</em> any exemption against {@code TlsEdgeProducerTest} and
          * its nested classes, must report exactly the code units {@link #WILDCARD_SITE_EXEMPTIONS}
          * names — no more, no fewer.
          * <p>
