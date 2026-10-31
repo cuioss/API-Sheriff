@@ -204,9 +204,10 @@ concern-class method directly. That is deliberate: a rule that is written but dr
 `DEFAULT_RULES` -- or registered with the wrong arguments -- then fails its own tests, while a test
 of the bare method would stay green over a rule that never runs.
 
-`ConfigValidatorTest` holds the orchestration cases only: a well-formed configuration passes, the
-structural `TRACE` and `CONNECT` rejection, and the single-pass aggregation of violations from
-several rules. A rule's own cases never go there.
+`ConfigValidatorTest` holds the orchestration cases only: a well-formed configuration passes, and
+the single-pass aggregation of violations from several rules. A rule's own cases never go there.
+The structural `TRACE` and `CONNECT` rejection is a property of the `HttpMethod` model, not of a rule
+or of the validator, and `ConfigModelContractTest` asserts it.
 
 == Constraints every rule keeps
 
