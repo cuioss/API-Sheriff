@@ -15,19 +15,19 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.topologyWith;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.validGateway;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
@@ -49,23 +49,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 class AssetDefaultsRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
-
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static ResolvedTopology topologyWith() {
-        return new ResolvedTopology(Map.of());
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
 
     @Nested
     @DisplayName("The add-only 'asset_defaults.content_types' boot refusal")
@@ -198,7 +181,8 @@ class AssetDefaultsRulesTest {
                 "text/plain; charset=utf-8",
                 "application/vnd.api+json",
                 "font/collection",
-                "application/x-7z-compressed"})
+                "application/x-7z-compressed",
+                "multipart/form-data; boundary=abc123; charset=utf-8"})
         @DisplayName("Should accept a well-formed media type, with or without parameters")
         void shouldAcceptWellFormedMediaType(String value) {
             List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
@@ -215,7 +199,8 @@ class AssetDefaultsRulesTest {
                 "application/",
                 "/json",
                 "text/plain; charset",
-                "text/plain extra"})
+                "text/plain extra",
+                "text/plain\n"})
         @DisplayName("Should refuse a value that is not a 'type/subtype' media type")
         void shouldRefuseMalformedValue(String value) {
             List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
@@ -237,24 +222,15 @@ class AssetDefaultsRulesTest {
         }
 
         @Test
-        @DisplayName("Should refuse a CR/LF-bearing value — the response-header-injection shape")
-        void shouldRefuseHeaderInjectionValue() {
-            String injected = "text/plain\r\nX-Injected: 1";
-
-            List<ConfigError> errors = validator.validate(gatewayWithValue(injected), List.of(), topologyWith());
-
-            assertEquals(1, valueErrors(errors).size(),
-                    () -> "a CR/LF-bearing value never reaches a response header, got: " + errors);
-        }
-
-        @Test
         @DisplayName("Should escape the echoed value, so the refusal cannot forge a line in the boot ERROR log")
         void shouldNotEchoRawControlCharacters() {
             String injected = "text/plain\r\nX-Injected: 1";
 
             List<ConfigError> errors = validator.validate(gatewayWithValue(injected), List.of(), topologyWith());
 
-            ConfigError refusal = valueErrors(errors).getFirst();
+            List<ConfigError> refusals = valueErrors(errors);
+            assertEquals(1, refusals.size(), () -> "a CR/LF-bearing value never reaches a response header, got: " + errors);
+            ConfigError refusal = refusals.getFirst();
             assertAll(
                     () -> assertFalse(refusal.message().contains("\r"),
                             () -> "a raw CR would forge a log line: " + refusal.message()),
@@ -262,27 +238,6 @@ class AssetDefaultsRulesTest {
                             () -> "a raw LF would forge a log line: " + refusal.message()),
                     () -> assertTrue(refusal.message().contains("\\u000D\\u000A"),
                             () -> "the operator still sees what they typed, escaped: " + refusal.message()));
-        }
-
-        @Test
-        @DisplayName("Should refuse a trailing newline an '^...$'-anchored regex would have admitted")
-        void shouldRefuseTrailingNewline() {
-            List<ConfigError> errors = validator.validate(gatewayWithValue("text/plain\n"), List.of(),
-                    topologyWith());
-
-            assertEquals(1, valueErrors(errors).size(),
-                    () -> "the match is whole-input, so a trailing newline is refused, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should accept a media type carrying several parameters")
-        void shouldAcceptSeveralParameters() {
-            String value = "multipart/form-data; boundary=abc123; charset=utf-8";
-
-            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
-
-            assertTrue(valueErrors(errors).isEmpty(),
-                    () -> "a multi-parameter media type is well-formed, got: " + errors);
         }
 
         /**
