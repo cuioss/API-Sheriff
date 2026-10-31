@@ -374,7 +374,7 @@ fi
 
 # Bring up Keycloak FIRST and wait until it is READY before starting the gateway. The api-sheriff
 # native app starts loading the Keycloak issuers' JWKS at boot and reports readiness DOWN until every
-# issuer's key set has loaded (ADR-0027 Amendment A1). A gateway started before Keycloak answers
+# issuer's key set has loaded (ADR-0027). A gateway started before Keycloak answers
 # retries the fetch on a bounded backoff (1 s doubling, capped at 30 s), so it recovers — but the
 # layer-2 readiness assertion below is a SINGLE SHOT taken right after the gateways report healthy,
 # and a key set still waiting out a backoff at that moment fails it. Gating the gateway start on a

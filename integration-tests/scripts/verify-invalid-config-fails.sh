@@ -22,7 +22,7 @@
 #      path that does not exist), which aborts boot from the ADR-0027 eager-assembly seam
 #      (a boot refusal — distinct from readiness DOWN, which a merely late IdP produces);
 #   8. an open redirect (a redirect route whose location is an external absolute URI while
-#      allow_external is off), refused by the ADR-0014 Amendment A1 open-redirect review;
+#      allow_external is off), refused by the ADR-0014 open-redirect review;
 #   9. auth.session_fallback: true on a require: session route, refused by the ConfigValidator
 #      session_fallback rule because the key only splits a bearer posture;
 #  10. require: bearer + auth.session_fallback: true on a gateway that declares token_validation but
@@ -485,7 +485,7 @@ assert_fails_to_boot "${MINIMAL_BFF_DIR}" "profile 'minimal' on a type: bff rout
 # throws here, so a gateway that cannot build a validator refuses to run at all rather than
 # deferring the failure to the first bearer request.
 #
-# Keep that distinct from what READINESS now reports. Since ADR-0027 Amendment A1, readiness is DOWN
+# Keep that distinct from what READINESS reports. Per ADR-0027, readiness is DOWN
 # while an issuer's key set has not loaded yet — an HTTP issuer whose IdP is merely late boots,
 # reports DOWN and retries. This case is the other kind of failure: a configuration the gateway can
 # never serve, which must stop the process rather than leave it running DOWN.
@@ -545,7 +545,7 @@ chmod 644 "${JWKS_UNRESOLVABLE_DIR}/gateway.yaml" "${JWKS_UNRESOLVABLE_DIR}/topo
 assert_fails_to_boot "${JWKS_UNRESOLVABLE_DIR}" "an unresolvable JWKS source" \
     "Cannot read JWKS file" "${MGMT_PROBE_PORT}"
 
-# Case 8: an open redirect (ADR-0014 Amendment A1). A redirect route whose location is an external
+# Case 8: an open redirect (ADR-0014). A redirect route whose location is an external
 # absolute URI is refused at boot unless the route opts in with allow_external: true — a location
 # that leaves the gateway origin is exactly the lever an open-redirect phish needs, so it is never
 # admitted by default. The endpoint carries only this redirect route and therefore needs no base_url

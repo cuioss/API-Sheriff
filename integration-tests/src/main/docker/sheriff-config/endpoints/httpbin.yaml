@@ -18,7 +18,7 @@
 # upstream at all. Each route below states which mode it resolves and why, because the
 # mode is selected by what the YAML does NOT say and is therefore invisible otherwise.
 #
-# UPSTREAM PATHS — upstream.path APPENDS to the alias base path (ADR-0004 Amendment A2):
+# UPSTREAM PATHS — upstream.path APPENDS to the alias base path (ADR-0004):
 # forward URI = alias base path + upstream.path + remainder-after-match-key. The UPSTREAM alias
 # already carries go-httpbin's /anything echo base, so a route declaring upstream.path: /graphql
 # reaches /anything/graphql — each route names only its own path segment, never the /anything
