@@ -15,18 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -86,6 +75,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
+
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -903,20 +893,6 @@ class BffRuntimeProducerTest {
                                 () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, status.state(),
                                         "assembly resolves no provider metadata"));
                     }));
-        }
-
-        @Test
-        @DisplayName("producing the view first builds no runtime and resolves nothing; the runtime then records into it")
-        void theViewIsTheOneTheRuntimeRecordsInto() {
-            BffRuntimeProducer producer = producer(serverModeOidc());
-
-            DiscoveryStatus before = producer.discoveryStatus();
-            producer.bffRuntime();
-            DiscoveryStatus after = producer.discoveryStatus();
-
-            assertAll("one view per producer, whichever producer method runs first",
-                    () -> assertSame(before, after, "the readiness probe and the runtime share one view"),
-                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, after.state()));
         }
 
         @Test
@@ -2669,6 +2645,32 @@ class BffRuntimeProducerTest {
                     () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
                             "the login is what fetched the discovery document"),
                     () -> assertEquals(DiscoveryStatus.State.RESOLVED, producer.discoveryStatus().state()));
+        }
+
+        /**
+         * The readiness probe may obtain the view before anything builds the runtime, so the instance read
+         * first has to be the one a later login records into. Read through that first instance, the case
+         * fails when the runtime's discovery supplier stops recording, and when the two producer methods
+         * stop sharing one view.
+         */
+        @Test
+        @DisplayName("producing the view first builds no runtime and resolves nothing; the runtime then records into it")
+        void theViewIsTheOneTheRuntimeRecordsInto() {
+            BffRuntimeProducer producer = stubProducer(stubOidc().build());
+            DiscoveryStatus view = producer.discoveryStatus();
+            DiscoveryStatus.State beforeTheRuntime = view.state();
+            int discoveriesBeforeTheRuntime = stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size();
+            BffRuntime runtime = producer.bffRuntime();
+
+            BffRuntime.ReservedHttpResponse answer = login(runtime, "/");
+
+            assertAll("one view per producer, whichever producer method runs first",
+                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, beforeTheRuntime,
+                            "producing the view resolves nothing"),
+                    () -> assertEquals(0, discoveriesBeforeTheRuntime, "producing the view asks the stub for nothing"),
+                    () -> assertEquals(302, answer.status(), "precondition: the login went through"),
+                    () -> assertEquals(DiscoveryStatus.State.RESOLVED, view.state(),
+                            "the view read before the runtime existed shows what the runtime's login recorded"));
         }
 
         @Test

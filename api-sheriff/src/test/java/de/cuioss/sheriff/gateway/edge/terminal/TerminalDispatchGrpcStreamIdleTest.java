@@ -15,10 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge.terminal;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -28,6 +25,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -45,6 +43,7 @@ import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
 import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
+import de.cuioss.sheriff.gateway.edge.relay.GrpcStreamIdleBounds;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
 import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
@@ -223,7 +222,7 @@ class TerminalDispatchGrpcStreamIdleTest {
     void onBuildsTheFixedFiveMinuteBound() {
         ResponseStage.GrpcStreamIdleBound bound = ResponseStage.GrpcStreamIdleBound.on(vertx);
 
-        assertEquals(TimeUnit.MINUTES.toMillis(5), bound.timeoutMillis(),
+        assertEquals(TimeUnit.MINUTES.toMillis(5), GrpcStreamIdleBounds.timeoutOf(bound),
                 "the stream-idle bound of every gRPC call is the fixed five minutes, reached by no configuration");
     }
 
