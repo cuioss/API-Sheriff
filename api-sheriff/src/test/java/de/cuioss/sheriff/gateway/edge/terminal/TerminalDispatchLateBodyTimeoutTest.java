@@ -15,10 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge.terminal;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -34,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -55,7 +53,6 @@ import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
 import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
-import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.forward.ForwardPolicyStage;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
@@ -79,12 +76,15 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
@@ -116,8 +116,10 @@ import org.junit.jupiter.api.Test;
  * loop, so it touches only the synchronized retired set; the failed relay's end learns of it from the
  * late refusal's event, and neither side writes the request's context data from an event loop or reads
  * a retirement mark from it. {@link ThroughTheDispatchPath} drives that through the dispatch path
- * itself, over a live stub upstream and an observed routing context; the HTTP/2 counterparts and the
- * marked-request case drive the retirement calls against fakes.
+ * itself, on HTTP/1.x and on prior-knowledge HTTP/2, over a live stub upstream and an observed routing
+ * context. The marked-request case alone drives the retirement call against fakes, because no dispatch
+ * can reach it: the mark is left only by {@code ConnectionRetirement.markFramingRejection}, whose two
+ * callers both rethrow the rejection, so a marked request never starts a relay that could fail.
  */
 @DisplayName("TerminalDispatch — the connection close and the answer after a request body outlived its deadline")
 @Tag("isolated-fork")
@@ -200,34 +202,11 @@ class TerminalDispatchLateBodyTimeoutTest {
     }
 
     @Test
-    @DisplayName("HTTP/2 — a late request-body timeout retires no connection: only the stream ends")
-    void lateTimeoutOnHttp2RetiresNothing() {
-        RetiringExchange exchange = new RetiringExchange(HttpVersion.HTTP_2, false);
-        ConnectionRetirement retirement = new ConnectionRetirement(new FramingGate(false));
-
-        retirement.recordRetirement(exchange.routingContext());
-
-        assertFalse(retirement.isRetired(exchange.connection()), "an HTTP/2 connection is never retired");
-    }
-
-    @Test
-    @DisplayName("HTTP/2 — a late request-body timeout closes no connection at the failed relay's end")
-    void failedRelayAfterLateTimeoutOnHttp2ClosesNothing() {
-        RetiringExchange exchange = new RetiringExchange(HttpVersion.HTTP_2, false);
-
-        TerminalDispatch.retireFailedRelayConnection(exchange.routingContext(), EventType.REQUEST_BODY_TIMEOUT);
-
-        assertAll("a late request-body timeout on an HTTP/2 stream",
-                () -> assertEquals(List.of(), exchange.connectionHeaders, "no Connection header on HTTP/2"),
-                () -> assertEquals(0, exchange.endHandlers.size(), "no close is tied to the end of the stream"));
-    }
-
-    @Test
     @DisplayName("any other relay failure retires the connection only where an earlier rejection marked the request")
     void otherFailureRetiresOnlyAMarkedRequest() {
-        RetiringExchange marked = new RetiringExchange(HttpVersion.HTTP_1_1, false);
+        RetiringExchange marked = new RetiringExchange();
         marked.markedForRetirement = true;
-        RetiringExchange unmarked = new RetiringExchange(HttpVersion.HTTP_1_1, false);
+        RetiringExchange unmarked = new RetiringExchange();
 
         TerminalDispatch.retireFailedRelayConnection(marked.routingContext(), null);
         marked.endHandlers.forEach(handler -> handler.handle(null));
@@ -240,10 +219,11 @@ class TerminalDispatchLateBodyTimeoutTest {
     }
 
     /**
-     * The late request-body timeout of a proxied HTTP/1.1 upload, run through
-     * {@link TerminalDispatch#dispatchAndRelay} against a live stub upstream that answers at once, with a
-     * request body that trickles past a short request-body deadline: the late refusal, the retirement it
-     * records and the failed relay that follows are the dispatch path's own, not called by the cases.
+     * The late request-body timeout of a proxied upload, on HTTP/1.1 and on prior-knowledge HTTP/2, run
+     * through {@link TerminalDispatch#dispatchAndRelay} against a live stub upstream that answers at once,
+     * with a request body that trickles past a short request-body deadline: the late refusal, the
+     * retirement it records and the failed relay that follows are the dispatch path's own, not called by
+     * the cases.
      * <p>
      * The routing context the dispatch is handed delegates to the real one and observes it: every
      * context-data write made from an event-loop thread — the late callback runs on the upstream
@@ -257,7 +237,7 @@ class TerminalDispatchLateBodyTimeoutTest {
      * the deadline ends it.
      */
     @Nested
-    @DisplayName("HTTP/1.x — a late request-body timeout through the dispatch path")
+    @DisplayName("a late request-body timeout through the dispatch path")
     class ThroughTheDispatchPath {
 
         private static final long IDLE_TIMEOUT_MILLIS = 300L;
@@ -282,6 +262,7 @@ class TerminalDispatchLateBodyTimeoutTest {
         private HttpServer upstreamServer;
         private HttpServer frontServer;
         private HttpClient upstreamClient;
+        private HttpClient http2Client;
         private NetClient netClient;
         private ConnectionRetirement connectionRetirement;
         private TerminalDispatch terminalDispatch;
@@ -306,10 +287,13 @@ class TerminalDispatchLateBodyTimeoutTest {
                     .requestHandler(front)
                     .listen(0, LoopbackHost.ADDRESS), "the front server to start listening");
             netClient = vertx.createNetClient();
+            http2Client = vertx.createHttpClient(new HttpClientOptions()
+                    .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
         }
 
         @AfterEach
         void tearDown() throws Exception {
+            Awaits.teardown(http2Client.close(), "the HTTP/2 client to close");
             Awaits.teardown(netClient.close(), "the raw TCP client to close");
             Awaits.teardown(upstreamClient.close(), "the upstream client to close");
             Awaits.teardown(frontServer.close(), "the front server to close");
@@ -363,6 +347,73 @@ class TerminalDispatchLateBodyTimeoutTest {
                             () -> "a written head is not changed: " + exchange),
                     () -> assertTrue(exchange.contains(ANSWER),
                             () -> "what the upstream sent before the deadline is relayed: " + exchange));
+        }
+
+        @Test
+        @DisplayName("HTTP/2 — a late request-body timeout retires no connection: only the stream ends")
+        void lateTimeoutOnHttp2RetiresNothing() throws Exception {
+            Http2Answer answer = trickleUntilStreamReset();
+
+            assertAll("the late request-body timeout on an HTTP/2 stream",
+                    () -> assertEquals(200, answer.status(),
+                            "the status the upstream sent stands, as only after a late request-body timeout"),
+                    () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, answer.streamEnd()).getCode(),
+                            "the stream is reset with NO_ERROR after the answer"),
+                    () -> assertFalse(connectionRetirement.isRetired(clientConnection.get()),
+                            "an HTTP/2 connection is never retired"));
+        }
+
+        @Test
+        @DisplayName("HTTP/2 — a late request-body timeout closes no connection at the failed relay's end")
+        void failedRelayAfterLateTimeoutOnHttp2ClosesNothing() throws Exception {
+            Http2Answer answer = trickleUntilStreamReset();
+            ObservedContext context = observed.get();
+            HttpConnection connection = clientConnection.get();
+
+            int nextStatus = Awaits.connect(http2Client
+                            .request(io.vertx.core.http.HttpMethod.POST, frontServer.actualPort(), LoopbackHost.ADDRESS,
+                                    "/" + ROUTE_ID + HEAD_ONLY)
+                            .compose(HttpClientRequest::send)
+                            .compose(response -> response.body().map(body -> response.statusCode())),
+                    "a second stream to be answered after the first one was reset");
+
+            assertAll("a late request-body timeout on an HTTP/2 stream",
+                    () -> assertEquals(200, answer.status(),
+                            "the status the upstream sent stands, as only after a late request-body timeout"),
+                    () -> assertNull(answer.connectionHeader(), "no Connection header on HTTP/2"),
+                    () -> assertEquals(0, context.endHandlers.get(), "no close is tied to the end of the stream"),
+                    () -> assertEquals(200, nextStatus, "the next stream is answered"),
+                    () -> assertSame(connection, clientConnection.get(), "and on the same connection"));
+        }
+
+        /**
+         * Opens a chunked upload to {@value #HEAD_ONLY} on route {@value #ROUTE_ID} over a prior-knowledge
+         * HTTP/2 connection and sends one chunk every {@value #TRICKLE_INTERVAL_MILLIS} ms until the edge
+         * resets the stream.
+         *
+         * @return what the client received before the reset, and how the stream ended
+         */
+        private Http2Answer trickleUntilStreamReset() throws Exception {
+            HttpClientRequest request = Awaits.connect(http2Client.request(io.vertx.core.http.HttpMethod.POST,
+                            frontServer.actualPort(), LoopbackHost.ADDRESS, "/" + ROUTE_ID + HEAD_ONLY),
+                    "the HTTP/2 upload to open");
+            CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+            request.exceptionHandler(streamEnd::complete);
+            request.setChunked(true);
+            Future<HttpClientResponse> head = request.response();
+            Future<Buffer> body = head.compose(HttpClientResponse::body);
+            long trickle = vertx.setPeriodic(TRICKLE_INTERVAL_MILLIS, timer -> {
+                if (!streamEnd.isDone()) {
+                    request.write("x");
+                }
+            });
+            try {
+                Awaits.connect(body, "the answer to the trickling upload to arrive whole");
+                Throwable end = Awaits.connect(streamEnd, "the edge to reset the stream of the trickling upload");
+                return new Http2Answer(head.result().statusCode(), head.result().getHeader("Connection"), end);
+            } finally {
+                vertx.cancelTimer(trickle);
+            }
         }
 
         /**
@@ -465,6 +516,16 @@ class TerminalDispatchLateBodyTimeoutTest {
     }
 
     /**
+     * What the client of an HTTP/2 upload received before the edge reset its stream.
+     *
+     * @param status           the status of the answer
+     * @param connectionHeader the answer's {@code Connection} header, or {@code null}
+     * @param streamEnd        the failure the stream's reset surfaced as
+     */
+    private record Http2Answer(int status, @Nullable String connectionHeader, Throwable streamEnd) {
+    }
+
+    /**
      * A routing context that delegates every call to a real one and observes it: the context-data writes
      * made from an event-loop thread, the lookups of a key the context holds no value for, and the end
      * handlers registered on it.
@@ -509,17 +570,14 @@ class TerminalDispatchLateBodyTimeoutTest {
     }
 
     /**
-     * A request on a fake connection and its routing context: the HTTP version, whether the response head
-     * has been written, the {@code Connection} headers put on it, the handlers registered for its end and
-     * the closes of the connection. A context datum reads as the retirement mark exactly when
-     * {@link #markedForRetirement} is set; a write to the context data fails the case.
+     * An HTTP/1.1 request on a fake connection and its routing context, its response head unwritten: the
+     * handlers registered for its end and the closes of the connection. A context datum reads as the
+     * retirement mark exactly when {@link #markedForRetirement} is set; a write to the context data fails
+     * the case.
      */
     private static final class RetiringExchange {
 
-        private final HttpVersion version;
-        private final boolean headWritten;
         private final AtomicInteger closes = new AtomicInteger();
-        private final List<String> connectionHeaders = new ArrayList<>();
         private final List<Handler<AsyncResult<Void>>> endHandlers = new ArrayList<>();
         private boolean markedForRetirement;
         private final HttpConnection connection = fake(HttpConnection.class, (name, args) -> {
@@ -530,27 +588,15 @@ class TerminalDispatchLateBodyTimeoutTest {
             throw new UnsupportedOperationException("the connection fake does not answer " + name);
         });
 
-        RetiringExchange(HttpVersion version, boolean headWritten) {
-            this.version = version;
-            this.headWritten = headWritten;
-        }
-
-        HttpConnection connection() {
-            return connection;
-        }
-
         RoutingContext routingContext() {
             HttpServerRequest request = fake(HttpServerRequest.class, (name, args) -> switch (name) {
-                case "version" -> version;
+                case "version" -> HttpVersion.HTTP_1_1;
                 case "connection" -> connection;
                 default -> throw new UnsupportedOperationException("the request fake does not answer " + name);
             });
             HttpServerResponse response = fake(HttpServerResponse.class, (name, args) -> switch (name) {
-                case "headWritten" -> headWritten;
-                case "putHeader" -> {
-                    connectionHeaders.add(String.valueOf(args[1]));
-                    yield null;
-                }
+                case "headWritten" -> false;
+                case "putHeader" -> null;
                 default -> throw new UnsupportedOperationException("the response fake does not answer " + name);
             });
             return fake(RoutingContext.class, (name, args) -> switch (name) {

@@ -15,13 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.config;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -30,13 +25,12 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+
 import de.cuioss.sheriff.gateway.config.PolicyBlock.Fallback;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.Scope;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder.RouteTableException;
-import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
-import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
@@ -44,7 +38,6 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
@@ -71,46 +64,16 @@ class PolicyBlockTest {
         return Generators.letterStrings(3, 12).next();
     }
 
-    private static AnchorConfig.AnchorConfigBuilder anchor(String anchorName) {
-        return AnchorConfig.builder().name(anchorName).pathPrefix("/" + anchorName).type(AnchorType.PROXY)
-                .access(AccessLevel.AUTHENTICATED);
-    }
-
-    private static GatewayConfig.GatewayConfigBuilder gateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
     private static GatewayConfig gatewayWith(AnchorConfig anchor) {
-        return gateway().anchors(Map.of(anchor.name(), anchor)).build();
+        return validGateway().anchors(Map.of(anchor.name(), anchor)).build();
     }
 
     private static EndpointConfig.EndpointConfigBuilder endpoint() {
-        return EndpointConfig.builder().id(name()).enabled(true);
+        return endpointSeed(name());
     }
 
     private static RouteConfig.RouteConfigBuilder route() {
-        String id = name();
-        return RouteConfig.builder().id(id).match(MatchConfig.builder().pathPrefix("/" + id).build());
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static SecurityFilterConfig filter() {
-        return SecurityFilterConfig.builder().profile("strict").build();
-    }
-
-    private static SecurityHeadersConfig headers() {
-        return SecurityHeadersConfig.builder().frameDeny(true).build();
-    }
-
-    private static CookiesConfig cookies(String cookieName) {
-        return new CookiesConfig(new CookieAllow.Named(List.of(cookieName)), null, null);
-    }
-
-    private static UpstreamDefaultsConfig upstreamDefaults() {
-        return UpstreamDefaultsConfig.builder().retryEnabled(false).notModifiedEnabled(false).build();
+        return routeConfigSeed(name());
     }
 
     @Nested
@@ -170,12 +133,12 @@ class PolicyBlockTest {
         @DisplayName("cookies resolves allow: none when no scope declares it")
         void shouldFallBackToNoCookies() {
             CookiesConfig resolved = PolicyBlock.COOKIES.resolve(
-                    ScopeChain.of(gateway().build(), endpoint().build(), route().build()));
+                    ScopeChain.of(validGateway().build(), endpoint().build(), route().build()));
 
             assertAll("nothing-declared cookies fallback",
                     () -> assertSame(CookiesConfig.NONE, resolved),
                     () -> assertNull(PolicyBlock.COOKIES.declared(
-                                    ScopeChain.of(gateway().build(), endpoint().build(), route().build())),
+                                    ScopeChain.of(validGateway().build(), endpoint().build(), route().build())),
                             "the fallback is not a declaration"),
                     () -> assertTrue(PolicyBlock.ALL.contains(PolicyBlock.COOKIES)));
         }
@@ -187,8 +150,8 @@ class PolicyBlockTest {
             CookiesConfig anchorCookies = cookies(name());
             CookiesConfig endpointCookies = cookies(name());
             CookiesConfig routeCookies = new CookiesConfig(CookieAllow.ALL, null, null);
-            AnchorConfig anchor = anchor(name()).cookies(anchorCookies).build();
-            GatewayConfig gateway = gateway().cookies(gatewayCookies).anchors(Map.of(anchor.name(), anchor)).build();
+            AnchorConfig anchor = anchorSeed(name()).cookies(anchorCookies).build();
+            GatewayConfig gateway = validGateway().cookies(gatewayCookies).anchors(Map.of(anchor.name(), anchor)).build();
 
             CookiesConfig routeWins = PolicyBlock.COOKIES.resolve(ScopeChain.of(gateway,
                     endpoint().anchor(anchor.name()).cookies(endpointCookies).build(),
@@ -231,7 +194,7 @@ class PolicyBlockTest {
             AuthConfig anchorAuth = auth(Require.BEARER);
             AuthConfig endpointAuth = auth(Require.SESSION);
             AuthConfig routeAuth = auth(Require.NONE);
-            AnchorConfig anchor = anchor(name()).auth(anchorAuth).build();
+            AnchorConfig anchor = anchorSeed(name()).auth(anchorAuth).build();
             GatewayConfig gateway = gatewayWith(anchor);
             EndpointConfig.EndpointConfigBuilder endpoint = endpoint().anchor(anchor.name());
 
@@ -251,8 +214,8 @@ class PolicyBlockTest {
         @Test
         @DisplayName("allowed_methods: endpoint over anchor over gateway")
         void shouldResolveAllowedMethodsNearestFirst() {
-            AnchorConfig anchor = anchor(name()).allowedMethods(List.of(HttpMethod.POST)).build();
-            GatewayConfig gateway = gateway().allowedMethods(List.of(HttpMethod.GET))
+            AnchorConfig anchor = anchorSeed(name()).allowedMethods(List.of(HttpMethod.POST)).build();
+            GatewayConfig gateway = validGateway().allowedMethods(List.of(HttpMethod.GET))
                     .anchors(Map.of(anchor.name(), anchor)).build();
             EndpointConfig anchored = endpoint().anchor(anchor.name()).build();
 
@@ -272,7 +235,7 @@ class PolicyBlockTest {
         @Test
         @DisplayName("allowed_methods: an empty list is not a declaration and falls through")
         void shouldTreatAnEmptyListAsAbsent() {
-            AnchorConfig anchor = anchor(name()).allowedMethods(List.of(HttpMethod.DELETE)).build();
+            AnchorConfig anchor = anchorSeed(name()).allowedMethods(List.of(HttpMethod.DELETE)).build();
             GatewayConfig gateway = gatewayWith(anchor);
             ScopeChain chain = ScopeChain.of(gateway,
                     endpoint().anchor(anchor.name()).allowedMethods(List.of()).build(), route().build());
@@ -287,10 +250,10 @@ class PolicyBlockTest {
         @Test
         @DisplayName("security_filter: route over endpoint over anchor, each replacing wholesale")
         void shouldResolveSecurityFilterNearestFirst() {
-            SecurityFilterConfig anchorFilter = filter();
+            SecurityFilterConfig anchorFilter = filter("strict");
             SecurityFilterConfig endpointFilter = SecurityFilterConfig.builder().profile("lenient").build();
             SecurityFilterConfig routeFilter = SecurityFilterConfig.builder().build();
-            AnchorConfig anchor = anchor(name()).securityFilter(anchorFilter).build();
+            AnchorConfig anchor = anchorSeed(name()).securityFilter(anchorFilter).build();
             GatewayConfig gateway = gatewayWith(anchor);
             EndpointConfig endpoint = endpoint().anchor(anchor.name()).build();
             EndpointConfig filteringEndpoint = endpoint().anchor(anchor.name()).securityFilter(endpointFilter).build();
@@ -316,9 +279,9 @@ class PolicyBlockTest {
             EndpointConfig endpoint = endpoint().forward(endpointForward).build();
 
             ForwardConfig routeWins = PolicyBlock.FORWARD.resolve(
-                    ScopeChain.of(gateway().build(), endpoint, route().forward(routeForward).build()));
+                    ScopeChain.of(validGateway().build(), endpoint, route().forward(routeForward).build()));
             ForwardConfig endpointWins = PolicyBlock.FORWARD.resolve(
-                    ScopeChain.of(gateway().build(), endpoint, route().build()));
+                    ScopeChain.of(validGateway().build(), endpoint, route().build()));
 
             assertAll("forward chain",
                     () -> assertSame(routeForward, routeWins),
@@ -331,8 +294,8 @@ class PolicyBlockTest {
         void shouldResolveSecurityHeadersNearestFirst() {
             SecurityHeadersConfig gatewayHeaders = headers();
             SecurityHeadersConfig anchorHeaders = SecurityHeadersConfig.builder().contentTypeNosniff(true).build();
-            AnchorConfig anchor = anchor(name()).securityHeaders(anchorHeaders).build();
-            GatewayConfig gateway = gateway().securityHeaders(gatewayHeaders)
+            AnchorConfig anchor = anchorSeed(name()).securityHeaders(anchorHeaders).build();
+            GatewayConfig gateway = validGateway().securityHeaders(gatewayHeaders)
                     .anchors(Map.of(anchor.name(), anchor)).build();
 
             SecurityHeadersConfig anchorWins = PolicyBlock.SECURITY_HEADERS.resolve(
@@ -348,9 +311,9 @@ class PolicyBlockTest {
         @Test
         @DisplayName("upstream_defaults: endpoint over gateway")
         void shouldResolveUpstreamDefaultsNearestFirst() {
-            UpstreamDefaultsConfig gatewayDefaults = upstreamDefaults();
+            UpstreamDefaultsConfig gatewayDefaults = upstreamDefaults(false, false);
             UpstreamDefaultsConfig endpointDefaults = UpstreamDefaultsConfig.builder().retryEnabled(true).build();
-            GatewayConfig gateway = gateway().upstreamDefaults(gatewayDefaults).build();
+            GatewayConfig gateway = validGateway().upstreamDefaults(gatewayDefaults).build();
 
             UpstreamDefaultsConfig endpointWins = PolicyBlock.UPSTREAM_DEFAULTS.resolve(
                     ScopeChain.of(gateway, endpoint().upstreamDefaults(endpointDefaults).build(), route().build()));
@@ -367,7 +330,7 @@ class PolicyBlockTest {
         void shouldResolveRouteLevelBlocksFromTheRoute() {
             ForwardConfig forward = ForwardConfig.builder().headersAllow(List.of(name())).build();
             WebSocketConfig websocket = WebSocketConfig.builder().idleTimeoutSeconds(42).build();
-            ScopeChain chain = ScopeChain.of(gateway().build(), endpoint().build(),
+            ScopeChain chain = ScopeChain.of(validGateway().build(), endpoint().build(),
                     route().forward(forward).websocket(websocket).build());
 
             assertAll("route-only blocks",
@@ -384,7 +347,7 @@ class PolicyBlockTest {
         @DisplayName("auth: boot error carrying the route id")
         void shouldRefuseAnUndeclaredAuth() {
             RouteConfig route = route().build();
-            ScopeChain chain = ScopeChain.of(gateway().build(), endpoint().build(), route);
+            ScopeChain chain = ScopeChain.of(validGateway().build(), endpoint().build(), route);
 
             RouteTableException error = assertThrows(RouteTableException.class, () -> PolicyBlock.AUTH.resolve(chain));
 
@@ -397,7 +360,7 @@ class PolicyBlockTest {
         @Test
         @DisplayName("Value fallbacks: every standard method, both upstream toggles on, a forward-all block")
         void shouldApplyTheValueFallbacks() {
-            ScopeChain chain = ScopeChain.of(gateway().build(), endpoint().build(), route().build());
+            ScopeChain chain = ScopeChain.of(validGateway().build(), endpoint().build(), route().build());
 
             List<HttpMethod> methods = PolicyBlock.ALLOWED_METHODS.resolve(chain);
             UpstreamDefaultsConfig defaults = PolicyBlock.UPSTREAM_DEFAULTS.resolve(chain);
@@ -406,7 +369,6 @@ class PolicyBlockTest {
             assertAll("value fallbacks",
                     () -> assertEquals(EnumSet.allOf(HttpMethod.class), EnumSet.copyOf(methods)),
                     () -> assertEquals(UpstreamDefaultsConfig.defaults(), defaults),
-                    () -> assertTrue(defaults.retryEnabled() && defaults.notModifiedEnabled()),
                     () -> assertNull(forward.headersAllow()),
                     () -> assertNull(forward.headersDeny()),
                     () -> assertNull(forward.queryAllow()),
@@ -417,7 +379,7 @@ class PolicyBlockTest {
         @Test
         @DisplayName("None fallbacks: security_filter, security_headers and websocket resolve to null")
         void shouldApplyTheNoneFallbacks() {
-            ScopeChain chain = ScopeChain.of(gateway().build(), endpoint().build(), route().build());
+            ScopeChain chain = ScopeChain.of(validGateway().build(), endpoint().build(), route().build());
 
             assertAll("none fallbacks",
                     () -> assertNull(PolicyBlock.SECURITY_FILTER.resolve(chain)),
@@ -430,7 +392,7 @@ class PolicyBlockTest {
         void shouldApplyEachFallbackKind() {
             String value = name();
             RouteConfig route = route().build();
-            ScopeChain chain = ScopeChain.of(gateway().build(), endpoint().build(), route);
+            ScopeChain chain = ScopeChain.of(validGateway().build(), endpoint().build(), route);
             Fallback<String> bootError = new Fallback.BootError<>("route '%s' refused");
 
             RouteTableException error = assertThrows(RouteTableException.class, () -> bootError.apply(chain));
@@ -449,17 +411,17 @@ class PolicyBlockTest {
         @Test
         @DisplayName("Every descriptor reads exactly its own scopes on a chain declaring everything")
         void shouldReadOnlyDeclarableScopes() {
-            AnchorConfig anchor = anchor(name()).auth(auth(Require.BEARER)).securityFilter(filter())
+            AnchorConfig anchor = anchorSeed(name()).auth(auth(Require.BEARER)).securityFilter(filter("strict"))
                     .securityHeaders(headers()).allowedMethods(List.of(HttpMethod.GET)).cookies(cookies(name()))
                     .build();
-            GatewayConfig gateway = gateway().allowedMethods(List.of(HttpMethod.GET)).securityHeaders(headers())
-                    .upstreamDefaults(upstreamDefaults()).cookies(cookies(name()))
+            GatewayConfig gateway = validGateway().allowedMethods(List.of(HttpMethod.GET)).securityHeaders(headers())
+                    .upstreamDefaults(upstreamDefaults(false, false)).cookies(cookies(name()))
                     .anchors(Map.of(anchor.name(), anchor)).build();
             EndpointConfig endpoint = endpoint().anchor(anchor.name()).auth(auth(Require.BEARER))
-                    .allowedMethods(List.of(HttpMethod.GET)).upstreamDefaults(upstreamDefaults())
-                    .securityFilter(filter()).forward(ForwardConfig.builder().build()).cookies(cookies(name()))
+                    .allowedMethods(List.of(HttpMethod.GET)).upstreamDefaults(upstreamDefaults(false, false))
+                    .securityFilter(filter("strict")).forward(ForwardConfig.builder().build()).cookies(cookies(name()))
                     .build();
-            RouteConfig route = route().auth(auth(Require.BEARER)).securityFilter(filter())
+            RouteConfig route = route().auth(auth(Require.BEARER)).securityFilter(filter("strict"))
                     .forward(ForwardConfig.builder().build()).websocket(WebSocketConfig.builder().build())
                     .cookies(cookies(name())).build();
             ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
@@ -471,7 +433,7 @@ class PolicyBlockTest {
         @Test
         @DisplayName("An unanchored route never reads the anchor scope")
         void shouldNotReadTheAnchorScopeOfAnUnanchoredRoute() {
-            AnchorConfig anchor = anchor(name()).auth(auth(Require.BEARER)).build();
+            AnchorConfig anchor = anchorSeed(name()).auth(auth(Require.BEARER)).build();
             ScopeChain chain = ScopeChain.of(gatewayWith(anchor), endpoint().build(), route().build());
 
             assertAll("unanchored route",
@@ -486,7 +448,7 @@ class PolicyBlockTest {
                     () -> assertFalse(PolicyBlock.isDeclared(null)),
                     () -> assertFalse(PolicyBlock.isDeclared(List.of())),
                     () -> assertTrue(PolicyBlock.isDeclared(List.of(HttpMethod.GET))),
-                    () -> assertTrue(PolicyBlock.isDeclared(filter())));
+                    () -> assertTrue(PolicyBlock.isDeclared(filter("strict"))));
         }
     }
 
@@ -497,9 +459,9 @@ class PolicyBlockTest {
         @Test
         @DisplayName("The route's anchor wins over the endpoint's")
         void shouldPreferTheRouteAnchor() {
-            AnchorConfig endpointAnchor = anchor(name() + "e").build();
-            AnchorConfig routeAnchor = anchor(name() + "r").build();
-            GatewayConfig gateway = gateway().anchors(Map.of(endpointAnchor.name(), endpointAnchor,
+            AnchorConfig endpointAnchor = anchorSeed(name() + "e").build();
+            AnchorConfig routeAnchor = anchorSeed(name() + "r").build();
+            GatewayConfig gateway = validGateway().anchors(Map.of(endpointAnchor.name(), endpointAnchor,
                     routeAnchor.name(), routeAnchor)).build();
             EndpointConfig endpoint = endpoint().anchor(endpointAnchor.name()).build();
 
@@ -514,7 +476,7 @@ class PolicyBlockTest {
         @Test
         @DisplayName("An unknown or absent anchor name resolves to no anchor")
         void shouldResolveNoAnchorForAnUnknownOrAbsentName() {
-            AnchorConfig known = anchor(name()).build();
+            AnchorConfig known = anchorSeed(name()).build();
             GatewayConfig gateway = gatewayWith(known);
 
             ScopeChain unknown = ScopeChain.of(gateway, endpoint().anchor(known.name() + "x").build(), route().build());

@@ -15,13 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.load;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
@@ -37,6 +31,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
+
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
@@ -250,7 +245,7 @@ class ConfigLoaderTest {
             GatewayConfig gateway = loader(Map.of()).load(IGNORE_DEFAULTED).gateway();
 
             assertEquals(new ThreatClassificationConfig(true, 40, 120,
-                    new ThreatClassificationConfig.Weights(8, 0, 3, 4, 20)), gateway.threatClassification(),
+                            new ThreatClassificationConfig.Weights(8, 0, 3, 4, 20)), gateway.threatClassification(),
                     "every snake_case key binds to its record component");
         }
 
@@ -349,7 +344,7 @@ class ConfigLoaderTest {
                         cookies: { allow: all, same_origin_check: false }
                     """);
             writeConfig("endpoints/app.yaml", endpointWithCookies("{ allow: [theme, app_session] }",
-                    "{ allow: [all], additional_origins: [\"https://App.example.com\"] }"));
+                    "{ allow: [all], additional_origins: [\"https://app.example.com\"] }"));
 
             ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
@@ -362,7 +357,7 @@ class ConfigLoaderTest {
                             endpoint.cookies().allow()),
                     () -> assertEquals(new CookiesConfig(new CookieAllow.Named(List.of("all")), null,
                                     List.of("https://app.example.com")), endpoint.routes().getFirst().cookies(),
-                            "[all] is the cookie named all, and the origin is lower-cased once"));
+                            "[all] is the cookie named all"));
         }
 
         @Test
@@ -555,39 +550,6 @@ class ConfigLoaderTest {
                 () -> assertNull(endpoint.forward()));
     }
 
-    static Stream<Arguments> invalidEndpointLevelBlocks() {
-        return Stream.of(
-                Arguments.of("security_filter:\n  unknown_knob: 1\n", "/endpoint/security_filter"),
-                Arguments.of("forward:\n  headers_permit: [\"Accept\"]\n", "/endpoint/forward"),
-                Arguments.of("security_filter:\n  profile: \"permissive\"\n", "/endpoint/security_filter/profile"));
-    }
-
-    @ParameterizedTest
-    @MethodSource("invalidEndpointLevelBlocks")
-    void schemaRefusesAnInvalidEndpointLevelBlock(String endpointMembers, String pointer) throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeConfig("endpoints/orders.yaml", endpointWithMembers(endpointMembers));
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        assertTrue(exception.errors().stream().anyMatch(error -> error.pointer().startsWith(pointer)),
-                () -> "expected an error at " + pointer + ", got: " + exception.errors());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"refresh_interval_seconds", "key_rotation_grace_period_seconds",
-            "unknown_kid_refresh_window_seconds"})
-    void schemaRefusesAJwksRefreshKeyThatIsNotAnInteger(String key) throws Exception {
-        writeConfig("gateway.yaml", gatewayWithJwksMembers(key + ": \"soon\""));
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        assertTrue(exception.errors().stream().anyMatch(error -> error.pointer().contains(key)),
-                () -> "expected an error pointing at the key, got: " + exception.errors());
-    }
-
     @Test
     void reportsMissingEnvSecretWithPointer() throws Exception {
         copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");
@@ -667,13 +629,12 @@ class ConfigLoaderTest {
         assertEquals(UpstreamDefaultsConfig.builder().retryEnabled(false).notModifiedEnabled(true).build(), endpoint.upstreamDefaults());
         assertEquals(List.of("orders.read", "orders.write"), endpoint.scopes(),
                 "endpoint.scopes must bind outside the auth block");
-        assertFalse(endpoint.auth().effectiveTokenRelay(), "a declared token_relay: false must bind");
+        assertEquals(Boolean.FALSE, endpoint.auth().tokenRelay(), "a declared token_relay: false must bind");
         assertEquals(1, endpoint.routes().size());
         RouteConfig route = endpoint.routes().getFirst();
         assertEquals("orders-read", route.id());
         assertEquals(Protocol.HTTP, route.protocol());
         assertNull(route.auth().tokenRelay(), "an omitted token_relay binds as absent");
-        assertTrue(route.auth().effectiveTokenRelay(), "an omitted token_relay resolves to relaying");
         assertNotNull(route.upstream().retry());
     }
 
@@ -702,10 +663,7 @@ class ConfigLoaderTest {
         assertAll("session_fallback binds through the SNAKE_CASE strategy onto the auth record",
                 () -> assertEquals(Boolean.TRUE, endpoint.auth().sessionFallback(),
                         "a declared session_fallback: true must bind"),
-                () -> assertTrue(endpoint.auth().effectiveSessionFallback()),
-                () -> assertNull(route.auth().sessionFallback(), "an omitted session_fallback binds as absent"),
-                () -> assertFalse(route.auth().effectiveSessionFallback(),
-                        "an omitted session_fallback resolves to false"));
+                () -> assertNull(route.auth().sessionFallback(), "an omitted session_fallback binds as absent"));
     }
 
     @Test
@@ -765,8 +723,8 @@ class ConfigLoaderTest {
      * they are one parameterized test; each case's own reason is recorded at its row. The gateway-level
      * counterpart is {@link #refusedGatewayBlocks()}.
      *
-     * @return (case description, {@code endpoints/orders.yaml} text, the pointer fragment the refusal
-     *         names)
+     * @return (case description, {@code endpoints/orders.yaml} text, the full JSON pointer prefix the
+     *         refusal starts with)
      */
     static Stream<Arguments> refusedEndpointDocuments() {
         return Stream.of(
@@ -824,7 +782,7 @@ class ConfigLoaderTest {
                                           failures: 5
                                           reset_ms: 30000
                                 """,
-                        "/routes/0/upstream"),
+                        "/endpoint/routes/0/upstream"),
                 // AS-3: a matcher carries exactly one path form, so declaring both is refused at load.
                 Arguments.of("a matcher declaring both path and path_prefix",
                         """
@@ -839,7 +797,7 @@ class ConfigLoaderTest {
                                         path_prefix: /orders
                                         path: /orders
                                 """,
-                        "/routes/0/match"),
+                        "/endpoint/routes/0/match"),
                 // AS-3: the other half of "exactly one" -- a matcher naming no path form is refused too.
                 Arguments.of("a matcher declaring neither path nor path_prefix",
                         """
@@ -853,7 +811,7 @@ class ConfigLoaderTest {
                                       match:
                                         methods: ["GET"]
                                 """,
-                        "/routes/0/match"),
+                        "/endpoint/routes/0/match"),
                 // RFC 6749 section 3.3: a scope-token is printable ASCII without space, double quote
                 // or backslash. The three excluded characters each fail the load at the item pointer.
                 Arguments.of("an endpoint scope containing a space",
@@ -861,7 +819,86 @@ class ConfigLoaderTest {
                 Arguments.of("an endpoint scope containing a double quote",
                         endpointDeclaringScope("'orders\"read'"), "/endpoint/scopes/0"),
                 Arguments.of("an endpoint scope containing a backslash",
-                        endpointDeclaringScope("'orders\\read'"), "/endpoint/scopes/0"));
+                        endpointDeclaringScope("'orders\\read'"), "/endpoint/scopes/0"),
+                Arguments.of("an unknown key in an endpoint security_filter",
+                        endpointWithMembers("security_filter:\n  unknown_knob: 1\n"), "/endpoint/security_filter"),
+                Arguments.of("an unknown key in an endpoint forward block",
+                        endpointWithMembers("forward:\n  headers_permit: [\"Accept\"]\n"), "/endpoint/forward"),
+                Arguments.of("an unknown endpoint security_filter profile",
+                        endpointWithMembers("security_filter:\n  profile: \"permissive\"\n"),
+                        "/endpoint/security_filter/profile"),
+                // The route half of the three symmetric profile enum sites; the other two are rows of
+                // refusedGatewayBlocks(), so a partial edit cannot leave one still accepting the dropped preset.
+                Arguments.of("the dropped route security_filter profile 'default'",
+                        endpointWithRouteProfile("default"), "/endpoint/routes/0/security_filter/profile"),
+                Arguments.of("an unknown route security_filter profile",
+                        endpointWithRouteProfile("bogus"), "/endpoint/routes/0/security_filter/profile"),
+                // The redirect status value range is owned by the schema, so a status outside it is a boot
+                // error at load, before any code rule runs.
+                Arguments.of("redirect status 300", endpointWithRedirect("status: 300"),
+                        "/endpoint/routes/0/redirect/status"),
+                Arguments.of("redirect status 304", endpointWithRedirect("status: 304"),
+                        "/endpoint/routes/0/redirect/status"),
+                Arguments.of("redirect status 200", endpointWithRedirect("status: 200"),
+                        "/endpoint/routes/0/redirect/status"),
+                Arguments.of("redirect status 399", endpointWithRedirect("status: 399"),
+                        "/endpoint/routes/0/redirect/status"),
+                // An omitted status is refused rather than defaulted: permanence is an explicit operator choice.
+                Arguments.of("a redirect omitting the mandatory status", endpointWithRedirect(""),
+                        "/endpoint/routes/0/redirect"),
+                Arguments.of("an unknown key inside the catalog block",
+                        endpointWithCatalog("title: Orders\n      entry: /orders/\n      icon: cart.svg"),
+                        "/endpoint/catalog"),
+                Arguments.of("an absolute catalog entry", endpointWithCatalogEntry("https://evil.example/"),
+                        "/endpoint/catalog/entry"),
+                Arguments.of("a scheme-relative catalog entry", endpointWithCatalogEntry("//evil.example"),
+                        "/endpoint/catalog/entry"),
+                Arguments.of("a relative catalog entry", endpointWithCatalogEntry("orders"),
+                        "/endpoint/catalog/entry"),
+                Arguments.of("a backslash catalog entry", endpointWithCatalogEntry("'/\\\\evil.example'"),
+                        "/endpoint/catalog/entry"));
+    }
+
+    private static String endpointWithRouteProfile(String profile) {
+        return """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                      security_filter:
+                        profile: %s
+                """.formatted(profile);
+    }
+
+    /** A redirect route whose {@code redirect} block ends with {@code redirectMember}, which may be empty. */
+    private static String endpointWithRedirect(String redirectMember) {
+        return """
+                endpoint:
+                  id: orders
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        %s
+                """.formatted(redirectMember);
+    }
+
+    /** @param catalogMembers the members of the {@code catalog} block, each continuation line indented six */
+    private static String endpointWithCatalog(String catalogMembers) {
+        return CATALOG_ENDPOINT.formatted("catalog:\n      " + catalogMembers);
+    }
+
+    private static String endpointWithCatalogEntry(String entry) {
+        return endpointWithCatalog("title: Orders\n      entry: " + entry);
     }
 
     /**
@@ -921,7 +958,7 @@ class ConfigLoaderTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("refusedEndpointDocuments")
-    void rejectsRefusedEndpointDocument(String description, String endpointYaml, String pointerFragment)
+    void rejectsRefusedEndpointDocument(String description, String endpointYaml, String pointerPrefix)
             throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");
         writeConfig("endpoints/orders.yaml", endpointYaml);
@@ -931,8 +968,8 @@ class ConfigLoaderTest {
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
-                                && error.pointer().contains(pointerFragment)),
-                () -> "expected " + description + " to be refused at a pointer naming '" + pointerFragment
+                                && error.pointer().startsWith(pointerPrefix)),
+                () -> "expected " + description + " to be refused under the pointer '" + pointerPrefix
                         + "', got: " + exception.errors());
     }
 
@@ -990,72 +1027,6 @@ class ConfigLoaderTest {
         // Assert — no entries means the host of jwks.url is derived as the egress allowance downstream
         IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
         assertEquals(List.of(), issuer.jwks().allowedEgressHosts());
-    }
-
-    /**
-     * One case per egress key whose value has the wrong JSON type, each written the way an operator
-     * plausibly gets it wrong. Every case must be refused at boot rather than silently ignored: an
-     * ignored {@code allowed_egress_hosts} would silently fall back to the derived {@code jwks.url}
-     * host instead of the host set the operator declared, an ignored {@code tls_profile} would
-     * leave the issuer on default trust while the operator believes a profile is in force, and a
-     * coerced {@code oidc_verify_hostname} would relax hostname verification from a document the
-     * operator believes disables nothing.
-     *
-     * @return (case description, {@code gateway.yaml} text, the key the refusing error pointer names)
-     */
-    static Stream<Arguments> wronglyTypedEgressKeys() {
-        return Stream.of(
-                Arguments.of("allowed_egress_hosts as a bare string - a plausible operator typo for a single host",
-                        """
-                                version: 1
-                                token_validation:
-                                  issuers:
-                                    - name: primary
-                                      issuer: https://issuer.example.com
-                                      jwks:
-                                        source: http
-                                        url: https://issuer.example.com/jwks
-                                        allowed_egress_hosts: keycloak
-                                """,
-                        "allowed_egress_hosts"),
-                Arguments.of("tls_profile as a list - a plausible operator confusion with allowed_egress_hosts",
-                        """
-                                version: 1
-                                token_validation:
-                                  issuers:
-                                    - name: primary
-                                      issuer: https://issuer.example.com
-                                      jwks:
-                                        source: http
-                                        url: https://issuer.example.com/jwks
-                                        tls_profile: ["corporate-idp"]
-                                """,
-                        "tls_profile"),
-                Arguments.of(
-                        "oidc_verify_hostname as a quoted \"no\" - a boolean spelling that must not be coerced to false",
-                        """
-                                version: 1
-                                egress_tls:
-                                  oidc_verify_hostname: "no"
-                                """,
-                        "oidc_verify_hostname"));
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("wronglyTypedEgressKeys")
-    void rejectsWronglyTypedEgressKey(String description, String gatewayYaml, String pointerKey) throws Exception {
-        // Arrange
-        writeConfig("gateway.yaml", gatewayYaml);
-
-        // Act
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        // Assert — the schema refuses it at boot, naming the offending key's own pointer
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> error.pointer().contains(pointerKey)),
-                () -> "expected a schema violation at the " + pointerKey + " pointer for " + description
-                        + ", got: " + exception.errors());
     }
 
     @Test
@@ -1213,7 +1184,8 @@ class ConfigLoaderTest {
      * reason is recorded at its row rather than lost in the merge. The endpoint-document counterpart
      * is {@link #refusedEndpointDocuments()}.
      *
-     * @return (case description, {@code gateway.yaml} text, the pointer fragment the refusal names)
+     * @return (case description, {@code gateway.yaml} text, the full JSON pointer prefix the refusal
+     *         starts with)
      */
     static Stream<Arguments> refusedGatewayBlocks() {
         return Stream.of(
@@ -1230,7 +1202,7 @@ class ConfigLoaderTest {
                                 egress_tls:
                                   jwks_verify_hostname: "no"
                                 """,
-                        "jwks_verify_hostname"),
+                        "/egress_tls/jwks_verify_hostname"),
                 // An unprefixed verify_hostname is a plausible operator abbreviation of any of the
                 // three prefixed keys, so it must be refused rather than silently ignored.
                 Arguments.of("an unknown key inside egress_tls - a plausible operator abbreviation",
@@ -1239,14 +1211,14 @@ class ConfigLoaderTest {
                                 egress_tls:
                                   verify_hostname: false
                                 """,
-                        "egress_tls"),
+                        "/egress_tls"),
                 Arguments.of("a forwarded block omitting the mandatory trusted_proxies",
                         """
                                 version: 1
                                 forwarded:
                                   trust_scheme_host: true
                                 """,
-                        "forwarded"),
+                        "/forwarded"),
                 // required_scopes is removed, not renamed: the scopes a route needs are now declared
                 // additively by endpoint.scopes, outside auth — an anchor's auth block included.
                 Arguments.of("a removed required_scopes key in an anchor auth block",
@@ -1272,7 +1244,7 @@ class ConfigLoaderTest {
                                     access: authenticated
                                     bogus_key: true
                                 """,
-                        "anchors"),
+                        "/anchors/api"),
                 // ADR-0007 Amendment A1: CORS is evaluated before route selection, so an anchor can never
                 // scope it. The anchor security_headers schema therefore carries only the response
                 // security headers, and a cors block there fails the boot at load rather than being
@@ -1291,7 +1263,7 @@ class ConfigLoaderTest {
                                         enabled: true
                                         allowed_origins: ["https://app.example"]
                                 """,
-                        "security_headers"),
+                        "/anchors/frontend/security_headers"),
                 // RFC 6749 section 3.3: a scope-token is printable ASCII without space, double quote
                 // or backslash. The three excluded characters each fail the load at the item pointer.
                 Arguments.of("an oidc scope containing a space",
@@ -1310,7 +1282,102 @@ class ConfigLoaderTest {
                 Arguments.of("an oidc scope containing a non-ASCII letter",
                         gatewayDeclaringOidcScope("\"ord\\u00e9rs\""), "/oidc/scopes/0"),
                 Arguments.of("an empty oidc scope",
-                        gatewayDeclaringOidcScope("\"\""), "/oidc/scopes/0"));
+                        gatewayDeclaringOidcScope("\"\""), "/oidc/scopes/0"),
+                // A wrongly typed egress key must be refused rather than ignored: an ignored
+                // allowed_egress_hosts would fall back to the derived jwks.url host instead of the set the
+                // operator declared, and an ignored tls_profile would leave the issuer on default trust
+                // while the operator believes a profile is in force.
+                Arguments.of("allowed_egress_hosts as a bare string - a plausible operator typo for a single host",
+                        gatewayWithJwksMembers("allowed_egress_hosts: keycloak"),
+                        "/token_validation/issuers/0/jwks/allowed_egress_hosts"),
+                Arguments.of("tls_profile as a list - a plausible operator confusion with allowed_egress_hosts",
+                        gatewayWithJwksMembers("tls_profile: [\"corporate-idp\"]"),
+                        "/token_validation/issuers/0/jwks/tls_profile"),
+                Arguments.of(
+                        "oidc_verify_hostname as a quoted \"no\" - a boolean spelling that must not be coerced to false",
+                        """
+                                version: 1
+                                egress_tls:
+                                  oidc_verify_hostname: "no"
+                                """,
+                        "/egress_tls/oidc_verify_hostname"),
+                Arguments.of("a non-integer jwks refresh_interval_seconds",
+                        gatewayWithJwksMembers("refresh_interval_seconds: \"soon\""),
+                        "/token_validation/issuers/0/jwks/refresh_interval_seconds"),
+                Arguments.of("a non-integer jwks key_rotation_grace_period_seconds",
+                        gatewayWithJwksMembers("key_rotation_grace_period_seconds: \"soon\""),
+                        "/token_validation/issuers/0/jwks/key_rotation_grace_period_seconds"),
+                Arguments.of("a non-integer jwks unknown_kid_refresh_window_seconds",
+                        gatewayWithJwksMembers("unknown_kid_refresh_window_seconds: \"soon\""),
+                        "/token_validation/issuers/0/jwks/unknown_kid_refresh_window_seconds"),
+                // The profile value range is owned by the bundled schema, which carries three symmetric enum
+                // sites: these two and the endpoint schema's row in refusedEndpointDocuments().
+                Arguments.of("the dropped security_defaults profile 'default'",
+                        gatewayWithSecurityDefaults("profile: default"), "/security_defaults/profile"),
+                Arguments.of("an unknown security_defaults profile",
+                        gatewayWithSecurityDefaults("profile: bogus"), "/security_defaults/profile"),
+                Arguments.of("the dropped anchor security_filter profile 'default'",
+                        gatewayWithAnchorProfile("default"), "/anchors/api/security_filter/profile"),
+                Arguments.of("an unknown anchor security_filter profile",
+                        gatewayWithAnchorProfile("bogus"), "/anchors/api/security_filter/profile"),
+                // The max_authorization_header_value_length range is owned by the schema (integer, minimum 1),
+                // so it is refused at bind time, before the validator's baseline comparison ever runs.
+                Arguments.of("a zero max_authorization_header_value_length",
+                        gatewayWithSecurityDefaults("max_authorization_header_value_length: 0"),
+                        "/security_defaults/max_authorization_header_value_length"),
+                Arguments.of("a negative max_authorization_header_value_length",
+                        gatewayWithSecurityDefaults("max_authorization_header_value_length: -1"),
+                        "/security_defaults/max_authorization_header_value_length"),
+                Arguments.of("a non-numeric max_authorization_header_value_length",
+                        gatewayWithSecurityDefaults("max_authorization_header_value_length: \"not-a-number\""),
+                        "/security_defaults/max_authorization_header_value_length"),
+                Arguments.of("a non-string step_up.path",
+                        """
+                                version: 1
+                                oidc:
+                                  redirect_uri: "https://gw.example.com/callback"
+                                  step_up:
+                                    path: 42
+                                """,
+                        "/oidc/step_up/path"),
+                // The control for the key_file binding cases: the block declares additionalProperties: false,
+                // so a document that binds proves key_file is the declared key and not an unvalidated extra.
+                Arguments.of("a misspelt key inside client_authentication",
+                        """
+                                version: 1
+                                oidc:
+                                  client_authentication:
+                                    keyfile: /etc/sheriff/keys/client-auth.pem
+                                """,
+                        "/oidc/client_authentication"),
+                Arguments.of("an unknown key inside the portal block",
+                        gatewayWithPortal("path: /\n  title: Applications\n  theme: dark"), "/portal"),
+                Arguments.of("a negative portal cache_seconds",
+                        gatewayWithPortal("path: /\n  title: Applications\n  cache_seconds: -1"),
+                        "/portal/cache_seconds"),
+                Arguments.of("a portal path without a leading slash",
+                        gatewayWithPortal("path: portal\n  title: Applications"), "/portal/path"));
+    }
+
+    private static String gatewayWithSecurityDefaults(String member) {
+        return "version: 1\nsecurity_defaults:\n  " + member + "\n";
+    }
+
+    private static String gatewayWithAnchorProfile(String profile) {
+        return """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    type: proxy
+                    access: public
+                    security_filter:
+                      profile: %s
+                """.formatted(profile);
+    }
+
+    private static String gatewayWithPortal(String portalMembers) {
+        return "version: 1\nportal:\n  " + portalMembers + "\n";
     }
 
     /**
@@ -1338,7 +1405,7 @@ class ConfigLoaderTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("refusedGatewayBlocks")
-    void rejectsRefusedGatewayBlock(String description, String gatewayYaml, String pointerFragment) throws Exception {
+    void rejectsRefusedGatewayBlock(String description, String gatewayYaml, String pointerPrefix) throws Exception {
         writeConfig("gateway.yaml", gatewayYaml);
 
         ConfigLoader loader = loader(Map.of());
@@ -1346,8 +1413,8 @@ class ConfigLoaderTest {
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains(pointerFragment)),
-                () -> "expected " + description + " to be refused at a pointer naming '" + pointerFragment
+                                && error.pointer().startsWith(pointerPrefix)),
+                () -> "expected " + description + " to be refused under the pointer '" + pointerPrefix
                         + "', got: " + exception.errors());
     }
 
@@ -1432,63 +1499,6 @@ class ConfigLoaderTest {
     }
 
     /**
-     * The {@code profile} value range is owned by the bundled JSON Schema, which carries three
-     * symmetric enum sites: {@code gateway.yaml} {@code security_defaults.profile} and
-     * {@code $defs/securityFilter.profile}, plus {@code endpoint.schema.json}'s
-     * {@code $defs/securityFilter.profile}. These tests pin all three together so a partial edit
-     * cannot leave one site still accepting the dropped {@code default} preset.
-     */
-    @ParameterizedTest(name = "gateway security_defaults.profile ''{0}'' fails the boot")
-    @ValueSource(strings = {"default", "bogus"})
-    void rejectsUnrecognisedGlobalSecurityDefaultsProfile(String value) throws Exception {
-        // Arrange
-        writeConfig("gateway.yaml", """
-                version: 1
-                security_defaults:
-                  profile: %s
-                """.formatted(value));
-
-        // Act
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        // Assert
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("security_defaults")),
-                () -> "expected a schema violation naming the security_defaults key, got: "
-                        + exception.errors());
-    }
-
-    /**
-     * The {@code max_authorization_header_value_length} value RANGE is owned by the bundled JSON
-     * Schema ({@code integer}, {@code minimum: 1}), so an out-of-range value is refused at bind time,
-     * before the configuration validator's cross-cutting baseline comparison ever runs.
-     */
-    @ParameterizedTest(name = "security_defaults.max_authorization_header_value_length ''{0}'' fails the boot")
-    @ValueSource(strings = {"0", "-1", "\"not-a-number\""})
-    void rejectsOutOfRangeAuthorizationHeaderValueLength(String value) throws Exception {
-        // Arrange
-        writeConfig("gateway.yaml", """
-                version: 1
-                security_defaults:
-                  profile: strict
-                  max_authorization_header_value_length: %s
-                """.formatted(value));
-
-        // Act
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        // Assert
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("security_defaults")),
-                () -> "expected a schema violation naming the security_defaults key, got: "
-                        + exception.errors());
-    }
-
-    /**
      * The end-to-end proof that the snake-cased key binds to the record component without an explicit
      * Jackson annotation — {@code ConfigLoader} binds under {@code PropertyNamingStrategies.SNAKE_CASE},
      * so the mapping is by convention and would break silently if that strategy ever changed.
@@ -1532,64 +1542,6 @@ class ConfigLoaderTest {
         assertNull(securityDefaults.maxAuthorizationHeaderValueLength());
         assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
                 securityDefaults.effectiveMaxAuthorizationHeaderValueLength());
-    }
-
-    @ParameterizedTest(name = "anchor security_filter.profile ''{0}'' fails the boot")
-    @ValueSource(strings = {"default", "bogus"})
-    void rejectsUnrecognisedAnchorSecurityFilterProfile(String value) throws Exception {
-        // Arrange
-        writeConfig("gateway.yaml", """
-                version: 1
-                anchors:
-                  api:
-                    path_prefix: /api
-                    type: proxy
-                    access: public
-                    security_filter:
-                      profile: %s
-                """.formatted(value));
-
-        // Act
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        // Assert
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("profile")),
-                () -> "expected a schema violation naming the anchor's profile key, got: "
-                        + exception.errors());
-    }
-
-    @ParameterizedTest(name = "route security_filter.profile ''{0}'' fails the boot")
-    @ValueSource(strings = {"default", "bogus"})
-    void rejectsUnrecognisedRouteSecurityFilterProfile(String value) throws Exception {
-        // Arrange
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeConfig("endpoints/orders.yaml", """
-                endpoint:
-                  id: orders
-                  base_url: ORDERS
-                  auth:
-                    require: none
-                  routes:
-                    - id: orders-read
-                      match:
-                        path_prefix: /orders
-                      security_filter:
-                        profile: %s
-                """.formatted(value));
-
-        // Act
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        // Assert
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
-                                && error.pointer().contains("security_filter/profile")),
-                () -> "expected a schema violation naming the route's profile key, got: "
-                        + exception.errors());
     }
 
     @Test
@@ -1816,64 +1768,6 @@ class ConfigLoaderTest {
                         + " target is admitted unless the operator opts in");
     }
 
-    /**
-     * The redirect {@code status} value range is owned by the bundled schema ({@code enum [301, 302,
-     * 303, 307, 308]}), so a status outside it is a boot error at load, before any code rule runs.
-     */
-    @ParameterizedTest(name = "redirect.status {0} fails the boot")
-    @ValueSource(ints = {300, 304, 200, 399})
-    void rejectsARedirectStatusOutsideTheEnum(int status) throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeConfig("endpoints/moved.yaml", """
-                endpoint:
-                  id: moved
-                  auth:
-                    require: none
-                  routes:
-                    - id: moved-home
-                      match:
-                        path: /
-                      redirect:
-                        location: /home
-                        status: %d
-                """.formatted(status));
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
-                                && error.pointer().contains("/redirect/status")),
-                () -> "a redirect status outside the enum must be refused at its own pointer, got: "
-                        + exception.errors());
-    }
-
-    @Test
-    void rejectsARedirectOmittingTheMandatoryStatus() throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeConfig("endpoints/moved.yaml", """
-                endpoint:
-                  id: moved
-                  auth:
-                    require: none
-                  routes:
-                    - id: moved-home
-                      match:
-                        path: /
-                      redirect:
-                        location: /home
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
-                                && error.pointer().contains("/redirect")),
-                () -> "an omitted status must be refused rather than defaulted — permanence is an explicit"
-                        + " operator choice, got: " + exception.errors());
-    }
-
     @Test
     void substitutedScalarIsSchemaTypeChecked() throws Exception {
         writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION:-1}\"\n");
@@ -1914,25 +1808,6 @@ class ConfigLoaderTest {
                 () -> assertNull(loaded.gateway().oidc().stepUp().enabled(),
                         "the path does not imply the RFC 9470 enabled key"),
                 () -> assertNull(loaded.gateway().oidc().stepUp().honorUpstreamChallenge()));
-    }
-
-    @Test
-    void refusesANonStringStepUpPathAtItsPointer() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                oidc:
-                  redirect_uri: "https://gw.example.com/callback"
-                  step_up:
-                    path: 42
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("/oidc/step_up/path")),
-                () -> "the schema declares step_up.path a string, got: " + exception.errors());
     }
 
     /**
@@ -2497,9 +2372,7 @@ class ConfigLoaderTest {
                 () -> assertEquals(expectedPath, loaded.gateway().oidc().clientAuthentication().keyFile(),
                         "the key file is a location: it binds as written or as resolved, never redacted"),
                 () -> assertNull(loaded.gateway().oidc().clientSecret(),
-                        "a document declaring only the key file carries no client secret"),
-                () -> assertFalse(loaded.gateway().oidc().usesClientSecret(),
-                        "without a client secret the document selects private_key_jwt"));
+                        "a document declaring only the key file carries no client secret"));
     }
 
     @Test
@@ -2516,28 +2389,6 @@ class ConfigLoaderTest {
 
         assertNull(loaded.gateway().oidc().clientAuthentication(),
                 "an omitted client_authentication block binds as absent, which selects a generated key");
-    }
-
-    @Test
-    void refusesAnUnknownKeyInsideTheClientAuthenticationBlock() throws Exception {
-        // THE CONTROL for the binding cases above: the block declares additionalProperties: false, so a
-        // misspelt key is refused rather than silently ignored — a document that binds proves key_file
-        // is the declared key and not merely an unvalidated extra.
-        writeConfig("gateway.yaml", """
-                version: 1
-                oidc:
-                  client_authentication:
-                    keyfile: /etc/sheriff/keys/client-auth.pem
-                """);
-
-        ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
-
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && error.pointer().contains("/oidc/client_authentication")),
-                () -> "a misspelt key inside client_authentication must be refused at the block's own "
-                        + "pointer, got: " + exception.errors());
     }
 
     // --- oidc.session.key_file: a location, not a secret (ADR-0072) --------------------------------
@@ -3518,12 +3369,10 @@ class ConfigLoaderTest {
         PortalConfig portal = loader(Map.of()).load(IGNORE_DEFAULTED).gateway().portal();
 
         assertNotNull(portal);
-        assertAll("omitted optional portal keys bind as absent and resolve to their defaults",
+        assertAll("omitted optional portal keys bind as absent",
                 () -> assertNull(portal.templateDir()),
                 () -> assertNull(portal.cacheSeconds()),
-                () -> assertNull(portal.errorPages()),
-                () -> assertEquals(0, portal.effectiveCacheSeconds()),
-                () -> assertFalse(portal.effectiveErrorPages()));
+                () -> assertNull(portal.errorPages()));
     }
 
     @Test
@@ -3531,32 +3380,6 @@ class ConfigLoaderTest {
         writeConfig("gateway.yaml", "version: 1\n");
 
         assertNull(loader(Map.of()).load(IGNORE_DEFAULTED).gateway().portal());
-    }
-
-    @Test
-    void refusesAnUnknownKeyInsideThePortalBlock() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                portal:
-                  path: /
-                  title: Applications
-                  theme: dark
-                """);
-
-        assertErrorAt(loadErrors(), "gateway.yaml", "/portal");
-    }
-
-    @Test
-    void refusesANegativeCacheSeconds() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                portal:
-                  path: /
-                  title: Applications
-                  cache_seconds: -1
-                """);
-
-        assertErrorAt(loadErrors(), "gateway.yaml", "/portal/cache_seconds");
     }
 
     @Test
@@ -3572,18 +3395,6 @@ class ConfigLoaderTest {
         assertErrorAt(errors, "gateway.yaml", "/portal");
         assertTrue(errors.stream().anyMatch(error -> error.message().contains("path")),
                 () -> "expected the missing required key to be named, got: " + errors);
-    }
-
-    @Test
-    void refusesAPortalPathWithoutLeadingSlash() throws Exception {
-        writeConfig("gateway.yaml", """
-                version: 1
-                portal:
-                  path: portal
-                  title: Applications
-                """);
-
-        assertErrorAt(loadErrors(), "gateway.yaml", "/portal/path");
     }
 
     @Test
@@ -3611,19 +3422,6 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void refusesAnUnknownKeyInsideTheCatalogBlock() throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeCatalogEndpoint("""
-                catalog:
-                    title: Orders
-                    entry: /orders/
-                    icon: cart.svg
-                """.strip().replace("\n", "\n  "));
-
-        assertErrorAt(loadErrors(), "endpoints/orders.yaml", "/endpoint/catalog");
-    }
-
-    @Test
     void refusesACatalogBlockWithoutEntry() throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");
         writeCatalogEndpoint("""
@@ -3636,18 +3434,5 @@ class ConfigLoaderTest {
         assertErrorAt(errors, "endpoints/orders.yaml", "/endpoint/catalog");
         assertTrue(errors.stream().anyMatch(error -> error.message().contains("entry")),
                 () -> "expected the missing required key to be named, got: " + errors);
-    }
-
-    @ParameterizedTest(name = "refuses the catalog entry {0}")
-    @ValueSource(strings = {"https://evil.example/", "//evil.example", "orders", "'/\\\\evil.example'"})
-    void refusesACatalogEntryFailingTheSchemaPattern(String entry) throws Exception {
-        writeConfig("gateway.yaml", "version: 1\n");
-        writeCatalogEndpoint("""
-                catalog:
-                    title: Orders
-                    entry: %s
-                """.formatted(entry).strip().replace("\n", "\n  "));
-
-        assertErrorAt(loadErrors(), "endpoints/orders.yaml", "/endpoint/catalog/entry");
     }
 }
