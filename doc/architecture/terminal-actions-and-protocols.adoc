@@ -14,21 +14,23 @@ The upstream client is split by plane (link:../adr/0008-data-plane-transport.ado
 
 image::../resources/diagrams/downstream-client-planes.svg[Upstream client split into a streaming Vert.x data plane, a fixed SmallRye Fault Tolerance guard and a cui-http control plane, align=center]
 
-* *Data plane -- Vert.x `HttpClient`.* Proxied traffic is dispatched on the Vert.x client that runs
-  the edge: request and response bodies are piped as streams in both directions, and the transport
-  natively provides HTTP trailers (gRPC), raw upgrade streams (WebSocket) and upstream HTTP/2. One
-  shared client and connection pool is built once at boot per *distinct upstream target*
+* *Data plane -- Vert.x `HttpClient`.* Proxied traffic for HTTP, GraphQL, and gRPC routes is
+  dispatched on the Vert.x client that runs the edge: request and response bodies are piped as streams
+  in both directions, and the transport natively provides HTTP trailers (gRPC) and upstream HTTP/2.
+  One shared client and connection pool is built once at boot per *distinct upstream target*
   (`edge.assembly.UpstreamTarget`: scheme + host + port + forced HTTP/2, with shared egress TLS trust
   options). Every client not forced to HTTP/2 closes its connections abortively (`SO_LINGER 0`), so a
   connection closed after resetting an upstream request or evicting an idle connection ends in a TCP
   `RST` and holds no local port in `TIME_WAIT`. The forced-HTTP/2 (gRPC) client leaves its shared
-  connection open and resets only the offending stream.
+  connection open and resets only the offending stream. WebSocket routes use the edge-wide WebSocket
+  client and receive neither a per-target client nor connection pooling.
 
-* *Resilience -- SmallRye Fault Tolerance, programmatic.* One guard per upstream target and retry
-  setting (`edge.assembly.ResilienceShape`), built at boot and invoked around the dispatch call in the
-  edge layer (no annotations or CDI interception on the hot path). The pre-boot configuration model
-  carries `retry.enabled`, `retry.max_attempts` and `retry.idempotent_only`; only `retry.enabled`
-  acts, the other two stay bound and validated but unwired
+* *Resilience -- SmallRye Fault Tolerance, programmatic.* Built at boot for HTTP, GraphQL, and gRPC
+  routes: one guard per upstream target and retry setting (`edge.assembly.ResilienceShape`), invoked
+  around the dispatch call in the edge layer (no annotations or CDI interception on the hot path).
+  WebSocket routes receive no resilience guard (no programmatic retries or circuit breakers). The
+  pre-boot configuration model carries `retry.enabled`, `retry.max_attempts` and
+  `retry.idempotent_only`; only `retry.enabled` acts, the other two stay bound and validated but unwired
   (link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[ADR-0062]).
 +
 Retry is *stream-aware*: on a route with `retry.enabled`, the guard allows at most two retries
@@ -75,7 +77,9 @@ Each guarded dispatch is bounded until its response head by the fixed 30 s timeo
 *Two planes, two body shapes* (link:../adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]).
 `HttpResult<T>` body materialization is used on the control plane only. On the data plane the gateway
 streams bodies with backpressure (`ReadStream.pipeTo`/`Pipe`) and enforces
-`security_filter.max_body_bytes` as a streaming byte counter without buffering the payload.
+`security_filter.max_body_bytes` as a streaming byte counter on inbound request bodies without
+buffering the payload (proxied responses are unbuffered and not bounded by `max_body_bytes`; asset
+responses are capped separately by `AssetSource.DEFAULT_MAX_BYTES`).
 
 [[_asset_terminal_action]]
 == Asset Terminal Action
@@ -176,8 +180,9 @@ image::../resources/diagrams/protocol-handling.svg[Protocol handling for HTTP an
   (link:observability-and-errors.adoc#_trust_boundary_rejections[Rejections before the trust
   boundary]).
 
-* *GraphQL.* Routed and forwarded as standard HTTP (`POST`), applying body-size caps and path/header
-  checks without parsing GraphQL ASTs.
+* *GraphQL.* Routed and forwarded as standard HTTP (supporting all proxyable methods including `GET`,
+  `POST`, `PUT`, `DELETE` via `HttpProtocolProcessor`), applying body-size caps and path/header checks
+  without parsing GraphQL ASTs.
 
 Connections whose SNI is listed in `tls.passthrough_sni` are relayed at L4 and never reach the route
 table (link:tls-and-inbound-security.adoc#_tls_edge_accept_time_sni_split[TLS Edge]).

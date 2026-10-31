@@ -40,6 +40,8 @@ image::../resources/diagrams/event-categories-and-consumers.svg[Failure event ca
   ** `AUTHORIZATION`: `SCOPE_MISSING`, `CSRF_REJECTED`, `WEBSOCKET_ORIGIN_REJECTED`
   ** `UPSTREAM`: `UPSTREAM_ERROR`, `UPSTREAM_TIMEOUT`, `UPSTREAM_CIRCUIT_OPEN`
   ** `RATE_LIMITING`: `SOURCE_BLOCKED`
+  ** `CONFIGURATION`: `CONFIG_INVALID`, `AUTH_WEAKENED` (boot-only validation events that abort startup;
+     outside HTTP responses and request metrics)
 
 * Each category carries one slug (`input-validation`, `routing`, `authentication`, `authorization`,
   `upstream`, `rate-limiting`, `configuration`), used in the RFC 9457 problem type
@@ -299,8 +301,8 @@ as a *trailers-only* HTTP/2 response (`grpc-status` and `grpc-message` in the `H
 The `429` of a blocked source has no gRPC mapping: it is answered before route selection, so no route
 -- and no `protocol: grpc` -- is known when it is written, and it is always the `rate-limiting`
 problem document (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]).
-`grpc-message` carries only the category slug (e.g. `routing` for `404`/`405`). A call ended after
-response headers by the 5-minute stream-idle bound
+`grpc-message` carries only the category slug (e.g. `routing` for `404`/`405`) for gateway-generated
+rejection trailers. A call ended after response headers by the 5-minute stream-idle bound
 (link:tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound]) ends the relayed
 stream with trailers `grpc-status: 4` and `grpc-message: stream-idle-timeout`.
 
@@ -334,13 +336,14 @@ which downgrades both health and metrics on that single port and logs `WARN ApiS
 | `sheriff_errors_total{route,category,event}`
 | Counter of rejected/failed requests sourced from the event system. `category` is the `EventCategory`
   slug (`input-validation`, `routing`, `authentication`, `authorization`, `upstream`, `rate-limiting`);
-  `event` is the `EventType` name. Rejections rendered to the caller as the unrouted `404`
-  (<<_trust_boundary_rejections>>) are counted under their *true* `event` and `category`. An unexpected
-  internal failure answered that way is counted under `event="PRE_TRUST_INTERNAL_FAILURE"`
-  (`category="routing"`); every other unexpected failure is uncategorized and appears in the `5xx`
-  bucket of `sheriff_requests_total` only. A request from a source blocked by per-source detection is
-  counted under `event="SOURCE_BLOCKED"` (`category="rate-limiting"`) with the shared `"<no-route>"`
-  route value, because it is refused before route selection
+  `configuration` is excluded from request error metrics because configuration failures abort boot
+  before requests can be served. `event` is the `EventType` name. Rejections rendered to the caller as
+  the unrouted `404` (<<_trust_boundary_rejections>>) are counted under their *true* `event` and
+  `category`. An unexpected internal failure answered that way is counted under
+  `event="PRE_TRUST_INTERNAL_FAILURE"` (`category="routing"`); every other unexpected failure is
+  uncategorized and appears in the `5xx` bucket of `sheriff_requests_total` only. A request from a source
+  blocked by per-source detection is counted under `event="SOURCE_BLOCKED"` (`category="rate-limiting"`)
+  with the shared `"<no-route>"` route value, because it is refused before route selection
   (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]). Three direct
   rejections are counted only in `sheriff_requests_total{status_family="4xx"}`: unparseable HTTP
   method `405` (`method="OTHER"`), reserved OIDC path `404` when no BFF runtime is active, and

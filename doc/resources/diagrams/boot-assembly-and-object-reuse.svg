@@ -8,7 +8,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">Boot-time assembly, object reuse and per-request stack state</title>
-  <desc id="desc">A three-column block diagram. Column 1, Shared Immutable Boot Objects: SecurityPostures deduplicated per distinct filter shape; UpstreamClients Vert.x client and connection pool per distinct target; ResilienceShape SmallRye FT guards per target and retry setting; shared cache-backed TokenValidator; ForwardedHeaderResolver; compiled RouteTable. Column 2, Shared Bounded Mutable State: SmallRye circuit breaker rolling windows (20 calls); lock-free GatewayEventCounter and cui-http SecurityEventCounter; when BFF active, bounded session store (max_sessions, sweep), pending auth store, activity cookie codec. Column 3, Per-Request State: allocated on virtual-thread stack and never shared across requests (PipelineRequest, ResolvedForwarding, validated AccessTokenContent, matched Route reference, streamed body chunks); prevents cross-request bleed.</desc>
+  <desc id="desc">A three-column block diagram. Column 1, Shared Immutable Boot Objects: SecurityPostures deduplicated per distinct filter shape; UpstreamClients Vert.x client and connection pool per distinct target; ResilienceShape SmallRye FT guards per target and retry setting; shared cache-backed TokenValidator; ForwardedHeaderResolver; compiled RouteTable. Column 2, Shared Bounded Mutable State: SmallRye circuit breaker rolling windows (20 calls); lock-free GatewayEventCounter and cui-http SecurityEventCounter; when BFF active, bounded session store (max_sessions, sweep), pending auth store, activity cookie codec. Column 3, Per-Request State: allocated on virtual-thread stack and never shared across requests (PipelineRequest, ResolvedForwarding, validated AccessTokenContent, matched Route reference, stream references; body chunks stream on event-loop I/O); prevents cross-request bleed.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -68,7 +68,7 @@
   <text x="760" y="176" class="item">ResolvedForwarding</text>
   <text x="760" y="196" class="item">AccessTokenContent</text>
   <text x="760" y="216" class="item">matched Route reference</text>
-  <text x="760" y="236" class="item">streamed body chunks</text>
+  <text x="760" y="236" class="item">stream handles / piped I/O</text>
   <line class="sep" x1="748" y1="250" x2="996" y2="250"/>
   <text x="760" y="274" class="sub">minimal request-time allocation</text>
 

@@ -166,8 +166,9 @@ WebSocket routes.
 non-WebSocket route whose effective `cookies` block forwards any cookie and keeps `same_origin_check`
 on, attaching it as `Route.cookieOriginDefence`; a route with the check off gets none and logs
 `WARN ApiSheriff-139` at boot. The instance trusts the request's own origin (`scheme://host[:port]`,
-default ports normalized) plus `additional_origins`, requiring a matching `Origin` or
-`Sec-Fetch-Site: same-origin` on unsafe methods whenever `admittedCookiePairs` is non-empty. A failure
+default ports normalized) plus `additional_origins`, requiring a matching `Origin` (or, when `Origin`
+is absent, the fallback `Sec-Fetch-Site: same-origin`) on unsafe methods whenever
+`admittedCookiePairs` is non-empty. A failure
 raises `CSRF_REJECTED` (the unrouted `404` while `security_defaults.uniform_not_found` is on, else
 `403` / gRPC `PERMISSION_DENIED`; see
 link:observability-and-errors.adoc#_trust_boundary_rejections[Rejections before the trust boundary]).

@@ -38,8 +38,9 @@ reads that field, so requesting and checking cannot drift apart:
 * *Session check.* `SessionAuthenticationStage` compares the session's active scope set `A` against
   `neededScopes` on every request, after near-expiry refresh and before any bearer is recorded,
   regardless of `auth.token_relay`. When nothing is missing, the request continues with no IdP call.
-  When all missing scopes lie inside the session's granted scope set `S`, `TokenRefreshCoordinator`
-  runs a scope-driven refresh requesting `A ∪ missing` and re-checks the returned session. Otherwise a
+  When all missing scopes lie inside the session's granted scope set `S`, transparent refresh is
+  enabled, and the request still carries the current binding cookie, `TokenRefreshCoordinator` runs a
+  scope-driven refresh requesting `A ∪ missing` and re-checks the returned session. Otherwise a
   navigation is redirected `302` into a widening of the live session, and any other request is
   rejected `403 SCOPE_MISSING` whose problem body carries `missing_scopes` and, when
   `oidc.step_up.path` is configured, `step_up_url` (no `WWW-Authenticate` challenge). The `SESSION`
@@ -135,8 +136,9 @@ image::../resources/diagrams/bff-runtime-wiring.svg[BFF runtime wiring: edge dis
   validates its own parameter grammar (ADR-0019).
 
 * *Engine boundary.* Login initiation, callback code exchange, session widening, RP-initiated and
-  back-channel logout, transparent refresh and RFC 9470 step-up drive `token-sheriff-client` and add
-  only browser-facing concerns. Token material never lives outside the active `SessionBinding`.
+  back-channel logout and transparent refresh drive `token-sheriff-client` and add only
+  browser-facing concerns. RFC 9470 step-up is assembled but is not currently driven by the live edge.
+  Token material never lives outside the active `SessionBinding`.
 
 * *`BffRuntime` / `BffRuntimeProducer` CDI wiring.* `BffRuntime` is the single collaborator the edge
   consults, holding `SessionAuthenticationStage`, `CsrfDefence` and `dispatch(...)` for reserved

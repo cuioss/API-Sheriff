@@ -19,10 +19,10 @@ the active mode is a function of configuration.
 
 == Component Model
 
-An inbound request flows left to right through a fixed pipeline on a virtual thread. *Route matching
+An admitted request flows left to right through a fixed pipeline on a virtual thread. *Route matching
 is the deny-by-default gate*: a request matching no route reaches no upstream, and the forward
 policy filters headers and query parameters only *within* a route the request is already authorised
-for. The event system and metrics observe every stage.
+for. The event system and metrics record request outcomes and events across the pipeline.
 
 image::../resources/diagrams/request-pipeline.svg[API Sheriff inbound request pipeline across stages 0 through 7 and terminal action branches, align=center]
 

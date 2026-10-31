@@ -105,8 +105,9 @@ image::../resources/diagrams/boot-assembly-and-object-reuse.svg[Boot-time assemb
 |===
 
 *Per-request state (on the virtual-thread stack, never shared):* `PipelineRequest`,
-`ResolvedForwarding`, validated `AccessTokenContent`, the matched `Route` reference, and streamed
-request/response bodies.
+`ResolvedForwarding`, validated `AccessTokenContent`, the matched `Route` reference, and stream
+references. Streamed body chunks flow on the connection event loop with backpressure and are never
+buffered on the virtual-thread stack.
 
 *Security of shared objects.* Shared pipeline objects hold immutable configuration rather than
 per-request state, preventing cross-request bleed. Mutable shared state is confined to the upstream
