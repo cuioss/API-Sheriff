@@ -23,9 +23,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -36,6 +42,7 @@ import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.library.dependencies.Slices;
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
@@ -169,6 +176,37 @@ class EdgeSubPackageArchTest {
                 () -> assertTrue(PRODUCTION_CLASSES.contain(EDGE_ROOT_CLASS),
                         EDGE_ROOT_CLASS + " did not resolve, so the edge root package the second rule "
                                 + "protects may hold nothing"));
+    }
+
+    @Test
+    @DisplayName("doc/architecture/README.adoc edge sub-package table and count match declared sub-packages")
+    void edgeSubPackagesTableMatchesDeclared() throws Exception {
+        Path readme = RepositoryRoot.holding("doc/architecture/README.adoc").resolve("doc/architecture/README.adoc");
+        String content = Files.readString(readme);
+
+        Pattern sectionPattern = Pattern.compile("=== Edge Package Structure.*?(?=\\n== |\\z)", Pattern.DOTALL);
+        Matcher sectionMatcher = sectionPattern.matcher(content);
+        assertTrue(sectionMatcher.find(), "=== Edge Package Structure section must be present in doc/architecture/README.adoc");
+        String section = sectionMatcher.group(0);
+
+        Pattern rowPattern = Pattern.compile("^\\| `([a-z]+)`", Pattern.MULTILINE);
+        Matcher rowMatcher = rowPattern.matcher(section);
+        List<String> rawDocumented = new ArrayList<>();
+        while (rowMatcher.find()) {
+            rawDocumented.add(rowMatcher.group(1));
+        }
+
+        Set<String> declared = declaredSubPackagesOf(EDGE_ROOT, PRODUCTION_CLASSES);
+        Set<String> documented = new TreeSet<>(rawDocumented);
+
+        assertAll("doc/architecture/README.adoc edge sub-package contract",
+                () -> assertEquals(rawDocumented.size(), documented.size(),
+                        "The edge sub-package table contains duplicate rows: " + rawDocumented),
+                () -> assertEquals(declared, documented,
+                        "The edge sub-package table in doc/architecture/README.adoc must match the declared sub-packages exactly"),
+                () -> assertTrue(section.contains(declared.size() + " acyclic sub-packages")
+                        || section.contains("nine acyclic sub-packages"),
+                        "doc/architecture/README.adoc must state the exact count of acyclic sub-packages (" + declared.size() + ")"));
     }
 
     @Nested

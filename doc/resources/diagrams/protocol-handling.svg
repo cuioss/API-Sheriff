@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Protocol handling: HTTP/GraphQL, WebSocket and gRPC, plus the L4 passthrough bypass.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 320"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Protocol handling for HTTP, WebSocket and gRPC</title>
+  <desc id="desc">A three-column block diagram. Column 1, HTTP/1.1 and HTTP/2 with GraphQL: HTTP/2 is negotiated through ALPN h2 on terminated TLS; GraphQL is routed as standard HTTP POST with body-size caps and path and header checks and no AST parsing. Column 2, WebSocket: the full inbound pipeline runs on the upgrade request before 101, authentication is enforced at handshake, the Origin is validated against a fail-closed allowed_origins allowlist before dialling the upstream, frames are relayed opaquely after 101 bounded by websocket.idle_timeout_seconds, and no upstream response header is relayed on 101 or a refused upgrade. Column 3, gRPC including gRPCS: the upstream dial is forced to HTTP/2, leading headers and trailers pass the response predicate, calls idle for 5 minutes after response headers end with DEADLINE_EXCEEDED, the filter inspects HTTP metadata only, and rejections after the trust boundary are trailers-only responses. HTTP/3 and QUIC are deferred and L4 passthrough SNI connections never reach the route table.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="172" y="32" class="col-header">HTTP/1.1 · HTTP/2 · GraphQL</text>
+  <rect class="stroke" x="24" y="48" width="296" height="232" rx="6"/>
+  <text x="44" y="80" class="item-bold">HTTP/1.1 and HTTP/2</text>
+  <text x="56" y="102" class="sub">h2 negotiated via ALPN on terminated TLS</text>
+  <line class="sep" x1="44" y1="114" x2="300" y2="114"/>
+  <text x="44" y="138" class="item-bold">GraphQL</text>
+  <text x="56" y="160" class="sub">standard HTTP POST; body-size caps,</text>
+  <text x="56" y="178" class="sub">path/header checks, no AST parsing</text>
+  <line class="sep" x1="44" y1="190" x2="300" y2="190"/>
+  <text x="44" y="214" class="item-bold">Deferred: HTTP/3 / QUIC</text>
+
+  <text x="520" y="32" class="col-header">WebSocket</text>
+  <rect class="stroke" x="360" y="48" width="320" height="232" rx="6"/>
+  <text x="380" y="80" class="item-bold">Full pipeline before 101</text>
+  <text x="392" y="102" class="sub">filter, auth, forward policy, Cookie</text>
+  <text x="392" y="120" class="sub">authentication at handshake time</text>
+  <line class="sep" x1="380" y1="132" x2="660" y2="132"/>
+  <text x="380" y="156" class="item-bold">Origin allowlist (fail-closed)</text>
+  <text x="392" y="178" class="sub">checked before dialling the upstream</text>
+  <line class="sep" x1="380" y1="190" x2="660" y2="190"/>
+  <text x="380" y="214" class="item-bold">After 101</text>
+  <text x="392" y="236" class="sub">opaque frames; websocket.idle_timeout_seconds</text>
+  <text x="392" y="254" class="sub">no upstream response header relayed</text>
+
+  <text x="868" y="32" class="col-header">gRPC (incl. gRPCS)</text>
+  <rect class="stroke" x="720" y="48" width="296" height="232" rx="6"/>
+  <text x="740" y="80" class="item-bold">Upstream dial forced to h2</text>
+  <text x="752" y="102" class="sub">headers + trailers pass the predicate</text>
+  <line class="sep" x1="740" y1="114" x2="996" y2="114"/>
+  <text x="740" y="138" class="item-bold">5 min stream-idle bound</text>
+  <text x="752" y="160" class="sub">→ DEADLINE_EXCEEDED</text>
+  <line class="sep" x1="740" y1="172" x2="996" y2="172"/>
+  <text x="740" y="196" class="item-bold">Metadata-only inspection</text>
+  <text x="752" y="218" class="sub">post-trust rejection: trailers-only</text>
+  <text x="752" y="236" class="sub">pre-trust: uniform unrouted 404</text>
+
+  <text x="520" y="306" class="caption">SNI listed in tls.passthrough_sni is relayed at L4 and never reaches the route table.</text>
+</svg>

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Asset and redirect terminal actions: pipeline depth, governed envelope and boot-validated redirects.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 336"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Asset and redirect terminal actions</title>
+  <desc id="desc">A three-column block diagram. Column 1, the asset terminal action: the route runs the full fixed pipeline through stage 5, so an unauthorized request to an authenticated asset is rejected before the source is touched, then serves the buffered governed response from a boot-built source, either a local directory reader or a secondary-origin fetcher. Column 2, the shared AssetResponseEnvelope and sources: Content-Type from the gateway extension map with an add-only operator map refused at boot when restating a built-in extension, X-Content-Type-Options nosniff, Set-Cookie and hop-by-hop and identity headers stripped, no-store for authenticated assets, only GET and HEAD, path canonicalized and confined under the root; upstream assets use a dedicated client with scheme allowlist, no redirects, 5 s connect, 10 s read and a response byte cap. Column 3, the redirect terminal action: the route runs through stage 4 and RedirectStage answers before ForwardPolicyStage without contacting an upstream; the configured location is written verbatim and open-redirect rules are validated at boot by ConfigValidator.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="168" y="32" class="col-header">Asset Action</text>
+  <rect class="stroke" x="24" y="48" width="288" height="268" rx="6"/>
+  <text x="44" y="80" class="item-bold">Pipeline through Stage 5</text>
+  <text x="56" y="102" class="sub">headers, floor, route, verb gate,</text>
+  <text x="56" y="120" class="sub">thorough checks, auth, forward policy</text>
+  <line class="sep" x1="44" y1="132" x2="292" y2="132"/>
+  <text x="44" y="156" class="item-bold">Auth before source</text>
+  <text x="56" y="178" class="sub">unauthorized → rejected, source</text>
+  <text x="56" y="196" class="sub">never touched (bearer 401 → 404)</text>
+  <line class="sep" x1="44" y1="208" x2="292" y2="208"/>
+  <text x="44" y="232" class="item-bold">Boot-built asset source</text>
+  <text x="56" y="254" class="item">source: directory</text>
+  <text x="56" y="274" class="item">source: upstream</text>
+
+  <text x="524" y="32" class="col-header">Governed Envelope &amp; Sources</text>
+  <rect class="stroke" x="344" y="48" width="360" height="268" rx="6"/>
+  <text x="364" y="80" class="item-bold">AssetResponseEnvelope</text>
+  <text x="376" y="102" class="sub">Content-Type from gateway extension map</text>
+  <text x="376" y="120" class="sub">nosniff always; Set-Cookie stripped</text>
+  <text x="376" y="138" class="sub">authenticated → no-store</text>
+  <text x="376" y="156" class="sub">GET and HEAD only; path confined to root</text>
+  <line class="sep" x1="364" y1="168" x2="684" y2="168"/>
+  <text x="364" y="192" class="item-bold">Add-only content_types map</text>
+  <text x="376" y="214" class="sub">restating a built-in extension: boot refusal</text>
+  <line class="sep" x1="364" y1="226" x2="684" y2="226"/>
+  <text x="364" y="250" class="item-bold">UpstreamAssetSource egress</text>
+  <text x="376" y="272" class="sub">scheme allowlist · no redirects · 5 s / 10 s</text>
+  <text x="376" y="290" class="sub">bounded response bytes (GW-05)</text>
+
+  <text x="876" y="32" class="col-header">Redirect Action</text>
+  <rect class="stroke" x="736" y="48" width="280" height="268" rx="6"/>
+  <text x="756" y="80" class="item-bold">Pipeline through Stage 4</text>
+  <text x="768" y="102" class="sub">RedirectStage answers before</text>
+  <text x="768" y="120" class="sub">ForwardPolicyStage; no upstream</text>
+  <line class="sep" x1="756" y1="132" x2="996" y2="132"/>
+  <text x="756" y="156" class="item-bold">Open-redirect rules (boot)</text>
+  <text x="768" y="178" class="sub">internal: single-slash gateway path</text>
+  <text x="768" y="196" class="sub">external: allow_external, http(s),</text>
+  <text x="768" y="214" class="sub">host, no user-info; WARN 128</text>
+  <line class="sep" x1="756" y1="226" x2="996" y2="226"/>
+  <text x="768" y="250" class="sub">authenticated or Set-Cookie → no-store</text>
+
+</svg>

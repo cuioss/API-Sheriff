@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Error rendering decision: true-event recording, trust-boundary check, then response shape.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 318"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Rejection rendering: record the true event, apply the trust boundary, choose the response shape</title>
+  <desc id="desc">A three-column flow diagram. Column 1: ErrorResponseWriter.handleGatewayRejection records the rejection under its true event on the event counter, log record and sheriff_errors_total, feeds per-source detection and threat classification, then checks UniformNotFound.applies. Column 2, pre-trust window (route selection to the end of stage 4) with security_defaults.uniform_not_found on: the verb gate, thorough checks, CSRF defence, cookie same-origin check and bearer branch before token validation render as the unrouted 404 with route Set-Cookie dropped and pre-route headers restored, held to a 50 ms response-timing floor on a step grid plus under 20 ms jitter; an unexpected internal failure is answered the same way. Column 3, after the trust boundary or when the switch is off: the honest status is rendered as RFC 9457 application/problem+json, a trailers-only gRPC response on gRPC routes, or a negotiated HTML error page when portal.error_pages is on and the Accept header lists text/html; pre-pipeline bare-status rejections write a status with no body.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="172" y="32" class="col-header">1 · Record the True Event</text>
+  <rect class="stroke" x="24" y="48" width="296" height="250" rx="6"/>
+  <text x="44" y="80" class="item-bold">handleGatewayRejection</text>
+  <text x="56" y="102" class="sub">event counter · log record</text>
+  <text x="56" y="120" class="sub">sheriff_errors_total{event}</text>
+  <text x="56" y="138" class="sub">recon + threat feeds (true event)</text>
+  <line class="sep" x1="44" y1="150" x2="300" y2="150"/>
+  <text x="44" y="174" class="item-bold">UniformNotFound.applies?</text>
+  <text x="56" y="196" class="sub">uniform_not_found on (default)</text>
+  <text x="56" y="214" class="sub">and rejection raised pre-trust</text>
+
+  <text x="528" y="32" class="col-header">2 · Pre-Trust Window → 404</text>
+  <rect class="stroke" x="360" y="48" width="336" height="250" rx="6"/>
+  <text x="380" y="80" class="item-bold">Stage 2 → end of Stage 4</text>
+  <text x="392" y="102" class="sub">verb gate · thorough checks · CSRF ·</text>
+  <text x="392" y="120" class="sub">same-origin · bearer before validation</text>
+  <line class="sep" x1="380" y1="132" x2="676" y2="132"/>
+  <text x="380" y="156" class="item-bold">Rendered as unrouted 404</text>
+  <text x="392" y="178" class="sub">pre-route headers restored,</text>
+  <text x="392" y="196" class="sub">route Set-Cookie dropped</text>
+  <line class="sep" x1="380" y1="208" x2="676" y2="208"/>
+  <text x="380" y="232" class="item-bold">Response-timing floor</text>
+  <text x="392" y="254" class="sub">50 ms step grid + &lt; 20 ms jitter</text>
+  <text x="392" y="272" class="sub">overruns → sheriff_uniform_not_found_*</text>
+
+  <text x="876" y="32" class="col-header">3 · Honest Shapes</text>
+  <rect class="stroke" x="736" y="48" width="280" height="250" rx="6"/>
+  <text x="756" y="80" class="item-bold">Post-trust or switch off</text>
+  <text x="768" y="102" class="sub">true status, no 404 rewrite</text>
+  <line class="sep" x1="756" y1="114" x2="996" y2="114"/>
+  <text x="756" y="138" class="item-bold">problem+json (RFC 9457)</text>
+  <text x="756" y="166" class="item-bold">gRPC trailers-only</text>
+  <text x="756" y="194" class="item-bold">Negotiated HTML page</text>
+  <text x="768" y="216" class="sub">portal.error_pages + text/html Accept</text>
+  <line class="sep" x1="756" y1="228" x2="996" y2="228"/>
+  <text x="768" y="252" class="sub">bare status, no body: body-floor 413,</text>
+  <text x="768" y="270" class="sub">admission 503, reserved 404/405</text>
+
+  <line class="arrow" x1="324" y1="173" x2="356" y2="173" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="700" y1="173" x2="732" y2="173" marker-end="url(#arrow)"/>
+</svg>

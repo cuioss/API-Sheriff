@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TLS edge accept-time SNI split and two server-TLS policy binding seams.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-flow.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 390"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">TLS edge accept-time SNI split and two server-TLS policy binding seams</title>
+  <desc id="desc">A multi-track flow diagram. On the top two tracks, an inbound TLS connection enters the Vert.x NetServer front listener, which parses the cleartext ClientHello SNI. If the SNI is listed in tls.passthrough_sni, the intact byte stream is relayed at L4 to the passthrough backend, which terminates TLS with its own certificate. Any other SNI (or none) fails closed to the terminated L7 HTTPS listener, which applies TlsServerCustomizer and MtlsServerCustomizer from gateway.yaml, runs the Host-vs-SNI smuggle guard (rejecting any Host matching a passthrough SNI with 404 PASSTHROUGH_HOST_SMUGGLED), and enters the request pipeline. On the bottom track, NeutralTlsConfigSource reads management.tls.enabled from gateway.yaml before CDI startup and projects quarkus.management.tls-configuration-name onto the management interface.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .stage      { font-size: 13px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .mono       { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .track      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .dash       { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+    </style>
+  </defs>
+
+  <!-- Inbound entry -->
+  <circle cx="32" cy="144" r="4" class="stroke"/>
+  <line class="track" x1="36" y1="144" x2="64" y2="144" marker-end="url(#arrow)"/>
+
+  <!-- Front listener box -->
+  <rect class="stroke" x="68" y="104" width="184" height="80" rx="6"/>
+  <text x="160" y="92"  class="stage">NetServer Front Listener</text>
+  <text x="160" y="130" class="mono">reassembles ClientHello</text>
+  <text x="160" y="148" class="mono">reads cleartext SNI</text>
+  <text x="160" y="168" class="sub">fail-closed accept split</text>
+
+  <!-- Split junction -->
+  <line class="track" x1="252" y1="144" x2="284" y2="144"/>
+  <circle cx="288" cy="144" r="4" class="stroke"/>
+
+  <!-- Top Track: Passthrough L4 Relay -->
+  <path class="track" d="M 288 140 L 288 68 L 444 68" marker-end="url(#arrow)"/>
+  <text x="366" y="58" class="mono">SNI ∈ passthrough_sni</text>
+  <rect class="stroke" x="448" y="36" width="216" height="64" rx="6"/>
+  <text x="556" y="60" class="stage">Opaque L4 TCP Relay</text>
+  <text x="556" y="80" class="sub">undecrypted bytes (ClientHello intact)</text>
+
+  <line class="track" x1="664" y1="68" x2="788" y2="68" marker-end="url(#arrow)"/>
+  <rect class="stroke" x="792" y="36" width="240" height="64" rx="6"/>
+  <text x="912" y="60" class="stage">Passthrough Backend</text>
+  <text x="912" y="80" class="sub">completes TLS with own certificate</text>
+
+  <!-- Middle Track: Terminated L7 Listener -->
+  <path class="track" d="M 288 148 L 288 208 L 444 208" marker-end="url(#arrow)"/>
+  <text x="366" y="198" class="sub">any other SNI, or none</text>
+  <rect class="stroke" x="448" y="168" width="216" height="80" rx="6"/>
+  <text x="556" y="156" class="stage">Seam 1 · Terminated HTTPS</text>
+  <text x="556" y="192" class="mono">TlsServerCustomizer</text>
+  <text x="556" y="210" class="mono">MtlsServerCustomizer</text>
+  <text x="556" y="230" class="sub">min_version · ciphers · alpn · mtls</text>
+
+  <line class="track" x1="664" y1="208" x2="696" y2="208" marker-end="url(#arrow)"/>
+  <rect class="stroke" x="700" y="168" width="204" height="80" rx="6"/>
+  <text x="802" y="156" class="stage">Host-vs-SNI Guard</text>
+  <text x="802" y="192" class="mono">Host ∈ passthrough_sni?</text>
+  <text x="802" y="210" class="mono">→ 404 before routing</text>
+  <text x="802" y="230" class="sub">PASSTHROUGH_HOST_SMUGGLED</text>
+
+  <line class="track" x1="904" y1="208" x2="924" y2="208" marker-end="url(#arrow)"/>
+  <rect class="stroke" x="928" y="176" width="120" height="64" rx="6"/>
+  <text x="988" y="202" class="stage">Stages 2 – 7</text>
+  <text x="988" y="222" class="sub">route &amp; dispatch</text>
+
+  <!-- Divider before Management Seam -->
+  <line class="dash" x1="68" y1="272" x2="1048" y2="272"/>
+
+  <!-- Bottom Track: Seam 2 Management Listener -->
+  <rect class="stroke" x="68" y="292" width="220" height="56" rx="6"/>
+  <text x="178" y="316" class="mono">gateway.yaml (management)</text>
+  <text x="178" y="334" class="sub">pre-CDI SnakeYAML read (ADR-0010 caps)</text>
+
+  <line class="track" x1="288" y1="320" x2="444" y2="320" marker-end="url(#arrow)"/>
+  <text x="366" y="310" class="sub">single-ordinal source</text>
+
+  <rect class="stroke" x="448" y="292" width="300" height="56" rx="6"/>
+  <text x="598" y="314" class="stage">Seam 2 · NeutralTlsConfigSource</text>
+  <text x="598" y="334" class="mono">quarkus.management.tls-configuration-name</text>
+
+  <line class="track" x1="748" y1="320" x2="788" y2="320" marker-end="url(#arrow)"/>
+  <rect class="stroke" x="792" y="292" width="256" height="56" rx="6"/>
+  <text x="920" y="314" class="stage">Management Interface (:9000)</text>
+  <text x="920" y="334" class="sub">/q/health · /q/metrics (HTTPS default)</text>
+
+  <!-- Footer caption -->
+  <text x="540" y="374" class="caption">Boot validation also refuses any route whose match.host equals a passthrough SNI.</text>
+</svg>

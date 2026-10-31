@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Why the OIDC callback uses response_mode=query instead of form_post.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 296"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">OIDC callback response mode: query instead of form_post</title>
+  <desc id="desc">A three-column block diagram. Column 1, form_post (the engine default, overridden): the identity provider auto-submits a cross-site POST to the callback, browsers withhold the SameSite=Lax browser-binding cookie on that request, and every login failed with 403. Column 2, response_mode=query (chosen on login, session widening and step-up): the identity provider redirects with 302 and the code is delivered as a top-level GET navigation with no body, so the SameSite=Lax cookie __Host-sheriff-binding is sent; relaxing it to SameSite=None was rejected. Column 3, controls bounding the authorization code in the URL: mandatory PKCE S256, single-use short-lived codes, and the browser-binding cookie with a constant-time state check answering 403 on mismatch; the callback is excluded from the reserved-body read allowlist.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="172" y="32" class="col-header">form_post (overridden)</text>
+  <rect class="stroke" x="24" y="48" width="296" height="228" rx="6"/>
+  <text x="44" y="80" class="item-bold">IdP auto-submits POST</text>
+  <text x="56" y="102" class="sub">cross-site POST to oidc.redirect_uri</text>
+  <text x="56" y="120" class="sub">SameSite=Lax cookie not sent</text>
+  <text x="56" y="138" class="sub">→ binding cookie missing → 403</text>
+  <line class="sep" x1="44" y1="150" x2="300" y2="150"/>
+  <text x="56" y="174" class="sub">every login failed under this mode</text>
+
+  <text x="520" y="32" class="col-header">query (chosen)</text>
+  <rect class="stroke" x="360" y="48" width="320" height="228" rx="6"/>
+  <text x="380" y="80" class="item-bold">response_mode=query</text>
+  <text x="392" y="102" class="sub">QueryResponseModeAuthorizationRequestBuilder</text>
+  <text x="392" y="120" class="sub">login · session widening · step-up</text>
+  <text x="392" y="138" class="sub">302 → callback?code&amp;state, a</text>
+  <text x="392" y="156" class="sub">top-level GET with no body</text>
+  <text x="392" y="174" class="sub">SameSite=Lax cookie is sent</text>
+  <line class="sep" x1="380" y1="186" x2="660" y2="186"/>
+  <text x="380" y="210" class="item-bold">__Host-sheriff-binding</text>
+  <text x="392" y="232" class="sub">Secure · HttpOnly · Path=/ · Lax</text>
+  <text x="392" y="250" class="sub">SameSite=None considered, rejected</text>
+
+  <text x="868" y="32" class="col-header">Bounding the Code in the URL</text>
+  <rect class="stroke" x="720" y="48" width="296" height="228" rx="6"/>
+  <text x="740" y="80" class="item-bold">PKCE (S256) mandatory</text>
+  <text x="752" y="102" class="sub">verifier held in the gateway</text>
+  <line class="sep" x1="740" y1="114" x2="996" y2="114"/>
+  <text x="740" y="138" class="item-bold">Single-use, short-lived code</text>
+  <text x="752" y="160" class="sub">at the IdP token endpoint</text>
+  <line class="sep" x1="740" y1="172" x2="996" y2="172"/>
+  <text x="740" y="196" class="item-bold">Binding cookie + state check</text>
+  <text x="752" y="218" class="sub">constant-time compare; 403 on mismatch</text>
+
+</svg>
