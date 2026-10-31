@@ -16,9 +16,10 @@
 
 Accepted
 
-This decision amends link:0007-anchor-scoped-policy.adoc[ADR-0007] (Amendment A2) and
-link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]
-(Amendment A1).
+This decision is the one resolution behind
+link:0007-anchor-scoped-policy.adoc#_policy_block_resolution_rule[ADR-0007, one declared rule resolved by `PolicyBlock`]
+and the endpoint scope of
+link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc#_forward_block_scopes[ADR-0036, declarable at endpoint and route].
 
 == Decision
 

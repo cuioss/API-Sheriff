@@ -124,8 +124,10 @@ address that certificate does not name. The right answer there is to fix the cer
 *Petition the library to lift the guard.* Ask the token-validation library to allow
 `verifyHostname(false)` with a caller-supplied `sslContext`. Rejected because the guard is correct. The
 library cannot relax a context it did not build without rebuilding it, silently discarding the caller's
-key managers, protocols and parameters. ADR-0022 adopts an upstream hardening decision instead of arguing
-it down, and the same posture applies to a guard. Requesting the change would also make the gateway's
+key managers, protocols and parameters. The
+link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes]
+adopts an upstream hardening decision instead of arguing it down, and the same posture applies to a
+guard. Requesting the change would also make the gateway's
 correctness depend on a third party accepting a weakening.
 
 Every rejected option moves security-critical TLS code into the gateway to widen the relaxation's reach.
@@ -183,7 +185,7 @@ collision refusal is the smaller price.
 * link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040 -- Egress TLS] -- the `egress_tls` block, the key names and the egress-TLS principle this record applies.
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045 -- BFF back-channel posture] -- the same principle on the other identity-provider leg.
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011 -- Neutral names] -- the seam that owns `jwks.tls_profile` and its refusals.
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022 -- Upstream security defaults] -- why the passthrough is called on both paths and the guard is adopted.
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects -- Upstream security defaults] -- why the passthrough is called on both paths and the guard is adopted.
 * link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027 -- Token-validation extension beans] -- the boundary posture toward the same library. Superseded by link:0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074], which states that posture at token-sheriff 0.9.8.
 * link:../user/tls-scenarios.adoc#_scenario_relax_hostname_verification[TLS Scenarios -- Relax outbound hostname verification] and link:../user/tls-scenarios.adoc#_scenario_private_ca_idp[Private-CA identity provider] -- the operator view of the key, the collision and its way out.
 * link:../configuration.adoc#_egress_tls[Configuration Reference -- `egress_tls`] -- the field contract.

@@ -134,7 +134,7 @@ The second half is the reversal conditions. A decision declined for now without 
 
 * link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]: the ruling that trust material is deployment-supplied, which this record implements the mechanism for and does not revisit
 * link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]: the delivered decision that rests on the single-executable property this record preserves
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]: the adopt-and-document posture this record's answer follows
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]: the adopt-and-document posture this record's answer follows
 * link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the platform bundle]: the operator route, the hazard and the recipe
 * link:../security-threat-model.adoc[Security threat model]: GW-06's trust-root replacement entry and its accepted residual risk
 * link:../LogMessages.adoc[Log messages]: `ApiSheriff-17` and `ApiSheriff-122`

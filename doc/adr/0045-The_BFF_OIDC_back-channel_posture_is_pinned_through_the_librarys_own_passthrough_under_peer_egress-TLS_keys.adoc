@@ -131,9 +131,8 @@ the native build.
 === A fitness function guards against an unbound leg
 
 A hand-written leg enumeration does not notice the construction site it omits, so the standing guard is
-a property instead: `EgressTlsPostureArchTest`, in the
-four-leg shape of
-link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030],
+a property instead: `EgressTlsPostureArchTest`, in the four-leg
+link:../development/test-corpus-integrity.adoc#fitness-function-shape[fitness-function shape],
 fails the build when production code calls an egress TLS-client construction target without calling
 that target's posture method in the same class. `ClientConfiguration#builder()` is one mapped target,
 with `verifyHostname` as its posture method. Removing the call from the producer turns the rule red,
@@ -143,8 +142,9 @@ naming the producer.
 
 *Leave the leg on the library default.* Bind nothing, and rely on the library keeping hostname
 verification on. Rejected because it makes a security property of the gateway a property of a
-dependency's release notes. ADR-0022 requires an upstream default change to be adopted deliberately,
-and a posture the gateway never sets can only be inherited. It would also leave operators with a
+dependency's release notes. The
+link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes]
+requires an upstream default change to be adopted deliberately, and a posture the gateway never sets can only be inherited. It would also leave operators with a
 private-CA or name-mismatched IdP no answer.
 
 *Reuse `jwks_verify_hostname` for both IdP legs.* Treat "the identity provider" as one egress surface.
@@ -227,8 +227,8 @@ key named for the leg, and is implemented by the library that owns the connectio
 * link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040 -- Egress TLS] -- the `egress_tls` block, the surface rule and the egress-TLS principle this record applies.
 * link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041 -- JWKS hostname verification] -- the same principle on the JWKS leg, and the rejected hand-rolled options.
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011 -- Neutral names] -- the trust-profile seam and its refusals, shared with this leg.
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022 -- Upstream security defaults] -- why the passthrough is called on both paths.
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030 -- Fitness functions] -- the four-leg shape of the posture guard.
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects -- Upstream security defaults] -- why the passthrough is called on both paths.
+* link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-corpus integrity -- Fitness-function shape] -- the four-leg shape of the posture guard.
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode] -- the BFF whose IdP client this leg is.
 * link:../user/tls-scenarios.adoc#_scenario_bff_oidc_back_channel[TLS Scenarios -- Reach the BFF identity provider] and link:../user/tls-edge.adoc#_egress_tls[TLS Edge -- Egress TLS] -- the operator view.
 * link:../configuration.adoc#_oidc_back_channel_posture[Configuration Reference -- The BFF OIDC back-channel] -- the field contracts.

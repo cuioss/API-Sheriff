@@ -233,7 +233,7 @@ The decision covers some adjacent concerns and declines others:
 
 * link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]
   -- the general admission budget and the relay sub-budget the probe exhausts
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+* link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-Corpus Integrity, fitness-function shape]
   -- the control legs a fitness function ships with; the negative control here is the matching leg
 * link:../development/README.adoc#_test_lanes[Developer documentation, "Test Lanes: Which Lane Owns Which Defect Class"]
   -- the defect-class-to-lane table and the recipe for a new resource bound

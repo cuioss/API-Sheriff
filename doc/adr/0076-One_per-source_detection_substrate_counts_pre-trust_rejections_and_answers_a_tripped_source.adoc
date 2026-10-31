@@ -114,8 +114,8 @@ a header.
 | `delay`
 | The recon rejections of a tripped source are released no earlier than admission plus
   `delay_millis`. `edge.end.ResponseDelay` holds them on a timer, and each held answer takes a permit
-  of the held-answer sub-budget (link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#amendment-a1[ADR-0073,
-  Amendment A1]). The uniform `404` floor still applies, and the later release wins. Requests the
+  of the held-answer sub-budget (link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#_held_answer_sub_budget[ADR-0073,
+  held-answer sub-budget]). The uniform `404` floor still applies, and the later release wins. Requests the
   gateway serves are never delayed. One tripped source's held answers count against its share of
   that sub-budget, an eighth of it and at least one (`EdgeHardeningOptions.heldAnswerSourceShare`);
   while the share is used up, each further request from the source is answered before admission
@@ -143,7 +143,7 @@ operator opts into `block` or `delay` once the deployment's source addresses are
 client, directly or through `forwarded.trusted_proxies`.
 
 The availability cost of a scan does not depend on this default. A held answer leaves the general
-admission pool for the held-answer sub-budget (ADR-0073, Amendment A1). A scan therefore draws on the
+admission pool for the held-answer sub-budget of ADR-0073. A scan therefore draws on the
 pool that trusted traffic is admitted from only while a probe is processed and, for a probe refused
 the hold, until the floor's release time. The secure-defaults rule is met without a default `block`.
 
@@ -286,7 +286,7 @@ admission.
 * link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
   sources and enumeration detection] -- the operator guide
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-  -- the uniform `404`, the trust boundary and the held-answer sub-budget of Amendment A1
+  -- the uniform `404`, the trust boundary and the held-answer sub-budget
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
   -- the rule this record gives its reason under
 * link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]
