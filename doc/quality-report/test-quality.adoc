@@ -452,8 +452,10 @@ coupling that is genuinely unusual rigor.
 
 === Unit-test counts and run time
 
-Test counts measured on 2026-10-31 on the developer build host, not in CI, by
-`test -pl api-sheriff -am`. Run times measured on 2026-10-30 by
+This section is measured later than the report's `b54eb12` snapshot, and each figure names its own
+revision; the other sections stay at the snapshot. Test counts were measured on 2026-10-31 on the
+developer build host, not in CI, by `test -pl api-sheriff -am`, on the tree that added them. Run times
+and coverage were measured on 2026-10-30 at `35c47791`, before four tests were restored, by
 `clean verify -Pcoverage -pl api-sheriff -am`, which took 12 minutes 43 seconds for the whole build.
 Its surefire reports sum to 416 seconds of test time; the executions overlap, so that figure is not
 elapsed time.
@@ -462,10 +464,10 @@ elapsed time.
 |===
 | Surefire execution | Tests run | Skipped
 
-| `default-test`       | 5745 | 2
+| `default-test`       | 5747 | 2
 | `quarkus-fork-tests` |  119 | 0
 | `isolated-fork-tests` | 1236 | 0
-| *Total*              | *7100* | *2*
+| *Total*              | *7102* | *2*
 |===
 
 === Test homes of the edge classes without a test of their own

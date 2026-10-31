@@ -2303,8 +2303,10 @@ and asserts that both cookie services reach the one committed sealing-key file.
 
 `config/model/ConfigModelContractTest.anchorConfigExposesEveryPolicyBlock`, a shape (a) `keep` of
 <<unit-lane-audit>>, no longer exists. It read the values its own fixture had just set back through
-the record's generated accessors. The `AnchorConfig` case of `shouldHonorValueObjectContract` covers
-the record. The verdict on `routing/RouteTest.shouldCarryMaterializedEffectivePosture`, which cites
+the record's generated accessors. No test now asserts those component values directly: the `AnchorConfig`
+case of `shouldHonorValueObjectContract` checks `equals`, `hashCode` and `toString` only. The removal
+was accepted because the accessors are generated, not because another test repeats the check. The
+verdict on `routing/RouteTest.shouldCarryMaterializedEffectivePosture`, which cites
 this method as the precedent for its narrow scope, is unchanged.
 
 === Two unflagged tests that gained an assertion

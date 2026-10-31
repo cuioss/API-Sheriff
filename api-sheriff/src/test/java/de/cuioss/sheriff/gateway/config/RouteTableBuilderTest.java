@@ -661,6 +661,18 @@ class RouteTableBuilderTest {
 
             assertEquals(Set.of(HttpMethod.PUT), find(table, "r").effectiveAllowedMethods());
         }
+
+        @Test
+        @DisplayName("Should fall back to the global list when the endpoint declares none")
+        void shouldFallBackToGlobalList() {
+            GatewayConfig config = validGateway().allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST)).build();
+            EndpointConfig endpoint = openEndpointSeed("orders", "ORDERS")
+                    .routes(List.of(routeConfig("r", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(Set.of(HttpMethod.GET, HttpMethod.POST), find(table, "r").effectiveAllowedMethods());
+        }
     }
 
     @Nested
@@ -681,6 +693,20 @@ class RouteTableBuilderTest {
             Route resolved = find(table, "r");
             assertEquals(Require.BEARER, resolved.effectiveAuth().require(), "the anchor auth floor should materialize");
             assertEquals("api", resolved.anchor(), "the resolving anchor name should be retained");
+        }
+
+        @Test
+        @DisplayName("Should materialize the anchor allowed_methods when the endpoint declares none")
+        void shouldMaterializeAnchorAllowedMethods() {
+            GatewayConfig config = validGateway().anchors(Map.of("api", anchor("api", "/api",
+                    auth(Require.BEARER), null, List.of(HttpMethod.GET), null))).build();
+            EndpointConfig endpoint = anchoredEndpointSeed("orders", "ORDERS", "api")
+                    .routes(List.of(prefixRoute("r", "/api/orders", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(Set.of(HttpMethod.GET), find(table, "r").effectiveAllowedMethods(),
+                    "the anchor allowed_methods should materialize when the endpoint declares none");
         }
 
         @Test
