@@ -51,11 +51,13 @@ Only upstream failures count. Client-ended dispatches -- body-cap breaches, abor
   (link:tls-and-inbound-security.adoc#_request_body_deadline[Request-body deadline]) -- are neither
   failures nor retried (SmallRye records skipped `GatewayException` outcomes as successes).
 +
-Each guarded dispatch is bounded until its response head by the fixed 30 s timeout
+Each attempt of a guarded dispatch is bounded until its response head by the fixed 30 s timeout
   (`UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS = 30`; `upstream.connect_timeout_ms` and
   `upstream.read_timeout_ms` are parsed into config records but not wired to the data-plane client).
-  The edge's inbound idle timeout can reap a connection before it fires, ending the dispatch as a
-  client-ended abort. Post-response upstream resets on early-answered uploads happen after the guarded
+  The timeout sits inside the retry, so on a route with `retry.enabled` an attempt that times out is
+  retried when the retry predicate admits it, and such a dispatch can last three attempts, about 90 s.
+  The edge's 60 s inbound idle timeout is longer than one attempt, so it can reap the connection first
+  only across attempts; the dispatch then ends as a client-ended abort. Post-response upstream resets on early-answered uploads happen after the guarded
   call has returned and are invisible to the breaker
   (link:tls-and-inbound-security.adoc#_http2_post_response_reset[HTTP/2 post-response reset]).
 

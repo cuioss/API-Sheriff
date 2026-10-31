@@ -151,7 +151,7 @@ endpoint:
         rewrite_location: false    # default false. true maps an upstream Location pointing
                                    #   inside this route's upstream back onto /api/orders
         connect_timeout_ms: 2000   # INERT today: parsed, read by nothing -- every
-        read_timeout_ms: 5000      #   dispatch runs under the guard's fixed 30 s timeout
+        read_timeout_ms: 5000      #   attempt runs under the guard's fixed 30 s timeout
         retry: { max_attempts: 3, idempotent_only: true }
                                    # INERT today: only retry.enabled acts (two retries,
                                    #   100 ms apart); max_attempts and idempotent_only are
@@ -1197,7 +1197,7 @@ deployment that never writes it keeps the behaviour shown here.
   is reused only when no body chunk had been forwarded; otherwise it is closed and the next request
   opens a new one. Not applied to bodyless requests or
   `protocol: grpc` routes; not configurable. Shorter than the upstream guard's 30 s timeout, which
-  bounds the dispatch until the upstream's response head. See
+  bounds each upstream attempt until the upstream's response head. See
   link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout].
 
 | Request-body deadline

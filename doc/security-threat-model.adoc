@@ -1576,7 +1576,7 @@ bound is recorded as `INFO` `ApiSheriff-25`. All three records are latched per r
 *Residual (accepted).* A body may hold its upstream connection for up to 25 s from the start of its
 attempt while it keeps arriving. A body the upstream is not taking data for when the deadline passes
 is ended only once the upstream reads it again; until then the upstream holds it, and before the
-response head the guard's 30 s timeout ends that dispatch. A gRPC call has no bound on its total
+response head the guard's 30 s timeout ends that attempt. A gRPC call has no bound on its total
 duration: a call that carries a frame at least every five minutes stays open, as long-lived streaming
 calls are normal for gRPC (ADR-0060).
 

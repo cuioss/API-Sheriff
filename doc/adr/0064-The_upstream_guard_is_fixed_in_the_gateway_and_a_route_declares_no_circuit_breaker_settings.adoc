@@ -63,8 +63,8 @@ The header carries no jitter. It states the breaker's real window on this node. 
 
 The other per-route upstream keys share the defect and are not decided here:
 
-* `connect_timeout_ms` and `read_timeout_ms` are bound into the model and read by nothing. The upstream client is built without a connect or idle timeout, and the guard applies a fixed 30 s timeout to every dispatch.
-* `retry.max_attempts` and `retry.idempotent_only` are bound and read by nothing. Only `retry.enabled` acts. A route that enables retry gets two retries 100 ms apart, gated by the stream-aware retry predicate.
+* `connect_timeout_ms` and `read_timeout_ms` are bound into the model and read by nothing. The upstream client is built without a connect or idle timeout, and the guard applies a fixed 30 s timeout to every attempt of a dispatch.
+* `retry.max_attempts` and `retry.idempotent_only` are bound and read by nothing. Only `retry.enabled` acts. A route that enables retry gets two retries 100 ms apart, gated by the stream-aware retry predicate, and each retry gets its own 30 s timeout.
 
 Each needs its own decision, wire it or remove it, and the code-correctness report records it as open until it gets one.
 
