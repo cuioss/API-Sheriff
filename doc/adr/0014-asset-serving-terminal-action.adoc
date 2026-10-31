@@ -55,7 +55,7 @@ Both sources serve through `AssetResponseEnvelope`: a fixed content-type map (th
 
 Asset routes carry no `forward` block, which under the three-mode model (link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]) would resolve forward-all. It does not matter. The edge computes the forward projection for every route, but the asset branch takes the terminal action without consuming it: the confined path and the request method alone resolve the source, and no client header or query parameter is carried into it. A `source: upstream` fetch is the gateway's own request. An asset route's exposure is bounded by authorization before source resolution, the confinement and the envelope, never by a forward list, so no asset descriptor needs a `forward` block to hold its posture.
 
-[[amendment-a1]]
+[[_redirect_and_exact_routes]]
 === Redirect and exact routes
 
 * *`redirect` is a terminal action.* The gateway answers a redirect route with the configured `status` (`301`, `302`, `303`, `307` or `308`) and `Location`, and never contacts an upstream. The status is mandatory, because browsers cache `301` and `308` and permanence should be an explicit operator choice. The `location` is written verbatim and reviewed for open-redirect spellings at boot. An external target requires the explicit `allow_external` opt-in. `keep_query` carries the raw inbound query string.

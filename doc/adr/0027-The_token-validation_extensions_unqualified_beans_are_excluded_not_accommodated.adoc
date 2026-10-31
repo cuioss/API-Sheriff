@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The gateway drives token validation from gateway.yaml through the @GatewayValidator qualifier and never uses the token-validation extension's unqualified validator, so every extension bean that reaches it — two health probes and a scheduled metrics collector — is removed from the bean set rather than configured into a working state; the extension dependency itself stays for the GraalVM reflection registration the gateway does use, and the resulting readiness `jwks` datum is a boot-time constructibility fact rather than a live signal. AMENDED (A1): the live-signal gap section 5 records is closed — the gateway installs its own JWKS loader per issuer, readiness reads a non-fetching per-issuer key-set state and reports DOWN while any issuer has no key set, and a failed load is retried on a bounded backoff; the exclusion and the eager-boot fail-closed disposition are unchanged.
+// summary: The gateway drives token validation from gateway.yaml through the @GatewayValidator qualifier and never uses the token-validation extension's unqualified validator, so every extension bean that reaches it — two health probes and a scheduled metrics collector — is removed from the bean set rather than configured into a working state; the extension dependency itself stays for the GraalVM reflection registration the gateway does use, and the resulting readiness `jwks` datum is a boot-time constructibility fact rather than a live signal. The live key-set readiness section closes the live-signal gap section 5 records — the gateway installs its own JWKS loader per issuer, readiness reads a non-fetching per-issuer key-set state and reports DOWN while any issuer has no key set, and a failed load is retried on a bounded backoff; the exclusion and the eager-boot fail-closed disposition are unchanged.
 // tags: health-checks, readiness, metrics, scheduler, cdi, bean-exclusion, observability, extension-boundary, native-image, token-validation
 // affects: api-sheriff
 // supersedes:
@@ -89,8 +89,8 @@ forbids.
 The exclusion names the health and metrics packages of the extension's Quarkus wiring and nothing
 else. It is specifically *not* a blanket disable of extension-contributed health checks, *not* a
 disable of the scheduler, and not any other global switch. Blanket-disabling a security-relevant
-readiness check to force a probe green is refused under the posture of
-link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022];
+readiness check to force a probe green is refused under the
+link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes];
 disabling the scheduler wholesale would silently take out any scheduled job this gateway itself later
 wants. The narrow exclusion removes beans that observe nothing here, whereas a global switch would
 also remove beans that observe something, and would keep doing so silently as the dependency set
@@ -126,8 +126,8 @@ so it is not tried again from scratch:
   ten-second failure is genuinely gone -- but that makes resolvability unable to distinguish the
   healthy state from the broken one, so it cannot carry the assertion.
 * *Enumerating the container's beans and comparing them to the exclusion list is a membership
-  snapshot,* which
-  link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  snapshot,* which the
+  link:../development/test-corpus-integrity.adoc#fitness-function-shape[fitness-function shape]
   forbids: a rule asserts a property, never equality with today's members. Such a rule would fail on
   every legitimate extension upgrade that adds an unrelated bean, and would be relaxed away.
 
@@ -158,9 +158,9 @@ gateway's own metrics adapter, which already binds the `cui-http` security count
 
 === 5. That `jwks` datum is boot-time constructibility, not a live signal
 
-NOTE: The gap this section records is *closed* by <<amendment-a1,Amendment A1>>: the readiness
-check now carries a live, non-fetching per-issuer key-set read. The section is kept as the statement
-of what the exclusion did and did not remove.
+NOTE: The gap this section records is *closed*: the readiness check carries a live, non-fetching
+per-issuer key-set read, described in <<_live_key_set_readiness>>. The section is kept as the
+statement of what the exclusion did and did not remove.
 
 This is stated as part of the decision rather than left to be discovered, because the datum reads
 more strongly than it is. The producer forces the application-scoped validator into existence at
@@ -202,14 +202,14 @@ exclusion removed, and restoring the excluded probes would not close it.
   scheduler-driven case; a bean in the same position driven some other way is still found from its
   symptom.
 * Someone reading the readiness payload sees a `jwks` datum that reports ready and will reasonably
-  read it as a live signal. *Resolved by <<amendment-a1,Amendment A1>>*: the datum now reports
+  read it as a live signal. *Resolved by <<_live_key_set_readiness>>*: the datum reports
   whether every issuer has a loaded key set; what it still does not cover is recorded there.
 
 === Risks
 
 * *The boot-time-constructibility datum is mistaken for liveness.* This was the principal residual
   risk when the exclusion was decided. It is *closed for key-set availability* by
-  <<amendment-a1,Amendment A1>> -- readiness is `DOWN` while any issuer has no key set. The part that
+  <<_live_key_set_readiness>> -- readiness is `DOWN` while any issuer has no key set. The part that
   remains is narrower and is carried there: a key set that loaded once keeps readiness `UP` while
   later background refreshes fail, because the library keeps serving the keys it already holds.
 
@@ -247,7 +247,8 @@ which is a single key and needs no knowledge of the extension's package structur
 Rejected on blast radius. It would suppress beans that *do* observe something, both now and as the
 dependency set grows, and would do so silently -- the failure mode is an observability surface that
 quietly stops covering things nobody decided to stop covering. Forcing a security-relevant readiness
-check green with a blanket switch is refused under ADR-0022's posture, and disabling the scheduler
+check green with a blanket switch is refused under the policy on upstream security-default changes,
+and disabling the scheduler
 would pre-emptively remove a mechanism this gateway has not yet used but has no reason to forbid. The
 narrow exclusion is more brittle to package reorganisation, which is the accepted cost of not
 over-reaching.
@@ -271,8 +272,10 @@ neither force aggregate readiness DOWN nor throw on a schedule, and adopt the fi
 Rejected as the sole remedy, on timing rather than on merit -- the scheduled collector makes the
 stronger version of the case: a metrics collector that finds no property-based issuers should warn
 once and go idle rather than fail hard on every tick, for any embedder in this position. But it puts
-this gateway's readiness and its log on another project's release cycle. ADR-0022 directs that a tightened upstream default the gateway cannot accommodate is
-escalated rather than patched around; that posture governs *security defaults*, and this is not one.
+this gateway's readiness and its log on another project's release cycle. The
+link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes]
+directs that a tightened upstream default the gateway cannot accommodate is escalated rather than
+patched around; that posture governs *security defaults*, and this is not one.
 These are observability beans reporting on a mechanism this consumer deliberately does not use, and
 declining to instantiate them narrows nothing the product relies on.
 
@@ -281,8 +284,8 @@ last two try to make it *someone else's problem*. An observability surface is co
 application that serves it -- a bean belongs in it when it observes something that application does,
 and a bean that observes nothing is removed rather than satisfied.
 
-[[amendment-a1]]
-== Amendment A1: readiness carries a live per-issuer key-set read
+[[_live_key_set_readiness]]
+== Readiness carries a live per-issuer key-set read
 
 *The gap section 5 records is closed.* The gateway's readiness check now carries the live
 loader-status read section 5 named as the way to close it, without restoring any excluded bean and
@@ -328,9 +331,12 @@ needs freshness still cannot rely on readiness alone.
 * link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
   -- the rule under which this exclusion is declared unconditionally rather than profile-scoped, and
   the masked-defect failure mode a profile-scoped health branch would have reproduced
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
-  -- the posture that forbids forcing a security-relevant check green with a global switch, and its
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]
+  -- the policy that forbids forcing a security-relevant check green with a global switch, and its
   scope boundary against this case
+* link:0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]
+  -- the boundary between this key-set readiness signal, which changes the verdict, and the
+  `oidc_discovery` datum, which never does
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
   -- the `gateway.yaml` token-validation surface that the qualified validator is built from
 * link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
