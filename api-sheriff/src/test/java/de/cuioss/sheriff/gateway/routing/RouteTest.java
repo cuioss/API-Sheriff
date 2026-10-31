@@ -15,16 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.routing;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -34,12 +25,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
@@ -54,6 +45,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
@@ -184,15 +176,6 @@ class RouteTest {
         }
 
         @Test
-        @DisplayName("Should default an absent effectiveForward to the all-absent forward-all block")
-        void shouldDefaultForwardToForwardAll() {
-            Route route = proxyRoute().effectiveForward(null).build();
-
-            assertEquals(ForwardConfig.builder().build(), route.effectiveForward(),
-                    "An absent forward block resolves to the all-absent forward-all posture");
-        }
-
-        @Test
         @DisplayName("Should default an absent effectiveCookies to allow: none, also across toBuilder()")
         void shouldDefaultCookiesToNone() {
             Route omitted = proxyRoute().build();
@@ -294,6 +277,8 @@ class RouteTest {
             Route route = proxyRoute().effectiveForward(null).build();
 
             assertAll("forward-all posture",
+                    () -> assertEquals(ForwardConfig.builder().build(), route.effectiveForward(),
+                            "An absent forward block resolves to the all-absent forward-all posture"),
                     () -> assertNull(route.effectiveForward().headersAllow(),
                             "Every list stays absent, never an empty allowlist that would forward nothing"),
                     () -> assertNull(route.effectiveForward().headersDeny(), "No header denylist"),
@@ -505,7 +490,7 @@ class RouteTest {
         void shouldAcceptEachSingleTerminalAction() {
             Route proxy = proxyRoute().build();
             Route asset = assetRoute().build();
-            Route redirect = baseRoute().redirect(redirect()).build();
+            Route redirect = ConfigFixtures.baseRoute().redirect(redirect()).build();
 
             assertAll("exactly one terminal action",
                     () -> assertEquals(upstream(), proxy.upstream(), "A proxy route carries its upstream"),
@@ -517,7 +502,7 @@ class RouteTest {
         @DisplayName("Should refuse a route with no terminal action")
         void shouldRefuseZeroTerminalActions() {
             String id = Generators.letterStrings(3, 12).next();
-            var builder = baseRoute().id(id);
+            var builder = ConfigFixtures.baseRoute().id(id);
 
             var thrown = assertThrows(IllegalArgumentException.class, builder::build,
                     "A route resolving no terminal action is refused");
@@ -528,10 +513,10 @@ class RouteTest {
         @Test
         @DisplayName("Should refuse a route with two or three terminal actions")
         void shouldRefuseSeveralTerminalActions() {
-            var upstreamAndAsset = baseRoute().upstream(upstream()).asset(asset());
-            var upstreamAndRedirect = baseRoute().upstream(upstream()).redirect(redirect());
-            var assetAndRedirect = baseRoute().asset(asset()).redirect(redirect());
-            var allThree = baseRoute().upstream(upstream()).asset(asset()).redirect(redirect());
+            var upstreamAndAsset = ConfigFixtures.baseRoute().upstream(upstream()).asset(asset());
+            var upstreamAndRedirect = ConfigFixtures.baseRoute().upstream(upstream()).redirect(redirect());
+            var assetAndRedirect = ConfigFixtures.baseRoute().asset(asset()).redirect(redirect());
+            var allThree = ConfigFixtures.baseRoute().upstream(upstream()).asset(asset()).redirect(redirect());
 
             assertAll("several terminal actions",
                     () -> assertThrows(IllegalArgumentException.class, upstreamAndAsset::build,
@@ -906,20 +891,12 @@ class RouteTest {
         }
     }
 
-    private static Route.RouteBuilder baseRoute() {
-        return Route.builder()
-                .id(Generators.letterStrings(3, 12).next())
-                .match(MatchConfig.builder().pathPrefix("/api").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET));
-    }
-
     private static Route.RouteBuilder proxyRoute() {
-        return baseRoute().upstream(upstream());
+        return ConfigFixtures.baseRoute().upstream(upstream());
     }
 
     private static Route.RouteBuilder assetRoute() {
-        return baseRoute().asset(asset());
+        return ConfigFixtures.baseRoute().asset(asset());
     }
 
     private static Route fullyResolvedProxyRoute() {
