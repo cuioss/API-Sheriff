@@ -14,25 +14,25 @@ API Sheriff tracks general and security-relevant events with a thread-safe, lock
 counter (`de.cuioss.sheriff.gateway.events`, modelled on `token-sheriff`'s `SecurityEventCounter`)
 that feeds metrics and error mapping without an external broker:
 
+image::../resources/diagrams/event-categories-and-consumers.svg[Failure event categories, event types and consumers, align=center]
+
 * `EventCategory` groups failure events by impact: `INPUT_VALIDATION`, `ROUTING`, `AUTHENTICATION`,
   `AUTHORIZATION`, `UPSTREAM`, `RATE_LIMITING`, `CONFIGURATION`. HTTP status is mapped per
-  `EventType`; the category
-  names the RFC 9457 problem type and keys error metrics. `CONFIGURATION` events occur at boot only
-  (when the gateway refuses to start) and never surface as an HTTP response.
+  `EventType`; the category names the RFC 9457 problem type and keys error metrics. `CONFIGURATION`
+  events occur at boot only (when the gateway refuses to start) and never surface as an HTTP response.
 
 * `GatewayEventCounter` holds a `ConcurrentHashMap<EventType, AtomicLong>` and exposes
   `increment(EventType)`, `getCount(EventType)`, an unmodifiable `getCounters()` snapshot, and
   `reset()`.
 
-* Success/informational events carry a `null` category (e.g. `REQUEST_FORWARDED`,
-  `TOKEN_REFRESHED`, `CONFIG_LOADED`) and serve as metric counters only. A trip of per-source
-  detection is the informational `SOURCE_TRIPPED`
-  (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]).
+* Success/informational events carry a `null` category (e.g. `REQUEST_FORWARDED`, `TOKEN_REFRESHED`,
+  `CONFIG_LOADED`) and serve as metric counters only. A trip of per-source detection is the
+  informational `SOURCE_TRIPPED` (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source
+  Detection]).
 
 * Failure events carry an `EventCategory`:
-  ** `INPUT_VALIDATION`: `PATH_NOT_ALLOWED`, `SECURITY_FILTER_VIOLATION`,
-     `PARAMETER_LIMIT_EXCEEDED`, `CONTENT_TOO_LARGE`, `RESERVED_BODY_TOO_LARGE`,
-     `INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`
+  ** `INPUT_VALIDATION`: `PATH_NOT_ALLOWED`, `SECURITY_FILTER_VIOLATION`, `PARAMETER_LIMIT_EXCEEDED`,
+     `CONTENT_TOO_LARGE`, `RESERVED_BODY_TOO_LARGE`, `INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`
   ** `ROUTING`: `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, `METHOD_NOT_ALLOWED`,
      `PRE_TRUST_INTERNAL_FAILURE` (counted under its own name, answered as `NO_ROUTE_MATCHED`;
      <<_trust_boundary_rejections>>)
@@ -43,8 +43,8 @@ that feeds metrics and error mapping without an external broker:
 
 * Each category carries one slug (`input-validation`, `routing`, `authentication`, `authorization`,
   `upstream`, `rate-limiting`, `configuration`), used in the RFC 9457 problem type
-  (`urn:api-sheriff:problem:<slug>`),
-  the `category` label of `sheriff_errors_total`, and `grpc-message` on `protocol: grpc` routes.
+  (`urn:api-sheriff:problem:<slug>`), the `category` label of `sheriff_errors_total`, and `grpc-message`
+  on `protocol: grpc` routes.
 
 * Typed gateway exceptions (`GatewayException`) carry their `EventType`, so the edge maps event to
   status and renders `application/problem+json` (RFC 9457) without leaking internal detail.
@@ -60,9 +60,11 @@ Every gateway-generated rejection rendered through `ErrorResponseWriter` is an
 with three exceptions: rejections on a `protocol: grpc` route after the trust boundary are
 trailers-only gRPC responses (<<_grpc_error_contract>>), browser navigations receive a negotiated
 HTML error page when `portal.error_pages: true` (<<_html_error_pages>>), and pre-pipeline /
-transport-level bare-status rejections write a status with no body (the Vert.x body-floor `413`,
-edge admission / executor rejection / WebSocket session-relay tracking-cap `503` via
-`ResponseEnds.reject`, and direct reserved-path `404`/`405` answers).
+transport-level bare-status rejections write a status with no body (the Vert.x body-floor `413`, edge
+admission / executor rejection / WebSocket session-relay tracking-cap `503` via `ResponseEnds.reject`,
+and direct reserved-path `404`/`405` answers).
+
+image::../resources/diagrams/rejection-rendering-and-trust-boundary.svg[Rejection rendering: record true event, apply pre-trust uniform 404 with timing floor, and select response shape, align=center]
 
 A rejection raised after route selection and before the trust boundary is rendered to the caller as
 the unrouted `404` while `security_defaults.uniform_not_found` is on, the shipped default
@@ -79,46 +81,43 @@ where the uniform-`404` rule applies:
   link:tls-and-inbound-security.adoc#_dispatch_body_framing[Dispatch body framing]); proxied request
   body failing after dispatch (`INBOUND_BODY_ABORTED`, see
   link:tls-and-inbound-security.adoc#_aborted_inbound_body[Aborted inbound body]); or a rejected
-  back-channel logout token (`LOGOUT_TOKEN_INVALID`, `AUTHENTICATION`). Route-scoped
-  `allowed_paths` and post-route security-filter `400`s render as the unrouted `404` before the
-  trust boundary (<<_trust_boundary_rejections>>); pre-route floor, framing-gate and back-channel
-  logout `400`s stay `400`.
+  back-channel logout token (`LOGOUT_TOKEN_INVALID`, `AUTHENTICATION`). Route-scoped `allowed_paths`
+  and post-route security-filter `400`s render as the unrouted `404` before the trust boundary
+  (<<_trust_boundary_rejections>>); pre-route floor, framing-gate and back-channel logout `400`s stay
+  `400`.
 | `INPUT_VALIDATION` (`AUTHENTICATION` for `LOGOUT_TOKEN_INVALID`)
 
 | `401`
 | Missing/invalid bearer token; invalid or expired session on a non-navigation request
   (unauthenticated `text/html` navigations on `session` routes redirect `302` to login; see
-  link:../configuration.adoc#_auth[Configuration -- `auth`]). Carries `WWW-Authenticate` (`Bearer`
-  per RFC 6750 on bearer routes). Bearer `401`s render as the unrouted `404` without
-  `WWW-Authenticate` while `security_defaults.uniform_not_found` is on; the session branch keeps its
-  `302` / `401` (<<_trust_boundary_rejections>>).
+  link:../configuration.adoc#_auth[Configuration -- `auth`]). Carries `WWW-Authenticate` (`Bearer` per
+  RFC 6750 on bearer routes). Bearer `401`s render as the unrouted `404` without `WWW-Authenticate`
+  while `security_defaults.uniform_not_found` is on; the session branch keeps its `302` / `401`
+  (<<_trust_boundary_rejections>>).
 | `AUTHENTICATION`
 
 | `403`
 | Valid bearer token lacking a required scope (`WWW-Authenticate: Bearer error="insufficient_scope",
   scope="<missing>"`); live session lacking a scope on a non-navigation request when refresh cannot
   obtain it (problem body carries `missing_scopes` and optional `step_up_url`, while navigations
-  redirect `302` to session widening -- see
-  link:authentication-and-bff.adoc#_scope_enforcement[Scope Enforcement]); failed CSRF or
-  cookie-forwarding same-origin check (see
+  redirect `302` to session widening -- see link:authentication-and-bff.adoc#_scope_enforcement[Scope
+  Enforcement]); failed CSRF or cookie-forwarding same-origin check (see
   link:routing-and-forwarding.adoc#_cookie_origin_check[Same-origin check]); or a WebSocket upgrade
-  whose `Origin` is absent or not in `allowed_origins` (`WEBSOCKET_ORIGIN_REJECTED`). CSRF `403`s
-  run before authentication and render as the unrouted `404` while
-  `security_defaults.uniform_not_found` is on; post-trust scope and WebSocket origin `403`s stay
-  `403`.
+  whose `Origin` is absent or not in `allowed_origins` (`WEBSOCKET_ORIGIN_REJECTED`). CSRF `403`s run
+  before authentication and render as the unrouted `404` while `security_defaults.uniform_not_found`
+  is on; post-trust scope and WebSocket origin `403`s stay `403`.
 | `AUTHORIZATION`
 
 | `404`
 | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated
   connection; disabled endpoint; and, while `security_defaults.uniform_not_found` is on, every
-  pre-trust rejection marked above, held to the response-timing floor
-  (<<_trust_boundary_rejections>>).
+  pre-trust rejection marked above, held to the response-timing floor (<<_trust_boundary_rejections>>).
 | `ROUTING`
 
 | `405`
 | Request method outside the matched route's effective `allowed_methods` allowlist (carries `Allow`),
-  or an unparseable HTTP method token. The route-level verb gate runs before authentication and
-  renders as the unrouted `404` without `Allow` while `security_defaults.uniform_not_found` is on
+  or an unparseable HTTP method token. The route-level verb gate runs before authentication and renders
+  as the unrouted `404` without `Allow` while `security_defaults.uniform_not_found` is on
   (<<_trust_boundary_rejections>>).
 | `ROUTING`
 
@@ -127,8 +126,8 @@ where the uniform-`404` rule applies:
   upstream connection, or not ending within the 25 s request-body deadline before the response head
   (`REQUEST_BODY_TIMEOUT`, see
   link:tls-and-inbound-security.adoc#_request_body_idle_timeout[Request-body idle timeout] and
-  link:tls-and-inbound-security.adoc#_request_body_deadline[Request-body deadline]). Ends the
-  HTTP/1.x connection (`Connection: close`) or resets the HTTP/2 stream with `NO_ERROR`
+  link:tls-and-inbound-security.adoc#_request_body_deadline[Request-body deadline]). Ends the HTTP/1.x
+  connection (`Connection: close`) or resets the HTTP/2 stream with `NO_ERROR`
   (link:tls-and-inbound-security.adoc#_http2_post_response_reset[HTTP/2 post-response reset]).
 | `INPUT_VALIDATION`
 
@@ -136,20 +135,18 @@ where the uniform-`404` rule applies:
 | Request body exceeding the per-route `security_filter.max_body_bytes` cap (`CONTENT_TOO_LARGE`) or
   the `reserved_body_max_bytes` ceiling on a reserved BFF `POST` (`RESERVED_BODY_TOO_LARGE`). The
   pre-authentication declared-`Content-Length` `413` on a proxy route renders as the unrouted `404`
-  while `security_defaults.uniform_not_found` is on; mid-transfer and reserved-path `413`s stay
-  `413`.
+  while `security_defaults.uniform_not_found` is on; mid-transfer and reserved-path `413`s stay `413`.
 | `INPUT_VALIDATION`
 
 | `429`
-| A request from a source blocked by per-source detection under `enumeration_detection` action
-  `block`, or, under action `delay`, from a tripped source whose share of the held-answer sub-budget
-  is used up (`SOURCE_BLOCKED`, see
-  link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]). It is answered
-  before admission and before route selection, so it does not depend on the address and is always a
-  problem document, never a trailers-only gRPC status; it carries `Retry-After` with the whole
-  seconds left of the block (under `delay`: the delay in whole seconds). The per-route `rate_limit`
-  block causes no `429`: it is *planned, not implemented*, parsed but enforced by nothing, and every
-  route that declares it is named at boot by the WARN `ApiSheriff-140` (see
+| A request from a source blocked by per-source detection under `enumeration_detection` action `block`,
+  or, under action `delay`, from a tripped source whose share of the held-answer sub-budget is used up
+  (`SOURCE_BLOCKED`, see link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source
+  Detection]). It is answered before admission and before route selection, so it does not depend on the
+  address and is always a problem document, never a trailers-only gRPC status; it carries `Retry-After`
+  with the whole seconds left of the block (under `delay`: the delay in whole seconds). The per-route
+  `rate_limit` block causes no `429`: it is *planned, not implemented*, parsed but enforced by
+  nothing, and every route that declares it is named at boot by the WARN `ApiSheriff-140` (see
   link:../configuration.adoc#_rate_limit[Configuration -- `rate_limit`] and
   link:../adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]).
 | `RATE_LIMITING`
@@ -172,41 +169,40 @@ where the uniform-`404` rule applies:
 |===
 
 The `404` and `405` rows report under `ROUTING` (`urn:api-sheriff:problem:routing`, `title: Routing`;
-link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
-Two BFF login exits also use this contract: a failed PAR push answers `502` (`UPSTREAM_ERROR`,
-`WARN ApiSheriff-132`), and an unbound token response on the callback answers `400` (`WARN
-ApiSheriff-134`).
+link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]). Two
+BFF login exits also use this contract: a failed PAR push answers `502` (`UPSTREAM_ERROR`, `WARN
+ApiSheriff-132`), and an unbound token response on the callback answers `400` (`WARN ApiSheriff-134`).
 
 [[_trust_boundary_rejections]]
 === Rejections Before the Trust Boundary (Uniform 404)
 
 An honest status on a matched route tells an unauthenticated caller that the route exists. To close
-that endpoint-existence oracle, the edge renders every rejection raised in the *pre-trust window*
-as the unrouted `404`
+that endpoint-existence oracle, the edge renders every rejection raised in the *pre-trust window* as
+the unrouted `404`
 (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 
-* *The trust boundary.* A request passes the trust boundary when the bearer branch of stage 4
-  validates a token, or when stage 4 completes on any branch (a live session or an anonymous route).
-  The pre-trust window runs from route selection (stage 2) up to that point, covering the verb gate
-  (2b), `ThoroughChecksStage` (3), the CSRF defence, the cookie-forwarding same-origin check, and
-  the bearer branch prior to token validation.
+* *The trust boundary.* A request passes the trust boundary when the bearer branch of stage 4 validates
+  a token, or when stage 4 completes on any branch (a live session or an anonymous route). The
+  pre-trust window runs from route selection (stage 2) up to that point, covering the verb gate (2b),
+  `ThoroughChecksStage` (3), the CSRF defence, the cookie-forwarding same-origin check, and the bearer
+  branch prior to token validation.
 
-* *The rejection flow.* `ErrorResponseWriter.handleGatewayRejection` first records the rejection
-  under its *true* event (event counter, log record, and `sheriff_errors_total{event}`), then
-  checks `UniformNotFound.applies` before choosing a response shape (including gRPC trailers-only).
-  On a match, it restores pre-route response headers (`PipelineRequest.restoreUnroutedResponse`),
-  drops any route `Set-Cookie`, and renders `NO_ROUTE_MATCHED` (`404`, routing problem body without
-  extension members, or negotiated HTML error page).
+* *The rejection flow.* `ErrorResponseWriter.handleGatewayRejection` first records the rejection under
+  its *true* event (event counter, log record, and `sheriff_errors_total{event}`), then checks
+  `UniformNotFound.applies` before choosing a response shape (including gRPC trailers-only). On a
+  match, it restores pre-route response headers (`PipelineRequest.restoreUnroutedResponse`), drops any
+  route `Set-Cookie`, and renders `NO_ROUTE_MATCHED` (`404`, routing problem body without extension
+  members, or negotiated HTML error page).
 
 * *An unexpected internal failure.* The trailing `RuntimeException` catch of the per-request flow
-  hands the failure to `ErrorResponseWriter.renderUnexpected`. One raised in the pre-trust window,
-  while the switch is on, is answered exactly like a resolved rejection -- the unrouted response
-  headers restored and the floored `404` -- and is reported as `PRE_TRUST_INTERNAL_FAILURE` on the
-  event counter and on `sheriff_errors_total{event}`, with its stack trace at `DEBUG` and no `WARN`,
-  since any caller that can craft the failing input reaches it. It carries no per-source detection
-  weight (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]): an
-  operator-side failure is not caller behaviour. Every other
-  unexpected failure keeps the opaque `500` (ADR-0073 Amendment A1).
+  hands the failure to `ErrorResponseWriter.renderUnexpected`. One raised in the pre-trust window, while
+  the switch is on, is answered exactly like a resolved rejection -- the unrouted response headers
+  restored and the floored `404` -- and is reported as `PRE_TRUST_INTERNAL_FAILURE` on the event
+  counter and on `sheriff_errors_total{event}`, with its stack trace at `DEBUG` and no `WARN`, since
+  any caller that can craft the failing input reaches it. It carries no per-source detection weight
+  (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]): an operator-side
+  failure is not caller behaviour. Every other unexpected failure keeps the opaque `500` (ADR-0073
+  Amendment A1).
 
 [cols="1,3", options="header"]
 |===
@@ -216,33 +212,31 @@ as the unrouted `404`
   `PARAMETER_LIMIT_EXCEEDED`, declared-`Content-Length` `CONTENT_TOO_LARGE`, `CSRF_REJECTED`,
   `TOKEN_MISSING` / `TOKEN_INVALID` on the bearer branch, and an unexpected internal failure
   (`PRE_TRUST_INTERNAL_FAILURE`)
-| Session branch `302` / `401`; `SCOPE_MISSING`; every rejection after stage 4 completed (dispatch
-  `400` / `408` / `413`, WebSocket origin `403`, upstream `5xx`); reserved paths; every stage-1
-  rejection (including framing gate); unparseable-method `405`
+| Session branch `302` / `401`; `SCOPE_MISSING`; every rejection after stage 4 completed (dispatch `400`
+  / `408` / `413`, WebSocket origin `403`, upstream `5xx`); reserved paths; every stage-1 rejection
+  (including framing gate); unparseable-method `405`
 |===
 
-`UniformNotFound.CLOSED_SET` is verified by `UniformNotFoundTest` against every `EventType`
-constant.
+`UniformNotFound.CLOSED_SET` is verified by `UniformNotFoundTest` against every `EventType` constant.
 
 * *Response-timing floor.* While `security_defaults.uniform_not_found` (default `true`) is enabled,
   every answer rendered as the unrouted `404` (including genuine `NO_ROUTE_MATCHED` and
-  `PASSTHROUGH_HOST_SMUGGLED`) is held to a step grid of `UniformNotFound.RESPONSE_FLOOR` (50 ms)
-  from admission plus random jitter below `UniformNotFound.RESPONSE_JITTER` (20 ms); an answer whose
-  processing ran past the floor is held to the next step plus the jitter
-  (`UniformNotFound.release`). The release time is computed on the event loop at the moment the
-  answer is armed -- after an HTML error page has rendered and after the hop from the virtual thread
-  -- so neither moves an answer off the grid; an answer released on a step above the first is
-  counted on `sheriff_uniform_not_found_overruns_total`. The write is scheduled on a Vert.x timer
-  via `edge.end.ResponseDelay` without blocking a thread. While it waits, the answer holds a permit
-  of the held-answer sub-budget instead of its general admission permit, and a full sub-budget
-  answers `503` no earlier than the floor's release time, under the general permit the request was
-  admitted with (link:README.adoc#_edge_package_structure[Edge Package Structure], the `admission`
-  row). Both values are fixed constants. The floor is measured: `EnumerationOracleIT` probes eight
-  caller-drivable pre-trust paths on the integration stack, the bearer-token paths among them, and
-  asserts that the overrun meter does not move (ADR-0073 Amendment A1 lists them). Setting
-  `security_defaults.uniform_not_found: false` restores honest statuses and
-  undelayed `404` responses (see link:../configuration.adoc#_security_defaults[Configuration --
-  `security_defaults`]).
+  `PASSTHROUGH_HOST_SMUGGLED`) is held to a step grid of `UniformNotFound.RESPONSE_FLOOR` (50 ms) from
+  admission plus random jitter below `UniformNotFound.RESPONSE_JITTER` (20 ms); an answer whose
+  processing ran past the floor is held to the next step plus the jitter (`UniformNotFound.release`).
+  The release time is computed on the event loop at the moment the answer is armed -- after an HTML
+  error page has rendered and after the hop from the virtual thread -- so neither moves an answer off
+  the grid; an answer released on a step above the first is counted on
+  `sheriff_uniform_not_found_overruns_total`. The write is scheduled on a Vert.x timer via
+  `edge.end.ResponseDelay` without blocking a thread. While it waits, the answer holds a permit of the
+  held-answer sub-budget instead of its general admission permit, and a full sub-budget answers `503`
+  no earlier than the floor's release time, under the general permit the request was admitted with
+  (link:README.adoc#_edge_package_structure[Edge Package Structure], the `admission` row). Both values
+  are fixed constants. The floor is measured: `EnumerationOracleIT` probes eight caller-drivable
+  pre-trust paths on the integration stack, the bearer-token paths among them, and asserts that the
+  overrun meter does not move (ADR-0073 Amendment A1 lists them). Setting
+  `security_defaults.uniform_not_found: false` restores honest statuses and undelayed `404` responses
+  (see link:../configuration.adoc#_security_defaults[Configuration -- `security_defaults`]).
 
 [[_html_error_pages]]
 === Negotiated HTML Error Pages
@@ -254,8 +248,8 @@ when all three hold:
 . error pages are enabled on an active portal;
 . `ErrorPageClassifier` classifies the exit as `HTML_ELIGIBLE`;
 
-. the request's `Accept` header explicitly lists `text/html` with quality > 0 (`+*/*+` and
-  `+text/*+` never qualify, so `fetch()`, XHR and REST clients keep the problem body).
+. the request's `Accept` header explicitly lists `text/html` with quality > 0 (`+*/*+` and `+text/*+`
+  never qualify, so `fetch()`, XHR and REST clients keep the problem body).
 
 [cols="1,3", options="header"]
 |===
@@ -263,31 +257,30 @@ when all three hold:
 
 | `HTML_ELIGIBLE`
 | `SCOPE_MISSING` and `CSRF_REJECTED` (`403`); `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED`
-  (`404`); routed `METHOD_NOT_ALLOWED` (`405`); `CONTENT_TOO_LARGE` (`413`); `UPSTREAM_ERROR`
-  (`502`), `UPSTREAM_CIRCUIT_OPEN` (`503`), `UPSTREAM_TIMEOUT` (`504`); failed OIDC callback;
-  `source: directory` asset miss (`404`).
+  (`404`); routed `METHOD_NOT_ALLOWED` (`405`); `CONTENT_TOO_LARGE` (`413`); `UPSTREAM_ERROR` (`502`),
+  `UPSTREAM_CIRCUIT_OPEN` (`503`), `UPSTREAM_TIMEOUT` (`504`); failed OIDC callback; `source: directory`
+  asset miss (`404`).
 
 | `KEEP_SHAPE`
-| Every other event (`400` security-filter/parameter/aborted-body rejections, `401` token
-  rejections, `RESERVED_BODY_TOO_LARGE`, WebSocket rejections, unparseable-method `405`), origin-relayed
-  responses, post-head relay failures, gRPC trailers-only rejections, admission `503`, and internal
-  failures.
+| Every other event (`400` security-filter/parameter/aborted-body rejections, `401` token rejections,
+  `RESERVED_BODY_TOO_LARGE`, WebSocket rejections, unparseable-method `405`), origin-relayed responses,
+  post-head relay failures, gRPC trailers-only rejections, admission `503`, and internal failures.
 |===
 
 A rejection rewritten to the unrouted `404` by <<_trust_boundary_rejections>> is classified as
 `NO_ROUTE_MATCHED` and is therefore `HTML_ELIGIBLE`. Error pages preserve the HTTP status, render
-anonymously with a fixed per-status title (no problem detail, exception message, or upstream
-address), and set `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and
-`Content-Security-Policy: default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`.
+anonymously with a fixed per-status title (no problem detail, exception message, or upstream address),
+and set `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Content-Security-Policy:
+default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`.
 
 [[_grpc_error_contract]]
 === gRPC Rejections (Trailers-Only)
 
 Because gRPC clients surface statuses from response trailers rather than `application/problem+json`
-bodies, a gateway-generated rejection on a `protocol: grpc` route after the trust boundary is
-emitted as a *trailers-only* HTTP/2 response (`grpc-status` and `grpc-message` in the `HEADERS`
-frame with `END_STREAM`, no `DATA` frame). Pre-trust rejections still render as the unrouted HTTP
-`404` while `security_defaults.uniform_not_found` is on (<<_trust_boundary_rejections>>):
+bodies, a gateway-generated rejection on a `protocol: grpc` route after the trust boundary is emitted
+as a *trailers-only* HTTP/2 response (`grpc-status` and `grpc-message` in the `HEADERS` frame with
+`END_STREAM`, no `DATA` frame). Pre-trust rejections still render as the unrouted HTTP `404` while
+`security_defaults.uniform_not_found` is on (<<_trust_boundary_rejections>>):
 
 [cols="1,1,3", options="header"]
 |===
@@ -303,14 +296,13 @@ frame with `END_STREAM`, no `DATA` frame). Pre-trust rejections still render as 
 | `DEADLINE_EXCEEDED`  | 4  | `504` -- `UPSTREAM_TIMEOUT` (the upstream guard's fixed 30 s head timeout)
 |===
 
-The `429` of a blocked source has no gRPC mapping: it is answered before route selection, so no
-route -- and no `protocol: grpc` -- is known when it is written, and it is always the
-`rate-limiting` problem document
-(link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]).
+The `429` of a blocked source has no gRPC mapping: it is answered before route selection, so no route
+-- and no `protocol: grpc` -- is known when it is written, and it is always the `rate-limiting`
+problem document (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]).
 `grpc-message` carries only the category slug (e.g. `routing` for `404`/`405`). A call ended after
 response headers by the 5-minute stream-idle bound
-(link:tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound]) ends the
-relayed stream with trailers `grpc-status: 4` and `grpc-message: stream-idle-timeout`.
+(link:tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound]) ends the relayed
+stream with trailers `grpc-status: 4` and `grpc-message: stream-idle-timeout`.
 
 [[_metrics]]
 == Metrics and Health
@@ -318,6 +310,8 @@ relayed stream with trailers `grpc-status: 4` and `grpc-message: stream-idle-tim
 Metrics are exposed as Prometheus data via Quarkus Micrometer on the *management port*
 (`quarkus.management.enabled=true`, default port `9000`), keeping the operational surface off the
 public data-plane port.
+
+image::../resources/diagrams/management-metrics-and-health.svg[Management port (:9000), Prometheus metric families, and SmallRye Health readiness checks, align=center]
 
 The management port is served over *HTTPS* by default (`quarkus.management.ssl.certificate.*`
 converts the single management port to HTTPS). Deployments behind a trusted boundary can opt out via
@@ -338,19 +332,19 @@ which downgrades both health and metrics on that single port and logs `WARN ApiS
 | Request latency timer and histogram per route.
 
 | `sheriff_errors_total{route,category,event}`
-| Counter of rejected/failed requests sourced from the event system. `category` is the
-  `EventCategory` slug (`input-validation`, `routing`, `authentication`, `authorization`, `upstream`,
-  `rate-limiting`); `event` is the `EventType` name. Rejections rendered to the caller as the
-  unrouted `404` (<<_trust_boundary_rejections>>) are counted under their *true* `event` and
-  `category`. An unexpected internal failure answered that way is counted under
-  `event="PRE_TRUST_INTERNAL_FAILURE"` (`category="routing"`); every other unexpected failure is
-  uncategorized and appears in the `5xx` bucket of `sheriff_requests_total` only. A request from a
-  source blocked by per-source detection is counted under `event="SOURCE_BLOCKED"`
-  (`category="rate-limiting"`) with the shared `"<no-route>"` route value, because it is refused
-  before route selection (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source
-  Detection]). Three direct rejections are counted only in
-  `sheriff_requests_total{status_family="4xx"}`: unparseable HTTP method `405` (`method="OTHER"`),
-  reserved OIDC path `404` when no BFF runtime is active, and withheld client JWKS `404`
+| Counter of rejected/failed requests sourced from the event system. `category` is the `EventCategory`
+  slug (`input-validation`, `routing`, `authentication`, `authorization`, `upstream`, `rate-limiting`);
+  `event` is the `EventType` name. Rejections rendered to the caller as the unrouted `404`
+  (<<_trust_boundary_rejections>>) are counted under their *true* `event` and `category`. An unexpected
+  internal failure answered that way is counted under `event="PRE_TRUST_INTERNAL_FAILURE"`
+  (`category="routing"`); every other unexpected failure is uncategorized and appears in the `5xx`
+  bucket of `sheriff_requests_total` only. A request from a source blocked by per-source detection is
+  counted under `event="SOURCE_BLOCKED"` (`category="rate-limiting"`) with the shared `"<no-route>"`
+  route value, because it is refused before route selection
+  (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]). Three direct
+  rejections are counted only in `sheriff_requests_total{status_family="4xx"}`: unparseable HTTP
+  method `405` (`method="OTHER"`), reserved OIDC path `404` when no BFF runtime is active, and
+  withheld client JWKS `404`
   (link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
 
 | `sheriff_source_trips_total{action}`
@@ -361,13 +355,13 @@ which downgrades both health and metrics on that single port and logs `WARN ApiS
   are the whole effect of a trip.
 
 | `sheriff_source_untracked_total` (no labels)
-| Counter of recon events whose source per-source detection could not track because its ledger was
-  at its bound of 65,536 sources. Such a source can neither trip nor be blocked; the first overflow
-  of a process is also logged once as WARN `ApiSheriff-142`.
+| Counter of recon events whose source per-source detection could not track because its ledger was at
+  its bound of 65,536 sources. Such a source can neither trip nor be blocked; the first overflow of a
+  process is also logged once as WARN `ApiSheriff-142`.
 
 | `sheriff_threat_alerts_total` (no labels)
-| Counter of per-source threat-classification ALERTs -- one per threat-ledger trip, so at most one
-  per source and episode (link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat
+| Counter of per-source threat-classification ALERTs -- one per threat-ledger trip, so at most one per
+  source and episode (link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat
   Classification]). Each count has one WARN `ApiSheriff-143` carrying the ALERT document
   (<<_threat_alert_document>>). The source an ALERT concerns is never a label value.
 
@@ -377,10 +371,10 @@ which downgrades both health and metrics on that single port and logs `WARN ApiS
   once as WARN `ApiSheriff-144`.
 
 | `sheriff_uniform_not_found_overruns_total` (no labels)
-| Counter of uniform `404` answers released on a step of the response-timing floor above the first
-  -- answers whose processing ran past the floor (<<_trust_boundary_rejections>>). It should stay at
-  zero; a steady non-zero rate means some path answered as the unrouted `404` is slower than the
-  floor on this deployment.
+| Counter of uniform `404` answers released on a step of the response-timing floor above the first --
+  answers whose processing ran past the floor (<<_trust_boundary_rejections>>). It should stay at zero;
+  a steady non-zero rate means some path answered as the unrouted `404` is slower than the floor on
+  this deployment.
 
 | `sheriff_security_events_total{failure_type}`
 | `cui-http` `SecurityEventCounter` counts per `UrlSecurityFailureType`.
@@ -403,46 +397,44 @@ which downgrades both health and metrics on that single port and logs `WARN ApiS
   link:../adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
 
 | `sheriff_token_validation_success_operations_total{event_type,result}`
-| Success counter from the same collector (`result="success"`, meter `sheriff.token.validation.success`
-  with base unit `operations`).
+| Success counter from the same collector (`result="success"`, meter
+  `sheriff.token.validation.success` with base unit `operations`).
 |===
 
 *Health.* SmallRye Health serves `/health`, `/health/live` and `/health/ready` beneath
-`quarkus.management.root-path` (default `/q`; see link:../user/context-path.adoc[The Context Path])
-on the management port. Readiness (`GatewayReadinessCheck`; the token-validation extension's own
-health probes are excluded per ADR-0074) reflects the validated configuration and -- where a
-`token_validation` block is configured -- whether *every configured issuer has a loaded key set*
+`quarkus.management.root-path` (default `/q`; see link:../user/context-path.adoc[The Context Path]) on
+the management port. Readiness (`GatewayReadinessCheck`; the token-validation extension's own health
+probes are excluded per ADR-0074) reflects the validated configuration and -- where a `token_validation`
+block is configured -- whether *every configured issuer has a loaded key set*
 (link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
 Amendment A1]). While any issuer lacks a key set, readiness reports `DOWN` with `jwks: loading` or
-`jwks: unavailable` and bounded `issuers` / `issuers_loaded` counts; once every issuer has loaded
-keys, it reports `UP` with `jwks: ready` (retaining `UP` across subsequent refresh failures; see
-link:../configuration.adoc#_jwks_readiness[Key-set loading and readiness]). Failed initial loads
-retry on a scheduler-driven backoff (1 s doubling, capped at 30 s and the refresh interval).
+`jwks: unavailable` and bounded `issuers` / `issuers_loaded` counts; once every issuer has loaded keys,
+it reports `UP` with `jwks: ready` (retaining `UP` across subsequent refresh failures; see
+link:../configuration.adoc#_jwks_readiness[Key-set loading and readiness]). Failed initial loads retry
+on a scheduler-driven backoff (1 s doubling, capped at 30 s and the refresh interval).
 
-A deployment with an active BFF runtime -- `mode: server` or `mode: cookie` -- adds two data,
-whether or not it configures `token_validation` and whether the probe is `UP` or `DOWN`. `oidc`
-names the mode. `oidc_discovery` reports what the BFF's lazy resolution of the identity provider's
-metadata (`.well-known/openid-configuration`) last did: `not-attempted` until the first engine use
-asks for it, `resolved` when the most recent attempt produced it, and `failed` when the most recent
-attempt threw. A failed attempt is not memoised, so the next engine use tries again. The probe reads
-the datum from a *non-fetching* view and sends no network request of its own. A deployment without
-an active BFF runtime emits neither datum, and `oidc_discovery` never changes the `UP`/`DOWN`
-verdict.
+A deployment with an active BFF runtime -- `mode: server` or `mode: cookie` -- adds two data, whether
+or not it configures `token_validation` and whether the probe is `UP` or `DOWN`. `oidc` names the mode.
+`oidc_discovery` reports what the BFF's lazy resolution of the identity provider's metadata
+(`.well-known/openid-configuration`) last did: `not-attempted` until the first engine use asks for it,
+`resolved` when the most recent attempt produced it, and `failed` when the most recent attempt threw.
+A failed attempt is not memoised, so the next engine use tries again. The probe reads the datum from a
+*non-fetching* view and sends no network request of its own. A deployment without an active BFF
+runtime emits neither datum, and `oidc_discovery` never changes the `UP`/`DOWN` verdict.
 
 Health payloads report *state tokens only, never cause* (never exposing issuer URLs, internal
-hostnames, TLS paths, or exception messages); full failure details are logged via `WARN
-ApiSheriff-116`.
+hostnames, TLS paths, or exception messages); full failure details are logged via `WARN ApiSheriff-116`.
 
 [[_threat_alert_document]]
 == The Threat ALERT Document
 
-A source that crosses the `threat_classification` threshold raises one WARN `ApiSheriff-143` per
-episode (link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat
-Classification]). The record's last substitution is a compact JSON object, the ALERT document.
-`edge.admission.ThreatAlertDocument` renders it through the gateway's own `GatewayJson`, so no
-further JSON library is needed. Its field names are those of the Elastic Common Schema (ECS) `8.17.0`,
-except the `api_sheriff.threat` namespace, which is the gateway's own. A SIEM can therefore parse the
-JSON tail of the record and index it without a mapping of its own.
+A source that crosses the `threat_classification` threshold raises one WARN `ApiSheriff-143` per episode
+(link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat Classification]). The
+record's last substitution is a compact JSON object, the ALERT document.
+`edge.admission.ThreatAlertDocument` renders it through the gateway's own `GatewayJson`, so no further
+JSON library is needed. Its field names are those of the Elastic Common Schema (ECS) `8.17.0`, except
+the `api_sheriff.threat` namespace, which is the gateway's own. A SIEM can therefore parse the JSON
+tail of the record and index it without a mapping of its own.
 
 [cols="2,3", options="header"]
 |===
@@ -473,18 +465,18 @@ JSON tail of the record and index it without a mapping of its own.
 | `api_sheriff.threat.host` | The folded host, `*` included.
 | `api_sheriff.threat.contributions` | The weight each event type contributed during the episode,
   keyed by the `EventType` name; a recon trip appears as `SOURCE_TRIPPED`.
-| `api_sheriff.threat.categories` | The same weights folded by event category slug, with
-  `recon_trip` for the recon trip.
+| `api_sheriff.threat.categories` | The same weights folded by event category slug, with `recon_trip`
+  for the recon trip.
 |===
 
 *The `source.ip` trap.* ECS types `source.ip` as an IP address. An IPv6 source is keyed on its `/64`
-prefix and an unresolvable one on `unknown`; neither is a valid `ip` value, and a SIEM would reject
-the document or drop the field. Both therefore appear in `source.address` only.
+prefix and an unresolvable one on `unknown`; neither is a valid `ip` value, and a SIEM would reject the
+document or drop the field. Both therefore appear in `source.address` only.
 
 *No request byte.* Every value is gateway-derived: the canonical key texts, enum names, the ledger's
 numbers and fixed constants. No path, raw `Host` or header can reach the document, so the record
-cannot carry log-injection text. Should the document fail to render, the ALERT is still logged at
-the same identifier with the marker `<document unavailable>`, and it is still counted.
+cannot carry log-injection text. Should the document fail to render, the ALERT is still logged at the
+same identifier with the marker `<document unavailable>`, and it is still counted.
 
 *The OCSF mapping.* The gateway emits ECS only. A pipeline that normalizes to the Open Cybersecurity
 Schema Framework maps the document as follows:
@@ -504,6 +496,6 @@ Schema Framework maps the document as follows:
 | `unmapped` | `api_sheriff.threat.*`
 |===
 
-*Volume.* The substrate trips a source at most once per `CLEAR` period, and the threat ledger tracks
-at most 65,536 sources. The ALERT volume is therefore at most one per tracked source per episode,
-bounded by 65,536 within one window. `sheriff_threat_alerts_total` carries the rate.
+*Volume.* The substrate trips a source at most once per `CLEAR` period, and the threat ledger tracks at
+most 65,536 sources. The ALERT volume is therefore at most one per tracked source per episode, bounded
+by 65,536 within one window. `sheriff_threat_alerts_total` carries the rate.

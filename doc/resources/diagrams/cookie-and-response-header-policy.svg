@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cookie rebuild, same-origin check, response filtering, security headers and Location rewrite.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 332"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Cookie policy, response header filtering, security headers and Location rewrite</title>
+  <desc id="desc">A three-column block diagram. Column 1, the request side at stage 5: ForwardPolicyStage.admittedCookiePairs splits the first Cookie value on semicolons, drops every gateway-owned cookie, keeps pairs by the cookies mode none, exact names or all, and joins them into one Cookie header; a CsrfDefence same-origin check guards every cookie-forwarding non-WebSocket route on unsafe methods, requiring a matching Origin or Sec-Fetch-Site same-origin, and fails as CSRF_REJECTED. Column 2, the response side at stage 7: UpstreamSetCookieFilter drops gateway cookies, enforces the cookies mode and strips every Domain attribute; UpstreamIdentityHeaders Server and X-Powered-By are dropped unless keep_identity_headers is set; the predicate runs at HTTP headers, gRPC leading headers and gRPC trailers. Column 3: the four gateway-owned security headers are seeded globally at stage 0 together with CORS and replaced by the route block at stage 2a, with set or default header modes against upstream values; the LocationRewriter maps an in-base-path upstream Location onto the route match key and leaves foreign or ambiguous values unchanged.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="184" y="32" class="col-header">Request Side (Stage 5)</text>
+  <rect class="stroke" x="24" y="48" width="320" height="264" rx="6"/>
+  <text x="44" y="80" class="item-bold">admittedCookiePairs</text>
+  <text x="56" y="102" class="sub">split first Cookie on ';'</text>
+  <text x="56" y="120" class="sub">drop gateway-owned cookies</text>
+  <text x="56" y="138" class="sub">keep by mode: none | names | all</text>
+  <text x="56" y="156" class="sub">join '; ' in order → one header</text>
+  <line class="sep" x1="44" y1="168" x2="324" y2="168"/>
+  <text x="44" y="192" class="item-bold">Same-Origin Check</text>
+  <text x="56" y="214" class="sub">cookie-forwarding non-WebSocket route</text>
+  <text x="56" y="232" class="sub">unsafe method needs Origin or</text>
+  <text x="56" y="250" class="sub">Sec-Fetch-Site: same-origin</text>
+  <text x="56" y="268" class="sub">fail → CSRF_REJECTED (uniform 404)</text>
+  <text x="56" y="286" class="sub">WebSocket: websocket.allowed_origins</text>
+
+  <text x="536" y="32" class="col-header">Response Side (Stage 7)</text>
+  <rect class="stroke" x="392" y="48" width="288" height="264" rx="6"/>
+  <text x="412" y="80" class="item-bold">UpstreamSetCookieFilter</text>
+  <text x="424" y="102" class="sub">drop gateway-owned cookies</text>
+  <text x="424" y="120" class="sub">enforce none | names | all</text>
+  <text x="424" y="138" class="sub">strip every Domain attribute</text>
+  <line class="sep" x1="412" y1="150" x2="660" y2="150"/>
+  <text x="412" y="174" class="item-bold">UpstreamIdentityHeaders</text>
+  <text x="424" y="196" class="sub">Server, X-Powered-By dropped</text>
+  <text x="424" y="214" class="sub">keep_identity_headers: true keeps</text>
+  <line class="sep" x1="412" y1="226" x2="660" y2="226"/>
+  <text x="424" y="250" class="sub">runs on HTTP headers, gRPC headers</text>
+  <text x="424" y="268" class="sub">and gRPC trailers</text>
+
+  <text x="872" y="32" class="col-header">Security Headers &amp; Location</text>
+  <rect class="stroke" x="728" y="48" width="288" height="264" rx="6"/>
+  <text x="748" y="80" class="item-bold">HSTS · XCTO · XFO · CSP</text>
+  <text x="760" y="102" class="sub">Stage 0 seeds global block + CORS</text>
+  <text x="760" y="120" class="sub">Stage 2a swaps in the route block</text>
+  <text x="760" y="138" class="sub">set overwrites; default fills gaps</text>
+  <line class="sep" x1="748" y1="150" x2="996" y2="150"/>
+  <text x="748" y="174" class="item-bold">LocationRewriter</text>
+  <text x="760" y="196" class="sub">in-base-path upstream Location</text>
+  <text x="760" y="214" class="sub">→ route match key, query kept</text>
+  <text x="760" y="232" class="sub">foreign, userinfo, relative, dot</text>
+  <text x="760" y="250" class="sub">segments: relayed unchanged</text>
+
+  <line class="arrow" x1="348" y1="180" x2="388" y2="180" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="684" y1="180" x2="724" y2="180" marker-end="url(#arrow)"/>
+</svg>

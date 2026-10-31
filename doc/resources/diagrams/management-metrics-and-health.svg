@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Management interface: Prometheus metrics, SmallRye health and readiness.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 372"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Management interface with metrics and health</title>
+  <desc id="desc">A three-column block diagram. Column 1: the management port 9000 serves Prometheus metrics and health off the public data-plane port, over HTTPS by default; opting out with management.tls.enabled false downgrades both and logs WARN ApiSheriff-115. Column 2, metric families: request counters and latency per route, errors by route category and event, per-source detection and threat counters, uniform-404 overruns, cui-http security events, upstream duration, BFF session events, authentication branch, and token-validation counters. Column 3, health: SmallRye Health serves health, live and ready; GatewayReadinessCheck reflects validated configuration and whether every configured issuer has a loaded key set, reporting DOWN with jwks loading or unavailable until all are loaded and then UP with jwks ready; with an active BFF runtime it adds oidc and oidc_discovery data; payloads report state tokens only, never causes.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="172" y="32" class="col-header">Management Port</text>
+  <rect class="stroke" x="24" y="48" width="296" height="304" rx="6"/>
+  <text x="44" y="80" class="item-bold">:9000 · off the data plane</text>
+  <text x="56" y="102" class="sub">Micrometer Prometheus + SmallRye Health</text>
+  <line class="sep" x1="44" y1="114" x2="300" y2="114"/>
+  <text x="44" y="138" class="item-bold">HTTPS by default</text>
+  <text x="56" y="160" class="sub">management.tls.enabled: false</text>
+  <text x="56" y="178" class="sub">opts out: WARN ApiSheriff-115</text>
+  <line class="sep" x1="44" y1="190" x2="300" y2="190"/>
+  <text x="56" y="214" class="sub">root path /q (management.root-path)</text>
+
+  <text x="536" y="32" class="col-header">Metric Families (sheriff_*)</text>
+  <rect class="stroke" x="360" y="48" width="352" height="304" rx="6"/>
+  <text x="380" y="80" class="item-bold">Traffic</text>
+  <text x="392" y="102" class="sub">requests_total · request_duration_seconds</text>
+  <text x="392" y="120" class="sub">upstream_duration_seconds</text>
+  <line class="sep" x1="380" y1="132" x2="692" y2="132"/>
+  <text x="380" y="156" class="item-bold">Rejections &amp; detection</text>
+  <text x="392" y="178" class="sub">errors_total{route,category,event}</text>
+  <text x="392" y="196" class="sub">source_trips · source_untracked</text>
+  <text x="392" y="214" class="sub">threat_alerts · threat_untracked</text>
+  <text x="392" y="232" class="sub">uniform_not_found_overruns</text>
+  <line class="sep" x1="380" y1="244" x2="692" y2="244"/>
+  <text x="380" y="268" class="item-bold">Security &amp; auth</text>
+  <text x="392" y="290" class="sub">security_events_total (cui-http)</text>
+  <text x="392" y="308" class="sub">session_events · auth_branch</text>
+  <text x="392" y="326" class="sub">token_validation_errors / _success</text>
+
+  <text x="884" y="32" class="col-header">Health (SmallRye)</text>
+  <rect class="stroke" x="752" y="48" width="264" height="304" rx="6"/>
+  <text x="772" y="80" class="item-bold">/health · /live · /ready</text>
+  <line class="sep" x1="772" y1="96" x2="996" y2="96"/>
+  <text x="772" y="120" class="item-bold">GatewayReadinessCheck</text>
+  <text x="784" y="142" class="sub">config validated + every issuer</text>
+  <text x="784" y="160" class="sub">has a key set: jwks ready → UP</text>
+  <text x="784" y="178" class="sub">loading / unavailable → DOWN</text>
+  <line class="sep" x1="772" y1="190" x2="996" y2="190"/>
+  <text x="772" y="214" class="item-bold">Active BFF runtime</text>
+  <text x="784" y="236" class="sub">oidc, oidc_discovery data only</text>
+  <text x="784" y="254" class="sub">state tokens, never causes</text>
+
+  <line class="arrow" x1="324" y1="200" x2="356" y2="200" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="716" y1="200" x2="748" y2="200" marker-end="url(#arrow)"/>
+</svg>

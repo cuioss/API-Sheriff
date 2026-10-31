@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Authentication strategy per variant and boot-derived scope enforcement on bearer and session routes.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 336"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Authentication strategy per variant and scope enforcement</title>
+  <desc id="desc">A three-column block diagram. Column 1: the three deployment variants and their strategy: base gateway validates the client's own bearer token offline with token-sheriff-validation; BFF session keeps tokens server-side behind an opaque session-id cookie; BFF cookie keeps tokens inside an AES-256-GCM encrypted HttpOnly cookie. Column 2: RouteTableBuilder derives neededScopes as oidc.scopes union endpoint.scopes once at boot and carries it on the route. Column 3: AuthenticationStage compares the validated bearer token against neededScopes and answers 403 SCOPE_MISSING with an RFC 6750 insufficient_scope challenge on a shortfall; SessionAuthenticationStage compares the session's active scope set against neededScopes after near-expiry refresh, continuing when nothing is missing, running a scope-driven refresh when every missing scope lies in the granted set, and otherwise redirecting a navigation into a session widening or rejecting other requests with 403 SCOPE_MISSING.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="184" y="32" class="col-header">1 · Strategy per Variant</text>
+  <rect class="stroke" x="24" y="48" width="320" height="268" rx="6"/>
+  <text x="44" y="80" class="item-bold">Base gateway</text>
+  <text x="56" y="102" class="sub">client's own Authorization: Bearer</text>
+  <text x="56" y="120" class="sub">offline TokenValidator check</text>
+  <line class="sep" x1="44" y1="132" x2="324" y2="132"/>
+  <text x="44" y="156" class="item-bold">BFF session</text>
+  <text x="56" y="178" class="sub">gateway = OIDC confidential client</text>
+  <text x="56" y="196" class="sub">tokens server-side; opaque cookie</text>
+  <text x="56" y="214" class="sub">stored access token injected upstream</text>
+  <line class="sep" x1="44" y1="226" x2="324" y2="226"/>
+  <text x="44" y="250" class="item-bold">BFF cookie</text>
+  <text x="56" y="272" class="sub">tokens only in AES-256-GCM cookie</text>
+  <text x="56" y="290" class="sub">HttpOnly; decrypted per request</text>
+
+  <text x="520" y="32" class="col-header">2 · Boot Derivation</text>
+  <rect class="stroke" x="392" y="48" width="256" height="268" rx="6"/>
+  <text x="412" y="80" class="item-bold">RouteTableBuilder</text>
+  <text x="424" y="102" class="item">neededScopes =</text>
+  <text x="424" y="122" class="item">  oidc.scopes</text>
+  <text x="424" y="142" class="item">  ∪ endpoint.scopes</text>
+  <text x="424" y="162" class="sub">endpoint.scopes alone without oidc</text>
+  <line class="sep" x1="412" y1="174" x2="628" y2="174"/>
+  <text x="424" y="198" class="sub">carried on routing.Route; every</text>
+  <text x="424" y="216" class="sub">leg reads it, so requesting and</text>
+  <text x="424" y="234" class="sub">checking cannot drift apart</text>
+
+  <text x="856" y="32" class="col-header">3 · Request-Time Check</text>
+  <rect class="stroke" x="696" y="48" width="320" height="268" rx="6"/>
+  <text x="716" y="80" class="item-bold">Bearer: AuthenticationStage</text>
+  <text x="728" y="102" class="sub">token vs neededScopes</text>
+  <text x="728" y="120" class="sub">shortfall → 403 SCOPE_MISSING +</text>
+  <text x="728" y="138" class="sub">WWW-Authenticate insufficient_scope</text>
+  <line class="sep" x1="716" y1="150" x2="996" y2="150"/>
+  <text x="716" y="174" class="item-bold">Session: SessionAuthenticationStage</text>
+  <text x="728" y="196" class="sub">active set A vs neededScopes</text>
+  <text x="728" y="214" class="sub">nothing missing → continue, no IdP call</text>
+  <text x="728" y="232" class="sub">missing ⊆ granted S → scope refresh</text>
+  <text x="728" y="250" class="sub">else navigation → 302 widening;</text>
+  <text x="728" y="268" class="sub">other → 403 + missing_scopes</text>
+
+  <line class="arrow" x1="348" y1="182" x2="388" y2="182" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="652" y1="182" x2="692" y2="182" marker-end="url(#arrow)"/>
+</svg>
