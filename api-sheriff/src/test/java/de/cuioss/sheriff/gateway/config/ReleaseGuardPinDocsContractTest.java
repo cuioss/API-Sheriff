@@ -15,21 +15,17 @@
  */
 package de.cuioss.sheriff.gateway.config;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.opentest4j.AssertionFailedError;
@@ -73,9 +69,6 @@ import org.opentest4j.AssertionFailedError;
  */
 @DisplayName("The release-process doc cites the reusable-workflow pin release.yml's release job uses")
 class ReleaseGuardPinDocsContractTest {
-
-    /** The working directory the runner started in — the module root under surefire. */
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
     /** The doc whose guard section is read at the pin it cites, relative to the repository root. */
     private static final String RELEASE_DOC = "doc/development/release-process.adoc";
@@ -301,23 +294,6 @@ class ReleaseGuardPinDocsContractTest {
     }
 
     private static String read(String relativePath) throws IOException {
-        return Files.readString(repoRoot().resolve(relativePath));
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory that holds every file this
-     * contract reads, so the guard does not depend on the directory a runner starts in.
-     *
-     * @return the repository root
-     */
-    private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
-            if (Files.isRegularFile(candidate.resolve(RELEASE_DOC))
-                    && Files.isRegularFile(candidate.resolve(RELEASE_WORKFLOW))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root from the working directory " + MODULE
-                + ": no ancestor of it holds " + RELEASE_DOC + " and " + RELEASE_WORKFLOW);
+        return Files.readString(RepositoryRoot.holding(RELEASE_DOC, RELEASE_WORKFLOW).resolve(relativePath));
     }
 }

@@ -15,13 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -43,6 +37,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -60,6 +55,7 @@ import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules.JwksRefreshKey;
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -175,14 +171,12 @@ import org.junit.jupiter.params.provider.MethodSource;
 @DisplayName("Documented sets stay bound to their authoritative source")
 class DocumentedSetsContractTest {
 
-    /** The working directory the runner started in — the module root under surefire. */
-    private static final Path MODULE = Path.of(System.getProperty("user.dir"));
-
-    private static final Path CONFIGURATION_ADOC = repoRoot().resolve("doc/configuration.adoc");
-    private static final Path USER_README_ADOC = repoRoot().resolve("doc/user/README.adoc");
-    private static final Path BFF_COOKIE_ADOC = repoRoot().resolve("doc/user/bff-cookie.adoc");
-    private static final Path ARCHITECTURE_ADOC = repoRoot().resolve("doc/architecture/observability-and-errors.adoc");
-    private static final Path THREAT_MODEL_ADOC = repoRoot().resolve("doc/security-threat-model.adoc");
+    private static final Path REPOSITORY_ROOT = RepositoryRoot.holding("doc");
+    private static final Path CONFIGURATION_ADOC = REPOSITORY_ROOT.resolve("doc/configuration.adoc");
+    private static final Path USER_README_ADOC = REPOSITORY_ROOT.resolve("doc/user/README.adoc");
+    private static final Path BFF_COOKIE_ADOC = REPOSITORY_ROOT.resolve("doc/user/bff-cookie.adoc");
+    private static final Path ARCHITECTURE_ADOC = REPOSITORY_ROOT.resolve("doc/architecture/observability-and-errors.adoc");
+    private static final Path THREAT_MODEL_ADOC = REPOSITORY_ROOT.resolve("doc/security-threat-model.adoc");
 
     /**
      * Anchor for the {@code oidc_discovery} value table of {@code doc/configuration.adoc}: the bullet that
@@ -2613,26 +2607,5 @@ class DocumentedSetsContractTest {
             }
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
-    }
-
-    /**
-     * The repository root — the nearest ancestor of the working directory that actually holds the
-     * {@code doc/} tree these contracts assert against.
-     * <p>
-     * The search walks up rather than taking a fixed one-level hop because the working directory is
-     * not the same everywhere: surefire runs with the module as its working directory, but an IDE
-     * runner or an aggregator invocation may use another. Probing for {@code doc/} resolves the root
-     * from a property of the tree instead of from an assumption about the runner, and a genuinely
-     * unresolvable root then fails naming the directory it started from rather than surfacing later
-     * as a {@code NoSuchFileException} on a path nobody asked for.
-     */
-    private static Path repoRoot() {
-        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
-            if (Files.isDirectory(candidate.resolve("doc"))) {
-                return candidate;
-            }
-        }
-        return fail("cannot resolve the repository root from the working directory " + MODULE
-                + ": no ancestor of it contains a doc/ directory");
     }
 }
