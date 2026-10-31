@@ -145,7 +145,7 @@ public final class RouteAssembler {
                 completed.assetSource(assetSourceFactory.create(asset, route.keepIdentityHeaders()));
             }
 
-            // A route resolves exactly one terminal action (ADR-0014 and its Amendment A1). Only a proxy
+            // A route resolves exactly one terminal action (ADR-0014). Only a proxy
             // route the HTTP dispatch serves needs a client and a guard: an asset route's egress rides the
             // source's own SSRF-controlled fetch seam, a redirect route never contacts an upstream, and a
             // WebSocket route is dialed by the edge-wide WebSocket client.

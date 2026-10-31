@@ -29,7 +29,7 @@ import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The single in-file placeholder substitution engine (D4, ADR-0004 Amendment A1).
+ * The single in-file placeholder substitution engine (D4, ADR-0004).
  * <p>
  * It resolves two placeholder forms embedded in configuration string values against
  * a supplied environment lookup:

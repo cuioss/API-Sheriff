@@ -30,7 +30,7 @@ import org.jspecify.annotations.Nullable;
  * the gateway's fixed policy (ADR-0064).
  *
  * @param path             the upstream path appended to the alias base path, joined on
- *                         exactly one {@code /} (ADR-0004 Amendment A2); the request
+ *                         exactly one {@code /} (ADR-0004); the request
  *                         remainder after the match key follows it. {@code null} (or blank)
  *                         keeps the alias base path unchanged
  * @param rewriteLocation  whether an upstream {@code Location} pointing inside this route's

@@ -80,7 +80,7 @@ import io.vertx.core.http.HttpServerOptions;
  * so a change of the transport default cannot move them, and they are never raised (ADR-0066). The
  * guard counts only the resets a client sends on its connection, so the gateway's own
  * {@code RST_STREAM(NO_ERROR)} — the early-response reset of ADR-0066 and the request-body and
- * stream-idle resets of ADR-0060 A2 — can never feed it. The per-source detection substrate
+ * stream-idle resets of ADR-0060 — can never feed it. The per-source detection substrate
  * ({@code de.cuioss.sheriff.gateway.detection}) is deliberately not used for these bounds: its key is a
  * source address, while stream creation and reset state belong to one connection, so per-source
  * keying would neither see a single abusive connection sooner nor bound its memory.

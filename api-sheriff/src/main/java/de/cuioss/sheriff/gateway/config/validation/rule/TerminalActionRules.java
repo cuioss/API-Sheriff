@@ -51,7 +51,7 @@ import org.jspecify.annotations.Nullable;
  * redirect target survives the open-redirect review, and whether the terminal action relays the
  * upstream response headers a {@code keep_identity_headers} key would govern.
  * <p>
- * The terminal-action rule ({@link #validateTerminalAction}, ADR-0014 and its Amendment A1) holds
+ * The terminal-action rule ({@link #validateTerminalAction}, ADR-0014) holds
  * every route to exactly one of upstream, asset or redirect, holds the anchor type and the terminal
  * action to the consistency matrix, requires the source-specific field of a declared asset action,
  * and reviews a redirect's {@code location} for open-redirect spellings at boot — a redirect is
@@ -85,7 +85,7 @@ public class TerminalActionRules {
     private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
 
     /**
-     * Rule: the terminal-action / anchor-type consistency matrix (ADR-0014 and its Amendment A1).
+     * Rule: the terminal-action / anchor-type consistency matrix (ADR-0014).
      * A route resolves exactly one terminal action — the endpoint upstream, an {@code asset}, or a
      * {@code redirect}.
      * <ul>
@@ -121,7 +121,7 @@ public class TerminalActionRules {
     }
 
     /**
-     * The per-route half of the terminal-action rule (ADR-0014 and its Amendment A1): redirect
+     * The per-route half of the terminal-action rule (ADR-0014): redirect
      * exclusivity, the anchor-type / terminal-action consistency check, the source-field check for a
      * declared asset action, and the redirect review for a declared redirect action. Every violation
      * collects into the shared list; the check never fails fast.
@@ -175,7 +175,7 @@ public class TerminalActionRules {
     }
 
     /**
-     * The redirect half of the terminal-action rule (ADR-0014 Amendment A1).
+     * The redirect half of the terminal-action rule (ADR-0014).
      * <p>
      * <strong>Protocol.</strong> A redirect is answered with a plain HTTP status and
      * {@code Location}, which a gRPC, WebSocket or GraphQL client cannot follow — so a redirect on

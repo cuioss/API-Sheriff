@@ -69,7 +69,7 @@ import org.jspecify.annotations.Nullable;
  * normalized {@code path_prefix} length (most specific first) then lexically. For the same
  * address an exact route therefore always wins over a prefix route.
  * <p>
- * Each route resolves exactly one of three terminal actions (ADR-0014 and its Amendment A1):
+ * Each route resolves exactly one of three terminal actions (ADR-0014):
  * {@code asset} (static content), {@code redirect} (answered at the gateway) or — when it
  * declares neither — {@code upstream} (proxy). An endpoint's {@code base_url} alias is
  * resolved through the topology only when the endpoint carries at least one proxy route
@@ -294,7 +294,7 @@ public final class RouteTableBuilder {
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeout)
                 .neededScopes(neededScopes(gateway, endpoint));
-        // A route resolves to exactly one terminal action (ADR-0014 and its Amendment A1): an asset
+        // A route resolves to exactly one terminal action (ADR-0014): an asset
         // action when the route declares an asset block, a redirect action when it declares a
         // redirect block, otherwise the route proxies to its endpoint upstream. The upstream is
         // present for every proxy route: resolveEndpointUpstream refuses a proxy-route endpoint
@@ -408,7 +408,7 @@ public final class RouteTableBuilder {
     /**
      * Materializes the route-level {@code upstream.path} into the route's effective upstream base
      * path. A route that declares a non-blank {@code upstream.path} <em>appends</em> it to the
-     * alias-derived base path (ADR-0004 Amendment A2): the two are joined on exactly one
+     * alias-derived base path (ADR-0004): the two are joined on exactly one
      * {@code /}, so the effective base path is
      * {@code stripTrailingSlashes(alias base path) + "/" + stripLeadingSlashes(upstream.path)} — no
      * doubled and no missing slash, whichever side the operator wrote one on. Both helpers remove

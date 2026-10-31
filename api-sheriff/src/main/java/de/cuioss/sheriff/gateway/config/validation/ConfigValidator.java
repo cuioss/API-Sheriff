@@ -163,7 +163,7 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * the canonical request path. The user-info rule also holds every {@code default_view} claim to the
  * {@code allowed_claims} allowlist.
  * <p>
- * The terminal-action rule (ADR-0014 and its Amendment A1, owned by {@link TerminalActionRules})
+ * The terminal-action rule (ADR-0014, owned by {@link TerminalActionRules})
  * holds every route to exactly one of upstream, asset or redirect, reviews a redirect's
  * {@code location} for open-redirect spellings at boot — a redirect is written verbatim at request
  * time, so this review is the only place its target is ever judged — and refuses

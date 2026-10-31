@@ -26,7 +26,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The global block is seeded onto every response at stage 0; once a route is selected, the route's
  * resolved block — its anchor's block when the anchor declares one, otherwise the global block — replaces
- * it <em>wholesale</em> (ADR-0007 and its Amendment A1): an anchor block that omits a header drops the
+ * it <em>wholesale</em> (ADR-0007): an anchor block that omits a header drops the
  * global value of that header for its routes, {@code content_security_policy} included. {@code cors} is
  * meaningful on the global block only; the bundled schema refuses it on an anchor. Every header value is
  * served verbatim.

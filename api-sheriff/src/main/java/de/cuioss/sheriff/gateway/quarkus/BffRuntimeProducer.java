@@ -275,7 +275,8 @@ import org.jspecify.annotations.Nullable;
  * revocation — is the sixth TLS-terminating outbound leg, and it is bound
  * to the global {@code egress_tls} block through its own peer keys: {@code oidc_verify_hostname} is
  * passed to the builder's {@code verifyHostname} on every build, the {@code true} path included, so
- * the leg's effect never depends on token-sheriff's own default (ADR-0022); {@code oidc_tls_profile},
+ * the leg's effect never depends on token-sheriff's own default ({@code doc/technical_aspects.adoc},
+ * "Adopting Upstream Security-Default Changes"); {@code oidc_tls_profile},
  * when named, is resolved through {@link JwksTrustProfileResolver} and supplies the builder's
  * {@code sslContext}, replacing the JVM default trust store on that leg. The relaxation and a named
  * profile are mutually exclusive and the pair is refused at boot, ahead of the library's own
@@ -775,7 +776,8 @@ public class BffRuntimeProducer {
      * <p>
      * <strong>The hostname posture is passed unconditionally.</strong> {@code verifyHostname} is called
      * on the {@code true} path as well, so the key's effect is independent of the library default and
-     * an upstream default change cannot silently move this gateway's posture (ADR-0022). The trust
+     * an upstream default change cannot silently move this gateway's posture
+     * ({@code doc/technical_aspects.adoc}, "Adopting Upstream Security-Default Changes"). The trust
      * context is set only when a profile is named; otherwise the leg keeps the JVM default trust store.
      * <p>
      * <strong>One posture for every scope set (ADR-0048).</strong> The {@code scopes} argument is the
@@ -834,7 +836,7 @@ public class BffRuntimeProducer {
                 .issuer(issuer).clientId(clientId)
                 .scopes(scopes).redirectUri(redirectUri)
                 // Called unconditionally, on the true path as well, so the posture never rests on the
-                // library default (ADR-0022).
+                // library default (doc/technical_aspects.adoc, "Adopting Upstream Security-Default Changes").
                 .verifyHostname(verifyHostname);
         // The same predicate selects the authentication instance in selectClientCredential(...), so the
         // declared method and the credential actually presented cannot disagree. Key mode sets no
