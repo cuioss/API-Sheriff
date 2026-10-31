@@ -324,8 +324,8 @@ per-source detection substrate (link:development/source-detection-substrate.adoc
   nothing this gateway does. No `sheriff.token.issuers.*` projection is introduced and the extension
   dependency stays. Supersedes
   link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027],
-  whose live per-issuer key-set readiness
-  (link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[Readiness carries a live per-issuer key-set read])
+  whose
+  link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[live per-issuer key-set readiness]
   carries forward unchanged.
   *(Status: accepted.)*
 |===
