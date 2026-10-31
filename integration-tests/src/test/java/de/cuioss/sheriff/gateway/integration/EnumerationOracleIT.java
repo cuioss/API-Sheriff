@@ -162,7 +162,7 @@ class EnumerationOracleIT extends BaseIntegrationTest {
 
     private static final String BEARER = "Bearer ";
 
-    /** The uniform-404 overrun counter; it carries no label (ADR-0073 Amendment A1). */
+    /** The uniform-404 overrun counter; it carries no label (ADR-0073). */
     private static final String OVERRUNS_TOTAL = "sheriff_uniform_not_found_overruns_total";
 
     /** The event a pre-trust internal failure is reported under. */

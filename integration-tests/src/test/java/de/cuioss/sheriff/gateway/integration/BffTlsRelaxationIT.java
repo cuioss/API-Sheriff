@@ -144,7 +144,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>How a refused login is told from an absent route.</strong> A login the back-channel refuses
  * fails inside the gateway after the session route was selected and before the trust boundary, so the
- * shipped default answers it as the unrouted {@code 404} too (ADR-0073, amendment A1), not as a server
+ * shipped default answers it as the unrouted {@code 404} too (ADR-0073), not as a server
  * error. It is asserted the same way: the unrouted problem document — this descriptor declares no
  * portal, so no HTML error page is negotiated for the navigation — with no {@code Location}, together
  * with {@code PRE_TRUST_INTERNAL_FAILURE} moving {@code sheriff_errors_total} on the session route
@@ -210,7 +210,7 @@ class BffTlsRelaxationIT {
      */
     private static final String SESSION_ROUTE_ID = "bff-session-mediated";
 
-    /** The event an internal failure before the trust boundary is counted under (ADR-0073, amendment A1). */
+    /** The event an internal failure before the trust boundary is counted under (ADR-0073). */
     private static final String PRE_TRUST_INTERNAL_FAILURE = "PRE_TRUST_INTERNAL_FAILURE";
 
     private static final String NETWORK = "sheriff-tls-relaxation";
@@ -413,7 +413,7 @@ class BffTlsRelaxationIT {
      * A navigation onto the session route, which would start a login, while the back-channel refuses
      * the identity provider's certificate. The login fails inside the gateway after the route was
      * selected and before the trust boundary, so the shipped default answers it as the unrouted
-     * {@code 404} (ADR-0073, amendment A1). Three facts together make that answer a refused login,
+     * {@code 404} (ADR-0073). Three facts together make that answer a refused login,
      * rather than an absent route or a login that started:
      * <ul>
      *   <li>it is exactly the unrouted problem document

@@ -116,7 +116,8 @@ import org.junit.jupiter.api.TestFactory;
  * through an alias of an export (an import renamed with {@code as}, or the function stored in a
  * variable). Function declarations are not calls.
  * <p>
- * <strong>This test must never pass quietly</strong> (ADR-0030). The walked population is asserted
+ * <strong>This test must never pass quietly</strong> ("Comment-Only Invariants Become Fitness
+ * Functions" in {@code doc/development/test-corpus-integrity.adoc}). The walked population is asserted
  * non-empty and fully covered as a property — never as equality with a file count; the discovered
  * literal set is asserted non-empty; every configuration file the table reads is asserted to exist
  * and parse; and the {@link Controls} drive the same resolvers over in-memory configuration
@@ -274,7 +275,7 @@ class BenchmarkScriptConfigContractTest {
 
     private static final Pattern PROTO_SERVICE = Pattern.compile("(?m)^service\\s+(\\w+)\\s*\\{");
 
-    /** The ADR-0004 Amendment A1 in-file placeholder form an overlay can repoint. */
+    /** The ADR-0004 in-file placeholder form an overlay can repoint. */
     private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{(\\w+)(?::-[^}]*)?}");
 
     /** The ALPN protocol identifier behind each protocol name k6 reports on a response. */
@@ -505,7 +506,8 @@ class BenchmarkScriptConfigContractTest {
     }
 
     /**
-     * ADR-0030 controls: the resolvers above, driven over in-memory configuration specimens. Each
+     * Controls (the fitness-function shape of {@code doc/development/test-corpus-integrity.adoc}): the
+     * resolvers above, driven over in-memory configuration specimens. Each
      * rejection specimen changes ONE key a script depends on and must be refused naming that script;
      * each acceptance specimen reshapes a document without breaking the key and must pass, so the
      * resolvers are shown to judge the key rather than the committed file's exact text.
