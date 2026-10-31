@@ -5,7 +5,7 @@
 
 == Overview
 
-This document describes the CUI libraries and frameworks used by API Sheriff, covering HTTP client communication, security validation, OAuth token handling, logging, and testing.
+This document describes the CUI libraries and frameworks used by API Sheriff, covering HTTP client communication, security validation, OAuth token handling, the adoption of upstream security-default changes, logging, and testing.
 
 == Upstream API Communication
 
@@ -190,6 +190,84 @@ strict rotation (ADR-0046). It wires
 API and requirement surface is `TokenSheriff/doc/client` (`CLIENT-1..22`); the split between
 engine and BFF responsibilities is stated in
 link:architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer].
+
+[[_upstream_security_default_changes]]
+== Adopting Upstream Security-Default Changes
+
+The token-validation and confidential-client libraries above express most of their security
+posture through *defaults*: which claims are required, which substitutions are permitted, and
+which malformed inputs fail closed. A hardening release of such a library seldom adds an API. It
+flips a default from permissive to strict.
+
+A tightened default differs from an ordinary breaking change:
+
+* *It compiles cleanly.* No signature moves, so the compiler reports nothing.
+* *Structural tests do not see it.* A test that asserts a validator was constructed passes before
+  and after the flip. The flip changes what the validator accepts at runtime, not whether it can be
+  built.
+* *It shows only at the trust boundary.* The first signal is a token that authenticated before and
+  is now rejected.
+
+=== Policy
+
+An upstream security default that tightens is *adopted and documented*. The gateway never
+restores the permissive behaviour locally. It does not re-enable the flipped setting, and it does
+not reimplement the relaxed path in gateway code.
+
+Three obligations go with each adoption:
+
+* *Document the narrowed operator contract.* The behaviour change is visible to operators even
+  when no gateway code changes. The link:configuration.adoc[Configuration Reference] states the
+  tightened requirement. It also names the remediation for a deployment that relied on the old
+  behaviour. An operator learns the contract from the documentation, not from a failing login.
+* *Escalate a default the gateway cannot accommodate.* Sometimes the gateway's configuration model
+  depends on a permissiveness the library withdrew. That dependency is a finding against the
+  configuration model. It is reported and escalated, never patched around. A local workaround would
+  turn a visible design problem into a hidden security divergence.
+* *Audit a version-floor move over the whole delta.* The change that alters behaviour is rarely the
+  one the bump was made for. Release titles rarely reveal it. Every change in the adopted range
+  gets an explicit verdict. "Checked, no impact" is a verdict too, and it carries its evidence. A
+  floor move without that audit is an unreviewed change of the gateway's authentication posture.
+
+The gateway's security posture therefore tracks its security dependency by default. The cost is
+explicit. A tightened default can break a working deployment at the floor move, and operators pay
+that cost. The whole-delta audit also makes every floor move more expensive than a version-string
+edit, including the many moves that change no behaviour.
+
+=== Risks
+
+* *Structural tests give false assurance.* A test that asserts successful construction cannot
+  detect a default flip. A green suite is therefore not a behavioural verdict. The audit verdict
+  rests on the changed code and the documented default. Test results are cited only for what they
+  cover.
+* *An automated dependency bump bypasses the audit.* A bot-authored one-line version change
+  carries no compatibility review. A tightened default can reach `main` unaudited this way. The
+  bump does not discharge the audit obligation. The obligation stays open and is discharged
+  afterwards.
+* *"Checked, no impact" is asserted from a title.* A verdict that rests on a change's description
+  instead of its diff does not satisfy the audit.
+
+=== Alternatives rejected
+
+*Restore the permissive default locally and revisit later.* This keeps every deployment working
+across the floor move. It defers all operator impact, which is the strongest argument any
+alternative here has. It loses because the gateway then runs a posture the upstream maintainers
+withdrew for cause. The divergence is recorded only as an unremarkable configuration line. Nothing
+forces the revisit to happen, so "revisit later" means "never" in practice. The gateway's posture
+is then defined by the oldest default it chose to keep.
+
+*Pin the dependency floor below the hardening release.* This avoids the behaviour change
+outright. Unlike a local revert, it is honest about doing so. It loses because it gives up every
+other fix in the release, including the rest of the hardening, to avoid one behaviour change. It
+also turns a one-time adoption cost into an upgrade gap that keeps growing.
+
+*Adopt the tightened default but skip the documentation.* This is the cheapest adoption, and the
+code stays correct. It loses because the operator contract did narrow. Without documentation, a
+deployment first learns of the change from a failed authentication with no explanation. That is
+the worst place to learn it.
+
+The three alternatives share one flaw. Each keeps the gateway's effective security contract
+different from the one its security dependency defines, and none records that difference.
 
 == Logging
 
