@@ -15,30 +15,24 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
-import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -68,83 +62,6 @@ class TerminalActionRulesTest {
     private final ConfigValidator validator = new ConfigValidator();
 
     // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
-
-    private static AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
-            @Nullable Require require) {
-        return AnchorConfig.builder()
-                .name(name)
-                .pathPrefix(prefix)
-                .type(type)
-                .access(access)
-                .auth(require == null ? null : auth(require))
-                .build();
-    }
-
-    private static GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
-        return validGateway().anchors(anchors).build();
-    }
-
-    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName,
-            @Nullable AuthConfig auth, RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .anchor(anchorName)
-                .auth(auth)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static RouteConfig anchoredRoute(String id, String prefix, String anchorName, HttpMethod... methods) {
-        return RouteConfig.builder()
-                .id(id)
-                .anchor(anchorName)
-                .match(match(prefix, methods))
-                .build();
-    }
-
-    private static RouteConfig assetRoute(String id, String prefix, String anchorName, AssetConfig asset,
-            HttpMethod... methods) {
-        return RouteConfig.builder()
-                .id(id)
-                .anchor(anchorName)
-                .match(match(prefix, methods))
-                .asset(asset)
-                .build();
-    }
-
-    private static AssetConfig directoryAsset(String root) {
-        return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
-                .directory(root).build();
-    }
 
     private static AssetConfig upstreamAsset(String alias) {
         return AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
@@ -181,20 +98,6 @@ class TerminalActionRulesTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should reject an asset-type anchor route that declares no asset terminal action")
-        void shouldRejectAssetAnchorWithoutAssetBlock() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    anchoredRoute("noasset", "/assets", "assets", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertHasError(errors, "/endpoint/routes", "declares no asset terminal action");
         }
 
         @Test

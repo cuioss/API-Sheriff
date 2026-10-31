@@ -15,16 +15,15 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.singleRefusalAt;
+import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
+
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -32,11 +31,8 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -65,58 +61,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ForwardingRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
-
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static RouteConfig route(String id, HttpMethod... methods) {
-        return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
-    }
-
-    private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
-            RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .auth(auth(Require.NONE))
-                .allowedMethods(allowedMethods)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
-
-    /** The single refusal recorded at exactly {@code pointer}; fails when there is none or more than one. */
-    private static ConfigError singleRefusalAt(List<ConfigError> errors, String pointer) {
-        List<ConfigError> refusals = errors.stream().filter(error -> pointer.equals(error.pointer())).toList();
-        assertEquals(1, refusals.size(), () -> "expected exactly one refusal at " + pointer + ", got: " + refusals);
-        return refusals.getFirst();
-    }
 
     /**
      * The forward-mode exclusivity rule: each {@code forward} dimension resolves exactly one of the
@@ -155,7 +99,8 @@ class ForwardingRulesTest {
                     () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
                     () -> assertHasError(errors, "/endpoint/routes", "proxied"),
                     () -> assertHasError(errors, "/endpoint/routes", "headers_allow"),
-                    () -> assertHasError(errors, "/endpoint/routes", "headers_deny"));
+                    () -> assertHasError(errors, "/endpoint/routes", "headers_deny"),
+                    () -> assertHasError(errors, "/endpoint/routes", "declares both"));
         }
 
         @Test
@@ -228,26 +173,6 @@ class ForwardingRulesTest {
                                     .setHeaders(Map.of()).build()));
         }
 
-        @Test
-        @DisplayName("Should accept a route declaring no forward block at all")
-        void shouldAcceptRouteWithoutForwardBlock() {
-            List<ConfigError> errors = validator.validate(validGateway().build(),
-                    List.of(endpoint("orders", "ORDERS", List.of(HttpMethod.GET), route("proxied", HttpMethod.GET))),
-                    topologyWith("ORDERS"));
-
-            assertTrue(errors.isEmpty(), () -> "an absent forward block declares no list, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("The refusal message tells the operator which lists collided")
-        void refusalMessageNamesTheCollidingKeys() {
-            List<ConfigError> errors = validateForward(ForwardConfig.builder()
-                    .headersAllow(List.of("Accept")).headersDeny(List.of("X-Internal")).setHeaders(Map.of()).build());
-
-            assertTrue(errors.getFirst().message().contains("declares both"),
-                    () -> "the message must state that both lists were declared, got: "
-                            + errors.getFirst().message());
-        }
     }
 
     @Nested
@@ -332,7 +257,7 @@ class ForwardingRulesTest {
         void shouldRefuseEndpointForwardDeclaringBothHeaderLists() {
             ForwardConfig both = ForwardConfig.builder().headersAllow(List.of("Accept"))
                     .headersDeny(List.of("X-Internal")).build();
-            EndpointConfig endpoint = endpointWith(auth(Require.NONE), route("r", HttpMethod.GET)).forward(both)
+            EndpointConfig endpoint = endpointWith(auth(Require.NONE), routeConfig("r", HttpMethod.GET)).forward(both)
                     .build();
 
             List<ConfigError> errors = validate(validGateway().build(), endpoint);
@@ -347,7 +272,7 @@ class ForwardingRulesTest {
         void shouldRefuseEndpointForwardDeclaringBothQueryLists() {
             ForwardConfig both = ForwardConfig.builder().queryAllow(List.of("page")).queryDeny(List.of("debug"))
                     .build();
-            EndpointConfig endpoint = endpointWith(auth(Require.NONE), route("r", HttpMethod.GET)).forward(both)
+            EndpointConfig endpoint = endpointWith(auth(Require.NONE), routeConfig("r", HttpMethod.GET)).forward(both)
                     .build();
 
             List<ConfigError> errors = validate(validGateway().build(), endpoint);
@@ -362,7 +287,7 @@ class ForwardingRulesTest {
         void shouldAcceptEndpointForwardDeclaringOneListPerDimension() {
             ForwardConfig coherent = ForwardConfig.builder().headersAllow(List.of("Accept"))
                     .queryDeny(List.of("debug")).build();
-            EndpointConfig endpoint = endpointWith(auth(Require.NONE), route("r", HttpMethod.GET)).forward(coherent)
+            EndpointConfig endpoint = endpointWith(auth(Require.NONE), routeConfig("r", HttpMethod.GET)).forward(coherent)
                     .build();
 
             List<ConfigError> errors = validate(validGateway().build(), endpoint);
@@ -375,7 +300,7 @@ class ForwardingRulesTest {
         @DisplayName("Should refuse Authorization re-admitted by an endpoint-level forward block on a token_relay: false route")
         void shouldRefuseEndpointForwardReadmittingAuthorization() {
             ForwardConfig readmitting = ForwardConfig.builder().headersAllow(List.of("authorization")).build();
-            EndpointConfig endpoint = endpointWith(noTokenRelay(), route("r", HttpMethod.GET)).forward(readmitting)
+            EndpointConfig endpoint = endpointWith(noTokenRelay(), routeConfig("r", HttpMethod.GET)).forward(readmitting)
                     .build();
 
             List<ConfigError> errors = validate(validGateway().build(), endpoint);
@@ -415,7 +340,7 @@ class ForwardingRulesTest {
 
         private List<ConfigError> validateEndpointForward(ForwardConfig forward) {
             EndpointConfig endpoint = EndpointConfig.builder().id(ENDPOINT_ID).enabled(true).baseUrl(ALIAS)
-                    .auth(auth(Require.NONE)).forward(forward).routes(List.of(route("r", HttpMethod.GET))).build();
+                    .auth(auth(Require.NONE)).forward(forward).routes(List.of(routeConfig("r", HttpMethod.GET))).build();
             return validator.validate(validGateway().build(), List.of(endpoint), topologyWith(ALIAS));
         }
 

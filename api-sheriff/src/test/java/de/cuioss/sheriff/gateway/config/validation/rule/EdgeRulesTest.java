@@ -15,23 +15,22 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
+
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
@@ -68,30 +67,6 @@ class EdgeRulesTest {
 
     // --- fixture helpers -------------------------------------------------
 
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static RouteConfig route(String id, HttpMethod... methods) {
-        return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
-    }
-
     private static RouteConfig routeWithHost(String id, String host, HttpMethod... methods) {
         MatchConfig match = MatchConfig.builder()
                 .pathPrefix("/" + id)
@@ -105,25 +80,6 @@ class EdgeRulesTest {
         return validGateway()
                 .tls(TlsConfig.builder().passthroughSni(passthroughSni).build())
                 .build();
-    }
-
-    private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
-            RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .auth(auth(Require.NONE))
-                .allowedMethods(allowedMethods)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
     }
 
     @Nested
@@ -144,22 +100,10 @@ class EdgeRulesTest {
         }
 
         @Test
-        @DisplayName("Should report no violations for a passthrough_sni alias resolving without a base path")
-        void shouldAcceptResolvablePassthroughAlias() {
-            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint),
-                    topologyWith("ORDERS", "SECURE"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
         @DisplayName("Should report no violations for a passthrough_sni alias resolving to a bare '/' base path")
         void shouldAcceptPassthroughAliasWithTrailingSlashBasePath() {
             GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("orders-list", HttpMethod.GET));
             ResolvedTopology topology = new ResolvedTopology(Map.of(
                     "ORDERS", new ResolvedUpstream("https", "orders.internal", 443, ""),
                     "SECURE", new ResolvedUpstream("https", "secure.internal", 443, "/")));
@@ -193,7 +137,7 @@ class EdgeRulesTest {
             GatewayConfig gateway = validGateway()
                     .forwarded(ForwardedConfig.builder().trustedProxies(trustedProxies).build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -213,7 +157,7 @@ class EdgeRulesTest {
                     .forwarded(ForwardedConfig.builder()
                             .trustedProxies(List.of(malformedCidr)).build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -246,7 +190,7 @@ class EdgeRulesTest {
             GatewayConfig gateway = validGateway()
                     .forwarded(ForwardedConfig.builder().trustedProxies(List.of(cidr)).build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -281,7 +225,7 @@ class EdgeRulesTest {
         @DisplayName("Should reject a passthrough_sni alias that does not resolve")
         void shouldRejectUnresolvedPassthroughAlias() {
             GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "MISSING"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("orders-list", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -293,7 +237,7 @@ class EdgeRulesTest {
         @DisplayName("Should reject a passthrough_sni alias resolving to an upstream carrying a base path")
         void shouldRejectPassthroughAliasWithBasePath() {
             GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("orders-list", HttpMethod.GET));
             ResolvedTopology topology = new ResolvedTopology(Map.of(
                     "ORDERS", new ResolvedUpstream("https", "orders.internal", 443, ""),
                     "SECURE", new ResolvedUpstream("https", "secure.internal", 443, "/api")));

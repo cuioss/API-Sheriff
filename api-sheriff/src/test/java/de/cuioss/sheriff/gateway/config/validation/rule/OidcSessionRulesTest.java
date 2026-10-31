@@ -15,15 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.stream.Stream;
+
 
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -31,16 +29,10 @@ import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
-import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -64,8 +56,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * browser-guarantee warning on the derived session {@code Set-Cookie} header, and the
  * {@code cookie_name} refusal.
  * <p>
- * Every case drives the full default validator, so a rule dropped from its registration fails here as
- * surely as a rule whose body is removed. The class-level test logger captures every logger, so the
+ * Every case except the empty-rule-set control {@code shouldAttributeTheRefusalToTheRule} drives the full
+ * default validator, so a rule dropped from its registration fails here as surely as a rule whose body is
+ * removed. The class-level test logger captures every logger, so the
  * budget-warning assertions read the warning wherever it is emitted.
  */
 @EnableGeneratorController
@@ -74,51 +67,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 class OidcSessionRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
-
-    // --- fixture helpers -------------------------------------------------
-
-    private static GatewayConfig.GatewayConfigBuilder validGateway() {
-        return GatewayConfig.builder().version(1);
-    }
-
-    private static AuthConfig auth(Require require) {
-        return AuthConfig.builder().require(require).build();
-    }
-
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
-    }
-
-    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
-        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
-    }
-
-    private static RouteConfig route(String id, HttpMethod... methods) {
-        return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
-    }
-
-    private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
-            RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .auth(auth(Require.NONE))
-                .allowedMethods(allowedMethods)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
-        assertTrue(errors.stream()
-                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
-                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
-                        + messageContains + "', but got: " + errors);
-    }
 
     @Nested
     @DisplayName("oidc.session.max_sessions_per_subject — its range, and its refusal in cookie mode")
@@ -205,7 +153,7 @@ class OidcSessionRulesTest {
                                     .build())
                             .build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -224,7 +172,7 @@ class OidcSessionRulesTest {
                                     .build())
                             .build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -245,7 +193,7 @@ class OidcSessionRulesTest {
                                     .build())
                             .build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -270,7 +218,7 @@ class OidcSessionRulesTest {
                                     .build())
                             .build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -289,7 +237,7 @@ class OidcSessionRulesTest {
                                     .build())
                             .build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -307,7 +255,7 @@ class OidcSessionRulesTest {
                                     .build())
                             .build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -325,7 +273,7 @@ class OidcSessionRulesTest {
                                     .build())
                             .build())
                     .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
