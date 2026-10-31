@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Performance model: boot-time assembly and immutable object reuse vs per-request stack state.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 340"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Boot-time assembly, object reuse and per-request stack state</title>
+  <desc id="desc">A three-column block diagram. Column 1, Shared Immutable Boot Objects: SecurityPostures deduplicated per distinct filter shape; UpstreamClients Vert.x client and connection pool per distinct target; ResilienceShape SmallRye FT guards per target and retry setting; shared cache-backed TokenValidator; ForwardedHeaderResolver; compiled RouteTable. Column 2, Shared Bounded Mutable State: SmallRye circuit breaker rolling windows (20 calls); lock-free GatewayEventCounter and cui-http SecurityEventCounter; when BFF active, bounded session store (max_sessions, sweep), pending auth store, activity cookie codec. Column 3, Per-Request State: allocated on virtual-thread stack and never shared across requests (PipelineRequest, ResolvedForwarding, validated AccessTokenContent, matched Route reference, stream references; body chunks stream on event-loop I/O); prevents cross-request bleed.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="192" y="32" class="col-header">1 · Immutable Boot Objects</text>
+  <rect class="stroke" x="24" y="48" width="336" height="272" rx="6"/>
+  <text x="44" y="80" class="item-bold">SecurityPostures (deduplicated)</text>
+  <text x="56" y="102" class="sub">pipeline sets per distinct filter shape</text>
+  <line class="sep" x1="44" y1="114" x2="340" y2="114"/>
+  <text x="44" y="138" class="item-bold">UpstreamClients (deduplicated)</text>
+  <text x="56" y="160" class="sub">one Vert.x pool per UpstreamTarget</text>
+  <text x="56" y="178" class="sub">scheme + host + port + forced h2</text>
+  <line class="sep" x1="44" y1="190" x2="340" y2="190"/>
+  <text x="44" y="214" class="item-bold">ResilienceShape (SmallRye FT)</text>
+  <text x="56" y="236" class="sub">one guard per target + retry setting</text>
+  <line class="sep" x1="44" y1="248" x2="340" y2="248"/>
+  <text x="44" y="272" class="item-bold">RouteTable · TokenValidator</text>
+  <text x="56" y="294" class="sub">ForwardedHeaderResolver</text>
+
+  <text x="544" y="32" class="col-header">2 · Bounded Mutable State</text>
+  <rect class="stroke" x="392" y="48" width="304" height="272" rx="6"/>
+  <text x="412" y="80" class="item-bold">Circuit Breakers (per shape)</text>
+  <text x="424" y="102" class="sub">rolling window of 20 calls</text>
+  <line class="sep" x1="412" y1="114" x2="676" y2="114"/>
+  <text x="412" y="138" class="item-bold">Event Counters (lock-free)</text>
+  <text x="424" y="160" class="sub">ConcurrentHashMap + AtomicLong</text>
+  <line class="sep" x1="412" y1="172" x2="676" y2="172"/>
+  <text x="412" y="196" class="item-bold">BFF State (when active)</text>
+  <text x="424" y="218" class="sub">InMemorySessionStore (max_sessions,</text>
+  <text x="424" y="236" class="sub">per-subject cap, 1-minute sweep)</text>
+  <text x="424" y="254" class="sub">pending auth · activity cookie</text>
+
+  <text x="872" y="32" class="col-header">3 · Per-Request Stack State</text>
+  <rect class="stroke" x="728" y="48" width="288" height="272" rx="6"/>
+  <text x="748" y="80" class="item-bold">Virtual-Thread Stack Only</text>
+  <text x="760" y="102" class="sub">never shared across requests</text>
+  <text x="760" y="120" class="sub">zero cross-request bleed</text>
+  <line class="sep" x1="748" y1="132" x2="996" y2="132"/>
+  <text x="760" y="156" class="item">PipelineRequest</text>
+  <text x="760" y="176" class="item">ResolvedForwarding</text>
+  <text x="760" y="196" class="item">AccessTokenContent</text>
+  <text x="760" y="216" class="item">matched Route reference</text>
+  <text x="760" y="236" class="item">stream handles / piped I/O</text>
+  <line class="sep" x1="748" y1="250" x2="996" y2="250"/>
+  <text x="760" y="274" class="sub">minimal request-time allocation</text>
+
+  <line class="arrow" x1="364" y1="184" x2="388" y2="184" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="700" y1="184" x2="724" y2="184" marker-end="url(#arrow)"/>
+</svg>

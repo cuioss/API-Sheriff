@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Configuration subsystem — three static input layers resolved and validated at boot into immutable runtime objects.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 984 400"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Boot-time configuration assembly from layered static files to immutable runtime objects</title>
+  <desc id="desc">A three-column block diagram. Column 1 (Static Input Layers) contains gateway.yaml (global defaults, anchors, OIDC, token_validation), endpoints/*.yaml (per-service routes referencing abstract base_url aliases), and topology.properties (concrete URL bindings with environment-variable placeholders). Column 2 (Boot-Time Resolution) runs ConfigLoader, PolicyBlockResolver (anchor and global inheritance), ConfigValidator (fail-fast startup abort on any error), and RouteAssembler. Column 3 (Immutable Runtime State) holds GatewayConfig, RouteTable (exact-first, longest-prefix-first), UpstreamClients and UpstreamGuards, and BffRuntime and PortalCatalog.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <!-- Column headers -->
+  <text x="164" y="32" class="col-header">1 · Static Input Layers</text>
+  <text x="492" y="32" class="col-header">2 · Boot-Time Resolution</text>
+  <text x="820" y="32" class="col-header">3 · Immutable Runtime State</text>
+
+  <!-- Column boxes -->
+  <rect class="stroke" x="24"  y="48" width="280" height="304" rx="6"/>
+  <rect class="stroke" x="352" y="48" width="280" height="304" rx="6"/>
+  <rect class="stroke" x="680" y="48" width="280" height="304" rx="6"/>
+
+  <!-- Column 1: Static Input Layers -->
+  <text x="44" y="84"  class="item-bold">gateway.yaml</text>
+  <text x="56" y="104" class="sub">security_defaults · anchors · oidc</text>
+  <text x="56" y="122" class="sub">token_validation · tls · portal</text>
+  <line class="sep" x1="44" y1="140" x2="284" y2="140"/>
+
+  <text x="44" y="168" class="item-bold">endpoints/*.yaml</text>
+  <text x="56" y="188" class="sub">portable per-service route descriptors</text>
+  <text x="56" y="206" class="sub">abstract base_url alias (no real host)</text>
+  <line class="sep" x1="44" y1="224" x2="284" y2="224"/>
+
+  <text x="44" y="252" class="item-bold">topology.properties</text>
+  <text x="56" y="272" class="sub">alias → concrete scheme://host:port</text>
+  <text x="56" y="290" class="sub">${ENV:-default} placeholder expansion</text>
+
+  <text x="164" y="334" class="col-sub">relocate environments via topology alone</text>
+
+  <!-- Gutter 1 → 2 -->
+  <line class="arrow" x1="304" y1="200" x2="348" y2="200" marker-end="url(#arrow)"/>
+  <text x="326" y="190" class="col-sub">load</text>
+
+  <!-- Column 2: Boot-Time Resolution -->
+  <text x="372" y="84"  class="item-bold">ConfigLoader</text>
+  <text x="384" y="104" class="sub">merges YAML &amp; resolves topology aliases</text>
+  <line class="sep" x1="372" y1="120" x2="612" y2="120"/>
+
+  <text x="372" y="146" class="item-bold">PolicyBlockResolver</text>
+  <text x="384" y="166" class="sub">resolves route → anchor → global defaults</text>
+  <line class="sep" x1="372" y1="182" x2="612" y2="182"/>
+
+  <text x="372" y="208" class="item-bold">ConfigValidator</text>
+  <text x="384" y="228" class="sub">route collisions · SSRF &amp; redirect rules</text>
+  <text x="384" y="246" class="sub">scope closure · profile &amp; TLS invariants</text>
+  <line class="sep" x1="372" y1="262" x2="612" y2="262"/>
+
+  <text x="372" y="288" class="item-bold">RouteAssembler</text>
+  <text x="384" y="308" class="sub">deduplicates clients, guards &amp; postures</text>
+
+  <text x="492" y="334" class="col-sub">fail-fast: startup aborts on any violation</text>
+
+  <!-- Gutter 2 → 3 -->
+  <line class="arrow" x1="632" y1="200" x2="676" y2="200" marker-end="url(#arrow)"/>
+  <text x="654" y="190" class="col-sub">freeze</text>
+
+  <!-- Column 3: Immutable Runtime State -->
+  <text x="700" y="84"  class="item-bold">GatewayConfig</text>
+  <text x="712" y="104" class="sub">immutable records · zero runtime re-parse</text>
+  <line class="sep" x1="700" y1="120" x2="940" y2="120"/>
+
+  <text x="700" y="148" class="item-bold">RouteTable</text>
+  <text x="712" y="168" class="sub">exact routes first, then longest-prefix</text>
+  <text x="712" y="186" class="sub">boot-attached DispatchPath per route</text>
+  <line class="sep" x1="700" y1="204" x2="940" y2="204"/>
+
+  <text x="700" y="232" class="item-bold">UpstreamClients &amp; Guards</text>
+  <text x="712" y="252" class="sub">pooled Vert.x clients &amp; SmallRye breakers</text>
+  <line class="sep" x1="700" y1="270" x2="940" y2="270"/>
+
+  <text x="700" y="296" class="item-bold">BffRuntime &amp; PortalCatalog</text>
+  <text x="712" y="314" class="sub">SessionBinding seam &amp; pre-rendered catalog</text>
+
+  <text x="820" y="334" class="col-sub">shared safely across all virtual threads</text>
+
+  <!-- Footer caption -->
+  <text x="492" y="380" class="caption">No dynamic reload or partial route table: a node serves traffic only after every file, alias, and security invariant validates.</text>
+</svg>

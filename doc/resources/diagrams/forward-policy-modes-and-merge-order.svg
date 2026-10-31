@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Forward policy: three modes per dimension, gateway-owned header sets and the fixed merge order.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 408"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Forward policy modes, gateway-owned header sets and merge order</title>
+  <desc id="desc">A three-column block diagram. Column 1: headers and query parameters each resolve one of three modes: positive-list (headers_allow or query_allow, only named entries cross), negative-list (headers_deny or query_deny, everything except the named entries) or forward-all (neither list declared, the baseline); declaring both lists for one dimension is refused at boot. Column 2: three gateway-owned sets bound every mode: the request-direction never-forward set (separator-folded; Authorization re-admittable only by a positive list, TE only with value trailers), the gateway-understood protocol set that crosses without being named, and the regenerated forwarding headers whose client copies never cross; the browser Cookie belongs to the cookies policy instead. Column 3: ForwardPolicyStage merges six sources in order into a case-insensitive outbound header map, so later sources win: mode copy with never-forward strip, rebuilt Cookie, protocol set, static set_headers, regenerated forwarding headers, mediated session bearer.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="172" y="32" class="col-header">Mode per Dimension</text>
+  <rect class="stroke" x="24" y="48" width="296" height="340" rx="6"/>
+  <text x="44" y="80" class="item-bold">Positive-list</text>
+  <text x="56" y="102" class="sub">headers_allow / query_allow</text>
+  <text x="56" y="120" class="sub">only the named entries cross</text>
+  <line class="sep" x1="44" y1="132" x2="300" y2="132"/>
+  <text x="44" y="156" class="item-bold">Negative-list</text>
+  <text x="56" y="178" class="sub">headers_deny / query_deny</text>
+  <text x="56" y="196" class="sub">all except the named entries</text>
+  <line class="sep" x1="44" y1="208" x2="300" y2="208"/>
+  <text x="44" y="232" class="item-bold">Forward-all (baseline)</text>
+  <text x="56" y="254" class="sub">neither list declared</text>
+  <text x="56" y="272" class="sub">every client entry crosses</text>
+  <line class="sep" x1="44" y1="284" x2="300" y2="284"/>
+  <text x="56" y="308" class="sub">headers and query resolve independently</text>
+  <text x="56" y="326" class="sub">both lists for one dimension:</text>
+  <text x="56" y="344" class="sub">refused at boot</text>
+
+  <text x="536" y="32" class="col-header">Gateway-Owned Sets</text>
+  <rect class="stroke" x="360" y="48" width="352" height="340" rx="6"/>
+  <text x="380" y="80" class="item-bold">Never-forward (every mode)</text>
+  <text x="392" y="102" class="sub">separator-folded name match</text>
+  <text x="392" y="120" class="sub">Authorization: positive-list re-admit only</text>
+  <text x="392" y="138" class="sub">TE: only when value is exactly 'trailers'</text>
+  <line class="sep" x1="380" y1="150" x2="692" y2="150"/>
+  <text x="380" y="174" class="item-bold">Protocol set (crosses unnamed)</text>
+  <text x="392" y="196" class="sub">Accept*, Content-Type, Range, If-Range,</text>
+  <text x="392" y="214" class="sub">If-Match, If-Unmodified-Since</text>
+  <text x="392" y="232" class="sub">If-None-Match / If-Modified-Since:</text>
+  <text x="392" y="250" class="sub">gated by the route's not_modified</text>
+  <line class="sep" x1="380" y1="262" x2="692" y2="262"/>
+  <text x="380" y="286" class="item-bold">Regenerated forwarding headers</text>
+  <text x="392" y="308" class="sub">X-Forwarded-* (RFC 7239 opt-in)</text>
+  <text x="392" y="326" class="sub">client copies never cross</text>
+  <line class="sep" x1="380" y1="338" x2="692" y2="338"/>
+  <text x="392" y="362" class="sub">browser Cookie: rebuilt by cookies policy</text>
+
+  <text x="884" y="32" class="col-header">Merge Order (ForwardPolicyStage)</text>
+  <rect class="stroke" x="752" y="48" width="264" height="340" rx="6"/>
+  <text x="784" y="80" class="item">1 mode copy − never-forward</text>
+  <text x="784" y="100" class="item">2 Cookie (cookies policy)</text>
+  <text x="784" y="120" class="item">3 protocol set</text>
+  <text x="784" y="140" class="item">4 operator set_headers</text>
+  <text x="784" y="160" class="item">5 regenerated forwarding</text>
+  <text x="784" y="180" class="item">6 mediated session bearer</text>
+  <line class="sep" x1="772" y1="194" x2="996" y2="194"/>
+  <text x="784" y="218" class="sub">case-insensitive keys; later wins:</text>
+  <text x="784" y="236" class="sub">operator beats client input,</text>
+  <text x="784" y="254" class="sub">gateway truth beats operator</text>
+
+  <line class="arrow" x1="324" y1="218" x2="356" y2="218" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="716" y1="218" x2="748" y2="218" marker-end="url(#arrow)"/>
+</svg>

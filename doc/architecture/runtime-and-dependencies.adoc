@@ -12,6 +12,8 @@ link:README.adoc[← Back to Architecture Index]
 
 The gateway uses a virtual-thread-per-request model:
 
+image::../resources/diagrams/threading-and-event-loop-boundary.svg[Threading model: Vert.x event loop owns socket I/O while request virtual threads run pipeline logic, align=center]
+
 * Inbound security validation is synchronous CPU work and runs inline on the request's virtual
   thread.
 
@@ -61,6 +63,8 @@ locally with `docker update --cpus 1 <container>`.
 Every expensive object is *assembled once at boot and shared immutably across all requests*;
 request-time work allocates minimally and touches no shared mutable per-request state:
 
+image::../resources/diagrams/boot-assembly-and-object-reuse.svg[Boot-time assembly and object reuse: immutable shared objects, bounded mutable state, and per-request stack state, align=center]
+
 [cols="1,3", options="header"]
 |===
 | Object | Reuse rule
@@ -101,8 +105,9 @@ request-time work allocates minimally and touches no shared mutable per-request 
 |===
 
 *Per-request state (on the virtual-thread stack, never shared):* `PipelineRequest`,
-`ResolvedForwarding`, validated `AccessTokenContent`, the matched `Route` reference, and streamed
-request/response bodies.
+`ResolvedForwarding`, validated `AccessTokenContent`, the matched `Route` reference, and stream
+references. Streamed body chunks flow on the connection event loop with backpressure and are never
+buffered on the virtual-thread stack.
 
 *Security of shared objects.* Shared pipeline objects hold immutable configuration rather than
 per-request state, preventing cross-request bleed. Mutable shared state is confined to the upstream

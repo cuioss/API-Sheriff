@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Per-source enumeration detection and threat classification — two-tier SourceLedger architecture.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 420"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Two-tier per-source enumeration detection and threat classification substrate</title>
+  <desc id="desc">A three-column block diagram. Column 1 (Key Resolution and Rejection Feed) shows SourceKeys resolving (source, host) on the event loop before admission (trusted_proxies or TCP peer, IPv6 /64 prefix, unknown Host folded to '*') and ErrorResponseWriter.handleGatewayRejection feeding true EventTypes to both tiers. Column 2 (Tier 1 Enumeration Detection via SourceGate) counts pre-trust ReconEvents (weight 1) in a 65,536-key SourceLedger (CLEAR to TRIPPED to BLOCKED), logs WARN ApiSheriff-141 on trip, and enforces observe (default), delay (held-answer sub-budget), or block (429 SOURCE_BLOCKED before admission). Column 3 (Tier 2 Threat Classification via ThreatClassifier) scores weighted rejections pre- and post-trust (input-validation 10, authentication/authorization 2, routing 1) plus Tier 1 recon trips (weight 50) in its own 65,536-key SourceLedger; its action is fixed to observe and emits one ECS ALERT (WARN ApiSheriff-143, sheriff_threat_alerts_total) per episode.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <!-- Column headers -->
+  <text x="176" y="32" class="col-header">1 · Source Key &amp; Event Feed</text>
+  <text x="530" y="32" class="col-header">2 · Tier 1: Enumeration Detection</text>
+  <text x="884" y="32" class="col-header">3 · Tier 2: Threat Classification</text>
+
+  <!-- Column boxes -->
+  <rect class="stroke" x="24"  y="48" width="304" height="328" rx="6"/>
+  <rect class="stroke" x="376" y="48" width="308" height="328" rx="6"/>
+  <rect class="stroke" x="732" y="48" width="304" height="328" rx="6"/>
+
+  <!-- Column 1: Source Key & Feed -->
+  <text x="44" y="80"  class="item-bold">SourceKeys (event loop, pre-admit)</text>
+  <text x="56" y="100" class="item">key = (source, host)</text>
+  <text x="56" y="118" class="sub">• source: trusted_proxies XFF or TCP peer</text>
+  <text x="56" y="136" class="sub">• IPv6 → /64 prefix; invalid → 'unknown'</text>
+  <text x="56" y="154" class="sub">• host: declared match.host, else '*'</text>
+  <line class="sep" x1="44" y1="172" x2="308" y2="172"/>
+
+  <text x="44" y="196" class="item-bold">handleGatewayRejection</text>
+  <text x="56" y="216" class="sub">feeds true EventType (before uniform</text>
+  <text x="56" y="234" class="sub">404 masking) to Tier 1 then Tier 2</text>
+  <line class="sep" x1="44" y1="252" x2="308" y2="252"/>
+
+  <text x="44" y="276" class="item-bold">Shared Substrate (SourceLedger)</text>
+  <text x="56" y="296" class="sub">lock-free ConcurrentHashMap (≤ 65,536)</text>
+  <text x="56" y="314" class="sub">linear drain: threshold / window per sec</text>
+  <text x="56" y="332" class="sub">trips once per CLEAR → TRIPPED episode</text>
+
+  <text x="176" y="358" class="col-sub">in-memory · per-node · zero timers</text>
+
+  <!-- Gutter 1 → 2 -->
+  <line class="arrow" x1="328" y1="212" x2="372" y2="212" marker-end="url(#arrow)"/>
+  <text x="350" y="202" class="col-sub">feed</text>
+
+  <!-- Column 2: Tier 1 Enumeration Detection -->
+  <text x="396" y="80"  class="item-bold">SourceGate &amp; ReconEvents</text>
+  <text x="408" y="100" class="sub">pre-trust recon events only (weight = 1)</text>
+  <text x="408" y="118" class="sub">excludes post-trust, assets, favicon/robots,</text>
+  <text x="408" y="136" class="sub">aborted bodies &amp; internal failures</text>
+  <line class="sep" x1="396" y1="154" x2="664" y2="154"/>
+
+  <text x="396" y="178" class="item-bold">State &amp; Wire Actions</text>
+  <text x="408" y="198" class="item">CLEAR → TRIPPED (→ BLOCKED)</text>
+  <text x="408" y="218" class="sub">• observe (default): wire unchanged</text>
+  <text x="408" y="236" class="sub">• delay: hold recon 404 by delay_millis</text>
+  <text x="420" y="254" class="sub">(held-answer sub-budget; excess → 429)</text>
+  <text x="408" y="272" class="sub">• block: 429 + Retry-After before admit</text>
+  <line class="sep" x1="396" y1="290" x2="664" y2="290"/>
+
+  <text x="396" y="314" class="item">WARN ApiSheriff-141 (SOURCE_TRIPPED)</text>
+  <text x="396" y="332" class="item">sheriff_source_trips_total{action}</text>
+
+  <text x="530" y="358" class="col-sub">overflow → WARN ApiSheriff-142</text>
+
+  <!-- Gutter 2 → 3 -->
+  <line class="arrow" x1="684" y1="190" x2="728" y2="190" marker-end="url(#arrow)"/>
+  <text x="706" y="180" class="col-sub">trip</text>
+  <line class="arrow" x1="684" y1="236" x2="728" y2="236" marker-end="url(#arrow)"/>
+  <text x="706" y="226" class="col-sub">events</text>
+
+  <!-- Column 3: Tier 2 Threat Classification -->
+  <text x="752" y="80"  class="item-bold">ThreatClassifier &amp; ThreatWeights</text>
+  <text x="764" y="100" class="sub">scores pre- &amp; post-trust rejections:</text>
+  <text x="764" y="120" class="item">input-validation : 10</text>
+  <text x="764" y="138" class="item">authentication   : 2</text>
+  <text x="764" y="156" class="item">authorization    : 2</text>
+  <text x="764" y="174" class="item">routing          : 1</text>
+  <text x="764" y="192" class="item">recon_trip       : 50 (from Tier 1)</text>
+  <line class="sep" x1="752" y1="210" x2="1016" y2="210"/>
+
+  <text x="752" y="234" class="item-bold">Alert-Only Posture (observe)</text>
+  <text x="764" y="254" class="sub">never changes status, headers, or timing</text>
+  <text x="764" y="272" class="sub">one ECS ALERT JSON per CLEAR episode</text>
+  <line class="sep" x1="752" y1="290" x2="1016" y2="290"/>
+
+  <text x="752" y="314" class="item">WARN ApiSheriff-143 (ThreatAlerts)</text>
+  <text x="752" y="332" class="item">sheriff_threat_alerts_total</text>
+
+  <text x="884" y="358" class="col-sub">overflow → WARN ApiSheriff-144</text>
+
+  <!-- Footer caption -->
+  <text x="530" y="402" class="caption">Filter violations (400) are scored even on asset/ambient paths; upstream, rate-limit, and body-abort events carry weight 0.</text>
+</svg>

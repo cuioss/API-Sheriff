@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BFF runtime wiring: edge dispatch, SessionBinding seam, engine boundary and IdP-facing controls.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 336"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">BFF runtime wiring: edge dispatch, session seam and IdP-facing controls</title>
+  <desc id="desc">A three-column block diagram. Column 1, edge dispatch: BffRuntime, built at boot by BffRuntimeProducer, is the single collaborator the edge consults, holding SessionAuthenticationStage, CsrfDefence and dispatch for reserved paths; ReservedPathRegistry matches gateway-owned OIDC endpoints by exact path before the proxy route table, browser-facing endpoints need the OIDC host while BACKCHANNEL_LOGOUT and CLIENT_JWKS match every host, and matched reserved paths bypass the URL-parameter value pipeline. Column 2, the SessionBinding seam selected by oidc.session.mode: server mode resolves an opaque cookie handle through a bounded InMemorySessionStore with a one-minute sweep; cookie mode unseals an AES-256-GCM cookie per request with an HMAC activity cookie; both enforce an absolute and an idle deadline, and the seam offers bind, persist and persistReissuingCookie. Column 3: the token-sheriff-client engine drives login, callback, widening, logout, refresh and step-up while the gateway adds browser-facing concerns; IdP-facing controls are private_key_jwt client authentication (client_secret_basic when a secret is configured), pushed authorization requests on every authorization seam, a DPoP sender constraint, and BoundTokenEndpointClient requiring token_type DPoP with a matching cnf.jkt.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="184" y="32" class="col-header">1 · Edge Dispatch</text>
+  <rect class="stroke" x="24" y="48" width="320" height="268" rx="6"/>
+  <text x="44" y="80" class="item-bold">BffRuntime (BffRuntimeProducer)</text>
+  <text x="56" y="102" class="sub">SessionAuthenticationStage, CsrfDefence,</text>
+  <text x="56" y="120" class="sub">dispatch(...) for reserved paths;</text>
+  <text x="56" y="138" class="sub">inert runtime without a global oidc block</text>
+  <line class="sep" x1="44" y1="150" x2="324" y2="150"/>
+  <text x="44" y="174" class="item-bold">ReservedPathRegistry</text>
+  <text x="56" y="196" class="sub">exact match before the route table</text>
+  <text x="56" y="214" class="sub">browser endpoints: OIDC host only</text>
+  <text x="56" y="232" class="sub">BACKCHANNEL_LOGOUT, CLIENT_JWKS:</text>
+  <text x="56" y="250" class="sub">every host (IdP dials server-to-server)</text>
+  <text x="56" y="268" class="sub">URL-parameter value pipeline bypassed</text>
+
+  <text x="552" y="32" class="col-header">2 · SessionBinding Seam</text>
+  <rect class="stroke" x="392" y="48" width="320" height="268" rx="6"/>
+  <text x="412" y="80" class="item-bold">oidc.session.mode: server</text>
+  <text x="424" y="102" class="sub">SessionCookieCodec: opaque handle</text>
+  <text x="424" y="120" class="sub">InMemorySessionStore: max_sessions,</text>
+  <text x="424" y="138" class="sub">per-subject cap, 1-minute sweep</text>
+  <line class="sep" x1="412" y1="150" x2="692" y2="150"/>
+  <text x="412" y="174" class="item-bold">oidc.session.mode: cookie</text>
+  <text x="424" y="196" class="sub">AES-256-GCM sealed cookie, no store</text>
+  <text x="424" y="214" class="sub">HMAC activity cookie (idle clock)</text>
+  <line class="sep" x1="412" y1="226" x2="692" y2="226"/>
+  <text x="424" y="250" class="item">bind · persist ·</text>
+  <text x="424" y="270" class="item">persistReissuingCookie</text>
+  <text x="424" y="290" class="sub">absolute expiry + idle timeout</text>
+
+  <text x="884" y="32" class="col-header">3 · Engine &amp; IdP Controls</text>
+  <rect class="stroke" x="752" y="48" width="264" height="268" rx="6"/>
+  <text x="772" y="80" class="item-bold">token-sheriff-client</text>
+  <text x="784" y="102" class="sub">login · callback · widening ·</text>
+  <text x="784" y="120" class="sub">logout · refresh · step-up</text>
+  <line class="sep" x1="772" y1="132" x2="996" y2="132"/>
+  <text x="772" y="156" class="item-bold">Assembled once at boot</text>
+  <text x="784" y="178" class="sub">private_key_jwt (default)</text>
+  <text x="784" y="196" class="sub">client_secret_basic if secret set</text>
+  <text x="784" y="214" class="sub">PAR on every authorization seam</text>
+  <text x="784" y="232" class="sub">DPoP sender constraint</text>
+  <text x="784" y="250" class="sub">BoundTokenEndpointClient:</text>
+  <text x="784" y="268" class="sub">requires DPoP + matching cnf.jkt</text>
+
+  <line class="arrow" x1="348" y1="182" x2="388" y2="182" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="716" y1="182" x2="748" y2="182" marker-end="url(#arrow)"/>
+</svg>

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Route table matching order, verb gate, terminal actions and nearest-scope policy block resolution.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 360"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Route matching order, verb gate and nearest-scope policy block resolution</title>
+  <desc id="desc">A three-column block diagram. Column 1, the immutable route table: only routes of enabled endpoints enter; matching is exact match.path first (un-normalized, trailing slash significant), then path prefixes on a segment boundary longest first, ANDed with method, host and header matchers; the first matching candidate wins and no match is rejected 404 deny-by-default. Column 2: the allowed_methods verb gate rejects a method outside the effective set with 405 and an Allow header, rendered as the unrouted 404 while uniform_not_found is on; each route then has exactly one terminal action, upstream proxy, asset or redirect. Column 3: every policy block is one PolicyBlock descriptor resolved by the nearest declared scope in the order route, endpoint, anchor, gateway, with whole-block replacement; RouteTableBuilder and ConfigValidator share the descriptors and the request pipeline reads only the materialized result.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <text x="184" y="32" class="col-header">1 · Route Table</text>
+  <rect class="stroke" x="24" y="48" width="320" height="292" rx="6"/>
+  <text x="44" y="80" class="item-bold">Static, immutable table</text>
+  <text x="56" y="102" class="sub">enabled endpoints only; a disabled</text>
+  <text x="56" y="120" class="sub">endpoint's paths fall through to 404</text>
+  <line class="sep" x1="44" y1="132" x2="324" y2="132"/>
+  <text x="44" y="156" class="item-bold">Matching order (first wins)</text>
+  <text x="56" y="178" class="item">1. exact match.path</text>
+  <text x="56" y="198" class="sub">un-normalized; trailing slash counts</text>
+  <text x="56" y="216" class="item">2. path prefix, longest first</text>
+  <text x="56" y="236" class="sub">on a segment boundary</text>
+  <text x="56" y="254" class="item">AND method · host · header</text>
+  <line class="sep" x1="44" y1="268" x2="324" y2="268"/>
+  <text x="44" y="292" class="item-bold">No match → 404</text>
+  <text x="56" y="314" class="sub">deny-by-default; no rule language</text>
+
+  <text x="536" y="32" class="col-header">2 · Verb Gate &amp; Terminal Action</text>
+  <rect class="stroke" x="392" y="48" width="288" height="292" rx="6"/>
+  <text x="412" y="80" class="item-bold">allowed_methods (Stage 2b)</text>
+  <text x="424" y="102" class="sub">nearest declared list replaces broader</text>
+  <text x="424" y="120" class="sub">method outside set → 405 + Allow</text>
+  <text x="424" y="138" class="sub">uniform_not_found → unrouted 404</text>
+  <line class="sep" x1="412" y1="150" x2="660" y2="150"/>
+  <text x="412" y="174" class="item-bold">One terminal action per route</text>
+  <text x="424" y="196" class="item">upstream   (proxy)</text>
+  <text x="424" y="216" class="item">asset</text>
+  <text x="424" y="236" class="item">redirect</text>
+  <text x="424" y="256" class="sub">base_url only for proxy endpoints</text>
+
+  <text x="872" y="32" class="col-header">3 · Policy Block Resolution</text>
+  <rect class="stroke" x="728" y="48" width="288" height="292" rx="6"/>
+  <text x="748" y="80" class="item-bold">PolicyBlock descriptor</text>
+  <text x="760" y="102" class="sub">nearest declared scope wins;</text>
+  <text x="760" y="120" class="sub">whole-block replacement</text>
+  <line class="sep" x1="748" y1="132" x2="996" y2="132"/>
+  <text x="760" y="156" class="item">route      ← most specific</text>
+  <text x="760" y="176" class="item">endpoint</text>
+  <text x="760" y="196" class="item">anchor</text>
+  <text x="760" y="216" class="item">gateway    ← broadest</text>
+  <line class="sep" x1="748" y1="230" x2="996" y2="230"/>
+  <text x="760" y="254" class="sub">RouteTableBuilder + ConfigValidator</text>
+  <text x="760" y="272" class="sub">resolve via the same descriptors;</text>
+  <text x="760" y="290" class="sub">the pipeline reads the result only</text>
+
+  <line class="arrow" x1="348" y1="194" x2="388" y2="194" marker-end="url(#arrow)"/>
+  <text x="368" y="186" class="gut">route</text>
+  <line class="arrow" x1="684" y1="194" x2="724" y2="194" marker-end="url(#arrow)"/>
+  <text x="704" y="186" class="gut">policy</text>
+</svg>
