@@ -1,0 +1,156 @@
+= ADR-0079: The oidc_discovery readiness datum reports provider-metadata resolution and never changes the verdict
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: On a gateway with an active BFF runtime, GatewayReadinessCheck reads a non-fetching DiscoveryStatus view that BffRuntimeProducer publishes and attaches oidc_discovery (not-attempted, resolved or failed) as a datum on UP and on DOWN alike. The datum never changes the readiness verdict. JWKS key-set readiness is the separate signal that does change it.
+// tags: readiness, health-checks, oidc, discovery, bff, observability
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+The BFF runtime resolves the OpenID Connect provider metadata (`.well-known/openid-configuration`)
+lazily. It resolves it on the first engine use, not at boot. A BFF gateway therefore boots without
+its identity provider. The resolution can fail at any later time, when the identity provider or the
+back channel to it is down.
+
+The readiness probe must answer one question for that state: does a failed or pending
+provider-metadata resolution affect readiness?
+
+=== The decision
+
+*The readiness probe reports the provider-metadata resolution as a datum, and the datum never
+changes the UP/DOWN verdict.*
+
+The mechanism has three parts:
+
+* *One non-fetching view.* `BffRuntimeProducer` creates one `DiscoveryStatus` and publishes it as a
+  CDI bean. The runtime's memoized discovery supplier records into it through
+  `DiscoveryStatus.recording(..)`. Each attempt records its own outcome: `resolved` when the attempt
+  returns, `failed` when it throws. The last attempt wins. `DiscoveryStatus.state()` only reads, so a
+  read never triggers a fetch.
+* *One datum on both verdicts.* `GatewayReadinessCheck` reads that view on every probe call. On a
+  gateway with an active BFF runtime, in server or cookie session mode, it adds two data: `oidc`, the
+  session mode, and `oidc_discovery`, the state token. It adds them before it reaches the verdict, so
+  they appear on `UP` and on `DOWN` alike.
+* *A closed vocabulary.* `oidc_discovery` is one of three fixed tokens: `not-attempted` (no engine use
+  has asked for the metadata yet), `resolved` or `failed`. The datum names no issuer, no URL and no
+  cause. The engine's own failure logging carries the cause.
+
+A gateway without an active BFF runtime gets the inert view. The probe then adds neither datum.
+
+=== The boundary with JWKS readiness
+
+Two signals concern the identity provider, and only one of them gates readiness:
+
+* *JWKS key-set readiness changes the verdict.* The probe reads a live, non-fetching per-issuer
+  key-set state and reports `DOWN` while any configured issuer has no key set. ADR-0027 introduced
+  this signal, and ADR-0074 carries it forward unchanged. Every bearer request depends on a key set,
+  so a missing key set makes the gateway unable to serve its authenticated routes.
+* *Provider-metadata resolution never changes the verdict.* A provider-metadata failure stops the BFF
+  legs that need the identity provider: login, refresh and step-up. Bearer-only routes and public
+  routes keep working. A `DOWN` verdict takes the whole instance out of rotation, so it would stop
+  traffic that does not depend on the failed resolution.
+
+ADR-0074 does not cover the `oidc_discovery` datum. This record is its only decision record.
+
+== Alternatives rejected
+
+=== Report an unresolved or failed discovery as DOWN
+
+The probe would return `DOWN` while the state is `failed`, and possibly while it is `not-attempted`.
+
+Rejected because the verdict is per instance, not per route. A load balancer removes a `DOWN`
+instance from rotation for all traffic. An identity-provider outage would then stop every bearer-only
+and public route on a BFF gateway, although none of them needs the provider metadata. A `DOWN` on
+`not-attempted` would be worse: discovery is lazy, so a fresh instance would never become ready until
+some request triggered an engine use, and no request reaches an instance that is not ready.
+
+=== Fetch the provider metadata on every probe call
+
+The probe would resolve the metadata itself and report the live result.
+
+Rejected for three reasons. Every probe call would send a request to the identity provider, at the
+probe's polling rate and from every instance. A slow identity provider would make the probe itself
+slow, and a probe timeout reads as a failed probe. The probe would also change the state it reports,
+because its own fetch would replace the outcome of the last engine use. The non-fetching view reports
+what the engine actually did.
+
+=== Resolve the provider metadata at boot
+
+The runtime would resolve the metadata during startup, so readiness would start from a known state.
+
+Rejected because a BFF gateway would then not boot while its identity provider is unreachable. Lazy
+resolution lets the gateway boot and serve its bearer-only and public routes first. The memoized
+supplier caches only a resolved value, so an attempt that fails leaves nothing cached and the next
+engine use retries.
+
+=== Omit the datum entirely
+
+The probe would report nothing about provider-metadata resolution.
+
+Rejected because an operator then has no readiness-side signal for a BFF gateway whose logins fail.
+The datum costs one bounded token and no network request. It lets an operator tell a pending
+resolution from a failed one without reading the log.
+
+=== Attach the datum only on DOWN
+
+The probe would add `oidc_discovery` only to a `DOWN` response.
+
+Rejected because the datum never causes `DOWN`, so it would be missing in exactly the state where it
+carries news: an instance that is `UP` while its logins fail. A datum whose presence depends on the
+verdict would also read as part of the verdict, which is the coupling this record rejects.
+
+=== Report the cause, the issuer or the URL in the datum
+
+The datum would carry the failure message or name the issuer it failed for.
+
+Rejected because the readiness payload is served on the management interface, which can be plain
+HTTP. Anything that reaches that port can read the payload. A failure message can carry issuer URLs,
+internal hostnames and TLS detail. Readiness owes the caller a state, not a cause, so the datum is a
+fixed token and the cause stays in the log.
+
+== Consequences
+
+* *Readiness stays a statement about serving.* A provider-metadata outage never removes a BFF
+  instance from rotation. Bearer-only and public routes keep their traffic through the outage.
+* *An operator sees the BFF state on every probe response.* `oidc_discovery` is present on `UP` and
+  on `DOWN`, so a dashboard can alert on `failed` independently of the verdict.
+* *A fresh instance reports `not-attempted`.* This is not a fault. The value changes on the first
+  engine use, and an operator must not alert on it alone.
+* *The datum reports the last attempt, not the current reachability.* `resolved` means the most recent
+  attempt succeeded. An identity provider that went down after that attempt still reads `resolved`
+  until an engine use tries again. The probe accepts this lag in exchange for sending no request.
+* *A gateway can be `UP` while every login fails.* This is deliberate. The alert for that state is
+  `oidc_discovery: failed`, not the verdict.
+
+== Links
+
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/GatewayReadinessCheck.java` -- the
+  probe that attaches the datum and computes the verdict
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/DiscoveryStatus.java` -- the
+  non-fetching view and its three state tokens
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` -- the
+  producer that publishes the view and wraps the discovery supplier with it
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
+  -- the record that introduced the live per-issuer key-set readiness signal
+* link:0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]
+  -- the record that carries the key-set readiness signal forward and keeps it the only JWKS
+  readiness coverage
+* link:../configuration.adoc#_jwks_readiness[Configuration reference] -- the operator-facing
+  readiness contract
+* link:../architecture/observability-and-errors.adoc#_metrics[Architecture -- Metrics and Health] --
+  the readiness and metrics surfaces
+* link:../security-threat-model.adoc[Security threat model] -- the third page that describes the
+  `oidc_discovery` datum
