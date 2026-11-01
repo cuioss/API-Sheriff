@@ -53,9 +53,11 @@ import io.vertx.core.http.HttpServerOptions;
  * partly sent request closes it), and the
  * {@linkplain #requestBodyDeadlineMillis() request-body deadline} bounds how long, from the start of
  * its upstream attempt, a proxied dispatch waits for the whole body. Both are fixed gateway constants,
- * like the upstream guard they sit under: each is shorter than the guard's whole-dispatch timeout, so a
- * dispatch whose body stopped arriving, or is still arriving when the guard would end it, is ended and
- * attributed to the request before the guard would end it as an upstream timeout. A bodyless request
+ * like the upstream guard they sit under: each is shorter than the guard's timeout, which bounds each
+ * upstream attempt rather than the whole dispatch (a retried dispatch on a retry-enabled route can run
+ * up to three attempts, about 90 s), so a dispatch whose body stopped arriving, or is still arriving
+ * when the guard would end the attempt, is ended and attributed to the request before the guard would
+ * end it as an upstream timeout. A bodyless request
  * and a gRPC route are watched by neither.
  * <p>
  * <strong>The inbound HTTP/2 concurrent streams and connection window are transport bounds too.</strong>
@@ -80,7 +82,7 @@ import io.vertx.core.http.HttpServerOptions;
  * so a change of the transport default cannot move them, and they are never raised (ADR-0066). The
  * guard counts only the resets a client sends on its connection, so the gateway's own
  * {@code RST_STREAM(NO_ERROR)} — the early-response reset of ADR-0066 and the request-body and
- * stream-idle resets of ADR-0060 A2 — can never feed it. The per-source detection substrate
+ * stream-idle resets of ADR-0060 — can never feed it. The per-source detection substrate
  * ({@code de.cuioss.sheriff.gateway.detection}) is deliberately not used for these bounds: its key is a
  * source address, while stream creation and reset state belong to one connection, so per-source
  * keying would neither see a single abusive connection sooner nor bound its memory.
@@ -137,7 +139,7 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
 
     /**
      * How long a proxied dispatch holding an upstream connection may go without request-body progress
-     * while it reads the body, in milliseconds. Below the upstream guard's whole-dispatch timeout
+     * while it reads the body, in milliseconds. Below the upstream guard's per-attempt timeout
      * ({@code UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS}), so it ends such a dispatch first; long enough
      * that a sender pausing between chunks on a slow link is not affected.
      */
@@ -146,8 +148,8 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     /**
      * How long, in milliseconds from the start of its upstream attempt, a proxied dispatch may wait for
      * the whole request body before it is answered {@code 408}. The attempt start is where the upstream
-     * guard's whole-dispatch timeout ({@code UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS}) starts too, and
-     * this bound is 5 s shorter, so a body still arriving when the guard would end the dispatch as an
+     * guard's per-attempt timeout ({@code UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS}) starts too, and
+     * this bound is 5 s shorter, so a body still arriving when the guard would end the attempt as an
      * upstream timeout is ended as the request's first.
      */
     private static final long REQUEST_BODY_DEADLINE_MILLIS = 25_000L;

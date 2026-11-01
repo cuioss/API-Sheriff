@@ -34,8 +34,9 @@ image::../resources/diagrams/downstream-client-planes.svg[Upstream client split 
   (link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[ADR-0062]).
 +
 Retry is *stream-aware*: on a route with `retry.enabled`, the guard allows at most two retries
-  (`maxRetries(2)`, 100 ms delay) and retries an attempt only for an idempotent method *and only when
-  zero request-body bytes have been sent upstream* (no replay buffer). The circuit breaker is fixed in
+  (`maxRetries(2)`, 100 ms delay) and retries an attempt only for an idempotent method *and only while
+  no attempt has taken up the one-shot request body* (no replay buffer), even when none of its bytes
+  reached the upstream. The circuit breaker is fixed in
   the gateway
   (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
   a rolling window of the last 20 calls, open at 50% failures, open for `BREAKER_RESET_SECONDS` = 5 s,
@@ -51,11 +52,13 @@ Only upstream failures count. Client-ended dispatches -- body-cap breaches, abor
   (link:tls-and-inbound-security.adoc#_request_body_deadline[Request-body deadline]) -- are neither
   failures nor retried (SmallRye records skipped `GatewayException` outcomes as successes).
 +
-Each guarded dispatch is bounded until its response head by the fixed 30 s timeout
+Each attempt of a guarded dispatch is bounded until its response head by the fixed 30 s timeout
   (`UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS = 30`; `upstream.connect_timeout_ms` and
   `upstream.read_timeout_ms` are parsed into config records but not wired to the data-plane client).
-  The edge's inbound idle timeout can reap a connection before it fires, ending the dispatch as a
-  client-ended abort. Post-response upstream resets on early-answered uploads happen after the guarded
+  The timeout sits inside the retry, so on a route with `retry.enabled` an attempt that times out is
+  retried when the retry predicate admits it, and such a dispatch can last three attempts, about 90 s.
+  The edge's 60 s inbound idle timeout is longer than one attempt, so it can reap the connection first
+  only across attempts; the dispatch then ends as a client-ended abort. Post-response upstream resets on early-answered uploads happen after the guarded
   call has returned and are invisible to the breaker
   (link:tls-and-inbound-security.adoc#_http2_post_response_reset[HTTP/2 post-response reset]).
 
@@ -127,7 +130,7 @@ image::../resources/diagrams/asset-and-redirect-actions.svg[Asset terminal actio
 == Redirect Terminal Action
 
 The third terminal action
-(link:../adr/0014-asset-serving-terminal-action.adoc#amendment-a1[ADR-0014 Amendment A1]) answers the
+(link:../adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]) answers the
 request at the gateway with the configured `redirect.status` (`3xx` from the schema's closed
 redirect-status set; see link:../configuration.adoc#_redirect[Configuration -- `redirect`]) and a
 `Location` header, never contacting an upstream.

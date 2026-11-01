@@ -57,7 +57,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the redirect rules the {@link ConfigValidator} runs through {@link TerminalActionRules}
- * (ADR-0014 Amendment A1): the open-redirect review of {@code location} with and without
+ * (ADR-0014): the open-redirect review of {@code location} with and without
  * {@code allow_external}, the refusal of
  * {@code keep_query} together with {@code allow_external}, terminal-action exclusivity,
  * the http-only protocol restriction, the anchor matrix admitting a redirect under every anchor type,

@@ -1217,7 +1217,7 @@ services:
   # TOPOLOGY_UPSTREAM is what repoints the shared /proxy route at that backend. The overlay
   # gateway.yaml cannot do it: endpoints/ and topology.properties are shared with the primary
   # instance, and topology.properties resolves UPSTREAM through an in-file ${TOPOLOGY_UPSTREAM:-...}
-  # placeholder (ADR-0004 Amendment A1) precisely so a deployment can repoint it without a second
+  # placeholder (ADR-0004) precisely so a deployment can repoint it without a second
   # copy of the endpoint descriptor.
   #
   # QUARKUS_CONFIG_LOCATIONS carries TWO files here, comma-separated, where every other instance

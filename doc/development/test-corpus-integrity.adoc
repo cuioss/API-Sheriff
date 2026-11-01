@@ -347,10 +347,8 @@ resolved, proving a code path never reached it).
 delete:: The test is fully subsumed by a strictly stronger sibling and carries no distinct arrange.
 
 The *matched-control* requirement is what keeps `keep` from becoming a rubber stamp. It is the same
-standard
-link:../adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
-sets for machine-checked invariants -- that ADR names the *always-passing assertion* as one of four
-vacuity sources ("a rule that asserts only the absence of something passes when the subject is
+standard <<fitness-function-shape>> sets for machine-checked invariants -- that section names the
+*always-passing assertion* as one of four vacuity sources ("a rule that asserts only the absence of something passes when the subject is
 renamed, moved, or deleted") and requires a *negative control* leg before a gate may be trusted as
 enforcement. This note applies the same two ideas to ordinary unit tests.
 
@@ -1392,7 +1390,7 @@ and the four under `testsupport/` (`Awaits`, `EgressTrustProfiles`, `LoopbackHos
 They are counted rather than skipped for the same reason <<pro-forma-audit>> counts its four: several
 of them *are* the mechanism under discussion. The seven specimens are the negative-control fixtures
 the `arch/*ArchTest` guards are pointed at -- delete one and its guard becomes an always-passing
-assertion in ADR-0030's own sense. `Awaits` owns every polling ceiling in the live-server tests and
+assertion in the sense of <<fitness-function-shape>>. `Awaits` owns every polling ceiling in the live-server tests and
 `SocketSnapshot` owns the diagnostic that explains a breached one; a pass that skipped "files with no
 tests" would have classified `AwaitsTest` without reading what it controls.
 
@@ -1449,7 +1447,7 @@ refusal control.*
 
 | `config/validation/rule/*RulesTest.java`       | 3347 | no vacuity marker; every admit paired with a matched refusal. Measured at `3abc370` as the single validator test class; its rule cases now live in one test class per configuration concern under `config/validation/rule/`
 | `config/load/ConfigLoaderTest.java`            | 2146 | four `assertNotNull`, every one a structural precondition ahead of a substantive assertion
-| `forward/ForwardPolicyStageTest.java`          | 1300 | no vacuity marker; carries the corpus's own worked example of ADR-0030's matched-positive-control leg (below)
+| `forward/ForwardPolicyStageTest.java`          | 1300 | no vacuity marker; carries the corpus's own worked example of the matched-positive-control leg of <<fitness-function-shape>> (below)
 | `edge/GatewayEdgeQueryHandoffTest.java`        |  526 | no vacuity marker
 | `events/EventTypeTest.java`                    |  263 | no vacuity marker; derives its swept population from the production enum and guards the derivation
 | `http/ConnectionHeadersTest.java`              |  226 | no vacuity marker
@@ -1459,10 +1457,10 @@ The consequence for a future sweep is the one <<density-finding>> already states
 makes it unarguable: *a sweep that ranks by density and acts without reading would rewrite
 correctly-scoped tests.* Counting markers finds candidates; only reading finds vacuity.
 
-[[adr-0030-worked-examples]]
-=== The corpus is already implementing ADR-0030, and this is where
+[[fitness-function-worked-examples]]
+=== The corpus is already implementing the fitness-function shape, and this is where
 
-ADR-0030 names four vacuity sources. Three of them map directly onto this note's taxonomy, and the
+<<fitness-function-shape>> names four vacuity sources. Three of them map directly onto this note's taxonomy, and the
 unit lane turns out to contain a worked example of each -- which is worth more to a reader than the
 flagged rows, because it says what the fix looks like in this codebase rather than in the abstract.
 
@@ -1610,8 +1608,8 @@ One row per flagged method, with a `file:line` citation at `3abc370` and exactly
 | 476 | F2 | (c)
 | The `toString` leg is `assertNotNull(subject.toString())`:482. *A record's generated `toString`
   cannot return null*, so that leg is entailed by the arrange while the class Javadoc names the
-  `toString` contract as one of the three it verifies. This is ADR-0030's *always-passing assertion*
-  exactly -- see <<structurally-unfailable>>.
+  `toString` contract as one of the three it verifies. This is the *always-passing assertion* of
+  <<fitness-function-shape>> exactly -- see <<structurally-unfailable>>.
 
 | `rejectsDisallowedVerb`
   (`edge/GatewayEdgePipelineTest`)
@@ -1765,7 +1763,8 @@ declared three-part contract is asserted by nothing.
 
 This is strictly worse than shape (a) and worth distinguishing from it. Under (a) the object was
 merely un-inspected, and a wrong implementation could still have produced a null; here no
-implementation could have failed the check. It is ADR-0030's *always-passing assertion* -- "a rule
+implementation could have failed the check. It is the *always-passing assertion* of
+<<fitness-function-shape>> -- "a rule
 that asserts only the absence of something passes when the subject is renamed, moved, or deleted" --
 reached from the other direction: not by the subject disappearing, but by the property being
 unfalsifiable in the first place.
@@ -1804,7 +1803,7 @@ pass.
 The risk is small -- the type is a record with many components -- and the site is *not* flagged,
 because this note's taxonomy is defined over assertion strength at a marker site and this is a
 population-derivation question. It is recorded because the same file's siblings already carry the
-guard (see <<adr-0030-worked-examples>>), and because
+guard (see <<fitness-function-worked-examples>>), and because
 `pipeline/SecurityHeadersStageTest.seedsOneHeaderPerDeclaredMode`:473 shows the fix in one line:
 compare the swept count against `HeaderModes.class.getRecordComponents().length` rather than trusting
 the sweep ran.
@@ -2131,6 +2130,131 @@ destructive discard of uncommitted work -- and so is the swap to the pre-change 
 needs, which is a checkout of `b4fadd2` and back. Every transient mutation was reverted and
 `git status --porcelain` was empty afterwards; the working tree carries no residue.
 
+[[fitness-function-shape]]
+== Comment-Only Invariants Become Fitness Functions
+
+Some repository invariants cannot be expressed in the type system. They are recorded as prose beside
+the value they constrain: a comment above a configuration list, a note in a Javadoc block. Prose
+enforces nothing. Whoever happens to read it follows it, while the invariant must hold for every
+future author. A comment can name the exact failure mode it exists to prevent and still fail to
+prevent it.
+
+Such an invariant is therefore converted into a *fitness function*: an executable assertion the build
+runs. The conversion carries its own risk. An assertion can be *vacuous* -- green because the rule
+matches nothing, inverts its own verdict, or asserts a property that cannot fail. A vacuous gate is
+worse than the comment it replaces. It turns an unenforced invariant into an apparently-enforced one,
+and it removes the reader's motive to check.
+
+=== The vacuity sources
+
+Vacuity has four distinct sources. Closing one leaves the others open.
+
+Polarity inversion:: Under ArchUnit's `no...` phrasing the framework inverts the polarity of a
+condition's events. A `satisfied()` event counts as a violation and a `violated()` event as a pass. A
+hand-written `ArchCondition` whose `check()` reports offenders through
+`SimpleConditionEvent.violated(...)` -- the natural way to write one -- then reports nothing. Every
+offender is reclassified as compliance, and the rule stays green over an arbitrarily dirty codebase.
+Empty selection:: A rule whose predicate matches zero classes finds zero violations and passes.
+Nothing distinguishes "no offenders exist" from "the selector is wrong".
+Always-passing assertion:: A rule that asserts only the absence of something passes when the subject
+is renamed, moved or deleted. The property it believed it was checking is gone, and so is the check.
+Wrong artifact:: A gate that reads shipped configuration through the classpath can resolve a
+test-profile copy instead of the packaged one. It then asserts green against a file that does not
+ship.
+
+The question a fitness function must answer is therefore not "assert or comment". It is "what must
+an assertion ship with before it may be trusted as enforcement".
+
+=== Positive phrasing
+
+A fitness function is phrased *positively*: `classes().should(condition)` or
+`fields().should(condition)`, with the condition emitting `SimpleConditionEvent.violated(...)` for each
+offender. The `no...` form is never used for a coverage assertion, because it inverts the very events
+the condition reports. A source sweep that is not an ArchUnit rule follows the same principle: it
+collects offenders and asserts the collection is empty.
+
+=== The four control legs
+
+Every fitness function ships four control legs. Each leg closes a distinct vacuity source.
+
+. *Non-vacuity guard.* A direct assertion that the selection predicate resolves to at least one
+  subject today, that any parsed input is non-empty, and that the configuration key the rule reads is
+  present. This leg distinguishes "no offenders" from "no selection".
+. *Negative control.* A deliberately non-compliant fixture, in a dedicated specimen package, that the
+  rule must reject. The test proves it by asserting the rule throws against the fixture. This leg
+  proves the rule is *capable of failing*.
+. *Matched positive controls.* Real classes from the production tree that are near misses for the
+  predicate and must not be selected. A positive control asserts that the near-miss property still
+  holds *before* it asserts exclusion. Otherwise it passes when the class is renamed or deleted, which
+  is the always-passing failure one level down.
+. *Specimen carve-out.* The production selection excludes the specimen package *explicitly*, not only
+  through a test-source import filter. No single incidental mechanism is then the only thing that
+  keeps the deliberate violation out of the real rule.
+
+=== Packaged-artifact resolution, properties and scan radius
+
+Three further rules complete the shape:
+
+* *Resolve the packaged artifact by path.* A gate that reads shipped configuration resolves it by
+  path against the packaged output directory, guarded by a regular-file precondition. It does not use
+  classpath resolution: test resources can precede packaged resources on the test classpath, and the
+  gate would then assert against the wrong artifact.
+* *Assert a property, never membership.* The rule asserts a property of the selected set. It never
+  asserts that the set equals today's members. A frozen membership list brings back the maintenance
+  burden the gate exists to remove, because every legitimate addition becomes a test edit.
+* *Justify the radius against the scan.* A selection radius is justified against the rule's *scan*
+  radius, not against today's known members. When a rule imports a wide tree but selects a narrow
+  subtree, the difference is scanned-then-discarded surface on which the invariant is unenforced.
+
+=== What the shape costs
+
+An invariant that was enforced by attention is enforced by the build, and it fails in the fast local
+gate rather than in a downstream packaging step. The control legs make the gate's own health
+observable: a change that breaks the selector or neuters the condition fails the guard or the
+negative control instead of passing silently. Because the rule asserts a property, a legitimate
+addition to the constrained set needs no test edit.
+
+The cost is size. A fitness function with four control legs is much larger than the comment it
+replaces, and it includes a fixture whose only purpose is to be rejected. The specimen package is
+production-shaped code that exists only as a control, and a reader who meets it without this section
+can mistake it for a defect.
+
+Two residual risks stay open:
+
+* *A control leg can rot.* A matched positive control whose near-miss property silently disappears
+  degrades to an always-passing assertion. That is why the control asserts the property before it
+  asserts exclusion.
+* *The carve-out must track the predicate.* A widened selection predicate that does not widen the
+  specimen carve-out pulls the deliberate violation into the production rule.
+
+=== Alternatives rejected
+
+*Leave the invariant as an explanatory comment.* This costs nothing and reads well where the value is
+defined. It loses because enforcement by reading does not reach authors who never read that place.
+The comment can name the exact failure mode and still not prevent it.
+
+*Widen the underlying configuration to a package prefix instead of asserting per class.* This removes
+the invariant entirely, because the constrained set becomes structural. It loses because a prefix
+imposes the constrained behaviour on the whole package, not only on the members that need it. That is
+a much larger blast radius, not a like-for-like swap.
+
+*Generate the configuration from the source set at build time.* This removes drift by construction,
+which is stronger than any assertion. It loses on cost: it adds build machinery whose maintenance and
+failure modes need separate ownership, where the assertion needs none.
+
+*Assert that the selected set equals its current membership.* This detects any change. It loses
+because it detects *legitimate* changes just as loudly, so every valid addition becomes a test edit --
+the maintenance burden the gate was introduced to remove.
+
+*Phrase the rule with `no...` and report offenders as violations.* This reads more naturally as
+English. It loses because the framework inverts the condition's event polarity under that form, so
+the rule reports nothing and stays green over an arbitrarily dirty codebase.
+
+Each rejected option either moves the enforcement burden somewhere nobody carries it, or produces a
+gate whose green is not evidence.
+link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
+is an example of an invariant carried structurally rather than by convention.
+
 [[awaits-reassertion-guard]]
 == The Until-Then-Re-Assert Fitness Function
 
@@ -2163,7 +2287,7 @@ each offender in the failure message. The inverted `no...should` spelling is del
 ArchUnit inverts a condition's event polarity under it, so such a rule reports nothing and stays
 green over an arbitrarily dirty corpus.
 
-=== The four ADR-0030 control legs
+=== The four control legs of <<fitness-function-shape>>
 
 Non-vacuity guard:: `guardIsNonVacuous` asserts the source root resolves, the selection is non-empty,
 it contains declared test methods, and at least one of those methods really calls `Awaits.until`.
@@ -2187,7 +2311,7 @@ control that first proves the specimen still violates the rule.
 [[awaits-guard-limits]]
 === Accepted limits
 
-Both limits below are bounds on what the guard reaches, stated here rather than left to be
+The limits below are bounds on what the guard reaches, stated here rather than left to be
 discovered from a green run.
 
 The selection is declared test methods, not every method:: At `3abc370` the lane carries *10*
@@ -2209,6 +2333,13 @@ sweep into `integration-tests` is explicitly not taken.* The integration lane ca
 guard, which is the defect this note exists to remove -- while doubling the maintenance surface of a
 hand-rolled source scanner. If the integration lane ever adopts `Awaits`, that decision is the trigger
 to revisit this, and nothing else is.
+
+The assertion is related to the wait by position, not by subject:: The guard asks only whether an
+assertion follows the wait in the same test body, never whether it asserts the awaited state. A test
+that waits on one condition and asserts an unrelated value passes, so a clean verdict means every
+awaited test carries _some_ post-wait assertion, not that each re-asserts what it waited for. Relating
+the two needs expression-level analysis of an arbitrary `BooleanSupplier`, which a source sweep cannot
+do. The matched control `sweepAcceptsAnUnrelatedPostWaitAssertion` pins this near miss.
 
 [[after-the-passes]]
 == Classified Rows Changed After the Passes
@@ -2683,9 +2814,8 @@ anywhere else would be a scope breach, not a judgement call.
 
 == Standard for a Strengthened Assertion
 
-Every strengthened method must satisfy the anti-vacuity contract
-link:../adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
-sets for fitness functions, applied to an ordinary unit test:
+Every strengthened method must satisfy the anti-vacuity contract <<fitness-function-shape>> sets for
+fitness functions, applied to an ordinary unit test:
 
 * the assertion must be *capable of failing* on the behaviour the method's name claims;
 * it must not degrade to an always-passing form when the subject is renamed or moved;

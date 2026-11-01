@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The framework edge de.cuioss.sheriff.gateway.edge is nine sub-packages (assembly, upstream, end, relay, admission, request, error, reserved, terminal) beneath a root that holds only GatewayEdgeRoute -- its CDI wiring, route registration, the shutdown observer and the handle -> process flow. The sub-packages form an acyclic graph and none depends back on the root; an ArchUnit test with the four ADR-0030 control legs holds both properties. routing.Route stays the single, framework-free per-route type and the top-level assembly.UpstreamClients holds the framework collaborators; only AssembledRoutes stays nested in RouteAssembler. Each extracted class logs under its own class name, so records that were logged under the GatewayEdgeRoute category carry their owner's category, with ApiSheriff-NNN ids and texts unchanged. The split moved code and changed no behaviour.
+// summary: The framework edge de.cuioss.sheriff.gateway.edge is nine sub-packages (assembly, upstream, end, relay, admission, request, error, reserved, terminal) beneath a root that holds only GatewayEdgeRoute -- its CDI wiring, route registration, the shutdown observer and the handle -> process flow. The sub-packages form an acyclic graph and none depends back on the root; an ArchUnit test with the four control legs of the fitness-function shape holds both properties. routing.Route stays the single, framework-free per-route type and the top-level assembly.UpstreamClients holds the framework collaborators; only AssembledRoutes stays nested in RouteAssembler. Each extracted class logs under its own class name, so records that were logged under the GatewayEdgeRoute category carry their owner's category, with ApiSheriff-NNN ids and texts unchanged. The split moved code and changed no behaviour.
 // tags: edge, package-structure, fitness-function, archunit, logging
 // affects: api-sheriff, documentation
 // supersedes:
@@ -74,7 +74,7 @@ The tests that exercise the whole edge stay in the root package beside it. The t
 
 The second rule closes the path the first cannot see. The root is in no slice, so a cycle through it (`sub -> GatewayEdgeRoute -> sub`) is not a cycle between slices.
 
-The test ships with the four control legs of link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]:
+The test ships with the four control legs of the link:../development/test-corpus-integrity.adoc#fitness-function-shape[fitness-function shape]:
 
 * a non-vacuity guard. At least two slices resolve. The sub-packages the production tree declares directly beneath the root, derived from their `package-info` classes and not from a list in the test, are at least one, and each resolves to a class other than its `package-info`. `GatewayEdgeRoute` is present in the root;
 * negative controls that run both rules against a specimen root whose sub-packages form a cycle and reference a class in the specimen root package;
@@ -140,7 +140,7 @@ The alternatives share one shortcoming: each leaves a boundary that is described
 == Links
 
 * link:../architecture/README.adoc#_edge_package_structure[Architecture -- Edge Package Structure]: the structure as built, and the current place to read it
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]: the four control legs the edge guard ships with
+* link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-corpus integrity, fitness-function shape]: the four control legs the edge guard ships with
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: why the edge is framework-bound and `routing.Route` is not
 * link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]: the end rule that `edge.end` owns
 * link:0008-data-plane-transport.adoc[ADR-0008]: the data-plane transport whose clients `assembly.UpstreamClients` holds

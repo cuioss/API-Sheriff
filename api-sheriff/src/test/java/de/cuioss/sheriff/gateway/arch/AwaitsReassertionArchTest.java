@@ -58,13 +58,14 @@ import org.junit.jupiter.api.Test;
  * would express this does not exist. The sweep therefore reads the source — the same shape
  * {@code LoopbackEphemeralBindArchTest}'s wildcard-host-literal sweep uses, and for the same reason.
  *
- * <p>The sweep is phrased <strong>positively</strong>, per ADR-0030: it collects offenders and
+ * <p>The sweep is phrased <strong>positively</strong>, per "Comment-Only Invariants Become Fitness
+ * Functions" in {@code doc/development/test-corpus-integrity.adoc}: it collects offenders and
  * asserts the collection is empty, with each offender named in the failure message. The inverted
  * {@code no...should} spelling is deliberately not used — ArchUnit inverts a condition's event
  * polarity under it, so such a rule reports nothing and stays green over an arbitrarily dirty
  * corpus.
  *
- * <h2>The four control legs (ADR-0030)</h2>
+ * <h2>The four control legs (the fitness-function shape of {@code doc/development/test-corpus-integrity.adoc})</h2>
  *
  * <ol>
  *   <li><strong>Non-vacuity guard</strong> — {@link #guardIsNonVacuous()} asserts the source root

@@ -68,7 +68,7 @@ The concern map is written by hand, so a test binds it to the code. `BootValidat
 * a registered rule is missing from the row of the class it is called through;
 * a row names a rule that no entry registers through that row's class, which covers a rule moved, renamed or deleted, or listed under a second owner.
 
-The test reads source text because the entries are lambdas, which name no method to reflection, and widening the class or the seam to expose them would change production code for a test. The test ships with a non-vacuity guard and matched negative controls over synthetic specimens, following link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030].
+The test reads source text because the entries are lambdas, which name no method to reflection, and widening the class or the seam to expose them would change production code for a test. The test ships with a non-vacuity guard and matched negative controls over synthetic specimens, following the link:../development/test-corpus-integrity.adoc#fitness-function-shape[fitness-function shape].
 
 == Alternatives rejected
 
@@ -117,7 +117,7 @@ The rejected alternatives share one property: each spreads either the order or t
 
 * link:../development/boot-validation-rules.adoc[Boot Validation Rules]: the concern map, where a new rule goes, and the constraints every rule keeps
 * link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]: every violation reported in one pass
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]: the control legs the concern-map contract test ships with
+* link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-corpus integrity, fitness-function shape]: the control legs the concern-map contract test ships with
 * link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]: the offline check that runs this validator before the framework starts
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: the narrowed pre-boot rule the validation packages keep
 * link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]: the one policy-block resolution every rule reads through

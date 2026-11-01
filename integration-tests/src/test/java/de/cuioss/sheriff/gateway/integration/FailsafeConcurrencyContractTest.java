@@ -89,7 +89,8 @@ import org.junit.jupiter.api.Test;
  * in; and it knows nothing of timing margins. A class that fails only when it runs concurrently is
  * found by its failing, and the answer then is to take the tag off it, not to change the test.
  * <p>
- * <strong>Controls</strong> (ADR-0030). The population every rule selects is asserted non-empty
+ * <strong>Controls</strong> ("Comment-Only Invariants Become Fitness Functions" in
+ * {@code doc/development/test-corpus-integrity.adoc}). The population every rule selects is asserted non-empty
  * before the rule runs, and each detector is driven with deliberately wrong specimens it must reject
  * and a correct one it must accept. The specimens are strings in this file, which is excluded from
  * the scanned sources by name ({@link #SELF}).

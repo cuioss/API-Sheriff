@@ -33,7 +33,7 @@ import org.jspecify.annotations.Nullable;
  * block and the block of every anchor alike.
  * <p>
  * The CORS rule ({@link #validateCors}) refuses a wildcard origin combined with
- * {@code allow_credentials}. CORS is global only (ADR-0007 Amendment A1): it is evaluated before route
+ * {@code allow_credentials}. CORS is global only (ADR-0007): it is evaluated before route
  * selection and authentication, so no anchor can scope it, and the rule checks the gateway block
  * alone. The content-security-policy rule ({@link #validateContentSecurityPolicy}) refuses a policy
  * carrying a CR, LF or other control character, because the value is served verbatim as a response
@@ -55,7 +55,7 @@ public class HeaderRules {
     /**
      * Rule: the global CORS block must not combine a wildcard origin with {@code allow_credentials}.
      * <p>
-     * CORS is global only (ADR-0007 Amendment A1): it is evaluated at stage 0, before route selection
+     * CORS is global only (ADR-0007): it is evaluated at stage 0, before route selection
      * and authentication, so no anchor can scope it. The bundled schema refuses a {@code cors} block
      * under {@code anchors.*.security_headers} at load, which is why only the gateway block is checked
      * here.

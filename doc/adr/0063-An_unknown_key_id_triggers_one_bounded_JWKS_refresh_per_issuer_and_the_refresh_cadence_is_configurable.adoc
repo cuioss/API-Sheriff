@@ -38,7 +38,7 @@ The obvious repair is to fetch the key set when an unknown key id arrives. The c
 
 Three structural facts constrain the answer:
 
-* *The gateway already owns each issuer's loader.* `RetryingJwksLoader` wraps the library loader of every issuer. It records whether a key set is loaded and retries a failed load (link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027 Amendment A1]). Every read through that wrapper is non-fetching, and readiness reads its state.
+* *The gateway already owns each issuer's loader.* `RetryingJwksLoader` wraps the library loader of every issuer. It records whether a key set is loaded and retries a failed load (link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027, live key-set readiness]). Every read through that wrapper is non-fetching, and readiness reads its state.
 * *The library offers no public re-fetch.* The only way to fetch a key set again outside the library's own timer is to build a fresh library loader and load it. A fresh loader knows the identity provider's current keys and none of the previous ones.
 * *The cadence is the library's unless the gateway exposes it.* The refresh interval and the key-rotation grace period are knobs of the library's loader configuration. The gateway configuration exposes such a knob only by deliberate decision (link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]). Left unexposed, a deployment can neither shorten the window of exposure nor lengthen the tolerance for the previous key.
 
@@ -52,7 +52,7 @@ An issuer's `jwks` block carries three keys. The link:../configuration.adoc#_jwk
 * `key_rotation_grace_period_seconds` is how long a replaced key set keeps verifying the tokens its keys signed. `0` drops it at once.
 * `unknown_kid_refresh_window_seconds` is the per-issuer window within which an unknown key id schedules at most one refresh.
 
-The first two are the library's knobs under neutral names (link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a2[ADR-0011 Amendment A2]). `TokenValidatorProducer` passes them to the library's loader configuration only when they are declared. An omitted key therefore keeps the library's own default, and the gateway holds no second copy of it (link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]). `RetryingJwksLoader` is timed by the values read back from the built configuration. The time it keeps a replaced key set and the time the library would are thus the same number by construction. The third key is the gateway's own and has no library counterpart.
+The first two are the library's knobs under neutral names (link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#_jwks_refresh_knobs[ADR-0011, the two refresh knobs]). `TokenValidatorProducer` passes them to the library's loader configuration only when they are declared. An omitted key therefore keeps the library's own default, and the gateway holds no second copy of it (link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes]). `RetryingJwksLoader` is timed by the values read back from the built configuration. The time it keeps a replaced key set and the time the library would are thus the same number by construction. The third key is the gateway's own and has no library counterpart.
 
 The configuration validator enforces the ranges at boot. The schema declares the keys as plain integers and enforces no range. The validator names the issuer and the admitted range and never the JWKS URL. The library accepts every non-negative value for its two knobs, so it accepts every value the gateway admits. The lower bound of the window, 5 seconds, is the security-relevant number, because it is the floor of the refresh bound below.
 
@@ -84,7 +84,7 @@ This condition makes the refresh safe to offer to uncredentialed callers. A toke
 
 A fresh library loader knows only the keys the identity provider serves at that moment. Publishing it alone would at once reject every token signed with the previous key. The gateway would trade one outage for another and void the grace period the same configuration makes tunable. The gateway therefore keeps the replaced loader as a second, non-fetching lookup until the key-rotation grace period has passed, and then drops and closes it. At most one replaced loader exists per issuer: a second replacement inside the grace period closes the older one. A grace period of zero closes the replaced loader at once.
 
-[[amendment-a1]]
+[[_monotonic_refresh_timing]]
 === The window and the grace deadline are measured on a monotonic clock
 
 Both timing bounds of this decision are durations the gateway enforces, each counted from a moment it observed itself. Neither is an instant the gateway reports. A wall clock can step, through a time synchronisation correction, an operator setting it, or a virtual machine resuming. A duration read across a step is wrong by the size of the step:
@@ -164,9 +164,9 @@ The unifying principle: work an uncredentialed caller can trigger is bounded by 
 
 == Links
 
-* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]: the neutral JWKS configuration surface; its Amendment A2 records the two library knobs this decision exposes
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]: upstream defaults are kept, not restated, so an omitted cadence key passes nothing to the library
-* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]: Amendment A1 records the gateway-owned loader, its non-fetching reads and the readiness contract this decision keeps
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#_jwks_refresh_knobs[ADR-0011]: the neutral JWKS configuration surface, including the two library refresh knobs this decision exposes
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]: upstream defaults are kept, not restated, so an omitted cadence key passes nothing to the library
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027, live key-set readiness]: the gateway-owned loader, its non-fetching reads and the readiness contract this decision keeps
 * link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]: an omitted key is a nullable component of the configuration model
 * link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]: the rule a record reachable by an uncredentialed caller follows
 * link:../configuration.adoc#_jwks_key_rotation[Configuration reference]: the three keys, their defaults, ranges and boot refusals, and the operator view of a key change

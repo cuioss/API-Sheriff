@@ -1122,8 +1122,8 @@ their *non-fetching* state. While any issuer has no key set, readiness is `DOWN`
 `jwks: loading` or `jwks: unavailable` and the counts `issuers` / `issuers_loaded`; a failed fetch is
 retried on a bounded backoff (1 s, doubling, capped at 30 s), so the instance turns `UP` within
 seconds of its identity provider answering
-(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
-Amendment A1]). The probe performs no JWKS fetch per probe.
+(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027]).
+The probe performs no JWKS fetch per probe.
 
 *This is why the stack waits for Keycloak's own readiness before it starts any gateway.* The
 gateway instances here name Keycloak realms as issuers, so an instance started ahead of
@@ -1677,7 +1677,7 @@ or accepted, and an accepted one names the reason it is safe to keep.
 [[upstream-path-integration-endpoints]]
 == `route.upstream.path` in the Integration Endpoints
 
-link:../adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004] makes a declared
+link:../adr/0004-topology-indirection.adoc#_upstream_path_append[ADR-0004] makes a declared
 `route.upstream.path` append to the alias base path. When that rule replaced the earlier replace
 semantics, every in-repo configuration moved with it in one change, so its effective upstream URI on
 the integration topology stayed identical:

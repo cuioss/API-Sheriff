@@ -2159,7 +2159,7 @@ class WebSocketRelayStageTest {
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 // Every route here is unanchored, so it resolves the gateway block — exactly what
                 // RouteTableBuilder materializes. Stage 2a applies the ROUTE's block after route
-                // selection (ADR-0007 Amendment A1), so a fixture route carrying none would strip them.
+                // selection (ADR-0007), so a fixture route carrying none would strip them.
                 .securityHeaders(securityHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)

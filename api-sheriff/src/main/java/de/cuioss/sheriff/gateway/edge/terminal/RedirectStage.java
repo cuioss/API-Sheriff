@@ -24,7 +24,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The {@code redirect} terminal action (ADR-0014 Amendment A1): computes the answer a redirect
+ * The {@code redirect} terminal action (ADR-0014): computes the answer a redirect
  * route sends instead of contacting an upstream.
  * <p>
  * The stage is framework-light by design — it turns a boot-resolved {@link RedirectConfig}, the raw

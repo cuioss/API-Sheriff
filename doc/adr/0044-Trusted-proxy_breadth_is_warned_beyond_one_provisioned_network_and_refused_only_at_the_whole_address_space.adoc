@@ -105,7 +105,7 @@ A breadth guard earns its place by staying silent on the configuration an operat
 * link:0003-forwarded-headers.adoc[ADR-0003]: the mandatory allowlist and the immediate-TCP-peer gate this record refines into a breadth posture
 * link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]: the warn-never-refuse rule for postures that are legitimate but must be visible
 * link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]: the counterpart distinction between a posture that must be visible and a configuration with no coherent meaning
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]: the controls-on-both-sides discipline the threshold test follows
+* link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-corpus integrity, fitness-function shape]: the controls-on-both-sides discipline the threshold test follows
 * link:../configuration.adoc[Configuration Reference]: the `forwarded.trusted_proxies` contract, the threshold and its residual
 * link:../security-threat-model.adoc[Security threat model]: the forwarded-header spoofing entries
 * link:../LogMessages.adoc[Log messages]: the `ApiSheriff-102` record

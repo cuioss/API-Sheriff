@@ -225,8 +225,8 @@ chmod 1777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
 # Keycloak FIRST, and READY, before either gateway starts. The native app starts loading the realms'
-# JWKS at boot and reports readiness DOWN until every issuer's key set has loaded (ADR-0027
-# Amendment A1). A gateway started before Keycloak answers retries the fetch on a bounded backoff
+# JWKS at boot and reports readiness DOWN until every issuer's key set has loaded (ADR-0027).
+# A gateway started before Keycloak answers retries the fetch on a bounded backoff
 # (1 s doubling, capped at 30 s), so it would still recover — but only up to 30 s after Keycloak
 # became reachable, which the gateway readiness budget below does not reliably cover. Gating the
 # gateway start on a ready Keycloak makes the first fetch succeed within a moment of boot.
@@ -271,7 +271,7 @@ $COMPOSE_CMD up -d --no-deps "${DEMO_GATEWAY_SERVICES[@]}"
 # uses, and for the same reason: the management interface's /health/live — reached beneath each
 # instance's derived management root path, wherever a deployment has moved it — answers as soon as
 # the process is up, which is strictly earlier than the point at which the SPA can be driven
-# against it. Readiness additionally waits for every issuer's JWKS key set (ADR-0027 Amendment A1),
+# against it. Readiness additionally waits for every issuer's JWKS key set (ADR-0027),
 # so it now trails liveness by the first key-set fetch; against the Keycloak this script already
 # waited on above that fetch completes within a moment of boot, well inside this budget. The
 # readiness contract, and the live-to-ready figure measured before that change, are in

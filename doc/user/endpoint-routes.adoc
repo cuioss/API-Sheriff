@@ -34,7 +34,7 @@ endpoint:
   enabled: ${ENDPOINT_APP1_ENABLED:-true}   # default true. false => this endpoint is inert:
                                    #   its routes are not added to the table and its base_url
                                    #   alias need not resolve. The ${VAR:-default} placeholder
-                                   #   makes the env override visible in-file (ADR-0004 A1);
+                                   #   makes the env override visible in-file (ADR-0004);
                                    #   a plain literal (enabled: true) is equally valid
   base_url: APP1                   # alias; resolved from topology.properties / env. Mandatory
                                    #   because this file carries a proxy route; an endpoint of
@@ -151,7 +151,7 @@ endpoint:
         rewrite_location: false    # default false. true maps an upstream Location pointing
                                    #   inside this route's upstream back onto /api/orders
         connect_timeout_ms: 2000   # INERT today: parsed, read by nothing -- every
-        read_timeout_ms: 5000      #   dispatch runs under the guard's fixed 30 s timeout
+        read_timeout_ms: 5000      #   attempt runs under the guard's fixed 30 s timeout
         retry: { max_attempts: 3, idempotent_only: true }
                                    # INERT today: only retry.enabled acts (two retries,
                                    #   100 ms apart); max_attempts and idempotent_only are
@@ -201,7 +201,7 @@ A proxy route's upstream URI is built from three parts: the resolved alias, the 
 `upstream.path`, and the *remainder* -- the request path with the route's match key stripped. The
 alias contributes its scheme, host, port *and base path*; `upstream.path` is *appended* to that base
 path, joined on exactly one `/` (decision:
-link:../adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004 Amendment A2]):
+link:../adr/0004-topology-indirection.adoc#_upstream_path_append[ADR-0004]):
 
 ----
 upstream URI = alias base path + upstream.path + remainder
@@ -231,7 +231,7 @@ the deployment.
 | `https://kc.internal:8443/realms/main/protocol/openid-connect/token`
 |===
 
-*Migrating a route written for the former replace semantics.* Before Amendment A2 a declared
+*Migrating a route written for the former replace semantics.* Under those semantics a declared
 `upstream.path` *replaced* the alias base path, so a route behind an alias with a base path had to
 repeat that base path. Drop the repeated part from the route:
 
@@ -380,9 +380,8 @@ passed route selection, the verb gate, the thorough checks and authentication:
 |===
 
 Declaring two of them on one route fails the boot: a `redirect` block beside an `asset` block, or
-beside an `upstream` block, is refused rather than resolved by a silent precedence (decisions:
-link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014] and its
-link:../adr/0014-asset-serving-terminal-action.adoc#amendment-a1[Amendment A1]).
+beside an `upstream` block, is refused rather than resolved by a silent precedence (decision:
+link:../adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]).
 
 [[_asset_terminal_action]]
 === Asset terminal action
@@ -1198,7 +1197,7 @@ deployment that never writes it keeps the behaviour shown here.
   is reused only when no body chunk had been forwarded; otherwise it is closed and the next request
   opens a new one. Not applied to bodyless requests or
   `protocol: grpc` routes; not configurable. Shorter than the upstream guard's 30 s timeout, which
-  bounds the dispatch until the upstream's response head. See
+  bounds each upstream attempt until the upstream's response head. See
   link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout].
 
 | Request-body deadline

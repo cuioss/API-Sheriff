@@ -408,7 +408,8 @@ public class TokenValidatorProducer {
                 .jwksUrl(url)
                 // Called unconditionally, on the true path as well: passing the resolved posture every
                 // time is what makes the key's effect independent of token-sheriff's own default, so an
-                // upstream default change cannot silently move this gateway's posture (ADR-0022).
+                // upstream default change cannot silently move this gateway's posture (doc/technical_aspects.adoc,
+                // "Adopting Upstream Security-Default Changes").
                 // Falsification-checked: deleting this call turns the RELAXED leg of
                 // TokenValidatorProducerTest.JwksVerifyHostname's two matched controls red (the JWKS
                 // fetch then fails hostname verification and the issuer never becomes healthy).
@@ -426,8 +427,9 @@ public class TokenValidatorProducer {
             builder.sslContext(trustProfileResolver.resolve(issuer, tlsProfile));
         }
         // Each cadence key is passed through only when declared, so an omitted key keeps the token
-        // library's own default instead of a second copy of it kept here (ADR-0022). ConfigValidator
-        // has already bounded both values to ranges the library accepts.
+        // library's own default instead of a second copy of it kept here (doc/technical_aspects.adoc,
+        // "Adopting Upstream Security-Default Changes"). ConfigValidator has already bounded both values to
+        // ranges the library accepts.
         Integer refreshIntervalSeconds = jwks.refreshIntervalSeconds();
         if (refreshIntervalSeconds != null) {
             builder.refreshIntervalSeconds(refreshIntervalSeconds);

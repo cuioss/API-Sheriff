@@ -249,7 +249,7 @@
                 "properties": {
                   "path": {
                     "type": "string",
-                    "description": "Upstream path appended to the topology alias base path, joined on exactly one slash (ADR-0004 Amendment A2). The request remainder after the match key follows it. Omitted or blank keeps the alias base path."
+                    "description": "Upstream path appended to the topology alias base path, joined on exactly one slash (ADR-0004). The request remainder after the match key follows it. Omitted or blank keeps the alias base path."
                   },
                   "rewrite_location": {
                     "type": "boolean",
@@ -309,7 +309,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["location", "status"],
-                "description": "Optional redirect terminal action (ADR-0014 Amendment A1). The gateway answers the request itself with the configured status and Location, without contacting any upstream. redirect and asset are the two explicit terminal actions and are mutually exclusive; a route declaring neither proxies, to the endpoint base_url unless a route-level upstream block overrides it. The open-redirect review of location and the protocol restriction are enforced in code.",
+                "description": "Optional redirect terminal action (ADR-0014). The gateway answers the request itself with the configured status and Location, without contacting any upstream. redirect and asset are the two explicit terminal actions and are mutually exclusive; a route declaring neither proxies, to the endpoint base_url unless a route-level upstream block overrides it. The open-redirect review of location and the protocol restriction are enforced in code.",
                 "properties": {
                   "location": {
                     "type": "string",

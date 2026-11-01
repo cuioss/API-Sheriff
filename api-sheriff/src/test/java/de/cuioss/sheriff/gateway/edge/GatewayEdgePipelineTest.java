@@ -576,7 +576,7 @@ class GatewayEdgePipelineTest {
         assertEquals(0, upstreamHits.get(), "a challenged redirect route never contacts the upstream");
     }
 
-    // --- security_headers after route selection (ADR-0007 Amendment A1) ------------------------------
+    // --- security_headers after route selection (ADR-0007) -------------------------------------------
 
     @Test
     @DisplayName("applies the anchor security_headers block wholesale to a routed response, keeping global CORS")

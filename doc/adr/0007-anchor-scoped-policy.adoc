@@ -51,7 +51,7 @@ If an anchor declares `auth.require` of `bearer` or `session`, the boot refuses 
 
 Endpoint `auth` is optional for an anchored endpoint whose anchor declares `auth`. An endpoint without an anchor-provided posture must still declare it. Every route has a non-ambiguous effective auth from route, endpoint or anchor, or the boot refuses it.
 
-[[amendment-a2]]
+[[_policy_block_resolution_rule]]
 === One declared rule, resolved by `PolicyBlock`
 
 *One rule, declared once per block.* Every policy block is a `PolicyBlock` descriptor naming the policy scopes it is declarable at, along the chain `gateway -> anchor -> endpoint -> route`. The nearest declared scope wins and replaces every broader declaration whole, never merged. `null` and an empty list both count as not declared. With no scope declaring the block, its fallback applies: a value, no block or a boot refusal. The route-table builder and the configuration validator both resolve through the descriptors.
@@ -64,7 +64,7 @@ The live inventory is `PolicyBlock.ALL`, and link:../user/anchors.adoc#_policy_b
 
 `RouteTable` assembly resolves anchors into the materialized per-route effective values. The request pipeline never sees an anchor and performs no runtime lookup, and the boot log can print the effective posture per route.
 
-[[amendment-a1]]
+[[_security_headers_after_route_selection]]
 === `security_headers` apply after route selection; CORS stays global and pre-auth
 
 An anchor's `security_headers` block must take effect on the wire, and a CORS preflight must be answered before authentication, which runs after route selection. The stage therefore splits in two positions:
@@ -80,7 +80,7 @@ An anchor's `security_headers` block must take effect on the wire, and a CORS pr
 
 Stage 2a never touches CORS headers or other accumulated non-security headers, such as `Allow` or `WWW-Authenticate`.
 
-[[amendment-adr-0073]]
+[[_pre_trust_rejection_global_block]]
 === A rejection before the trust boundary carries the global block
 
 On the shipped default, a rejection raised after route selection and before the trust boundary is answered as the unrouted `404` (link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]). The gateway restores the response headers the request had before its route was selected, so that answer carries the global block, as an unrouted `404` does. The verb gate's rejection is one such case. With `security_defaults.uniform_not_found: false`, those rejections carry the route's block.
@@ -115,7 +115,7 @@ The Kubernetes Gateway API (GEP-713) attaches hierarchical policies with separat
 
 Azure API Management's child policy places a `<base/>` element marking where the parent chain executes, so the child sees and controls its inheritance.
 
-*Not adopted.* This design comes from the survey, and no reason for not adopting it is on record.
+*Not adopted.* No reason for not adopting it is on record.
 
 === Allow a route to belong to several anchors
 

@@ -50,7 +50,7 @@ Two questions follow. Trust anchors live in the runtime's own named-TLS surface.
 
 Neither key, nor the JSON schema that validates them, names a runtime, a TLS registry, a truststore path or a password. `tls_profile` is a name in API Sheriff's vocabulary and carries no trust material.
 
-[[amendment-a1]]
+[[_derived_egress_allowance]]
 === An absent `allowed_egress_hosts` derives the `jwks.url` host
 
 The `http` issuer's allowance has two forms:
@@ -62,7 +62,7 @@ The boot refuses a blank or whitespace-only entry and a `host:port` entry, namin
 
 No dedicated key restores the no-exemption posture for an `http` issuer. An operator who wants a narrower allowance declares an explicit list. A key whose only purpose is to switch the derivation off was not added, because the explicit list already expresses every narrower posture that still loads a key set.
 
-The derivation is not a local reversal of an upstream tightening. `EgressPolicy.secureDefault()` is unchanged, and the gateway does not replace or relax it. The gateway passes one host through the library's own `allowedEgressHost` seam, the seam a declared list uses. The posture of link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022] is therefore not engaged: no upstream default changed and none is being worked around.
+The derivation is not a local reversal of an upstream tightening. `EgressPolicy.secureDefault()` is unchanged, and the gateway does not replace or relax it. The gateway passes one host through the library's own `allowedEgressHost` seam, the seam a declared list uses. The link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes] is therefore not engaged: no upstream default changed and none is being worked around.
 
 The field contract is in link:../configuration.adoc#_token_validation[the configuration reference].
 
@@ -83,7 +83,7 @@ An operator who names an unbound profile needs the exact key to set. Neutrality 
 
 The boot refuses a named-but-unbound profile on an `http`-sourced issuer. It never falls back to default trust. `TokenValidatorProducer.onStartup` forces the validator into existence at boot, so the failure surfaces at startup and not on the first bearer request. A `source: file` issuer opens no TLS connection and never resolves the profile, so it boots with an unbound name, and that name governs nothing (link:../configuration.adoc#_jwks_verify_hostname_profile_collision[configuration reference]).
 
-[[amendment-a2]]
+[[_jwks_refresh_knobs]]
 === Two refresh knobs are exposed; the rest stay deferred
 
 A knob is promoted under one discipline: a neutral key named for what API Sheriff means, with a default that preserves current behaviour. `jwks.refresh_interval_seconds` and `jwks.key_rotation_grace_period_seconds` are promoted under it:
@@ -153,7 +153,7 @@ The unifying principle: the gateway configuration is the product's configuration
 * link:../configuration.adoc#_token_validation[Configuration reference]: the `token_validation` surface, the `allowed_egress_hosts` and `tls_profile` field contracts, the trust-profile mapping, the worked example and the failure modes
 * link:../configuration.adoc#_jwks_deferred_knobs[Configuration reference]: the loader knobs that stay deferred
 * link:../security-threat-model.adoc[Security threat model]: GW-05 and BFF-07, which record the egress guard, the derived allowance and its accepted trade-off
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]: the posture on upstream security defaults, which the derived allowance does not engage
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]: the policy on upstream security defaults, which the derived allowance does not engage
 * link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]: the bounded refresh on an unknown key id and the two refresh keys
 * link:0005-module-structure.adoc[ADR-0005]: the framework-bound edge seam that keeps runtime-specific assembly at the boundary
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java`: the egress allowance and the loader configuration

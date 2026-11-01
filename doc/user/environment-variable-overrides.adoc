@@ -211,7 +211,7 @@ breaks. See link:tls-edge.adoc[TLS Edge] for when the downgrade is legitimate, a
 
 Topology aliases and endpoint enablement are also deployment-supplied, but through a different --
 and deliberately *visible* -- mechanism: an in-file `${VAR}` placeholder written in the configuration
-document (link:../adr/0004-topology-indirection.adoc[ADR-0004] Amendment A1). An environment value
+document (link:../adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004]). An environment value
 reaches these fields only through an explicit placeholder, never through an invisible lookup, so
 reading the file tells you every override point. The conventional names are `TOPOLOGY_<ALIAS>` and
 `ENDPOINT_<ID>_ENABLED`.
@@ -233,8 +233,8 @@ KEYCLOAK=https://kc.internal:8443
 ==== Environment-variable override (takes precedence)
 
 Any alias may be overridden per environment: the entry declares its override point as an
-in-file placeholder (link:../adr/0004-topology-indirection.adoc#_amendment_a1[ADR-0004
-Amendment A1]), with the file value as the default and the environment winning when set:
+in-file placeholder (link:../adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004]),
+with the file value as the default and the environment winning when set:
 
 [source,properties]
 ----
@@ -258,7 +258,7 @@ an alias referenced by an endpoint file that resolves to nothing, is a *boot fai
   one `/`). The effective base path
   is the alias-derived base path with the route's `upstream.path` *appended* to it when declared,
   and the alias-derived base path alone otherwise
-  (link:../adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004 Amendment A2]). So
+  (link:../adr/0004-topology-indirection.adoc#_upstream_path_append[ADR-0004]). So
   `/api/orders/42` on `path_prefix: /api/orders` with `upstream.path: /orders` reaches
   `https://app1.internal:8443/app1/orders/42` -- APP1's own `/app1` base path is kept and the route
   path follows it. Omit `upstream.path` and the same request reaches
@@ -476,8 +476,8 @@ Read it as a map of what you can and cannot change, and of where the answer is "
   *authoritative*: host-exact, with no wildcard or suffix form, and never merged with the `jwks.url`
   host, so declaring it pins the allowance and a typo cannot broaden it. A blank or `host:port` entry
   is refused at boot. See link:../security-threat-model.adoc#gw-05[GW-05] and
-  link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a1[ADR-0011
-  Amendment A1]. `tls_profile` stays opt-in and default-preserving.
+  link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#_derived_egress_allowance[ADR-0011].
+  `tls_profile` stays opt-in and default-preserving.
 * *Override route:* *neutral*, `gateway.yaml` -- and this is the pattern the whole configuration
   model follows (link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]).
   The document names a logical trust *profile*; the deployment binds that name to anchors.
@@ -599,7 +599,7 @@ gateway uses lives in it.
   routes deliberately cannot override it: resolution stops at the anchor. The gateway-owned security
   headers (HSTS, nosniff, frame-deny, CSP) are seeded globally before route selection and then
   *replaced wholesale* by the selected route's anchor block once a route is chosen
-  (link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] Amendment A1), so a global -> anchor
+  (link:../adr/0007-anchor-scoped-policy.adoc#_security_headers_after_route_selection[ADR-0007]), so a global -> anchor
   resolution -- not the global block alone -- is what an anchored route serves. Only CORS and the
   responses produced *before* a route is selected (a stage-1 rejection, a 404 for an unrouted path,
   the preflight answer) are governed by the global block alone. CORS stays global by necessity: the

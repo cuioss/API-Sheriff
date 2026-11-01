@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: At token-sheriff 0.9.8 every observability bean of the token-validation extension resolves its validator through ObservedValidatorResolver, which observes the @GatewayValidator validator while the extension's own sheriff.token.issuers.* namespace is empty. The gateway therefore keeps the extension's metrics collector, which publishes sheriff.token.validation.errors and sheriff.token.validation.success for the gateway validator, and keeps excluding only the two health probes, which would report UP while observing nothing this gateway does. No sheriff.token.issuers.* projection is introduced and the extension dependency stays. ADR-0027's Amendment A1, the eager-boot fail-closed assembly and the fail-closed jwks.tls_profile resolution carry forward unchanged.
+// summary: At token-sheriff 0.9.8 every observability bean of the token-validation extension resolves its validator through ObservedValidatorResolver, which observes the @GatewayValidator validator while the extension's own sheriff.token.issuers.* namespace is empty. The gateway therefore keeps the extension's metrics collector, which publishes sheriff.token.validation.errors and sheriff.token.validation.success for the gateway validator, and keeps excluding only the two health probes, which would report UP while observing nothing this gateway does. No sheriff.token.issuers.* projection is introduced and the extension dependency stays. ADR-0027's live key-set readiness, the eager-boot fail-closed assembly and the fail-closed jwks.tls_profile resolution carry forward unchanged.
 // tags: health-checks, readiness, metrics, scheduler, cdi, bean-exclusion, observability, extension-boundary, native-image, token-validation
 // affects: api-sheriff
 // supersedes: 27
@@ -181,7 +181,7 @@ decision was taken on. It does not hold at 0.9.8.
 The exclusion is still declared unconditionally and in no profile
 (link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]).
 It is still named per package and never as a global switch
-(link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+(link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes]).
 
 === The fitness function follows the new scope
 
@@ -207,7 +207,7 @@ collector is registered and publishes for the gateway validator.
 
 === Carried forward unchanged
 
-* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027 Amendment A1]:
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027, live key-set readiness]:
   readiness reads a live, non-fetching per-issuer key-set state and reports `DOWN` while any issuer
   has no key set. `GatewayReadinessCheck` stays the only JWKS readiness coverage. The operator-facing
   contract is in link:../configuration.adoc#_jwks_readiness[the configuration reference].
@@ -250,7 +250,7 @@ Rejected on four counts:
   same issuers. That doubles the key fetches and lets two copies of the key sets drift apart, unless
   the gateway's producer is removed as well.
 * *It bypasses the gateway's guarantees.* The extension's producer knows none of the gateway's own
-  loader wrapper, the live key-set readiness of Amendment A1, the derived egress allowance or the
+  loader wrapper, the live key-set readiness of ADR-0027, the derived egress allowance or the
   fail-closed `jwks.tls_profile` resolution. Each would have to be re-expressed in the extension's
   property model or lost.
 * *It closes no gap.* The collector already publishes for the gateway validator without it.
@@ -319,14 +319,18 @@ and with it a second package to re-read on every upgrade.
 == Links
 
 * link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
-  -- the superseded decision, its Amendment A1 and the reasons the exclusion scope cannot be derived
+  -- the superseded decision, its live key-set readiness section and the reasons the exclusion scope
+  cannot be derived
+* link:0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]
+  -- the boundary between the JWKS key-set readiness carried forward here, which changes the verdict,
+  and the `oidc_discovery` datum, which never does
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
   -- the platform-preferred rule that decides between the collector and a gateway binding
 * link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
   -- the rule under which the exclusion is unconditional
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
-  -- the posture that forbids a global switch in place of the per-package exclusion
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]
+  -- the policy that forbids a global switch in place of the per-package exclusion
+* link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-corpus integrity, fitness-function shape]
   -- the fitness-function rule the rewritten scheduled-job assertion follows
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
   -- the `token_validation` surface the gateway validator is built from

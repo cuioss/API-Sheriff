@@ -68,7 +68,8 @@ import org.jspecify.annotations.Nullable;
  * {@code client_secret_basic} when {@code oidc.client_secret} is configured.
  * {@code oidcVerifyHostname} is passed to
  * that builder's {@code verifyHostname} on every build, the {@code true} path included, so an
- * upstream default change cannot move the leg's posture (ADR-0022); {@code oidcTlsProfile}, when
+ * upstream default change cannot move the leg's posture ({@code doc/technical_aspects.adoc},
+ * "Adopting Upstream Security-Default Changes"); {@code oidcTlsProfile}, when
  * named, supplies the builder's {@code sslContext}. The two are mutually exclusive in the same way
  * as {@code jwksVerifyHostname} and {@code jwks.tls_profile} (ADR-0041): the library relaxes
  * hostname matching only on the default-trust-store context it derives itself, so a

@@ -139,7 +139,8 @@ import org.junit.jupiter.api.Test;
  * tags declared on implemented interfaces, and a superclass outside the module's test sources or
  * named through a wildcard import — the {@code extends} chain stops there.
  * <p>
- * <strong>Controls</strong> (ADR-0030). The population is asserted non-empty before the rule runs: the
+ * <strong>Controls</strong> ("Comment-Only Invariants Become Fitness Functions" in
+ * {@code doc/development/test-corpus-integrity.adoc}). The population is asserted non-empty before the rule runs: the
  * IT reads at least one property and among them the port, at least one lane selects the IT today and
  * at least one leaves it out. The detector is driven with POM specimens it must reject — a selecting
  * lane with no properties, with only the port, with the primary port, a lane with an include or exclude

@@ -104,7 +104,7 @@ The rejected options fall into two classes. The first two buy a conventional pro
 
 === Accepted costs
 
-* *The health state is liveness, not readiness.* A bare accept says the port is bound, not that the instance can serve. Everything reading container health is reading liveness, however "healthy" reads. Readiness stays asserted in the readiness endpoint itself and in the host-side readiness assertion the link:../development/integration-test-topology.adoc#readiness-gate-rules[readiness-gate rules] describe. A reader who takes a healthy container as a ready one has drawn a conclusion the signal does not support. Readiness also waits for every issuer's JWKS key set (link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027 Amendment A1]), so a container stays healthy and not ready until its identity provider has served a key set.
+* *The health state is liveness, not readiness.* A bare accept says the port is bound, not that the instance can serve. Everything reading container health is reading liveness, however "healthy" reads. Readiness stays asserted in the readiness endpoint itself and in the host-side readiness assertion the link:../development/integration-test-topology.adoc#readiness-gate-rules[readiness-gate rules] describe. A reader who takes a healthy container as a ready one has drawn a conclusion the signal does not support. Readiness also waits for every issuer's JWKS key set (link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027, live key-set readiness]), so a container stays healthy and not ready until its identity provider has served a key set.
 * *The application binary carries a second role, so its command line is a contract.* Every future argument must be distinguishable from the probe token. The whole-token match keeps that cost at zero, and it is the property to preserve if the command line grows.
 * *The management port is compiled in.* A deployment that moves it never reports healthy until the image is rebuilt against the new port. That is the right direction to fail, but it is silent until someone reads the health column.
 
@@ -126,7 +126,7 @@ Two corollaries follow:
 == Links
 
 * link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]: the deployment-bound management scheme that makes the probe necessarily protocol-blind
-* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]: what readiness reports; its Amendment A1 makes readiness wait for every configured issuer's JWKS key set
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]: what readiness reports; its live key-set readiness section makes readiness wait for every configured issuer's JWKS key set
 * link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]: the artifact-purity rule behind compiling the port in and not adding a configuration surface for it
 * link:../development/integration-test-topology.adoc#readiness-gate-rules[Integration-Test Topology, the rules every host-side readiness gate follows]: the host-side consumer of this health state, and the two places readiness is asserted
 * link:../development/integration-test-topology.adoc[Integration-Test Topology]: the measured boot time the `--start-period` is sized from

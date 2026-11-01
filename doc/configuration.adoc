@@ -104,8 +104,8 @@ subdirectories, are ignored.
 * Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
   commit. Topology values may be literal (they are locations, not secrets) but are still
   overridable through an explicit in-file `${VAR}` placeholder.
-* *Environment override mechanism* (link:adr/0004-topology-indirection.adoc#_amendment_a1[ADR-0004
-  Amendment A1]): every override point is a *visible in-file placeholder*, resolved once, before
+* *Environment override mechanism* (link:adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004]):
+  every override point is a *visible in-file placeholder*, resolved once, before
   schema validation, uniformly across `gateway.yaml`, `endpoints/*.yaml`, and
   `topology.properties`. The grammar is fixed: `${NAME}` (required -- the variable must be set or
   the boot fails, the secrets semantics) or `${NAME:-default}` (optional -- the literal
@@ -643,7 +643,8 @@ enablement fields:
   environment can be shipped in the config set and simply switched off there. A disabled
   endpoint is still *schema-validated* (typos are caught), it is just not activated. Overridable
   per environment via the in-file placeholder form -- `enabled: ${ENDPOINT_ORDER_API_ENABLED:-true}`
-  -- where the environment variable *wins over the placeholder default* (ADR-0004 Amendment A1,
+  -- where the environment variable *wins over the placeholder default*
+  (link:adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004],
   the same mechanism link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology] uses). By convention `<ID>` in the variable name
   is the upper-cased `id` with hyphens mapped to underscores (endpoint `order-api` ->
   `ENDPOINT_ORDER_API_ENABLED`).
@@ -1353,7 +1354,7 @@ another.
 
 *A seventh leg of a mapped client family cannot land unbound.* A fitness function
 (`EgressTlsPostureArchTest`, in the
-link:adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+link:development/test-corpus-integrity.adoc#fitness-function-shape[fitness-function]
 four-leg shape) fails the build whenever production code
 calls an egress TLS-client construction target without, in the same class, calling that target's
 posture method -- `setVerifyHost` on the Vert.x options, `sslContext` or `sslParameters` on a JDK
@@ -1646,7 +1647,7 @@ egress_tls:
 *The posture is the gateway's, not the library's.* The flag is passed to the identity-provider
 client's own hostname-verification setting on every build -- the `true` path included -- so an
 upstream default change cannot move this leg's posture
-(link:adr/0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+(link:technical_aspects.adoc#_upstream_security_default_changes[Adopting Upstream Security-Default Changes]).
 An omitted block and an omitted key are the same posture: verification on.
 
 [[_oidc_verify_hostname_scope]]
@@ -2256,7 +2257,7 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
   operator who wants a narrower allowance declares an explicit list, which is authoritative. See
   link:security-threat-model.adoc#gw-05[GW-05],
   link:security-threat-model.adoc#bff-07[BFF-07] and the
-  link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#amendment-a1[ADR-0011].
+  link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#_derived_egress_allowance[ADR-0011].
 
 | `issuers[].jwks.tls_profile`
 | Name of the logical *trust profile* used to verify the IdP's server certificate when fetching
@@ -2327,8 +2328,8 @@ issuer loads from disk and normally reports `ready` immediately.
 a later background-refresh failure keeps the loaded keys in service and readiness stays `UP` -- the
 held keys still validate the tokens they signed. An identity provider that becomes unreachable after
 boot, or a stalled key rotation, is therefore not visible through readiness; alert on it separately
-(link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
-Amendment A1]). A stalled rotation has a log record to alert on: `WARN ApiSheriff-136`, described
+(link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027]).
+A stalled rotation has a log record to alert on: `WARN ApiSheriff-136`, described
 under link:#_jwks_key_rotation[Key rotation and the refresh cadence].
 
 *A BFF deployment reports its provider-metadata state, and readiness does not gate on it.* A
@@ -2359,7 +2360,9 @@ deployment with an active BFF runtime -- `oidc.session.mode: server` or `oidc.se
 `oidc_discovery` never changes the `UP`/`DOWN` verdict. A failed resolution stops only the
 identity-provider legs -- login, refresh and step-up -- while bearer-only and public routes keep
 working, so an orchestrator that pulled the instance for it would turn an identity-provider outage
-into a full outage. Alert on `failed` instead. The datum is read from a view that records each
+into a full outage. Alert on `failed` instead
+(link:adr/0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]).
+The datum is read from a view that records each
 resolution attempt and never triggers one, so polling readiness sends no discovery request. It is a
 fixed token: it names no issuer, URL or cause. The key-set state above is not a stand-in for it
 either way -- a loaded key set stays loaded through later refresh failures, and a missing one says
@@ -4233,7 +4236,7 @@ link:user/endpoint-routes.adoc#_keep_identity_headers[Keeping an upstream's iden
 === `upstream`
 
 The target is `resolved(endpoint.base_url) + upstream.path + remainder`
-(link:adr/0004-topology-indirection.adoc#_amendment_a2[ADR-0004 Amendment A2]). The resolved alias
+(link:adr/0004-topology-indirection.adoc#_upstream_path_append[ADR-0004]). The resolved alias
 supplies the scheme, host, port and *base path*; `upstream.path` is *appended* to that base path,
 joined on exactly one `/` whichever side carries a slash; an omitted or blank `upstream.path` keeps
 the alias base path unchanged. *Remainder* is the request path after stripping the route's match key
@@ -4258,12 +4261,16 @@ relayed unchanged. It is valid on `http` and `graphql` routes; declaring it on a
 fails the boot. See link:user/endpoint-routes.adoc#_rewrite_location[Rewriting upstream `Location`
 headers].
 
-`connect_timeout_ms` / `read_timeout_ms` are
-millisecond-precision options on the shared per-upstream-tuple data-plane client
-(link:adr/0008-data-plane-transport.adoc[ADR-0008]). `retry` maps to the resilience guard
+`connect_timeout_ms` / `read_timeout_ms` are declared in milliseconds for the shared
+per-upstream-tuple data-plane client
+(link:adr/0008-data-plane-transport.adoc[ADR-0008]); the client is built without them (see the
+note below). `retry` maps to the resilience guard
 assembled at boot (SmallRye Fault Tolerance, programmatic -- ADR-0008): retry applies to
-idempotent methods only (`idempotent_only` -- GET, HEAD, OPTIONS, PUT, DELETE; never POST or
-PATCH) *and* only while no request-body byte has been sent upstream.
+idempotent methods only (GET, HEAD, OPTIONS, PUT, DELETE; never POST or
+PATCH) *and* only while no attempt has taken up the request body: the inbound body stream is
+one-shot, so once an attempt has subscribed it no retry follows, even when none of its bytes reached
+the upstream. A request without a body never subscribes it. The guard's fixed 30 s
+timeout bounds each attempt, so a retried attempt gets its own 30 s.
 
 NOTE: today only `retry.enabled` takes effect. `connect_timeout_ms`, `read_timeout_ms`,
 `retry.max_attempts` and `retry.idempotent_only` are bound and validated but act on nothing: the
@@ -4329,7 +4336,7 @@ Either key on a `source: upstream` block, or a value that is not a single segmen
 === `redirect`
 
 The redirect terminal action
-(link:adr/0014-asset-serving-terminal-action.adoc#amendment-a1[ADR-0014 Amendment A1]): the gateway
+(link:adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]): the gateway
 answers the request itself with `status` and a `Location` header and contacts no upstream. How to
 author it -- status choice, the context-path convention and the review table -- is in
 link:user/endpoint-routes.adoc#_redirect_terminal_action[Endpoint Routes -- Redirect terminal action].
@@ -4382,7 +4389,10 @@ pipeline reads a single resolved `true`/`false` and never re-derives the inherit
 
 | `retry.enabled`
 | Whether idempotent upstream calls for the route are retried. This toggle only *gates* retry;
-  the retry *policy* (attempt count, idempotent-only) lives in the route's `upstream.retry` --
+  the retry *policy* is fixed in the gateway -- two retries 100 ms apart, idempotent methods only,
+  and only while no attempt has taken up the one-shot request body, even when none of its bytes
+  reached the upstream. The route's
+  `upstream.retry.max_attempts` and `upstream.retry.idempotent_only` are read by nothing --
   see link:#_upstream[`upstream`].
 
 | `not_modified.enabled`
@@ -4527,8 +4537,7 @@ general permit it was admitted with, until that release time (with `security_def
 off there is no floor, and the `503` is written at once). That `503` is the same for every route
 and every caller. A held answer keeps no general permit while it waits, so the general permits stay
 free for requests the gateway serves except for the refused answers waiting for their release time
-(link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#amendment-a1[ADR-0073,
-Amendment A1]).
+(link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#_held_answer_sub_budget[ADR-0073]).
 
 [[_enumeration_detection]]
 === `enumeration_detection`
@@ -4792,7 +4801,7 @@ Scope]).
 
 Response-header middleware applied to every response the gateway returns. Declared in the global
 `gateway.yaml` block and, optionally, in an anchor's block; endpoints and routes can neither override
-nor disable it (link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]). The
+nor disable it (link:adr/0007-anchor-scoped-policy.adoc#_security_headers_after_route_selection[ADR-0007]). The
 anchor's block wins over the global one by the rule every policy block follows (see
 link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]).
 
@@ -5365,8 +5374,8 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   declaring neither `asset` nor `redirect`); an endpoint with a proxy route and no `base_url` fails the
   boot. A declared `base_url` must resolve whether or not a route uses it.
 * An endpoint is *enabled* unless its resolved `enabled` value is `false` (file literal, or a
-  `${ENDPOINT_<ID>_ENABLED:-...}` placeholder resolved against the environment -- ADR-0004
-  Amendment A1). A *disabled* endpoint is schema-validated but otherwise inert: its routes are
+  `${ENDPOINT_<ID>_ENABLED:-...}` placeholder resolved against the environment --
+  link:adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004]). A *disabled* endpoint is schema-validated but otherwise inert: its routes are
   not merged into the table, its `base_url` alias is *exempt* from the resolution requirement
   below, and it takes no part in the disjointness / passthrough-collision checks.
 * Every `base_url` alias *of an enabled endpoint* resolves (after placeholder substitution)

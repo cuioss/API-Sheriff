@@ -20,7 +20,7 @@ import java.util.Objects;
 import lombok.Builder;
 
 /**
- * The per-route {@code redirect} terminal-action block (ADR-0014 Amendment A1).
+ * The per-route {@code redirect} terminal-action block (ADR-0014).
  * <p>
  * A redirect action answers the request at the gateway with {@code status} and a
  * {@code Location} header, without contacting any upstream. A route carries exactly

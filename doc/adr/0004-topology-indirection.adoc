@@ -26,7 +26,7 @@ Endpoint configuration should move between dev, staging and production without e
 
 `topology.properties` holds `APP1=https://app1.internal:8443/app1`. On load, `TopologyResolver` validates each resolved URL and decomposes it once into `{scheme, host, port, base-path}`. The rest of the gateway works with the structured components.
 
-[[_amendment_a1]]
+[[_topology_override_placeholder]]
 === The override channel is an in-file placeholder
 
 Every override point is a visible shell-style placeholder in the artifact it affects:
@@ -38,7 +38,7 @@ APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
 
 `${VAR}` is a required substitution, and an unset variable is a boot refusal. `${VAR:-default}` keeps the file value as the default and lets the environment win. `TOPOLOGY_<ALIAS>` survives as a naming convention in the sample configuration. The mechanism is the placeholder, resolved once before schema validation. The operator guide's link:../user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology and endpoint enablement section] documents it.
 
-[[_amendment_a2]]
+[[_upstream_path_append]]
 === `route.upstream.path` appends to the alias base path
 
 A declared `route.upstream.path` is appended to the alias base path, joined on exactly one `/`. Aliases carry environments and routes carry paths.

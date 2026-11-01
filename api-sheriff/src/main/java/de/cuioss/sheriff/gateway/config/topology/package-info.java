@@ -19,7 +19,7 @@
  * {@link de.cuioss.sheriff.gateway.config.topology.TopologyResolver} resolves the topology
  * aliases referenced by the enabled endpoints — reading each value from
  * {@code topology.properties}, running it through the shared {@code ${VAR}} /
- * {@code ${VAR:-default}} substitution engine (D4, ADR-0004 Amendment A1), validating
+ * {@code ${VAR:-default}} substitution engine (D4, ADR-0004), validating
  * each URL, and decomposing it once into a
  * {@link de.cuioss.sheriff.gateway.config.model.ResolvedUpstream} (ADR-0004). Endpoint
  * enablement is a plain file-level {@code enabled} flag (a {@code ${VAR:-default}}

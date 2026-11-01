@@ -174,10 +174,11 @@ jobs:
   # to report. That is CI time this repository did not previously spend; the invocation is kept to the
   # narrowest form that still produces all three mutations.
   #
-  # DELIBERATE DIVERGENCE FROM ADR-0030, which holds that a repository invariant asserted only by an
-  # explanatory comment becomes a positively-phrased, machine-checked fitness function. This lane is
-  # deliberately NOT that shape, because the fixed point is observed rather than held. The argument,
-  # and the condition under which ADR-0030's shape becomes the right call, are in
+  # DELIBERATE DIVERGENCE FROM "Comment-Only Invariants Become Fitness Functions" in
+  # doc/development/test-corpus-integrity.adoc, which holds that a repository invariant asserted only
+  # by an explanatory comment becomes a positively-phrased, machine-checked fitness function. This lane
+  # is deliberately NOT that shape, because the fixed point is observed rather than held. The argument,
+  # and the condition under which the fitness-function shape becomes the right call, are in
   # doc/development/build-gate-discipline.adoc under "The enforcement" — read it before converting
   # this job into a hard fail-on-dirty gate.
   #

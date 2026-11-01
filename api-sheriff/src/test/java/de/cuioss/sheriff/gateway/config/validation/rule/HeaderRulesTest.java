@@ -42,7 +42,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the {@code security_headers} rules the {@link ConfigValidator} runs through
- * {@link HeaderRules}: the global-only CORS wildcard-with-credentials refusal (ADR-0007 Amendment A1),
+ * {@link HeaderRules}: the global-only CORS wildcard-with-credentials refusal (ADR-0007),
  * the header-injection refusal of a {@code content_security_policy} on the global and every anchor
  * block, and the refusal of a {@code header_modes} entry for a header its own block does not enable.
  * <p>
@@ -78,7 +78,7 @@ class HeaderRulesTest {
         }
 
         @Test
-        @DisplayName("Should check CORS on the global block only — an anchor cannot carry cors (ADR-0007 Amendment A1)")
+        @DisplayName("Should check CORS on the global block only — an anchor cannot carry cors (ADR-0007)")
         void shouldCheckCorsOnGlobalBlockOnly() {
             SecurityHeadersConfig wildcardWithCredentials = SecurityHeadersConfig.builder()
                     .cors(SecurityHeadersConfig.Cors.builder()

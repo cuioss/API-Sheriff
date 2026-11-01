@@ -2,11 +2,11 @@
 # Response-path acceptance endpoint exercised by RoutingAndResponseHeadersIT (and, for the
 # origin-status route, HtmlErrorPageIT). Its proxy routes
 # reach go-httpbin through the HTTPBIN_ROOT alias, which — unlike UPSTREAM — carries NO base path, so
-# each route's upstream.path is the whole effective upstream base (ADR-0004 Amendment A2: alias base
+# each route's upstream.path is the whole effective upstream base (ADR-0004: alias base
 # path + upstream.path + remainder-after-match-key, with an empty alias base).
 #
 # All routes ride the 'api' anchor (/proxy), so every response on them carries the anchor's
-# security_headers block rather than the global one (ADR-0007 Amendment A1). The endpoint declares the
+# security_headers block rather than the global one (ADR-0007). The endpoint declares the
 # require: none posture itself because the 'api' anchor is access: public and carries no auth block
 # (ADR-0013).
 #

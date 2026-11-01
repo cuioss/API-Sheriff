@@ -85,8 +85,8 @@ to the BFF back channel.
 . *Every TLS-client construction site declares its posture explicitly.* The site passes the resolved
   value on the default path as well as on the relaxed one. A site that sets nothing follows the
   library's default, and an upstream default change would then move the gateway's posture silently,
-  which
-  link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+  which the
+  link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes]
   forbids. `EgressTlsPostureArchTest` holds the rule for every construction site, named or not.
 
 Three surface rules go with the principle:
@@ -245,8 +245,8 @@ without that control.
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045 -- BFF back-channel posture] -- the principle applied to the BFF back channel.
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011 -- Neutral names] -- the boundary rule and the trust-profile seam the egress resolver mirrors.
 * link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025 -- Server TLS surface] -- the `tls` block, and why an egress key does not belong in it.
-* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022 -- Upstream security defaults] -- why every site sets its posture on the default path too.
-* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030 -- Fitness functions] -- the four-leg shape of `EgressTlsPostureArchTest`.
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects -- Upstream security defaults] -- why every site sets its posture on the default path too.
+* link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-corpus integrity -- Fitness-function shape] -- the four-leg shape of `EgressTlsPostureArchTest`.
 * link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- Re-assertion principle] -- the partial-binding failure class.
 * link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017 -- SNI split] -- the L4 relay no egress key can govern.
 * link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033 -- Absence model] -- what makes an omitted profile name distinguishable from any string.

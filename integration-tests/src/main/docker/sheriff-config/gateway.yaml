@@ -105,7 +105,7 @@ asset_defaults:
     webmanifest: application/manifest+json
 # The global response security headers plus the global CORS policy (also in the passthrough-empty
 # and refresh overlays; no other carries them). The block is seeded onto every response, and once a route is selected
-# its anchor's block — when the anchor declares one — replaces it WHOLESALE (ADR-0007 Amendment A1).
+# its anchor's block — when the anchor declares one — replaces it WHOLESALE (ADR-0007).
 # RoutingAndResponseHeadersIT asserts both sides against this descriptor: /assets/* (the
 # 'assets-public' anchor declares no block) and a pre-route 404 carry this block, while /proxy/* carries
 # the 'api' anchor's block below and therefore NO Strict-Transport-Security.

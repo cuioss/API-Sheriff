@@ -168,7 +168,7 @@ import org.jspecify.annotations.Nullable;
  *       and the client JWKS — which are matched on every host), then the application portal's
  *       {@code portal.path} (exact, on any host) — so a prefix route never swallows either;</li>
  *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
- *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
+ *       {@code security_headers} block replacing the global one wholesale (ADR-0007),
  *       then the per-route verb gate;</li>
  *   <li>stage 3 — per-route thorough checks ({@code allowed_paths}, body cap, divergent pipeline);</li>
  *   <li>stage 4 — authentication on the {@link AuthBranch} resolved once for the request: offline

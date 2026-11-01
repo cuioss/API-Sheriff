@@ -6,7 +6,7 @@
 #
 # UPSTREAM — the HTTPBIN_ROOT alias, the go-httpbin backend WITHOUT the /anything base path. No route
 # declares an upstream.path, so the remainder after the match key is the whole go-httpbin path
-# (ADR-0004 Amendment A2): /proxy/cookie-policy/named/cookies reaches go-httpbin's /cookies, which
+# (ADR-0004): /proxy/cookie-policy/named/cookies reaches go-httpbin's /cookies, which
 # answers the cookies it received as JSON; .../response-headers?Set-Cookie=... makes the upstream
 # answer the Set-Cookie lines the test names; .../anything echoes any method, an unsafe one included.
 #

@@ -173,7 +173,7 @@ import org.jspecify.annotations.Nullable;
  *                               {@code Location}, no upstream contact), {@code null} otherwise; a
  *                               route resolves exactly one terminal action, so {@code upstream},
  *                               {@code asset} and {@code redirect} are mutually exclusive
- *                               (ADR-0014 and its Amendment A1)
+ *                               (ADR-0014)
  * @param effectiveAllowedOrigins the materialized, lower-cased exact-match {@code Origin} allowlist
  *                               enforced on a WebSocket upgrade (GW-09 / CSWSH); empty for a
  *                               non-WebSocket route, and empty (no enforcement) only for a
