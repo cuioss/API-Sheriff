@@ -34,8 +34,9 @@ image::../resources/diagrams/downstream-client-planes.svg[Upstream client split 
   (link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[ADR-0062]).
 +
 Retry is *stream-aware*: on a route with `retry.enabled`, the guard allows at most two retries
-  (`maxRetries(2)`, 100 ms delay) and retries an attempt only for an idempotent method *and only when
-  zero request-body bytes have been sent upstream* (no replay buffer). The circuit breaker is fixed in
+  (`maxRetries(2)`, 100 ms delay) and retries an attempt only for an idempotent method *and only while
+  no attempt has taken up the one-shot request body* (no replay buffer), even when none of its bytes
+  reached the upstream. The circuit breaker is fixed in
   the gateway
   (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
   a rolling window of the last 20 calls, open at 50% failures, open for `BREAKER_RESET_SECONDS` = 5 s,
