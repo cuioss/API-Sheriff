@@ -68,7 +68,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The forward-on-redirect rule refuses a route-scope {@code forward} block on a redirect route: a
  * redirect consumes no forward policy and contacts no upstream, so the block would parse and then
- * never be read. A broader {@code forward} block — endpoint or anchor — stays accepted.
+ * never be read. A broader {@code forward} block — endpoint scope — stays accepted.
  * <p>
  * Every rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and never
  * fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of this
@@ -183,7 +183,7 @@ public class TerminalActionRules {
      * consumed and no upstream is contacted, so a {@code forward} block declared on the route
      * itself would parse and then act on nothing — the same inert trap
      * {@link CookieRules#validateNoCookiesOnTerminalRoute} already closes for a route-scope
-     * {@code cookies} block. A broader block — endpoint or anchor — stays accepted: it governs
+     * {@code cookies} block. A broader block — endpoint scope — stays accepted: it governs
      * that scope's proxy routes. A {@code forward} block on an asset route is out of scope here;
      * whether it is read needs its own check before the refusal is widened.
      * <p>
