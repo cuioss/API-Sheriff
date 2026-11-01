@@ -485,9 +485,14 @@ dispatched through the plan-marshall build daemon, one build at a time, in the o
 A, B. The host was busy and the run did not wait for a quiet one: `uptime` was taken before each
 run, and from run 3 on other Maven builds from other projects ran next to it. Every figure comes
 from the build's own output. _Tests_ is the sum of the per-class `time` attributes in the surefire
-XML reports of an execution. _Elapsed_ is the time between report-file timestamps: the three
-executions run one after the other with one fork each, so it covers the execution including JVM and
-Quarkus start-up. _Build_ is the whole `clean test` as the executor timed it.
+XML reports of an execution. The three executions run one after the other. `default-test` and
+`quarkus-fork-tests` each run all their classes in one JVM, and `isolated-fork-tests` starts one JVM
+per class. _Elapsed_ is read from the report-file timestamps. For `quarkus-fork-tests` and
+`isolated-fork-tests` it runs from the last report of the execution before it to the last report of
+its own, so it includes the start of every JVM of that execution, and in `quarkus-fork-tests` the
+Quarkus start-up. For `default-test`, which runs first, it runs from the first class's report
+timestamp minus that class's time to the last report, so the start of its JVM is not in it. _Build_
+is the whole `clean test` as the executor timed it.
 
 [cols="1,1,3,2,2,2,1",options="header"]
 |===
