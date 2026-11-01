@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: A declared security_filter.max_body_bytes body cap is the cap in force; the boot refuses any declared cap above the framework body limit quarkus.http.limits.max-body-size, so the framework never clips a declared cap silently, and the gateway renders a breach it observes as its own RFC 9457 413 (CONTENT_TOO_LARGE, INPUT_VALIDATION), mapped to RESOURCE_EXHAUSTED on gRPC; on the shipped default the declared-Content-Length fast-reject before the trust boundary answers as the unrouted 404 (ADR-0073)
+// summary: A declared security_filter.max_body_bytes body cap is the cap in force; the boot refuses any declared cap above the framework body limit quarkus.http.limits.max-body-size, so the framework never clips a declared cap silently, and the gateway renders a breach it observes as its own RFC 9457 413 (CONTENT_TOO_LARGE, INPUT_VALIDATION), mapped to RESOURCE_EXHAUSTED on gRPC; on the shipped default the declared-Content-Length fast-reject before the trust boundary answers as the unrouted 404 (ADR-0073), and it is reached only for a declared cap below the framework limit
 // tags: body-limits, error-contract, fail-closed, configuration, edge
 // affects: api-sheriff/src/main/resources/application.properties, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/boot/ConfigBootPipeline.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigProducer.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/ThoroughChecksStage.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/GrpcStatusMapper.java, doc/configuration.adoc, doc/architecture/tls-and-inbound-security.adoc, doc/architecture/observability-and-errors.adoc
 // supersedes:
@@ -64,7 +64,9 @@ address (link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_ra
 The post-route stage raises it before authentication runs. The gateway then answers the `404` routing
 problem, not the `413`, and never `RESOURCE_EXHAUSTED` on gRPC. A `413` would tell an
 unauthenticated caller that the route exists. The event is still `CONTENT_TOO_LARGE`, and
-`sheriff_errors_total` still meters it.
+`sheriff_errors_total` still meters it. The fast-reject is reached only for a declared cap below the
+framework limit. At equality the framework answers first, with its bare `413` and no gateway event or
+metric (the shadowing case below).
 
 The streaming byte counter enforces the cap after the trust boundary, so its breach keeps the `413`
 envelope and the gRPC mapping. With `security_defaults.uniform_not_found: false`, both paths answer

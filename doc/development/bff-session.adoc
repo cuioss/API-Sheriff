@@ -321,9 +321,10 @@ were not observed on a running stack:
 * *The gateway's own validation ignores `cnf`.* The validation pipeline runs DPoP checks only for an
   issuer that carries a DPoP configuration, and the gateway configures none. The same fact means
   that the gateway's bearer routes accept a bound token presented without a proof.
-* *Plain HTTP stays refused.* The engine refuses a non-`https` issuer and a non-`https` back-channel
-  endpoint unless its insecure-HTTP flag is set. The gateway never sets it and gains no key that
-  would, in line with
+* *Plain HTTP is refused by default.* The engine refuses a non-`https` issuer and a non-`https`
+  back-channel endpoint unless its insecure-HTTP flag is set. The gateway sets that flag only when
+  `oidc.back_channel_allow_insecure_http` is `true`, an explicit opt-in that boot validation admits
+  only together with an `http` back-channel origin (ADR-0069). Otherwise the default stands, in line with
   link:../technical_aspects.adoc#_upstream_security_default_changes[Adopting Upstream Security-Default Changes].
 * *An omitted `oidc.issuer`.* It resolves to the gateway's own origin for discovery and for the
   assertion audience alike, which cannot authenticate against any identity provider. This is

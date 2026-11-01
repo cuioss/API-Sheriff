@@ -2311,7 +2311,7 @@ control that first proves the specimen still violates the rule.
 [[awaits-guard-limits]]
 === Accepted limits
 
-Both limits below are bounds on what the guard reaches, stated here rather than left to be
+The limits below are bounds on what the guard reaches, stated here rather than left to be
 discovered from a green run.
 
 The selection is declared test methods, not every method:: At `3abc370` the lane carries *10*
@@ -2333,6 +2333,13 @@ sweep into `integration-tests` is explicitly not taken.* The integration lane ca
 guard, which is the defect this note exists to remove -- while doubling the maintenance surface of a
 hand-rolled source scanner. If the integration lane ever adopts `Awaits`, that decision is the trigger
 to revisit this, and nothing else is.
+
+The assertion is related to the wait by position, not by subject:: The guard asks only whether an
+assertion follows the wait in the same test body, never whether it asserts the awaited state. A test
+that waits on one condition and asserts an unrelated value passes, so a clean verdict means every
+awaited test carries _some_ post-wait assertion, not that each re-asserts what it waited for. Relating
+the two needs expression-level analysis of an arbitrary `BooleanSupplier`, which a source sweep cannot
+do. The matched control `sweepAcceptsAnUnrelatedPostWaitAssertion` pins this near miss.
 
 [[after-the-passes]]
 == Classified Rows Changed After the Passes

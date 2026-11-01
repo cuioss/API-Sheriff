@@ -118,9 +118,10 @@ import org.jspecify.annotations.Nullable;
  * attempt rather than the whole dispatch, starts too — and is shorter than that timeout. When it passes
  * while the gateway is still waiting for body bytes, the attempt's upstream request is reset and the body
  * is refused as a {@link RequestBodyDeadlineExceeded} ({@link EventType#REQUEST_BODY_TIMEOUT},
- * {@code 408}). Before the response was handed over this is the dispatch's own failure, so a body still
- * arriving when the guard would end the attempt as an upstream timeout is ended as the request's
- * instead. After the hand-over —
+ * {@code 408}). Before the response was handed over this is the dispatch's own failure, so a body the
+ * gateway is still reading when the guard would end the attempt is ended as the request's instead; a
+ * body the upstream has stopped reading, or an attempt still waiting for its pooled connection, can
+ * reach the guard's timeout first and then ends as an upstream timeout. After the hand-over —
  * an upstream that answered at once and keeps reading — the refusal goes to the
  * {@linkplain BodyFraming#lateViolation() late-violation callback}, and the reset upstream request fails
  * the relay, which ends the client response with the status the upstream sent. Once it has passed, the

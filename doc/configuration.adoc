@@ -4267,7 +4267,9 @@ per-upstream-tuple data-plane client
 note below). `retry` maps to the resilience guard
 assembled at boot (SmallRye Fault Tolerance, programmatic -- ADR-0008): retry applies to
 idempotent methods only (GET, HEAD, OPTIONS, PUT, DELETE; never POST or
-PATCH) *and* only while no request-body byte has been sent upstream. The guard's fixed 30 s
+PATCH) *and* only while no attempt has taken up the request body: the inbound body stream is
+one-shot, so once an attempt has subscribed it no retry follows, even when none of its bytes reached
+the upstream. A request without a body never subscribes it. The guard's fixed 30 s
 timeout bounds each attempt, so a retried attempt gets its own 30 s.
 
 NOTE: today only `retry.enabled` takes effect. `connect_timeout_ms`, `read_timeout_ms`,
@@ -4388,7 +4390,8 @@ pipeline reads a single resolved `true`/`false` and never re-derives the inherit
 | `retry.enabled`
 | Whether idempotent upstream calls for the route are retried. This toggle only *gates* retry;
   the retry *policy* is fixed in the gateway -- two retries 100 ms apart, idempotent methods only,
-  and only while no request-body byte has been sent upstream. The route's
+  and only while no attempt has taken up the one-shot request body, even when none of its bytes
+  reached the upstream. The route's
   `upstream.retry.max_attempts` and `upstream.retry.idempotent_only` are read by nothing --
   see link:#_upstream[`upstream`].
 

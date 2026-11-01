@@ -164,7 +164,7 @@ The unifying principle: work an uncredentialed caller can trigger is bounded by 
 
 == Links
 
-* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]: the neutral JWKS configuration surface, including the two library refresh knobs this decision exposes
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#_jwks_refresh_knobs[ADR-0011]: the neutral JWKS configuration surface, including the two library refresh knobs this decision exposes
 * link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]: upstream defaults are kept, not restated, so an omitted cadence key passes nothing to the library
 * link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027, live key-set readiness]: the gateway-owned loader, its non-fetching reads and the readiness contract this decision keeps
 * link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]: an omitted key is a nullable component of the configuration model

@@ -205,8 +205,9 @@ A tightened default differs from an ordinary breaking change:
 * *Structural tests do not see it.* A test that asserts a validator was constructed passes before
   and after the flip. The flip changes what the validator accepts at runtime, not whether it can be
   built.
-* *It shows only at the trust boundary.* The first signal is a token that authenticated before and
-  is now rejected.
+* *It shows only at the trust boundary.* The first signal is a runtime failure there: a token that
+  authenticated before is now rejected, or a confidential-client exchange with the identity provider
+  -- discovery, PAR, code exchange, refresh or revocation -- now fails.
 
 === Policy
 
