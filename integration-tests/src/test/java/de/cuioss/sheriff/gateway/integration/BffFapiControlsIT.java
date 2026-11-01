@@ -15,6 +15,17 @@
  */
 package de.cuioss.sheriff.gateway.integration;
 
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitGatewayLogLineCountAbove;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLog;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLogLineCount;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.publishedPort;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.removeContainer;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGatewayWithSigningKeys;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeDerivedDescriptor;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeSealingKeyFile;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -40,6 +51,7 @@ import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,12 +61,15 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
+import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
+import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
 
 import io.restassured.http.ContentType;
 import io.restassured.path.json.JsonPath;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -82,8 +97,9 @@ import org.junit.jupiter.api.Test;
  *       {@code cnf.jkt}, arrives as {@code Authorization: Bearer} with no proof beside it, and its
  *       {@code jkt} equals the thumbprint this test computes from the committed DPoP key file — and
  *       differs from the published client key id. Both proof key types are covered: the primary
- *       instance (EC, {@code ES256}) and the cookie-refresh instance (RSA, {@code PS256}), where the
- *       token rotated inside the near-expiry window carries the same {@code jkt}. The vacuity control
+ *       instance (EC, {@code ES256}) and a gateway that runs the cookie-refresh instance's descriptor
+ *       (RSA, {@code PS256}), where the token rotated inside the near-expiry window carries the same
+ *       {@code jkt}. The vacuity control
  *       is a token minted through {@code token-mint-client}, which carries no {@code cnf} claim: the
  *       claim is there because the gateway presented a proof, not because the realm adds it to every
  *       token.</li>
@@ -92,10 +108,28 @@ import org.junit.jupiter.api.Test;
  * <strong>The binding check.</strong> Every gateway refuses a token response that is not bound to its
  * own proof key: the login is refused, or the session is ended. The logins and the rotation driven
  * here complete, so they are the proof in key mode that Keycloak's bound response is accepted on the
- * authorization-code exchange and on the refresh grant. The rotation leg therefore also reads the log
- * of the instance that rotated: it must have gained a token-refreshed record
+ * authorization-code exchange and on the refresh grant. The rotation leg therefore also reads the
+ * output of the gateway that rotated: it must have gained a token-refreshed record
  * ({@value #TOKEN_REFRESHED_RECORD}), which is the control that the log was read and the rotation ran,
  * and it must carry no record of a refused token response ({@value #TOKEN_NOT_BOUND_RECORD}).
+ * <p>
+ * <strong>The rotation leg runs on a gateway of its own.</strong> A record carries nothing that tells
+ * which request caused it, and the compose instance {@code api-sheriff-cookie-refresh} also serves
+ * the suites running beside this one, whose refreshes write token-refreshed records to it. So the
+ * rotation leg starts a gateway for itself, {@value #GATEWAY} on host port {@value #APPLICATION_PORT},
+ * from a descriptor derived from the committed {@code sheriff-config-cookie-refresh/gateway.yaml}
+ * with the gateway-origin triple retargeted (see
+ * {@link OneOffGatewayContainers#writeDerivedDescriptor(String, Path, String, int)}), the RSA proof key
+ * the compose instance is given and a sealing key of this suite alone: the committed
+ * {@code cookie-refresh-sealing.key} belongs to the compose instance, and a cookie sealed with it
+ * would unseal there. The gateway keeps the client and its client-authentication key, which Keycloak
+ * verifies against the key the primary instance publishes. It counts the records of that gateway's
+ * own container output and removes the gateway on every exit path. The other tests run on the
+ * primary instance and count nothing.
+ * <p>
+ * <strong>Run concurrently.</strong> The class carries the tag {@code sleep-bound} and runs in the
+ * concurrent Failsafe execution (see {@code integration-tests/pom.xml}). It names no instance log,
+ * drives no admin API of the identity provider and ends no session.
  * <p>
  * <strong>What this suite does NOT prove.</strong> It does not show a token response being
  * <em>refused</em>: Keycloak binds every access token of these clients. The refusal on the
@@ -115,6 +149,7 @@ import org.junit.jupiter.api.Test;
  * @since 1.0
  */
 @DisplayName("FAPI 2.0 controls in key mode: pushed requests, private_key_jwt, the published key and the DPoP binding")
+@Tag("sleep-bound")
 class BffFapiControlsIT {
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
@@ -150,14 +185,45 @@ class BffFapiControlsIT {
      */
     private static final String FORMER_CLIENT_SECRET = "integration-secret";
 
-    private static final String COOKIE_REFRESH_LOG = "quarkus-cookie-refresh.log";
-
     private static final String KEYCLOAK_REALM =
             "https://" + BffKeycloakLoginFlow.KEYCLOAK_HOST_AUTHORITY + "/realms/integration";
 
     /** The members of a JWK that would disclose an RSA or EC private key. */
     private static final List<String> PRIVATE_JWK_MEMBERS = List.of("d", "p", "q", "dp", "dq", "qi", "oth");
 
+    /** The rotation leg's one-off cookie-mode gateway: its container name and network alias. */
+    private static final String GATEWAY = "sheriff-fapi-controls";
+
+    /**
+     * The fixed host port of the rotation leg's gateway's application listener, published on every
+     * interface; listed with every other test-started gateway's port in
+     * {@code doc/development/integration-test-topology.adoc}.
+     */
+    private static final int APPLICATION_PORT = 10476;
+
+    private static final String ORIGIN = "https://localhost:" + APPLICATION_PORT;
+
+    /** The committed descriptor of {@code api-sheriff-cookie-refresh}, which the gateway is derived from. */
+    private static final Path SOURCE_DESCRIPTOR =
+            OneOffGatewayContainers.DOCKER.resolve(Path.of("sheriff-config-cookie-refresh", "gateway.yaml"));
+
+    /** The DPoP proof key the compose instance is given (see {@code docker-compose.yml}). */
+    private static final String PROOF_KEY_FILE = "/app/signing-keys/dpop-rsa.pem";
+
+    /** Where the gateway's sealing key file is written; a build output, never committed. */
+    private static final Path SEALING_KEY_FILE = Path.of("target", GATEWAY, "cookie-sealing.key");
+
+    /**
+     * The AES-256 sealing key of the rotation leg's gateway, base64 of 32 bytes. A fixed test value of
+     * this suite alone: it seals throwaway integration-realm sessions and shares state with no other
+     * instance.
+     */
+    private static final String SEALING_KEY = Base64.getEncoder()
+            .encodeToString("fapi-controls-sealing-key-012345".getBytes(StandardCharsets.US_ASCII));
+
+    private static final long BOOT_TIMEOUT_SECONDS = 90L;
+
+    /** How long a record may take to appear after the response of the call that caused it. */
     private static final long LOG_VISIBILITY_TIMEOUT_MILLIS = 5_000L;
     private static final long LOG_POLL_INTERVAL_MILLIS = 250L;
 
@@ -247,28 +313,37 @@ class BffFapiControlsIT {
     }
 
     @Test
-    @DisplayName("sender constraint: the rotated token of the cookie-refresh instance stays bound to the RSA proof key")
+    @DisplayName("sender constraint: the rotated token of a cookie-refresh gateway stays bound to the RSA proof key")
     void rotatedTokenStaysBoundToTheRsaProofKey() throws Exception {
-        String origin = BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN;
-        Session session = BffKeycloakLoginFlow.login(MEDIATED_PATH, origin,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
-        String atLogin = bearerToken(mediatedCall(session.gatewayCookies(), origin));
-        long refreshedBefore = recordCount(COOKIE_REFRESH_LOG, TOKEN_REFRESHED_RECORD);
+        removeContainer(GATEWAY);
+        try {
+            startCookieRefreshGateway();
+            Session session = BffKeycloakLoginFlow.login(MEDIATED_PATH, ORIGIN,
+                    BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+            String atLogin = bearerToken(mediatedCall(session.gatewayCookies(), ORIGIN));
+            long refreshedBefore = gatewayLogLineCount(GATEWAY, TOKEN_REFRESHED_RECORD);
 
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        String rotated = bearerToken(mediatedCall(session.gatewayCookies(), origin));
+            sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+            String rotated = bearerToken(mediatedCall(session.gatewayCookies(), ORIGIN));
+            long refreshedAfter = awaitGatewayLogLineCountAbove(GATEWAY, refreshedBefore,
+                    Duration.ofMillis(LOG_VISIBILITY_TIMEOUT_MILLIS), TOKEN_REFRESHED_RECORD);
 
-        String proofKey = publicKeyThumbprint(signingKeyFile("dpop-rsa.pem"));
-        assertNotEquals(atLogin, rotated, "the call inside the near-expiry window must mediate a rotated token");
-        assertAll("both token legs are bound to the RSA proof key",
-                () -> assertEquals(proofKey, confirmationThumbprint(atLogin),
-                        "the token of the code exchange must carry the thumbprint of the committed RSA proof key"),
-                () -> assertEquals(proofKey, confirmationThumbprint(rotated),
-                        "the token of the refresh grant must carry the same thumbprint"));
-        assertRecordCountAbove(COOKIE_REFRESH_LOG, TOKEN_REFRESHED_RECORD, refreshedBefore,
-                "the rotation must be recorded, or the absence asserted next was read from a log that shows nothing");
-        assertEquals(0, recordCount(COOKIE_REFRESH_LOG, TOKEN_NOT_BOUND_RECORD),
-                "the gateway accepted Keycloak's bound responses on both legs, so it recorded no refusal");
+            String proofKey = publicKeyThumbprint(signingKeyFile("dpop-rsa.pem"));
+            assertNotEquals(atLogin, rotated, "the call inside the near-expiry window must mediate a rotated token");
+            assertAll("both token legs are bound to the RSA proof key",
+                    () -> assertEquals(proofKey, confirmationThumbprint(atLogin),
+                            "the token of the code exchange must carry the thumbprint of the committed RSA proof key"),
+                    () -> assertEquals(proofKey, confirmationThumbprint(rotated),
+                            "the token of the refresh grant must carry the same thumbprint"));
+            assertTrue(refreshedAfter > refreshedBefore, () -> "the rotation must be recorded, or the absence "
+                    + "asserted next was read from a log that shows nothing: expected a new " + TOKEN_REFRESHED_RECORD
+                    + " line in the output of " + GATEWAY + " (count before " + refreshedBefore + ", after "
+                    + refreshedAfter + "). " + gatewayLog(GATEWAY));
+            assertEquals(0, gatewayLogLineCount(GATEWAY, TOKEN_NOT_BOUND_RECORD),
+                    "the gateway accepted Keycloak's bound responses on both legs, so it recorded no refusal");
+        } finally {
+            removeContainer(GATEWAY);
+        }
     }
 
     @Test
@@ -466,6 +541,25 @@ class BffFapiControlsIT {
         long finalObserved = observed;
         assertTrue(finalObserved > countBefore, () -> why + ": expected a new " + record + " line in " + logFileName
                 + " (count before " + countBefore + ", after " + finalObserved + ")");
+    }
+
+    /**
+     * Starts the rotation leg's cookie-mode gateway: the committed cookie-refresh descriptor with its
+     * origin retargeted at {@link #ORIGIN} and its sealing key file at this suite's own, the stack's
+     * signing keys for the client-authentication and the RSA proof key, and the sealing key file
+     * mounted read-only beside them.
+     */
+    private static void startCookieRefreshGateway() throws IOException {
+        Path descriptor = writeDerivedDescriptor(GATEWAY, SOURCE_DESCRIPTOR,
+                BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN, APPLICATION_PORT);
+        ReadOnlyMount sealingKey = writeSealingKeyFile(SEALING_KEY_FILE, SEALING_KEY);
+        startBffGatewayWithSigningKeys(new BffGateway(GATEWAY, composeNetwork(), GATEWAY, APPLICATION_PORT,
+                descriptor, "localhost.crt", "localhost.key", List.of("OIDC_DPOP_KEY_FILE=" + PROOF_KEY_FILE)),
+                List.of(sealingKey));
+        awaitReadiness(GATEWAY, "https://localhost:" + publishedPort(GATEWAY, 9000),
+                response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
+                "the gateway " + GATEWAY + " to report readiness UP");
+        assertApplicationPortAnswers(GATEWAY, ORIGIN);
     }
 
     /**

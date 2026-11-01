@@ -15,6 +15,16 @@
  */
 package de.cuioss.sheriff.gateway.integration;
 
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitGatewayLogLineCountAbove;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLog;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLogLineCount;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.publishedPort;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.removeContainer;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGatewayWithSigningKeys;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeDerivedDescriptor;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -22,11 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
@@ -35,27 +43,32 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
+import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
 
 import io.restassured.path.json.JsonPath;
 import io.restassured.response.Response;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
  * Drives all three {@code RefreshOutcome.Kind} branches of the server-mode BFF token refresh through
- * a live gateway edge, against the dedicated {@code api-sheriff-refresh} instance.
+ * a live gateway edge, against a one-off gateway of this suite's own that runs the descriptor of the
+ * {@code api-sheriff-refresh} instance.
  * <p>
- * <strong>Why a dedicated instance.</strong> The near-expiry refresh window is a function of the
+ * <strong>Why that descriptor.</strong> The near-expiry refresh window is a function of the
  * access token's lifespan, and that lifespan is a property of the OIDC client that minted the token —
  * so it cannot be varied per request on an existing instance. The shared realm mints a 900-second
  * token, which with {@code session.refresh.leeway_seconds: 30} puts the refresh window 870 seconds
- * into a session. This instance authenticates as {@code refresh-client}, whose client-level
+ * into a session. The descriptor authenticates as {@code refresh-client}, whose client-level
  * {@code access.token.lifespan} is 45, so the window is 15s..45s after issuance and a test can reach
  * it with a bounded wait.
  * <p>
- * <strong>This instance authenticates with a client secret.</strong> It is the one gateway instance
- * of the stack whose descriptor declares {@code oidc.client_secret}; every other instance
+ * <strong>The gateway authenticates with a client secret.</strong> Its descriptor is the one of the
+ * stack that declares {@code oidc.client_secret}; every other instance
  * authenticates with {@code private_key_jwt}. Only the client authentication differs: the realm
  * requires {@code refresh-client} to push its authorization requests and to have its access tokens
  * bound to a DPoP proof key, like the key-authenticated clients. Every login of this suite therefore
@@ -86,7 +99,7 @@ import org.junit.jupiter.api.Test;
  *       opened is rejected as unauthenticated and the session cookie is cleared. The rejection is
  *       pinned to its <em>named reason</em>: the admin logout makes Keycloak answer the refresh
  *       grant with {@code invalid_grant}, the engine classifies that as {@code CREDENTIAL_REJECTED},
- *       and the refresh instance's container log must gain a WARN {@code ApiSheriff-111} line with
+ *       and the gateway's own container output must gain a WARN {@code ApiSheriff-111} line with
  *       reason {@code credential-rejected} for the request under test. A {@code 401} or {@code 302}
  *       alone would also be produced by a session the gateway lost for any other reason, so without
  *       the log line the leg would be green without proving which disposition ran.</li>
@@ -112,18 +125,24 @@ import org.junit.jupiter.api.Test;
  * logins to its last request with no other test in between, so it ends no session a test of this
  * class has yet to use; the sessions of tests that already finished are ended with it, unused.
  * <p>
- * <strong>Why this suite still runs in the sequential Failsafe execution.</strong> The user is not
- * what keeps it there; the log is. Each {@code FAILED} leg attributes a {@code credential-rejected}
- * record to its own request by the record count of {@code quarkus-refresh.log} on either side of
- * that request. The record ({@code ApiSheriff-111}) carries the reason and nothing else — no
- * session, no user, no request — so a record cannot be told from one that another suite's request
- * caused on the same instance. {@code BffRefreshReuseIT} causes such records on this instance, and
- * it runs in the concurrent execution ({@code sleep-bound}, see {@code integration-tests/pom.xml}).
- * Were this suite tagged as well, a record of that suite could satisfy a count assertion here whose
- * own request recorded nothing. So the longer of the two suites runs concurrently and this one does
- * not; the two Failsafe executions run one after the other, so the two suites never overlap.
- * {@code FailsafeConcurrencyContractTest} fails the build when two tagged suites name the same
- * instance log.
+ * <strong>Why this suite runs in the concurrent Failsafe execution.</strong> The class carries the
+ * tag {@code sleep-bound} (see {@code integration-tests/pom.xml}). What once kept it sequential was
+ * the log, not the user. Each {@code FAILED} leg attributes a {@code credential-rejected} record to
+ * its own request by the record count on either side of that request. The record
+ * ({@code ApiSheriff-111}) carries the reason and nothing else — no session, no user, no request —
+ * so a record cannot be told from one that another suite's request caused on the same gateway, and
+ * {@code BffRefreshReuseIT}, which runs concurrently, causes such records on {@code api-sheriff-refresh}.
+ * This suite therefore no longer sends a request to that instance. It starts a gateway of its own
+ * once per class, {@value #GATEWAY} on host port {@value #APPLICATION_PORT}, from a descriptor
+ * derived from the committed {@code sheriff-config-refresh/gateway.yaml} with the gateway-origin
+ * triple retargeted and nothing else changed (see
+ * {@link OneOffGatewayContainers#writeDerivedDescriptor(String, Path, String, int)}), removes it on
+ * every exit path, and counts the records of that gateway's own container output. No other suite
+ * sends a request to it, so every record counted was caused here. The gateway keeps the client, the
+ * client secret and the RSA proof key of the compose instance, and the realm registers no
+ * back-channel logout URL for {@code refresh-client}, so nothing an assertion observes differs
+ * between the compose instance and this one. {@code FailsafeConcurrencyContractTest} fails the build
+ * when two tagged suites name the same instance log or declare the same host port.
  * <p>
  * <strong>The defect this suite reproduced, and its cause.</strong> Run against the live stack on
  * 2026-09-07 ({@code verify -Pintegration-tests}, 130 integration tests, of which the five below),
@@ -184,8 +203,9 @@ import org.junit.jupiter.api.Test;
  * observes four sessions inside their windows, as before, on two waits where there were four.
  * <p>
  * This suite deliberately does not extend {@code BaseIntegrationTest}: that base binds the primary
- * instance's origin, while every request here must go to {@link BffKeycloakLoginFlow#REFRESH_GATEWAY_ORIGIN}.
+ * instance's origin, while every request here must go to this suite's own gateway, {@link #ORIGIN}.
  */
+@Tag("sleep-bound")
 class BffTokenRefreshIT {
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
@@ -218,8 +238,27 @@ class BffTokenRefreshIT {
      */
     private static final int WAIT_INTO_REFRESH_WINDOW_SECONDS = 22;
 
-    /** The refresh instance's container log, written by compose into {@code test.log.dir}. */
-    private static final String REFRESH_INSTANCE_LOG_FILE = "quarkus-refresh.log";
+    /** This suite's one-off gateway: its container name and network alias. */
+    private static final String GATEWAY = "sheriff-token-refresh";
+
+    /**
+     * The fixed host port of this suite's gateway's application listener, published on every
+     * interface; listed with every other test-started gateway's port in
+     * {@code doc/development/integration-test-topology.adoc}.
+     */
+    private static final int APPLICATION_PORT = 10474;
+
+    /** The origin of this suite's gateway, which every request of this suite goes to. */
+    private static final String ORIGIN = "https://localhost:" + APPLICATION_PORT;
+
+    /** The committed descriptor of {@code api-sheriff-refresh}, which this suite's gateway is derived from. */
+    private static final Path SOURCE_DESCRIPTOR =
+            OneOffGatewayContainers.DOCKER.resolve(Path.of("sheriff-config-refresh", "gateway.yaml"));
+
+    /** The DPoP proof key the compose instance is given (see {@code docker-compose.yml}). */
+    private static final String PROOF_KEY_FILE = "/app/signing-keys/dpop-rsa.pem";
+
+    private static final long BOOT_TIMEOUT_SECONDS = 90L;
 
     /** The identifier of the WARN every session-ending refresh disposition records. */
     private static final String SESSION_REFRESH_FAILED_IDENTIFIER = "ApiSheriff-111";
@@ -233,13 +272,39 @@ class BffTokenRefreshIT {
     private static final String CREDENTIAL_REJECTED_REASON = "(credential-rejected)";
 
     /**
-     * How long to wait for the WARN to reach the host-mounted log file. The record is written before
-     * the response is sent, but the bind mount can surface the append a moment later, so the read is
-     * retried briefly rather than taken once.
+     * How long to wait for the WARN to appear in the gateway's container output. The record is written
+     * before the response is sent, but the container runtime can surface it a moment later, so the
+     * read is retried briefly rather than taken once.
      */
     private static final long LOG_VISIBILITY_TIMEOUT_MILLIS = 5_000L;
 
-    private static final long LOG_POLL_INTERVAL_MILLIS = 250L;
+    /**
+     * Starts this suite's gateway once for the class: the committed refresh descriptor with its origin
+     * retargeted at {@link #ORIGIN}, the client secret the realm registers for {@code refresh-client}
+     * and the RSA proof key, as the compose instance has them. A container an aborted earlier run left
+     * behind is removed first.
+     */
+    @BeforeAll
+    static void startGateway() {
+        removeContainer(GATEWAY);
+        Path descriptor = writeDerivedDescriptor(GATEWAY, SOURCE_DESCRIPTOR,
+                BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN, APPLICATION_PORT);
+        startBffGatewayWithSigningKeys(new BffGateway(GATEWAY, composeNetwork(), GATEWAY, APPLICATION_PORT,
+                descriptor, "localhost.crt", "localhost.key",
+                List.of("OIDC_CLIENT_SECRET=" + BffTlsRelaxationIT.refreshClientSecret(),
+                        "OIDC_DPOP_KEY_FILE=" + PROOF_KEY_FILE)),
+                List.of());
+        awaitReadiness(GATEWAY, "https://localhost:" + publishedPort(GATEWAY, 9000),
+                response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
+                "the gateway " + GATEWAY + " to report readiness UP");
+        assertApplicationPortAnswers(GATEWAY, ORIGIN);
+    }
+
+    /** Removes this suite's gateway, whatever the outcome of the class — a failed start included. */
+    @AfterAll
+    static void removeGateway() {
+        removeContainer(GATEWAY);
+    }
 
     @Test
     @DisplayName("the refresh-client access token is minted with the declared 45-second lifespan")
@@ -306,7 +371,7 @@ class BffTokenRefreshIT {
         // failure further down. The redirect is that of a pushed request and names no scope, so the
         // scope set the route asks for is proven by the granted token of the login below.
         Response initiation = BffKeycloakLoginFlow
-                .gateway(Map.of(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
+                .gateway(Map.of(), ORIGIN)
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when().get(BffEndpointScopesIT.SCOPED_SESSION_PATH)
@@ -420,8 +485,7 @@ class BffTokenRefreshIT {
             "the two refreshes inside the window", () -> {
                 Session plain = loginToRefreshInstance();
                 Response plainBefore = unassertedCall(plain, MEDIATED_PATH);
-                Session scoped = BffKeycloakLoginFlow.login(BffEndpointScopesIT.SCOPED_SESSION_PATH,
-                        BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
+                Session scoped = BffKeycloakLoginFlow.login(BffEndpointScopesIT.SCOPED_SESSION_PATH, ORIGIN,
                         BffKeycloakLoginFlow.REVOCATION_USERNAME, BffKeycloakLoginFlow.REVOCATION_PASSWORD);
                 Response scopedBefore = unassertedCall(scoped, BffEndpointScopesIT.SCOPED_SESSION_PATH);
 
@@ -460,7 +524,7 @@ class BffTokenRefreshIT {
     private static Rejection rejectionOf(Session session, String accept) {
         long recordsBefore = credentialRejectedRecordCount();
         Response response = BffKeycloakLoginFlow
-                .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
+                .gateway(session.gatewayCookies(), ORIGIN)
                 .header("Accept", accept)
                 .redirects().follow(false)
                 .when().get(MEDIATED_PATH)
@@ -509,7 +573,7 @@ class BffTokenRefreshIT {
     // ---------------------------------------------------------------- helpers
 
     private static Session loginToRefreshInstance() {
-        return BffKeycloakLoginFlow.login(MEDIATED_PATH, BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
+        return BffKeycloakLoginFlow.login(MEDIATED_PATH, ORIGIN,
                 BffKeycloakLoginFlow.REVOCATION_USERNAME, BffKeycloakLoginFlow.REVOCATION_PASSWORD);
     }
 
@@ -519,7 +583,7 @@ class BffTokenRefreshIT {
 
     private static Response mediatedCall(Session session, String path) {
         return BffKeycloakLoginFlow
-                .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
+                .gateway(session.gatewayCookies(), ORIGIN)
                 .when().get(path)
                 .then().statusCode(200)
                 .extract().response();
@@ -528,7 +592,7 @@ class BffTokenRefreshIT {
     /** {@link #mediatedCall(Session, String)} without its status assertion, for a response a test asserts on later. */
     private static Response unassertedCall(Session session, String path) {
         return BffKeycloakLoginFlow
-                .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
+                .gateway(session.gatewayCookies(), ORIGIN)
                 .when().get(path)
                 .then().extract().response();
     }
@@ -614,18 +678,15 @@ class BffTokenRefreshIT {
     }
 
     /**
-     * Counts the {@code ApiSheriff-111} lines carrying reason {@code credential-rejected} in the
-     * refresh instance's container log.
+     * Counts the {@code ApiSheriff-111} lines carrying reason {@code credential-rejected} in this
+     * suite's gateway's own container output.
      * <p>
-     * A count, not a presence check: both {@code FAILED} legs write to the same log, so a line the
+     * A count, not a presence check: both {@code FAILED} legs write to the same output, so a line the
      * earlier leg left behind would satisfy a presence check for the later one. Comparing the count
      * before and after the request under test attributes the record to that request.
      */
     private static long credentialRejectedRecordCount() {
-        return readRefreshInstanceLog().lines()
-                .filter(line -> line.contains(SESSION_REFRESH_FAILED_IDENTIFIER))
-                .filter(line -> line.contains(CREDENTIAL_REJECTED_REASON))
-                .count();
+        return gatewayLogLineCount(GATEWAY, SESSION_REFRESH_FAILED_IDENTIFIER, CREDENTIAL_REJECTED_REASON);
     }
 
     /**
@@ -634,20 +695,9 @@ class BffTokenRefreshIT {
      *
      * @return the count once it had risen, or the last count read when it had not
      */
-    @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded wait for a bind-mounted log append
     private static long awaitCredentialRejectedRecordAfter(long countBefore) {
-        long deadline = System.currentTimeMillis() + LOG_VISIBILITY_TIMEOUT_MILLIS;
-        long observed = credentialRejectedRecordCount();
-        while (observed <= countBefore && System.currentTimeMillis() < deadline) {
-            try {
-                Thread.sleep(LOG_POLL_INTERVAL_MILLIS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("interrupted while waiting for the refresh log record", interrupted);
-            }
-            observed = credentialRejectedRecordCount();
-        }
-        return observed;
+        return awaitGatewayLogLineCountAbove(GATEWAY, countBefore, Duration.ofMillis(LOG_VISIBILITY_TIMEOUT_MILLIS),
+                SESSION_REFRESH_FAILED_IDENTIFIER, CREDENTIAL_REJECTED_REASON);
     }
 
     /**
@@ -661,21 +711,9 @@ class BffTokenRefreshIT {
         assertTrue(finalObserved > countBefore,
                 () -> "the IdP-side revocation must be disposed as CREDENTIAL_REJECTED: expected a new WARN "
                         + SESSION_REFRESH_FAILED_IDENTIFIER + " line with reason " + CREDENTIAL_REJECTED_REASON
-                        + " in " + REFRESH_INSTANCE_LOG_FILE + " (count before the request " + countBefore
+                        + " in the output of " + GATEWAY + " (count before the request " + countBefore
                         + ", after " + finalObserved + "); without it the 401/302 proves only that the "
-                        + "session was lost, not which refresh disposition ended it");
-    }
-
-    private static String readRefreshInstanceLog() {
-        Path logFile = Path.of(System.getProperty("test.log.dir", "target/quarkus-logs"))
-                .resolve(REFRESH_INSTANCE_LOG_FILE);
-        assertTrue(Files.isRegularFile(logFile),
-                () -> "expected the refresh instance log at " + logFile.toAbsolutePath());
-        try {
-            return Files.readString(logFile, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot read " + logFile, e);
-        }
+                        + "session was lost, not which refresh disposition ended it. " + gatewayLog(GATEWAY));
     }
 
     /**

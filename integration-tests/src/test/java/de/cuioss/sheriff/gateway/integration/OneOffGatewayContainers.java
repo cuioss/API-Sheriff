@@ -19,11 +19,13 @@ import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
+import java.io.Reader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -35,12 +37,18 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import org.yaml.snakeyaml.DumperOptions;
+import org.yaml.snakeyaml.Yaml;
 
 import io.restassured.response.Response;
 
@@ -79,6 +87,13 @@ import io.restassured.response.Response;
  * mounts, a configuration directory assembled below {@code target/} by
  * {@link #assembleConfigurationDirectory(Path, Path, List)} and process arguments, and builds its
  * surroundings with the network and auxiliary-container helpers.
+ * <p>
+ * A suite that needs a compose instance's behaviour on a gateway of its own — because it counts the
+ * records of the gateway log, and a compose instance's log also holds whatever every other suite on
+ * that instance caused — derives the descriptor with
+ * {@link #writeDerivedDescriptor(String, Path, String, int)} and counts the records of the gateway's
+ * own container output with {@link #gatewayLogLineCount(String, String...)} and
+ * {@link #awaitGatewayLogLineCountAbove(String, long, Duration, String...)}.
  * <p>
  * Not instantiable; every member is a stateless static helper. Docker container names are global to
  * the docker daemon, so callers give each container a unique name.
@@ -723,6 +738,158 @@ final class OneOffGatewayContainers {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Derived descriptors
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The keys of a descriptor that name the gateway's own origin, in dotted form: what
+     * {@link #writeDerivedDescriptor(String, Path, String, int)} retargets at a one-off gateway's port.
+     */
+    static final List<String> ORIGIN_KEYS =
+            List.of("oidc.redirect_uri", "oidc.logout.post_logout_redirect_uri", "oidc.session.csrf.trusted_origins");
+
+    /** The key, in dotted form, by which a cookie-mode descriptor names its sealing key file. */
+    static final String SEALING_KEY_FILE_KEY = "oidc.session.key_file";
+
+    /** A container name that is also a single directory name below {@code target/}. */
+    private static final Pattern GATEWAY_NAME = Pattern.compile("[a-z0-9][a-z0-9-]*");
+
+    /** Readable by the gateway image's own user, which is not the uid the build runs as. */
+    private static final String DESCRIPTOR_MODE = "rw-r--r--";
+
+    /**
+     * Writes the descriptor of a one-off gateway derived from a committed compose descriptor to
+     * {@code target/<gateway>/gateway.yaml}.
+     * <p>
+     * The derived descriptor is the source with the gateway-origin triple —
+     * {@code oidc.redirect_uri}, {@code oidc.logout.post_logout_redirect_uri} and every entry of
+     * {@code oidc.session.csrf.trusted_origins} — retargeted from {@code sourceOrigin} at
+     * {@code https://localhost:<applicationHostPort>}, the origin the one-off gateway is published on.
+     * The three move together: the origin of {@code redirect_uri} is what same-origin return-URL
+     * validation and the default CSRF trusted origin derive from, so a half-moved triple rejects the
+     * browser flow instead of failing at boot. In cookie mode ({@code oidc.session.mode: cookie}) the
+     * derived descriptor also names {@value #SEALING_KEY_IN_CONTAINER} as {@code oidc.session.key_file}
+     * in place of the committed sealing key, which belongs to the compose instance; the gateway is then
+     * started with the mount {@link #writeSealingKeyFile(Path, String)} returns, exactly as
+     * {@code BffSessionIdleTimeoutIT} does for its cookie-mode gateway.
+     * <p>
+     * Refused before anything is written: an origin key that does not name {@code sourceOrigin}, a
+     * cookie-mode source that declares no sealing key file and a server-mode source that declares one.
+     * Once written, the derived document is read back and compared with its source key by key. It
+     * must differ in exactly the retargeted keys, so a derivation that changed more, or left one of
+     * them as it was, fails here rather than as a gateway that behaves unlike the compose instance it
+     * stands in for.
+     *
+     * @param gateway             the one-off gateway's container name, and the directory below
+     *                            {@code target/} the descriptor is written to
+     * @param source              the committed compose descriptor
+     * @param sourceOrigin        the gateway origin the source names, such as
+     *                            {@code https://localhost:10452}
+     * @param applicationHostPort the fixed host port the one-off gateway publishes its application
+     *                            listener on
+     * @return the derived descriptor, readable by others
+     */
+    static Path writeDerivedDescriptor(String gateway, Path source, String sourceOrigin, int applicationHostPort) {
+        assertTrue(GATEWAY_NAME.matcher(gateway).matches(),
+                () -> "the gateway name '" + gateway + "' must be one lower-case directory name");
+        String origin = "https://localhost:" + applicationHostPort;
+        Map<String, Object> document = loadDescriptor(source);
+        Map<String, Object> oidc = descriptorMapping(document.get("oidc"), "oidc");
+        Map<String, Object> logout = descriptorMapping(oidc.get("logout"), "oidc.logout");
+        Map<String, Object> session = descriptorMapping(oidc.get("session"), "oidc.session");
+        Map<String, Object> csrf = descriptorMapping(session.get("csrf"), "oidc.session.csrf");
+        boolean cookieMode = "cookie".equals(session.get("mode"));
+        assertEquals(cookieMode, session.containsKey("key_file"), () -> SEALING_KEY_FILE_KEY + " of " + source
+                + " must be declared exactly in cookie mode; oidc.session.mode is " + session.get("mode"));
+
+        oidc.put("redirect_uri", retargeted(source, ORIGIN_KEYS.get(0), oidc.get("redirect_uri"), sourceOrigin,
+                origin));
+        logout.put("post_logout_redirect_uri", retargeted(source, ORIGIN_KEYS.get(1),
+                logout.get("post_logout_redirect_uri"), sourceOrigin, origin));
+        List<?> trustedOrigins = assertInstanceOf(List.class, csrf.get("trusted_origins"),
+                () -> ORIGIN_KEYS.get(2) + " of " + source + " must be a list");
+        csrf.put("trusted_origins", trustedOrigins.stream()
+                .map(entry -> retargeted(source, ORIGIN_KEYS.get(2), entry, sourceOrigin, origin)).toList());
+        if (cookieMode) {
+            session.put("key_file", SEALING_KEY_IN_CONTAINER);
+        }
+        session.put("csrf", csrf);
+        oidc.put("logout", logout);
+        oidc.put("session", session);
+        document.put("oidc", oidc);
+
+        Path derived = BUILD_DIRECTORY.resolve(gateway).resolve(DESCRIPTOR_FILE);
+        DumperOptions options = new DumperOptions();
+        options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
+        try {
+            Files.createDirectories(derived.getParent());
+            Files.writeString(derived, new Yaml(options).dump(document), StandardCharsets.UTF_8);
+            Files.setPosixFilePermissions(derived, PosixFilePermissions.fromString(DESCRIPTOR_MODE));
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot write the derived descriptor " + derived.toAbsolutePath(), e);
+        }
+
+        Set<String> expected = new TreeSet<>(ORIGIN_KEYS);
+        if (cookieMode) {
+            expected.add(SEALING_KEY_FILE_KEY);
+        }
+        Set<String> changed = new TreeSet<>();
+        collectDifferingKeys("", loadDescriptor(source), loadDescriptor(derived), changed);
+        assertEquals(expected, changed, () -> "the descriptor " + derived + " derived from " + source
+                + " must differ from it in exactly the retargeted keys");
+        return derived;
+    }
+
+    /** One origin key's value, retargeted from {@code sourceOrigin} at {@code origin}. */
+    private static String retargeted(Path source, String key, Object value, String sourceOrigin, String origin) {
+        String configured = String.valueOf(value);
+        assertTrue(configured.equals(sourceOrigin) || configured.startsWith(sourceOrigin + "/"),
+                () -> key + " of " + source + " must name the origin " + sourceOrigin + ", was " + configured);
+        return origin + configured.substring(sourceOrigin.length());
+    }
+
+    /**
+     * Adds, in dotted form below {@code prefix}, every key whose value differs between two parsed YAML
+     * mappings — present in one only, or present in both with unequal values. Nested mappings are
+     * compared member by member; a list is a value and compared whole.
+     */
+    private static void collectDifferingKeys(String prefix, Map<String, Object> left, Map<String, Object> right,
+            Set<String> differing) {
+        Set<String> keys = new TreeSet<>(left.keySet());
+        keys.addAll(right.keySet());
+        for (String key : keys) {
+            String path = prefix.isEmpty() ? key : prefix + "." + key;
+            Object leftValue = left.get(key);
+            Object rightValue = right.get(key);
+            if (leftValue instanceof Map<?, ?> && rightValue instanceof Map<?, ?>) {
+                collectDifferingKeys(path, descriptorMapping(leftValue, path), descriptorMapping(rightValue, path),
+                        differing);
+            } else if (!Objects.equals(leftValue, rightValue)) {
+                differing.add(path);
+            }
+        }
+    }
+
+    private static Map<String, Object> loadDescriptor(Path descriptor) {
+        try (Reader reader = Files.newBufferedReader(descriptor, StandardCharsets.UTF_8)) {
+            return descriptorMapping(new Yaml().load(reader), descriptor.toString());
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read the descriptor " + descriptor.toAbsolutePath(), e);
+        }
+    }
+
+    /**
+     * Reads a parsed YAML node as a mapping with string keys. The result is a copy, so a caller that
+     * changes a nested mapping writes it back into its parent.
+     */
+    private static Map<String, Object> descriptorMapping(Object node, String what) {
+        Map<?, ?> raw = assertInstanceOf(Map.class, node, () -> what + " must be a mapping");
+        Map<String, Object> typed = new LinkedHashMap<>();
+        raw.forEach((key, value) -> typed.put(String.valueOf(key), value));
+        return typed;
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Dedicated networks and auxiliary containers
     // ---------------------------------------------------------------------------------------------
 
@@ -1095,6 +1262,50 @@ final class OneOffGatewayContainers {
             sleepPollInterval();
         }
         fail(why + " (waited " + timeoutSeconds + "s). " + gatewayLog(gateway));
+    }
+
+    /**
+     * The number of lines of a one-off gateway's own container output that carry every one of
+     * {@code fragments}: a record identifier and, where the identifier alone is not specific enough,
+     * the reason the record renders.
+     * <p>
+     * A count, not a presence check: a line an earlier request left behind would satisfy a presence
+     * check for a later one, so a suite compares the count before and after the request under test.
+     * The count reads the container's output, never an instance log file of the compose stack, so a
+     * record another suite causes on another gateway is not counted.
+     *
+     * @param gateway   the container name
+     * @param fragments the texts a counted line carries, all of them; at least one
+     * @return the number of such lines
+     */
+    static long gatewayLogLineCount(String gateway, String... fragments) {
+        assertTrue(fragments.length > 0, "a counted line must be described by at least one fragment");
+        return docker("read the log of the one-off gateway " + gateway, "logs", gateway).lines()
+                .filter(line -> Stream.of(fragments).allMatch(line::contains))
+                .count();
+    }
+
+    /**
+     * Waits, for at most {@code timeout}, for {@link #gatewayLogLineCount(String, String...)} to rise
+     * above {@code countBefore}, and asserts nothing. A record is written before the response that
+     * caused it is sent, but the container runtime can surface it a moment later, so the count is read
+     * again briefly rather than once.
+     *
+     * @param gateway     the container name
+     * @param countBefore the count read before the request under test was sent
+     * @param timeout     how long the count may take to rise
+     * @param fragments   the texts a counted line carries, all of them
+     * @return the count once it had risen, or the last count read when it had not
+     */
+    static long awaitGatewayLogLineCountAbove(String gateway, long countBefore, Duration timeout,
+            String... fragments) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        long observed = gatewayLogLineCount(gateway, fragments);
+        while (observed <= countBefore && System.nanoTime() < deadline) {
+            sleepPollInterval();
+            observed = gatewayLogLineCount(gateway, fragments);
+        }
+        return observed;
     }
 
     /**

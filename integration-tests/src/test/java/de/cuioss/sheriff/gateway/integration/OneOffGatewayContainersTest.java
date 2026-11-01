@@ -19,23 +19,29 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import org.yaml.snakeyaml.Yaml;
 
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
@@ -50,7 +56,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Fast, no-Docker <em>surefire</em> test of the parts of {@link OneOffGatewayContainers} that decide
  * what a one-off gateway mounts and publishes: the refusal of an extra mount reaching into a path the
  * harness mounts itself, the assembly of a configuration directory below {@code target/}, the
- * {@code docker run} argument list both feed, and the publication rule — no container a test starts
+ * {@code docker run} argument list both feed, the derivation of a one-off descriptor from a compose
+ * descriptor — the origin triple retargeted, a cookie-mode sealing key pointed at the suite's own, a
+ * source naming another origin refused — and the publication rule: no container a test starts
  * carries two loopback publications, or one loopback publication on two networks.
  * <p>
  * Every case goes through an argument builder or a helper it calls, never through a start method, so
@@ -676,6 +684,93 @@ class OneOffGatewayContainersTest {
 
         /** A fixed host port and the class whose source assigns it. */
         private record Assignment(String className, int port) {
+        }
+    }
+
+    @Nested
+    @DisplayName("Deriving a one-off descriptor from a compose descriptor")
+    class DerivedDescriptor {
+
+        private static final Path REFRESH_SOURCE = MODULE.resolve("src/main/docker/sheriff-config-refresh/gateway.yaml");
+        private static final String REFRESH_ORIGIN = "https://localhost:10452";
+        private static final Path COOKIE_REFRESH_SOURCE =
+                MODULE.resolve("src/main/docker/sheriff-config-cookie-refresh/gateway.yaml");
+        private static final String COOKIE_REFRESH_ORIGIN = "https://localhost:10455";
+        private static final int PORT = 10498;
+        private static final String ORIGIN = "https://localhost:" + PORT;
+
+        @Test
+        @DisplayName("retargets the origin triple of a server-mode source and keeps its sealing-key absence")
+        void shouldRetargetTheOriginTripleOfAServerModeSource() throws Exception {
+            Path derived = OneOffGatewayContainers.writeDerivedDescriptor("harness-test-derived-server",
+                    REFRESH_SOURCE, REFRESH_ORIGIN, PORT);
+
+            Map<String, Object> oidc = child(load(derived), "oidc");
+            Map<String, Object> session = child(oidc, "session");
+            assertAll("the derived server-mode descriptor",
+                    () -> assertEquals(MODULE.resolve("target/harness-test-derived-server/gateway.yaml"),
+                            derived.toAbsolutePath(), "the descriptor is written below target/, under the gateway's name"),
+                    () -> assertEquals(ORIGIN + "/bff/callback", oidc.get("redirect_uri")),
+                    () -> assertEquals(ORIGIN + "/bff/logout/return",
+                            child(oidc, "logout").get("post_logout_redirect_uri")),
+                    () -> assertEquals(List.of(ORIGIN), child(session, "csrf").get("trusted_origins")),
+                    () -> assertEquals("refresh-client", oidc.get("client_id"), "the client is the source's"),
+                    () -> assertFalse(session.containsKey("key_file"), "a server-mode descriptor names no sealing key"),
+                    () -> assertTrue(Files.getPosixFilePermissions(derived).contains(PosixFilePermission.OTHERS_READ),
+                            "the gateway image reads the descriptor as another uid"));
+        }
+
+        @Test
+        @DisplayName("retargets the origin triple of a cookie-mode source and points its sealing key at the suite's own")
+        void shouldRetargetTheSealingKeyOfACookieModeSource() throws Exception {
+            Path derived = OneOffGatewayContainers.writeDerivedDescriptor("harness-test-derived-cookie",
+                    COOKIE_REFRESH_SOURCE, COOKIE_REFRESH_ORIGIN, PORT);
+
+            Map<String, Object> oidc = child(load(derived), "oidc");
+            Map<String, Object> session = child(oidc, "session");
+            assertAll("the derived cookie-mode descriptor",
+                    () -> assertEquals(ORIGIN + "/bff/callback", oidc.get("redirect_uri")),
+                    () -> assertEquals(List.of(ORIGIN), child(session, "csrf").get("trusted_origins")),
+                    () -> assertEquals(OneOffGatewayContainers.SEALING_KEY_IN_CONTAINER, session.get("key_file"),
+                            "the committed sealing key belongs to the compose instance"),
+                    () -> assertEquals("cookie", session.get("mode")));
+        }
+
+        @Test
+        @DisplayName("refuses a source whose origin keys do not all name the stated origin, and writes nothing")
+        void shouldRefuseASourceNamingADifferentOrigin() throws Exception {
+            String committed = Files.readString(REFRESH_SOURCE);
+            String halfMoved = committed.replace(REFRESH_ORIGIN + "/bff/callback", "https://localhost:10999/bff/callback");
+            assertNotEquals(committed, halfMoved, "precondition: the specimen moves oidc.redirect_uri");
+            Path specimen = writeReadableByOthers("derived-refused/gateway.yaml", halfMoved);
+            Path wouldBeWritten = MODULE.resolve("target/harness-test-derived-refused/gateway.yaml");
+            Files.deleteIfExists(wouldBeWritten);
+
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-refused", specimen, REFRESH_ORIGIN, PORT));
+
+            assertAll("the refusal",
+                    () -> assertTrue(refusal.getMessage().contains("oidc.redirect_uri"), refusal::getMessage),
+                    () -> assertTrue(refusal.getMessage().contains("https://localhost:10999/bff/callback"),
+                            refusal::getMessage),
+                    () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
+        }
+
+        private static Map<String, Object> load(Path descriptor) throws IOException {
+            try (Reader reader = Files.newBufferedReader(descriptor, StandardCharsets.UTF_8)) {
+                return typed(new Yaml().load(reader), descriptor.toString());
+            }
+        }
+
+        private static Map<String, Object> child(Map<String, Object> parent, String key) {
+            return typed(parent.get(key), key);
+        }
+
+        private static Map<String, Object> typed(Object node, String what) {
+            Map<?, ?> raw = assertInstanceOf(Map.class, node, () -> what + " must be a mapping");
+            Map<String, Object> typed = new LinkedHashMap<>();
+            raw.forEach((key, value) -> typed.put(String.valueOf(key), value));
+            return typed;
         }
     }
 
