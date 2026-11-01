@@ -114,12 +114,13 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>A body that does not end in time is ended at the request-body deadline.</strong> A dispatch
  * constructed with a request-body deadline also bounds how long it waits for the whole body. The
- * deadline is counted from the start of the attempt — the moment the guard's whole-dispatch timeout
- * starts too — and is shorter than that timeout. When it passes while the gateway is still waiting for
- * body bytes, the attempt's upstream request is reset and the body is refused as a
- * {@link RequestBodyDeadlineExceeded} ({@link EventType#REQUEST_BODY_TIMEOUT}, {@code 408}). Before the
- * response was handed over this is the dispatch's own failure, so a body still arriving when the guard
- * would end the dispatch as an upstream timeout is ended as the request's instead. After the hand-over —
+ * deadline is counted from the start of the attempt — the moment the guard's timeout, which bounds each
+ * attempt rather than the whole dispatch, starts too — and is shorter than that timeout. When it passes
+ * while the gateway is still waiting for body bytes, the attempt's upstream request is reset and the body
+ * is refused as a {@link RequestBodyDeadlineExceeded} ({@link EventType#REQUEST_BODY_TIMEOUT},
+ * {@code 408}). Before the response was handed over this is the dispatch's own failure, so a body still
+ * arriving when the guard would end the attempt as an upstream timeout is ended as the request's
+ * instead. After the hand-over —
  * an upstream that answered at once and keeps reading — the refusal goes to the
  * {@linkplain BodyFraming#lateViolation() late-violation callback}, and the reset upstream request fails
  * the relay, which ends the client response with the status the upstream sent. Once it has passed, the

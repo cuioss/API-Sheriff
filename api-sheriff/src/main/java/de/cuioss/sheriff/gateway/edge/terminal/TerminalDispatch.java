@@ -337,8 +337,9 @@ public final class TerminalDispatch {
      * <p>
      * <strong>What bounds the call.</strong> The dispatch arms neither the request-body idle timeout nor
      * the request-body deadline, so a client-streaming or bidirectional call may pause between its
-     * messages. Until the upstream sends its response headers the guard's whole-dispatch timeout bounds
-     * the call. From then on the call's {@linkplain ResponseStage.GrpcStreamIdleBound stream-idle bound}
+     * messages. Until the upstream sends its response headers the guard's timeout bounds the call: that
+     * timeout bounds each attempt, and a gRPC call is a {@code POST}, which is never retried, so its one
+     * attempt is the whole call. From then on the call's {@linkplain ResponseStage.GrpcStreamIdleBound stream-idle bound}
      * does: every request frame the dispatch reads and every upstream frame the relay writes restarts it,
      * and a call that carried no frame in either direction for its fixed five minutes is ended by the
      * relay — the upstream request is reset, and the client response ends through the one end rule with

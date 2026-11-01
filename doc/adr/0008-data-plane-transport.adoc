@@ -47,9 +47,9 @@ Every path that relays upstream response headers strips the upstream identity he
 
 The breaker is a fixed policy of the gateway, and one guard serves every route dialing the same upstream target with the same retry setting. link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064] records that policy and removes the `upstream.circuit_breaker` block. ADR-0064 also lists the upstream timeout and retry keys that parse and act on nothing, and it leaves them open.
 
-*Retry is stream-aware gateway policy.* The retry predicate retries a failed attempt only when the method is idempotent *and zero request-body bytes have been sent upstream*.
-  No replay buffering in the initial release. Timeouts are transport options on the shared
-  Vert.x client (connect/read per upstream tuple), not fault-tolerance timeouts.
+*Retry is stream-aware gateway policy.* The retry predicate retries a failed attempt only when the method is idempotent *and zero request-body bytes have been sent upstream*. No replay buffering in the initial release.
+
+*The upstream timeout is the guard's.* The shared Vert.x client of an upstream target is built without connect or idle timeout options. Each upstream attempt is bounded by the guard's fixed 30 s SmallRye Fault Tolerance timeout, and a request the retry predicate allows is retried, each retry with its own 30 s timeout (link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
 
 *No whole-second timeout rule applies.* That rule existed only because the `cui-http` `HttpHandler` builder takes whole seconds. The Vert.x client takes milliseconds.
 

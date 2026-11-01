@@ -25,7 +25,7 @@ import io.smallrye.faulttolerance.api.Guard;
 
 /**
  * Builds the per-shape SmallRye Fault-Tolerance guard every proxied dispatch runs under, and owns the
- * two upstream bounds the edge states: the breaker's reset window and the whole-dispatch timeout.
+ * two upstream bounds the edge states: the breaker's reset window and the per-attempt upstream timeout.
  * <p>
  * Handed to the {@link de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler} as its
  * {@link de.cuioss.sheriff.gateway.edge.assembly.ResilienceGuardFactory}, which builds one guard per
@@ -45,13 +45,15 @@ public final class UpstreamGuards {
      */
     public static final int BREAKER_RESET_SECONDS = 5;
     /**
-     * The upstream guard's whole-dispatch timeout, in seconds ({@link #guardFor}). The request-body idle
+     * The upstream guard's timeout, in seconds ({@link #guardFor}). It bounds each upstream attempt, not
+     * the whole dispatch: the timeout sits inside the retry, so a dispatch retried on a retry-enabled
+     * route can run up to three attempts, about 90 s in all. The request-body idle
      * timeout ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyIdleTimeoutMillis()})
      * is shorter, so a dispatch whose body stopped arriving is ended as the request's before the guard
      * would end it as the upstream's. So is the request-body deadline
      * ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}),
      * counted from the start of the attempt like this timeout, so a body still arriving when this timeout
-     * would end the dispatch is ended as the request's first.
+     * would end the attempt is ended as the request's first.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -77,10 +79,11 @@ public final class UpstreamGuards {
      * the request-body deadline — reaches the guard as such a skipped {@link GatewayException} (see
      * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records a
      * skipped exception as a success; keeping these dispatches out of its window would need the guarded
-     * call to be restructured. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds the whole
-     * dispatch; the request-body idle timeout and the request-body deadline are shorter, so a body the
-     * gateway is still waiting for ends as the request's, and the timeout ends a dispatch the upstream
-     * holds up.
+     * call to be restructured. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each
+     * attempt: it is nested inside the retry, so a route that enables retry gives each of up to three
+     * attempts (two retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The
+     * request-body idle timeout and the request-body deadline are shorter, so a body the gateway is still
+     * waiting for ends as the request's, and the timeout ends an attempt the upstream holds up.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard

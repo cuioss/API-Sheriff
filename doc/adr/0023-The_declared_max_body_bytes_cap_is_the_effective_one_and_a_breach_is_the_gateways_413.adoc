@@ -52,6 +52,10 @@ The status alone does not tell the two rejecting components apart, because the f
 type and title. The framework's carries no body. A test that means to prove the gateway enforced the
 cap asserts on the envelope, not on the status alone.
 
+The operator-facing statement of the framework body-limit floor (`quarkus.http.limits.max-body-size`)
+is in link:../configuration.adoc[Configuration Reference]. The status and category tables are in
+link:../architecture/observability-and-errors.adoc#_error_contract[Architecture].
+
 [[_pre_trust_fast_reject]]
 === The declared-Content-Length fast-reject before the trust boundary
 
@@ -66,10 +70,6 @@ The streaming byte counter enforces the cap after the trust boundary, so its bre
 envelope and the gRPC mapping. With `security_defaults.uniform_not_found: false`, both paths answer
 `413`. The cap in force and the boot check do not depend on the answer. The shadowing case below does
 not either, because the framework raises its bare `413` before route selection.
-
-The operator-facing statement of the floor is in
-link:../configuration.adoc[Configuration Reference]. The status and category tables are in
-link:../architecture/observability-and-errors.adoc#_error_contract[Architecture].
 
 == Alternatives rejected
 

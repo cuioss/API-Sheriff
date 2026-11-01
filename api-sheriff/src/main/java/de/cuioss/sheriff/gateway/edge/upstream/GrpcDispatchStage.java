@@ -58,7 +58,8 @@ import io.vertx.core.streams.ReadStream;
  * connection for such a bound to release.
  * <p>
  * <strong>The exemption is bounded.</strong> Until the upstream sends its response headers the guard's
- * whole-dispatch timeout bounds the call. Once they have arrived the guarded call has returned, and the
+ * timeout bounds the call. That timeout bounds each attempt, and a gRPC call is a {@code POST}, which the
+ * retry predicate never retries, so its one attempt is the whole call. Once the headers have arrived the guarded call has returned, and the
  * call's stream-idle bound takes over: the edge hands this stage the request body
  * {@linkplain de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound#watch watched} by
  * that bound, so every request frame counts as activity, and the trailer relay ends a call that carried

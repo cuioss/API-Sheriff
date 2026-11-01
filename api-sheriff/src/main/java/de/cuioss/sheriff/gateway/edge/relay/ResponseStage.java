@@ -401,8 +401,10 @@ public final class ResponseStage {
      * <p>
      * A gRPC dispatch arms neither the request-body idle timeout nor the request-body deadline:
      * client-streaming and bidirectional calls legitimately pause between messages. Before the upstream
-     * sends its response headers the call is bounded by the upstream guard's whole-dispatch timeout; once
-     * they have arrived the guarded call has returned, and this bound is what ends a call that went quiet.
+     * sends its response headers the call is bounded by the upstream guard's timeout, which bounds each
+     * attempt; a gRPC call is a {@code POST}, which is never retried, so its one attempt is the whole call.
+     * Once the headers have arrived the guarded call has returned, and this bound is what ends a call that
+     * went quiet.
      * A call's {@code grpc-timeout} header is not honoured, so the bound stays one fixed constant; no
      * configuration key or system property reaches it.
      * <p>
