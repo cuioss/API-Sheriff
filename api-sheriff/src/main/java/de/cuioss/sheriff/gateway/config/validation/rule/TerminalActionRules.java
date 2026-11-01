@@ -15,10 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.effectiveProtocol;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.*;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -68,6 +65,10 @@ import org.jspecify.annotations.Nullable;
  * The identity-header target rule ({@link #validateKeepIdentityHeadersTarget}) refuses
  * {@code keep_identity_headers} on a redirect, a directory-asset and a WebSocket route, none of which
  * relays an upstream response header for the key to govern.
+ * <p>
+ * The forward-on-redirect rule refuses a route-scope {@code forward} block on a redirect route: a
+ * redirect consumes no forward policy and contacts no upstream, so the block would parse and then
+ * never be read. A broader {@code forward} block — endpoint or anchor — stays accepted.
  * <p>
  * Every rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and never
  * fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of this
@@ -134,6 +135,7 @@ public class TerminalActionRules {
         RedirectConfig redirect = route.redirect();
         if (redirect != null) {
             validateRedirectExclusivity(endpoint, route, errors);
+            validateNoForwardOnRedirectRoute(endpoint, route, errors);
         }
         if (assetAnchor && asset == null && redirect == null) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
@@ -172,6 +174,33 @@ public class TerminalActionRules {
                     "route '%s' declares both a redirect terminal action and an upstream block; a redirect contacts no upstream, so the upstream settings would be silently ignored"
                             .formatted(route.id())));
         }
+    }
+
+    /**
+     * Rule: a route-scope {@code forward} block is refused on a redirect route.
+     * <p>
+     * A redirect is answered with a plain status and {@code Location}; no forward policy is
+     * consumed and no upstream is contacted, so a {@code forward} block declared on the route
+     * itself would parse and then act on nothing — the same inert trap
+     * {@link CookieRules#validateNoCookiesOnTerminalRoute} already closes for a route-scope
+     * {@code cookies} block. A broader block — endpoint or anchor — stays accepted: it governs
+     * that scope's proxy routes. A {@code forward} block on an asset route is out of scope here;
+     * whether it is read needs its own check before the refusal is widened.
+     * <p>
+     * Every violation collects into the shared list; the rule never fails fast.
+     *
+     * @param endpoint the endpoint owning the route, for the file-annotated error
+     * @param route    the route whose own {@code forward} block is judged
+     * @param errors   the shared violation list every refusal is appended to
+     */
+    private static void validateNoForwardOnRedirectRoute(EndpointConfig endpoint, RouteConfig route,
+            List<ConfigError> errors) {
+        if (route.forward() == null) {
+            return;
+        }
+        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                ("route '%s' declares a forward block but serves a redirect, which has no upstream "
+                        + "to forward to — remove the block").formatted(route.id())));
     }
 
     /**

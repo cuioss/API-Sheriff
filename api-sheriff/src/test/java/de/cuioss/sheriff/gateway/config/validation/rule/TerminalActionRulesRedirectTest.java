@@ -22,7 +22,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -31,6 +30,7 @@ import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
@@ -332,6 +333,65 @@ class TerminalActionRulesRedirectTest {
 
             assertRefused(errors, ROUTES_POINTER, "route '%s' declares both a redirect terminal action and an upstream block"
                     .formatted(id));
+        }
+
+        @Test
+        @DisplayName("Should refuse a forward block declared on a redirect route")
+        void shouldRefuseForwardOnRedirectRoute() {
+            String id = routeId();
+            RouteConfig route = redirectRoute(id, redirect("/new-home", false, false))
+                    .forward(ForwardConfig.builder().headersAllow(List.of("X-Trace")).build())
+                    .build();
+
+            List<ConfigError> errors = validate(route);
+
+            assertRefused(errors, ROUTES_POINTER,
+                    "route '%s' declares a forward block but serves a redirect".formatted(id));
+        }
+
+        @Test
+        @DisplayName("Should admit a forward block on a proxy route")
+        void shouldAdmitForwardOnProxyRoute() {
+            String id = routeId();
+            RouteConfig route = RouteConfig.builder()
+                    .id(id)
+                    .match(MatchConfig.builder().pathPrefix("/" + id).build())
+                    .upstream(UpstreamConfig.builder().path("/v2").build())
+                    .forward(ForwardConfig.builder().headersAllow(List.of("X-Trace")).build())
+                    .build();
+            EndpointConfig endpointWithProxy = EndpointConfig.builder()
+                    .id("proxy")
+                    .enabled(true)
+                    .auth(AuthConfig.builder().require(Require.NONE).build())
+                    .baseUrl("API")
+                    .routes(List.of(route))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(GatewayConfig.builder().version(1).build(),
+                    List.of(endpointWithProxy),
+                    new ResolvedTopology(Map.of("API", new ResolvedUpstream("https", "api.internal", 443, ""))));
+
+            assertTrue(errors.isEmpty(), () -> "a forward block on a proxy route should be admitted, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should admit an endpoint-scope forward block governing a redirect route")
+        void shouldAdmitEndpointScopeForwardWithRedirectRoute() {
+            String id = routeId();
+            RouteConfig route = redirectRoute(id, redirect("/new-home", false, false)).build();
+            EndpointConfig endpointWithForward = EndpointConfig.builder()
+                    .id("redirects")
+                    .enabled(true)
+                    .auth(AuthConfig.builder().require(Require.NONE).build())
+                    .forward(ForwardConfig.builder().headersAllow(List.of("X-Trace")).build())
+                    .routes(List.of(route))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(GatewayConfig.builder().version(1).build(),
+                    List.of(endpointWithForward), new ResolvedTopology(Map.of()));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "an endpoint-scope forward block should stay accepted, got: " + errors);
         }
 
         @ParameterizedTest(name = "refuses protocol {0}")
