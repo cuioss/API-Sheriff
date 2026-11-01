@@ -2,7 +2,7 @@
   "id": "PLAN-V02-55",
   "slug": "it-concurrency-and-local-image-hazard",
   "workstream": "WS-05",
-  "status": "staged",
+  "status": "running",
   "lane": "plan-marshall",
   "plan_marshall_plan_id": "",
   "pr": "",

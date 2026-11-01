@@ -2,10 +2,10 @@
   "id": "PLAN-V02-52",
   "slug": "adr-relocations-and-citation-rewrite",
   "workstream": "WS-02",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-v02-52-adr-relocations-and-citation-rewrite",
+  "pr": "554",
+  "landing": "landings/PLAN-V02-52.md",
   "seq": 52
 }
