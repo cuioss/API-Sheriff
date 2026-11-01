@@ -2,10 +2,10 @@
   "id": "PLAN-V02-49",
   "slug": "test-simplification-part-2",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-v02-49-test-simplification-part-2",
+  "pr": "550",
+  "landing": "landings/PLAN-V02-49.md",
   "seq": 49
 }

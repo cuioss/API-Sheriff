@@ -1,0 +1,11 @@
+{
+  "id": "PLAN-V02-54",
+  "slug": "token-sheriff-lazy-generators-measured",
+  "workstream": "WS-05",
+  "status": "shipped",
+  "lane": "plan-marshall",
+  "plan_marshall_plan_id": "plan-v02-54-token-sheriff-lazy-generators-measured",
+  "pr": "553",
+  "landing": "landings/PLAN-V02-54.md",
+  "seq": 54
+}

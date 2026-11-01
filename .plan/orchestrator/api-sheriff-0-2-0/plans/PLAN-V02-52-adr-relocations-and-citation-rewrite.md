@@ -72,9 +72,10 @@ cut deliverable 5's wording items first.
   the skill; report the reading in the PR, as `PLAN-V02-48` did.
 - **Derive the next free ADR ordinal at write time** from `doc/adr/` on the branch, checking `main` and open PRs, and re-fetch before push
   (`finalize-main-drift`).
-- **A plan in flight touches the same test sources.** `PLAN-V02-49` (PR #546) edits `ConfigLoaderTest`, `HeaderRulesTest`,
-  `TerminalActionRulesRedirectTest`, `WebSocketRelayStageTest` and `doc/development/test-corpus-integrity.adoc`, all of which this plan
-  repoints or extends. Start from `main` after #546 has landed. If it has not, rebase onto it before any of these files are touched.
+- **The test sources and documents this plan repoints were rewritten by `PLAN-V02-49`** (on `main` as #547 to #550): `ConfigLoaderTest`,
+  `HeaderRulesTest`, `TerminalActionRulesRedirectTest`, `WebSocketRelayStageTest` and `doc/development/test-corpus-integrity.adoc`. Re-read each from
+  current `main` before editing it, and take its citations from there, not from this spec. `#552` rewrote seven `doc/architecture/*.adoc`
+  files and touched `EdgeSubPackageArchTest`; five of those eight files cite an amendment label or one of the two relocated records, so they are in the citation set.
 
 ## Claim Labels
 
@@ -111,8 +112,8 @@ cut deliverable 5's wording items first.
 
 - Depends on: `PLAN-V02-48` merged (#544, `6f06e7b2`, done). It delivers the rewritten records, the invisible anchors this plan removes,
   and the term list and ceiling guard this plan applies.
-- **Sequence after `PLAN-V02-49` lands (#546).** The two share five files (four test sources and `test-corpus-integrity.adoc`). A shared
-  multi-file footprint is the operator's call; starting after #546 avoids the rebase.
+- **`PLAN-V02-49` is on `main`** (#547 to #550), so no sequencing against it remains. The five files the two plans share (four test sources and
+  `test-corpus-integrity.adoc`) are read from `main` as `PLAN-V02-49` left them.
 - **Not concurrent with any plan that authors or re-opens an ADR.** None is left in this epic. A plan in a sibling epic that writes an ADR is the
   remaining case: a relocation moves the ground under a record being written there.
 - Kidicap `PLAN-29` D6 owns `0008`'s timeout sentence; it is not settled here. The kidicap line references into `0008` and `0064` are

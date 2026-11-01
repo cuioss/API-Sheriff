@@ -137,9 +137,15 @@ would otherwise force a retrofit.
 - **PLAN-V02-48** (staged 2026-10-25): the nine ADR groups `PLAN-V02-04` deferred (52 records), plus its
   documentation residue (D12). Unblocked since #521 merged; it never runs beside an ADR-authoring plan (V02-06,
   -07, -09, -11).
-- **PLAN-V02-49** (staged 2026-10-25): the `config/validation/`, `config/` and `routing/` duplicates plus the edge
-  residue of V02-27 (FU-1 and FU-2 merged). It collides on `config/` and `edge/` tests with V02-05, -06, -07, -09
-  and -20, so it runs after them, not beside them.
+- **PLAN-V02-49** — SHIPPED 2026-10-31 as four serial PRs, #547 (`19ad7a8f`), #548 (`2ceb1384`), #549 (`9e95440a`) and #550 (`5589ff33`), see
+  `landings/PLAN-V02-49.md`. The single-PR attempts #545 and #546 were closed unmerged (too large for the review bots). The `config/validation/`, `config/` and `routing/`
+  duplicates are removed against named survivors, the fixtures live in `ConfigFixtures`, `ValidationAsserts` and `RepositoryRoot`, and the edge residue of V02-27 is closed
+  (`GrpcStreamIdleBound#timeoutMillis()` is package-private). 7,153 → 7,102 tests. Reviews closed by operator override.
+- **PLAN-V02-54** (staged 2026-10-31, WS-05): #422 measured, orchestrator-verified; **shipped 2026-11-01 as #553 (`267a285d`), verdict `measured`: inside the noise** (landing `landings/PLAN-V02-54.md`). Document-only footprint (`doc/quality-report/test-quality.adoc`). #422 closed.
+- **PLAN-V02-55** (staged 2026-10-31, WS-05): #423, six deliverables, orchestrator-verified; HELD until `PLAN-V02-52` lands (operator, 11 shared files). Runs before or after `PLAN-V02-53`, not beside it.
+- **PLAN-V02-53** (staged 2026-10-31, WS-01): the seven PLAN-15 follow-up issues #323 to #329 in one PR, plus closing those issues after the PR has landed. Sequenced AFTER
+  `PLAN-V02-52`: the two share 18 files (docs, ADR-0007, `AnchorRules` and six production files) and the gate asks the overlap question while V02-52 runs. The first cut, if the PR
+  grows past 100 files or 150,000 characters, is #324, then #327; a cut issue stays open.
 
 ## Workstreams
 
@@ -163,6 +169,30 @@ needs no translation.
 
 ## Decisions
 
+- **2026-11-01 — `PLAN-V02-54` landed and verified `measured`; #422 closed; an outside PR (#555) collides with `PLAN-V02-53` D7.** `PLAN-V02-54` shipped as #553 (`267a285d`), a one-file documentation change. Landing: `landings/PLAN-V02-54.md`. The verdict is **inside the noise**: build 278 / 447 / 462 s at 0.9.7 against 291 / 359 / 556 s at 0.9.8, counts identical in all six runs (4747 + 2 skipped / 117 / 942), JaCoCo identical except `AnchorRules` (a class that does not import TokenSheriff). The host was loaded (load 7 to 40), so the document says it cannot rule out a few seconds across the 15 generator-using JVMs. One check in the spec could not be made as written: CI skipped the `build` job on the merge commit (docs-only footprint) and the pin-bump commit's runs are gone, so test counts were re-read from the raw Maven log of each of the six runs instead of from CI. #422 was closed on the numbers at 12:25Z by the operator's account. **Collision:** an outside contributor opened #555 ("Fixes #329") on 2026-11-01 10:56Z. It edits `TerminalActionRules`, `TerminalActionRulesRedirectTest` and `doc/configuration.adoc`, which is `PLAN-V02-53` deliverable 7 almost exactly (refuse a route-scope `forward` block on a redirect route at boot; asset routes left out). It is open, not ours, and unmerged. The operator decides whether it goes in; `PLAN-V02-53` is not emitted yet, so nothing is wasted. `PLAN-V02-52` is open as #554 and has not landed, so `PLAN-V02-55` is still held for it (standing instruction: emit straight after V02-52 is analyzed).
+- **2026-10-31 — `PLAN-V02-54` and `PLAN-V02-55` staged for #422 and #423, orchestrator-verified; `PLAN-V02-54` emitted, `PLAN-V02-55` held for `PLAN-V02-52` by the operator.** The operator asked to do the two test-duration issues now and to have the orchestrator drive them to verify the change. The orchestrator never builds or measures (prime directive), so "drive" is implemented as: baselines read by the orchestrator from CI BEFORE the plans start and written into each spec (`## Verification by the orchestrator`), a verdict rule, and a re-read of the same sources at `analyze`. Baselines: failsafe XML archived in `cuioss/cuioss.github.io` under `api-sheriff/integration-tests-{timestamp}/failsafe-reports/` (per-class `time`, three runs 2026-10-31: `BffSessionIdleTimeoutIT` 194.6 to 196.3 s, `BffTokenRefreshIT` 46.9 to 49.1 s, `BffFapiControlsIT` 24.6 to 26.0 s, `BffClientSecretModeIT` 24.2 to 25.6 s, `BffTlsRelaxationIT` 33.5 to 35.1 s); workflow durations are recorded as NOT evidence because their spread (Integration Tests 1,096 to 1,720 s over twelve full runs, Maven Build 793 to 1,479 s) dwarfs any gain. `PLAN-V02-54` (WS-05, #422) is a measurement-only plan: the pin is already 0.9.8 (#491) and upstream is lazy at that tag, so it measures 0.9.7 against 0.9.8 in two worktrees, three alternating runs each, records the figures in `doc/quality-report/test-quality.adoc`, and closes #422 on the numbers whether or not there is a gain. `PLAN-V02-55` (WS-05, #423) has six deliverables (overlap the idle-timeout legs, make the three log-counting suites attributable and move them, isolate `BffTlsRelaxationIT`, rebuild the echo image locally, keep the partition honest, close #423 only if every part is done); the attributable log value in D2(a) is a production change on the refresh path and carries a mandatory security review, with a cut if no acceptable value exists. Gate read: both specs `declarative` (1 and 13 entries), comparison determinate, no blocking verdict row; `PLAN-V02-54` shares nothing with in-flight work; `PLAN-V02-55` shares 11 files with the running `PLAN-V02-52` (its citation rewrite), overlap prompt required, answered by the operator: **hold until V02-52 lands**. `auto_emit` is on, so `PLAN-V02-54` is recorded `launched`, not `running`. Ordering to keep: `PLAN-V02-53` and `PLAN-V02-55` both edit `integration-tests/` and both wait for `PLAN-V02-52`, so they run one after the other; `PLAN-V02-54` and `PLAN-V02-55` each need a quiet host for their own builds and never run their builds at the same time on one machine, and `PLAN-V02-52`'s builds on the same host are what `PLAN-V02-54`'s spec tells it to check with `uptime` first.
+- **2026-10-31 — `PLAN-V02-53` staged: the seven PLAN-15 follow-up issues (#323 to #329) as one plan with eight deliverables, the eighth being the closure of the issues after landing.**
+  The operator asked for one plan for the small issues and for the plan to close them after it lands. Scope: #323 to #329; `#422` and `#423` (test-cycle duration) are left out as measurement and
+  test-timing work, not small code defects, and `#285` was closed the same day as already done. Split-or-proceed verdict: **proceed unsplit** (eight deliverables against the ~6 guard; each is thin,
+  they share one origin, and the plan ceiling is 12), with a stated cut order for the review-bot caps (#324 first, then #327). The closure is a plan deliverable, not a merge keyword: the PR names
+  the issues without a closing keyword, so a cut #324 is not closed by the merge, and each closure comment names the merged PR and the test that proves it. Gate read at staging: surface
+  `declarative` (34 entries, none unresolved), comparison determinate, and an 18-file overlap with the running `PLAN-V02-52`, so the spec declares `Depends on: PLAN-V02-52` and is not emitted
+  until that plan has landed. Two corrections made while writing it: my comment on #329 had said an asset route also reads no `forward` block, which I had not checked (an upstream-sourced
+  asset contacts an upstream), so the comment was edited and the spec keeps asset routes out of scope unless the outline proves it; and my sweep for committed YAML combining `forward` with
+  `redirect` was inconclusive (no YAML parser in the orchestrator's interpreter), so the spec makes it an outline-time sweep over the listed redirect declarations. #325's title still says "four
+  places" and the plan updates it.
+- **2026-10-31 — `PLAN-V02-49` landed as four serial PRs (#547 to #550, last merge `5589ff33`); all four deliverables shipped; `PLAN-V02-52` released from its hold and emitted.**
+  The plan's single-PR attempts #545 and #546 were closed unmerged (about 496,000 diff characters, which the review bots could not review), and it cut the work by area as its split
+  guard says. I verified each PR's state, the merged diff (52 files, one production file: `ResponseStage.GrpcStreamIdleBound#timeoutMillis()` narrowed to package-private, plus a
+  stray import blank line), CI per merge commit (Maven Build and Integration Tests `success` on both the merge group and the push run, four of four), the PR-attached benchmark
+  (`success` at all four heads; #544's run `41091771555` also concluded `success`) and zero unresolved resolvable review threads. The landing's `pr` fact says `#545`, the number
+  `create-pr` recorded; the row carries `550`. Tests 7,153 → 7,102. **Per-class JaCoCo (529 classes, 0 lower) was measured before four tests were restored and not repeated**, so it is
+  a Watch, not a settled claim. Functional review, code review and simplify were closed by operator override at `9f1817b3` (fourth recent plan to do so). `landing-check`:
+  `complete: true`, `effort=low`; the surface delta is `expansion_detected` by two undeclared files (`BffRuntimeProducerTest`, `doc/development/boot-validation-rules.adoc`), no collision
+  resulted, the spec is shipped so its declaration was not changed. `PLAN-V02-52`'s spec was corrected in place: its dependency on #546 is replaced by the fact that the work
+  landed as #547 to #550, and its constraint on the test sources is rewritten as current state. #552 (`docs(architecture)`, merged 2026-10-31 by the operator outside this epic) rewrote seven
+  `doc/architecture` files that `PLAN-V02-52` has to repoint; its Expected Surface already names `doc/architecture/` and `EdgeSubPackageArchTest`, so it gained no entry. No fix plan for the
+  formatter churn was staged: that is the operator's call (Watch).
 - **2026-10-30 — `PLAN-V02-48` landed (#544, `6f06e7b2`) as part 1 of two: nine deliverables met, three met with residuals, four named items NOT done; `PLAN-V02-52`
   staged for them and held until #546 lands.** 50 ADR records were rewritten in place to the skeleton (ordinals, filenames and anchors kept; all 24 `Proposed`
   among them became `Accepted`, each with its evidence in the PR report) and nine more reworded. I re-measured the corpus from `main`: **72 records, 13,123 lines,
@@ -533,9 +563,8 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
-- **THE `PLAN-V02-48` PR BENCHMARK WAS UNOBSERVED, AND CODERABBIT'S MERGE-RISK TEXT NAMES INACCURACIES IT DOES NOT LOCATE** (added 2026-10-30, `PLAN-V02-48` landing).
-  The PR-attached Performance Benchmark run for #544's head (`41091771555`) was `in_progress` when I read it. The change is ADR prose, Javadoc and one contract test,
-  so a measurement cannot have moved; still read the run's conclusion at the next analyze before calling it green. Separately, CodeRabbit's final summary on #544 says
+- **CODERABBIT'S MERGE-RISK TEXT ON #544 NAMES INACCURACIES IT DOES NOT LOCATE** (added 2026-10-30, `PLAN-V02-48` landing).
+  The benchmark half of this Watch is closed: the PR-attached run for #544's head (`41091771555`) concluded `success`, read 2026-10-31. CodeRabbit's final summary on #544 says
   the documentation refresh "retains material timeout and security-contract inaccuracies" and attaches to no thread. It is third-party text and unverified; `PLAN-V02-52`
   D5 re-reads the timeout and security-contract statements in the rewritten records against the code. If that finds nothing, strike this Watch.
 - **THE APISIX `bearer` BENCHMARK LANE HAS NO VALID SIDE, SO `run-comparison.sh --target both` STOPS THERE** (added 2026-10-30, `PLAN-V02-48` landing).
@@ -597,7 +626,19 @@ doc-only or build-light plan for the second and third slots.
   **Recurrence 2026-10-30:** `PLAN-V02-07` hit it as well (three plans in a row) and paid a second cost: reverting the rewrite left the tree at a hash no build row carried, so
   the freshness gate went stale and an extra non-mutating build (about 7 minutes) was needed to mint a matching row. Routed to `lessons-routing` as `-076`. The churn itself
   is still unreproduced by the orchestrator and still has no fix plan; with three plans reporting it, check it on a clean `main` worktree before `PLAN-V02-48` and
-  `PLAN-V02-49` run the gate.
+  `PLAN-V02-49` run the gate. **Recurrence 2026-10-31:** `PLAN-V02-49` reported it too, now four plans; each of its four parts reverted about 380 untouched files. It is also the first time
+  the rewrite reached a committed file: `ResponseStage.java` on `main` carries one extra blank line in its import block (merged diff `6f06e7b2..5589ff33`, #549 says it came from the formatter).
+  Still unreproduced by the orchestrator. A fix plan would need the reproduction first (clean `main` worktree, `verify -Ppre-commit`, `git status --porcelain`); staging one is the operator's decision. Not
+  closed by `PLAN-V02-52`, which also runs the gate.
+- **`PLAN-V02-49` RESIDUE — NO OWNER, ALL LOW** (added 2026-10-31, `PLAN-V02-49` landing). (1) The per-class JaCoCo comparison (529 classes, 0 lower, 2 higher) was measured at `35c47791`, before
+  four tests were restored (the #550 body names three: `shouldLetRouteAnchorOverrideEndpointAnchor`, `shouldFallBackToGlobalList`, `shouldMaterializeAnchorAllowedMethods`), and not repeated; the
+  last two passed but were not shown failing, so "nothing a test proves is lost" rests on that comparison plus an independent read, not on a final-tree measurement. Re-measure from a clean tree
+  (`clean verify -Pcoverage -pl api-sheriff -am`, lesson `2026-10-25-22-001`) if coverage of `config/` or `routing/` is ever in question. (2) `GatewayEdgeEarlyResponseResetTest.uploadsStillSendingWhenAnsweredStayOnOneConnectionUnderTheEdgesOptions`
+  failed once in a unit run under host load around 30 (part C), passed alone and on rerun, file untouched, cause not established; same family as the HTTP/2 early-reset Watches above, a recurrence is a suspected
+  production defect, reproduce under `ActiveProcessorCount=1`. (3) The `plan-v02-49-part-c` worktree is still listed by `git worktree list` although the landing says `cleanup_owed=false`; remove it with plain git
+  after confirming #549 merged (it did, `9e95440a`). (4) Advisories the plan left open: `ConfigFixtures.anchoredEndpointSeed` Javadoc says anchor where endpoint is meant, `baseRoute` and `backendUpstream`
+  have one consumer each, `TopologyResolverTest.stillThrows...AlongsideSkippedAdditionalAlias` is misnamed (its alias resolves), `PortalConfig.DEFAULT_CACHE_SECONDS` has no reader outside its class, the marked outcome of
+  `retireFailedRelayConnection` looks unreachable from the dispatch path, and the `test-quality.adoc` format validator reports existing header and list warnings.
 - **HAND-MAINTAINED INVENTORIES NOT BOUND BY A TEST — NO OWNER** (added 2026-10-27, inbox
   `plan-v02-05-response-hygiene-012`). `DocumentedHeaderSetsContractTest` binds the identity set and both protocol tiers to
   their constants. The route-field inventory (`doc/configuration.adoc`, `endpoint.schema.json`) and the never-forward and
@@ -894,8 +935,8 @@ doc-only or build-light plan for the second and third slots.
   bound to the overload the tests drive. The operator chose to hold it as the named residual: do not close it by
   adding a test inside another plan, and do not move the threat-model status. Also open and not this plan's: the
   `gw-07-upstream-ports` matrix row reads COVERED while naming an effect no test observes (not authored by #520).
-  `GrpcStreamIdleBound.timeoutMillis()` is a public production method added only for a test; `PLAN-V02-49`
-  D3 decides whether to remove it.
+  `GrpcStreamIdleBound.timeoutMillis()` was a public production method added only for a test; `PLAN-V02-49` (#549) made it package-private and reads it through
+  the test-only `GrpcStreamIdleBounds`. That sub-item is closed; the `dispatchGrpc` hand-over residue above is untouched and still the operator's named residual.
 - **ADR-0066 HAS NO TEST FOR TWO ABORTIVE-CLOSE TRIGGERS — OPERATOR RULED: REPORT, NO TEST** (added 2026-10-25, from
   `PLAN-V02-04`'s message). No test pins the abortive HTTP/1.1 upstream close on the request-body idle-timeout trigger
   or the 25 s deadline trigger. The gap is recorded in ADR-0066 and the GW-07 threat-model entry. Owner: none; it
