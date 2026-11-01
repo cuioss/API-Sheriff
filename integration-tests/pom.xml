@@ -95,8 +95,10 @@
                  The 'integration-tests' and 'jfr' profiles below each bind a
                  'grpc-echo-build' execution of the 'build' goal, so the host reactor
                  produces the echo fast-jar under target/quarkus-app at 'package' — before
-                 either profile's pre-integration-test executions start the stack, whose
-                 grpc-echo image build copies that directory. -->
+                 either profile's pre-integration-test image-build execution builds the
+                 grpc-echo image, which copies that directory. The lanes build the fixture
+                 images themselves rather than leaving them to 'up -d', which would reuse any
+                 grpc-echo image the daemon already holds. -->
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
@@ -197,9 +199,9 @@
                     <!-- Packages the in-repo gRPC echo service as a Quarkus JVM fast-jar. It
                          re-enables the Quarkus 'build' goal that the normal module build
                          deliberately leaves disabled. The goal runs at 'package', so
-                         target/quarkus-app exists before the pre-integration-test executions
-                         below start the stack: the grpc-echo image build copies that directory
-                         and runs no Maven of its own. -->
+                         target/quarkus-app exists before the docker-build-distroless execution
+                         below builds the grpc-echo image: that build copies the directory and
+                         runs no Maven of its own. -->
                     <plugin>
                         <groupId>io.quarkus</groupId>
                         <artifactId>quarkus-maven-plugin</artifactId>
@@ -430,7 +432,16 @@
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
                             </execution>
-                            <!-- Build Docker image (native executable must already exist) -->
+                            <!-- Build the gateway image (native executable must already exist) and
+                                 every compose fixture image the stack starts from a build. The
+                                 lane builds the fixtures itself rather than leaving them to
+                                 'up -d', which builds an image only when the daemon holds none of
+                                 that name, so a changed grpc-echo or passthrough-backend would
+                                 otherwise never reach its container. api-sheriff is the only
+                                 image the release lane publishes; the two fixtures are test-only
+                                 and never tagged, scanned, pushed or signed.
+                                 ComposeFixtureImageBuildWiringTest pins the service list to the
+                                 build: services of docker-compose.yml. -->
                             <execution>
                                 <id>docker-build-distroless</id>
                                 <phase>pre-integration-test</phase>
@@ -444,6 +455,8 @@
                                         <argument>compose</argument>
                                         <argument>build</argument>
                                         <argument>api-sheriff</argument>
+                                        <argument>grpc-echo</argument>
+                                        <argument>passthrough-backend</argument>
                                     </arguments>
                                     <environmentVariables>
                                         <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
@@ -540,8 +553,9 @@
             <build>
                 <plugins>
                     <!-- Same grpc-echo-build execution as the integration-tests profile above,
-                         for the same reason: this lane starts the same stack, whose grpc-echo
-                         image build copies the host-built target/quarkus-app. -->
+                         for the same reason: this lane starts the same stack, and the
+                         docker-build-jfr execution below builds the grpc-echo image, which
+                         copies the host-built target/quarkus-app. -->
                     <plugin>
                         <groupId>io.quarkus</groupId>
                         <artifactId>quarkus-maven-plugin</artifactId>
@@ -641,7 +655,11 @@
                                     </arguments>
                                 </configuration>
                             </execution>
-                            <!-- Build Docker image with native JFR support -->
+                            <!-- Build the gateway image with native JFR support and every compose
+                                 fixture image the stack starts from a build, for the reason given
+                                 on docker-build-distroless in the integration-tests profile: 'up -d'
+                                 would reuse a stale fixture image. ComposeFixtureImageBuildWiringTest
+                                 pins this service list too. -->
                             <execution>
                                 <id>docker-build-jfr</id>
                                 <phase>pre-integration-test</phase>
@@ -659,6 +677,8 @@
                                         <argument>docker-compose.jfr.yml</argument>
                                         <argument>build</argument>
                                         <argument>api-sheriff</argument>
+                                        <argument>grpc-echo</argument>
+                                        <argument>passthrough-backend</argument>
                                     </arguments>
                                     <environmentVariables>
                                         <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>

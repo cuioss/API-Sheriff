@@ -43,7 +43,7 @@ import org.junit.jupiter.api.Test;
  * image and proves the values arrived, but it can only run where a native image has been built and
  * Docker is available. This test covers the one link in the chain that is pure declaration: the
  * release lane performs <em>no</em> {@code docker build} of its own — the harness Compose build is the
- * single image build — so the {@code api-sheriff} service's {@code build.args} is the ONLY channel
+ * single build of the published image — so the {@code api-sheriff} service's {@code build.args} is the ONLY channel
  * reaching the Dockerfile's {@code ARG APP_VERSION} / {@code ARG APP_REVISION}. Drop an entry here and
  * the Dockerfile's declared default silently wins: the released image would label itself {@code dev}
  * while every step still succeeds.

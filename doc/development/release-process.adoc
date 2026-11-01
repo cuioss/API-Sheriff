@@ -167,11 +167,13 @@ cause on `main` and *cut a new patch version*. Do not re-run.
 === One build per architecture, and why the step order is inverted
 
 link:../../integration-tests/pom.xml[`integration-tests/pom.xml`] binds
-`docker compose build api-sheriff` to `pre-integration-test`, so the integration-test harness always
-builds the image. Each leg of the publish lane is therefore ordered *test-which-builds, then
-push-that-digest* rather than the more obvious build, test, push: the harness build is the one and
-only image build in that leg, and the image it produced is the one that gets tagged, pushed, listed
-in the index and signed.
+`docker compose build api-sheriff grpc-echo passthrough-backend` to `pre-integration-test`, so the
+integration-test harness always builds the image. Each leg of the publish lane is therefore ordered
+*test-which-builds, then push-that-digest* rather than the more obvious build, test, push: the
+harness build is the leg's only build of the published gateway image (`api-sheriff`); the
+`grpc-echo` and `passthrough-backend` images it also builds are test-only fixtures that are never
+tagged, scanned, pushed or signed. The gateway image it produced is the one that gets tagged,
+pushed, listed in the index and signed.
 
 The inversion exists so that "push exactly what was tested" holds *by construction*. Each leg has
 only one build, so there is nothing that can drift between the artifact it tested and the one it

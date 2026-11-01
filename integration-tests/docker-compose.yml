@@ -364,9 +364,11 @@ services:
     build:
       context: ../api-sheriff
       dockerfile: src/main/docker/Dockerfile.native
-      # The harness build is the ONE image build in this project — the release lane runs this very
-      # compose build and pushes exactly the digest it produced — so this is the single supply point
-      # for the image's org.opencontainers.image.version and .revision labels. release.yml performs
+      # The harness build is the leg's only build of the published gateway image (api-sheriff); the
+      # grpc-echo and passthrough-backend images it also builds are test-only fixtures that are never
+      # tagged, scanned, pushed or signed. The release lane runs this very compose build and pushes
+      # exactly the api-sheriff digest it produced, so this is the single supply point for the
+      # image's org.opencontainers.image.version and .revision labels. release.yml performs
       # no docker build of its own, which makes these build.args the ONLY channel reaching the
       # Dockerfile ARGs. The release lane exports APP_VERSION=<released version> and
       # APP_REVISION=<release-tag commit sha> into the Maven step's environment; locally both stay
