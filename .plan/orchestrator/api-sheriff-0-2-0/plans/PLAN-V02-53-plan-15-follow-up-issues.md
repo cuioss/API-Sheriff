@@ -66,6 +66,9 @@ decomposition, and the issue bodies were corrected on 2026-10-31 to the current 
    `ConfigProducerTest`, `integration-tests/scripts/verify-invalid-config-fails.sh` and `doc/user/endpoint-routes.adoc` — and fix those that do. **Asset
    routes are out of scope unless the outline proves an asset route also never reads `forward`**: an upstream-sourced asset contacts an upstream, so
    that is not assumed.
+   **Outside PR #555** (opened 2026-11-01 by an outside contributor, "Fixes #329") implements this refusal in `TerminalActionRules` with tests in `TerminalActionRulesRedirectTest` and a
+   `doc/configuration.adoc` edit. At outline, check its state on `main`: if it has merged, this deliverable shrinks to what it left undone (the YAML sweep, `doc/user/endpoint-routes.adoc`, the schema description, the
+   closure of #329 on the merged code); if it is still open, the operator has ruled on it first.
 8. **Close the seven issues after the PR has landed.** Last, after the PR is merged and CI on the merge commit is green, close each of #323 to #329
    through the CI abstraction (`ci issue comment`, then `ci issue close`), each with a comment that names the merged PR and says which acceptance
    criterion the merged change meets and which test proves it. An issue whose deliverable was cut or only partly met stays open with a comment saying
