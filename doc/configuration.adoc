@@ -3802,6 +3802,11 @@ dimension together, and an `Authorization` re-admitted on a `token_relay: false`
 link:#_auth_token_relay[`auth.token_relay`]) -- apply to an endpoint block exactly as to a route
 block. The modes below are stated for "the route", meaning the block the route resolves.
 
+A route-scope `forward` block is refused at boot on a redirect route: a redirect answers with a
+plain status and `Location`, contacts no upstream, and consumes no forward policy, so the block
+would parse and then never be read. An endpoint-scope block stays accepted -- it governs that
+endpoint's proxy routes.
+
 ==== The three modes
 
 Headers and query parameters are *independent dimensions*. Each resolves exactly one of three
