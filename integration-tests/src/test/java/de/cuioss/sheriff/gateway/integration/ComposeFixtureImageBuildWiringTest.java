@@ -187,13 +187,13 @@ class ComposeFixtureImageBuildWiringTest {
                 () -> assertFalse(violationsOf(fixtures, knownLanes(buildArguments("gateway", "echo", "upstream"),
                         withOverlay)).isEmpty(), "a lane that builds a service without a build section was accepted"),
                 () -> assertFalse(violationsOf(fixtures, knownLanes("<argument>compose</argument><argument>up"
-                        + "</argument>", withOverlay)).isEmpty(),
+                                + "</argument>", withOverlay)).isEmpty(),
                         "a lane whose command line has no build argument was accepted"),
                 () -> assertFalse(violationsOf(fixtures, knownLanes(complete, null)).isEmpty(),
                         "a profile without its image-build execution was accepted"),
                 () -> assertFalse(violationsOf(fixtures, pom(knownLane(KNOWN_LANES.getFirst(), complete),
-                        knownLane(KNOWN_LANES.getLast(), withOverlay),
-                        profile("smoke", true, "build-smoke", buildArguments("gateway")))).isEmpty(),
+                                knownLane(KNOWN_LANES.getLast(), withOverlay),
+                                profile("smoke", true, "build-smoke", buildArguments("gateway")))).isEmpty(),
                         "a further profile that starts the stack and leaves a fixture to 'up -d' was accepted"));
     }
 
