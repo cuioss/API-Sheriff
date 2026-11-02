@@ -19,21 +19,18 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.EnumSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,7 +38,6 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-import org.yaml.snakeyaml.Yaml;
 
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
@@ -720,7 +716,7 @@ class OneOffGatewayContainersTest {
             Path derived = OneOffGatewayContainers.writeDerivedDescriptor("harness-test-derived-server",
                     REFRESH_SOURCE, REFRESH_ORIGIN, PORT);
 
-            Map<String, Object> oidc = child(load(derived), "oidc");
+            Map<String, Object> oidc = child(OneOffGatewayContainers.loadDescriptor(derived), "oidc");
             Map<String, Object> session = child(oidc, "session");
             assertAll("the derived server-mode descriptor",
                     () -> assertEquals(MODULE.resolve("target/harness-test-derived-server/gateway.yaml"),
@@ -741,7 +737,7 @@ class OneOffGatewayContainersTest {
             Path derived = OneOffGatewayContainers.writeDerivedDescriptor("harness-test-derived-cookie",
                     COOKIE_REFRESH_SOURCE, COOKIE_REFRESH_ORIGIN, PORT);
 
-            Map<String, Object> oidc = child(load(derived), "oidc");
+            Map<String, Object> oidc = child(OneOffGatewayContainers.loadDescriptor(derived), "oidc");
             Map<String, Object> session = child(oidc, "session");
             assertAll("the derived cookie-mode descriptor",
                     () -> assertEquals(ORIGIN + "/bff/callback", oidc.get("redirect_uri")),
@@ -771,21 +767,8 @@ class OneOffGatewayContainersTest {
                     () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
         }
 
-        private static Map<String, Object> load(Path descriptor) throws IOException {
-            try (Reader reader = Files.newBufferedReader(descriptor, StandardCharsets.UTF_8)) {
-                return typed(new Yaml().load(reader), descriptor.toString());
-            }
-        }
-
         private static Map<String, Object> child(Map<String, Object> parent, String key) {
-            return typed(parent.get(key), key);
-        }
-
-        private static Map<String, Object> typed(Object node, String what) {
-            Map<?, ?> raw = assertInstanceOf(Map.class, node, () -> what + " must be a mapping");
-            Map<String, Object> typed = new LinkedHashMap<>();
-            raw.forEach((key, value) -> typed.put(String.valueOf(key), value));
-            return typed;
+            return OneOffGatewayContainers.descriptorMapping(parent.get(key), key);
         }
     }
 

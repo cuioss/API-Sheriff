@@ -870,7 +870,7 @@ final class OneOffGatewayContainers {
         }
     }
 
-    private static Map<String, Object> loadDescriptor(Path descriptor) {
+    static Map<String, Object> loadDescriptor(Path descriptor) {
         try (Reader reader = Files.newBufferedReader(descriptor, StandardCharsets.UTF_8)) {
             return descriptorMapping(new Yaml().load(reader), descriptor.toString());
         } catch (IOException e) {
@@ -882,7 +882,7 @@ final class OneOffGatewayContainers {
      * Reads a parsed YAML node as a mapping with string keys. The result is a copy, so a caller that
      * changes a nested mapping writes it back into its parent.
      */
-    private static Map<String, Object> descriptorMapping(Object node, String what) {
+    static Map<String, Object> descriptorMapping(Object node, String what) {
         Map<?, ?> raw = assertInstanceOf(Map.class, node, () -> what + " must be a mapping");
         Map<String, Object> typed = new LinkedHashMap<>();
         raw.forEach((key, value) -> typed.put(String.valueOf(key), value));
