@@ -326,7 +326,7 @@ class ComposeFixtureImageBuildWiringTest {
     private static String profileWith(Lane lane, String arguments) {
         String execution = arguments == null ? ""
                 : "<execution><id>" + lane.execution() + "</id><configuration><arguments>" + arguments
-                        + "</arguments></configuration></execution>";
+                + "</arguments></configuration></execution>";
         return "<profile><id>" + lane.profile() + "</id><build><plugins><plugin><artifactId>" + EXEC
                 + "</artifactId><executions>" + execution + "</executions></plugin></plugins></build></profile>";
     }
