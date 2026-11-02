@@ -102,8 +102,9 @@ import org.junit.jupiter.api.Test;
  * The control session lives on the shared {@code api-sheriff-refresh} instance, as
  * {@link BffKeycloakLoginFlow#REFRESH_USERNAME}; no suite ends a Keycloak session of that user, and
  * the one login made there stays far below the ten sessions that instance keeps per subject. The
- * refresh of the control session writes a token-refreshed record to that instance's log, which is
- * why no suite that counts those records ({@code BffClientSecretModeIT}) runs at the same time.
+ * refresh of the control session writes a token-refreshed record to that instance's log; no suite
+ * that runs at the same time counts those records there — {@code BffClientSecretModeIT}, which counts
+ * them, runs concurrently too but counts only the output of a one-off gateway of its own.
  * <p>
  * The suite does not extend {@code BaseIntegrationTest}: no request goes to the primary instance.
  *

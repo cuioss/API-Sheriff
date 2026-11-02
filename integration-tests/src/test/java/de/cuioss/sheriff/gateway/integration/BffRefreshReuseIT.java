@@ -164,8 +164,10 @@ import org.junit.jupiter.api.Test;
  *       {@code credential-rejected} record to one request by the count on either side of it, and the
  *       record carries no session, user or request to tell it by. The attribution therefore holds only
  *       while no suite running at the same time causes that record on the same instance. None does: no
- *       other tagged suite ends a Keycloak session, so none drives a refresh that is refused, and
- *       {@code BffTokenRefreshIT}, which does, stays in the sequential execution for this reason.
+ *       other tagged suite ends a Keycloak session on either instance, so none drives a refresh there
+ *       that is refused: {@code BffTokenRefreshIT}, which does end one, runs concurrently on a one-off
+ *       gateway of its own, so its refused refresh is recorded in that gateway's output and in neither
+ *       of the two logs.
  *       {@code FailsafeConcurrencyContractTest} fails the build when a second tagged suite names one
  *       of the two logs.</li>
  *   <li><em>The two refresh instances.</em> Other tagged suites hold sessions on them at the same time,

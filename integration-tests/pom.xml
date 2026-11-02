@@ -242,7 +242,10 @@
                          class as well, three of them at a time. These classes spend most of
                          their time waiting on a wall clock — a token lifespan, a session
                          lifetime, an idle window, an upstream timeout — so running them side by
-                         side costs little CPU and saves the sum of their waits.
+                         side costs little CPU and saves the sum of their waits. This execution
+                         alone also enables JUnit's parallel execution; the default mode stays
+                         same_thread, so only a class annotated @Execution(CONCURRENT) runs its
+                         own methods side by side.
 
                          ORDER IS LOAD-BEARING. The default execution is declared first and Maven
                          runs the executions of one plugin in one phase in the order of the
@@ -272,18 +275,11 @@
                          the gateway instances it drives and what it changes there; the
                          container names, networks and host ports it creates; the instance log
                          files it reads; whether it attaches a compose container to a network.
+                         A suite that counts the records of an instance log runs concurrently
+                         only on a gateway of its own, or as the one tagged suite that names
+                         that log.
                          Kept in the default execution although they wait on a wall clock:
 
-                         BffTokenRefreshIT, BffClientSecretModeIT, BffFapiControlsIT: each
-                           attributes a log record to its own request by counting the records of
-                           an instance log before and after it (quarkus-refresh.log,
-                           quarkus-cookie-refresh.log). The records carry no session, user or
-                           request, so one caused by a tagged suite on the same instance would
-                           satisfy the count. BffRefreshReuseIT, the longest suite that counts on
-                           both logs, is the one that runs concurrently.
-                         BffTlsRelaxationIT: connects the compose echo container to a network of
-                           its own and disconnects it again, three times per run, while every
-                           tagged suite's mediated call goes through that container.
                          BffRefreshTransientFailureIT, BffRefreshSingleFlightIT,
                          BffRefreshScopeWireIT: the stub identity-provider rig has one container
                            name, one network and one port; the three exclude each other only by
