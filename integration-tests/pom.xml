@@ -398,6 +398,13 @@
                                     <groups>sleep-bound</groups>
                                     <forkCount>3</forkCount>
                                     <reuseForks>false</reuseForks>
+                                    <!-- Lets a class of this execution opt in to running its own
+                                         methods concurrently with @Execution(CONCURRENT). The
+                                         default mode stays same_thread, so every other class still
+                                         runs its methods one after the other. -->
+                                    <properties>
+                                        <configurationParameters>junit.jupiter.execution.parallel.enabled=true</configurationParameters>
+                                    </properties>
                                 </configuration>
                             </execution>
                         </executions>

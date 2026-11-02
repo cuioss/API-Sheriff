@@ -60,6 +60,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 /**
  * Proves {@code oidc.session.idle_timeout_seconds} on the native image, in both session modes: a
@@ -132,12 +134,27 @@ import org.junit.jupiter.api.Timeout;
  * session stores and logs are shared with nobody. The suite logs in as
  * {@link BffKeycloakLoginFlow#USERNAME}, logs one gateway session out, its own, and drives no admin
  * API of the identity provider, so it ends no session another suite holds.
+ * <p>
+ * <strong>The two legs overlap.</strong> The class runs its methods concurrently
+ * ({@code @Execution(CONCURRENT)}; the concurrent Failsafe execution enables JUnit's parallel
+ * execution, and only a class that opts in like this one runs its methods side by side). The
+ * server-mode and the cookie-mode test therefore run at the same time, each waiting only for its own
+ * leg, and the class takes as long as its longer leg rather than the sum of both. That is safe because
+ * the two methods share no state: each starts, drives and removes a gateway of its own, under its own
+ * container name, host port, derived descriptor and directory below {@code target/}; every wait is
+ * measured from an instant the method took itself; and the helpers both call,
+ * {@link BffKeycloakLoginFlow} and {@link OneOffGatewayContainers}, keep no mutable static state and
+ * set no REST Assured global — every request builds a specification of its own. The two logins may
+ * reach the identity provider at the same instant; its realm keys exist by then, because the logins of
+ * the default execution have completed before the concurrent execution starts (see
+ * {@code integration-tests/pom.xml}). What ships is the plain overlap: no lock serialises the logins.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 @DisplayName("Session idle timeout on one-off gateways, server mode and cookie mode")
 @Tag("sleep-bound")
+@Execution(ExecutionMode.CONCURRENT)
 class BffSessionIdleTimeoutIT {
 
     /** The declared key this suite exists for, below {@code oidc.session}. */
