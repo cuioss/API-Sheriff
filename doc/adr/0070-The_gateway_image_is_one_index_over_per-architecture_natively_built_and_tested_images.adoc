@@ -41,7 +41,7 @@ The `publish-image` job of `.github/workflows/release.yml` is a two-leg matrix: 
 
 Each leg keeps the single-image guarantees intact for its own architecture:
 
-* The full `-Pintegration-tests` suite runs on the leg's runner. That run is the leg's only build of the gateway image, so the image the leg pushes is by construction the image the suite ran against.
+* The full `-Pintegration-tests` suite runs on the leg's runner. That run is the leg's only build of the gateway image; the `grpc-echo` and `passthrough-backend` images it also builds are test-only fixtures that are never tagged, scanned, pushed or signed. So the image the leg pushes is by construction the image the suite ran against.
 * The leg generates its own SBOM, because the two images carry different executables over different variants of the base image.
 * The HIGH and CRITICAL Trivy gate runs per architecture. The two base-image variants are separate package sets that can carry different CVEs, so a clean scan of one says nothing about the other.
 * The leg pushes with `docker tag` and `docker push` under a leg-local tag, `leg-<release-tag sha>-<arch>`, never under a release tag. It asserts exactly one pushed digest, and it asserts that the digest addresses a plain image manifest and not an index.
