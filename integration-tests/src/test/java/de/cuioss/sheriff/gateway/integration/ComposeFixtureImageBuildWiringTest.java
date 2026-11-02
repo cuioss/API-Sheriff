@@ -61,14 +61,14 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>What it asserts.</strong> The lanes are derived from the POM rather than listed: every
  * profile with an {@code exec-maven-plugin} execution that Maven runs — bound to the {@code exec} goal at
- * a phase and not skipped — and that runs {@code start-integration-container.sh} is a lane. Its
- * image-build executions are its {@code exec-maven-plugin} executions that run {@code docker} with a
- * {@code build} argument and that Maven runs before the stack starts: bound to the {@code exec} goal at
- * the start execution's own phase, declared before it (Maven runs one plugin's executions of one phase in
- * declaration order), and not skipped. Requiring the same phase keeps the guard free of a copy of Maven's
- * lifecycle; both lanes bind build and start to {@code pre-integration-test}. An execution that carries
- * the arguments but no goal, another phase, a declaration after the start, or {@code <skip>true</skip>}
- * is not an image build. The services of {@code docker-compose.yml} that declare a {@code build}
+ * {@code pre-integration-test}, the phase both lanes use, and not skipped — and that runs
+ * {@code start-integration-container.sh} is a lane. Its image-build executions are its
+ * {@code exec-maven-plugin} executions that run {@code docker} with a {@code build} argument and that Maven
+ * runs before the stack starts: bound to the {@code exec} goal at that same phase, declared before the
+ * start (Maven runs one plugin's executions of one phase in declaration order), and not skipped. Naming
+ * the one phase keeps the guard free of a copy of Maven's lifecycle while still rejecting a misspelled
+ * phase, which Maven would never run. An execution that carries the arguments but no goal, another phase,
+ * a declaration after the start, or {@code <skip>true</skip>} is not an image build. The services of {@code docker-compose.yml} that declare a {@code build}
  * section and no {@code profiles} — the services the IT lanes start from a build — are exactly the
  * services named after the {@code build} argument of every such execution, and a lane with no such
  * execution is a defect. A profile-gated service such as {@code k6} ({@code profiles: [benchmark]}) is
@@ -199,7 +199,9 @@ class ComposeFixtureImageBuildWiringTest {
                 profile("after-start", bound, "build-images", arguments, bound, true),
                 profile("skipped", bound, "build-images", arguments, bound + SKIP, false),
                 profile("start-unbound", binding(PRE_IT, null), "build-images", arguments, bound, false),
-                profile("start-skipped", bound + SKIP, "build-images", arguments, bound, false));
+                profile("start-skipped", bound + SKIP, "build-images", arguments, bound, false),
+                profile("misspelled-phase", binding("pre-integration-tset", EXEC_GOAL), "build-images", arguments,
+                        binding("pre-integration-tset", EXEC_GOAL), false));
 
         assertEquals(List.of(new Lane("bound", "build-images"), new Lane("other-phase", NO_BUILD),
                 new Lane("no-goal", NO_BUILD), new Lane("no-phase", NO_BUILD), new Lane("after-start", NO_BUILD),
@@ -357,7 +359,7 @@ class ComposeFixtureImageBuildWiringTest {
 
     /**
      * The position of the first {@value #EXEC} execution that runs {@value #START_SCRIPT} and that Maven
-     * runs: bound to the {@value #EXEC_GOAL} goal at a phase and not skipped.
+     * runs: bound to the {@value #EXEC_GOAL} goal at {@value #PRE_IT} and not skipped.
      *
      * @param executions the profile's {@value #EXEC} executions
      * @return the position, or {@code -1} when the profile starts no stack
@@ -366,7 +368,7 @@ class ComposeFixtureImageBuildWiringTest {
         for (int index = 0; index < executions.size(); index++) {
             Element execution = executions.get(index);
             if (executable(execution).endsWith(START_SCRIPT) && boundToExec(execution)
-                    && !childText(execution, "phase").isEmpty() && !skipped(execution)) {
+                    && PRE_IT.equals(childText(execution, "phase")) && !skipped(execution)) {
                 return index;
             }
         }
