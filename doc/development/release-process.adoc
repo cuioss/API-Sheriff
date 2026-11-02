@@ -172,8 +172,9 @@ integration-test harness always builds the image. Each leg of the publish lane i
 *test-which-builds, then push-that-digest* rather than the more obvious build, test, push: the
 harness build is the leg's only build of the published gateway image (`api-sheriff`); the
 `grpc-echo` and `passthrough-backend` images it also builds are test-only fixtures that are never
-tagged, scanned, pushed or signed. The gateway image it produced is the one that gets tagged,
-pushed, listed in the index and signed.
+published: they carry only the local `<project>-<service>` tag Compose gives every image it builds,
+and the leg never scans, pushes or signs them. The gateway image it produced is the one that gets
+tagged for the registry, pushed, listed in the index and signed.
 
 The inversion exists so that "push exactly what was tested" holds *by construction*. Each leg has
 only one build, so there is nothing that can drift between the artifact it tested and the one it

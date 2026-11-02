@@ -442,7 +442,9 @@
                                  that name, so a changed grpc-echo or passthrough-backend would
                                  otherwise never reach its container. api-sheriff is the only
                                  image the release lane publishes; the two fixtures are test-only
-                                 and never tagged, scanned, pushed or signed.
+                                 and never published: they carry only the local
+                                 <project>-<service> tag Compose gives every image it builds,
+                                 and the release lane never scans, pushes or signs them.
                                  ComposeFixtureImageBuildWiringTest pins the service list to the
                                  build: services of docker-compose.yml. -->
                             <execution>

@@ -26,12 +26,11 @@ import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.function.BiFunction;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -46,7 +45,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Fast, no-Docker <em>surefire</em> guard that both integration-test lanes build every Compose
+ * Fast, no-Docker <em>surefire</em> guard that every integration-test lane builds every Compose
  * fixture image the stack starts, rather than leaving the fixtures to {@code docker compose up -d}.
  * <p>
  * <strong>Why this test exists.</strong> {@code up -d} builds a service's image only when the daemon
@@ -55,33 +54,42 @@ import org.junit.jupiter.api.Test;
  * Dockerfile or sources never reaches the container and the lane stays green against the old one.
  * The {@code docker-build-distroless} execution of the {@code integration-tests} profile and the
  * {@code docker-build-jfr} execution of the {@code jfr} profile close that by naming every fixture on
- * their {@code docker compose build} command line, so each run builds every image it starts. Neither
- * half is checked by a compiler: a fixture service added to {@code docker-compose.yml} and not to the
- * two command lines stays green, and so does a profile-gated service named on them.
+ * their {@code docker compose build} command line, so each run builds every image it starts. None of
+ * this is checked by a compiler: a fixture service added to {@code docker-compose.yml} and not to the
+ * command lines stays green, so does a profile-gated service named on them, and so does a further
+ * profile that starts the stack and builds no fixture at all.
  * <p>
- * <strong>What it asserts.</strong> The services of {@code docker-compose.yml} that declare a
- * {@code build} section and no {@code profiles} — the services the IT lanes start from a build — are
- * exactly the services named after the {@code build} argument of both executions. A profile-gated
- * service such as {@code k6} ({@code profiles: [benchmark]}) is started by no IT lane, so no IT lane
- * builds it.
+ * <strong>What it asserts.</strong> The lanes are derived from the POM rather than listed: every
+ * profile with an {@code exec-maven-plugin} execution that runs {@code start-integration-container.sh}
+ * is a lane, and its image-build executions are its {@code exec-maven-plugin} executions that run
+ * {@code docker} with a {@code build} argument. The services of {@code docker-compose.yml} that declare a {@code build}
+ * section and no {@code profiles} — the services the IT lanes start from a build — are exactly the
+ * services named after the {@code build} argument of every such execution, and a lane with no such
+ * execution is a defect. A profile-gated service such as {@code k6} ({@code profiles: [benchmark]}) is
+ * started by no IT lane, so no IT lane builds it. The derived lanes must include the two lanes this
+ * guard was written against, so a derivation that stops seeing them fails instead of asserting over
+ * fewer lanes.
  * <p>
  * <strong>What it does not prove.</strong> That the build ran, that Docker rebuilt a layer rather
  * than reusing one from its cache, or that the running container uses the image the build produced:
  * those are properties of a Docker daemon, which this test never reaches. It does not read the
  * Compose overlays either — {@code docker-compose.jfr.yml} re-declares only the {@code api-sheriff}
  * build, and {@code docker-compose.benchmark.yml} declares none — so a {@code build} section added to
- * an overlay alone is not seen. It parses the committed descriptor and the committed POM only; it
- * starts no container and reaches no network.
+ * an overlay alone is not seen. It reads this module's POM only, so a lane another module's POM
+ * declares is not seen, and neither is a profile that starts the stack by any means other than
+ * {@code start-integration-container.sh}. It parses the committed descriptor and the committed POM only; it starts no
+ * container and reaches no network.
  * <p>
  * <strong>Controls</strong> ("Comment-Only Invariants Become Fitness Functions" in
- * {@code doc/development/test-corpus-integrity.adoc}). The population the rule selects is asserted
- * non-empty before the rule runs, and the detector is driven with deliberately wrong specimens it must
- * reject and a correct one it must accept.
+ * {@code doc/development/test-corpus-integrity.adoc}). Both populations the rule selects are asserted
+ * before the rule runs — the fixtures non-empty, the lanes a superset of the known ones — and the lane
+ * selector and the detector are driven with deliberately wrong specimens they must reject and a correct
+ * one they must accept.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-@DisplayName("both IT lanes build every compose fixture image the stack starts")
+@DisplayName("every IT lane builds every compose fixture image the stack starts")
 class ComposeFixtureImageBuildWiringTest {
 
     /** The working directory the runner started in — the module root under surefire. */
@@ -91,9 +99,19 @@ class ComposeFixtureImageBuildWiringTest {
     private static final String POM = "pom.xml";
     private static final String EXEC = "exec-maven-plugin";
     private static final String BUILD = "build";
+    private static final String DOCKER = "docker";
 
-    /** The two IT lanes, each with the execution that builds the images its stack starts. */
-    private static final List<Lane> LANES = List.of(
+    /** The script every IT lane starts the Compose stack with; a profile that runs it is a lane. */
+    private static final String START_SCRIPT = "start-integration-container.sh";
+
+    /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
+    private static final String NO_BUILD = "";
+
+    /**
+     * The two IT lanes this guard was written against, each with the execution that builds the images
+     * its stack starts — the independent oracle the lanes derived from the POM must include.
+     */
+    private static final List<Lane> KNOWN_LANES = List.of(
             new Lane("integration-tests", "docker-build-distroless"),
             new Lane("jfr", "docker-build-jfr"));
 
@@ -118,13 +136,17 @@ class ComposeFixtureImageBuildWiringTest {
     @DisplayName("each lane's compose build names exactly the services the stack starts from a build")
     void lanesBuildEveryStartedFixture() throws Exception {
         Set<String> fixtures = servicesStartedFromABuild(Files.readString(file(COMPOSE)));
+        Map<Lane, List<String>> lanes = stackStartingLanes(parse(Files.readString(file(POM))));
 
         assertFalse(fixtures.isEmpty(), file(COMPOSE) + " declares no service with a build section and no"
                 + " profiles, so this guard would assert over nothing");
-        assertEquals(List.of(), laneViolations(fixtures, parse(Files.readString(file(POM)))));
+        assertTrue(lanes.keySet().containsAll(KNOWN_LANES), file(POM) + " yields the lanes " + lanes.keySet()
+                + ", which miss one of " + KNOWN_LANES + ": the derivation no longer sees a lane known to start"
+                + " the stack");
+        assertEquals(List.of(), laneViolations(fixtures, lanes));
     }
 
-    // --- controls over the selector and the detector -----------------------------------------------
+    // --- controls over the selectors and the detector ----------------------------------------------
 
     @Test
     @DisplayName("the selector takes the services with a build section and no profiles, in either build form")
@@ -133,34 +155,46 @@ class ComposeFixtureImageBuildWiringTest {
     }
 
     @Test
-    @DisplayName("the detector accepts complete lanes and rejects a missing fixture and a profiled service")
+    @DisplayName("the lane selector takes every profile that starts the stack, with its compose build")
+    void laneSelectorTakesStackStartingProfiles() {
+        String specimen = pom(
+                profile("it", true, "build-images", buildArguments("gateway")),
+                profile("unit", false, "build-images", buildArguments("gateway")),
+                profile("up-only", true, "start-up", "<argument>compose</argument><argument>up</argument>"),
+                profile("smoke", true, null, null));
+
+        assertEquals(List.of(new Lane("it", "build-images"), new Lane("up-only", NO_BUILD),
+                new Lane("smoke", NO_BUILD)), List.copyOf(stackStartingLanes(parsed(specimen)).keySet()));
+    }
+
+    @Test
+    @DisplayName("the detector accepts complete lanes and rejects a missing fixture, a profiled service and an"
+            + " unbuilt lane")
     void detectorRejectsIncompleteLanes() {
         Set<String> fixtures = servicesStartedFromABuild(SPECIMEN_COMPOSE);
-        BiFunction<String, String, List<String>> violations = (distroless, jfr) -> {
-            try {
-                return laneViolations(fixtures, parse(pomWith(distroless, jfr)));
-            } catch (ParserConfigurationException | SAXException | IOException e) {
-                throw new AssertionError("the specimen is not a readable POM", e);
-            }
-        };
         String complete = buildArguments("gateway", "echo");
         String withOverlay = "<argument>-f</argument><argument>docker-compose.yml</argument>"
                 + "<argument>-f</argument><argument>docker-compose.jfr.yml</argument>" + complete;
 
         assertAll(
-                () -> assertEquals(List.of(), violations.apply(complete, withOverlay)),
-                () -> assertFalse(violations.apply(buildArguments("gateway"), withOverlay).isEmpty(),
-                        "a lane that leaves a fixture to 'up -d' was accepted"),
-                () -> assertFalse(violations.apply(complete, buildArguments("gateway")).isEmpty(),
+                () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(complete, withOverlay))),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(buildArguments("gateway"), withOverlay))
+                        .isEmpty(), "a lane that leaves a fixture to 'up -d' was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(complete, buildArguments("gateway"))).isEmpty(),
                         "the jfr lane leaving a fixture to 'up -d' was accepted"),
-                () -> assertFalse(violations.apply(buildArguments("gateway", "echo", "load"), withOverlay)
-                        .isEmpty(), "a lane that builds a profile-gated service was accepted"),
-                () -> assertFalse(violations.apply(buildArguments("gateway", "echo", "upstream"), withOverlay)
-                        .isEmpty(), "a lane that builds a service without a build section was accepted"),
-                () -> assertFalse(violations.apply("<argument>compose</argument><argument>up</argument>",
-                        withOverlay).isEmpty(), "a lane whose command line has no build argument was accepted"),
-                () -> assertFalse(violations.apply(complete, null).isEmpty(),
-                        "a profile without its image-build execution was accepted"));
+                () -> assertFalse(violationsOf(fixtures, knownLanes(buildArguments("gateway", "echo", "load"),
+                        withOverlay)).isEmpty(), "a lane that builds a profile-gated service was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(buildArguments("gateway", "echo", "upstream"),
+                        withOverlay)).isEmpty(), "a lane that builds a service without a build section was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes("<argument>compose</argument><argument>up"
+                        + "</argument>", withOverlay)).isEmpty(),
+                        "a lane whose command line has no build argument was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(complete, null)).isEmpty(),
+                        "a profile without its image-build execution was accepted"),
+                () -> assertFalse(violationsOf(fixtures, pom(knownLane(KNOWN_LANES.getFirst(), complete),
+                        knownLane(KNOWN_LANES.getLast(), withOverlay),
+                        profile("smoke", true, "build-smoke", buildArguments("gateway")))).isEmpty(),
+                        "a further profile that starts the stack and leaves a fixture to 'up -d' was accepted"));
     }
 
     // --- the rule ----------------------------------------------------------------------------------
@@ -169,24 +203,20 @@ class ComposeFixtureImageBuildWiringTest {
      * Why a lane does not build exactly the given services; empty when every lane does.
      *
      * @param fixtures the services the stack starts from a build
-     * @param pom      the parsed POM
+     * @param lanes    the lanes, each with the command line of its image-build execution
      * @return one message per defect
      */
-    private static List<String> laneViolations(Set<String> fixtures, Document pom) {
+    private static List<String> laneViolations(Set<String> fixtures, Map<Lane, List<String>> lanes) {
         List<String> violations = new ArrayList<>();
-        for (Lane lane : LANES) {
-            Optional<List<String>> arguments = arguments(pom, lane);
-            if (arguments.isEmpty()) {
-                violations.add(lane + " is not declared, so that lane builds no image before its stack starts");
+        for (Map.Entry<Lane, List<String>> entry : lanes.entrySet()) {
+            Lane lane = entry.getKey();
+            if (NO_BUILD.equals(lane.execution())) {
+                violations.add("profile " + lane.profile() + " runs " + START_SCRIPT + " but no " + DOCKER + " "
+                        + BUILD + " execution, so that lane builds no image before its stack starts");
                 continue;
             }
-            List<String> commandLine = arguments.get();
+            List<String> commandLine = entry.getValue();
             int build = commandLine.indexOf(BUILD);
-            if (build < 0) {
-                violations.add(lane + " runs 'docker " + String.join(" ", commandLine) + "', which has no "
-                        + BUILD + " argument");
-                continue;
-            }
             Set<String> named = new TreeSet<>(commandLine.subList(build + 1, commandLine.size()));
             Set<String> missing = new TreeSet<>(fixtures);
             missing.removeAll(named);
@@ -211,13 +241,15 @@ class ComposeFixtureImageBuildWiringTest {
      * One IT lane: the profile that selects it and the execution that builds its images.
      *
      * @param profile   the profile id
-     * @param execution the id of the {@value #EXEC} execution that runs {@code docker compose build}
+     * @param execution the id of the {@value #EXEC} execution that runs {@code docker compose build}, or
+     *                  empty ({@code NO_BUILD}) when the profile starts the stack and runs no such build
      */
     private record Lane(String profile, String execution) {
 
         @Override
         public String toString() {
-            return "execution " + execution + " of profile " + profile;
+            return NO_BUILD.equals(execution) ? "profile " + profile + " (no image-build execution)"
+                    : "execution " + execution + " of profile " + profile;
         }
     }
 
@@ -243,30 +275,51 @@ class ComposeFixtureImageBuildWiringTest {
     }
 
     /**
-     * The {@code arguments} of a lane's {@value #EXEC} execution, in document order.
+     * The IT lanes a POM declares: every profile with an {@value #EXEC} execution that runs
+     * {@value #START_SCRIPT}, once per {@value #EXEC} execution of that profile that runs {@code docker}
+     * with a {@code build} argument. A profile that starts the stack and runs no such build is recorded
+     * once, under an empty execution id and an empty command line, so the rule can report it.
      *
-     * @param pom  the parsed POM
-     * @param lane the lane
-     * @return the argument texts, empty when the profile does not declare the execution
+     * @param pom the parsed POM
+     * @return the lanes in document order, each mapped to its execution's argument texts
      */
-    private static Optional<List<String>> arguments(Document pom, Lane lane) {
+    private static Map<Lane, List<String>> stackStartingLanes(Document pom) {
+        Map<Lane, List<String>> lanes = new LinkedHashMap<>();
         for (Element profiles : children(pom.getDocumentElement(), "profiles")) {
             for (Element profile : children(profiles, "profile")) {
-                if (!lane.profile().equals(childText(profile, "id"))) {
+                List<Element> executions = execExecutions(profile);
+                if (executions.stream().noneMatch(execution -> executable(execution).endsWith(START_SCRIPT))) {
                     continue;
                 }
-                for (Element execution : execExecutions(profile)) {
-                    if (lane.execution().equals(childText(execution, "id"))) {
-                        return Optional.of(children(execution, "configuration").stream()
-                                .flatMap(configuration -> children(configuration, "arguments").stream())
-                                .flatMap(arguments -> children(arguments, "argument").stream())
-                                .map(argument -> argument.getTextContent().strip())
-                                .toList());
+                String id = childText(profile, "id");
+                int before = lanes.size();
+                for (Element execution : executions) {
+                    List<String> commandLine = commandLine(execution);
+                    if (DOCKER.equals(executable(execution)) && commandLine.contains(BUILD)) {
+                        lanes.put(new Lane(id, childText(execution, "id")), commandLine);
                     }
+                }
+                if (lanes.size() == before) {
+                    lanes.put(new Lane(id, NO_BUILD), List.of());
                 }
             }
         }
-        return Optional.empty();
+        return lanes;
+    }
+
+    private static String executable(Element execution) {
+        return children(execution, "configuration").stream()
+                .map(configuration -> childText(configuration, "executable"))
+                .findFirst()
+                .orElse("");
+    }
+
+    private static List<String> commandLine(Element execution) {
+        return children(execution, "configuration").stream()
+                .flatMap(configuration -> children(configuration, "arguments").stream())
+                .flatMap(arguments -> children(arguments, "argument").stream())
+                .map(argument -> argument.getTextContent().strip())
+                .toList();
     }
 
     private static List<Element> execExecutions(Element profile) {
@@ -311,24 +364,62 @@ class ComposeFixtureImageBuildWiringTest {
     }
 
     /**
-     * A POM declaring both lanes' image-build executions with the given arguments, for the control.
+     * The detector's verdict over a specimen POM, with the lanes derived exactly as the real test
+     * derives them.
      *
-     * @param distroless the arguments of the integration-tests lane's execution
-     * @param jfr        the arguments of the jfr lane's execution, or {@code null} to leave the
-     *                   execution out of its profile
-     * @return the POM text
+     * @param fixtures the services the stack starts from a build
+     * @param pom      the specimen POM text
+     * @return one message per defect
      */
-    private static String pomWith(String distroless, String jfr) {
-        return "<project><profiles>" + profileWith(LANES.getFirst(), distroless)
-                + profileWith(LANES.getLast(), jfr) + "</profiles></project>";
+    private static List<String> violationsOf(Set<String> fixtures, String pom) {
+        return laneViolations(fixtures, stackStartingLanes(parsed(pom)));
     }
 
-    private static String profileWith(Lane lane, String arguments) {
-        String execution = arguments == null ? ""
-                : "<execution><id>" + lane.execution() + "</id><configuration><arguments>" + arguments
-                + "</arguments></configuration></execution>";
-        return "<profile><id>" + lane.profile() + "</id><build><plugins><plugin><artifactId>" + EXEC
-                + "</artifactId><executions>" + execution + "</executions></plugin></plugins></build></profile>";
+    private static Document parsed(String pom) {
+        try {
+            return parse(pom);
+        } catch (ParserConfigurationException | SAXException | IOException e) {
+            throw new AssertionError("the specimen is not a readable POM", e);
+        }
+    }
+
+    /**
+     * A POM declaring both known lanes, each starting the stack and building with the given arguments.
+     *
+     * @param distroless the arguments of the integration-tests lane's image-build execution
+     * @param jfr        the arguments of the jfr lane's image-build execution, or {@code null} to leave
+     *                   that execution out of its profile
+     * @return the POM text
+     */
+    private static String knownLanes(String distroless, String jfr) {
+        return pom(knownLane(KNOWN_LANES.getFirst(), distroless), knownLane(KNOWN_LANES.getLast(), jfr));
+    }
+
+    private static String knownLane(Lane lane, String arguments) {
+        return profile(lane.profile(), true, arguments == null ? null : lane.execution(), arguments);
+    }
+
+    private static String pom(String... profiles) {
+        return "<project><profiles>" + String.join("", profiles) + "</profiles></project>";
+    }
+
+    /**
+     * One profile of a specimen POM.
+     *
+     * @param id          the profile id
+     * @param startsStack whether the profile runs {@value #START_SCRIPT}
+     * @param execution   the id of its {@code docker} execution, or {@code null} to declare none
+     * @param arguments   the arguments of that execution
+     * @return the profile's text
+     */
+    private static String profile(String id, boolean startsStack, String execution, String arguments) {
+        String build = execution == null ? ""
+                : "<execution><id>" + execution + "</id><configuration><executable>" + DOCKER
+                + "</executable><arguments>" + arguments + "</arguments></configuration></execution>";
+        String start = startsStack ? "<execution><id>start-integration-app</id><configuration><executable>./scripts/"
+                + START_SCRIPT + "</executable></configuration></execution>" : "";
+        return "<profile><id>" + id + "</id><build><plugins><plugin><artifactId>" + EXEC
+                + "</artifactId><executions>" + build + start + "</executions></plugin></plugins></build></profile>";
     }
 
     private static String buildArguments(String... services) {

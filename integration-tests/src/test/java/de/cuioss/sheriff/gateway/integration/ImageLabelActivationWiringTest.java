@@ -44,11 +44,12 @@ import org.junit.jupiter.api.Test;
  * Docker is available. This test covers the one link in the chain that is pure declaration: the
  * release lane performs <em>no</em> {@code docker build} of its own — the harness Compose build is the
  * single build of the published image; the {@code grpc-echo} and {@code passthrough-backend} images it
- * also builds are test-only fixtures that are never tagged, scanned, pushed or signed — so the
- * {@code api-sheriff} service's {@code build.args} is the ONLY channel reaching the Dockerfile's
- * {@code ARG APP_VERSION} / {@code ARG APP_REVISION}. Drop an entry here and the Dockerfile's
- * declared default silently wins: the released image would label itself {@code dev}
- * while every step still succeeds.
+ * also builds are test-only fixtures that are never published (they carry only the local
+ * {@code <project>-<service>} tag Compose gives every image it builds, and the release lane never
+ * scans, pushes or signs them) — so the {@code api-sheriff} service's {@code build.args} is the ONLY
+ * channel reaching the Dockerfile's {@code ARG APP_VERSION} / {@code ARG APP_REVISION}. Drop an entry
+ * here and the Dockerfile's declared default silently wins: the released image would label itself
+ * {@code dev} while every step still succeeds.
  * <p>
  * The asserted form is the passthrough literal {@code ${VAR:-dev}} rather than merely "the key is
  * present". The default half is load-bearing in both directions: it is what keeps a local or PR build
