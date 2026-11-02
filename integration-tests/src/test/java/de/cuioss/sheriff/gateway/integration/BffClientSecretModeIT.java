@@ -184,9 +184,9 @@ class BffClientSecretModeIT {
         Path descriptor = writeDerivedDescriptor(GATEWAY, SOURCE_DESCRIPTOR,
                 BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN, APPLICATION_PORT);
         startBffGatewayWithSigningKeys(new BffGateway(GATEWAY, composeNetwork(), GATEWAY, APPLICATION_PORT,
-                descriptor, "localhost.crt", "localhost.key",
-                List.of("OIDC_CLIENT_SECRET=" + BffTlsRelaxationIT.refreshClientSecret(),
-                        "OIDC_DPOP_KEY_FILE=" + PROOF_KEY_FILE)),
+                        descriptor, "localhost.crt", "localhost.key",
+                        List.of("OIDC_CLIENT_SECRET=" + BffTlsRelaxationIT.refreshClientSecret(),
+                                "OIDC_DPOP_KEY_FILE=" + PROOF_KEY_FILE)),
                 List.of());
         awaitReadiness(GATEWAY, "https://localhost:" + publishedPort(GATEWAY, 9000),
                 response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,

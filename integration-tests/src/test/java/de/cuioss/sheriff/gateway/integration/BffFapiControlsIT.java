@@ -554,7 +554,7 @@ class BffFapiControlsIT {
                 BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN, APPLICATION_PORT);
         ReadOnlyMount sealingKey = writeSealingKeyFile(SEALING_KEY_FILE, SEALING_KEY);
         startBffGatewayWithSigningKeys(new BffGateway(GATEWAY, composeNetwork(), GATEWAY, APPLICATION_PORT,
-                descriptor, "localhost.crt", "localhost.key", List.of("OIDC_DPOP_KEY_FILE=" + PROOF_KEY_FILE)),
+                        descriptor, "localhost.crt", "localhost.key", List.of("OIDC_DPOP_KEY_FILE=" + PROOF_KEY_FILE)),
                 List.of(sealingKey));
         awaitReadiness(GATEWAY, "https://localhost:" + publishedPort(GATEWAY, 9000),
                 response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
