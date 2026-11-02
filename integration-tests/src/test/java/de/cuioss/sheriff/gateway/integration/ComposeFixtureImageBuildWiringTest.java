@@ -62,7 +62,11 @@ import org.junit.jupiter.api.Test;
  * <strong>What it asserts.</strong> The lanes are derived from the POM rather than listed: every
  * profile with an {@code exec-maven-plugin} execution that runs {@code start-integration-container.sh}
  * is a lane, and its image-build executions are its {@code exec-maven-plugin} executions that run
- * {@code docker} with a {@code build} argument. The services of {@code docker-compose.yml} that declare a {@code build}
+ * {@code docker} with a {@code build} argument and that Maven actually runs before the stack starts: bound
+ * to the {@code exec} goal at a default-lifecycle phase that precedes the start execution's phase, or at
+ * the same phase and declared before it (Maven runs one plugin's executions of one phase in declaration
+ * order). An execution that carries the arguments but no goal, no phase, or a binding after the start is
+ * not an image build. The services of {@code docker-compose.yml} that declare a {@code build}
  * section and no {@code profiles} — the services the IT lanes start from a build — are exactly the
  * services named after the {@code build} argument of every such execution, and a lane with no such
  * execution is a defect. A profile-gated service such as {@code k6} ({@code profiles: [benchmark]}) is
@@ -103,6 +107,19 @@ class ComposeFixtureImageBuildWiringTest {
 
     /** The script every IT lane starts the Compose stack with; a profile that runs it is a lane. */
     private static final String START_SCRIPT = "start-integration-container.sh";
+
+    /** The goal an {@value #EXEC} execution must be bound to for Maven to run it. */
+    private static final String EXEC_GOAL = "exec";
+
+    /** The phase both real lanes bind their image build and their stack start to. */
+    private static final String PRE_IT = "pre-integration-test";
+
+    /** The phases of Maven's default lifecycle, in the order Maven runs them. */
+    private static final List<String> LIFECYCLE = List.of("validate", "initialize", "generate-sources",
+            "process-sources", "generate-resources", "process-resources", "compile", "process-classes",
+            "generate-test-sources", "process-test-sources", "generate-test-resources", "process-test-resources",
+            "test-compile", "process-test-classes", "test", "prepare-package", "package", "pre-integration-test",
+            "integration-test", "post-integration-test", "verify", "install", "deploy");
 
     /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
     private static final String NO_BUILD = "";
@@ -168,6 +185,25 @@ class ComposeFixtureImageBuildWiringTest {
     }
 
     @Test
+    @DisplayName("the lane selector counts a build only when Maven runs it before the stack starts")
+    void laneSelectorRequiresABuildBoundBeforeTheStart() {
+        String arguments = buildArguments("gateway");
+        String bound = binding(PRE_IT, EXEC_GOAL);
+        String specimen = pom(
+                profile("bound", true, "build-images", arguments, bound, false),
+                profile("earlier-phase", true, "build-images", arguments, binding("package", EXEC_GOAL), false),
+                profile("no-goal", true, "build-images", arguments, binding(PRE_IT, null), false),
+                profile("no-phase", true, "build-images", arguments, binding(null, EXEC_GOAL), false),
+                profile("later-phase", true, "build-images", arguments, binding("post-integration-test", EXEC_GOAL),
+                        false),
+                profile("after-start", true, "build-images", arguments, bound, true));
+
+        assertEquals(List.of(new Lane("bound", "build-images"), new Lane("earlier-phase", "build-images"),
+                new Lane("no-goal", NO_BUILD), new Lane("no-phase", NO_BUILD), new Lane("later-phase", NO_BUILD),
+                new Lane("after-start", NO_BUILD)), List.copyOf(stackStartingLanes(parsed(specimen)).keySet()));
+    }
+
+    @Test
     @DisplayName("the detector accepts complete lanes and rejects a missing fixture, a profiled service and an"
             + " unbuilt lane")
     void detectorRejectsIncompleteLanes() {
@@ -194,7 +230,11 @@ class ComposeFixtureImageBuildWiringTest {
                 () -> assertFalse(violationsOf(fixtures, pom(knownLane(KNOWN_LANES.getFirst(), complete),
                                 knownLane(KNOWN_LANES.getLast(), withOverlay),
                                 profile("smoke", true, "build-smoke", buildArguments("gateway")))).isEmpty(),
-                        "a further profile that starts the stack and leaves a fixture to 'up -d' was accepted"));
+                        "a further profile that starts the stack and leaves a fixture to 'up -d' was accepted"),
+                () -> assertFalse(violationsOf(fixtures, pom(profile(KNOWN_LANES.getFirst().profile(), true,
+                                KNOWN_LANES.getFirst().execution(), complete, binding(PRE_IT, null), false),
+                                knownLane(KNOWN_LANES.getLast(), withOverlay))).isEmpty(),
+                        "an image-build execution bound to no goal, which Maven never runs, was accepted"));
     }
 
     // --- the rule ----------------------------------------------------------------------------------
@@ -288,14 +328,17 @@ class ComposeFixtureImageBuildWiringTest {
         for (Element profiles : children(pom.getDocumentElement(), "profiles")) {
             for (Element profile : children(profiles, "profile")) {
                 List<Element> executions = execExecutions(profile);
-                if (executions.stream().noneMatch(execution -> executable(execution).endsWith(START_SCRIPT))) {
+                int start = indexOfStart(executions);
+                if (start < 0) {
                     continue;
                 }
                 String id = childText(profile, "id");
                 int before = lanes.size();
-                for (Element execution : executions) {
+                for (int index = 0; index < executions.size(); index++) {
+                    Element execution = executions.get(index);
                     List<String> commandLine = commandLine(execution);
-                    if (DOCKER.equals(executable(execution)) && commandLine.contains(BUILD)) {
+                    if (DOCKER.equals(executable(execution)) && commandLine.contains(BUILD)
+                            && runsBefore(execution, index, executions.get(start), start)) {
                         lanes.put(new Lane(id, childText(execution, "id")), commandLine);
                     }
                 }
@@ -305,6 +348,38 @@ class ComposeFixtureImageBuildWiringTest {
             }
         }
         return lanes;
+    }
+
+    private static int indexOfStart(List<Element> executions) {
+        for (int index = 0; index < executions.size(); index++) {
+            if (executable(executions.get(index)).endsWith(START_SCRIPT)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Whether Maven runs the build execution before the start execution: the build is bound to the
+     * {@value #EXEC_GOAL} goal at a default-lifecycle phase that precedes the start's phase, or at the
+     * same phase and declared before it.
+     *
+     * @param build      the image-build execution
+     * @param buildIndex its position among the profile's {@value #EXEC} executions
+     * @param start      the stack-start execution
+     * @param startIndex its position among the same executions
+     * @return {@code true} when the build runs first
+     */
+    private static boolean runsBefore(Element build, int buildIndex, Element start, int startIndex) {
+        boolean boundToExec = children(build, "goals").stream()
+                .flatMap(goals -> children(goals, "goal").stream())
+                .anyMatch(goal -> EXEC_GOAL.equals(goal.getTextContent().strip()));
+        int buildPhase = LIFECYCLE.indexOf(childText(build, "phase"));
+        int startPhase = LIFECYCLE.indexOf(childText(start, "phase"));
+        if (!boundToExec || buildPhase < 0 || startPhase < 0) {
+            return false;
+        }
+        return buildPhase < startPhase || buildPhase == startPhase && buildIndex < startIndex;
     }
 
     private static String executable(Element execution) {
@@ -399,12 +474,24 @@ class ComposeFixtureImageBuildWiringTest {
         return profile(lane.profile(), true, arguments == null ? null : lane.execution(), arguments);
     }
 
+    /**
+     * The phase and goal elements of a specimen execution.
+     *
+     * @param phase the phase, or {@code null} to declare none
+     * @param goal  the goal, or {@code null} to declare none
+     * @return the elements' text
+     */
+    private static String binding(String phase, String goal) {
+        return (phase == null ? "" : "<phase>" + phase + "</phase>")
+                + (goal == null ? "" : "<goals><goal>" + goal + "</goal></goals>");
+    }
+
     private static String pom(String... profiles) {
         return "<project><profiles>" + String.join("", profiles) + "</profiles></project>";
     }
 
     /**
-     * One profile of a specimen POM.
+     * One profile of a specimen POM, its build execution bound the way the real lanes bind theirs.
      *
      * @param id          the profile id
      * @param startsStack whether the profile runs {@value #START_SCRIPT}
@@ -413,13 +500,31 @@ class ComposeFixtureImageBuildWiringTest {
      * @return the profile's text
      */
     private static String profile(String id, boolean startsStack, String execution, String arguments) {
+        return profile(id, startsStack, execution, arguments, binding(PRE_IT, EXEC_GOAL), false);
+    }
+
+    /**
+     * One profile of a specimen POM.
+     *
+     * @param id           the profile id
+     * @param startsStack  whether the profile runs {@value #START_SCRIPT}, bound to {@value #EXEC_GOAL} at
+     *                     {@value #PRE_IT}
+     * @param execution    the id of its {@code docker} execution, or {@code null} to declare none
+     * @param arguments    the arguments of that execution
+     * @param buildBinding the phase and goal elements of that execution
+     * @param buildLast    whether that execution is declared after the start execution
+     * @return the profile's text
+     */
+    private static String profile(String id, boolean startsStack, String execution, String arguments,
+            String buildBinding, boolean buildLast) {
         String build = execution == null ? ""
-                : "<execution><id>" + execution + "</id><configuration><executable>" + DOCKER
+                : "<execution><id>" + execution + "</id>" + buildBinding + "<configuration><executable>" + DOCKER
                 + "</executable><arguments>" + arguments + "</arguments></configuration></execution>";
-        String start = startsStack ? "<execution><id>start-integration-app</id><configuration><executable>./scripts/"
-                + START_SCRIPT + "</executable></configuration></execution>" : "";
-        return "<profile><id>" + id + "</id><build><plugins><plugin><artifactId>" + EXEC
-                + "</artifactId><executions>" + build + start + "</executions></plugin></plugins></build></profile>";
+        String start = startsStack ? "<execution><id>start-integration-app</id>" + binding(PRE_IT, EXEC_GOAL)
+                + "<configuration><executable>./scripts/" + START_SCRIPT + "</executable></configuration></execution>"
+                : "";
+        return "<profile><id>" + id + "</id><build><plugins><plugin><artifactId>" + EXEC + "</artifactId><executions>"
+                + (buildLast ? start + build : build + start) + "</executions></plugin></plugins></build></profile>";
     }
 
     private static String buildArguments(String... services) {
