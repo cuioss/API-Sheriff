@@ -15,16 +15,12 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ANCHORS_POINTER;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.lacksConfiguredIssuer;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.requireOf;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.*;
 
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+
 
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;

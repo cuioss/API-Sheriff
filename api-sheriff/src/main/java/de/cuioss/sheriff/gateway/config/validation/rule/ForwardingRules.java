@@ -20,6 +20,7 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpo
 
 import java.util.List;
 
+
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;

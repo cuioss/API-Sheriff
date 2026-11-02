@@ -15,9 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.*;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -25,6 +23,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+
 
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;

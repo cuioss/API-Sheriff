@@ -15,14 +15,11 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.WILDCARD_ORIGIN;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.effectiveProtocol;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.requireOf;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.*;
 
 import java.util.List;
 import java.util.Locale;
+
 
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;

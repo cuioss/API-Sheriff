@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge.upstream;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

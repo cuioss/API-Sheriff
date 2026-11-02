@@ -15,23 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.bff.runtime;
 
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.CLOCK;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.bindingWith;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.identityRefresh;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.navigationHeaders;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.rebind;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.redirectLogin;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.session;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.sessionRequest;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.unreachableScopeRefresh;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.unreachableWidening;
-import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.xhrHeaders;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStageTest.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -40,6 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiFunction;
+
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.OnFailure;

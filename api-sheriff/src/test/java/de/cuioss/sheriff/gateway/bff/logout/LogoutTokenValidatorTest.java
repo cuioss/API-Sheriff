@@ -15,10 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.logout;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -27,6 +24,7 @@ import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
 
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.LogoutSubject;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.Verdict;

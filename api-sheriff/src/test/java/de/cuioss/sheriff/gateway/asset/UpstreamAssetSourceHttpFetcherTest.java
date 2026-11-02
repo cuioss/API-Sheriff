@@ -15,10 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.asset;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +24,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+
 
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource.UpstreamFetcher;
 import de.cuioss.test.mockwebserver.EnableMockWebServer;

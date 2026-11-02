@@ -15,17 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.load;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+
 
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver.MalformedPlaceholderException;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver.MissingVariableException;

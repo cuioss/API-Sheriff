@@ -15,12 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge.error;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -29,6 +24,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
+
 
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;

@@ -15,9 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -32,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
 
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
@@ -323,8 +322,8 @@ class GatewayEdgeHeldAnswerBudgetTest {
     private void start(int admissionCap) throws Exception {
         front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
                 .gatewayConfig(ConfigFixtures.gateway().enumerationDetection(EnumerationDetectionConfig.builder()
-                                .threshold(1).action(EnumerationDetectionConfig.Action.DELAY).delayMillis((int) HOLD_MILLIS)
-                                .build())
+                        .threshold(1).action(EnumerationDetectionConfig.Action.DELAY).delayMillis((int) HOLD_MILLIS)
+                        .build())
                         .forwarded(ForwardedConfig.builder().trustedProxies(List.of(LoopbackHost.ADDRESS + "/32")).build())
                         .build())
                 .hardening(new EdgeHardeningOptions(new EdgeHardeningConfig(admissionCap, null)))

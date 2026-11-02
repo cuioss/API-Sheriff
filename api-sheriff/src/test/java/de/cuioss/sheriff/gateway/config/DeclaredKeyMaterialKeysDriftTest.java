@@ -15,16 +15,14 @@
  */
 package de.cuioss.sheriff.gateway.config;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Parameter;
 import java.util.LinkedHashSet;
 import java.util.Set;
+
 
 import de.cuioss.sheriff.gateway.tls.ManagementPlainHttpAudit;
 import de.cuioss.sheriff.gateway.tls.TerminatedListenerTlsAudit;

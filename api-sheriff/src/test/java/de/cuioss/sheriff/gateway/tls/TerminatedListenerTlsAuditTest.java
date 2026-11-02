@@ -15,13 +15,12 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.test.juli.LogAsserts;
