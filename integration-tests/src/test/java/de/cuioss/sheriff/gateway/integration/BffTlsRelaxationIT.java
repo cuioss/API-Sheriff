@@ -29,9 +29,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.asse
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitLogRecord;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
-import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.connectToNetwork;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.createNetwork;
-import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.disconnectFromNetwork;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.docker;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.dockerQuietly;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLog;
@@ -41,6 +39,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.read
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.removeContainer;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.removeNetwork;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.securedAssetStatus;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startAuxiliaryContainer;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startAuxiliaryContainerOnNetworks;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGateway;
 import static io.restassured.RestAssured.given;
@@ -81,6 +80,7 @@ import io.restassured.response.ExtractableResponse;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -96,15 +96,21 @@ import org.junit.jupiter.api.Test;
  *       {@code tls-relaxation-idp/default.conf.template}), which answers on that network under the
  *       name {@value #IDENTITY_PROVIDER_ALIAS} — the host the fixture descriptor dials, through its
  *       {@code oidc.back_channel_origin} and every {@code jwks.url}; its issuer stays Keycloak's
- *       published identity — and presents the certificate the test chooses;</li>
+ *       published identity — and presents the certificate the test chooses. It is attached to the
+ *       compose network as well, under no alias there, to dial Keycloak; it answers as
+ *       {@value #IDENTITY_PROVIDER_ALIAS} on the rig's network only;</li>
+ *   <li>an echo container of the rig's own ({@value #ECHO}), on that network and no other, under the
+ *       name {@value #ECHO_SERVICE} the shared {@code UPSTREAM} alias dials, so the session route has
+ *       its upstream. It publishes no port. It runs the image the compose {@value #ECHO_SERVICE}
+ *       container runs, read off that container, so the rig pins no second image;</li>
  *   <li>a one-off gateway on that network, mounting the fixture descriptor
  *       {@code sheriff-config-tls-relaxation/gateway.yaml} over the shared configuration directory.
  *       The descriptor names no trust profile, so both legs verify the proxy's chain against the JVM
  *       default trust store, and the gateway process is given that store on its command line: the
  *       committed {@code upstream-truststore.p12}, which holds one certificate.</li>
  * </ul>
- * The compose echo container is connected to the network for the life of a rig, so the session route
- * has its upstream.
+ * The rig attaches no container of the compose stack to any network: a suite running beside it whose
+ * mediated calls go through the compose echo container never sees that container change networks.
  * <p>
  * <strong>The two certificates, and why the premises are asserted.</strong> A leg proves something
  * about hostname matching only if the proxy's certificate is trusted and does not name the host, and
@@ -168,13 +174,22 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>Timing.</strong> The first test waits on the wall clock for the session's access token to
  * enter the refresh leeway: the property is defined against a token lifetime, so there is no state to
- * poll for. One rig at a time — the container names, the network name and the gateway port are fixed.
+ * poll for. One rig at a time within the suite — the container names, the network name and the
+ * gateway port are fixed.
+ * <p>
+ * <strong>Why it runs in the concurrent Failsafe execution.</strong> The suite carries the
+ * {@code sleep-bound} tag because nothing it uses is shared with another suite: it names no instance
+ * log of the compose stack, its fixed port {@value #APPLICATION_PORT} is its own, it drives no admin API
+ * of the identity provider, and every container its rig attaches to a network is one the rig started.
+ * {@code FailsafeConcurrencyContractTest} holds those facts on this source, as far as source text shows
+ * them.
  * <p>
  * The suite does not extend {@code BaseIntegrationTest}: every request goes to the rig's own gateway.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
+@Tag("sleep-bound")
 class BffTlsRelaxationIT {
 
     /**
@@ -192,7 +207,7 @@ class BffTlsRelaxationIT {
      * The fixed host port of the gateway's application listener, published on every interface (see
      * {@link OneOffGatewayContainers#applicationPortPublication(int)}); the port of the origin the
      * fixture descriptor names. The compose stack publishes {@code 10443}–{@code 10455}; the other
-     * one-off gateways take {@code 10459}, {@code 10462} and {@code 10464}–{@code 10468}.
+     * one-off gateways take {@code 10459}, {@code 10462} and {@code 10464}–{@code 10476}.
      */
     private static final int APPLICATION_PORT = 10463;
 
@@ -216,6 +231,9 @@ class BffTlsRelaxationIT {
     private static final String NETWORK = "sheriff-tls-relaxation";
     private static final String PROXY = "sheriff-tls-relaxation-idp";
     private static final String GATEWAY = "sheriff-tls-relaxation-gateway";
+
+    /** The rig's own echo container; the session route reaches it under {@value #ECHO_SERVICE}. */
+    private static final String ECHO = "sheriff-tls-relaxation-echo";
 
     /**
      * The name the fixture descriptor dials the identity provider under: the host of its
@@ -248,7 +266,10 @@ class BffTlsRelaxationIT {
 
     private static final String KEYCLOAK_SERVICE = "keycloak";
 
-    /** The compose service the session route relays to, and the name it dials it under. */
+    /**
+     * The compose service whose image the rig's echo container runs, and the name the shared
+     * {@code UPSTREAM} alias dials — the network alias of that echo container on the rig's network.
+     */
     private static final String ECHO_SERVICE = "go-httpbin";
 
     private static final Path FIXTURE_DESCRIPTOR =
@@ -667,16 +688,25 @@ class BffTlsRelaxationIT {
     }
 
     /**
-     * One network, one proxy and one gateway. Closing it removes all three and disconnects the echo
-     * container, whatever the outcome of the test it served.
+     * The {@code docker run} options of the rig's echo container: the rig's network, and on it the name
+     * the shared {@code UPSTREAM} alias dials — and no published port, because nothing outside the
+     * rig's network reaches it. Package-private so the harness test can hold them to the publication
+     * rule without a docker daemon.
+     *
+     * @return the options placed before the echo image
+     */
+    static List<String> echoRunOptions() {
+        return List.of("--network", NETWORK, "--network-alias", ECHO_SERVICE);
+    }
+
+    /**
+     * One network, one proxy, one echo container and one gateway. Closing it removes all four, whatever
+     * the outcome of the test it served.
      *
      * @author API Sheriff Team
      * @since 1.0
      */
     private static final class Rig implements AutoCloseable {
-
-        /** The compose echo container this rig connected to its network; empty until it is resolved. */
-        private String echoContainer = "";
 
         /** The published management origin of the gateway; empty until the gateway is started. */
         private String managementOrigin = "";
@@ -686,8 +716,8 @@ class BffTlsRelaxationIT {
         }
 
         /**
-         * Starts the network, the proxy and the gateway. Whatever a failed start had already created is
-         * removed before the failure propagates.
+         * Starts the network, the proxy, the echo container and the gateway. Whatever a failed start
+         * had already created is removed before the failure propagates.
          *
          * @param proxyCertificate the base name of the certificate pair the proxy presents
          * @param descriptor       the gateway descriptor mounted over the shared configuration
@@ -714,13 +744,12 @@ class BffTlsRelaxationIT {
             assertAll("the compose project must run the services this rig builds on: " + compose,
                     () -> assertNotNull(echo, ECHO_SERVICE),
                     () -> assertNotNull(keycloak, KEYCLOAK_SERVICE));
-            echoContainer = echo;
             // An aborted earlier run may have left its containers and its network behind.
             close();
 
             createNetwork(NETWORK);
             startProxy(proxyCertificate, containerName(keycloak));
-            connectToNetwork(NETWORK, echo, ECHO_SERVICE);
+            startAuxiliaryContainer(ECHO, imageOf(echo), echoRunOptions(), List.of());
             startBffGateway(
                     new BffGateway(GATEWAY, NETWORK, GATEWAY, APPLICATION_PORT, descriptor, "localhost.crt",
                             "localhost.key",
@@ -742,6 +771,18 @@ class BffTlsRelaxationIT {
             startAuxiliaryContainerOnNetworks(PROXY, PROXY_IMAGE, proxyRunOptions(certificate, keycloakContainer),
                     List.of(), List.of(composeNetwork()));
             awaitProxyServing();
+        }
+
+        /**
+         * The image a running container was created from, by its content-addressed id: the rig's echo
+         * container runs exactly what the compose echo container runs, and no second reference to the
+         * image is written down.
+         */
+        private static String imageOf(String container) {
+            String image = docker("read the image of " + container, "inspect", "--format", "{{.Image}}", container)
+                    .strip();
+            assertTrue(image.startsWith("sha256:"), () -> "expected the image id of " + container + ", was " + image);
+            return image;
         }
 
         /** The name of a container, which is what another container of its network resolves. */
@@ -823,17 +864,14 @@ class BffTlsRelaxationIT {
         }
 
         /**
-         * Removes the gateway, the proxy and the network, and disconnects the echo container. Every
-         * step is attempted whatever the outcome of the one before, and none of them fails the caller.
-         * Idempotent.
+         * Removes the gateway, the proxy, the echo container and the network. Every step is attempted
+         * whatever the outcome of the one before, and none of them fails the caller. Idempotent.
          */
         @Override
         public void close() {
             removeContainer(GATEWAY);
             removeContainer(PROXY);
-            if (!echoContainer.isEmpty()) {
-                disconnectFromNetwork(NETWORK, echoContainer);
-            }
+            removeContainer(ECHO);
             removeNetwork(NETWORK);
         }
     }

@@ -685,15 +685,18 @@ loopback publication while it is attached to two networks:
   network. That admin port is the one host port of a test-started container docker still assigns;
   no run has yet seen it refused, and it moves to a fixed number the first time one does;
 * the two containers that are attached to a second network -- the identity-provider proxy of
-  `BffTlsRelaxationIT` and the late provider of `JwksLateIdpReadinessIT` -- publish no port at all.
+  `BffTlsRelaxationIT` and the late provider of `JwksLateIdpReadinessIT` -- publish no port at all;
+* the echo container of `BffTlsRelaxationIT` joins the rig's network and no other, and publishes no
+  port.
 
 `OneOffGatewayContainers.assertLeavesNoDeadHostPort` refuses both shapes in every argument builder of
 the harness, before any docker call. `OneOffGatewayContainersTest` holds the rule without a docker
 daemon: it runs each builder with the options the suites pass, and it scans the integration-test
 sources so that a publish option, a raw `network connect` and a call of the harness's own network
-attachment each occur in a named set of files and in no other. The echo container a rig borrows from
-the Compose stack is attached to the rig's network and detached again; no test starts it, and the rule
-does not cover it.
+attachment each occur in a named set of files and in no other. The echo container the stub
+identity-provider rig borrows from the Compose stack is attached to the rig's network and detached
+again; no test starts it, and the rule does not cover it. The TLS-relaxation rig borrows none: it
+starts an echo container of its own (<<tls-relaxation-rig>>).
 
 *The start check.* A gateway's readiness is polled on its management port, so readiness `UP` says
 nothing about the application port, which is published over a different mapping. Each suite therefore
@@ -935,7 +938,12 @@ gateway that reaches Keycloak through that proxy only.
   `jwks.url` and `oidc.back_channel_origin`.
 
 | Echo upstream
-| The Compose `go-httpbin` container, connected for the life of the rig as in <<stub-idp-rig>>.
+| `sheriff-tls-relaxation-echo`, an echo container of the rig's own, on the rig's network and no
+  other, under the network alias `go-httpbin` -- the host the `UPSTREAM` alias of the shared
+  `topology.properties` dials.
+  It publishes no host port. It runs the image the Compose `go-httpbin` container runs, read off that
+  container through `docker inspect` when the rig starts, so the rig pins no second image. The rig
+  removes it on every exit path.
 
 | Gateway
 | `sheriff-tls-relaxation-gateway`, on the rig's network and no other. It authenticates as
@@ -957,6 +965,15 @@ gateway that reaches Keycloak through that proxy only.
 | The application listener on the fixed host port `10463`, on every interface; the management
   interface on the fixed loopback port `19463`.
 |===
+
+*Why the rig runs concurrently.* The rig attaches no Compose container to any network. Its echo
+container is its own, so a suite whose mediated calls go through the Compose `go-httpbin` never sees
+that container join or leave a network while it runs. The proxy joins the Compose network as a
+container the rig started, under no alias there, and answers as `keycloak` on the rig's network only.
+Beyond that, `BffTlsRelaxationIT` names no shared instance log, its fixed port `10463` is its own,
+and it drives no admin API. So it carries the `sleep-bound` tag and runs in the concurrent Failsafe
+execution, which `FailsafeConcurrencyContractTest` admits. One rig runs at a time within the
+suite: its three tests share the fixed container names, the network name and the port.
 
 *The certificate and the descriptor of each leg.* A leg says something about hostname matching only
 if the proxy's certificate is trusted and does not name the host, and something about chain trust

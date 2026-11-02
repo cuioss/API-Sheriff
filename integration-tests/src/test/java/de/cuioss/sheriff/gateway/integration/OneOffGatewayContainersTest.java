@@ -366,6 +366,21 @@ class OneOffGatewayContainersTest {
         }
 
         @Test
+        @DisplayName("the TLS-relaxation echo container joins one network and publishes no port at all")
+        void tlsRelaxationEchoPublishesNothingOnOneNetwork() {
+            List<String> options = BffTlsRelaxationIT.echoRunOptions();
+
+            List<String> arguments = OneOffGatewayContainers.auxiliaryContainerArguments(List.of("run", "-d"),
+                    CONTAINER, "harness-test-image", options, List.of(), 0);
+
+            assertAll("TLS-relaxation echo container",
+                    () -> assertEquals(List.of(), published(arguments)),
+                    () -> assertTrue(arguments.stream().noneMatch(argument -> argument.startsWith("--publish")),
+                            () -> "no publish option in any spelling: " + arguments),
+                    () -> assertEquals(1, arguments.stream().filter("--network"::equals).count()));
+        }
+
+        @Test
         @DisplayName("an auxiliary container is refused before any argument is produced when its options break the rule")
         void auxiliaryContainerIsHeldToTheRule() {
             List<String> verb = List.of("create");
@@ -404,10 +419,10 @@ class OneOffGatewayContainersTest {
         }
 
         @Test
-        @DisplayName("the harness's network attachment is called by the two rigs that borrow the compose echo container")
-        void networkAttachmentIsCalledByTheRigsThatBorrowAComposeContainer() throws Exception {
+        @DisplayName("the harness's network attachment is called by the one rig that borrows the compose echo container")
+        void networkAttachmentIsCalledByTheRigThatBorrowsAComposeContainer() throws Exception {
             Set<String> expected = Set.of("OneOffGatewayContainers.java", "OneOffGatewayContainersTest.java",
-                    "StubIdentityProviderRig.java", "BffTlsRelaxationIT.java");
+                    "StubIdentityProviderRig.java");
 
             Set<String> naming = new TreeSet<>(sourcesNaming("connectToNetwork("));
 
