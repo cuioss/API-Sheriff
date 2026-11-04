@@ -128,10 +128,14 @@ class ComposeFixtureImageBuildWiringTest {
      * not attached with {@code =}.
      */
     private static final Set<String> OPTIONS_WITH_A_VALUE = Set.of("--build-arg", "--builder", "-m", "--memory",
-            "--no-cache-filter", "--progress", "--ssh");
+            "--progress", "--provenance", "--sbom", "--ssh");
 
-    /** The {@code docker compose build} options under which compose prints and builds nothing. */
-    private static final Set<String> NON_BUILDING_OPTIONS = Set.of("--help", "-h", "--print", "--dry-run");
+    /**
+     * The {@code docker compose} options, global or of {@code build}, under which compose prints, checks
+     * or simulates and builds nothing. Each counts in its bare form and as {@code --name=value} with
+     * any value other than {@code false}.
+     */
+    private static final Set<String> NON_BUILDING_OPTIONS = Set.of("--help", "-h", "--print", "--dry-run", "--check");
 
     /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
     private static final String NO_BUILD = "";
@@ -259,7 +263,7 @@ class ComposeFixtureImageBuildWiringTest {
         Set<String> fixtures = servicesStartedFromABuild(SPECIMEN_COMPOSE);
         String withOptions = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
                 + "<argument>--no-cache</argument><argument>--build-arg</argument><argument>VERSION=1</argument>"
-                + "<argument>--no-cache-filter</argument><argument>deps</argument><argument>--progress=plain</argument><argument>gateway</argument><argument>echo</argument>";
+                + "<argument>--sbom</argument><argument>true</argument><argument>--print=false</argument><argument>--progress=plain</argument><argument>gateway</argument><argument>echo</argument>";
         String optionsOnly = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
                 + "<argument>gateway</argument>";
 
@@ -272,7 +276,14 @@ class ComposeFixtureImageBuildWiringTest {
                 () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions, withOptions.replace("--pull",
                         "--dry-run"))).isEmpty(), "a lane whose build is a dry run was accepted"),
                 () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--help"),
-                        withOptions)).isEmpty(), "a lane whose build prints help was accepted"));
+                        withOptions)).isEmpty(), "a lane whose build prints help was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--check"),
+                        withOptions)).isEmpty(), "a lane whose build only checks its configuration was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--print=true"),
+                        withOptions)).isEmpty(), "a lane whose build prints through --print=true was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace(
+                                "<argument>compose</argument>", "<argument>compose</argument><argument>--dry-run</argument>"),
+                        withOptions)).isEmpty(), "a lane whose compose-level dry run builds nothing was accepted"));
     }
 
     // --- the rule ----------------------------------------------------------------------------------
@@ -295,10 +306,11 @@ class ComposeFixtureImageBuildWiringTest {
             }
             List<String> commandLine = entry.getValue();
             List<String> afterBuild = commandLine.subList(commandLine.indexOf(BUILD) + 1, commandLine.size());
-            List<String> nonBuilding = afterBuild.stream().filter(NON_BUILDING_OPTIONS::contains).toList();
+            List<String> nonBuilding = commandLine.stream().filter(ComposeFixtureImageBuildWiringTest::buildsNothing)
+                    .toList();
             if (!nonBuilding.isEmpty()) {
-                violations.add(lane + " passes " + nonBuilding + " to " + BUILD + ", which then prints and builds no"
-                        + " image, so 'up -d' starts whatever image the daemon already holds.");
+                violations.add(lane + " passes " + nonBuilding + " to compose, which then builds no image, so"
+                        + " 'up -d' starts whatever image the daemon already holds.");
             }
             Set<String> named = servicesNamed(afterBuild);
             Set<String> missing = new TreeSet<>(fixtures);
@@ -326,6 +338,12 @@ class ComposeFixtureImageBuildWiringTest {
      * @param afterBuild the arguments following {@code build}, in order
      * @return the service names
      */
+    private static boolean buildsNothing(String argument) {
+        int equals = argument.indexOf('=');
+        String name = equals < 0 ? argument : argument.substring(0, equals);
+        return NON_BUILDING_OPTIONS.contains(name) && (equals < 0 || !"false".equals(argument.substring(equals + 1)));
+    }
+
     private static Set<String> servicesNamed(List<String> afterBuild) {
         Set<String> named = new TreeSet<>();
         boolean optionValue = false;

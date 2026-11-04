@@ -301,7 +301,12 @@ class FailsafeConcurrencyContractTest {
                 () -> assertFalse(partitionViolationsOf(pomWith(sequential + concurrent, "<configuration>"
                                 + "<systemPropertyVariables><" + PARALLEL_MODE_DEFAULT + ">concurrent</"
                                 + PARALLEL_MODE_DEFAULT + "></systemPropertyVariables></configuration>")).isEmpty(),
-                        "a default mode set at plugin level, which every execution inherits, was accepted"));
+                        "a default mode set at plugin level, which every execution inherits, was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3", "false",
+                                parameters(PARALLEL_ENABLED + "=true\n" + PARALLEL_MODE_DEFAULT + "=concurrent")
+                                        + "<argLine>-D" + PARALLEL_MODE_DEFAULT + "=same_thread</argLine>")).isEmpty(),
+                        "a concurrent default mode masked by a same_thread system property, which JUnit overrides, was"
+                                + " accepted"));
     }
 
     @Test
@@ -670,13 +675,11 @@ class FailsafeConcurrencyContractTest {
      * reads all three, so a guard that read only the first would accept a mode set through another.
      *
      * @param configuration the plugin-level or execution-level configuration
-     * @return the settings by key; a later source of the same element wins, as no source here sets a
-     *         key twice
+     * @return the settings by key; where two sources set one key, the value JUnit uses wins:
+     *         {@code configurationParameters} over the JVM system properties
      */
     private static Map<String, String> junitSettings(Element configuration) {
         Map<String, String> settings = new TreeMap<>();
-        children(configuration, "properties").forEach(properties -> settings.putAll(
-                configurationParameters(childText(properties, "configurationParameters"))));
         children(configuration, "systemPropertyVariables").forEach(variables -> {
             for (Node node = variables.getFirstChild(); node != null; node = node.getNextSibling()) {
                 if (node instanceof Element variable && variable.getTagName().startsWith(JUNIT_PREFIX)) {
@@ -688,6 +691,9 @@ class FailsafeConcurrencyContractTest {
         while (option.find()) {
             settings.put(option.group(1), option.group(2));
         }
+        // Last, because the JUnit Platform gives configuration parameters precedence over system properties.
+        children(configuration, "properties").forEach(properties -> settings.putAll(
+                configurationParameters(childText(properties, "configurationParameters"))));
         return settings;
     }
 
