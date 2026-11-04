@@ -128,7 +128,7 @@ class ComposeFixtureImageBuildWiringTest {
      * not attached with {@code =}.
      */
     private static final Set<String> OPTIONS_WITH_A_VALUE = Set.of("--build-arg", "--builder", "-m", "--memory",
-            "--progress", "--ssh");
+            "--no-cache-filter", "--progress", "--ssh");
 
     /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
     private static final String NO_BUILD = "";
@@ -256,7 +256,7 @@ class ComposeFixtureImageBuildWiringTest {
         Set<String> fixtures = servicesStartedFromABuild(SPECIMEN_COMPOSE);
         String withOptions = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
                 + "<argument>--no-cache</argument><argument>--build-arg</argument><argument>VERSION=1</argument>"
-                + "<argument>--progress=plain</argument><argument>gateway</argument><argument>echo</argument>";
+                + "<argument>--no-cache-filter</argument><argument>deps</argument><argument>--progress=plain</argument><argument>gateway</argument><argument>echo</argument>";
         String optionsOnly = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
                 + "<argument>gateway</argument>";
 

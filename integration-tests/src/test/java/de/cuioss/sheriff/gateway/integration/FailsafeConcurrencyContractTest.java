@@ -22,18 +22,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -150,6 +154,10 @@ class FailsafeConcurrencyContractTest {
     private static final String PARALLEL_ENABLED = "junit.jupiter.execution.parallel.enabled";
     private static final String PARALLEL_MODE_DEFAULT = "junit.jupiter.execution.parallel.mode.default";
     private static final String PARALLEL_MODE_CLASSES_DEFAULT = "junit.jupiter.execution.parallel.mode.classes.default";
+    private static final String JUNIT_PREFIX = "junit.";
+    private static final Pattern ARG_LINE_JUNIT_OPTION = Pattern.compile("-D(junit\\.[\\w.]+)=(\\S+)");
+    private static final Path ROOT_POM = Path.of("..", "pom.xml");
+    private static final Path PLATFORM_PROPERTIES = Path.of("src", "test", "resources", "junit-platform.properties");
     private static final String REMEDY = " Take the tag off the class; do not change the test.";
 
     // --- the real pom.xml and the real sources -----------------------------------------------------
@@ -162,6 +170,35 @@ class FailsafeConcurrencyContractTest {
         assertFalse(executions.isEmpty(), pom() + " declares no " + FAILSAFE + " execution in the profile "
                 + IT_PROFILE + ", so this guard would assert over nothing");
         assertEquals(List.of(), partitionViolations(executions));
+    }
+
+    @Test
+    @DisplayName("no inherited source sets a JUnit parallel setting the execution guard would not see")
+    void noInheritedSourceSetsAParallelSetting() throws Exception {
+        Path rootPom = MODULE.resolve(ROOT_POM).normalize();
+        assertTrue(Files.isRegularFile(rootPom), rootPom + " does not exist; this guard reads the reactor root"
+                + " pom.xml, whose failsafe configuration every module inherits");
+        Map<String, String> inherited = new TreeMap<>();
+        Document root = parse(Files.readString(rootPom));
+        for (Element build : children(root.getDocumentElement(), "build")) {
+            Stream.concat(children(build, "plugins").stream(), children(build, "pluginManagement").stream()
+                    .flatMap(management -> children(management, "plugins").stream()))
+                    .flatMap(plugins -> children(plugins, "plugin").stream())
+                    .filter(plugin -> FAILSAFE.equals(childText(plugin, "artifactId")))
+                    .flatMap(plugin -> children(plugin, "configuration").stream())
+                    .forEach(configuration -> inherited.putAll(junitSettings(configuration)));
+        }
+        Path platformProperties = MODULE.resolve(PLATFORM_PROPERTIES);
+        if (Files.isRegularFile(platformProperties)) {
+            inherited.putAll(configurationParameters(Files.readString(platformProperties)));
+        }
+
+        assertEquals(Map.of(), inherited.entrySet().stream()
+                        .filter(entry -> entry.getKey().startsWith("junit.jupiter.execution.parallel."))
+                        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue)),
+                "the root " + POM + " or " + PLATFORM_PROPERTIES + " sets a JUnit parallel setting; it would reach"
+                        + " both failsafe executions without passing the execution guard above. Set it on the"
+                        + " execution instead.");
     }
 
     @Test
@@ -210,13 +247,7 @@ class FailsafeConcurrencyContractTest {
         String sequential = execution(DEFAULT_EXECUTION, "", SLEEP_BOUND, "", "", "");
         String parallel = parameters(PARALLEL_ENABLED + "=true");
         String concurrent = execution("concurrent", SLEEP_BOUND, "", "3", "false", parallel);
-        Function<String, List<String>> violations = executions -> {
-            try {
-                return partitionViolations(failsafeExecutions(parse(pomWith(executions)), IT_PROFILE));
-            } catch (ParserConfigurationException | SAXException | IOException e) {
-                throw new AssertionError("the specimen is not a readable POM: " + executions, e);
-            }
-        };
+        Function<String, List<String>> violations = executions -> partitionViolationsOf(pomWith(executions, ""));
 
         assertAll(
                 () -> assertEquals(List.of(), violations.apply(sequential + concurrent)),
@@ -256,7 +287,21 @@ class FailsafeConcurrencyContractTest {
                                 + "=concurrent"))).isEmpty(),
                         "a concurrent execution that runs classes concurrently inside one fork was accepted"),
                 () -> assertFalse(violations.apply(execution(DEFAULT_EXECUTION, "", SLEEP_BOUND, "", "", parallel)
-                        + concurrent).isEmpty(), "a sequential execution enabling JUnit parallel execution was accepted"));
+                        + concurrent).isEmpty(), "a sequential execution enabling JUnit parallel execution was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3", "false",
+                        parameters(PARALLEL_ENABLED + ": true\n" + PARALLEL_MODE_DEFAULT + " concurrent")))
+                        .isEmpty(), "a default mode set in the colon or space form of the properties syntax was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3", "false",
+                                parallel + "<systemPropertyVariables><" + PARALLEL_MODE_DEFAULT + ">concurrent</"
+                                        + PARALLEL_MODE_DEFAULT + "></systemPropertyVariables>")).isEmpty(),
+                        "a default mode set through systemPropertyVariables was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3", "false",
+                        parallel + "<argLine>-Xmx1g -D" + PARALLEL_MODE_DEFAULT + "=concurrent</argLine>"))
+                        .isEmpty(), "a default mode set through argLine was accepted"),
+                () -> assertFalse(partitionViolationsOf(pomWith(sequential + concurrent, "<configuration>"
+                                + "<systemPropertyVariables><" + PARALLEL_MODE_DEFAULT + ">concurrent</"
+                                + PARALLEL_MODE_DEFAULT + "></systemPropertyVariables></configuration>")).isEmpty(),
+                        "a default mode set at plugin level, which every execution inherits, was accepted"));
     }
 
     @Test
@@ -577,10 +622,15 @@ class FailsafeConcurrencyContractTest {
             for (Element candidate : children(profiles, "profile")) {
                 if (profile.equals(childText(candidate, "id"))) {
                     plugins(candidate).filter(plugin -> FAILSAFE.equals(childText(plugin, "artifactId")))
-                            .flatMap(plugin -> children(plugin, "executions").stream())
-                            .flatMap(holder -> children(holder, "execution").stream())
-                            .map(FailsafeConcurrencyContractTest::itExecution)
-                            .forEach(executions::add);
+                            .forEach(plugin -> {
+                                Map<String, String> pluginLevel = new TreeMap<>();
+                                children(plugin, "configuration")
+                                        .forEach(configuration -> pluginLevel.putAll(junitSettings(configuration)));
+                                children(plugin, "executions").stream()
+                                        .flatMap(holder -> children(holder, "execution").stream())
+                                        .map(execution -> itExecution(execution, pluginLevel))
+                                        .forEach(executions::add);
+                            });
                 }
             }
         }
@@ -593,16 +643,15 @@ class FailsafeConcurrencyContractTest {
                 .flatMap(plugins -> children(plugins, "plugin").stream());
     }
 
-    private static ItExecution itExecution(Element execution) {
+    private static ItExecution itExecution(Element execution, Map<String, String> pluginLevel) {
         String groups = "";
         String excludedGroups = "";
         String forkCount = "";
         String reuseForks = "";
         List<String> redeclared = new ArrayList<>();
-        Map<String, String> parameters = new TreeMap<>();
+        Map<String, String> parameters = new TreeMap<>(pluginLevel);
         for (Element configuration : children(execution, "configuration")) {
-            children(configuration, "properties").forEach(properties -> parameters.putAll(
-                    configurationParameters(childText(properties, "configurationParameters"))));
+            parameters.putAll(junitSettings(configuration));
             groups = childText(configuration, "groups");
             excludedGroups = childText(configuration, "excludedGroups");
             forkCount = childText(configuration, "forkCount");
@@ -615,20 +664,49 @@ class FailsafeConcurrencyContractTest {
     }
 
     /**
-     * Reads the {@code key=value} lines of a {@code configurationParameters} block, the format JUnit
-     * reads it in.
+     * Every JUnit setting one failsafe {@code <configuration>} element hands to the JUnit Platform, by
+     * key: the {@code properties/configurationParameters} block, the {@code junit.*} entries of
+     * {@code systemPropertyVariables}, and {@code -Djunit.*} options of {@code argLine}. The platform
+     * reads all three, so a guard that read only the first would accept a mode set through another.
+     *
+     * @param configuration the plugin-level or execution-level configuration
+     * @return the settings by key; a later source of the same element wins, as no source here sets a
+     *         key twice
+     */
+    private static Map<String, String> junitSettings(Element configuration) {
+        Map<String, String> settings = new TreeMap<>();
+        children(configuration, "properties").forEach(properties -> settings.putAll(
+                configurationParameters(childText(properties, "configurationParameters"))));
+        children(configuration, "systemPropertyVariables").forEach(variables -> {
+            for (Node node = variables.getFirstChild(); node != null; node = node.getNextSibling()) {
+                if (node instanceof Element variable && variable.getTagName().startsWith(JUNIT_PREFIX)) {
+                    settings.put(variable.getTagName(), variable.getTextContent().strip());
+                }
+            }
+        });
+        Matcher option = ARG_LINE_JUNIT_OPTION.matcher(childText(configuration, "argLine"));
+        while (option.find()) {
+            settings.put(option.group(1), option.group(2));
+        }
+        return settings;
+    }
+
+    /**
+     * Reads a {@code configurationParameters} block the way the JUnit Platform provider does, as
+     * {@link Properties} text, so {@code key=value}, {@code key: value} and {@code key value} all count.
      *
      * @param block the element text, possibly empty
      * @return the parameters by key
      */
     private static Map<String, String> configurationParameters(String block) {
-        Map<String, String> parameters = new TreeMap<>();
-        for (String line : block.split("\\R")) {
-            int separator = line.indexOf('=');
-            if (separator > 0) {
-                parameters.put(line.substring(0, separator).strip(), line.substring(separator + 1).strip());
-            }
+        Properties properties = new Properties();
+        try {
+            properties.load(new StringReader(block));
+        } catch (IOException e) {
+            throw new UncheckedIOException("unreadable configurationParameters block: " + block, e);
         }
+        Map<String, String> parameters = new TreeMap<>();
+        properties.stringPropertyNames().forEach(key -> parameters.put(key, properties.getProperty(key).strip()));
         return parameters;
     }
 
@@ -666,10 +744,23 @@ class FailsafeConcurrencyContractTest {
         return factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
     }
 
-    /** A POM whose integration-tests profile holds the given failsafe executions, for the control. */
-    private static String pomWith(String executions) {
+    private static List<String> partitionViolationsOf(String pom) {
+        try {
+            return partitionViolations(failsafeExecutions(parse(pom), IT_PROFILE));
+        } catch (ParserConfigurationException | SAXException | IOException e) {
+            throw new AssertionError("the specimen is not a readable POM: " + pom, e);
+        }
+    }
+
+    /**
+     * A POM whose integration-tests profile holds the given failsafe executions, for the control.
+     *
+     * @param executions          the execution elements
+     * @param pluginConfiguration a plugin-level {@code <configuration>} element, or empty
+     */
+    private static String pomWith(String executions, String pluginConfiguration) {
         return "<project><profiles><profile><id>" + IT_PROFILE + "</id><build><plugins><plugin><artifactId>"
-                + FAILSAFE + "</artifactId><executions>" + executions
+                + FAILSAFE + "</artifactId>" + pluginConfiguration + "<executions>" + executions
                 + "</executions></plugin></plugins></build></profile></profiles></project>";
     }
 
