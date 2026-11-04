@@ -262,10 +262,10 @@ class FailsafeConcurrencyContractTest {
                 () -> assertFalse(violations.apply(sequential + concurrent + concurrent).isEmpty(),
                         "two executions selecting the same tag were accepted"),
                 () -> assertFalse(violations.apply(sequential
-                                + execution("concurrent", SLEEP_BOUND, "", "1", "false", "")).isEmpty(),
+                                + execution("concurrent", SLEEP_BOUND, "", "1", "false", parallel)).isEmpty(),
                         "a concurrent execution with one fork was accepted"),
                 () -> assertFalse(violations.apply(sequential
-                                + execution("concurrent", SLEEP_BOUND, "", "3", "true", "")).isEmpty(),
+                                + execution("concurrent", SLEEP_BOUND, "", "3", "true", parallel)).isEmpty(),
                         "a concurrent execution that reuses its forks was accepted"),
                 () -> assertFalse(violations.apply(execution(DEFAULT_EXECUTION, "", SLEEP_BOUND, "3", "", "")
                         + concurrent).isEmpty(), "a sequential execution with a fork count was accepted"),

@@ -832,6 +832,8 @@ final class OneOffGatewayContainers {
                 () -> ORIGIN_KEYS.get(2) + " of " + source + " must be a list");
         csrf.put("trusted_origins", trustedOrigins.stream()
                 .map(entry -> retargeted(source, ORIGIN_KEYS.get(2), entry, sourceOrigin, origin)).toList());
+        assertFalse(sessionAdditions.containsKey("key_file"), () -> SEALING_KEY_FILE_KEY
+                + " is derived from the session mode, never declared as an addition");
         sessionAdditions.forEach((key, value) -> {
             assertFalse(session.containsKey(key), () -> "oidc.session." + key + " of " + source
                     + " is already declared; an addition never overrides the source's own value");
@@ -878,7 +880,8 @@ final class OneOffGatewayContainers {
 
     /**
      * Adds, in dotted form below {@code prefix}, every key whose value differs between two parsed YAML
-     * mappings — present in one only, or present in both with unequal values. Nested mappings are
+     * mappings — present in one only (a key present with a null value counts as present), or present in
+     * both with unequal values. Nested mappings are
      * compared member by member; a list is a value and compared whole.
      */
     private static void collectDifferingKeys(String prefix, Map<String, Object> left, Map<String, Object> right,
@@ -892,7 +895,7 @@ final class OneOffGatewayContainers {
             if (leftValue instanceof Map<?, ?> && rightValue instanceof Map<?, ?>) {
                 collectDifferingKeys(path, descriptorMapping(leftValue, path), descriptorMapping(rightValue, path),
                         differing);
-            } else if (!Objects.equals(leftValue, rightValue)) {
+            } else if (left.containsKey(key) != right.containsKey(key) || !Objects.equals(leftValue, rightValue)) {
                 differing.add(path);
             }
         }

@@ -794,6 +794,16 @@ class OneOffGatewayContainersTest {
                     () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
         }
 
+        @Test
+        @DisplayName("refuses the sealing key file as an addition: the derivation owns that key")
+        void shouldRefuseTheSealingKeyAsAnAddition() {
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-key-addition", REFRESH_SOURCE, REFRESH_ORIGIN, PORT,
+                            Map.of("key_file", "/app/k.key")));
+
+            assertTrue(refusal.getMessage().contains("never declared as an addition"), refusal::getMessage);
+        }
+
         @ParameterizedTest(name = "refuses the gateway name ''{0}''")
         @ValueSource(strings = {"Upper", "../escape", "two/levels", "-leading-dash", ""})
         @DisplayName("refuses a gateway name that is not one lower-case directory name")

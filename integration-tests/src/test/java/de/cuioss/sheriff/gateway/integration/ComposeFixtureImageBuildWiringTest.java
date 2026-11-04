@@ -130,6 +130,9 @@ class ComposeFixtureImageBuildWiringTest {
     private static final Set<String> OPTIONS_WITH_A_VALUE = Set.of("--build-arg", "--builder", "-m", "--memory",
             "--no-cache-filter", "--progress", "--ssh");
 
+    /** The {@code docker compose build} options under which compose prints and builds nothing. */
+    private static final Set<String> NON_BUILDING_OPTIONS = Set.of("--help", "-h", "--print", "--dry-run");
+
     /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
     private static final String NO_BUILD = "";
 
@@ -263,7 +266,13 @@ class ComposeFixtureImageBuildWiringTest {
         assertAll(
                 () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions, withOptions))),
                 () -> assertFalse(violationsOf(fixtures, knownLanes(optionsOnly, withOptions)).isEmpty(),
-                        "a lane whose options hide that it leaves a fixture to 'up -d' was accepted"));
+                        "a lane whose options hide that it leaves a fixture to 'up -d' was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--print"),
+                        withOptions)).isEmpty(), "a lane whose build only prints its definition was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions, withOptions.replace("--pull",
+                        "--dry-run"))).isEmpty(), "a lane whose build is a dry run was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--help"),
+                        withOptions)).isEmpty(), "a lane whose build prints help was accepted"));
     }
 
     // --- the rule ----------------------------------------------------------------------------------
@@ -285,8 +294,13 @@ class ComposeFixtureImageBuildWiringTest {
                 continue;
             }
             List<String> commandLine = entry.getValue();
-            Set<String> named = servicesNamed(commandLine.subList(commandLine.indexOf(BUILD) + 1,
-                    commandLine.size()));
+            List<String> afterBuild = commandLine.subList(commandLine.indexOf(BUILD) + 1, commandLine.size());
+            List<String> nonBuilding = afterBuild.stream().filter(NON_BUILDING_OPTIONS::contains).toList();
+            if (!nonBuilding.isEmpty()) {
+                violations.add(lane + " passes " + nonBuilding + " to " + BUILD + ", which then prints and builds no"
+                        + " image, so 'up -d' starts whatever image the daemon already holds.");
+            }
+            Set<String> named = servicesNamed(afterBuild);
             Set<String> missing = new TreeSet<>(fixtures);
             missing.removeAll(named);
             Set<String> extra = new TreeSet<>(named);
