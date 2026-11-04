@@ -123,6 +123,13 @@ class ComposeFixtureImageBuildWiringTest {
     private static final String SKIP = "<skip>true</skip>";
 
 
+    /**
+     * The {@code docker compose build} options that take their value as the next argument when it is
+     * not attached with {@code =}.
+     */
+    private static final Set<String> OPTIONS_WITH_A_VALUE = Set.of("--build-arg", "--builder", "-m", "--memory",
+            "--progress", "--ssh");
+
     /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
     private static final String NO_BUILD = "";
 
@@ -243,6 +250,22 @@ class ComposeFixtureImageBuildWiringTest {
                         "an image-build execution bound to no goal, which Maven never runs, was accepted"));
     }
 
+    @Test
+    @DisplayName("the detector reads compose build options after 'build' as options, not as services")
+    void detectorSkipsBuildOptions() {
+        Set<String> fixtures = servicesStartedFromABuild(SPECIMEN_COMPOSE);
+        String withOptions = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
+                + "<argument>--no-cache</argument><argument>--build-arg</argument><argument>VERSION=1</argument>"
+                + "<argument>--progress=plain</argument><argument>gateway</argument><argument>echo</argument>";
+        String optionsOnly = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
+                + "<argument>gateway</argument>";
+
+        assertAll(
+                () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions, withOptions))),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(optionsOnly, withOptions)).isEmpty(),
+                        "a lane whose options hide that it leaves a fixture to 'up -d' was accepted"));
+    }
+
     // --- the rule ----------------------------------------------------------------------------------
 
     /**
@@ -262,8 +285,8 @@ class ComposeFixtureImageBuildWiringTest {
                 continue;
             }
             List<String> commandLine = entry.getValue();
-            int build = commandLine.indexOf(BUILD);
-            Set<String> named = new TreeSet<>(commandLine.subList(build + 1, commandLine.size()));
+            Set<String> named = servicesNamed(commandLine.subList(commandLine.indexOf(BUILD) + 1,
+                    commandLine.size()));
             Set<String> missing = new TreeSet<>(fixtures);
             missing.removeAll(named);
             Set<String> extra = new TreeSet<>(named);
@@ -279,6 +302,29 @@ class ComposeFixtureImageBuildWiringTest {
             }
         }
         return violations;
+    }
+
+    /**
+     * The service names among the arguments after {@code build}. Compose takes its options there too, so
+     * an option ({@code --pull}, {@code --no-cache}) is not a service, and neither is the value of an
+     * option that takes one as the next argument ({@code --build-arg KEY=VALUE}).
+     *
+     * @param afterBuild the arguments following {@code build}, in order
+     * @return the service names
+     */
+    private static Set<String> servicesNamed(List<String> afterBuild) {
+        Set<String> named = new TreeSet<>();
+        boolean optionValue = false;
+        for (String argument : afterBuild) {
+            if (optionValue) {
+                optionValue = false;
+            } else if (argument.startsWith("-")) {
+                optionValue = OPTIONS_WITH_A_VALUE.contains(argument);
+            } else {
+                named.add(argument);
+            }
+        }
+        return named;
     }
 
     // --- reading -----------------------------------------------------------------------------------

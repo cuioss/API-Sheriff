@@ -147,6 +147,9 @@ class FailsafeConcurrencyContractTest {
      */
     private static final Pattern NETWORK_ATTACHMENT = Pattern.compile("\\bconnectToNetwork\\b");
 
+    private static final String PARALLEL_ENABLED = "junit.jupiter.execution.parallel.enabled";
+    private static final String PARALLEL_MODE_DEFAULT = "junit.jupiter.execution.parallel.mode.default";
+    private static final String PARALLEL_MODE_CLASSES_DEFAULT = "junit.jupiter.execution.parallel.mode.classes.default";
     private static final String REMEDY = " Take the tag off the class; do not change the test.";
 
     // --- the real pom.xml and the real sources -----------------------------------------------------
@@ -205,7 +208,8 @@ class FailsafeConcurrencyContractTest {
     @DisplayName("the partition detector accepts the declared split and rejects each way of breaking it")
     void partitionDetectorRejectsBrokenSplits() {
         String sequential = execution(DEFAULT_EXECUTION, "", SLEEP_BOUND, "", "", "");
-        String concurrent = execution("concurrent", SLEEP_BOUND, "", "3", "false", "");
+        String parallel = parameters(PARALLEL_ENABLED + "=true");
+        String concurrent = execution("concurrent", SLEEP_BOUND, "", "3", "false", parallel);
         Function<String, List<String>> violations = executions -> {
             try {
                 return partitionViolations(failsafeExecutions(parse(pomWith(executions)), IT_PROFILE));
@@ -235,8 +239,24 @@ class FailsafeConcurrencyContractTest {
                 () -> assertFalse(violations.apply(execution(DEFAULT_EXECUTION, "", SLEEP_BOUND, "3", "", "")
                         + concurrent).isEmpty(), "a sequential execution with a fork count was accepted"),
                 () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3",
-                                "false", "<includes><include>**/*IT.java</include></includes>")).isEmpty(),
-                        "an execution that declares the include pattern for itself was accepted"));
+                                "false", parallel + "<includes><include>**/*IT.java</include></includes>")).isEmpty(),
+                        "an execution that declares the include pattern for itself was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3",
+                                "false", "")).isEmpty(),
+                        "a concurrent execution without JUnit parallel execution enabled was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3",
+                                "false", parameters(PARALLEL_ENABLED + "=false"))).isEmpty(),
+                        "a concurrent execution with JUnit parallel execution disabled was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3",
+                                "false", parameters(PARALLEL_ENABLED + "=true\n" + PARALLEL_MODE_DEFAULT
+                                + "=concurrent"))).isEmpty(),
+                        "a concurrent execution that runs every class's methods concurrently by default was accepted"),
+                () -> assertFalse(violations.apply(sequential + execution("concurrent", SLEEP_BOUND, "", "3",
+                                "false", parameters(PARALLEL_ENABLED + "=true\n" + PARALLEL_MODE_CLASSES_DEFAULT
+                                + "=concurrent"))).isEmpty(),
+                        "a concurrent execution that runs classes concurrently inside one fork was accepted"),
+                () -> assertFalse(violations.apply(execution(DEFAULT_EXECUTION, "", SLEEP_BOUND, "", "", parallel)
+                        + concurrent).isEmpty(), "a sequential execution enabling JUnit parallel execution was accepted"));
     }
 
     @Test
@@ -330,6 +350,24 @@ class FailsafeConcurrencyContractTest {
             violations.add("execution " + concurrent.id() + " declares reuseForks '" + concurrent.reuseForks()
                     + "'; it has to be false: IT classes set JVM-wide REST Assured state the next class in the"
                     + " same JVM would inherit");
+        }
+        if (!"true".equals(concurrent.parameters().get(PARALLEL_ENABLED))) {
+            violations.add("execution " + concurrent.id() + " sets " + PARALLEL_ENABLED + " to '"
+                    + concurrent.parameters().getOrDefault(PARALLEL_ENABLED, "") + "'; it has to be true, or a class's"
+                    + " @Execution(CONCURRENT) is ignored and BffSessionIdleTimeoutIT runs its two legs one after the"
+                    + " other again, with every test still green");
+        }
+        for (String mode : List.of(PARALLEL_MODE_DEFAULT, PARALLEL_MODE_CLASSES_DEFAULT)) {
+            String value = concurrent.parameters().getOrDefault(mode, "same_thread");
+            if (!"same_thread".equals(value)) {
+                violations.add("execution " + concurrent.id() + " sets " + mode + " to '" + value + "'; it has to stay"
+                        + " same_thread: a class opts in with @Execution(CONCURRENT), and BffTokenRefreshIT's admin"
+                        + " logout is safe only while its own methods run one after the other");
+            }
+        }
+        if (!sequential.parameters().isEmpty()) {
+            violations.add("execution " + sequential.id() + " declares JUnit configuration parameters "
+                    + sequential.parameters().keySet() + "; the classes it runs are the ones that must not overlap");
         }
         for (ItExecution execution : executions) {
             if (!execution.redeclared().isEmpty()) {
@@ -425,9 +463,11 @@ class FailsafeConcurrencyContractTest {
      * @param forkCount      the execution's {@code forkCount} text, empty when it declares none
      * @param reuseForks     the execution's {@code reuseForks} text, empty when it declares none
      * @param redeclared     the elements of {@link #SHARED_CONFIGURATION} the execution declares itself
+     * @param parameters     the JUnit configuration parameters of {@code properties/configurationParameters},
+     *                       empty when the execution declares none
      */
     private record ItExecution(String id, Set<String> groups, Set<String> excludedGroups, String forkCount,
-    String reuseForks, List<String> redeclared) {
+    String reuseForks, List<String> redeclared, Map<String, String> parameters) {
     }
 
     /**
@@ -559,7 +599,10 @@ class FailsafeConcurrencyContractTest {
         String forkCount = "";
         String reuseForks = "";
         List<String> redeclared = new ArrayList<>();
+        Map<String, String> parameters = new TreeMap<>();
         for (Element configuration : children(execution, "configuration")) {
+            children(configuration, "properties").forEach(properties -> parameters.putAll(
+                    configurationParameters(childText(properties, "configurationParameters"))));
             groups = childText(configuration, "groups");
             excludedGroups = childText(configuration, "excludedGroups");
             forkCount = childText(configuration, "forkCount");
@@ -568,7 +611,25 @@ class FailsafeConcurrencyContractTest {
                     .forEach(redeclared::add);
         }
         return new ItExecution(childText(execution, "id"), tags(groups), tags(excludedGroups), forkCount, reuseForks,
-                redeclared);
+                redeclared, parameters);
+    }
+
+    /**
+     * Reads the {@code key=value} lines of a {@code configurationParameters} block, the format JUnit
+     * reads it in.
+     *
+     * @param block the element text, possibly empty
+     * @return the parameters by key
+     */
+    private static Map<String, String> configurationParameters(String block) {
+        Map<String, String> parameters = new TreeMap<>();
+        for (String line : block.split("\\R")) {
+            int separator = line.indexOf('=');
+            if (separator > 0) {
+                parameters.put(line.substring(0, separator).strip(), line.substring(separator + 1).strip());
+            }
+        }
+        return parameters;
     }
 
     private static Set<String> tags(String commaSeparated) {
@@ -610,6 +671,10 @@ class FailsafeConcurrencyContractTest {
         return "<project><profiles><profile><id>" + IT_PROFILE + "</id><build><plugins><plugin><artifactId>"
                 + FAILSAFE + "</artifactId><executions>" + executions
                 + "</executions></plugin></plugins></build></profile></profiles></project>";
+    }
+
+    private static String parameters(String lines) {
+        return "<properties><configurationParameters>" + lines + "</configurationParameters></properties>";
     }
 
     private static String execution(String id, String groups, String excludedGroups, String forkCount,

@@ -791,6 +791,10 @@ mode, `oidc.session.key_file` changed, which the helper asserts on the parsed do
 `refresh-client` nor `cookie-refresh-client` registers a back-channel logout URL in
 `integration-realm.json`, and both accept any redirect URI, so nothing an assertion of the three
 suites observes differs between a compose instance and its one-off stand-in.
+`BffSessionIdleTimeoutIT` derives its two gateways through the same helper, adding
+`oidc.session.idle_timeout_seconds` as a session addition. The helper refuses an addition the source
+already declares and counts each addition among the keys the derived document may change, so there
+is one derivation rule and not two copies of it.
 
 *Why the first two do not share a gateway.* Both derive from the same descriptor, but
 `BffTokenRefreshIT`'s refreshing legs log the very record whose rise `BffClientSecretModeIT` counts

@@ -119,7 +119,10 @@ import org.junit.jupiter.api.Test;
  * {@link BffKeycloakLoginFlow#REVOCATION_USERNAME}, which no other suite logs in as. A logout
  * therefore only ever ends sessions this suite created itself, whichever suite runs before, after or
  * beside it; that no longer rests on the order or the number of the Failsafe forks. Within the class
- * the tests run one after another, in one JVM, with no JUnit parallel execution configured: the two
+ * the tests run one after another, in one JVM. The concurrent execution does enable JUnit parallel
+ * execution, but only as an opt-in: its default mode stays {@code same_thread} and this class carries
+ * no {@code @Execution(CONCURRENT)}. That default is load-bearing here, and
+ * {@code FailsafeConcurrencyContractTest} refuses a POM that changes it. Under it the two
  * no-wait tests log in for themselves, and the two tests of each pair read sessions their pair logged
  * in once. The logout is issued inside the {@code FAILED} pair's observation, which runs from its two
  * logins to its last request with no other test in between, so it ends no session a test of this
