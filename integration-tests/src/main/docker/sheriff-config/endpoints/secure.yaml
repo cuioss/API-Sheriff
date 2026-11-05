@@ -55,3 +55,24 @@ endpoint:
       security_filter:
         profile: strict
         allowed_paths: ["/secure/filtered/{action}"]
+
+    # --- An authenticated redirect: the no-store half of the redirect verdict (#328) ---
+    # The bearer-protected twin of httpbin-redirect-entry in endpoints/httpbin.yaml: same
+    # exact-path shape, same 308, same same-origin trailing-slash Location, so the one
+    # variable between the two answers is the route's effective auth. This route inherits
+    # `auth.require: bearer` from the 'secure' anchor, which makes RedirectStage mark its
+    # answer `Cache-Control: no-store` — the answer is the product of one caller's
+    # credentials and must not be replayed to another by a shared cache. The public twin
+    # (require: none, no Set-Cookie) answers without it, which is the negative control
+    # RoutingAndResponseHeadersIT asserts next to this route in the native image.
+    #
+    # The exact path is selected before the /secure prefix route, and the Location it
+    # points at (/secure/redirect-entry/) is a different address that secure-proxy routes.
+    # No upstream block — a redirect route never contacts an upstream — and no limit-shaped
+    # key, so the declared-limit inventory is unchanged.
+    - id: secure-redirect-entry
+      match:
+        path: /secure/redirect-entry
+      redirect:
+        location: /secure/redirect-entry/
+        status: 308

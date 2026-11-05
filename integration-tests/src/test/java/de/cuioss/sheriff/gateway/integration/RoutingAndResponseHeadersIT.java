@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.integration;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,7 +36,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Acceptance of the route-table and response-path behaviour against the native image over the public
- * HTTPS edge: exact routes and the redirect terminal action (AS-3), anchor-scoped security headers with
+ * HTTPS edge: exact routes and the redirect terminal action (AS-3) including the {@code no-store}
+ * marking of a redirect on an authenticated route (#328), anchor-scoped security headers with
  * their per-header precedence (AS-8), the appended {@code upstream.path} (AS-9), the opt-in
  * {@code Location} rewrite (AS-11), header-matcher route selection: a {@code present: true} /
  * {@code present: false} route pair on one prefix selects the same route whichever order it is declared
@@ -58,8 +60,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * exact redirect route), {@code endpoints/origin-headers.yaml} (the precedence and rewrite routes, the
  * two header-discriminated route pairs under {@code /proxy/header-order/present-first} and
  * {@code /proxy/header-order/absent-first}, and the identity-header pair: the default-strip
- * {@code origin-headers} route and its {@code origin-headers-keep-identity} opt-out twin) and
- * {@code endpoints/assets.yaml}. Redirects are never followed, so the gateway's own answer is observed.
+ * {@code origin-headers} route and its {@code origin-headers-keep-identity} opt-out twin),
+ * {@code endpoints/secure.yaml} (the bearer-protected redirect twin whose answer must be
+ * {@code Cache-Control: no-store}) and {@code endpoints/assets.yaml}. Redirects are never followed, so
+ * the gateway's own answer is observed.
  */
 class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
 
@@ -67,6 +71,8 @@ class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
     private static final String FRAME_OPTIONS = "X-Frame-Options";
     private static final String CSP = "Content-Security-Policy";
     private static final String LOCATION = "Location";
+    private static final String CACHE_CONTROL = "Cache-Control";
+    private static final String NO_STORE = "no-store";
 
     /** The global block's HSTS value, as {@code sheriff-config/gateway.yaml} declares it. */
     private static final String GLOBAL_HSTS = "max-age=31536000; includeSubDomains";
@@ -113,6 +119,73 @@ class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
                     () -> assertEquals(200, response.statusCode()),
                     () -> assertTrue(response.path("url").toString().contains("/anything/redirect-entry"),
                             "the prefix route forwarded the request to the echo upstream: " + response.asString()));
+        }
+    }
+
+    @Nested
+    @DisplayName("#328 — a redirect on an authenticated route is answered Cache-Control: no-store")
+    class AuthenticatedRedirectCacheability {
+
+        /**
+         * The bearer-protected twin of the public {@code /proxy/redirect-entry} route, declared in
+         * {@code endpoints/secure.yaml}: same exact-path shape, same 308, same trailing-slash
+         * {@code Location}, so the route's effective auth is the one variable between the two answers.
+         */
+        private static final String SECURE_REDIRECT_PATH = "/secure/redirect-entry";
+        private static final String PUBLIC_REDIRECT_PATH = "/proxy/redirect-entry";
+
+        @Test
+        @DisplayName("a bearer-admitted request to the secure redirect route gets the 308 marked no-store")
+        void authenticatedRedirectIsMarkedNoStore() {
+            String authorization = "Bearer " + BearerValidationIT.mintIntegrationRealmAccessToken();
+
+            ExtractableResponse<Response> response = given()
+                    .header("Authorization", authorization)
+                    .redirects().follow(false)
+                    .when()
+                    .get(SECURE_REDIRECT_PATH)
+                    .then()
+                    .extract();
+
+            assertAll("the redirect answer is one caller's credential-gated answer and must not be cached",
+                    () -> assertEquals(308, response.statusCode()),
+                    () -> assertEquals(SECURE_REDIRECT_PATH + "/", response.header(LOCATION)),
+                    () -> assertTrue(response.asString().isEmpty(),
+                            "a redirect answer carries no body, so no upstream echo: " + response.asString()),
+                    () -> assertEquals(NO_STORE, response.header(CACHE_CONTROL),
+                            "require: bearer inherited from the secure anchor makes the redirect no-store"));
+        }
+
+        @Test
+        @DisplayName("the secure redirect route refuses a request without a bearer token")
+        void secureRedirectRouteRequiresBearer() {
+            ExtractableResponse<Response> response = given()
+                    .redirects().follow(false)
+                    .when()
+                    .get(SECURE_REDIRECT_PATH)
+                    .then()
+                    .extract();
+
+            UniformNotFoundAssertions.assertUnroutedProblem(response,
+                    "an unauthenticated request to the bearer-protected redirect route");
+        }
+
+        @Test
+        @DisplayName("the public require: none twin answers the same 308 without no-store")
+        void publicRedirectIsNotMarkedNoStore() {
+            ExtractableResponse<Response> response = given()
+                    .redirects().follow(false)
+                    .when()
+                    .get(PUBLIC_REDIRECT_PATH)
+                    .then()
+                    .extract();
+
+            String cacheControl = response.header(CACHE_CONTROL);
+            assertAll("THE CONTROL: without credentials and without a cookie the redirect stays cacheable",
+                    () -> assertEquals(308, response.statusCode()),
+                    () -> assertEquals(PUBLIC_REDIRECT_PATH + "/", response.header(LOCATION)),
+                    () -> assertFalse(cacheControl != null && cacheControl.contains(NO_STORE),
+                            "the public redirect must not be marked no-store: " + cacheControl));
         }
     }
 
