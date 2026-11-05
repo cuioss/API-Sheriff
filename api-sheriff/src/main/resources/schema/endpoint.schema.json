@@ -237,7 +237,7 @@
               },
               "forward": {
                 "$ref": "#/$defs/forward",
-                "description": "Optional per-route forward filter. When present, replaces the endpoint-level forward block wholesale for this route: no list of the endpoint block survives a route-level block."
+                "description": "Optional per-route forward filter. When present, replaces the endpoint-level forward block wholesale for this route: no list of the endpoint block survives a route-level block. Refused at boot on a redirect route, which contacts no upstream and so has nothing to forward to (enforced in code); an endpoint-level forward block stays accepted on an endpoint that also declares redirect routes, because it governs that endpoint's proxying routes."
               },
               "cookies": {
                 "$ref": "#/$defs/cookies",

@@ -562,8 +562,11 @@ anonymous caller does not get. On a bearer route it receives the unrouted `404` 
 the login and any other request receives `401`. A public
 entry redirect declares `auth: { require: none }` like any other public route. The redirect answer
 carries the route's resolved security headers (see link:anchors.adoc#_anchors[Anchors]) and any
-`Set-Cookie` an earlier stage produced; the route's `forward` block is not consulted, because nothing is
-forwarded.
+`Set-Cookie` an earlier stage produced. Nothing is forwarded, so a `forward` block declared on the
+redirect route itself fails the boot rather than sitting there as inert configuration; an
+endpoint-level `forward` block stays accepted on an endpoint that also declares redirect routes, since
+it governs that endpoint's proxy routes. The rule reaches redirect routes only -- asset routes are not
+affected by it.
 
 *Caching of the answer.* A redirect is a normal cacheable response -- `301` and `308` are stored by
 browsers and by any shared cache on the path, indefinitely if nothing says otherwise. The gateway
