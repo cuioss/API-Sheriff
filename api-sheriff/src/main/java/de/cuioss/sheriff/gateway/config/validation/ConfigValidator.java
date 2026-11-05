@@ -84,9 +84,10 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * them.
  * <p>
  * The anchor rules (ADR-0007, owned by {@link AnchorRules}) — pairwise-disjoint anchor prefixes,
- * declared-anchor existence, route/namespace membership agreement, anchor-namespace coverage (no
- * route outside an anchor may swallow the anchor's namespace unless a route under the anchor covers
- * it) and the non-weakenable auth floor — are joined by two auth rules owned by {@link AuthRules}:
+ * declared-anchor existence, route/namespace membership agreement, anchor-namespace coverage (rule
+ * (4b), enforced by {@code AnchorRules.checkRouteContainsUncoveredAnchor} and stated in
+ * {@code doc/configuration.adoc}) and the non-weakenable auth floor — are joined by two auth rules
+ * owned by {@link AuthRules}:
  * the per-route auth resolvability (every route must resolve an auth posture from its own
  * {@code auth}, its endpoint, or a declared anchor) and the anchor-aware effective-auth completeness
  * check. All of them collect into the same shared {@code errors} list with file/pointer context and

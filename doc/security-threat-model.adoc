@@ -432,33 +432,28 @@ let it answer addresses inside the namespace. With exact routes that gap is reac
 whose only member is `path: /admin` claims exactly one address, and `/admin/` and `/admin/x` land on
 whatever encloses it -- served with *its* auth posture and *its* `security_headers` block, which is
 the router-vs-enforcement desync of this entry expressed in configuration rather than in parsing. The
-boot now closes it with the mirror rule: a prefix route whose namespace strictly contains an anchor's
-`path_prefix` without declaring that anchor fails the boot, unless a prefix route declared at the
-anchor's own `path_prefix` covers the namespace -- in which case longest-prefix selection gives that
-member every address inside it. Coverage requires the member to match its whole namespace and not
-merely to name it: a member narrowing on a non-path `match` dimension is not accepted as covering, so
-no address in an anchor namespace is served by a route outside the anchor.
+boot now closes it with link:configuration.adoc#anchor-coverage-rule[the anchor-coverage rule], the
+mirror of the declaration-scoped rules, so no address in an anchor namespace is served by a route
+outside the anchor.
 
-*The mirror rule reaches every protocol, including `grpc`.* The two declaration-scoped rules waive
-`protocol: grpc` routes, because a service-rooted gRPC method path can never nest inside a gateway
-namespace on a segment boundary -- an argument about where the route's own match key sits. The mirror
-rule asks the opposite question, and nothing constrains a gRPC route's declared match key to a bare
-service path. Selection is protocol-blind (the route table looks a request path up on the path alone,
-and the matcher carries no protocol dimension), so a gRPC route declaring a broad `path_prefix` would
-answer plain HTTP requests inside the swallowed namespace with its own posture. Waiving it there
-would reopen precisely this entry's desync in configuration, so it is not waived.
+*The desync reaches every protocol, including `grpc`.* Selection is protocol-blind (the route table
+looks a request path up on the path alone, and the matcher carries no protocol dimension), and nothing
+constrains a gRPC route's declared match key to a bare service path. A gRPC route declaring a broad
+`path_prefix` would therefore answer plain HTTP requests inside the swallowed namespace with its own
+posture. The service-rooted argument that waives the declaration-scoped rules for gRPC routes is about
+where a route's own match key sits, so it does not reach this threat, and waiving the mirror rule there
+would reopen precisely this entry's desync in configuration.
 
-*Coverage requires an unnarrowed member.* The coverage exception was first written path-geometrically
+*Naming a namespace is not covering it.* The coverage exception was first written path-geometrically
 -- prefix equality alone -- which left the bypass reachable one dimension over: a member declared at
 the anchor prefix but narrowed to `methods: [GET]` marked the namespace covered while every other verb
 matched no anchored route and fell through to the enclosing one, answered under *its* auth and
 `security_headers`. A `host` or `headers` narrowing does the same, and the header case is the easiest
-of the three to reach, since the complement is any request that simply does not send the header.
-The rule therefore tests both halves: the member's normalized match key equals the anchor prefix *and*
-it narrows on no dimension the route matcher ANDs with the path. The matcher is the declaring source
-for what those dimensions are (`match.methods`, `match.host` and `match.headers` at present), and the
-predicate deciding it lives on the match model beside them, with a contract test asserting that every
-component of that model is classified -- so a dimension added later cannot silently reopen this.
+of the three to reach, since the complement is any request that simply does not send the header. The
+control is that a narrowed member does not count as coverage. The matcher is the declaring source for
+what the narrowing dimensions are, and the predicate deciding it lives on the match model beside them,
+with a contract test asserting that every component of that model is classified -- so a dimension
+added later cannot silently reopen this.
 
 *The query is held to the same one-form rule, in the other direction.* A path is canonicalized
 because routing and enforcement must agree on it; a query is forwarded, so what the filter judged and
@@ -1972,7 +1967,9 @@ cannot form an authority.
 *Control -- one refusal set, not two.* "The refusal set of the boot review" above is a shared
 implementation rather than a maintained agreement: both paths call
 `http.LocationPathReview.refusalReason`, so the boot review of a configured target and the per-request
-rewrite of an upstream one cannot drift apart. That class is also where the split between the library
+rewrite of an upstream one cannot drift apart. The BFF return URL a login, a session widening or a
+step-up lands on (`PendingAuthorizationRecord.sameOrigin`, <<bff-02>>) reads the same review, so it
+has no normalisation of its own either. That class is also where the split between the library
 and this project's own tests is decided, and the split is empirical rather than stylistic. cui-http's
 `URL_PATH` pipeline is a *canonicalizer*: for the traversal family it throws only when the result
 would escape above the root, and otherwise returns a fixed value. It therefore *admits* -- by
@@ -2421,16 +2418,24 @@ session-route navigation records its return URL as the canonical request path pl
 query, byte for byte -- the query is re-emitted from the raw wire pairs the security filter
 already validated (ADR-0047), never re-encoded or reordered, so the page the user lands on is the
 page they asked for. The target is still same-origin checked on the way into the pending record:
-a gateway path with a single leading `/`, or an absolute URL on the `oidc.redirect_uri` origin.
-An absent, cross-origin or unparseable target falls back to `oidc.login.default_return_url` (or
-`/`), and that fallback is itself refused at boot unless it passes the same check
-(`PendingAuthorizationRecord.sameOrigin`, the single predicate for both). Preserving the query adds
-no redirect surface: it can change which gateway page loads, never which origin.
+a gateway path with a single leading `/`, or an absolute URL on the `oidc.redirect_uri` origin --
+and in both shapes its *path* must pass the shared open-redirect review of <<gw-13>>
+(`http.LocationPathReview.refusalReason`), the one the `redirect` action and the rewritten upstream
+`Location` read. The return URL applies no normalisation of its own: a percent-encoded separator
+(`/%2F%2Fevil.example`, `/%5Cevil.example`), double encoding (`/%252F%252Fevil.example`) and a dot
+segment in either spelling are refused here exactly as they are there. The review sees the path only
+(everything before the first `?` or `#`); an encoded value in the query is carried verbatim, because it
+cannot form an authority. An absent, cross-origin, unparseable or review-refused target falls back to
+`oidc.login.default_return_url` (or `/`), and that fallback is itself refused at boot unless it passes
+the same check (`PendingAuthorizationRecord.sameOrigin`, the single predicate for both). Preserving
+the query adds no redirect surface: it can change which gateway page loads, never which origin.
 
 *Assertion.* A callback with a missing/foreign/re-used `state` is rejected; the record is
 single-use (a replayed callback fails); return-URL is same-origin validated (no open
-redirect); a navigation to `/x?tab=a&b` records exactly `/x?tab=a&b`; a cross-origin
-`oidc.login.default_return_url` fails the boot.
+redirect), including every encoded and dot-segment spelling the shared review refuses, on the
+gateway-relative and the same-origin absolute form, while an encoded value in the query is still
+accepted (`PendingAuthorizationStoreTest`); a navigation to `/x?tab=a&b` records exactly
+`/x?tab=a&b`; a cross-origin `oidc.login.default_return_url` fails the boot.
 
 [#bff-03]
 === BFF-03 -- PKCE downgrade / authorization-code injection
@@ -4049,12 +4054,12 @@ outstanding hardening work (next section).
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs; upstream `Server` / `X-Powered-By` stripped by default with a per-route opt-out; no version string on gateway errors | cui-http + token-sheriff mappers + gateway error contract + `UpstreamIdentityHeaders` (ADR-0037) | PARTIAL
-| <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014) | COVERED
+| <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication; one path review shared by the redirect action, the rewritten upstream `Location` and the BFF return URL | Configuration validator + `RedirectStage` (ADR-0014) + `LocationPathReview` | COVERED
 | <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007) | COVERED
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
 | <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` on the floor's release time when it is full, one tripped source held to its share; the floor measured against eight caller-drivable pre-trust paths, the bearer-token paths among them, and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
-| <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
+| <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL whose path passes the shared <<gw-13>> review, with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie, `PendingAuthorizationRecord.sameOrigin` over `LocationPathReview`) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED
 | <<bff-04>> | `nonce` validated + single-use | Engine `IdTokenValidationBridge` + gateway pending-authorization record | COVERED
 | <<bff-05>> | Single-IdP; `iss` verification | Design + engine `IssValidator` | ELIMINATED

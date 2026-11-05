@@ -26,6 +26,7 @@ import de.cuioss.http.security.core.HttpSecurityValidator;
 import de.cuioss.http.security.exceptions.UrlSecurityException;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.http.security.pipeline.PipelineFactory;
+import de.cuioss.sheriff.gateway.http.PathSlashes;
 
 /**
  * Canonicalize-and-confine for asset paths — the single boundary that turns an
@@ -97,12 +98,12 @@ public final class PathConfinement {
         }
         String canonical;
         try {
-            String asAbsolute = "/" + stripLeadingSlashes(requestSubPath);
+            String asAbsolute = "/" + PathSlashes.stripLeading(requestSubPath);
             canonical = pathValidator.validate(asAbsolute).orElse("/");
         } catch (UrlSecurityException _) {
             return Optional.empty();
         }
-        String relative = stripLeadingSlashes(canonical);
+        String relative = PathSlashes.stripLeading(canonical);
         Path confinedRoot = root.toAbsolutePath().normalize();
         try {
             Path resolved = confinedRoot.resolve(relative).normalize();
@@ -113,13 +114,5 @@ public final class PathConfinement {
         } catch (InvalidPathException _) {
             return Optional.empty();
         }
-    }
-
-    private static String stripLeadingSlashes(String value) {
-        int index = 0;
-        while (index < value.length() && value.charAt(index) == '/') {
-            index++;
-        }
-        return value.substring(index);
     }
 }

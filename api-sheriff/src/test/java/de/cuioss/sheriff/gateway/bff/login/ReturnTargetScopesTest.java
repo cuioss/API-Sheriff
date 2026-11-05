@@ -110,9 +110,11 @@ class ReturnTargetScopesTest {
         }
 
         @Test
-        @DisplayName("Should match the dot-segment-normalized path")
-        void shouldMatchNormalizedPath() {
-            assertEquals(APP_SCOPES, resolver.resolve("/public/../app/orders"));
+        @DisplayName("Should fall back for a dot-segment path instead of normalizing it onto a route")
+        void shouldFallBackForDotSegmentPath() {
+            assertEquals(OIDC_SCOPES, resolver.resolve("/public/../app/orders"),
+                    "the same-origin check refuses a dot segment (the shared Location review), so the target "
+                            + "is not a usable return URL and selects no route");
         }
     }
 

@@ -24,6 +24,7 @@ import java.util.Optional;
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.http.LocationPathReview;
+import de.cuioss.sheriff.gateway.http.PathSlashes;
 
 /**
  * The {@code upstream.rewrite_location} mapping (AS-11): maps an upstream {@code Location} response
@@ -38,7 +39,7 @@ import de.cuioss.sheriff.gateway.http.LocationPathReview;
  *       whose scheme, host and effective port (the scheme default when the URI omits it) all equal
  *       the route upstream and which carries no user-info.</li>
  *   <li><strong>Mapping.</strong> A candidate whose path equals the effective base path, or continues
- *       it on a segment boundary, is mapped onto {@code stripTrailingSlash(matchKey) + remainder} and
+ *       it on a segment boundary, is mapped onto {@code PathSlashes.stripTrailing(matchKey) + remainder} and
  *       emitted as a gateway-relative path. With an empty base path every candidate path continues
  *       it. The query and fragment are carried over verbatim.</li>
  *   <li><strong>Exact routes only map onto their own match key.</strong> An exact route's
@@ -121,10 +122,10 @@ public final class LocationRewriter {
         this.scheme = upstream.scheme().toLowerCase(Locale.ROOT);
         this.host = upstream.host().toLowerCase(Locale.ROOT);
         this.port = upstream.port();
-        this.basePath = stripTrailingSlashes(upstream.basePath());
+        this.basePath = PathSlashes.stripTrailing(upstream.basePath());
         this.matchKey = matchKey;
         this.exactMatch = exactMatch;
-        this.gatewayPrefix = stripTrailingSlashes(matchKey);
+        this.gatewayPrefix = PathSlashes.stripTrailing(matchKey);
     }
 
     /**
@@ -261,11 +262,4 @@ public final class LocationRewriter {
         return Optional.empty();
     }
 
-    private static String stripTrailingSlashes(String value) {
-        int end = value.length();
-        while (end > 0 && value.charAt(end - 1) == '/') {
-            end--;
-        }
-        return value.substring(0, end);
-    }
 }

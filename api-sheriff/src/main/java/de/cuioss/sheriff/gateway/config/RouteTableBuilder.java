@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteMatcher;
@@ -411,11 +412,11 @@ public final class RouteTableBuilder {
      * path. A route that declares a non-blank {@code upstream.path} <em>appends</em> it to the
      * alias-derived base path (ADR-0004): the two are joined on exactly one
      * {@code /}, so the effective base path is
-     * {@code stripTrailingSlashes(alias base path) + "/" + stripLeadingSlashes(upstream.path)} — no
-     * doubled and no missing slash, whichever side the operator wrote one on. Both helpers remove
-     * <em>repeated</em> slashes at the seam, so an alias ending {@code /anything//} joined with
-     * {@code //graphql} still yields {@code /anything/graphql}. The forward URI is
-     * then reconstructed as {@code stripTrailingSlash(effective base path) + remainder-after-match-key}
+     * {@code PathSlashes.stripTrailing(alias base path) + "/" + PathSlashes.stripLeading(upstream.path)}
+     * — no doubled and no missing slash, whichever side the operator wrote one on. Both operations
+     * remove <em>repeated</em> slashes at the seam, so an alias ending {@code /anything//} joined with
+     * {@code //graphql} still yields {@code /anything/graphql}. The forward URI is then reconstructed
+     * as {@code PathSlashes.stripTrailing(effective base path) + remainder-after-match-key}
      * by {@link de.cuioss.sheriff.gateway.edge.upstream.DispatchStage#upstreamRequestUri}.
      * <p>
      * Aliases therefore carry environments and routes carry paths: an alias
@@ -452,25 +453,10 @@ public final class RouteTableBuilder {
         // consumers normalize it. What those consumers must agree on is HOW MANY they strip:
         // DispatchStage and LocationRewriter both remove the whole trailing run, so a stored
         // '/upload//' cannot make the rewrite and the follow-up dispatch disagree about the path.
-        String effectiveBasePath = stripTrailingSlashes(aliasUpstream.basePath()) + "/" + stripLeadingSlashes(path);
+        String effectiveBasePath = PathSlashes.stripTrailing(aliasUpstream.basePath()) + "/"
+                + PathSlashes.stripLeading(path);
         return new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(), aliasUpstream.port(),
                 effectiveBasePath);
-    }
-
-    private static String stripTrailingSlashes(String value) {
-        int end = value.length();
-        while (end > 0 && value.charAt(end - 1) == '/') {
-            end--;
-        }
-        return value.substring(0, end);
-    }
-
-    private static String stripLeadingSlashes(String value) {
-        int start = 0;
-        while (start < value.length() && value.charAt(start) == '/') {
-            start++;
-        }
-        return value.substring(start);
     }
 
     /**

@@ -23,6 +23,7 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -198,7 +199,12 @@ public final class EdgeRequests {
     /**
      * The part of the canonical path below the selected route's match key — the remainder every
      * dispatch path appends to the upstream base path. An exact route matched the whole address, so
-     * its remainder is empty; a prefix route strips its (trailing-slash-free) prefix.
+     * its remainder is empty; a prefix route strips its prefix less <em>one</em> trailing slash.
+     * <p>
+     * Exactly one, not the whole run: the prefix matcher admits a path at or below a key by appending
+     * one {@code /} to a key that does not already end in one, so that one slash is the segment
+     * boundary, and dropping it leaves a prefix the remainder continues with its own leading
+     * {@code /} (see {@link PathSlashes#stripOneTrailing}).
      *
      * @param route     the selected route
      * @param canonical the request's canonical path
@@ -208,7 +214,7 @@ public final class EdgeRequests {
         if (route.matcher().isExact()) {
             return "";
         }
-        String prefix = stripTrailingSlash(route.matcher().matchKey());
+        String prefix = PathSlashes.stripOneTrailing(route.matcher().matchKey());
         return canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
     }
 
@@ -279,9 +285,5 @@ public final class EdgeRequests {
      */
     private static String encodeSemicolons(String raw) {
         return raw.replace(";", "%3B");
-    }
-
-    private static String stripTrailingSlash(String value) {
-        return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
     }
 }

@@ -207,20 +207,6 @@ public class PortalRules {
         if (LocationPathReview.carriesEncodedSeparator(entry)) {
             return Optional.of("a percent-encoded '/' or '\\' is decoded by intermediaries");
         }
-        return LocationPathReview.refusalReason(pathPart(entry));
-    }
-
-    /** The path portion of an origin-relative reference: everything before the first {@code ?} or {@code #}. */
-    private static String pathPart(String reference) {
-        int end = reference.length();
-        int query = reference.indexOf('?');
-        if (query >= 0) {
-            end = query;
-        }
-        int fragment = reference.indexOf('#');
-        if (fragment >= 0 && fragment < end) {
-            end = fragment;
-        }
-        return reference.substring(0, end);
+        return LocationPathReview.refusalReason(LocationPathReview.pathPortion(entry));
     }
 }

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -170,6 +171,51 @@ class LocationPathReviewTest {
                             "a 1024-character path is within the strict policy's cap"),
                     () -> assertTrue(LocationPathReview.refusalReason(overCap).orElse("").contains("cui-http"),
                             "a 1025-character path is refused by the length stage"));
+        }
+    }
+
+    /**
+     * The one path-portion split every reader applies before it hands a reference to
+     * {@code refusalReason}: the path ends at the first {@code ?} or {@code #}, whichever comes first.
+     */
+    @Nested
+    @DisplayName("path portion of a reference")
+    class PathPortion {
+
+        @ParameterizedTest(name = "path portion of \"{0}\" is \"{1}\"")
+        @CsvSource(delimiter = '|', value = {
+                "/app/items|/app/items",
+                "/app/items?next=%2Fx|/app/items",
+                "/app/items#%2F%2Fx|/app/items",
+                "/app?a=1#b|/app",
+                "/app#b?a=1|/app",
+                "/?x|/",
+                "/#|/",
+                "/a%2Fb?c|/a%2Fb"})
+        @DisplayName("ends the path at the first query or fragment delimiter, decoding nothing")
+        void endsAtFirstQueryOrFragmentDelimiter(String reference, String expected) {
+            assertEquals(expected, LocationPathReview.pathPortion(reference));
+        }
+
+        @Test
+        @DisplayName("returns the empty string for an empty reference or one that opens with a delimiter")
+        void returnsEmptyWhenNoPathPrecedesTheDelimiter() {
+            assertAll(
+                    () -> assertEquals("", LocationPathReview.pathPortion("")),
+                    () -> assertEquals("", LocationPathReview.pathPortion("?next=/x")),
+                    () -> assertEquals("", LocationPathReview.pathPortion("#frag")));
+        }
+
+        @Test
+        @DisplayName("keeps an encoded separator after the query out of the review, and one before it in")
+        void scopesTheReviewToThePath() {
+            assertAll(
+                    () -> assertTrue(LocationPathReview.refusalReason(
+                                    LocationPathReview.pathPortion("/app/items?next=%2Fx")).isEmpty(),
+                            "an encoded separator in the query is not the path's"),
+                    () -> assertTrue(LocationPathReview.refusalReason(
+                                    LocationPathReview.pathPortion("/%2F%2Fevil.example?next=/app")).isPresent(),
+                            "an encoded separator in the path is refused whatever follows it"));
         }
     }
 
