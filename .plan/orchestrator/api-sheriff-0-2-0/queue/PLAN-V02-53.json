@@ -2,9 +2,9 @@
   "id": "PLAN-V02-53",
   "slug": "plan-15-follow-up-issues",
   "workstream": "WS-01",
-  "status": "staged",
+  "status": "running",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
+  "plan_marshall_plan_id": "plan-v02-53-plan-15-follow-up-issues",
   "pr": "",
   "landing": "",
   "seq": 53
