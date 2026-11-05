@@ -432,33 +432,28 @@ let it answer addresses inside the namespace. With exact routes that gap is reac
 whose only member is `path: /admin` claims exactly one address, and `/admin/` and `/admin/x` land on
 whatever encloses it -- served with *its* auth posture and *its* `security_headers` block, which is
 the router-vs-enforcement desync of this entry expressed in configuration rather than in parsing. The
-boot now closes it with the mirror rule: a prefix route whose namespace strictly contains an anchor's
-`path_prefix` without declaring that anchor fails the boot, unless a prefix route declared at the
-anchor's own `path_prefix` covers the namespace -- in which case longest-prefix selection gives that
-member every address inside it. Coverage requires the member to match its whole namespace and not
-merely to name it: a member narrowing on a non-path `match` dimension is not accepted as covering, so
-no address in an anchor namespace is served by a route outside the anchor.
+boot now closes it with link:configuration.adoc#anchor-coverage-rule[the anchor-coverage rule], the
+mirror of the declaration-scoped rules, so no address in an anchor namespace is served by a route
+outside the anchor.
 
-*The mirror rule reaches every protocol, including `grpc`.* The two declaration-scoped rules waive
-`protocol: grpc` routes, because a service-rooted gRPC method path can never nest inside a gateway
-namespace on a segment boundary -- an argument about where the route's own match key sits. The mirror
-rule asks the opposite question, and nothing constrains a gRPC route's declared match key to a bare
-service path. Selection is protocol-blind (the route table looks a request path up on the path alone,
-and the matcher carries no protocol dimension), so a gRPC route declaring a broad `path_prefix` would
-answer plain HTTP requests inside the swallowed namespace with its own posture. Waiving it there
-would reopen precisely this entry's desync in configuration, so it is not waived.
+*The desync reaches every protocol, including `grpc`.* Selection is protocol-blind (the route table
+looks a request path up on the path alone, and the matcher carries no protocol dimension), and nothing
+constrains a gRPC route's declared match key to a bare service path. A gRPC route declaring a broad
+`path_prefix` would therefore answer plain HTTP requests inside the swallowed namespace with its own
+posture. The service-rooted argument that waives the declaration-scoped rules for gRPC routes is about
+where a route's own match key sits, so it does not reach this threat, and waiving the mirror rule there
+would reopen precisely this entry's desync in configuration.
 
-*Coverage requires an unnarrowed member.* The coverage exception was first written path-geometrically
+*Naming a namespace is not covering it.* The coverage exception was first written path-geometrically
 -- prefix equality alone -- which left the bypass reachable one dimension over: a member declared at
 the anchor prefix but narrowed to `methods: [GET]` marked the namespace covered while every other verb
 matched no anchored route and fell through to the enclosing one, answered under *its* auth and
 `security_headers`. A `host` or `headers` narrowing does the same, and the header case is the easiest
-of the three to reach, since the complement is any request that simply does not send the header.
-The rule therefore tests both halves: the member's normalized match key equals the anchor prefix *and*
-it narrows on no dimension the route matcher ANDs with the path. The matcher is the declaring source
-for what those dimensions are (`match.methods`, `match.host` and `match.headers` at present), and the
-predicate deciding it lives on the match model beside them, with a contract test asserting that every
-component of that model is classified -- so a dimension added later cannot silently reopen this.
+of the three to reach, since the complement is any request that simply does not send the header. The
+control is that a narrowed member does not count as coverage. The matcher is the declaring source for
+what the narrowing dimensions are, and the predicate deciding it lives on the match model beside them,
+with a contract test asserting that every component of that model is classified -- so a dimension
+added later cannot silently reopen this.
 
 *The query is held to the same one-form rule, in the other direction.* A path is canonicalized
 because routing and enforcement must agree on it; a query is forwarded, so what the filter judged and

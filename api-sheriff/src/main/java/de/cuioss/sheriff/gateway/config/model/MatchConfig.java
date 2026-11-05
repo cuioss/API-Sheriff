@@ -107,10 +107,10 @@ List<HeaderMatcher> headers) {
      * so a new one cannot be added while this method silently keeps ignoring it.
      * <p>
      * Security-relevant: a route that narrows covers only what it matches, so it cannot
-     * stand for its whole path namespace. {@code ConfigValidator}'s anchor-coverage rule
-     * consults this before accepting a route as closing an anchor namespace — without it,
-     * a {@code methods: [GET]} member would mark the namespace covered while every other
-     * verb fell through to a broader route carrying a different auth posture.
+     * stand for its whole path namespace. Rule (4b), the anchor-coverage rule enforced by
+     * {@code AnchorRules.checkRouteContainsUncoveredAnchor} and stated in
+     * {@code doc/configuration.adoc}, consults this before accepting a route as covering an
+     * anchor namespace.
      *
      * @return {@code true} when any non-path dimension constrains the match,
      * {@code false} when the path is the only thing this matcher tests

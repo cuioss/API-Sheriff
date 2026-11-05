@@ -33,30 +33,23 @@ Semantics -- deliberately few rules:
   block => this section does not apply. `protocol: grpc` routes are exempt from *these two*
   directions -- a gRPC method path is service-rooted on a single opaque segment and can never
   nest inside a gateway path namespace on a segment boundary -- but still declare an anchor for
-  the classification axes and the auth floor. The exemption stops here: the namespace-coverage
-  rule below judges what a route's prefix *contains* rather than where its own match key sits,
-  and applies to `grpc` routes unchanged.
-* *Namespace coverage: nothing outside the anchor may serve the namespace.* The two directions
-  above judge a route by where its *own* match key sits, which leaves the opposite geometry --
-  a route sitting outside and *above* an anchor, whose `path_prefix` swallows the anchor's --
-  for this rule. A prefix route whose namespace strictly contains an anchor's `path_prefix`,
-  and which does not declare that anchor, fails the boot *unless* a route under the anchor
-  covers the namespace: a prefix route whose `path_prefix` is the anchor prefix itself *and which
-  declares no further `match` dimension*. By longest prefix that covering route wins every address in
-  the namespace, so a broader route alongside it is the ordinary topology, not a bypass. Without one, only the addresses the
-  anchor's own routes name are protected and every other address falls through to the broader
-  route -- served with *its* auth posture and *its* `security_headers`. The case this closes is
-  an anchor whose only member is an exact `match.path` route: `path: /admin` claims exactly
-  `/admin`, so `/admin/` and `/admin/x` would land on the enclosing route. See
-  link:endpoint-routes.adoc#_route_ordering[Route ordering] for the selection rules this follows
-  from. Exact routes are not judged here -- an exact route serves one address, which is the
-  previous rule's case -- but `protocol: grpc` routes *are*: route selection is protocol-blind, so
-  a gRPC route declaring a broad `path_prefix` swallows a namespace exactly as an `http` one does.
-  Naming a namespace is not covering it: a candidate narrowed by any further dimension the route
-  matcher applies (`match.methods`, `match.host` and `match.headers` today) serves only part of the
-  namespace, so it does not count as coverage and the enclosing route is refused just as if the
-  anchor had no covering member. Declaring `methods: [GET]` on the covering route is the easiest way
-  to trip this: the anchor looks covered, but a `POST` would have fallen through.
+  the classification axes and the auth floor. The exemption does not extend to the
+  namespace-coverage rule below.
+* *Namespace coverage: nothing outside the anchor may serve the namespace.* A broader route
+  whose `path_prefix` swallows an anchor's namespace fails the boot unless the anchor covers that
+  namespace itself -- the rule, including what counts as coverage, is stated once in
+  link:../configuration.adoc#anchor-coverage-rule[the anchor-coverage rule]. In practice: when an
+  anchor sits under a broader prefix route, give the anchor a member route whose `path_prefix` is
+  the anchor prefix itself and that declares no `methods`, `host` or `headers`. By longest prefix
+  that member then wins every address in the namespace, so the broader route alongside it is the
+  ordinary topology, not a bypass. Without it, only the addresses the anchor's own routes name are
+  protected and every other address falls through to the broader route -- served with *its* auth
+  posture and *its* `security_headers`. The typical trap is an anchor whose only member is an
+  exact `match.path` route: `path: /admin` claims exactly `/admin`, so `/admin/` and `/admin/x`
+  would land on the enclosing route. Declaring `methods: [GET]` on the covering route is the
+  easiest way to trip the boot refusal: the anchor looks covered, but a `POST` would have fallen
+  through. See link:endpoint-routes.adoc#_route_ordering[Route ordering] for the selection rules
+  this follows from.
 * *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers`,
   `allowed_methods` and `cookies`. Every policy block is resolved by one rule -- the nearest declared scope of
   *gateway -> anchor -> endpoint -> route* wins and replaces every broader declaration *whole,

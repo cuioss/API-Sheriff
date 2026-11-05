@@ -49,8 +49,7 @@ import org.jspecify.annotations.Nullable;
  * The anchor rules (ADR-0007) are: pairwise-disjoint anchor prefixes
  * ({@link #validateAnchorPrefixDisjointness}), declared-anchor existence
  * ({@link #validateAnchorReferencesExist}), route/namespace membership agreement and
- * anchor-namespace coverage — no route outside an anchor may swallow the anchor's namespace unless a
- * route under the anchor covers it ({@link #validateAnchorNamespaceMembership}) — and the
+ * anchor-namespace coverage, rule (4b) ({@link #validateAnchorNamespaceMembership}), and the
  * non-weakenable auth floor ({@link #validateAnchorAuthFloor}). The fail-closed access→auth matrix
  * (ADR-0013, {@link #validateAccessAuthMatrix}) adds per-anchor checks: a {@code type: bff} anchor
  * requires {@code access: authenticated}; an {@code access: authenticated} anchor requires a
@@ -136,10 +135,9 @@ public class AnchorRules {
      * {@code match.path}) lies inside its
      * declared anchor's namespace; (4) every enabled route whose path lies inside
      * any anchor namespace declares exactly that anchor — an undeclared squatter
-     * fails the boot (ADR-0007); (4b) no enabled <em>prefix</em> route whose namespace strictly
-     * contains an anchor's {@code path_prefix} serves that anchor's namespace, unless the anchor
-     * covers it with a prefix route of its own — the mirror of rule (4), see
-     * {@code checkRouteContainsUncoveredAnchor}.
+     * fails the boot (ADR-0007); (4b) the anchor-coverage rule, the mirror of rule (4), enforced by
+     * {@code checkRouteContainsUncoveredAnchor} and stated in the configuration reference
+     * {@code doc/configuration.adoc} (anchor id {@code anchor-coverage-rule}).
      * <p>
      * {@code protocol: grpc} routes are exempt from rules (3) and (4) — and from those two only.
      * Both are <em>declaration</em>-scoped: they judge a route by where its own match key sits. A
@@ -149,10 +147,10 @@ public class AnchorRules {
      * — no non-root anchor {@code path_prefix} can contain it, and stock gRPC clients
      * cannot be told to prepend a namespace prefix.
      * <p>
-     * Rule (4b) judges the opposite geometry — whether the route's own prefix <em>contains</em> an
-     * anchor namespace — so that rationale does not reach it, and it is applied to gRPC routes
-     * unchanged. Nothing constrains a gRPC route's declared match key to a bare service path, and
-     * selection is protocol-blind ({@code RouteTable.lookup} filters on path alone, and
+     * Why rule (4b) is not waived for gRPC routes: it judges the opposite geometry — whether the
+     * route's own prefix <em>contains</em> an anchor namespace — so the service-rooted rationale
+     * does not reach it. Nothing constrains a gRPC route's declared match key to a bare service
+     * path, and selection is protocol-blind ({@code RouteTable.lookup} filters on path alone, and
      * {@code RouteMatcher} carries no protocol dimension), so a gRPC route declaring a broad
      * {@code path_prefix} answers plain HTTP requests inside the swallowed anchor namespace with
      * <em>its</em> auth posture and <em>its</em> {@code security_headers} block — the same CWE-284
@@ -225,45 +223,15 @@ public class AnchorRules {
     }
 
     /**
-     * Rule (4b): the namespace-coverage mirror of rule (4). A <em>prefix</em> route whose namespace
-     * strictly contains an anchor's {@code path_prefix}, and which does not resolve that anchor,
-     * fails the boot unless the anchor's own namespace is covered by a prefix route that does
-     * resolve it.
+     * Enforces rule (4b), the anchor-coverage rule — the mirror of rule (4). The rule is stated once,
+     * in the configuration reference {@code doc/configuration.adoc} (anchor id
+     * {@code anchor-coverage-rule}); {@code AnchorRulesTest} is its behavioural assertion.
      * <p>
-     * Rules (3) and (4) are <em>declaration</em>-scoped: they judge a route by where its own match
-     * key sits. That leaves the opposite geometry unjudged — a route sitting <em>outside</em> and
-     * <em>above</em> an anchor, whose namespace swallows the anchor's. Selection then decides what
-     * is actually served: for an address inside the anchor namespace, an exact route wins outright
-     * and the longest matching prefix wins among the rest. So with an exact {@code path: /admin}
-     * route as the anchor's only member, {@code /admin/} and {@code /admin/x} match no route
-     * belonging to the anchor and fall through to the broader route — served with <em>its</em> auth
-     * posture and <em>its</em> {@code security_headers} block, with the anchor's floor escaped for
-     * every address in the namespace but the one exact string (CWE-284).
-     * <p>
-     * The coverage exception is what keeps the ordinary topology legal, and it is exact rather than
-     * approximate. Rule (3) confines an anchored route's match key to the anchor's namespace, so
-     * the broadest prefix a member can declare is the anchor prefix itself. When such a route
-     * exists, every address in the namespace matches it at the anchor prefix's full length, while
-     * any containing route matches at a strictly shorter one — so longest-prefix selection always
-     * picks the member, and rule (4) has already refused every exact route outside the anchor whose
-     * path lies inside it. The namespace is then genuinely closed and a broader route alongside it
-     * is not a bypass.
-     * <p>
-     * Only prefix routes are judged here: an exact route covers exactly one address, and an exact
-     * route whose address lies inside an anchor namespace is rule (4)'s case, not this one. Unlike
-     * rules (3) and (4), this rule is <em>not</em> waived for {@code protocol: grpc} routes — see
-     * {@link #validateAnchorNamespaceMembership} for why the exemption's rationale stops at the two
-     * declaration-scoped rules.
-     * <p>
-     * Coverage requires the covering route to match its whole namespace, not merely to name it.
-     * {@link #anchorsCoveredByOwnPrefixRoute} therefore tests prefix equality <em>and</em>
-     * {@link MatchConfig#narrowsBeyondPath()}: a member narrowed on {@code match.methods},
-     * {@code match.host} or {@code match.headers} serves only part of its namespace, and the
-     * complement — a {@code POST} where the member matched {@code GET}, a request from another host —
-     * would fall through to the containing route and be answered under <em>its</em> auth and
-     * {@code security_headers} posture. That is the same bypass this rule exists to refuse, reached
-     * one dimension over, so such a route does not count as coverage and the containing route is
-     * refused as if the anchor had no covering member at all.
+     * An exact route returns at once, because an exact route inside an anchor namespace is rule (4)'s
+     * case. An anchor the route itself declares is never reported against it, and which anchors count
+     * as covered is computed once per validation pass by {@link #anchorsCoveredByOwnPrefixRoute}. The
+     * check runs for every protocol — see {@link #validateAnchorNamespaceMembership} for why the gRPC
+     * exemption of rules (3) and (4) does not reach this rule.
      */
     private static void checkRouteContainsUncoveredAnchor(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route, @Nullable String declaredName, Set<String> coveredAnchors, List<ConfigError> errors) {
@@ -294,9 +262,7 @@ public class AnchorRules {
      * <p>
      * Three tests, all required: the route is not exact, it narrows on no dimension beyond the path
      * ({@link MatchConfig#narrowsBeyondPath()}), and its normalized match key equals the normalized
-     * anchor prefix. The middle test is what makes "covered" mean <em>every</em> address in the
-     * namespace rather than merely every address the member chose to serve — see
-     * {@link #checkRouteContainsUncoveredAnchor} for the bypass it refuses.
+     * anchor prefix — the coverage definition of rule (4b) in {@code doc/configuration.adoc}.
      */
     private static Set<String> anchorsCoveredByOwnPrefixRoute(GatewayConfig gateway,
             List<EndpointConfig> endpoints) {
