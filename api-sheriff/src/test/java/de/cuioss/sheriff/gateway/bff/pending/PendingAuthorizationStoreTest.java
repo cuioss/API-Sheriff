@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord.Widening;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -370,6 +372,58 @@ class PendingAuthorizationStoreTest {
         void shouldRejectNullOrBlank() {
             assertFalse(PendingAuthorizationRecord.sameOrigin(null, GATEWAY_ORIGIN));
             assertFalse(PendingAuthorizationRecord.sameOrigin("   ", GATEWAY_ORIGIN));
+        }
+
+        /**
+         * The path spellings the shared {@code LocationPathReview} refuses and the earlier,
+         * private {@code sameOrigin} check admitted (issue #323): the encoded separators in both cases,
+         * double encoding, and the dot segments in their {@code %2E}/{@code %2e} and literal spellings.
+         * Each is a path only; the tests below put it on the gateway-relative form and on the
+         * same-origin absolute form.
+         */
+        static Stream<String> reviewRefusedPaths() {
+            return Stream.of("/%2F%2Fevil.example.com", "/%2f%2fevil.example.com", "/app/x%2Fy", "/app/x%2fy",
+                    "/%5Cevil.example.com", "/%5cevil.example.com", "/%252F%252Fevil.example.com",
+                    "/%2E%2E/admin", "/%2e%2e/admin", "/app/%2E/b", "/app/%2e/b", "/app/./b", "/app/../admin",
+                    "/app/..");
+        }
+
+        @ParameterizedTest(name = "review-refused gateway-relative return URL \"{0}\" is rejected")
+        @MethodSource("reviewRefusedPaths")
+        @DisplayName("Should reject a gateway-relative return URL whose path the shared Location review refuses")
+        void shouldRejectReviewRefusedRelativePath(String path) {
+            assertFalse(PendingAuthorizationRecord.sameOrigin(path, GATEWAY_ORIGIN),
+                    "an encoded separator, double encoding or dot segment in the path is refused exactly as "
+                            + "the redirect action and the upstream Location mapping refuse it");
+        }
+
+        @ParameterizedTest(name = "review-refused same-origin absolute return URL with path \"{0}\" is rejected")
+        @MethodSource("reviewRefusedPaths")
+        @DisplayName("Should reject a same-origin absolute return URL whose path the shared Location review refuses")
+        void shouldRejectReviewRefusedAbsolutePath(String path) {
+            String returnUrl = GATEWAY_ORIGIN + path;
+
+            assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN),
+                    "the origin matches, but the path is one the shared review refuses");
+        }
+
+        @ParameterizedTest(name = "review-refused path before a query or fragment \"{0}\" is rejected")
+        @ValueSource(strings = {"/%2F%2Fevil.example.com?next=/app", "/app/../admin#top",
+                "https://gw.example.com/%5Cevil.example.com?x=1"})
+        @DisplayName("Should reject a refused path even when a query or fragment follows it")
+        void shouldRejectReviewRefusedPathBeforeQuery(String returnUrl) {
+            assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN));
+        }
+
+        @ParameterizedTest(name = "path-only scope: return URL \"{0}\" is accepted")
+        @ValueSource(strings = {"/app/items?next=%2Fx", "/app/items?next=%5Cx", "/app/items?next=%252F",
+                "/app/items#%2F%2Fx", "/app/items?next=/../x", "https://gw.example.com/app/items?next=%2Fx",
+                "https://gw.example.com", "https://gw.example.com?next=%2Fx",
+                "https://gw.example.com/app/v1.2/file.txt", "/app/.well-known"})
+        @DisplayName("Should accept an encoded value outside the path and dot runs that are not dot segments")
+        void shouldAcceptReviewOutsideThePath(String returnUrl) {
+            assertTrue(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN),
+                    "the review is scoped to the path: a query or fragment cannot form an authority");
         }
     }
 }

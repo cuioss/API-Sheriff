@@ -24,9 +24,14 @@
  *       names neither response path may relay, read by the proxy data plane's streamed relay in
  *       {@code edge} and the asset terminal action's buffered envelope in {@code asset}.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.http.LocationPathReview} — the open-redirect review of a
- *       gateway path about to be written into a {@code Location} header, read by the boot review of
- *       a <em>configured</em> redirect target in {@code config.validation} and by the per-request
- *       mapping of an <em>upstream</em> {@code Location} in {@code routing}.</li>
+ *       gateway path about to be written into a {@code Location} header or handed to a browser as a
+ *       link target, read by the boot review of a <em>configured</em> redirect target
+ *       ({@code TerminalActionRules}) and of the portal path, its catalog entries and the reserved
+ *       OIDC paths ({@code PortalRules}, {@code ReservedPathRules}) in {@code config.validation}, by
+ *       the per-request mapping of an <em>upstream</em> {@code Location} in {@code routing}, and by
+ *       the BFF return URL a login, widening or step-up lands on in {@code bff.pending}
+ *       ({@code PendingAuthorizationRecord.sameOrigin}, which {@code OidcClientRules} also applies
+ *       to {@code oidc.login.default_return_url} at boot).</li>
  *   <li>{@link de.cuioss.sheriff.gateway.http.GatewayCookies} — the gateway's own cookies, which an
  *       upstream may neither set nor receive, read by the response relay in {@code edge}.</li>
  * </ul>

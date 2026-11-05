@@ -45,7 +45,8 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>no {@code returnUrl}, a blank one, or one that fails the same-origin check
  *       ({@link PendingAuthorizationRecord#sameOrigin}) — cross-origin, schema-relative, backslash
- *       authority or unparseable;</li>
+ *       authority, unparseable, or a path the shared {@code Location} review refuses (an encoded
+ *       separator, double encoding, or a dot segment in either spelling);</li>
  *   <li>a path that is not canonical — an encoded separator ({@code %2f}, {@code %5c}), a matrix
  *       parameter ({@code ;}), or a dot-segment that escapes the root — which the gateway's stage-1
  *       floor would reject as a navigation anyway;</li>

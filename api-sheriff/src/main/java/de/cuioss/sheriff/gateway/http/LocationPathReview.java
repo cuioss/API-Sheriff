@@ -28,20 +28,38 @@ import lombok.experimental.UtilityClass;
 
 /**
  * The open-redirect review of a gateway path the gateway is about to write into a {@code Location}
- * response header — declared once and read by both paths that emit one (GW-13, AS-3, AS-11).
+ * response header, or to hand a browser as a link target — declared once and read by every path that
+ * emits one (GW-13, AS-3, AS-11).
  * <p>
- * The gateway emits a {@code Location} from two places: {@code ConfigValidator} reviews a
- * <em>configured</em> {@code redirect.location} at boot, and {@code routing.LocationRewriter} maps an
- * <em>upstream</em> {@code Location} onto the gateway per request. They judge the same question about
- * the same kind of value, so the answer lives here rather than being mirrored into each — the defect
- * class {@link ConnectionHeaders} was extracted for, applied to a second shared rule.
+ * Every reader judges the same question about the same kind of value — "does this gateway path keep
+ * the browser on the gateway origin, under the path it names?" — so the answer lives here rather than
+ * being mirrored into each, the defect class {@link ConnectionHeaders} was extracted for, applied to a
+ * second shared rule. The readers are:
+ * <ul>
+ *   <li>{@code config.validation.rule.TerminalActionRules} — the boot review of a <em>configured</em>
+ *       {@code redirect.location} (run by {@code ConfigValidator}); a refusal is a {@code ConfigError}.</li>
+ *   <li>{@code routing.LocationRewriter} — the per-request mapping of an <em>upstream</em>
+ *       {@code Location} onto the gateway; a refused path or mapping is relayed unchanged rather than
+ *       mapped.</li>
+ *   <li>{@code bff.pending.PendingAuthorizationRecord.sameOrigin} — the BFF return URL a login, a
+ *       session widening or a step-up redirects the browser to afterwards, request-supplied at runtime
+ *       and {@code oidc.login.default_return_url} at boot; a refused target falls back to the
+ *       configured default at runtime and is a {@code ConfigError} at boot.</li>
+ *   <li>{@code config.validation.rule.PortalRules} — the boot review of {@code portal.path} and of every
+ *       {@code catalog.entry}, the link targets the application portal hands the browser; the same
+ *       canonical-path review also holds the reserved OIDC paths ({@code ReservedPathRules}). A refusal
+ *       is a {@code ConfigError}.</li>
+ * </ul>
+ * Each reader hands the review the <em>path portion</em> only ({@link #pathPortion}), so the query
+ * and fragment of a reference never reach it: a separator after the {@code ?} cannot form an
+ * authority, and refusing it would refuse an ordinary encoded query value.
  *
  * <h2>Detector, never canonicalizer</h2>
  *
  * The review runs the {@code cui-http} {@code URL_PATH} validation pipeline, but consumes only
  * <strong>whether it threw</strong> and discards the canonical value it returns. That is not an
  * oversight — it is the whole contract. The pipeline exists for <em>inbound</em> validation, where
- * the canonical form is what the application then uses. Both callers here judge a value that is
+ * the canonical form is what the application then uses. Every reader here judges a value that is
  * <strong>emitted</strong>: the browser receives the original string, so confinement proved against
  * a normalized string the browser never sees bounds nothing. Emitting the pipeline's output in place
  * of the reviewed value would silently change the target of a redirect an operator wrote, or of a
@@ -88,14 +106,16 @@ import lombok.experimental.UtilityClass;
  * which would refuse legitimate gateway route paths spelled the same way.
  * <p>
  * {@code strict} caps a reviewed path at 1024 characters. A longer path is refused, which for a
- * configured redirect is a boot error and for an upstream {@code Location} means the header is
- * relayed unchanged rather than mapped.
+ * configured redirect is a boot error, for an upstream {@code Location} means the header is relayed
+ * unchanged rather than mapped, and for a request-supplied BFF return URL means the browser lands on
+ * the configured default instead.
  * <p>
  * The {@link SecurityEventCounter} is deliberately a dedicated instance rather than the boot-shared
  * one {@code SheriffMetrics} exports. That counter aggregates <em>inbound</em> request-filter events;
  * folding outbound {@code Location} reviews into the same failure-type counters would make the
- * inbound security metric report events that never came from a request. Both callers surface a
- * refusal on their own terms instead — a {@code ConfigError} at boot, an unmapped header at runtime.
+ * inbound security metric report events that never came from a request. Every reader surfaces a
+ * refusal on its own terms instead — a {@code ConfigError} at boot, an unmapped header or a fallback
+ * to the default return URL at runtime.
  * <p>
  * Stateless and thread-safe: the pipeline is built once and {@code cui-http} documents its validators
  * as safe for concurrent use.
@@ -177,13 +197,16 @@ public class LocationPathReview {
      * Whether {@code value} carries a percent-encoded {@code /} or {@code \} ({@code %2f} /
      * {@code %5c}, matched case-insensitively so {@code %2F} and {@code %5C} count too).
      * <p>
-     * Exposed separately from {@link #refusalReason} because the two callers scope it differently, on
-     * purpose. {@code LocationRewriter} applies it to the path alone: an encoded separator after the
-     * {@code ?} cannot form an authority — a relative reference's authority is decided before the
-     * query delimiter — and refusing it would stop mapping the ordinary encoded-path query parameter
-     * an upstream redirect carries. {@code ConfigValidator} applies it to the whole configured value:
-     * nothing an operator can express in a query needs an encoded separator, so the wider scope costs
-     * a fixed configured string nothing.
+     * Exposed separately from {@link #refusalReason} because the readers scope it differently, on
+     * purpose. {@code LocationRewriter} and {@code PendingAuthorizationRecord.sameOrigin} reach it only
+     * through {@link #refusalReason}, on the path alone: an encoded separator after the {@code ?} cannot
+     * form an authority — a relative reference's authority is decided before the query delimiter — and
+     * refusing it would stop mapping the ordinary encoded-path query parameter an upstream redirect
+     * carries, or refuse the encoded query an ordinary return URL carries. {@code TerminalActionRules}
+     * (a configured {@code redirect.location}) and {@code PortalRules} (a configured
+     * {@code catalog.entry}) apply it to the whole configured value as well: nothing an operator can
+     * express in a query needs an encoded separator, so the wider scope costs a fixed configured string
+     * nothing.
      *
      * @param value any URL component, or a whole URL reference
      * @return {@code true} when {@code value} carries an encoded separator in either spelling
@@ -191,6 +214,29 @@ public class LocationPathReview {
     public static boolean carriesEncodedSeparator(String value) {
         String lowered = value.toLowerCase(Locale.ROOT);
         return lowered.contains(ENCODED_SLASH) || lowered.contains(ENCODED_BACKSLASH);
+    }
+
+    /**
+     * The path portion of a gateway-relative reference: everything before the first {@code ?} or
+     * {@code #}, or the whole value when it carries neither.
+     * <p>
+     * This is the one split every reader of {@link #refusalReason} uses before handing it a
+     * <em>reference</em> rather than a bare path, so the review is scoped to the path the same way
+     * everywhere. The split is purely lexical — the first query or fragment delimiter ends the path,
+     * exactly where a client ends it — and decodes nothing.
+     *
+     * @param reference a gateway-relative reference, possibly carrying a query and a fragment; never
+     *                  {@code null}
+     * @return the path portion of {@code reference}, never {@code null}
+     */
+    public static String pathPortion(String reference) {
+        for (int index = 0; index < reference.length(); index++) {
+            char current = reference.charAt(index);
+            if (current == '?' || current == '#') {
+                return reference.substring(0, index);
+            }
+        }
+        return reference;
     }
 
     /**

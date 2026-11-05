@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Set;
 
 
+import de.cuioss.sheriff.gateway.http.LocationPathReview;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;
@@ -177,15 +178,62 @@ Duration ttl,
     /**
      * Whether {@code returnUrl} is safe to redirect a browser to: a gateway-relative
      * path ({@code /...}), or an absolute URL whose origin (scheme + host + port) matches
-     * {@code gatewayOrigin}. A schema-relative ({@code //host}) value, a backslash-authority
-     * ({@code /\host}, which browsers normalize to {@code //host}) value, a value carrying any
-     * control character ({@code /\t/host}, which browsers strip to {@code //host}), a cross-origin
-     * absolute URL, a blank value, or an unparseable value is rejected — the redirect is
-     * never an open redirect.
+     * {@code gatewayOrigin} — and, in both shapes, whose path passes the shared open-redirect review
+     * {@link LocationPathReview#refusalReason(String)}.
+     * <p>
+     * <strong>Refused</strong>, so the redirect is never an open redirect:
+     * <ul>
+     *   <li>a blank or unparseable value, a schema-relative ({@code //host}) value, and a cross-origin
+     *       absolute URL;</li>
+     *   <li>a value carrying a raw backslash anywhere ({@code /\host}, which browsers normalize to
+     *       {@code //host}) or any control character anywhere ({@code /<TAB>/host}, which browsers
+     *       strip to {@code //host});</li>
+     *   <li>a value whose <em>path</em> the shared review refuses — the path portion of a
+     *       gateway-relative value (everything before the first {@code ?} or {@code #},
+     *       {@link LocationPathReview#pathPortion(String)}), or the raw path of a same-origin absolute
+     *       URL. That covers a percent-encoded separator ({@code /%2F%2Fevil.example},
+     *       {@code /%5Cevil.example}, either case), double encoding ({@code /%252F%252Fevil.example}),
+     *       a dot segment in its literal or {@code %2E} spelling ({@code /a/../b}, {@code /%2E%2E/b}),
+     *       and everything else the {@code cui-http} {@code URL_PATH} pipeline refuses (null bytes,
+     *       non-normalized unicode, the 1024-character path cap).</li>
+     * </ul>
+     * <strong>Accepted</strong>: a gateway-relative path or a same-origin absolute URL whose path the
+     * review admits, query and fragment included verbatim — an encoded value after the {@code ?}
+     * ({@code /app/items?next=%2Fx}) is not reviewed, because it cannot form an authority. An absolute
+     * same-origin URL with an empty path names the origin root and is accepted. The review is the one
+     * the redirect action ({@code TerminalActionRules}) and the upstream {@code Location} mapping
+     * ({@code routing.LocationRewriter}) read, so the gateway applies a single normalisation to every
+     * same-origin target it emits; this method owns no second one.
+     * <p>
+     * <strong>Callers, and what each does with a refusal.</strong>
+     * <ul>
+     *   <li>{@code bff.reserved.LoginInitiationEndpoint} — the request-supplied {@code returnUrl}: on the
+     *       already-authenticated short-circuit a refused target is replaced by the configured
+     *       {@code oidc.login.default_return_url} before the {@code 302}; on a fresh login it is
+     *       handed to {@code LoginFlow}, which applies the same fallback.</li>
+     *   <li>{@code bff.reserved.StepUpEndpoint} — the request-supplied {@code returnUrl}: a refused
+     *       target is replaced by the default return URL, which is then both the scope lookup's input
+     *       and the redirect target.</li>
+     *   <li>{@code bff.login.LoginFlow} — the post-login return target: a refused target records the
+     *       default return URL on the pending record instead.</li>
+     *   <li>{@code bff.login.SessionWidening} — the post-widening return target: a refused target
+     *       records the default return URL instead.</li>
+     *   <li>{@code bff.refresh.StepUpCoordinator} — the URL of the request replayed after an RFC 9470
+     *       step-up: a refused target records the default return URL instead.</li>
+     *   <li>{@code bff.login.ReturnTargetScopes} — the scope lookup for a return target: a refused
+     *       target resolves to {@code oidc.scopes} rather than to a route's needed scopes.</li>
+     *   <li>{@code config.validation.rule.OidcClientRules} — {@code oidc.login.default_return_url} at
+     *       boot: a refused value is a {@code ConfigError} and the gateway does not start, so the
+     *       fallback every runtime caller relies on is itself held to this predicate.</li>
+     * </ul>
+     * {@code config.validation.rule.ReservedPathRules} does not call this method; it holds the reserved
+     * OIDC paths to the same raw-backslash and control-character tests on their own terms, and to the
+     * shared review through {@code PortalRules.canonicalPathRefusal}.
      *
      * @param returnUrl     the candidate redirect target (may be absent/blank)
      * @param gatewayOrigin the gateway's own origin (e.g. the {@code redirect_uri} origin)
-     * @return {@code true} only when the candidate is same-origin with the gateway
+     * @return {@code true} only when the candidate is same-origin with the gateway and its path passes
+     *         the shared review
      */
     public static boolean sameOrigin(@Nullable String returnUrl, String gatewayOrigin) {
         if (returnUrl == null || returnUrl.isBlank() || returnUrl.startsWith("//")) {
@@ -207,13 +255,31 @@ Duration ttl,
             return false;
         }
         if (returnUrl.startsWith("/")) {
-            return true;
+            return pathAdmitted(LocationPathReview.pathPortion(returnUrl));
         }
         try {
-            return sameOriginAbsolute(URI.create(returnUrl), URI.create(gatewayOrigin));
+            URI candidate = URI.create(returnUrl);
+            return sameOriginAbsolute(candidate, URI.create(gatewayOrigin)) && pathAdmitted(rootIfEmpty(candidate));
         } catch (IllegalArgumentException _) {
             return false;
         }
+    }
+
+    /**
+     * Whether the shared open-redirect review admits {@code path} — the single normalisation the
+     * redirect action, the upstream {@code Location} mapping and this return-URL check all read.
+     */
+    private static boolean pathAdmitted(String path) {
+        return LocationPathReview.refusalReason(path).isEmpty();
+    }
+
+    /**
+     * The raw path of an absolute candidate, or {@code /} when it has none: an absolute URL with an
+     * empty path names the origin root.
+     */
+    private static String rootIfEmpty(URI candidate) {
+        String rawPath = candidate.getRawPath();
+        return rawPath == null || rawPath.isEmpty() ? "/" : rawPath;
     }
 
     private static boolean sameOriginAbsolute(URI candidate, URI reference) {

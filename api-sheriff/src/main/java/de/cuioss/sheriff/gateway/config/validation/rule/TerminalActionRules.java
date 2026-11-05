@@ -305,10 +305,11 @@ public class TerminalActionRules {
 
     /**
      * The gateway-path half of the location review. The refusal set itself is not this class's own:
-     * the path portion is handed to {@link LocationPathReview#refusalReason(String)}, the single place
-     * the gateway decides which {@code Location} path is dangerous, so this boot review and the
-     * runtime {@code routing.LocationRewriter} mapping of an <em>upstream</em> {@code Location} cannot
-     * disagree (GW-13). That review covers the scheme-relative {@code //} prefix, the percent-encoded
+     * the path portion ({@link LocationPathReview#pathPortion(String)}) is handed to
+     * {@link LocationPathReview#refusalReason(String)}, the single place the gateway decides which
+     * {@code Location} path is dangerous, so this boot review, the runtime
+     * {@code routing.LocationRewriter} mapping of an <em>upstream</em> {@code Location} and the BFF
+     * return-URL check ({@code PendingAuthorizationRecord.sameOrigin}) cannot disagree (GW-13). That review covers the scheme-relative {@code //} prefix, the percent-encoded
      * separators, the dot segments, and everything the {@code cui-http} {@code URL_PATH} pipeline owns
      * — double encoding above all, which no hand-written substring test here ever caught
      * ({@code /%252F%252Fevil.example}).
@@ -337,18 +338,7 @@ public class TerminalActionRules {
         if (LocationPathReview.carriesEncodedSeparator(location)) {
             return Optional.of("a percent-encoded '/' or '\\' is decoded by intermediaries");
         }
-        return LocationPathReview.refusalReason(location.substring(0, firstIndexOf(location, '?', '#')));
-    }
-
-    /** The index of the first occurrence of either character, or the value's length when neither occurs. */
-    private static int firstIndexOf(String value, char first, char second) {
-        for (int index = 0; index < value.length(); index++) {
-            char current = value.charAt(index);
-            if (current == first || current == second) {
-                return index;
-            }
-        }
-        return value.length();
+        return LocationPathReview.refusalReason(LocationPathReview.pathPortion(location));
     }
 
     /**
