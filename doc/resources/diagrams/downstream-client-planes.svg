@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Upstream client split by plane: streaming data plane, programmatic resilience guard, cui-http control plane.
+  Downstream client dispatch flow and SmallRye Fault Tolerance circuit-breaker state machine
+  across the streaming Vert.x data plane, WebSocket client, and cui-http control plane.
   theme-handling: A (theme-neutral)
-  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-state.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 394"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 404"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
-  <title id="title">Upstream client split by plane with the fixed resilience guard</title>
-  <desc id="desc">A three-column block diagram. Column 1, the data plane: a Vert.x HttpClient with one shared pool per distinct upstream target (scheme, host, port, forced HTTP/2), streaming request and response bodies with backpressure, natively handling trailers, WebSocket upgrades and upstream HTTP/2; non-h2 clients close abortively with SO_LINGER 0. Column 2, the programmatic SmallRye Fault Tolerance guard built at boot per upstream target and retry setting: retry only when enabled, at most two retries 100 ms apart, idempotent methods and only when zero body bytes were sent; a fixed circuit breaker over a rolling window of 20 calls opening at 50 percent failures for 5 seconds and closing after two successes; a fixed 30 second timeout until the response head; client-ended dispatches are neither failures nor retried. Column 3, the control plane: cui-http HttpHandler, ResilientHttpAdapter, ETagAwareHttpAdapter and HttpResult for bounded JSON calls such as OIDC discovery, JWKS, PAR, token exchange and revocation; and there is no gateway response cache.</desc>
+  <title id="title">Downstream client dispatch flow, resilience guard state machine, and control plane</title>
+  <desc id="desc">A multi-track flow and state diagram. On the top Data Plane track, Stage 6 proxy dispatches for HTTP, GraphQL, and gRPC enter the programmatic SmallRye Fault Tolerance Guard built per (UpstreamTarget, retry.enabled). Inside the guard, each attempt has a fixed 30 s timeout to response head, stream-aware retry (up to 2 retries, 100 ms apart, idempotent verb and only while zero request-body bytes were taken), and a fixed circuit breaker transitioning from CLOSED (rolling 20 calls) to OPEN (5 s reset) at 50% upstream failures, then HALF-OPEN (closing after 2 successful trials); client-ended aborts and body timeouts never count as failures or retry. Guarded calls execute on a pooled Vert.x HttpClient per UpstreamTarget (scheme, host, port, forced h2), piping request/response streams with backpressure, closing non-h2 connections abortively with SO_LINGER 0 (TCP RST) and resetting streams on forced-h2 gRPC, with no gateway response cache. On the bottom left, WebSocket routes bypass the guard and per-target pool to use the edge-wide WebSocket client. On the bottom right, the Control Plane uses cui-http (HttpHandler, ResilientHttpAdapter, ETagAwareHttpAdapter, HttpResult) for bounded JSON calls (OIDC discovery, JWKS, PAR, token exchange, revocation).</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -16,68 +17,103 @@
       <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
     </marker>
     <style>
-      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
-      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
-      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stage      { font-size: 13px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .mono       { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
-      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .track      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .dash       { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
       .arrow-fill { fill: #6e7681; }
-      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
     </style>
   </defs>
 
-  <text x="184" y="32" class="col-header">Data Plane</text>
-  <rect class="stroke" x="24" y="48" width="320" height="326" rx="6"/>
-  <text x="44" y="80" class="item-bold">Vert.x HttpClient</text>
-  <text x="56" y="102" class="sub">bodies piped as streams, backpressure</text>
-  <text x="56" y="120" class="sub">trailers, WebSocket, upstream HTTP/2</text>
-  <line class="sep" x1="44" y1="132" x2="324" y2="132"/>
-  <text x="44" y="156" class="item-bold">One pool per UpstreamTarget</text>
-  <text x="56" y="178" class="sub">scheme + host + port + forced h2,</text>
-  <text x="56" y="196" class="sub">shared egress TLS trust options</text>
-  <line class="sep" x1="44" y1="208" x2="324" y2="208"/>
-  <text x="44" y="232" class="item-bold">Abortive close (SO_LINGER 0)</text>
-  <text x="56" y="254" class="sub">every client not forced to h2: RST,</text>
-  <text x="56" y="272" class="sub">no TIME_WAIT; gRPC client resets stream</text>
-  <line class="sep" x1="44" y1="284" x2="324" y2="284"/>
-  <text x="56" y="308" class="sub">max_body_bytes: streaming byte counter</text>
+  <!-- Section Header -->
+  <text x="580" y="24" class="stage">Data Plane · Guarded Streaming Dispatch (HTTP · GraphQL · gRPC)</text>
 
-  <text x="568" y="32" class="col-header">Resilience Guard (SmallRye FT)</text>
-  <rect class="stroke" x="392" y="48" width="352" height="326" rx="6"/>
-  <text x="412" y="80" class="item-bold">Built at boot per target + retry</text>
-  <text x="424" y="102" class="sub">programmatic; no CDI interception</text>
-  <line class="sep" x1="412" y1="114" x2="724" y2="114"/>
-  <text x="412" y="138" class="item-bold">Retry (route retry.enabled)</text>
-  <text x="424" y="160" class="sub">max 2 retries, 100 ms; idempotent method,</text>
-  <text x="424" y="178" class="sub">only if zero body bytes sent upstream</text>
-  <line class="sep" x1="412" y1="190" x2="724" y2="190"/>
-  <text x="412" y="214" class="item-bold">Circuit breaker (fixed, ADR-0064)</text>
-  <text x="424" y="236" class="sub">last 20 calls · open at 50% · 5 s open</text>
-  <text x="424" y="254" class="sub">closes after 2 successful trial calls</text>
-  <line class="sep" x1="412" y1="266" x2="724" y2="266"/>
-  <text x="412" y="290" class="item-bold">Timeout: fixed 30 s to response head</text>
-  <line class="sep" x1="412" y1="306" x2="724" y2="306"/>
-  <text x="424" y="330" class="sub">client-ended dispatches: not failures,</text>
-  <text x="424" y="348" class="sub">never retried</text>
+  <!-- Box 1: Stage 6 Proxy Dispatch -->
+  <rect class="stroke" x="20" y="44" width="204" height="176" rx="6"/>
+  <text x="122" y="68"  class="stage">Stage 6 · Proxy Entry</text>
+  <text x="122" y="88"  class="mono">HTTP · GraphQL · gRPC</text>
+  <text x="122" y="106" class="sub">streaming max_body_bytes</text>
+  <line class="dash" x1="36" y1="118" x2="208" y2="118"/>
+  <text x="122" y="138" class="sub">client-ended aborts, body</text>
+  <text x="122" y="154" class="sub">caps &amp; timers skipped by</text>
+  <text x="122" y="170" class="sub">breaker &amp; never retried</text>
+  <text x="122" y="192" class="mono">30 s timeout / attempt</text>
 
-  <text x="904" y="32" class="col-header">Control Plane</text>
-  <rect class="stroke" x="792" y="48" width="224" height="326" rx="6"/>
-  <text x="812" y="80" class="item-bold">cui-http</text>
-  <text x="824" y="102" class="sub">HttpHandler</text>
-  <text x="824" y="120" class="sub">ResilientHttpAdapter</text>
-  <text x="824" y="138" class="sub">ETagAwareHttpAdapter</text>
-  <text x="824" y="156" class="sub">HttpResult&lt;T&gt;</text>
-  <line class="sep" x1="812" y1="168" x2="996" y2="168"/>
-  <text x="824" y="192" class="sub">bounded JSON: discovery,</text>
-  <text x="824" y="210" class="sub">JWKS, PAR, token, revoke</text>
-  <line class="sep" x1="812" y1="222" x2="996" y2="222"/>
-  <text x="812" y="246" class="item-bold">No response cache</text>
-  <text x="824" y="268" class="sub">no cross-user leaks</text>
+  <line class="track" x1="224" y1="132" x2="256" y2="132" marker-end="url(#arrow)"/>
 
-  <line class="arrow" x1="348" y1="211" x2="388" y2="211" marker-end="url(#arrow)"/>
-  <line class="arrow" x1="748" y1="211" x2="788" y2="211" marker-end="url(#arrow)"/>
+  <!-- Box 2: SmallRye FT Guard with Circuit Breaker State Machine -->
+  <rect class="stroke" x="260" y="44" width="584" height="176" rx="6"/>
+  <text x="552" y="64" class="stage">SmallRye FT Guard (per UpstreamTarget + retry.enabled · ADR-0064)</text>
+
+  <!-- Breaker State 1: CLOSED -->
+  <rect class="stroke" x="276" y="78" width="144" height="62" rx="8" ry="8"/>
+  <text x="348" y="98"  class="stage">CLOSED</text>
+  <text x="348" y="116" class="mono">window = 20 calls</text>
+  <text x="348" y="132" class="sub">30 s head timeout</text>
+
+  <line class="track" x1="420" y1="112" x2="496" y2="112" marker-end="url(#arrow)"/>
+  <text x="458" y="102" class="mono">&gt;=50% fail</text>
+
+  <!-- Breaker State 2: OPEN -->
+  <rect class="stroke" x="500" y="78" width="132" height="62" rx="8" ry="8"/>
+  <text x="566" y="98"  class="stage">OPEN (5 s)</text>
+  <text x="566" y="116" class="mono">fail-fast 503</text>
+  <text x="566" y="132" class="sub">WARN LogRecord</text>
+
+  <line class="track" x1="632" y1="112" x2="696" y2="112" marker-end="url(#arrow)"/>
+  <text x="664" y="102" class="mono">after 5 s</text>
+
+  <!-- Breaker State 3: HALF-OPEN -->
+  <rect class="stroke" x="700" y="78" width="128" height="62" rx="8" ry="8"/>
+  <text x="764" y="98"  class="stage">HALF-OPEN</text>
+  <text x="764" y="116" class="mono">2 trial calls</text>
+  <text x="764" y="132" class="sub">pass → CLOSED</text>
+
+  <!-- Back-edge HALF-OPEN -> CLOSED -->
+  <path class="track" d="M 764 140 Q 764 162 556 162 Q 348 162 348 144" marker-end="url(#arrow)"/>
+  <text x="556" y="156" class="sub">2 consecutive trial successes close breaker</text>
+
+  <line class="dash" x1="276" y1="172" x2="828" y2="172"/>
+  <text x="552" y="190" class="mono">Stream-Aware Retry (retry.enabled): max 2 retries · 100 ms delay</text>
+  <text x="552" y="208" class="sub">idempotent method AND zero request-body bytes taken (up to 3 × 30 s = 90 s)</text>
+
+  <line class="track" x1="844" y1="132" x2="876" y2="132" marker-end="url(#arrow)"/>
+
+  <!-- Box 3: Vert.x HttpClient Pool -->
+  <rect class="stroke" x="880" y="44" width="260" height="176" rx="6"/>
+  <text x="1010" y="68"  class="stage">Vert.x HttpClient Pool</text>
+  <text x="1010" y="88"  class="mono">1 pool per UpstreamTarget</text>
+  <text x="1010" y="104" class="sub">scheme + host + port + forced h2</text>
+  <line class="dash" x1="896" y1="116" x2="1124" y2="116"/>
+  <text x="1010" y="134" class="mono">Pipe streaming + backpressure</text>
+  <text x="1010" y="152" class="sub">non-h2: SO_LINGER 0 (TCP RST)</text>
+  <text x="1010" y="168" class="sub">forced h2 (gRPC): stream reset</text>
+  <line class="dash" x1="896" y1="180" x2="1124" y2="180"/>
+  <text x="1010" y="198" class="sub">no gateway response cache;</text>
+  <text x="1010" y="212" class="sub">not_modified governs 304/ETag</text>
+
+  <!-- ============================================================ -->
+  <!-- BOTTOM ROW: WebSocket Direct Track + Control Plane (cui-http) -->
+  <!-- ============================================================ -->
+  <line class="dash" x1="20" y1="242" x2="1140" y2="242"/>
+
+  <!-- WebSocket Track -->
+  <rect class="stroke" x="20" y="260" width="496" height="96" rx="6"/>
+  <text x="268" y="284" class="stage">WebSocket Data Plane · Edge-Wide WebSocket Client</text>
+  <text x="268" y="304" class="mono">OriginValidationStage → 101 Upgrade → Bidirectional Frame Relay</text>
+  <text x="268" y="322" class="sub">bypasses SmallRye FT guard and per-target connection pool;</text>
+  <text x="268" y="338" class="sub">bounded by websocket.idle_timeout_seconds (ping/pong counts as activity)</text>
+
+  <!-- Control Plane Track -->
+  <rect class="stroke" x="544" y="260" width="596" height="96" rx="6"/>
+  <text x="842" y="284" class="stage">Control Plane · cui-http (Bounded JSON Materialization)</text>
+  <text x="842" y="304" class="mono">OIDC Discovery · JWKS · PAR · Token Exchange · Revocation</text>
+  <text x="842" y="322" class="mono">HttpHandler → ResilientHttpAdapter / ETagAwareHttpAdapter → HttpResult&lt;T&gt;</text>
+  <text x="842" y="338" class="sub">body materialization is confined to control-plane JSON; data plane never buffers</text>
+
+  <!-- Footer caption -->
+  <text x="580" y="384" class="caption">Post-response upstream resets on early-answered HTTP/2 uploads run after the guarded call returns and are invisible to the breaker.</text>
 </svg>

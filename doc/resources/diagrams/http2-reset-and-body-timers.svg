@@ -1,95 +1,94 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  HTTP/2 post-response stream reset, connection window, and request-body framing and timers.
+  HTTP/2 post-response stream reset, dispatch body framing, and stream/body timers
+  shown as a time-ordered sequence across Client, API Sheriff Edge, and Upstream.
   theme-handling: A (theme-neutral)
-  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-sequence.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 410"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 590"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
-  <title id="title">HTTP/2 post-response reset protocol, connection bounds, and request-body framing and timers</title>
-  <desc id="desc">A three-column block diagram. Column 1 (HTTP/2 Post-Response Reset and Bounds) shows the three-step ResponseEnds.endResponse sequence for open request bodies (1: pause inbound stream and reset upstream request; 2: wait for window exhaustion, 50 ms quiet period, or 1 s cap; 3: write END_STREAM and RST_STREAM NO_ERROR together) and the transport constants (6,553,500 B connection window for 100 streams, 16 KiB MAX_HEADER_LIST_SIZE, 200 per 30 s client RST_STREAM cap). Column 2 (Dispatch Body Framing) covers bodyless GET/HEAD enforcement, exact Content-Length framing, and HTTP/1.1 abortive upstream close (SO_LINGER 0 TCP RST). Column 3 (Body and Stream Timers) lists the 10 s request-body idle timeout (408), 25 s request-body deadline (408 before head, upstream status after head), 30 s upstream guard head timeout (504), and 5 min gRPC bidirectional stream-idle timeout (DEADLINE_EXCEEDED).</desc>
+  <title id="title">Request-body streaming timers, framing checks, and HTTP/2 post-response reset sequence</title>
+  <desc id="desc">A sequence diagram across Client, API Sheriff Edge, and Upstream Target. Part 1 shows normal streaming dispatch under EdgeHardeningOptions (100 concurrent streams, 6,553,500 B connection window, 16 KiB header list, 200/30s RST_STREAM cap), enforcing live body-framing checks (bodyless GET/HEAD 400, Content-Length overflow/truncation 400, max_body_bytes 413) and the four timers (10 s chunk idle 408, 25 s body deadline 408, 30 s upstream head guard 504, 5 min gRPC stream-idle DEADLINE_EXCEEDED). Part 2 shows ResponseEnds.endResponse when a response is ready while the inbound request body is still open: (1) reset upstream request (H1 abortive SO_LINGER 0 TCP RST or H2 stream reset) and pause inbound stream; (2) hold END_STREAM until the stream window hits 0, 50 ms passes with no DATA frame, or the 1 s cap expires; (3) flush response END_STREAM and RST_STREAM(NO_ERROR) together.</desc>
 
   <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
     <style>
-      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
-      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
-      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
-      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+      .col-header   { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .stroke       { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .sep          { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+      .arrow        { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-return { stroke: #6e7681; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+      .arrow-fill   { fill: #6e7681; }
+      .arrow-lbl    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .mono-lbl     { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .activation   { stroke: #6e7681; stroke-width: 0.8; fill: #6e7681; opacity: 0.15; }
+      .note         { font-size: 11px; fill: #6e7681; text-anchor: start; font-style: italic; }
+      .note-mono    { font-size: 11px; fill: #6e7681; text-anchor: start; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .caption      { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
     </style>
   </defs>
 
-  <!-- Column headers -->
-  <text x="184" y="32" class="col-header">1 · HTTP/2 Reset &amp; Window</text>
-  <text x="520" y="32" class="col-header">2 · Dispatch Body Framing</text>
-  <text x="856" y="32" class="col-header">3 · Body &amp; Stream Timers</text>
+  <!-- Actors + Lifelines -->
+  <text x="128" y="30" class="col-header">Client (H1 / H2)</text>
+  <rect class="stroke" x="56" y="42" width="144" height="36" rx="6"/>
+  <line class="sep" x1="128" y1="80" x2="128" y2="536"/>
 
-  <!-- Column boxes -->
-  <rect class="stroke" x="24"  y="48" width="320" height="320" rx="6"/>
-  <rect class="stroke" x="360" y="48" width="320" height="320" rx="6"/>
-  <rect class="stroke" x="696" y="48" width="320" height="320" rx="6"/>
+  <text x="480" y="30" class="col-header">API Sheriff Edge</text>
+  <rect class="stroke" x="404" y="42" width="152" height="36" rx="6"/>
+  <line class="sep" x1="480" y1="80" x2="480" y2="536"/>
 
-  <!-- Column 1: HTTP/2 Post-Response Reset & Bounds -->
-  <text x="44" y="80"  class="item-bold">ResponseEnds (open H2 body)</text>
-  <text x="56" y="100" class="sub">1. reset upstream req &amp; pause inbound</text>
-  <text x="56" y="118" class="sub">2. hold END_STREAM until window = 0,</text>
-  <text x="68" y="136" class="sub">50 ms quiet period, or 1 s cap</text>
-  <text x="56" y="154" class="sub">3. flush END_STREAM + RST(NO_ERROR)</text>
-  <line class="sep" x1="44" y1="172" x2="324" y2="172"/>
+  <text x="860" y="30" class="col-header">Upstream Target</text>
+  <rect class="stroke" x="788" y="42" width="144" height="36" rx="6"/>
+  <line class="sep" x1="860" y1="80" x2="860" y2="536"/>
 
-  <text x="44" y="196" class="item-bold">EdgeHardeningOptions (per conn)</text>
-  <text x="56" y="216" class="item">100 maxConcurrentStreams</text>
-  <text x="56" y="236" class="item">6,553,500 B connection window</text>
-  <text x="68" y="254" class="sub">100 × 65,535 B (no upload starvation)</text>
-  <text x="56" y="274" class="item">16 KiB MAX_HEADER_LIST_SIZE</text>
-  <text x="56" y="294" class="item">200 / 30 s client RST_STREAM</text>
-  <text x="68" y="312" class="sub">excess → GOAWAY ENHANCE_YOUR_CALM</text>
+  <!-- Activation bars -->
+  <rect class="activation" x="475" y="108" width="10" height="408"/>
+  <rect class="activation" x="855" y="144" width="10" height="168"/>
 
-  <text x="184" y="348" class="col-sub">unread 503 uploads return credit on end</text>
+  <!-- 1. Client -> Edge: request head + body stream -->
+  <line class="arrow" x1="128" y1="114" x2="475" y2="114" marker-end="url(#arrow)"/>
+  <text x="302" y="104" class="arrow-lbl">HEADERS + DATA (6.55 MB window · 100 streams · 16 KiB hdrs)</text>
 
-  <!-- Column 2: Dispatch Body Framing -->
-  <text x="380" y="80"  class="item-bold">Bodyless Methods (GET / HEAD)</text>
-  <text x="392" y="100" class="sub">forwarded with no body; first inbound</text>
-  <text x="392" y="118" class="sub">byte → 400 (or CANCEL after relay start)</text>
-  <line class="sep" x1="380" y1="136" x2="660" y2="136"/>
+  <!-- 2. Edge -> Upstream: piped stream -->
+  <line class="arrow" x1="485" y1="150" x2="855" y2="150" marker-end="url(#arrow)"/>
+  <text x="670" y="140" class="arrow-lbl">pipe request head &amp; unbuffered DATA chunks</text>
 
-  <text x="380" y="160" class="item-bold">Declared Content-Length</text>
-  <text x="392" y="180" class="sub">• byte &gt; CL → 400 SECURITY_FILTER_VIOLATION</text>
-  <text x="392" y="198" class="sub">• EOF &lt; CL → 400 INBOUND_BODY_ABORTED</text>
-  <text x="392" y="216" class="sub">• byte &gt; max_body_bytes → 413</text>
-  <line class="sep" x1="380" y1="234" x2="660" y2="234"/>
+  <!-- Live framing & timers box on Edge -->
+  <rect class="stroke" x="504" y="168" width="332" height="128" rx="4"/>
+  <text x="516" y="186" class="note-mono">Framing: GET/HEAD body, &gt;CL, or EOF&lt;CL → 400</text>
+  <text x="516" y="204" class="note-mono">Cap:     stream &gt; max_body_bytes → 413</text>
+  <text x="516" y="224" class="note">• 10 s chunk-idle timer → 408 (pauses on backpressure)</text>
+  <text x="516" y="242" class="note">• 25 s body deadline → 408 pre-head (kept post-head)</text>
+  <text x="516" y="260" class="note">• 30 s SmallRye guard head timeout → 504</text>
+  <text x="516" y="278" class="note">• 5 min gRPC stream-idle → grpc-status: 4</text>
 
-  <text x="380" y="258" class="item-bold">Abortive H1 Upstream Close</text>
-  <text x="392" y="278" class="item">SO_LINGER 0 (TCP RST)</text>
-  <text x="392" y="296" class="sub">frees local ephemeral port immediately</text>
-  <text x="392" y="314" class="sub">on early answer, abort, or body timeout</text>
+  <!-- Client RST flood note -->
+  <text x="148" y="216" class="note">client RST_STREAM &gt; 200 / 30 s</text>
+  <text x="148" y="234" class="note-mono">→ GOAWAY(ENHANCE_YOUR_CALM)</text>
 
-  <text x="520" y="348" class="col-sub">client aborts never trip circuit breaker</text>
+  <!-- Divider: Early Answer / Post-Response Reset -->
+  <line class="sep" x1="56" y1="320" x2="944" y2="320"/>
+  <text x="480" y="338" class="mono-lbl">ResponseEnds.endResponse — early answer while inbound body is still open</text>
 
-  <!-- Column 3: Body & Stream Timers -->
-  <text x="716" y="80"  class="item-bold">10 s Request-Body Idle Timeout</text>
-  <text x="728" y="100" class="sub">per forwarded chunk → 408 (pauses on</text>
-  <text x="728" y="118" class="sub">upstream backpressure; not on gRPC)</text>
-  <line class="sep" x1="716" y1="134" x2="996" y2="134"/>
+  <!-- Step 1: Edge resets upstream & pauses inbound -->
+  <line class="arrow" x1="485" y1="368" x2="855" y2="368" marker-end="url(#arrow)"/>
+  <text x="670" y="358" class="arrow-lbl">1a. reset upstream req (H1: SO_LINGER 0 RST · H2: stream reset)</text>
+  <text x="302" y="388" class="arrow-lbl">1b. pause inbound stream (return conn credit on 503)</text>
 
-  <text x="716" y="158" class="item-bold">25 s Request-Body Deadline</text>
-  <text x="728" y="178" class="sub">from attempt start → 408 before head;</text>
-  <text x="728" y="196" class="sub">upstream status stands after head</text>
-  <line class="sep" x1="716" y1="212" x2="996" y2="212"/>
+  <!-- Step 2: Drain window / quiet timer -->
+  <line class="arrow" x1="128" y1="432" x2="475" y2="432" marker-end="url(#arrow)"/>
+  <text x="302" y="422" class="arrow-lbl">in-flight DATA frames drain against stream window</text>
+  <text x="504" y="432" class="note">2. hold END_STREAM until: window == 0,</text>
+  <text x="504" y="450" class="note">   50 ms quiet period, or 1 s cap expires</text>
 
-  <text x="716" y="236" class="item-bold">30 s Upstream Guard Timeout</text>
-  <text x="728" y="256" class="sub">bounds call until response head → 504</text>
-  <line class="sep" x1="716" y1="272" x2="996" y2="272"/>
-
-  <text x="716" y="296" class="item-bold">5 min gRPC Stream-Idle Bound</text>
-  <text x="728" y="316" class="sub">no frame either way → DEADLINE_EXCEEDED</text>
-
-  <text x="856" y="348" class="col-sub">all client timeouts skip retry &amp; breaker</text>
+  <!-- Step 3: Flush END_STREAM + RST_STREAM(NO_ERROR) -->
+  <line class="arrow-return" x1="475" y1="492" x2="128" y2="492" marker-end="url(#arrow)"/>
+  <text x="302" y="482" class="arrow-lbl">3. flush response END_STREAM + H2 RST_STREAM(NO_ERROR)</text>
 
   <!-- Footer caption -->
-  <text x="520" y="392" class="caption">Every timer and flow-control bound is enforced in the gateway with zero payload buffering.</text>
+  <text x="500" y="566" class="caption">Client-ended dispatches (aborts, framing errors, 10 s / 25 s / 5 min timeouts) never retry and never trip the circuit breaker.</text>
 </svg>

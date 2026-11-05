@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Management interface: Prometheus metrics, SmallRye health and readiness.
+  Management port (:9000) sequence for Prometheus metrics scraping and SmallRye Health readiness probes.
   theme-handling: A (theme-neutral)
-  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-sequence.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 372"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 530"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
-  <title id="title">Management interface with metrics and health</title>
-  <desc id="desc">A three-column block diagram. Column 1: the management port 9000 serves Prometheus metrics and health off the public data-plane port, over HTTPS by default; opting out with management.tls.enabled false downgrades both and logs WARN ApiSheriff-115. Column 2, metric families: request counters and latency per route, errors by route category and event, per-source detection and threat counters, uniform-404 overruns, cui-http security events, upstream duration, BFF session events, authentication branch, and token-validation counters. Column 3, health: SmallRye Health serves health, live and ready; GatewayReadinessCheck reflects validated configuration and whether every configured issuer has a loaded key set, reporting DOWN with jwks loading or unavailable until all are loaded and then UP with jwks ready; with an active BFF runtime it adds oidc and oidc_discovery data; payloads report state tokens only, never causes.</desc>
+  <title id="title">Management port metrics scrape and readiness probe sequence</title>
+  <desc id="desc">A four-actor sequence diagram across Scraper / Probe, Management Port (:9000), Micrometer / SheriffMetrics, and GatewayReadinessCheck. In the top section (Metrics Scrape), a scraper requests GET /q/metrics over HTTPS on port 9000 (or HTTP with WARN ApiSheriff-115 when management.tls.enabled is false); Micrometer exports traffic counters/timers (requests_total, request_duration_seconds, upstream_duration_seconds), rejection/detection counters (errors_total, source_trips_total, source_untracked_total, threat_alerts_total, threat_untracked_total, uniform_not_found_overruns_total), and security/auth counters (security_events_total, session_events_total, auth_branch_total, token_validation_errors_total, token_validation_success_operations_total). In the bottom section (Readiness Probe), GET /q/health/ready invokes GatewayReadinessCheck, which checks validated configuration and issuer JWKS key sets (DOWN with jwks: loading or unavailable until every issuer loads keys, then UP with jwks: ready retained across refresh failures) and, when a BFF runtime is active, attaches oidc (server or cookie) and non-fetching oidc_discovery (not-attempted, resolved, or failed without altering the UP/DOWN verdict), returning state tokens only while logging causes via WARN ApiSheriff-116.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -16,61 +16,88 @@
       <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
     </marker>
     <style>
-      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
-      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
-      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .actor      { font-size: 13px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .section    { font-size: 12px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .msg-c      { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .note       { font-size: 11px; fill: #6e7681; font-style: italic; text-anchor: middle; }
       .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
-      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .lifeline   { stroke: #6e7681; stroke-width: 1.0; stroke-dasharray: 4 4; fill: none; }
+      .call       { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .ret        { stroke: #6e7681; stroke-width: 1.3; stroke-dasharray: 5 3; fill: none; }
+      .sep        { stroke: #6e7681; stroke-width: 0.7; stroke-dasharray: 4 4; fill: none; }
       .arrow-fill { fill: #6e7681; }
-      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
     </style>
   </defs>
 
-  <text x="172" y="32" class="col-header">Management Port</text>
-  <rect class="stroke" x="24" y="48" width="296" height="304" rx="6"/>
-  <text x="44" y="80" class="item-bold">:9000 · off the data plane</text>
-  <text x="56" y="102" class="sub">Micrometer Prometheus + SmallRye Health</text>
-  <line class="sep" x1="44" y1="114" x2="300" y2="114"/>
-  <text x="44" y="138" class="item-bold">HTTPS by default</text>
-  <text x="56" y="160" class="sub">management.tls.enabled: false</text>
-  <text x="56" y="178" class="sub">opts out: WARN ApiSheriff-115</text>
-  <line class="sep" x1="44" y1="190" x2="300" y2="190"/>
-  <text x="56" y="214" class="sub">root path /q (management.root-path)</text>
+  <!-- Actor 1: Scraper / K8s Probe -->
+  <rect class="stroke" x="24" y="20" width="184" height="44" rx="6"/>
+  <text x="116" y="40" class="actor">Scraper / K8s Probe</text>
+  <text x="116" y="56" class="note">Prometheus · Orchestrator</text>
+  <line class="lifeline" x1="116" y1="64" x2="116" y2="484"/>
 
-  <text x="536" y="32" class="col-header">Metric Families (sheriff_*)</text>
-  <rect class="stroke" x="360" y="48" width="352" height="304" rx="6"/>
-  <text x="380" y="80" class="item-bold">Traffic</text>
-  <text x="392" y="102" class="sub">requests_total · request_duration_seconds</text>
-  <text x="392" y="120" class="sub">upstream_duration_seconds</text>
-  <line class="sep" x1="380" y1="132" x2="692" y2="132"/>
-  <text x="380" y="156" class="item-bold">Rejections &amp; detection</text>
-  <text x="392" y="178" class="sub">errors_total{route,category,event}</text>
-  <text x="392" y="196" class="sub">source_trips · source_untracked</text>
-  <text x="392" y="214" class="sub">threat_alerts · threat_untracked</text>
-  <text x="392" y="232" class="sub">uniform_not_found_overruns</text>
-  <line class="sep" x1="380" y1="244" x2="692" y2="244"/>
-  <text x="380" y="268" class="item-bold">Security &amp; auth</text>
-  <text x="392" y="290" class="sub">security_events_total (cui-http)</text>
-  <text x="392" y="308" class="sub">session_events · auth_branch</text>
-  <text x="392" y="326" class="sub">token_validation_errors / _success</text>
+  <!-- Actor 2: Management Port (:9000) -->
+  <rect class="stroke" x="288" y="20" width="208" height="44" rx="6"/>
+  <text x="392" y="40" class="actor">Management Port (:9000)</text>
+  <text x="392" y="56" class="note">HTTPS default · root /q</text>
+  <line class="lifeline" x1="392" y1="64" x2="392" y2="484"/>
 
-  <text x="884" y="32" class="col-header">Health (SmallRye)</text>
-  <rect class="stroke" x="752" y="48" width="264" height="304" rx="6"/>
-  <text x="772" y="80" class="item-bold">/health · /live · /ready</text>
-  <line class="sep" x1="772" y1="96" x2="996" y2="96"/>
-  <text x="772" y="120" class="item-bold">GatewayReadinessCheck</text>
-  <text x="784" y="142" class="sub">config validated + every issuer</text>
-  <text x="784" y="160" class="sub">has a key set: jwks ready → UP</text>
-  <text x="784" y="178" class="sub">loading / unavailable → DOWN</text>
-  <line class="sep" x1="772" y1="190" x2="996" y2="190"/>
-  <text x="772" y="214" class="item-bold">Active BFF runtime</text>
-  <text x="784" y="236" class="sub">oidc, oidc_discovery data only</text>
-  <text x="784" y="254" class="sub">state tokens, never causes</text>
+  <!-- Actor 3: Micrometer / SheriffMetrics -->
+  <rect class="stroke" x="596" y="20" width="216" height="44" rx="6"/>
+  <text x="704" y="40" class="actor">Micrometer (sheriff_*)</text>
+  <text x="704" y="56" class="note">SheriffMetrics · Collectors</text>
+  <line class="lifeline" x1="704" y1="64" x2="704" y2="484"/>
 
-  <line class="arrow" x1="324" y1="200" x2="356" y2="200" marker-end="url(#arrow)"/>
-  <line class="arrow" x1="716" y1="200" x2="748" y2="200" marker-end="url(#arrow)"/>
+  <!-- Actor 4: GatewayReadinessCheck -->
+  <rect class="stroke" x="884" y="20" width="212" height="44" rx="6"/>
+  <text x="990" y="40" class="actor">GatewayReadinessCheck</text>
+  <text x="990" y="56" class="note">SmallRye Health · Non-fetching</text>
+  <line class="lifeline" x1="990" y1="64" x2="990" y2="484"/>
+
+  <!-- ============================================================ -->
+  <!-- TOP SECTION: Prometheus Metrics Scrape                       -->
+  <!-- ============================================================ -->
+  <text x="560" y="86" class="section">1 · Metrics Scrape (GET /q/metrics — Isolated from Public Data-Plane Port)</text>
+
+  <line class="call" x1="116" y1="112" x2="388" y2="112" marker-end="url(#arrow)"/>
+  <text x="252" y="104" class="msg-c">1 · GET /q/metrics (HTTPS)</text>
+
+  <line class="call" x1="392" y1="136" x2="700" y2="136" marker-end="url(#arrow)"/>
+  <text x="546" y="128" class="msg-c">2 · Collect sheriff_* meters</text>
+
+  <rect class="stroke" x="472" y="148" width="464" height="92" rx="4"/>
+  <text x="704" y="168" class="msg-c">Traffic: requests_total · request_duration · upstream_duration</text>
+  <line class="sep" x1="488" y1="176" x2="920" y2="176"/>
+  <text x="704" y="192" class="msg-c">Errors/Recon: errors_total{route,category,event} · source_trips</text>
+  <text x="704" y="208" class="note">source_untracked · threat_alerts · threat_untracked · 404_overruns</text>
+  <line class="sep" x1="488" y1="216" x2="920" y2="216"/>
+  <text x="704" y="232" class="msg-c">Auth: security_events · session_events · auth_branch · token_val_*</text>
+
+  <line class="ret" x1="704" y1="258" x2="120" y2="258" marker-end="url(#arrow)"/>
+  <text x="412" y="250" class="msg-c">3 · 200 OK Prometheus exposition</text>
+
+  <!-- ============================================================ -->
+  <!-- BOTTOM SECTION: Health & Readiness Probe                     -->
+  <!-- ============================================================ -->
+  <line class="sep" x1="24" y1="280" x2="1096" y2="280"/>
+  <text x="560" y="300" class="section">2 · Readiness Probe (GET /q/health/ready — Non-Fetching State Evaluation)</text>
+
+  <line class="call" x1="116" y1="326" x2="388" y2="326" marker-end="url(#arrow)"/>
+  <text x="252" y="318" class="msg-c">1 · GET /q/health/ready</text>
+
+  <line class="call" x1="392" y1="350" x2="986" y2="350" marker-end="url(#arrow)"/>
+  <text x="688" y="342" class="msg-c">2 · Read issuer JWKS &amp; BFF discovery state (no network call)</text>
+
+  <rect class="stroke" x="628" y="362" width="468" height="84" rx="4"/>
+  <text x="862" y="382" class="msg-c">Token Validation JWKS: loading | unavailable → DOWN</text>
+  <text x="862" y="398" class="note">all issuers loaded → UP (jwks: ready, retained across refresh errs)</text>
+  <line class="sep" x1="644" y1="408" x2="1080" y2="408"/>
+  <text x="862" y="424" class="msg-c">Active BFF: oidc (server|cookie) + oidc_discovery</text>
+  <text x="862" y="440" class="note">not-attempted | resolved | failed (never alters UP/DOWN verdict)</text>
+
+  <line class="ret" x1="990" y1="468" x2="120" y2="468" marker-end="url(#arrow)"/>
+  <text x="555" y="460" class="msg-c">3 · 200 UP / 503 DOWN (state tokens only; causes logged via WARN 116)</text>
+
+  <!-- Footer caption -->
+  <text x="560" y="510" class="caption">Opting out of HTTPS on :9000 via management.tls.enabled: false downgrades both metrics and health and logs WARN ApiSheriff-115 at boot.</text>
 </svg>

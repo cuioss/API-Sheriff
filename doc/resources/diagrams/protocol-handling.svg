@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Protocol handling: HTTP/GraphQL, WebSocket and gRPC, plus the L4 passthrough bypass.
+  Multi-track swim-lane flow across L4 SNI Passthrough, HTTP/1.1 & HTTP/2 & GraphQL,
+  WebSocket upgrade & relay, and gRPC over HTTP/2.
   theme-handling: A (theme-neutral)
-  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-flow.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 320"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 412"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
-  <title id="title">Protocol handling for HTTP, WebSocket and gRPC</title>
-  <desc id="desc">A three-column block diagram. Column 1, HTTP/1.1 and HTTP/2 with GraphQL: HTTP/2 is negotiated through ALPN h2 on terminated TLS; GraphQL is routed as standard HTTP POST with body-size caps and path and header checks and no AST parsing. Column 2, WebSocket: the full inbound pipeline runs on the upgrade request before 101, authentication is enforced at handshake, the Origin is validated against a fail-closed allowed_origins allowlist before dialling the upstream, frames are relayed opaquely after 101 bounded by websocket.idle_timeout_seconds, and no upstream response header is relayed on 101 or a refused upgrade. Column 3, gRPC including gRPCS: the upstream dial is forced to HTTP/2, leading headers and trailers pass the response predicate, calls idle for 5 minutes after response headers end with DEADLINE_EXCEEDED, the filter inspects HTTP metadata only, and rejections after the trust boundary are trailers-only responses. HTTP/3 and QUIC are deferred and L4 passthrough SNI connections never reach the route table.</desc>
+  <title id="title">Multi-track protocol handling flow: L4 passthrough, HTTP/GraphQL, WebSocket, and gRPC</title>
+  <desc id="desc">A four-lane left-to-right swim-lane flow diagram branching from TLS Accept and ALPN. Lane 1 (L4 SNI Passthrough): connections matching tls.passthrough_sni bypass TLS termination and the route table for raw TCP byte relay. Lane 2 (HTTP/1.1, HTTP/2, and GraphQL): terminated TLS negotiates h2 or http/1.1 via ALPN, runs Stages 0–5, and streams via HttpProtocolProcessor with max_body_bytes (GraphQL supports all proxyable methods without AST parsing). Lane 3 (WebSocket): the HTTP upgrade request runs Stages 0–5 and OriginValidationStage (fail-closed allowed_origins required for bearer, session, and cookie routes before dialling), answers 101 Switching Protocols without relaying upstream headers, and relays opaque frames bounded by websocket.idle_timeout_seconds. Lane 4 (gRPC and gRPCS): inspects HTTP/2 metadata only (never protobuf payloads), forces the upstream dial to h2, filters leading headers and trailers through the response predicate, bounds stream idle at 5 minutes (DEADLINE_EXCEEDED), and renders post-trust rejections as trailers-only responses (pre-trust rejections render as uniform HTTP 404 when enabled). HTTP/3 and QUIC are deferred.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -16,55 +17,119 @@
       <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
     </marker>
     <style>
-      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
-      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
-      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stage      { font-size: 13px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .mono       { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
-      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .track      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .dash       { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
       .arrow-fill { fill: #6e7681; }
-      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
     </style>
   </defs>
 
-  <text x="172" y="32" class="col-header">HTTP/1.1 · HTTP/2 · GraphQL</text>
-  <rect class="stroke" x="24" y="48" width="296" height="232" rx="6"/>
-  <text x="44" y="80" class="item-bold">HTTP/1.1 and HTTP/2</text>
-  <text x="56" y="102" class="sub">h2 negotiated via ALPN on terminated TLS</text>
-  <line class="sep" x1="44" y1="114" x2="300" y2="114"/>
-  <text x="44" y="138" class="item-bold">GraphQL</text>
-  <text x="56" y="160" class="sub">standard HTTP POST; body-size caps,</text>
-  <text x="56" y="178" class="sub">path/header checks, no AST parsing</text>
-  <line class="sep" x1="44" y1="190" x2="300" y2="190"/>
-  <text x="44" y="214" class="item-bold">Deferred: HTTP/3 / QUIC</text>
+  <!-- Left Origin: TLS Accept & ALPN -->
+  <rect class="stroke" x="20" y="136" width="184" height="128" rx="6"/>
+  <text x="112" y="160" class="stage">TLS Accept &amp; ALPN</text>
+  <text x="112" y="180" class="mono">ClientHello SNI</text>
+  <line class="dash" x1="36" y1="192" x2="188" y2="192"/>
+  <text x="112" y="210" class="mono">ALPN: h2 | http/1.1</text>
+  <text x="112" y="228" class="sub">route protocol selects</text>
+  <text x="112" y="244" class="sub">processor at Stage 6</text>
 
-  <text x="520" y="32" class="col-header">WebSocket</text>
-  <rect class="stroke" x="360" y="48" width="320" height="232" rx="6"/>
-  <text x="380" y="80" class="item-bold">Full pipeline before 101</text>
-  <text x="392" y="102" class="sub">filter, auth, forward policy, Cookie</text>
-  <text x="392" y="120" class="sub">authentication at handshake time</text>
-  <line class="sep" x1="380" y1="132" x2="660" y2="132"/>
-  <text x="380" y="156" class="item-bold">Origin allowlist (fail-closed)</text>
-  <text x="392" y="178" class="sub">checked before dialling the upstream</text>
-  <line class="sep" x1="380" y1="190" x2="660" y2="190"/>
-  <text x="380" y="214" class="item-bold">After 101</text>
-  <text x="392" y="236" class="sub">opaque frames; websocket.idle_timeout_seconds</text>
-  <text x="392" y="254" class="sub">no upstream response header relayed</text>
+  <!-- Spine fork into 4 protocol swim-lanes -->
+  <line class="track" x1="204" y1="200" x2="228" y2="200"/>
+  <circle cx="232" cy="200" r="4" class="stroke"/>
+  <path class="track" d="M 232 196 L 232 58  L 260 58"  marker-end="url(#arrow)"/>
+  <path class="track" d="M 232 196 L 232 146 L 260 146" marker-end="url(#arrow)"/>
+  <path class="track" d="M 232 204 L 232 242 L 260 242" marker-end="url(#arrow)"/>
+  <path class="track" d="M 232 204 L 232 338 L 260 338" marker-end="url(#arrow)"/>
 
-  <text x="868" y="32" class="col-header">gRPC (incl. gRPCS)</text>
-  <rect class="stroke" x="720" y="48" width="296" height="232" rx="6"/>
-  <text x="740" y="80" class="item-bold">Upstream dial forced to h2</text>
-  <text x="752" y="102" class="sub">headers + trailers pass the predicate</text>
-  <line class="sep" x1="740" y1="114" x2="996" y2="114"/>
-  <text x="740" y="138" class="item-bold">5 min stream-idle bound</text>
-  <text x="752" y="160" class="sub">→ DEADLINE_EXCEEDED</text>
-  <line class="sep" x1="740" y1="172" x2="996" y2="172"/>
-  <text x="740" y="196" class="item-bold">Metadata-only inspection</text>
-  <text x="752" y="218" class="sub">post-trust rejection: trailers-only</text>
-  <text x="752" y="236" class="sub">pre-trust: uniform unrouted 404</text>
+  <!-- ============================================================ -->
+  <!-- LANE 1: L4 TLS Passthrough                                   -->
+  <!-- ============================================================ -->
+  <rect class="stroke" x="264" y="26" width="380" height="64" rx="6"/>
+  <text x="454" y="48" class="stage">L4 Passthrough · tls.passthrough_sni</text>
+  <text x="454" y="68" class="sub">matched before TLS handshake; never reaches route table</text>
 
-  <text x="520" y="306" class="caption">SNI listed in tls.passthrough_sni is relayed at L4 and never reaches the route table.</text>
+  <line class="track" x1="644" y1="58" x2="684" y2="58" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="688" y="26" width="452" height="64" rx="6"/>
+  <text x="914" y="48" class="stage">Opaque L4 TCP Byte Stream Relay</text>
+  <text x="914" y="68" class="sub">upstream terminates TLS with its own certificate</text>
+
+  <!-- ============================================================ -->
+  <!-- LANE 2: HTTP/1.1 · HTTP/2 · GraphQL                          -->
+  <!-- ============================================================ -->
+  <line class="dash" x1="252" y1="102" x2="1140" y2="102"/>
+
+  <rect class="stroke" x="264" y="114" width="268" height="68" rx="6"/>
+  <text x="398" y="136" class="stage">HTTP/1.1 · HTTP/2 · GraphQL</text>
+  <text x="398" y="154" class="mono">Stages 0–5 + max_body_bytes</text>
+  <text x="398" y="170" class="sub">GraphQL: all verbs, no AST parse</text>
+
+  <line class="track" x1="532" y1="148" x2="564" y2="148" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="568" y="114" width="284" height="68" rx="6"/>
+  <text x="710" y="136" class="stage">HttpProtocolProcessor</text>
+  <text x="710" y="154" class="mono">SmallRye FT Guard + Vert.x Pool</text>
+  <text x="710" y="170" class="sub">bidirectional Pipe streaming</text>
+
+  <line class="track" x1="852" y1="148" x2="884" y2="148" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="888" y="114" width="252" height="68" rx="6"/>
+  <text x="1014" y="136" class="stage">Stage 7 · ResponseStage</text>
+  <text x="1014" y="154" class="mono">Set-Cookie · LocationRewriter</text>
+  <text x="1014" y="170" class="sub">+ route security headers</text>
+
+  <!-- ============================================================ -->
+  <!-- LANE 3: WebSocket                                            -->
+  <!-- ============================================================ -->
+  <line class="dash" x1="252" y1="194" x2="1140" y2="194"/>
+
+  <rect class="stroke" x="264" y="206" width="268" height="72" rx="6"/>
+  <text x="398" y="228" class="stage">WebSocket Upgrade Request</text>
+  <text x="398" y="246" class="mono">Stages 0–5 + rebuilt Cookie</text>
+  <text x="398" y="264" class="sub">authenticated at handshake time</text>
+
+  <line class="track" x1="532" y1="242" x2="564" y2="242" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="568" y="206" width="284" height="72" rx="6"/>
+  <text x="710" y="228" class="stage">OriginValidationStage + 101</text>
+  <text x="710" y="246" class="mono">fail-closed allowed_origins</text>
+  <text x="710" y="264" class="sub">checked before dial; no upstream hdrs</text>
+
+  <line class="track" x1="852" y1="242" x2="884" y2="242" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="888" y="206" width="252" height="72" rx="6"/>
+  <text x="1014" y="228" class="stage">Opaque Frame Relay</text>
+  <text x="1014" y="246" class="mono">websocket.idle_timeout_seconds</text>
+  <text x="1014" y="264" class="sub">ping/pong counts as activity</text>
+
+  <!-- ============================================================ -->
+  <!-- LANE 4: gRPC / gRPCS                                         -->
+  <!-- ============================================================ -->
+  <line class="dash" x1="252" y1="290" x2="1140" y2="290"/>
+
+  <rect class="stroke" x="264" y="302" width="268" height="72" rx="6"/>
+  <text x="398" y="324" class="stage">gRPC / gRPCS (HTTP/2)</text>
+  <text x="398" y="342" class="mono">HTTP/2 metadata filter only</text>
+  <text x="398" y="360" class="sub">never parses protobuf payloads</text>
+
+  <line class="track" x1="532" y1="338" x2="564" y2="338" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="568" y="302" width="284" height="72" rx="6"/>
+  <text x="710" y="324" class="stage">GrpcProtocolProcessor</text>
+  <text x="710" y="342" class="mono">upstream dial forced to h2</text>
+  <text x="710" y="360" class="sub">5 min stream-idle → DEADLINE_EXCEEDED</text>
+
+  <line class="track" x1="852" y1="338" x2="884" y2="338" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="888" y="302" width="252" height="72" rx="6"/>
+  <text x="1014" y="324" class="stage">Headers &amp; Trailers Relay</text>
+  <text x="1014" y="342" class="mono">grpc-status · grpc-message</text>
+  <text x="1014" y="360" class="sub">post-trust err → trailers-only</text>
+
+  <!-- Footer caption -->
+  <text x="580" y="396" class="caption">Pre-trust rejections on gRPC routes render as uniform HTTP 404 when uniform_not_found is on; HTTP/3 / QUIC is deferred.</text>
 </svg>

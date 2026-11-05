@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Authentication strategy per variant and boot-derived scope enforcement on bearer and session routes.
+  Boot-derived neededScopes and request-time scope enforcement decision flow
+  across Bearer (AuthenticationStage) and Session (SessionAuthenticationStage) routes.
   theme-handling: A (theme-neutral)
-  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-flow.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 336"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 396"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
-  <title id="title">Authentication strategy per variant and scope enforcement</title>
-  <desc id="desc">A three-column block diagram. Column 1: the three deployment variants and their strategy: base gateway validates the client's own bearer token offline with token-sheriff-validation; BFF session keeps tokens server-side behind an opaque session-id cookie; BFF cookie keeps tokens inside an AES-256-GCM encrypted HttpOnly cookie. Column 2: RouteTableBuilder derives neededScopes as oidc.scopes union endpoint.scopes once at boot and carries it on the route. Column 3: AuthenticationStage compares the validated bearer token against neededScopes and answers 403 SCOPE_MISSING with an RFC 6750 insufficient_scope challenge on a shortfall; SessionAuthenticationStage compares the session's active scope set against neededScopes after near-expiry refresh, continuing when nothing is missing, running a scope-driven refresh when every missing scope lies in the granted set, and otherwise redirecting a navigation into a session widening or rejecting other requests with 403 SCOPE_MISSING.</desc>
+  <title id="title">Authentication variants and boot-derived scope enforcement decision flow</title>
+  <desc id="desc">A two-track decision flow diagram. On the left, RouteTableBuilder derives neededScopes = oidc.scopes union endpoint.scopes once at boot on routing.Route. At Stage 4, requests branch by route posture. On the top track (Bearer: AuthenticationStage), TokenValidator validates the client's JWT offline and compares token scopes against neededScopes: when satisfied, the request advances to Stage 5; on a shortfall, it exits to 403 SCOPE_MISSING with RFC 6750 WWW-Authenticate insufficient_scope. On the bottom track (Session: SessionAuthenticationStage, covering both BFF server-mode handle and BFF cookie-mode AES-256-GCM cookie), near-expiry refresh of active set A runs first, then missing = neededScopes \ A is evaluated: if empty, the request advances to Stage 5 (injecting the session bearer unless token_relay is false); if missing lies inside granted set S (with refresh enabled and binding cookie current), TokenRefreshCoordinator runs a scope-driven refresh for A union missing (removing any unreturned scope from S); otherwise navigations redirect 302 into PAR SessionWidening (S union neededScopes) and non-navigations exit with 403 SCOPE_MISSING carrying missing_scopes and optional step_up_url.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -16,61 +17,95 @@
       <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
     </marker>
     <style>
-      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
-      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
-      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stage      { font-size: 13px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .mono       { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
-      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .track      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .dash       { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
       .arrow-fill { fill: #6e7681; }
-      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
     </style>
   </defs>
 
-  <text x="184" y="32" class="col-header">1 · Strategy per Variant</text>
-  <rect class="stroke" x="24" y="48" width="320" height="268" rx="6"/>
-  <text x="44" y="80" class="item-bold">Base gateway</text>
-  <text x="56" y="102" class="sub">client's own Authorization: Bearer</text>
-  <text x="56" y="120" class="sub">offline TokenValidator check</text>
-  <line class="sep" x1="44" y1="132" x2="324" y2="132"/>
-  <text x="44" y="156" class="item-bold">BFF session</text>
-  <text x="56" y="178" class="sub">gateway = OIDC confidential client</text>
-  <text x="56" y="196" class="sub">tokens server-side; opaque cookie</text>
-  <text x="56" y="214" class="sub">stored access token injected upstream</text>
-  <line class="sep" x1="44" y1="226" x2="324" y2="226"/>
-  <text x="44" y="250" class="item-bold">BFF cookie</text>
-  <text x="56" y="272" class="sub">tokens only in AES-256-GCM cookie</text>
-  <text x="56" y="290" class="sub">HttpOnly; decrypted per request</text>
+  <!-- Left Origin: Boot Derivation -->
+  <rect class="stroke" x="20" y="116" width="212" height="140" rx="6"/>
+  <text x="126" y="138" class="stage">Boot · RouteTableBuilder</text>
+  <text x="126" y="158" class="mono">neededScopes =</text>
+  <text x="126" y="176" class="mono">oidc.scopes ∪ endpoint.scopes</text>
+  <text x="126" y="194" class="sub">(endpoint.scopes alone w/o oidc)</text>
+  <line class="dash" x1="36" y1="206" x2="216" y2="206"/>
+  <text x="126" y="224" class="sub">materialized on routing.Route;</text>
+  <text x="126" y="242" class="sub">shared by every auth leg</text>
 
-  <text x="520" y="32" class="col-header">2 · Boot Derivation</text>
-  <rect class="stroke" x="392" y="48" width="256" height="268" rx="6"/>
-  <text x="412" y="80" class="item-bold">RouteTableBuilder</text>
-  <text x="424" y="102" class="item">neededScopes =</text>
-  <text x="424" y="122" class="item">  oidc.scopes</text>
-  <text x="424" y="142" class="item">  ∪ endpoint.scopes</text>
-  <text x="424" y="162" class="sub">endpoint.scopes alone without oidc</text>
-  <line class="sep" x1="412" y1="174" x2="628" y2="174"/>
-  <text x="424" y="198" class="sub">carried on routing.Route; every</text>
-  <text x="424" y="216" class="sub">leg reads it, so requesting and</text>
-  <text x="424" y="234" class="sub">checking cannot drift apart</text>
+  <!-- Fork into Bearer Track (top) and Session Track (bottom) -->
+  <line class="track" x1="232" y1="186" x2="254" y2="186"/>
+  <circle cx="258" cy="186" r="4" class="stroke"/>
+  <path class="track" d="M 258 182 L 258 96 L 280 96" marker-end="url(#arrow)"/>
+  <path class="track" d="M 258 190 L 258 264 L 280 264" marker-end="url(#arrow)"/>
 
-  <text x="856" y="32" class="col-header">3 · Request-Time Check</text>
-  <rect class="stroke" x="696" y="48" width="320" height="268" rx="6"/>
-  <text x="716" y="80" class="item-bold">Bearer: AuthenticationStage</text>
-  <text x="728" y="102" class="sub">token vs neededScopes</text>
-  <text x="728" y="120" class="sub">shortfall → 403 SCOPE_MISSING +</text>
-  <text x="728" y="138" class="sub">WWW-Authenticate insufficient_scope</text>
-  <line class="sep" x1="716" y1="150" x2="996" y2="150"/>
-  <text x="716" y="174" class="item-bold">Session: SessionAuthenticationStage</text>
-  <text x="728" y="196" class="sub">active set A vs neededScopes</text>
-  <text x="728" y="214" class="sub">nothing missing → continue, no IdP call</text>
-  <text x="728" y="232" class="sub">missing ⊆ granted S → scope refresh</text>
-  <text x="728" y="250" class="sub">else navigation → 302 widening;</text>
-  <text x="728" y="268" class="sub">other → 403 + missing_scopes</text>
+  <!-- ============================================================ -->
+  <!-- TOP TRACK: Bearer (AuthenticationStage)                      -->
+  <!-- ============================================================ -->
+  <rect class="stroke" x="284" y="44" width="236" height="104" rx="6"/>
+  <text x="402" y="66"  class="stage">Bearer · AuthenticationStage</text>
+  <text x="402" y="86"  class="sub">Base gateway &amp; BFF bearer leg</text>
+  <text x="402" y="104" class="mono">TokenValidator (offline JWT)</text>
+  <text x="402" y="122" class="mono">check token ⊇ neededScopes</text>
+  <text x="402" y="138" class="sub">includes oidc.scopes in BFF mode</text>
 
-  <line class="arrow" x1="348" y1="182" x2="388" y2="182" marker-end="url(#arrow)"/>
-  <line class="arrow" x1="652" y1="182" x2="692" y2="182" marker-end="url(#arrow)"/>
+  <!-- Bearer shortfall -> 403 RFC 6750 -->
+  <line class="track" x1="520" y1="68" x2="584" y2="68" marker-end="url(#arrow)"/>
+  <text x="552" y="58" class="sub">shortfall</text>
+  <rect class="stroke" x="588" y="28" width="284" height="74" rx="6"/>
+  <text x="730" y="50"  class="stage">403 SCOPE_MISSING (Bearer)</text>
+  <text x="730" y="70"  class="mono">WWW-Authenticate: Bearer</text>
+  <text x="730" y="88"  class="mono">error="insufficient_scope", scope=…</text>
+
+  <!-- Bearer pass -> Stage 5 -->
+  <path class="track" d="M 520 132 L 908 132 L 908 150 L 932 150" marker-end="url(#arrow)"/>
+  <text x="730" y="124" class="mono">all neededScopes present</text>
+
+  <!-- ============================================================ -->
+  <!-- BOTTOM TRACK: Session (SessionAuthenticationStage)           -->
+  <!-- ============================================================ -->
+  <rect class="stroke" x="284" y="196" width="236" height="136" rx="6"/>
+  <text x="402" y="218" class="stage">Session · SessionAuthStage</text>
+  <text x="402" y="236" class="sub">BFF server (opaque handle) or</text>
+  <text x="402" y="252" class="sub">BFF cookie (AES-256-GCM cookie)</text>
+  <line class="dash" x1="300" y1="264" x2="504" y2="264"/>
+  <text x="402" y="282" class="mono">1. near-expiry refresh of A</text>
+  <text x="402" y="300" class="mono">2. missing = neededScopes \ A</text>
+  <text x="402" y="318" class="sub">no session on nav → 302 login</text>
+
+  <!-- Session branch 1: missing == empty -> Stage 5 -->
+  <path class="track" d="M 520 220 L 552 220 L 552 166 L 932 166" marker-end="url(#arrow)"/>
+  <text x="730" y="158" class="mono">missing = ∅ (no IdP call)</text>
+
+  <!-- Session branch 2: missing subset of granted S -> Scope-driven refresh -->
+  <line class="track" x1="520" y1="252" x2="584" y2="220" marker-end="url(#arrow)"/>
+  <rect class="stroke" x="588" y="180" width="284" height="76" rx="6"/>
+  <text x="730" y="202" class="stage">missing ⊆ S · Scope Refresh</text>
+  <text x="730" y="220" class="mono">TokenRefreshCoordinator: A ∪ missing</text>
+  <text x="730" y="238" class="sub">refresh on &amp; binding cookie current;</text>
+  <text x="730" y="250" class="sub">trims unreturned scopes from S</text>
+  <path class="track" d="M 872 218 L 908 218 L 908 196 L 932 196" marker-end="url(#arrow)"/>
+
+  <!-- Session branch 3: missing outside S -> Widening (302) or 403 -->
+  <line class="track" x1="520" y1="296" x2="584" y2="308" marker-end="url(#arrow)"/>
+  <rect class="stroke" x="588" y="270" width="284" height="84" rx="6"/>
+  <text x="730" y="292" class="stage">Outside S · Widening or 403</text>
+  <text x="730" y="310" class="mono">navigation → 302 PAR SessionWidening</text>
+  <text x="730" y="328" class="mono">other → 403 SCOPE_MISSING</text>
+  <text x="730" y="344" class="sub">body: missing_scopes (+ step_up_url)</text>
+
+  <!-- Stage 5 Convergence Box -->
+  <rect class="stroke" x="936" y="128" width="204" height="92" rx="6"/>
+  <text x="1038" y="152" class="stage">Stage 5 · ForwardPolicy</text>
+  <text x="1038" y="172" class="mono">Session route injects</text>
+  <text x="1038" y="190" class="mono">Authorization: Bearer</text>
+  <text x="1038" y="208" class="sub">unless token_relay: false</text>
+
+  <!-- Footer caption -->
+  <text x="580" y="378" class="caption">In server mode, widening merges and refreshes write via the updating-write seam (persist / persistReissuingCookie) so logout always wins.</text>
 </svg>

@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Route table matching order, verb gate, terminal actions and nearest-scope policy block resolution.
+  Route table matching order, verb gate, nearest-scope policy resolution and terminal action fan-out.
   theme-handling: A (theme-neutral)
-  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-flow.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 360"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 364"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
-  <title id="title">Route matching order, verb gate and nearest-scope policy block resolution</title>
-  <desc id="desc">A three-column block diagram. Column 1, the immutable route table: only routes of enabled endpoints enter; matching is exact match.path first (un-normalized, trailing slash significant), then path prefixes on a segment boundary longest first, ANDed with method, host and header matchers; the first matching candidate wins and no match is rejected 404 deny-by-default. Column 2: the allowed_methods verb gate rejects a method outside the effective set with 405 and an Allow header, rendered as the unrouted 404 while uniform_not_found is on; each route then has exactly one terminal action, upstream proxy, asset or redirect. Column 3: every policy block is one PolicyBlock descriptor resolved by the nearest declared scope in the order route, endpoint, anchor, gateway, with whole-block replacement; RouteTableBuilder and ConfigValidator share the descriptors and the request pipeline reads only the materialized result.</desc>
+  <title id="title">Route matching flow, verb gate, nearest-scope policy resolution and terminal action fan-out</title>
+  <desc id="desc">A left-to-right decision flow diagram. An inbound request with canonical path, Host, method and headers enters the static route table (populated from enabled endpoints only). Step 1 evaluates exact match.path candidates first (un-normalized, trailing slash significant, ANDed with method, host and header matchers); on a miss, Step 2 evaluates path-prefix candidates longest-first on a segment boundary. If no candidate matches, the request exits downward to 404 NO_ROUTE_MATCHED (deny-by-default). A matched route carries its boot-resolved PolicyBlock descriptors (nearest declared scope in route, endpoint, anchor, gateway wins with whole-block replacement) and enters Stage 2b VerbGateStage (allowed_methods); a disallowed method exits downward to 405 METHOD_NOT_ALLOWED + Allow (rendered as uniform 404 when uniform_not_found is on). Permitted requests proceed to one of three terminal actions: upstream proxy (base_url required), asset (directory or upstream), or redirect (301/302/307/308).</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -16,66 +16,106 @@
       <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
     </marker>
     <style>
-      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
-      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
-      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stage      { font-size: 13px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .mono       { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
-      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .track      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .dash       { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
       .arrow-fill { fill: #6e7681; }
-      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
     </style>
   </defs>
 
-  <text x="184" y="32" class="col-header">1 · Route Table</text>
-  <rect class="stroke" x="24" y="48" width="320" height="292" rx="6"/>
-  <text x="44" y="80" class="item-bold">Static, immutable table</text>
-  <text x="56" y="102" class="sub">enabled endpoints only; a disabled</text>
-  <text x="56" y="120" class="sub">endpoint's paths fall through to 404</text>
-  <line class="sep" x1="44" y1="132" x2="324" y2="132"/>
-  <text x="44" y="156" class="item-bold">Matching order (first wins)</text>
-  <text x="56" y="178" class="item">1. exact match.path</text>
-  <text x="56" y="198" class="sub">un-normalized; trailing slash counts</text>
-  <text x="56" y="216" class="item">2. path prefix, longest first</text>
-  <text x="56" y="236" class="sub">on a segment boundary</text>
-  <text x="56" y="254" class="item">AND method · host · header</text>
-  <line class="sep" x1="44" y1="268" x2="324" y2="268"/>
-  <text x="44" y="292" class="item-bold">No match → 404</text>
-  <text x="56" y="314" class="sub">deny-by-default; no rule language</text>
+  <!-- Step 0: Inbound Request -->
+  <rect class="stroke" x="20" y="96" width="168" height="100" rx="6"/>
+  <text x="104" y="120" class="stage">Inbound Request</text>
+  <text x="104" y="140" class="mono">canonical path · Host</text>
+  <text x="104" y="158" class="mono">method · headers</text>
+  <text x="104" y="178" class="sub">enabled endpoints only</text>
 
-  <text x="536" y="32" class="col-header">2 · Verb Gate &amp; Terminal Action</text>
-  <rect class="stroke" x="392" y="48" width="288" height="292" rx="6"/>
-  <text x="412" y="80" class="item-bold">allowed_methods (Stage 2b)</text>
-  <text x="424" y="102" class="sub">nearest declared list replaces broader</text>
-  <text x="424" y="120" class="sub">method outside set → 405 + Allow</text>
-  <text x="424" y="138" class="sub">uniform_not_found → unrouted 404</text>
-  <line class="sep" x1="412" y1="150" x2="660" y2="150"/>
-  <text x="412" y="174" class="item-bold">One terminal action per route</text>
-  <text x="424" y="196" class="item">upstream   (proxy)</text>
-  <text x="424" y="216" class="item">asset</text>
-  <text x="424" y="236" class="item">redirect</text>
-  <text x="424" y="256" class="sub">base_url only for proxy endpoints</text>
+  <line class="track" x1="188" y1="146" x2="224" y2="146" marker-end="url(#arrow)"/>
 
-  <text x="872" y="32" class="col-header">3 · Policy Block Resolution</text>
-  <rect class="stroke" x="728" y="48" width="288" height="292" rx="6"/>
-  <text x="748" y="80" class="item-bold">PolicyBlock descriptor</text>
-  <text x="760" y="102" class="sub">nearest declared scope wins;</text>
-  <text x="760" y="120" class="sub">whole-block replacement</text>
-  <line class="sep" x1="748" y1="132" x2="996" y2="132"/>
-  <text x="760" y="156" class="item">route      ← most specific</text>
-  <text x="760" y="176" class="item">endpoint</text>
-  <text x="760" y="196" class="item">anchor</text>
-  <text x="760" y="216" class="item">gateway    ← broadest</text>
-  <line class="sep" x1="748" y1="230" x2="996" y2="230"/>
-  <text x="760" y="254" class="sub">RouteTableBuilder + ConfigValidator</text>
-  <text x="760" y="272" class="sub">resolve via the same descriptors;</text>
-  <text x="760" y="290" class="sub">the pipeline reads the result only</text>
+  <!-- Step 1: Exact Match Candidates -->
+  <rect class="stroke" x="228" y="80" width="192" height="132" rx="6"/>
+  <text x="324" y="102" class="stage">1 · Exact Match First</text>
+  <text x="324" y="122" class="mono">exact match.path</text>
+  <text x="324" y="140" class="sub">un-normalized; trailing '/'</text>
+  <text x="324" y="156" class="sub">is significant</text>
+  <line class="dash" x1="244" y1="168" x2="404" y2="168"/>
+  <text x="324" y="186" class="mono">AND method · host · header</text>
+  <text x="324" y="202" class="sub">first candidate wins</text>
 
-  <line class="arrow" x1="348" y1="194" x2="388" y2="194" marker-end="url(#arrow)"/>
-  <text x="368" y="186" class="gut">route</text>
-  <line class="arrow" x1="684" y1="194" x2="724" y2="194" marker-end="url(#arrow)"/>
-  <text x="704" y="186" class="gut">policy</text>
+  <!-- Exact match hit bypasses prefix step along top track -->
+  <path class="track" d="M 324 80 L 324 44 L 680 44 L 680 126 L 700 126" marker-end="url(#arrow)"/>
+  <text x="502" y="34" class="mono">exact match hit</text>
+
+  <!-- Miss -> Step 2 Prefix Match -->
+  <line class="track" x1="420" y1="146" x2="464" y2="146" marker-end="url(#arrow)"/>
+  <text x="442" y="136" class="sub">miss</text>
+
+  <!-- Step 2: Prefix Match Candidates -->
+  <rect class="stroke" x="468" y="80" width="192" height="132" rx="6"/>
+  <text x="564" y="102" class="stage">2 · Prefix Match Next</text>
+  <text x="564" y="122" class="mono">longest prefix first</text>
+  <text x="564" y="140" class="sub">segment-boundary match</text>
+  <text x="564" y="156" class="sub">after all exact routes</text>
+  <line class="dash" x1="484" y1="168" x2="644" y2="168"/>
+  <text x="564" y="186" class="mono">AND method · host · header</text>
+  <text x="564" y="202" class="sub">first candidate wins</text>
+
+  <!-- Prefix hit -> Stage 2a & 2b -->
+  <line class="track" x1="660" y1="146" x2="700" y2="146" marker-end="url(#arrow)"/>
+  <text x="680" y="164" class="sub">hit</text>
+
+  <!-- Prefix miss -> 404 NO_ROUTE_MATCHED -->
+  <line class="track" x1="564" y1="212" x2="564" y2="256" marker-end="url(#arrow)"/>
+  <text x="598" y="238" class="sub">no match</text>
+  <rect class="stroke" x="456" y="260" width="216" height="64" rx="6"/>
+  <text x="564" y="284" class="stage">404 NO_ROUTE_MATCHED</text>
+  <text x="564" y="304" class="sub">deny-by-default · disabled endpoints</text>
+  <text x="564" y="318" class="sub">also fall through here</text>
+
+  <!-- Step 3: Stage 2a Policy Resolution + Stage 2b Verb Gate -->
+  <rect class="stroke" x="704" y="72" width="216" height="148" rx="6"/>
+  <text x="812" y="94"  class="stage">Stage 2a &amp; 2b · Route &amp; Verb</text>
+  <text x="812" y="114" class="mono">PolicyBlock (boot-resolved):</text>
+  <text x="812" y="132" class="mono">route → endpoint → anchor → gw</text>
+  <text x="812" y="148" class="sub">nearest scope replaces wholesale</text>
+  <line class="dash" x1="720" y1="160" x2="904" y2="160"/>
+  <text x="812" y="180" class="mono">VerbGateStage: allowed_methods</text>
+  <text x="812" y="198" class="sub">nearest scope replaces broader</text>
+  <text x="812" y="212" class="sub">Stage 2a swaps route sec-headers</text>
+
+  <!-- Verb gate reject -> 405 -->
+  <line class="track" x1="812" y1="220" x2="812" y2="256" marker-end="url(#arrow)"/>
+  <text x="858" y="240" class="sub">disallowed verb</text>
+  <rect class="stroke" x="700" y="260" width="224" height="64" rx="6"/>
+  <text x="812" y="284" class="stage">405 METHOD_NOT_ALLOWED</text>
+  <text x="812" y="304" class="mono">+ Allow header</text>
+  <text x="812" y="318" class="sub">rendered as 404 when uniform on</text>
+
+  <!-- Fan-out to 3 Terminal Actions -->
+  <line class="track" x1="920" y1="146" x2="946" y2="146"/>
+  <circle cx="950" cy="146" r="4" class="stroke"/>
+  <path class="track" d="M 950 142 L 950 76 L 976 76" marker-end="url(#arrow)"/>
+  <line class="track" x1="954" y1="146" x2="976" y2="146" marker-end="url(#arrow)"/>
+  <path class="track" d="M 950 150 L 950 216 L 976 216" marker-end="url(#arrow)"/>
+
+  <text x="1060" y="34" class="stage">Terminal Action (Stage 6)</text>
+
+  <rect class="stroke" x="980" y="48" width="160" height="56" rx="6"/>
+  <text x="1060" y="72" class="stage">upstream (proxy)</text>
+  <text x="1060" y="92" class="sub">base_url required</text>
+
+  <rect class="stroke" x="980" y="118" width="160" height="56" rx="6"/>
+  <text x="1060" y="142" class="stage">asset</text>
+  <text x="1060" y="162" class="sub">directory | upstream</text>
+
+  <rect class="stroke" x="980" y="188" width="160" height="56" rx="6"/>
+  <text x="1060" y="212" class="stage">redirect</text>
+  <text x="1060" y="232" class="sub">301 · 302 · 307 · 308</text>
+
+  <!-- Footer caption -->
+  <text x="580" y="348" class="caption">RouteTableBuilder and ConfigValidator share the PolicyBlock descriptors and the proxy base_url predicate at boot; the pipeline reads materialized state.</text>
 </svg>

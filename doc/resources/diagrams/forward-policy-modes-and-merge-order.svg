@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Forward policy: three modes per dimension, gateway-owned header sets and the fixed merge order.
+  ForwardPolicyStage (Stage 5) sequential 6-step outbound header merge pipeline
+  and independent query-parameter filtering.
   theme-handling: A (theme-neutral)
-  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-flow.md
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 408"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 348"
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
-  <title id="title">Forward policy modes, gateway-owned header sets and merge order</title>
-  <desc id="desc">A three-column block diagram. Column 1: headers and query parameters each resolve one of three modes: positive-list (headers_allow or query_allow, only named entries cross), negative-list (headers_deny or query_deny, everything except the named entries) or forward-all (neither list declared, the baseline); declaring both lists for one dimension is refused at boot. Column 2: three gateway-owned sets bound every mode: the request-direction never-forward set (separator-folded; Authorization re-admittable only by a positive list, TE only with value trailers), the gateway-understood protocol set that crosses without being named, and the regenerated forwarding headers whose client copies never cross; the browser Cookie belongs to the cookies policy instead. Column 3: ForwardPolicyStage merges six sources in order into a case-insensitive outbound header map, so later sources win: mode copy with never-forward strip, rebuilt Cookie, protocol set, static set_headers, regenerated forwarding headers, mediated session bearer.</desc>
+  <title id="title">ForwardPolicyStage six-step header merge pipeline and independent query filtering</title>
+  <desc id="desc">A two-track left-to-right flow diagram of Stage 5 (ForwardPolicyStage). The top track shows the sequential six-step merge into a case-insensitively keyed outbound header map where each step overwrites earlier keys: (1) Mode Copy minus Never-Forward (headers_allow, headers_deny, or forward-all baseline; strips separator-folded ConnectionHeaders.REQUEST_STRIP; Authorization re-admitted only by positive list, TE only when 'trailers'); (2) Rebuilt Cookie (from the route's cookies policy, GatewayCookies always stripped); (3) Protocol Set (Accept*, Content-Type, Range, If-Range, If-Match, If-Unmodified-Since, plus If-None-Match/If-Modified-Since gated by not_modified on GET/HEAD); (4) Static set_headers (operator configuration overwrites client input); (5) Regenerated Forwarding (X-Forwarded-* and opt-in RFC 7239 Forwarded from cui-http behind trusted_proxies); (6) Mediated Session Bearer (Authorization: Bearer from BFF session). The bottom track shows independent query parameter filtering (query_allow, query_deny, or forward-all; declaring both allow and deny on either dimension is refused at boot).</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -16,70 +17,113 @@
       <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
     </marker>
     <style>
-      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
-      .item-bold  { font-size: 12px; font-weight: 700; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .item       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
-      .sub        { font-size: 11px; fill: #6e7681; font-style: italic; }
-      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
-      .gut        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stage      { font-size: 13px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .mono       { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+      .sub        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
-      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .track      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .dash       { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
       .arrow-fill { fill: #6e7681; }
-      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
     </style>
   </defs>
 
-  <text x="172" y="32" class="col-header">Mode per Dimension</text>
-  <rect class="stroke" x="24" y="48" width="296" height="340" rx="6"/>
-  <text x="44" y="80" class="item-bold">Positive-list</text>
-  <text x="56" y="102" class="sub">headers_allow / query_allow</text>
-  <text x="56" y="120" class="sub">only the named entries cross</text>
-  <line class="sep" x1="44" y1="132" x2="300" y2="132"/>
-  <text x="44" y="156" class="item-bold">Negative-list</text>
-  <text x="56" y="178" class="sub">headers_deny / query_deny</text>
-  <text x="56" y="196" class="sub">all except the named entries</text>
-  <line class="sep" x1="44" y1="208" x2="300" y2="208"/>
-  <text x="44" y="232" class="item-bold">Forward-all (baseline)</text>
-  <text x="56" y="254" class="sub">neither list declared</text>
-  <text x="56" y="272" class="sub">every client entry crosses</text>
-  <line class="sep" x1="44" y1="284" x2="300" y2="284"/>
-  <text x="56" y="308" class="sub">headers and query resolve independently</text>
-  <text x="56" y="326" class="sub">both lists for one dimension:</text>
-  <text x="56" y="344" class="sub">refused at boot</text>
+  <!-- Section header -->
+  <text x="600" y="26" class="stage">Stage 5 · ForwardPolicyStage Sequential Merge (Case-Insensitive Map — Later Step Overwrites Earlier)</text>
 
-  <text x="536" y="32" class="col-header">Gateway-Owned Sets</text>
-  <rect class="stroke" x="360" y="48" width="352" height="340" rx="6"/>
-  <text x="380" y="80" class="item-bold">Never-forward (every mode)</text>
-  <text x="392" y="102" class="sub">separator-folded name match</text>
-  <text x="392" y="120" class="sub">Authorization: positive-list re-admit only</text>
-  <text x="392" y="138" class="sub">TE: only when value is exactly 'trailers'</text>
-  <line class="sep" x1="380" y1="150" x2="692" y2="150"/>
-  <text x="380" y="174" class="item-bold">Protocol set (crosses unnamed)</text>
-  <text x="392" y="196" class="sub">Accept*, Content-Type, Range, If-Range,</text>
-  <text x="392" y="214" class="sub">If-Match, If-Unmodified-Since</text>
-  <text x="392" y="232" class="sub">If-None-Match / If-Modified-Since:</text>
-  <text x="392" y="250" class="sub">gated by the route's not_modified</text>
-  <line class="sep" x1="380" y1="262" x2="692" y2="262"/>
-  <text x="380" y="286" class="item-bold">Regenerated forwarding headers</text>
-  <text x="392" y="308" class="sub">X-Forwarded-* (RFC 7239 opt-in)</text>
-  <text x="392" y="326" class="sub">client copies never cross</text>
-  <line class="sep" x1="380" y1="338" x2="692" y2="338"/>
-  <text x="392" y="362" class="sub">browser Cookie: rebuilt by cookies policy</text>
+  <!-- Step 1: Mode Copy - Never-Forward -->
+  <rect class="stroke" x="16" y="48" width="184" height="148" rx="6"/>
+  <text x="108" y="70"  class="stage">1 · Mode − Strip</text>
+  <text x="108" y="90"  class="mono">allow | deny | all</text>
+  <text x="108" y="108" class="sub">− REQUEST_STRIP</text>
+  <text x="108" y="124" class="sub">separator-folded (_ → -)</text>
+  <line class="dash" x1="30" y1="136" x2="186" y2="136"/>
+  <text x="108" y="154" class="mono">Authz: allow-list only</text>
+  <text x="108" y="170" class="mono">TE: 'trailers' only</text>
+  <text x="108" y="186" class="sub">Cookie skipped here</text>
 
-  <text x="884" y="32" class="col-header">Merge Order (ForwardPolicyStage)</text>
-  <rect class="stroke" x="752" y="48" width="264" height="340" rx="6"/>
-  <text x="784" y="80" class="item">1 mode copy − never-forward</text>
-  <text x="784" y="100" class="item">2 Cookie (cookies policy)</text>
-  <text x="784" y="120" class="item">3 protocol set</text>
-  <text x="784" y="140" class="item">4 operator set_headers</text>
-  <text x="784" y="160" class="item">5 regenerated forwarding</text>
-  <text x="784" y="180" class="item">6 mediated session bearer</text>
-  <line class="sep" x1="772" y1="194" x2="996" y2="194"/>
-  <text x="784" y="218" class="sub">case-insensitive keys; later wins:</text>
-  <text x="784" y="236" class="sub">operator beats client input,</text>
-  <text x="784" y="254" class="sub">gateway truth beats operator</text>
+  <line class="track" x1="200" y1="122" x2="220" y2="122" marker-end="url(#arrow)"/>
 
-  <line class="arrow" x1="324" y1="218" x2="356" y2="218" marker-end="url(#arrow)"/>
-  <line class="arrow" x1="716" y1="218" x2="748" y2="218" marker-end="url(#arrow)"/>
+  <!-- Step 2: Rebuilt Cookie -->
+  <rect class="stroke" x="224" y="48" width="164" height="148" rx="6"/>
+  <text x="306" y="70"  class="stage">2 · Cookie Rebuild</text>
+  <text x="306" y="90"  class="mono">cookies policy:</text>
+  <text x="306" y="108" class="mono">none | list | all</text>
+  <line class="dash" x1="238" y1="122" x2="374" y2="122"/>
+  <text x="306" y="142" class="sub">drops GatewayCookies</text>
+  <text x="306" y="158" class="sub">(__Host-sheriff-* &amp;</text>
+  <text x="306" y="174" class="sub">session cookies)</text>
+
+  <line class="track" x1="388" y1="122" x2="408" y2="122" marker-end="url(#arrow)"/>
+
+  <!-- Step 3: Protocol Set -->
+  <rect class="stroke" x="412" y="48" width="184" height="148" rx="6"/>
+  <text x="504" y="70"  class="stage">3 · Protocol Set</text>
+  <text x="504" y="90"  class="mono">Accept* · Content-Type</text>
+  <text x="504" y="108" class="mono">Range · If-Range</text>
+  <text x="504" y="126" class="mono">If-Match · If-Unmod</text>
+  <line class="dash" x1="426" y1="138" x2="582" y2="138"/>
+  <text x="504" y="156" class="mono">If-None-Match / Mod:</text>
+  <text x="504" y="172" class="sub">gated by not_modified</text>
+  <text x="504" y="188" class="sub">respects headers_deny</text>
+
+  <line class="track" x1="596" y1="122" x2="616" y2="122" marker-end="url(#arrow)"/>
+
+  <!-- Step 4: Operator Static set_headers -->
+  <rect class="stroke" x="620" y="48" width="164" height="148" rx="6"/>
+  <text x="702" y="70"  class="stage">4 · Static Headers</text>
+  <text x="702" y="92"  class="mono">set_headers</text>
+  <line class="dash" x1="634" y1="108" x2="770" y2="108"/>
+  <text x="702" y="130" class="sub">operator config</text>
+  <text x="702" y="148" class="sub">overwrites any client</text>
+  <text x="702" y="166" class="sub">or protocol header</text>
+
+  <line class="track" x1="784" y1="122" x2="804" y2="122" marker-end="url(#arrow)"/>
+
+  <!-- Step 5: Regenerated Forwarding Headers -->
+  <rect class="stroke" x="808" y="48" width="180" height="148" rx="6"/>
+  <text x="898" y="70"  class="stage">5 · Forwarding Truth</text>
+  <text x="898" y="90"  class="mono">X-Forwarded-*</text>
+  <text x="898" y="108" class="mono">+ Forwarded (opt-in)</text>
+  <line class="dash" x1="822" y1="122" x2="974" y2="122"/>
+  <text x="898" y="142" class="sub">cui-http sanitized via</text>
+  <text x="898" y="158" class="sub">trusted_proxies;</text>
+  <text x="898" y="174" class="sub">client copies stripped</text>
+
+  <line class="track" x1="988" y1="122" x2="1008" y2="122" marker-end="url(#arrow)"/>
+
+  <!-- Step 6: Mediated Session Bearer -->
+  <rect class="stroke" x="1012" y="48" width="172" height="148" rx="6"/>
+  <text x="1098" y="70"  class="stage">6 · Session Bearer</text>
+  <text x="1098" y="90"  class="mono">Authorization:</text>
+  <text x="1098" y="108" class="mono">Bearer &lt;token&gt;</text>
+  <line class="dash" x1="1026" y1="122" x2="1170" y2="122"/>
+  <text x="1098" y="142" class="sub">BFF mediated session</text>
+  <text x="1098" y="158" class="sub">always wins last over</text>
+  <text x="1098" y="174" class="sub">re-admitted client Authz</text>
+
+  <!-- Parallel Bottom Track: Query Parameter Filtering + Boot Invariant -->
+  <line class="dash" x1="16" y1="216" x2="1184" y2="216"/>
+
+  <rect class="stroke" x="16" y="232" width="372" height="72" rx="6"/>
+  <text x="202" y="254" class="stage">Independent Query Parameter Filtering</text>
+  <text x="202" y="274" class="mono">query_allow | query_deny | forward-all</text>
+  <text x="202" y="292" class="sub">resolved independently; baseline forwards all</text>
+
+  <line class="track" x1="388" y1="268" x2="436" y2="268" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="440" y="232" width="356" height="72" rx="6"/>
+  <text x="618" y="254" class="stage">Boot Exclusivity Guard (ConfigValidator)</text>
+  <text x="618" y="274" class="mono">headers_allow + headers_deny → refused at boot</text>
+  <text x="618" y="292" class="mono">query_allow + query_deny     → refused at boot</text>
+
+  <line class="track" x1="796" y1="268" x2="844" y2="268" marker-end="url(#arrow)"/>
+
+  <rect class="stroke" x="848" y="232" width="336" height="72" rx="6"/>
+  <text x="1016" y="254" class="stage">Outbound Upstream Request</text>
+  <text x="1016" y="274" class="mono">sanitized headers + filtered query</text>
+  <text x="1016" y="292" class="sub">dispatched to HTTP, GraphQL, gRPC or WS</text>
+
+  <!-- Footer caption -->
+  <text x="600" y="330" class="caption">Precedence law: operator configuration (step 4) beats client input (steps 1–3); gateway transport &amp; identity truth (steps 5–6) beats operator configuration.</text>
 </svg>
