@@ -80,6 +80,16 @@ dropped and reported, not acted on.
    - the `@return` wording of `GatewayCookies.setCookieName`;
    - the BFF-2 heading in `doc/quality-report/`.
 
+   Also fix the four `PLAN-V02-53` (#565) code-review advisories, folded 2026-11-05 (see `landings/PLAN-V02-53.md`):
+   - the `PathSlashes` class Javadoc and `http/package-info.java` overstate its reach, because `UpstreamAssetSource.upstreamUri` still
+     trims one slash itself. Migrate that site to `PathSlashes`, or correct both docs;
+   - the `LocationPathReview` Javadoc says every reader uses `pathPortion`. `LocationRewriter`, the absolute branch of `sameOrigin` and
+     `PortalRules` do not;
+   - `ReturnTargetScopes` keeps a second, unreachable copy of the encoded-separator and dot-segment checks behind `sameOrigin`. Remove it
+     (pre-1.0), keeping a test that proves `sameOrigin` still refuses those inputs.
+
+   #565 already rewrote the reader list in `http/package-info.java`, so re-check that V02-23 item before acting on it.
+
    Fix each one that still holds, and drop the rest with a one-line reason in the PR. Retires that Watch.
 8. **The `PLAN-V02-49` advisories and the `DispatchStage` question.**
    - `ConfigFixtures.anchoredEndpointSeed`: its Javadoc says anchor where endpoint is meant.
@@ -101,6 +111,11 @@ dropped and reported, not acted on.
    - `doc/quality-report/build-and-peripherals.adoc:166` says "All seven gateway instances". Count the instances and correct the number.
    - `demo-client/scripts/start-dev-environment.sh` lines 244–260 use the literal `120` four times for the Keycloak wait. ADR-0031 requires
      one named constant.
+
+   - `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/rule/TerminalActionRulesRedirectTest.java` is not in
+     the pre-commit formatter's stable layout: the gate rewrites a blank import-separator line on every run. It arrived unformatted
+     with #561 (the re-hosted fork commits), and `PLAN-V02-53` reverted the rewrite six times. Commit the formatter's version, the one
+     file only. Any OTHER file the gate rewrites stays reverted, as before.
 
    Retires "LOW-BUDGET FIXTURE HEADER" and "`PLAN-V02-21` DOCUMENTATION LEFTOVERS".
 
@@ -173,22 +188,27 @@ in the landing and leave its Watch open.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/package-info.java`,
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/GatewayCookies.java`,
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java`, `doc/quality-report/*.adoc` (D7)
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/PathSlashes.java`,
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/LocationPathReview.java`,
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/asset/UpstreamAssetSource.java`,
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/ReturnTargetScopes.java` and its test (D7, folded from #565)
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/testsupport/ConfigFixtures.java`,
   `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/topology/TopologyResolverTest.java`,
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/PortalConfig.java`,
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/terminal/TerminalDispatch.java`,
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java`, `doc/quality-report/test-quality.adoc` (D8)
 - OBSERVED: `integration-tests/src/main/docker/sheriff-config-ws-admission/gateway.yaml`,
-  `doc/quality-report/build-and-peripherals.adoc`, `demo-client/scripts/start-dev-environment.sh` (D9)
+  `doc/quality-report/build-and-peripherals.adoc`, `demo-client/scripts/start-dev-environment.sh`,
+  `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/rule/TerminalActionRulesRedirectTest.java` (D9)
 
 ## Dependencies and Sequencing
 
-- **Depends on `PLAN-V02-53` merged.** That plan edits these files:
+- **Depends on `PLAN-V02-53`: merged as #565 (`7a5d52ad`) on 2026-11-05, so this dependency is met.** That plan edits these files:
   - `ConfigValidator`, `RouteTableBuilder`, `DispatchStage`, `ForwardingRules` (a `RuleSupport.endpointFile` caller),
     `doc/configuration.adoc`, `doc/security-threat-model.adoc`, `endpoint.schema.json`;
   - the `integration-tests/` fixtures and ITs.
 
-  This plan edits nine of them, so it starts from `main` at or after V02-53's merge commit and re-reads them. It must not run beside V02-53.
+  This plan edits nine of them, so it starts from `main` at or after `7a5d52ad` and re-reads them.
 - D1 depends on `PLAN-V02-12` D1 (back-channel origin, #492), `PLAN-V02-23` (cookie policy, #515) and `PLAN-V02-15` (BFF sample and
   login proof, #516). All three are merged.
 - Next free ADR ordinal at staging: `0080`. Derive it at write time and again against `origin/main` before the push, if any ADR is written.

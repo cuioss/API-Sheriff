@@ -7,11 +7,12 @@ pr: #558 (https://github.com/cuioss/API-Sheriff/pull/558), merged through the me
 > Written 2026-11-04 by `analyze` (inbox drain, message `plan-v02-55-it-concurrency-and-local-image-hazard-001.md`,
 > `landing-check` complete: true). Every figure below was re-read by the orchestrator, not copied from the message.
 
-## Verdict: partly verified
+## Verdict: verified (settled 2026-11-05)
 
-The spec's verdict rule asks for (a) to (d) on every shipped deliverable. (a), (b) and (d) hold. (c) **is not settled yet**: it needs
-at least two `main` Integration Tests runs after the merge head, and the only `main` commit after `d70d2f16` so far is `c6d4cf71`, a
-ledger-only commit (#560). Re-read the archive once two later `main` runs exist (Watch in `epic.md`).
+(a) to (d) hold on every shipped deliverable. (c) was settled on 2026-11-05 by the two `main` Integration Tests runs after `d70d2f16`:
+`954d7d88` (run `41984810982`, archive `integration-tests-2026-11-05-0726-3130`, 382 completed, 0 failures) and `7a5d52ad` (run
+`42088184509`, archive `integration-tests-2026-11-05-1909-0550`, 385 completed, 0 failures). The five moved classes and the control pass
+on both, inside their baselines; the per-class times are in `landings/PLAN-V02-53.md` § Orchestrator verification.
 
 ## Deliverable Fidelity vs Spec
 
@@ -42,8 +43,8 @@ Source: `cuioss/cuioss.github.io`, `api-sheriff/integration-tests-2026-11-02-173
 finding under (b). The spec ruled the workflow duration out as evidence, and no gain or loss is read from it here.
 
 - (a) **holds.** All five moved classes carry `@Tag("sleep-bound")` at `d70d2f16`, and the pom comment was updated.
-- (b) **holds for the merge-head run.** The two later runs the spec also names do not exist yet.
-- (c) **open.** See the verdict above.
+- (b) **holds** for the merge-head run and both later `main` runs (2026-11-05).
+- (c) **holds** (settled 2026-11-05, see the verdict above).
 - (d) **holds.** D2(a) was not chosen. For D4, the changed build steps are in the pom.
 
 ## Metrics and Anomalies
