@@ -87,6 +87,11 @@ public class RuleSupport {
 
     /**
      * The file name every refusal of an endpoint-file key is reported against.
+     * <p>
+     * Derived from the id rather than carried from the load, because a bound {@link EndpointConfig}
+     * holds no source path. The derivation is exact, not a guess: {@code ConfigLoader} refuses an
+     * endpoint whose {@code id} differs from its file name and drops it before any rule runs, so every
+     * endpoint a rule sees was loaded from {@code endpoints/<id>.yaml} — the file this names.
      *
      * @param endpoint the endpoint whose file is named
      * @return the endpoint file, relative to the configuration root

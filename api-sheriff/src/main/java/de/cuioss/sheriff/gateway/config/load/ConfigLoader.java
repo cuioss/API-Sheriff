@@ -120,6 +120,7 @@ public final class ConfigLoader {
     private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String ENDPOINTS_DIR = "endpoints";
     private static final String ENDPOINT_ROOT = "endpoint";
+    private static final String ENDPOINT_ID_POINTER = "/endpoint/id";
     private static final String ENABLED_FIELD = "enabled";
     private static final String ANCHORS_FIELD = "anchors";
     private static final String NAME_FIELD = "name";
@@ -336,7 +337,45 @@ public final class ConfigLoader {
         }
         JsonNode block = root.get(ENDPOINT_ROOT);
         applyEnabledDefault(block);
-        return bind(block, EndpointConfig.class, file, errors);
+        EndpointConfig endpoint = bind(block, EndpointConfig.class, file, errors);
+        if (endpoint == null || !declaresIdOfItsFile(endpoint, path, file, errors)) {
+            return null;
+        }
+        return endpoint;
+    }
+
+    /**
+     * Holds an endpoint to the name-equals-id rule: the file {@code endpoints/<id>.yaml} declares the
+     * endpoint whose {@code id} is {@code <id>}, and no other.
+     * <p>
+     * Every boot-validation rule reports an endpoint's violations against the file named after its id
+     * ({@code RuleSupport.endpointFile} in the validation rules), because the bound {@link EndpointConfig} carries no source
+     * path. Refusing a mismatch here, where the actual file is still known, is what makes that name
+     * the file actually loaded: an operator who renamed {@code legacy.yaml}'s id to {@code redirects}
+     * would otherwise be pointed at an {@code endpoints/redirects.yaml} that does not exist. The
+     * refusal is reported against the file actually loaded, names both values and the rename that
+     * fixes it, and drops the endpoint so no later rule reports against the wrong name.
+     * <p>
+     * Neither echoed value can carry a secret or forge a log line: the id has already passed the
+     * endpoint schema, whose {@code ^[a-z][a-z0-9-]*$} pattern admits no control character, and the
+     * stem is the name of the file the error is already reported against.
+     *
+     * @return {@code true} when the declared id equals the file stem; otherwise {@code false}, with one
+     *         {@link ConfigError} recorded against {@code file}
+     */
+    private static boolean declaresIdOfItsFile(EndpointConfig endpoint, Path path, String file,
+            List<ConfigError> errors) {
+        String fileName = path.getFileName().toString();
+        String stem = fileName.substring(0, fileName.length() - YAML_EXTENSION.length());
+        String id = endpoint.id();
+        if (stem.equals(id)) {
+            return true;
+        }
+        errors.add(new ConfigError(file, ENDPOINT_ID_POINTER,
+                ("endpoint id '%s' differs from its file name '%s': an endpoint file is named after the id "
+                        + "it declares — rename the file to endpoints/%s.yaml, or set the id to '%s'")
+                        .formatted(id, stem, id, stem)));
+        return false;
     }
 
     private List<Path> listEndpointFiles(List<ConfigError> errors) {

@@ -2794,6 +2794,66 @@ class ConfigLoaderTest {
                 () -> "a stray '.yml' endpoint file must fail the boot, got: " + exception.errors());
     }
 
+    /**
+     * An endpoint file must declare the {@code id} it is named after. The validation rules report an
+     * endpoint's violations against {@code endpoints/<id>.yaml}, so a file whose id differs would send
+     * the operator to a file that does not exist; the loader refuses it against the file it actually
+     * read. Exactly one error, so the mismatch is not also reported under the derived name.
+     */
+    @Test
+    void refusesAnEndpointFileWhoseIdDiffersFromItsName() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/legacy.yaml", """
+                endpoint:
+                  id: redirects
+                  auth:
+                    require: none
+                  routes:
+                    - id: redirects-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: 307
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+        List<ConfigError> errors = exception.errors();
+        assertEquals(1, errors.size(), () -> "expected exactly one error, got: " + errors);
+        ConfigError error = errors.getFirst();
+        assertAll("the refusal names the file actually loaded, both values and the fix",
+                () -> assertEquals("endpoints/legacy.yaml", error.file()),
+                () -> assertEquals("/endpoint/id", error.pointer()),
+                () -> assertTrue(error.message().contains("'redirects'"), error::message),
+                () -> assertTrue(error.message().contains("'legacy'"), error::message),
+                () -> assertTrue(error.message().contains("endpoints/redirects.yaml"), error::message));
+    }
+
+    /** Control: the same endpoint under its own name loads, so the refusal above is the name alone. */
+    @Test
+    void loadsAnEndpointFileNamedAfterItsId() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/redirects.yaml", """
+                endpoint:
+                  id: redirects
+                  auth:
+                    require: none
+                  routes:
+                    - id: redirects-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: 307
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
+
+        assertEquals(List.of("redirects"), loaded.endpoints().stream().map(EndpointConfig::id).toList());
+    }
+
     @Test
     void bindingOrSchemaErrorNeverEchoesResolvedSecret() throws Exception {
         writeConfig("gateway.yaml", """
@@ -3197,9 +3257,14 @@ class ConfigLoaderTest {
                     default_return_url: "/app/${TAB:-%s}"
                 """;
 
-        private static final String ENDPOINT_WITH_DEFAULTED_ID = """
+        /**
+         * The endpoint-side default sits in the redirect target, not in the {@code id}: an endpoint's
+         * id must equal its file name, so a defaulted id would put the default literal into the file
+         * name every recorded entry carries — which is exactly what these tests assert never happens.
+         */
+        private static final String ENDPOINT_WITH_DEFAULTED_LOCATION = """
                 endpoint:
-                  id: "${ENDPOINT_ID:-%s}"
+                  id: home
                   auth:
                     require: none
                   routes:
@@ -3207,7 +3272,7 @@ class ConfigLoaderTest {
                       match:
                         path: /home
                       redirect:
-                        location: /home/
+                        location: "/home/${PAGE:-%s}"
                         status: 302
                 """;
 
@@ -3248,18 +3313,20 @@ class ConfigLoaderTest {
             String gatewayDefault = sentinel();
             String endpointDefault = sentinel();
             writeConfig("gateway.yaml", GATEWAY_WITH_DEFAULTED_RETURN_URL.formatted(gatewayDefault));
-            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_ID.formatted(endpointDefault));
+            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_LOCATION.formatted(endpointDefault));
             List<DefaultedPlaceholder> defaulted = new ArrayList<>();
 
             ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(defaulted::add);
 
             assertEquals(List.of(
                             new DefaultedPlaceholder("gateway.yaml", "/oidc/login/default_return_url", "TAB"),
-                            new DefaultedPlaceholder("endpoints/home.yaml", "/endpoint/id", "ENDPOINT_ID")),
+                            new DefaultedPlaceholder("endpoints/home.yaml",
+                                    "/endpoint/routes/0/redirect/location", "PAGE")),
                     defaulted);
             assertAll("the defaults were applied, yet no recorded field carries them",
                     () -> assertEquals("/app/" + gatewayDefault, loaded.gateway().oidc().login().defaultReturnUrl()),
-                    () -> assertEquals(endpointDefault, loaded.endpoints().getFirst().id()),
+                    () -> assertEquals("/home/" + endpointDefault,
+                            loaded.endpoints().getFirst().routes().getFirst().redirect().location()),
                     () -> assertTrue(defaulted.stream().noneMatch(entry -> entry.toString().contains(gatewayDefault)
                                     || entry.toString().contains(endpointDefault)),
                             () -> "a default literal reached a recorded field: " + defaulted));
@@ -3268,10 +3335,10 @@ class ConfigLoaderTest {
         @Test
         void setVariablesProduceNoDefaultedEntry() throws Exception {
             writeConfig("gateway.yaml", GATEWAY_WITH_DEFAULTED_RETURN_URL.formatted(sentinel()));
-            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_ID.formatted(sentinel()));
+            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_LOCATION.formatted(sentinel()));
             List<DefaultedPlaceholder> defaulted = new ArrayList<>();
 
-            loader(Map.of("TAB", "overview", "ENDPOINT_ID", "home")).load(defaulted::add);
+            loader(Map.of("TAB", "overview", "PAGE", "start")).load(defaulted::add);
 
             assertTrue(defaulted.isEmpty(), () -> "no default applied, but got " + defaulted);
         }
@@ -3298,7 +3365,7 @@ class ConfigLoaderTest {
         @Test
         void loadWithoutSinkReturnsTheSameConfiguration() throws Exception {
             writeConfig("gateway.yaml", GATEWAY_WITH_DEFAULTED_RETURN_URL.formatted(sentinel()));
-            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_ID.formatted(sentinel()));
+            writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_LOCATION.formatted(sentinel()));
             ConfigLoader loader = loader(Map.of());
 
             ConfigLoader.LoadedConfig withoutSink = loader.load(IGNORE_DEFAULTED);

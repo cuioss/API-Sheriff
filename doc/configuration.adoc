@@ -85,8 +85,16 @@ config/
 The configuration directory is selected by the `sheriff.config.dir` property (a Quarkus
 configuration property; default `config`). Under it, `gateway.yaml` and `topology.properties`
 are read by exact name, and every *`.yaml`* file directly under `endpoints/` is loaded as an
-endpoint file in filename-sorted order -- files with any other extension, and nested
-subdirectories, are ignored.
+endpoint file in filename-sorted order. A `.yml` file there *fails the boot* with a request to
+rename it to `.yaml`; files with any other extension, and nested subdirectories, are ignored.
+
+*An endpoint file is named after the `id` it declares*: `endpoints/<id>.yaml` holds the endpoint
+whose `endpoint.id` is `<id>`, and no other. A file whose declared `id` differs from its file name
+*fails the boot* -- and the offline check (link:user/offline-config-validation.adoc[`--validate-config`]) --
+with one error reported against the file actually loaded, at `/endpoint/id`, naming both values
+and the rename that fixes it. The rule is what lets every later configuration error name the file
+it concerns: those errors are reported against `endpoints/<id>.yaml`, which therefore is always
+the file that was read.
 
 == Loading, Resolution and Validation
 
