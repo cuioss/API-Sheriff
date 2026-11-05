@@ -33,6 +33,7 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -52,9 +53,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Tests for the OIDC session rules the {@link ConfigValidator} runs through {@link OidcSessionRules}:
  * the {@code oidc.session.mode} store requirement and its server-mode {@code key_file} refusal, the
  * {@code max_sessions},
- * {@code max_sessions_per_subject}, {@code idle_timeout_seconds} and {@code max_cookie_size} ranges, the
- * browser-guarantee warning on the derived session {@code Set-Cookie} header, and the
- * {@code cookie_name} refusal.
+ * {@code max_sessions_per_subject}, {@code idle_timeout_seconds}, {@code max_cookie_size} and
+ * {@code max_cookie_header_value_length} ranges, the browser-guarantee warning on the derived session
+ * {@code Set-Cookie} header, and the {@code cookie_name} refusal.
  * <p>
  * Every case except the empty-rule-set control {@code shouldAttributeTheRefusalToTheRule} drives the full
  * default validator, so a rule dropped from its registration fails here as surely as a rule whose body is
@@ -136,6 +137,115 @@ class OidcSessionRulesTest {
                             "an omitted key leaves cookie mode as it was"),
                     () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, null, 1),
                             "control: the same value is accepted in server mode"));
+        }
+    }
+
+    /**
+     * The server-mode {@code Cookie} header-value cap: a declared
+     * {@code oidc.session.max_cookie_header_value_length} must lie between the resolved baseline
+     * {@code max_header_value_length} and {@code 8192}, and is refused outside server session mode.
+     * <p>
+     * Every number is a literal on purpose — 1024 is the {@code strict} preset's header-value cap, 8192
+     * the {@code lenient} one's and the key's ceiling — so a rule that drifted onto a different bound
+     * turns a row red rather than moving with it.
+     */
+    @Nested
+    @DisplayName("oidc.session.max_cookie_header_value_length — its range, and its refusal outside server mode")
+    class SessionMaxCookieHeaderValueLength {
+
+        private static final String POINTER = "/oidc/session/max_cookie_header_value_length";
+
+        private List<ConfigError> refusals(@Nullable String mode, String profile, @Nullable Integer declared) {
+            GatewayConfig gateway = validGateway()
+                    .securityDefaults(SecurityDefaultsConfig.builder().profile(profile).build())
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder().mode(mode).store("memory")
+                                    .maxCookieHeaderValueLength(declared).build())
+                            .build())
+                    .build();
+            return validator.validate(gateway, List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        @ParameterizedTest(name = "max_cookie_header_value_length = {0} is accepted on a strict server-mode BFF")
+        @ValueSource(ints = {1024, 1650, 2048, 8192})
+        @DisplayName("Should accept a cap from the strict baseline up to the ceiling")
+        void shouldAcceptCapInsideTheRange(int declared) {
+            assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, "strict", declared));
+        }
+
+        @Test
+        @DisplayName("Should accept an omitted key in every mode (the secure default)")
+        void shouldAcceptAnOmittedKey() {
+            assertAll("an omitted key is never refused",
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, "strict", null)),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_COOKIE, "strict", null)),
+                    () -> assertEquals(List.of(), refusals(null, "strict", null)));
+        }
+
+        @Test
+        @DisplayName("Should refuse a cap below the resolved strict baseline, which would tighten instead of relax")
+        void shouldRefuseCapBelowTheStrictBaseline() {
+            List<ConfigError> below = refusals(OidcConfig.Session.MODE_SERVER, "strict", 1023);
+
+            assertEquals(1, below.size(), () -> "exactly one refusal at the key, got: " + below);
+            assertTrue(below.getFirst().message().contains(
+                            "max_cookie_header_value_length 1023 is below the resolved baseline max_header_value_length 1024"),
+                    () -> below.getFirst().message());
+        }
+
+        @Test
+        @DisplayName("Should compare against the RESOLVED baseline, so a lenient gateway refuses what a strict one accepts")
+        void shouldRefuseCapBelowTheLenientBaseline() {
+            assertAll("the same declared value under two profiles",
+                    () -> assertEquals(1, refusals(OidcConfig.Session.MODE_SERVER, "lenient", 2048).size(),
+                            "2048 sits below the lenient baseline of 8192"),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, "lenient", 8192),
+                            "control: the lenient baseline itself is accepted"));
+        }
+
+        @ParameterizedTest(name = "max_cookie_header_value_length = {0} is refused")
+        @ValueSource(ints = {8193, 16_384, Integer.MAX_VALUE})
+        @DisplayName("Should refuse a cap above the 8192 ceiling")
+        void shouldRefuseCapAboveTheCeiling(int declared) {
+            List<ConfigError> above = refusals(OidcConfig.Session.MODE_SERVER, "strict", declared);
+
+            assertEquals(1, above.size(), () -> "exactly one refusal at the key, got: " + above);
+            assertTrue(above.getFirst().message().contains("exceeds the ceiling 8192"),
+                    () -> above.getFirst().message());
+        }
+
+        @Test
+        @DisplayName("Should refuse the key in cookie mode, where max_cookie_size already derives the Cookie cap")
+        void shouldRefuseTheKeyInCookieMode() {
+            List<ConfigError> cookieMode = refusals(OidcConfig.Session.MODE_COOKIE, "strict", 2048);
+
+            assertEquals(1, cookieMode.size(), () -> "exactly one refusal at the key, got: " + cookieMode);
+            assertTrue(cookieMode.getFirst().message().contains("only in server session mode"),
+                    () -> cookieMode.getFirst().message());
+        }
+
+        @ParameterizedTest(name = "session.mode = ''{0}''")
+        @ValueSource(strings = {"", "bearer-only"})
+        @DisplayName("Should refuse the key when no recognised session mode makes the gateway a BFF")
+        void shouldRefuseTheKeyWithoutAServerModeBff(String mode) {
+            assertEquals(1, refusals(mode, "strict", 2048).size(),
+                    "a gateway that is no server-mode BFF never reads the key");
+        }
+
+        @Test
+        @DisplayName("Should record no refusal once the rule is absent from the rule set (the rule is what refuses)")
+        void shouldAttributeTheRefusalToTheRule() {
+            GatewayConfig gateway = validGateway().oidc(OidcConfig.builder()
+                    .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE)
+                            .maxCookieHeaderValueLength(1).build())
+                    .build()).build();
+
+            List<ConfigError> withoutAnyRule = new ConfigValidator(List.of()).validate(gateway, List.of(), topologyWith());
+
+            assertEquals(List.of(), withoutAnyRule,
+                    "control: the model itself refuses nothing, so the refusals above are the validator rule's");
         }
     }
 

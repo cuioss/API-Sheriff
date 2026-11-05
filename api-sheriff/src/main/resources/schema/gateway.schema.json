@@ -612,6 +612,12 @@
             "max_cookie_size": {
               "type": "integer",
               "description": "Cookie-mode sealed cookie-value size budget in bytes; valid range 40..8192, defaulting to 4019 when omitted — the browser-safe value budget, being the ~4096 bytes RFC 6265 6.1 guarantees per whole Set-Cookie header less the 77 bytes the default cookie name and attributes wrap around the value. This is the ONE declared number driving both ends of the round trip — the seal-time budget and the gateway's pre-route Cookie header-value cap — so the two can never contradict each other. The bounds are stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no minimum, maximum or default keyword is declared."
+            },
+            "max_cookie_header_value_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8192,
+              "description": "Server-mode pre-route cap on the length of an inbound Cookie header value, in characters. It exists for a server-mode BFF that carries a third party's cookies through the gateway — typically an identity provider it fronts, whose own cookies (Keycloak's KC_RESTART measures about 1650 characters) outgrow the strict profile's 1024-character header-value cap and would otherwise be rejected 400 before route selection. It raises the cap for Cookie (and an inbound Set-Cookie) values only: every other header keeps the resolved security_defaults baseline, and every non-length check (null byte, control character, injection pattern) still applies to the cookie value. The effective cap is the larger of the baseline and this value. Omitted means no Cookie carve-out: Cookie values are measured at the baseline like every other header. The cap applies gateway-wide, because the check runs before route selection. Must be at least the resolved baseline max_header_value_length (1024 under strict, 8192 under lenient) and at most 8192, the lenient profile's own cap; a value outside that range is refused at boot. Refused at boot outside session mode server: cookie mode derives its Cookie cap from max_cookie_size, and a gateway that is no server-mode BFF never reads the key."
             }
           }
         },

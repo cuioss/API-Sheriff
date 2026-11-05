@@ -30,17 +30,19 @@ import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.tools.logging.CuiLogger;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
  * The boot-time {@link ValidationRule}s that judge the {@code oidc.session} block: the session mode
- * and its companions, the bounds on the session store, the idle timeout, the sealed-cookie size budget
- * and the session cookie's name.
+ * and its companions, the bounds on the session store, the idle timeout, the sealed-cookie size budget,
+ * the server-mode {@code Cookie} header-value cap and the session cookie's name.
  * <p>
  * The mode rule ({@link #validateSessionMode}) requires a {@code store} in {@code server} mode and
  * refuses the cookie-mode {@code key_file} there. The
@@ -55,7 +57,10 @@ import org.jspecify.annotations.Nullable;
  * {@code Set-Cookie} header the effective budget produces outgrows the browser guarantee — the only
  * warning, never a refusal, this class issues. The cookie-name rule ({@link #validateSessionCookieName})
  * holds a declared {@code cookie_name} to the {@code __Host-} guarantee, to an RFC 9110 token, and to a
- * name distinct from the gateway-owned cookies.
+ * name distinct from the gateway-owned cookies. The server-mode cookie-cap rule
+ * ({@link #validateSessionMaxCookieHeaderValueLength}) holds {@code max_cookie_header_value_length} to
+ * server mode and to the range from the resolved header-value baseline up to
+ * {@link OidcConfig.Session#MAX_COOKIE_HEADER_VALUE_LENGTH_CEILING}.
  * <p>
  * Each bound is compared against the value the runtime producer resolves for the key it depends on, so
  * validation reasons about the session the gateway will actually run. Every rule appends file- and
@@ -77,6 +82,8 @@ public class OidcSessionRules {
             "/oidc/session/max_sessions_per_subject";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
     private static final String OIDC_SESSION_KEY_FILE_POINTER = "/oidc/session/key_file";
+    private static final String OIDC_SESSION_MAX_COOKIE_HEADER_VALUE_LENGTH_POINTER =
+            "/oidc/session/max_cookie_header_value_length";
 
     /**
      * The cookie-name prefix every gateway-owned cookie carries. A browser honours a
@@ -351,6 +358,68 @@ public class OidcSessionRules {
             LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, effectiveBudget,
                     headerBytes,
                     SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE - overhead);
+        }
+    }
+
+    /**
+     * Rule: the server-mode pre-route {@code Cookie} header-value cap. A <em>declared</em>
+     * {@code oidc.session.max_cookie_header_value_length} is refused
+     * <ol>
+     * <li>outside {@code session.mode: server}. Cookie mode derives its {@code Cookie} cap from
+     * {@code max_cookie_size}, the one number that also bounds the sealed value, so a second source
+     * there would let the two disagree; and a gateway that is no server-mode BFF never reads the key,
+     * so it would parse and do nothing — the shape this class refuses for {@code max_sessions_per_subject}
+     * in cookie mode;</li>
+     * <li>below the resolved gateway-wide baseline {@code maxHeaderValueLength}. The key can only
+     * <em>raise</em> the pre-route floor's cap for {@code Cookie} values (ADR-0019); a value below the
+     * baseline would read like a relaxation while making {@code Cookie} the single most-restricted
+     * header — the same refusal {@code LimitRules.validateAuthorizationHeaderValueLength} applies to
+     * the {@code Authorization} carve-out;</li>
+     * <li>above {@link OidcConfig.Session#MAX_COOKIE_HEADER_VALUE_LENGTH_CEILING}, the {@code lenient}
+     * preset's own cap, so the relaxation never admits a header value the loosest shipped profile
+     * would itself reject.</li>
+     * </ol>
+     * <p>
+     * The baseline comparison cannot live in the bundled JSON Schema, which cannot see the resolved
+     * profile; it is resolved through the same {@link RouteTableBuilder#globalProfile} plus
+     * {@link SecurityProfile#limitsProfile} chain the edge performs, so the boot refusal and the
+     * runtime cap can never disagree. The schema declares the {@code 1..8192} range as well; the rule
+     * restates the ceiling so a document bound without the schema is held to it too. An omitted key is
+     * never refused — it leaves the {@code Cookie} value at the baseline. Each refusal names the
+     * pointer and the declared integer, which carries no secret; the rule never fails fast (ADR-0009).
+     *
+     * @param gateway the bound gateway document, whose {@code oidc.session} block is judged
+     * @param errors  the shared violation list every refusal is appended to
+     */
+    public static void validateSessionMaxCookieHeaderValueLength(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig.Session session = oidcSession(gateway);
+        Integer declared = session == null ? null : session.maxCookieHeaderValueLength();
+        if (declared == null) {
+            return;
+        }
+        if (!session.isServerMode()) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_HEADER_VALUE_LENGTH_POINTER,
+                    "oidc session max_cookie_header_value_length applies only in server session mode — cookie "
+                            + "mode derives its Cookie cap from max_cookie_size, and a gateway that is no "
+                            + "server-mode BFF never reads the key; remove the key, or use server session mode"));
+            return;
+        }
+        SecurityProfile global = RouteTableBuilder.globalProfile(gateway);
+        int baseline = SecurityProfile.limitsProfile(global, global).preset().maxHeaderValueLength();
+        if (declared < baseline) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_HEADER_VALUE_LENGTH_POINTER,
+                    ("oidc session max_cookie_header_value_length %d is below the resolved baseline "
+                            + "max_header_value_length %d; the key raises the pre-route cap for Cookie values "
+                            + "only and can never lower it — declare at least the baseline, or omit the key")
+                            .formatted(declared, baseline)));
+            return;
+        }
+        int ceiling = OidcConfig.Session.MAX_COOKIE_HEADER_VALUE_LENGTH_CEILING;
+        if (declared > ceiling) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_HEADER_VALUE_LENGTH_POINTER,
+                    ("oidc session max_cookie_header_value_length %d exceeds the ceiling %d, the lenient "
+                            + "profile's own header-value cap — declare a value of at most %d")
+                            .formatted(declared, ceiling, ceiling)));
         }
     }
 

@@ -1,0 +1,103 @@
+# API Sheriff — /auth-fronted identity-provider variant of the compose sample
+#
+# An OVERRIDE FILE, not a second stack. It is layered on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.auth-fronted.yml up -d --wait
+#
+# or, equivalently, `./scripts/start-sample.sh --auth-fronted`, which composes the same two files.
+#
+# WHAT IT DEMONSTRATES. The gateway fronts the identity provider. Keycloak publishes NO host port at
+# all; the browser reaches its login page through the gateway, under the /auth prefix of the
+# gateway's own origin (https://localhost:8443/auth/...). The gateway exposes an ALLOWLIST of
+# Keycloak's paths there — the sample realm, the static resources, the well-known documents and the
+# load-balancer check — and nothing else: the admin console, the master realm and the management
+# port are unreachable from outside the bridge network by construction, not by a deny rule
+# (docker/sheriff-config-auth-fronted/endpoints/idp.yaml).
+#
+# The gateway's OWN calls to the IdP do not loop back through its listener. Discovery, the pushed
+# authorization request, the token, refresh and revocation calls go to https://keycloak:8443/auth/...
+# through oidc.back_channel_origin, and the JWKS fetch names that address directly — the same
+# transport split the base sample uses, with the path kept (ADR-0069).
+#
+# THE IDENTITY. Keycloak publishes one static identity, https://localhost:8443/auth: the gateway's
+# origin plus the prefix it fronts Keycloak under. KC_HTTP_RELATIVE_PATH moves the paths Keycloak
+# SERVES under that same prefix, so the gateway proxies /auth/... to keycloak:8443/auth/... with the
+# path unchanged and never rewrites a URL Keycloak minted. Every realm issuer derives from it:
+# https://localhost:8443/auth/realms/sample, which is what the variant's gateway.yaml validates.
+#
+# REQUIRES DOCKER COMPOSE v2.24.4 OR NEWER. Keycloak's `ports:` below carries the Compose-Spec
+# `!override` merge tag, which 2.24.4 is the first release to implement. An older Compose accepts the
+# tag and ignores it, so the base file's loopback publication of the admin console would survive the
+# merge — the one port this variant exists to take away. scripts/start-sample.sh refuses an older
+# Compose for that reason.
+#
+# WHY A CLEARED VALUE IS CLEARED RATHER THAN OMITTED. Compose MERGES an override into the base; it
+# does not replace it. The merge rules this file relies on:
+#
+#   environment  merges BY VARIABLE NAME, so a variable here replaces the base's value of the same name.
+#   ports        CONCATENATES the two lists, so a published port is dropped by replacing the whole
+#                list with `!override`, never by leaving it out.
+#   volumes      merge BY TARGET PATH, so a mount here replaces the base's mount at the same target.
+#
+# See doc/user/compose-sample.adoc for the operator walkthrough and
+# doc/development/compose-sample.adoc for the rationale behind each decision below.
+
+services:
+
+  # --- The identity provider, behind the gateway --------------------------------------------------
+  keycloak:
+    environment:
+      # MERGED BY NAME over the base file's https://localhost:1443. The IdP's ONE identity is now the
+      # gateway's origin plus the prefix the gateway fronts it under — a full URL, scheme, port and
+      # path included. Every URL Keycloak mints (the realm issuer, the login form's action, the
+      # endpoints discovery advertises) derives from it, whichever address a request arrives on.
+      - KC_HOSTNAME=https://localhost:8443/auth
+      # The path Keycloak SERVES under, matching the path of KC_HOSTNAME above. With the two equal the
+      # gateway forwards /auth/... unchanged, and the back channel maps
+      # https://localhost:8443/auth/realms/sample/... to https://keycloak:8443/auth/realms/sample/...
+      # by swapping the origin alone — which is the only mapping oidc.back_channel_origin performs.
+      - KC_HTTP_RELATIVE_PATH=/auth
+      # Keycloak believes X-Forwarded-For only from a proxy — and the gateway IS its proxy here. The
+      # static URLs come from KC_HOSTNAME whatever the headers say; what the headers settle is the
+      # client address Keycloak records in its events and its brute-force detection, which would
+      # otherwise name the gateway for every user.
+      - KC_PROXY_HEADERS=xforwarded
+      # WHOSE forwarding headers Keycloak believes: the gateway's static address (networks: below),
+      # and nothing else. Every other container on this network holds an address in the same subnet,
+      # so a range here would let any of them state a client address of its choosing. The subnet, the
+      # gateway's ipv4_address and this value are one decision.
+      - KC_PROXY_TRUSTED_ADDRESSES=10.89.0.20
+    # REPLACES the base's port list with an empty one: Keycloak publishes nothing on the host. The base
+    # binds the login UI and the admin console to 127.0.0.1:1443; in this variant the browser reaches
+    # the login UI through the gateway, and the admin console and the management port 9000 are reached
+    # by nothing outside the bridge network (doc/user/compose-sample.adoc names the operator route).
+    #
+    # `!override` and not `!reset`: both clear the list here, and `!override` keeps the key present,
+    # stating "publishes nothing" rather than "publication not declared".
+    ports: !override []
+
+  # --- The gateway, fronting the identity provider ------------------------------------------------
+  api-sheriff:
+    volumes:
+      # MERGED BY TARGET PATH over the base's ./docker/sheriff-config mount: the variant's own,
+      # self-contained configuration set replaces it. Read-only, as in the base.
+      - ./docker/sheriff-config-auth-fronted:/app/sheriff-config:ro
+    networks:
+      api-sheriff:
+        # The static address KC_PROXY_TRUSTED_ADDRESSES names. Without one Docker assigns from a pool
+        # and Keycloak's trusted-proxy entry would have to widen to a range that also trusts every
+        # co-located container.
+        ipv4_address: 10.89.0.20
+
+networks:
+  api-sheriff:
+    # An EXPLICIT subnet, which the base file does not declare. Docker only honours a service's
+    # ipv4_address when the network it joins has a declared IPAM subnet, so this block is what makes
+    # the gateway's static address above legal.
+    #
+    # The same 10.89.0.0/24 the plain-HTTP variant declares, outside Docker's default bridge address
+    # pools. Change it if it collides with your own routing, and change the gateway's address and
+    # KC_PROXY_TRUSTED_ADDRESSES with it — the three values are one decision.
+    ipam:
+      config:
+        - subnet: 10.89.0.0/24

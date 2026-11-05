@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Two bounded inbound-validation relaxations: a matched reserved path never reaches the url-parameter value pipeline, because it is answered before route selection and its handler validates its own parameters; and the header-value length cap is raised for two header names only -- Cookie/Set-Cookie on an active cookie-mode BFF and Authorization on every gateway -- gateway-wide because the pre-route floor runs before any route exists; each carve-out is seeded from the resolved configuration so only the length cap changes, it is honoured by the post-route re-run too, and no site may lower a cap; the BFF structure belongs to ADR-0018 and the re-assertion principle to ADR-0026
+// summary: Two bounded inbound-validation relaxations: a matched reserved path never reaches the url-parameter value pipeline, because it is answered before route selection and its handler validates its own parameters; and the header-value length cap is raised for two header names only -- Cookie/Set-Cookie on an active cookie-mode BFF or on an active server-mode BFF that declares oidc.session.max_cookie_header_value_length, and Authorization on every gateway -- gateway-wide because the pre-route floor runs before any route exists; each carve-out is seeded from the resolved configuration so only the length cap changes, it is honoured by the post-route re-run too, and no site may lower a cap; the BFF structure belongs to ADR-0018 and the re-assertion principle to ADR-0026
 // tags: security, bff, reserved-paths, input-validation, cookie-header, authorization-header, relaxation, blast-radius
 // affects: api-sheriff
 // supersedes:
@@ -29,7 +29,9 @@ it.
   path, with separators that look suspicious in a value bound for an upstream.
 * *Some header values are long by design.* The cookie-mode BFF's sealed session cookie is designed to
   a multi-kilobyte budget. A bearer token with its `Bearer ` prefix routinely exceeds the `strict`
-  preset's 1024-character value cap. Both fail the pre-route floor on every request.
+  preset's 1024-character value cap. Both fail the pre-route floor on every request. A server-mode
+  BFF that fronts its identity provider carries that provider's cookies -- Keycloak's `KC_RESTART`
+  measures about 1650 characters -- and fails the floor on every login.
 
 The pre-route floor (`BasicChecksStage`) runs before route selection, so route selection decides on
 canonical, validated input. At that point no route or anchor exists to scope a relaxation to. That
@@ -72,9 +74,11 @@ unaffected.
 
 `BasicChecksStage` selects the value policy by header name, on three branches:
 
-* *`Cookie` and `Set-Cookie`*, on an active cookie-mode BFF only. The budget is
-  `oidc.session.max_cookie_size` plus 512 bytes for co-resident cookies. A bearer-only or server-mode
-  gateway has no cookie carve-out.
+* *`Cookie` and `Set-Cookie`*, on an active BFF only. In cookie mode the budget is
+  `oidc.session.max_cookie_size` plus 512 bytes for co-resident cookies. In server mode it is the
+  operator-declared `oidc.session.max_cookie_header_value_length`, held at boot between the resolved
+  baseline and 8192, the `lenient` preset's own cap, and refused in every other mode; a server-mode
+  gateway that declares nothing has no cookie carve-out. A bearer-only gateway has none either.
 * *`Authorization`*, on every gateway. The budget is
   `security_defaults.max_authorization_header_value_length`, default 8192, the `lenient` preset's own
   header-value cap. A declared value below the resolved baseline is a boot refusal: a relaxation key
@@ -106,11 +110,16 @@ length:
 |===
 | Site | Cap | Mechanism
 
-| Pre-route `Cookie` / `Set-Cookie`
+| Pre-route `Cookie` / `Set-Cookie`, cookie mode
 | `max(baseline cap, budget + 512)`
 | A silent `max`. The cookie budget is a codec transport property with its own range check, so a
   value below the baseline is a legitimate budget, and clamping it is correct. The shipped default,
   4019 plus 512, is 4531, below the `lenient` baseline of 8192.
+
+| Pre-route `Cookie` / `Set-Cookie`, server mode
+| `max(baseline cap, declared cap)`
+| A boot refusal of a below-baseline value, as for `Authorization`: the key is a pure relaxation key,
+  so a lower value is a misconfiguration. The runtime `max` stays as defence in depth.
 
 | Pre-route `Authorization`
 | The declared budget
@@ -124,7 +133,10 @@ length:
 
 The residual exposure is enumerable. On a cookie-mode gateway a client may send a longer `Cookie`
 value, subject to every other content check and the transport limits. A value that is not a
-resolvable sealed session is "no session" to the binding. On every gateway a client may send a longer
+resolvable sealed session is "no session" to the binding. On a server-mode gateway that declares the
+cap a client may send a `Cookie` value up to that cap, subject to the same checks; the gateway reads
+only its own opaque session handle out of it, and the cookies a route's `cookies` block forwards
+reach the upstream that set them. On every gateway a client may send a longer
 `Authorization` value, subject to the same checks, before bearer validation rejects an invalid token.
 The configuration field contract is in
 link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route
@@ -177,6 +189,22 @@ and rejected cookie values every other header could carry.
 *Clamp a below-baseline `Authorization` budget silently, like the cookie budget.* Rejected because it
 turns a misconfiguration into silent coercion. A boot refusal names the key that is wrong.
 
+*Run a server-mode gateway that fronts its identity provider on the `lenient` profile.* The
+cheapest way to admit the provider's long cookies. Rejected because `lenient` raises the length cap
+of every header and relaxes every non-length validator on every route, to solve a problem confined to
+one header name -- the same blunt widening the name-scoped carve-out exists to avoid.
+
+*Read `max_cookie_size` in server mode too.* One key for both modes. Rejected because that key is a
+sealed-value budget with its own floor, ceiling and browser-guarantee warning, none of which means
+anything for a server-mode gateway, and because silently making a cookie-mode key act in server mode
+would relax every server-mode gateway that happens to carry it. The server-mode cap is a separate,
+explicit key, refused in cookie mode so each mode keeps one source.
+
+*Put the server-mode cap on `security_defaults`, beside the `Authorization` budget.* Rejected because
+it would drop the mode axis: every gateway, bearer-only included, could declare it. On
+`oidc.session` and refused outside server mode, the cap stays bound to the one deployment that needs
+it.
+
 The rejected options fall into two classes. One widens a relaxation past the case that motivates it.
 The other refuses a bounded relaxation at the cost of a legitimate capability. The chosen position is
 the narrowest scope each enforcement point permits, and where that scope is coarser than wanted, the
@@ -189,7 +217,9 @@ limit is structural and stated.
 * Legitimate BFF and bearer traffic passes the edge: a login return leg with a path-shaped target, a
   cookie-mode request with a multi-kilobyte sealed cookie, and a bearer request with a long token.
 * Reserved-path parameters are validated more precisely, by a handler that knows their grammar.
-* The cookie carve-out is inert on a gateway that is not an active cookie-mode BFF.
+* The cookie carve-out is inert on a gateway that is not an active BFF, and on a server-mode BFF
+  until the operator declares a cap. A server-mode gateway fronting its identity provider stays on
+  `strict` for every other header.
 * The carve-outs hold the same bound at every site that measures a header value, and no route's
   posture is weakened on any other axis.
 * The residual exposure of each relaxation is enumerable, which makes it reviewable.
@@ -198,8 +228,8 @@ limit is structural and stated.
 
 * Reserved-path parameter validation is the reserved handlers' responsibility. A new handler that
   does not validate its own parameters has no generic backstop.
-* Neither length relaxation can be scoped to the routes that need it. On a cookie-mode gateway the
-  cookie carve-out applies to every request.
+* Neither length relaxation can be scoped to the routes that need it. On a cookie-mode gateway, and
+  on a server-mode gateway that declares the cap, the cookie carve-out applies to every request.
 * The `Authorization` carve-out has no mode axis. It is present on every gateway, a larger residual
   than the cookie carve-out's, accepted because the alternative is a gateway that cannot serve bearer
   traffic.
@@ -209,7 +239,8 @@ limit is structural and stated.
 
 * A new reserved handler must validate every parameter it reads.
 * The limit now accepted is two header names, one validator (the length cap) and a mode axis that
-  binds the cookie carve-out alone. Relaxing a different validator is a separate decision with its
+  binds the cookie carve-out alone -- by mode-specific budget key in cookie mode and by an explicit,
+  bounded opt-in in server mode. Relaxing a different validator is a separate decision with its
   own record.
 * A carve-out must stay seeded from the resolved configuration, and no site may lower a cap.
 
@@ -221,4 +252,4 @@ limit is structural and stated.
 * link:../architecture/tls-and-inbound-security.adoc#_inbound_security_filter[Architecture -- Inbound Security Filter] -- the pipeline's position ahead of route selection.
 * link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] and link:../configuration.adoc#_preset_limits[Preset limits] -- the keys, their bounds and the preset numbers.
 * link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] and link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the sealed cookie the cookie budget bounds.
-* `ReservedPathHandler`, `BasicChecksStage`, `ThoroughChecksStage`, `SecurityPostures` -- the implementation; `GatewayEdgeRouteTest`, `ThoroughChecksStageTest`, `LimitRulesTest`, `DeclaredLimitBoundaryIT` -- the tests.
+* `ReservedPathHandler`, `BasicChecksStage`, `ThoroughChecksStage`, `SecurityPostures` -- the implementation; `GatewayEdgeRouteTest`, `ServerModeCookieHeaderCapTest`, `ThoroughChecksStageTest`, `LimitRulesTest`, `OidcSessionRulesTest`, `DeclaredLimitBoundaryIT` -- the tests.

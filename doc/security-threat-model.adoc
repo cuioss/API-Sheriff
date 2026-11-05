@@ -3694,6 +3694,18 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   to a fixed size; the activity value has one fixed length. A rejected session cookie is recorded
   once per kind of rejection and a rejected activity cookie at `DEBUG` only, so a stream of junk
   cookies does not flood the log.
+* *A server-mode gateway raises the `Cookie` cap only on an explicit, bounded opt-in.* By default a
+  server-mode BFF measures `Cookie` values at the resolved baseline (1024 under `strict`), like every
+  other header. A gateway that fronts its identity provider carries that provider's cookies --
+  Keycloak's `KC_RESTART` measures about 1650 characters -- and may declare
+  `oidc.session.max_cookie_header_value_length` to admit them without leaving `strict`. The relaxation
+  is the ADR-0019 cookie carve-out with a server-mode budget key: it reaches `Cookie` / `Set-Cookie`
+  values only, changes the length cap alone (every non-length validator still runs on the value), and
+  never lowers a cap. The boot refuses a value below the resolved baseline, above 8192 and outside
+  server mode. *Residual (accepted):* the cap is gateway-wide, so every route admits a `Cookie` value
+  up to it, not only the identity provider's; a longer value buys an attacker nothing the transport
+  limits and the content checks did not already bound, since the gateway reads only its own opaque
+  session handle out of it.
 * *A login ends the session the browser presented.* A login callback that has passed its checks --
   the binding cookie, `state`, the code exchange and the subject -- destroys the session the
   request's own cookie resolves, whoever it belongs to, and binds the new session afterwards. In

@@ -1,0 +1,85 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The identity provider, fronted by the gateway under /auth — the endpoint this variant adds.
+#
+# AN ALLOWLIST, NEVER A CATCH-ALL. Each route below names one of Keycloak's path namespaces the login
+# flow needs, and nothing else is routed: there is deliberately no route for /auth itself. A request
+# for any other path under /auth — the admin console (/auth/admin/), the master realm
+# (/auth/realms/master/), Keycloak's metrics and health paths — matches no route and is answered with
+# the gateway's unrouted 404, so Keycloak never sees it. That holds by construction: no rule has to
+# recognise a dangerous path, because a path nobody listed has no way in.
+#
+# Every request is canonicalised BEFORE route selection. A dot-segment, an encoded separator, a
+# doubled slash or a backslash — /auth/realms/sample/../../admin/, /auth/%2e%2e/admin/,
+# /auth//admin/ — is refused by the gateway's canonical-path guard or reduced to the path it really
+# names before any route is chosen, so a relative spelling cannot reach /auth/admin/ through the realm
+# route. IdpFrontingCanonicalPathTest proves that against this file, and check-bff-login.sh
+# --idp-prefix /auth against the running sample.
+#
+# THE PATH IS KEPT. Each route's upstream.path repeats its match key, so the request path reaches
+# Keycloak unchanged: /auth/realms/sample/protocol/... is forwarded to
+# https://keycloak:8443/auth/realms/sample/protocol/.... Keycloak serves under /auth
+# (KC_HTTP_RELATIVE_PATH in docker-compose.auth-fronted.yml), so neither side rewrites a path and no
+# Location header needs mapping back: every URL Keycloak emits already names https://localhost:8443/auth.
+endpoint:
+  id: idp
+  enabled: true
+  # Resolved through topology.properties to https://keycloak:8443. Never a literal address here.
+  base_url: IDP
+  anchor: auth
+  # The `auth` anchor is access: public, so the endpoint declares the posture itself: the login flow is
+  # necessarily unauthenticated. Every route inherits it.
+  auth:
+    require: none
+  routes:
+    # The ONE realm the BFF signs users in to: the authorization endpoint the browser is redirected
+    # to, the login form and its credential POST (login-actions), and the realm's other browser-facing
+    # pages. Narrowed to /auth/realms/sample rather than /auth/realms, which is what keeps
+    # /auth/realms/master/ — the realm that administers Keycloak itself — unrouted.
+    - id: idp-realm-sample
+      match:
+        path_prefix: /auth/realms/sample
+      upstream:
+        path: /auth/realms/sample
+      # Keycloak's login cookies, BY EXACT NAME — the only route that forwards cookies at all. Without
+      # this block no browser cookie would cross and no upstream Set-Cookie line would be relayed
+      # (the omitted-block default is `allow: none`), and Keycloak could not hold the login session
+      # across the form POST. The gateway's own cookies never cross under any block, so the BFF's
+      # __Host-sample-session stays at the gateway whatever this list says.
+      #
+      # A list rather than `all`, so a cookie the browser holds for another application on this origin
+      # never reaches the identity provider.
+      #
+      # This block decides WHICH cookies cross, not how long the Cookie header may be. The length is
+      # checked before any route is selected, so it cannot be set here: gateway.yaml raises it for the
+      # Cookie header alone (oidc.session.max_cookie_header_value_length), because KC_RESTART outgrows
+      # the strict header-value cap.
+      cookies:
+        allow:
+          - AUTH_SESSION_ID
+          - KC_AUTH_SESSION_HASH
+          - KC_RESTART
+          - KEYCLOAK_IDENTITY
+          - KEYCLOAK_SESSION
+          - KEYCLOAK_LOCALE
+          - KEYCLOAK_REMEMBER_ME
+          - KC_STATE_CHECKER
+        # The credential POST carries those cookies, so it must come from this gateway's own origin —
+        # which is where Keycloak's login form, served through this route, posts from. A cross-site
+        # POST carrying a Keycloak cookie is refused before it reaches Keycloak. Stated although
+        # `true` is the default, because this route is where it matters.
+        same_origin_check: true
+    # The login theme's static files (stylesheets, scripts, images) the login page references.
+    - id: idp-resources
+      match:
+        path_prefix: /auth/resources
+      upstream:
+        path: /auth/resources
+    # Keycloak's server-level well-known documents under its context path, among them the RFC 8414
+    # authorization-server metadata of the sample realm
+    # (/auth/.well-known/oauth-authorization-server/realms/sample). The realm's own discovery document
+    # lies under the realm route above.
+    - id: idp-well-known
+      match:
+        path_prefix: /auth/.well-known
+      upstream:
+        path: /auth/.well-known

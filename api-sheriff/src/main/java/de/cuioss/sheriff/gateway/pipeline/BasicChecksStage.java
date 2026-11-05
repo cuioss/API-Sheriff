@@ -59,11 +59,13 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li><strong>{@code Cookie} / {@code Set-Cookie}</strong> — a cookie-mode BFF's sealed session
  *       cookie is designed to a multi-kilobyte budget the resolved baseline would reject at the edge
- *       on every authenticated request. The OPTIONAL {@code cookieHeaderConfiguration} supplies the
- *       raised cap; a bearer-only or server-mode gateway passes {@code null}, so no cookie carve-out
- *       exists there and its {@code Cookie} / {@code Set-Cookie} values are measured at the resolved
- *       baseline like any other header. Its budget key is
- *       {@code oidc.session.max_cookie_size}.</li>
+ *       on every authenticated request, and a server-mode BFF fronting its identity provider carries
+ *       that provider's cookies, which can outgrow a {@code strict} baseline too. The OPTIONAL
+ *       {@code cookieHeaderConfiguration} supplies the raised cap; a bearer-only gateway, and a
+ *       server-mode gateway declaring no cap, passes {@code null}, so no cookie carve-out exists there
+ *       and its {@code Cookie} / {@code Set-Cookie} values are measured at the resolved baseline like
+ *       any other header. Its budget key is {@code oidc.session.max_cookie_size} in cookie mode and
+ *       {@code oidc.session.max_cookie_header_value_length} in server mode.</li>
  *   <li><strong>{@code Authorization}</strong> — a bearer token plus its {@code Bearer } prefix
  *       routinely exceeds the {@code strict} baseline, which would reject every bearer request here,
  *       before route selection and before bearer validation ever runs. Unlike the cookie carve-out
@@ -76,9 +78,9 @@ import org.jspecify.annotations.Nullable;
  * <em>By validator</em>: each carve-out configuration is seeded from the resolved baseline and differs
  * from it in {@code maxHeaderValueLength} alone, so every non-length validator (null-byte,
  * control-character, extended-ASCII, injection-pattern) still applies to the carved-out value exactly
- * as to any other. <em>By deployment</em>: the cookie carve-out exists only in an active cookie-mode
- * BFF, while the {@code Authorization} carve-out is unconditional — a genuinely weaker axis, not a
- * parallel one.
+ * as to any other. <em>By deployment</em>: the cookie carve-out exists only in an active BFF — always
+ * in cookie mode, and in server mode only where the operator declared a cap — while the
+ * {@code Authorization} carve-out is unconditional — a genuinely weaker axis, not a parallel one.
  * <p>
  * Both relaxations are necessarily <strong>gateway-wide, not per-anchor</strong>: this stage runs
  * BEFORE route selection, so no anchor is resolved yet. Both configuration keys sit on global blocks
@@ -112,7 +114,8 @@ public final class BasicChecksStage {
      *                           header VALUES only, or {@code null} to validate them under
      *                           {@code configuration} like every other header. Supplied only by a
      *                           cookie-mode BFF gateway, whose sealed session cookie exceeds the
-     *                           resolved baseline header-value cap
+     *                           resolved baseline header-value cap, and by a server-mode BFF gateway
+     *                           that declares {@code oidc.session.max_cookie_header_value_length}
      * @param authorizationHeaderConfiguration the policy applied to {@code Authorization} header
      *                           VALUES only. Unconditional and never {@code null}: every gateway is
      *                           bearer-capable, so unlike the cookie carve-out there is no mode that

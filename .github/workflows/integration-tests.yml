@@ -28,13 +28,21 @@ jobs:
       # integration suite has torn its stack down, so the sample's host ports 8443,
       # 127.0.0.1:9000 and 127.0.0.1:1443 are free again, and it reuses the native
       # api-sheriff:distroless image the integration build produced from this pull request's
-      # source rather than the released image the sample pins in its .env. The 60-minute limit
-      # above keeps headroom over the ~35-minute suite plus the few minutes of sample bring-up
-      # and login.
+      # source rather than the released image the sample pins in its .env.
+      #
+      # The fourth line runs the sample's /auth-fronted variant against the same image: the
+      # gateway fronts Keycloak under /auth, Keycloak publishes no host port, and the login check
+      # signs in through the IdP pages the gateway proxies (--idp-prefix /auth). It runs after the
+      # base lane, whose success-path teardown has freed the host ports again; the variant's
+      # explicit-subnet network is created fresh because that teardown removed the base network.
+      #
+      # The 60-minute limit above keeps headroom over the ~35-minute suite plus two sample
+      # bring-ups and logins, a few minutes each.
       maven-args-input: |
         install -DskipTests -DskipITs -pl integration-tests -am
         verify -Pintegration-tests -pl integration-tests
         verify -Pcompose-sample -pl deployment -Dcompose-sample.image=api-sheriff:distroless
+        verify -Pcompose-sample -pl deployment -Dcompose-sample.image=api-sheriff:distroless -Dcompose-sample.variant=auth-fronted
       reports-folder: |
         integration-tests/target/failsafe-reports
     secrets:

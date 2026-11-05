@@ -45,6 +45,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
@@ -3434,5 +3435,40 @@ class ConfigLoaderTest {
         assertErrorAt(errors, "endpoints/orders.yaml", "/endpoint/catalog");
         assertTrue(errors.stream().anyMatch(error -> error.message().contains("entry")),
                 () -> "expected the missing required key to be named, got: " + errors);
+    }
+
+    /**
+     * The YAML spelling of the server-mode {@code Cookie} cap binds to the model component the edge
+     * reads ({@code ServerModeCookieHeaderCapTest} drives that component through the pre-route floor),
+     * so the key both parses AND acts; an omitted key binds as absent, the secure default.
+     */
+    @Test
+    void bindsTheServerModeCookieHeaderCap() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  session:
+                    mode: server
+                    store: memory
+                    max_cookie_header_value_length: 2048
+                """);
+
+        OidcConfig.Session session = loader(Map.of()).load(IGNORE_DEFAULTED).gateway().oidc().session();
+
+        assertEquals(2048, session.maxCookieHeaderValueLength());
+    }
+
+    @Test
+    void refusesAServerModeCookieHeaderCapAboveTheSchemaMaximum() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  session:
+                    mode: server
+                    store: memory
+                    max_cookie_header_value_length: 8193
+                """);
+
+        assertErrorAt(loadErrors(), "gateway.yaml", "/oidc/session/max_cookie_header_value_length");
     }
 }

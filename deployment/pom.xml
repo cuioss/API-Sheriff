@@ -249,5 +249,57 @@
                 </plugins>
             </build>
         </profile>
+        <!-- Runs the sample as its /auth-fronted variant, in which the gateway fronts the identity
+             provider: -Dcompose-sample.variant=auth-fronted layers docker-compose.auth-fronted.yml on
+             top of the base file and checks the login against the IdP under the gateway's own /auth
+             prefix. CI runs it as a lane of its own beside the base lane; see
+             doc/development/compose-sample.adoc for why the variant is gated rather than only
+             documented.
+
+             The same shape as compose-sample-image above: it carries arguments only, and its execution
+             ids match the compose-sample profile's start-sample and check-bff-login, so Maven merges
+             them into those executions. Without -Pcompose-sample there is nothing for them to join.
+             It composes with compose-sample-image, which sets the environment of the same start-sample
+             execution — the two touch different configuration elements.
+
+             Activated by the VALUE auth-fronted, not by the property's presence: the IdP prefix below
+             belongs to that variant alone, so a presence-activated profile would hand /auth to a
+             variant whose identity provider is not behind one. -->
+        <profile>
+            <id>compose-sample-variant</id>
+            <activation>
+                <property>
+                    <name>compose-sample.variant</name>
+                    <value>auth-fronted</value>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>start-sample</id>
+                                <configuration>
+                                    <arguments>
+                                        <argument>--auth-fronted</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>check-bff-login</id>
+                                <configuration>
+                                    <arguments>
+                                        <argument>--idp-prefix</argument>
+                                        <argument>/auth</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 </project>
