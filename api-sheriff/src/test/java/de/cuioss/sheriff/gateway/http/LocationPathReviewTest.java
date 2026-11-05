@@ -211,10 +211,10 @@ class LocationPathReviewTest {
         void scopesTheReviewToThePath() {
             assertAll(
                     () -> assertTrue(LocationPathReview.refusalReason(
-                            LocationPathReview.pathPortion("/app/items?next=%2Fx")).isEmpty(),
+                                    LocationPathReview.pathPortion("/app/items?next=%2Fx")).isEmpty(),
                             "an encoded separator in the query is not the path's"),
                     () -> assertTrue(LocationPathReview.refusalReason(
-                            LocationPathReview.pathPortion("/%2F%2Fevil.example?next=/app")).isPresent(),
+                                    LocationPathReview.pathPortion("/%2F%2Fevil.example?next=/app")).isPresent(),
                             "an encoded separator in the path is refused whatever follows it"));
         }
     }
