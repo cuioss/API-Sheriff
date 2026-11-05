@@ -41,6 +41,7 @@ import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.tools.logging.CuiLogger;
 import io.smallrye.faulttolerance.api.Guard;
@@ -326,7 +327,11 @@ public final class DispatchStage {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(pathRemainder, "pathRemainder");
         Objects.requireNonNull(rawQuery, "rawQuery");
-        String path = stripTrailingSlash(upstream.basePath()) + pathRemainder;
+        // The whole trailing run, as LocationRewriter strips it from this same base path, so the
+        // rewrite_location round trip cannot split. A base path reaches here from two places and only
+        // one is normalized (RouteTableBuilder joins a configured upstream.path; an alias base path is
+        // whatever URI.getPath() returned), so the agreement is enforced here rather than assumed.
+        String path = PathSlashes.stripTrailing(upstream.basePath()) + pathRemainder;
         return rawQuery.isEmpty() ? path : path + rawQuery;
     }
 
@@ -650,26 +655,6 @@ public final class DispatchStage {
             current = cause;
         }
         return null;
-    }
-
-    /**
-     * Removes <em>every</em> trailing slash, not just one.
-     * <p>
-     * The count matters because {@code LocationRewriter} strips all of them before matching an
-     * upstream {@code Location} against this same base path. Removing one here and all of them there
-     * splits the {@code rewrite_location} round trip whenever a base path ends in a run: the rewriter
-     * maps an upstream {@code /upload/next} onto the gateway, and the client's follow-up is then
-     * dispatched to {@code /upload//next} — not the path the mapping was derived from. A base path
-     * reaches here from two places and only one of them is normalized ({@code RouteTableBuilder}
-     * normalizes a configured {@code upstream.path}; an alias base path is whatever
-     * {@code URI.getPath()} returned), so the agreement is enforced here rather than assumed.
-     */
-    private static String stripTrailingSlash(String value) {
-        int end = value.length();
-        while (end > 0 && value.charAt(end - 1) == '/') {
-            end--;
-        }
-        return value.substring(0, end);
     }
 
     /**

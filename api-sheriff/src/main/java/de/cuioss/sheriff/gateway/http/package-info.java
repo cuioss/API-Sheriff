@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 /**
- * Protocol-level HTTP rules shared by every path that answers a client.
+ * Protocol-level HTTP rules, and the URL-path primitive they rest on, shared by every path that
+ * answers a client.
  * <p>
  * The package sits <em>below</em> the paths that produce a response, and depends on none of them, so
  * a rule about the HTTP protocol itself is declared once and read by every caller rather than
- * mirrored into each. Three such rules live here:
+ * mirrored into each. Five such members live here:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.http.ConnectionHeaders} — the connection-specific header
  *       names neither response path may relay, read by the proxy data plane's streamed relay in
@@ -34,10 +35,19 @@
  *       to {@code oidc.login.default_return_url} at boot).</li>
  *   <li>{@link de.cuioss.sheriff.gateway.http.GatewayCookies} — the gateway's own cookies, which an
  *       upstream may neither set nor receive, read by the response relay in {@code edge}.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders} — the upstream response
+ *       headers that name the server software behind the gateway, read by the proxy relay in
+ *       {@code edge} and the upstream-backed asset envelope in {@code asset}.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.http.PathSlashes} — the leading- and trailing-slash
+ *       trimming every path join and split is built from, read by the route-table join in
+ *       {@code config}, the {@code Location} mapping in {@code routing}, the match-key remainder and
+ *       upstream request URI in {@code edge}, and the asset confinement and index lookup in
+ *       {@code asset}.</li>
  * </ul>
- * All three exist for the same reason: a mirrored copy is what lets two paths quietly disagree about
- * one protocol rule (issue #172 was exactly that, for a response header the proxy path stripped and
- * the asset path did not).
+ * All five exist for the same reason: a mirrored copy is what lets two paths quietly disagree about
+ * one rule (issue #172 was exactly that, for a response header the proxy path stripped and the asset
+ * path did not; issue #327 was seven private copies of the slash trimming, where only a reader of all
+ * seven could tell how many slashes each one removed).
  * <p>
  * <strong>Framework-agnostic.</strong> The package carries no {@code io.vertx..} /
  * {@code io.quarkus..} / {@code jakarta..} imports, which is what lets the framework-coupled

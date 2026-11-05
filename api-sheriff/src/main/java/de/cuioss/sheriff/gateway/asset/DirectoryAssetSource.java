@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -259,7 +260,7 @@ public final class DirectoryAssetSource implements AssetSource {
         Path target = confined.get();
         if (index != null && Files.isDirectory(target)) {
             return serveTarget(method,
-                    confinement.confine(root, stripTrailingSlashes(subPath) + "/" + index).orElse(null));
+                    confinement.confine(root, PathSlashes.stripTrailing(subPath) + "/" + index).orElse(null));
         }
         if (fallback != null && Files.notExists(target, LinkOption.NOFOLLOW_LINKS) && hasNoExtension(target)) {
             return serveTarget(method, confinement.confine(root, fallback).orElse(null));
@@ -293,14 +294,6 @@ public final class DirectoryAssetSource implements AssetSource {
     private static boolean hasNoExtension(Path target) {
         Path name = target.getFileName();
         return name != null && name.toString().indexOf('.') < 0;
-    }
-
-    private static String stripTrailingSlashes(String value) {
-        int end = value.length();
-        while (end > 0 && value.charAt(end - 1) == '/') {
-            end--;
-        }
-        return value.substring(0, end);
     }
 
     /**
