@@ -54,8 +54,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  * the boot path through {@link ConfigProducer} — capturing the {@code ApiSheriff-200} record it logs
  * per violation — and the offline path through {@link ConfigValidationCommand} — parsing its
  * {@code INVALID} lines. The two ordered {@code (file, pointer, message)} lists must be equal. The
- * corpus spans the shipped compose-sample and integration-test sets (both valid, read from their
- * sibling module directories), the shared classpath fixtures, and temporary sets failing at the
+ * corpus spans the shipped compose-sample sets — the base set and the {@code /auth}-fronted variant's
+ * own — and the integration-test set (all valid, read from their sibling module directories), the
+ * shared classpath fixtures, and temporary sets failing at the
  * loader-schema, placeholder, topology and validator stages.
  * <p>
  * The one intended difference — the framework request-body ceiling, a runtime framework key the
@@ -147,6 +148,11 @@ class ConfigValidationParityTest {
         return Stream.of(
                 new CorpusSet("shipped compose-sample set",
                         ignored -> REPOSITORY.resolve("deployment/compose-sample/docker/sheriff-config"),
+                        Map.of("SHERIFF_TRUSTED_PROXIES", "192.0.2.10/32,192.0.2.11/32",
+                                "SHERIFF_CLIENT_AUTH_KEY_FILE", "/app/certificates/client-auth.pem",
+                                "SHERIFF_DPOP_KEY_FILE", "/app/certificates/dpop.pem"), false),
+                new CorpusSet("shipped compose-sample /auth-fronted set",
+                        ignored -> REPOSITORY.resolve("deployment/compose-sample/docker/sheriff-config-auth-fronted"),
                         Map.of("SHERIFF_TRUSTED_PROXIES", "192.0.2.10/32,192.0.2.11/32",
                                 "SHERIFF_CLIENT_AUTH_KEY_FILE", "/app/certificates/client-auth.pem",
                                 "SHERIFF_DPOP_KEY_FILE", "/app/certificates/dpop.pem"), false),

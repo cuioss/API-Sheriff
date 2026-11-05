@@ -87,12 +87,24 @@ class BackChannelOriginActivationWiringTest {
      * <p>
      * The enumeration must find at least the floor under EACH root, so an empty or mis-rooted directory
      * scan fails loudly instead of passing vacuously, and a descriptor one stack gains cannot cover for one
-     * the other stack lost. Ten sit in the integration-test stack; the compose sample's one descriptor
-     * declares the oidc block of its server-session BFF. A root and its floor are declared together, so no
-     * root can be added without one.
+     * the other stack lost. Ten sit in the integration-test stack; the compose sample's two — the base set
+     * and the {@code /auth}-fronted variant's own — each declare the oidc block of its server-session BFF.
+     * A root and its floor are declared together, so no root can be added without one.
      */
     private static final List<DescriptorRoot> GATEWAY_DESCRIPTOR_ROOTS = List.of(new DescriptorRoot(DOCKER, 10),
-            new DescriptorRoot(COMPOSE_SAMPLE.resolve("docker"), 1));
+            new DescriptorRoot(COMPOSE_SAMPLE.resolve("docker"), 2));
+
+    /**
+     * The compose sample's {@code /auth}-fronted descriptor directory. Its gateway FRONTS Keycloak under
+     * {@code /auth}, so Keycloak's published identity there is the gateway's own origin plus that prefix,
+     * and its issuers carry {@value #AUTH_FRONTED_AUTHORITY} rather than {@value #PUBLISHED_AUTHORITY}. The
+     * back channel is unchanged: it still dials {@value #BACK_CHANNEL_ORIGIN}. The variant's exact identity
+     * is bound to its override's {@code KC_HOSTNAME} by {@code ComposeSampleAuthFrontedWiringTest}.
+     */
+    private static final Path AUTH_FRONTED_DESCRIPTORS = COMPOSE_SAMPLE.resolve("docker/sheriff-config-auth-fronted");
+
+    /** The authority of the gateway's own origin, which the {@code /auth}-fronted variant's issuers carry. */
+    private static final String AUTH_FRONTED_AUTHORITY = "localhost:8443";
 
     /**
      * The realm-import directory of every stack that runs Keycloak: the integration-test stack and the
@@ -148,9 +160,11 @@ class BackChannelOriginActivationWiringTest {
                     descriptor + " declares an oidc block without a textual issuer");
             URI issuerUri = URI.create(issuer);
             assertEquals("https", issuerUri.getScheme(), descriptor + " oidc.issuer " + issuer + " is not https");
-            assertEquals(PUBLISHED_AUTHORITY, issuerUri.getAuthority(), descriptor + " oidc.issuer " + issuer
-                    + " is not on Keycloak's published identity " + PUBLISHED_ORIGIN + ", the one origin Keycloak"
-                    + " mints into every token and discovery document.");
+            String publishedAuthority = descriptor.startsWith(AUTH_FRONTED_DESCRIPTORS)
+                    ? AUTH_FRONTED_AUTHORITY : PUBLISHED_AUTHORITY;
+            assertEquals(publishedAuthority, issuerUri.getAuthority(), descriptor + " oidc.issuer " + issuer
+                    + " is not on Keycloak's published identity for its stack (" + publishedAuthority + "), the one"
+                    + " origin Keycloak mints into every token and discovery document.");
         }
 
         for (DescriptorRoot root : GATEWAY_DESCRIPTOR_ROOTS) {
