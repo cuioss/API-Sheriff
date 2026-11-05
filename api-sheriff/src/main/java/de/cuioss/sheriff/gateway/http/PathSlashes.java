@@ -55,6 +55,9 @@ public class PathSlashes {
 
     private static final char SLASH = '/';
 
+    /** The parameter name every operation reports when it is handed {@code null}. */
+    private static final String VALUE_PARAMETER = "value";
+
     /**
      * Removes every leading {@code /}.
      *
@@ -62,7 +65,7 @@ public class PathSlashes {
      * @return {@code value} without its leading run of slashes — {@code //a/b} becomes {@code a/b}
      */
     public static String stripLeading(String value) {
-        Objects.requireNonNull(value, "value");
+        Objects.requireNonNull(value, VALUE_PARAMETER);
         int start = 0;
         while (start < value.length() && value.charAt(start) == SLASH) {
             start++;
@@ -77,7 +80,7 @@ public class PathSlashes {
      * @return {@code value} without its trailing run of slashes — {@code /a/b//} becomes {@code /a/b}
      */
     public static String stripTrailing(String value) {
-        Objects.requireNonNull(value, "value");
+        Objects.requireNonNull(value, VALUE_PARAMETER);
         int end = value.length();
         while (end > 0 && value.charAt(end - 1) == SLASH) {
             end--;
@@ -94,7 +97,7 @@ public class PathSlashes {
      *         {@code /a}
      */
     public static String stripOneTrailing(String value) {
-        Objects.requireNonNull(value, "value");
+        Objects.requireNonNull(value, VALUE_PARAMETER);
         return !value.isEmpty() && value.charAt(value.length() - 1) == SLASH
                 ? value.substring(0, value.length() - 1)
                 : value;
