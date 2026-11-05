@@ -129,7 +129,7 @@ jobs:
       && (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
     permissions:
       contents: write
-    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
+    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@5a641e5da90ae209472419a541b7566bf7f4172e # v0.44.0
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -155,7 +155,7 @@ jobs:
   # per-architecture artifact, leg-digest-<arch>, uploaded as the leg's last act.
   #
   # WHY `needs.release.outputs.released-version != ''` IS THE RUN/SKIP DISCRIMINATOR.
-  # At the pinned 3e1ecaf (v0.43.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
+  # At the pinned 5a641e5 (v0.44.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
   # block, so `released-version` is genuinely readable here. It is EMPTY exactly when the central
   # guard declined to release — the declared version did not move, or a tag for it already exists —
   # so an empty string proves no release was produced, never which predicate refused. The caller
@@ -253,7 +253,7 @@ jobs:
 
       - name: Read the released version
         id: config
-        uses: cuioss/cuioss-organization/.github/actions/read-project-config@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@5a641e5da90ae209472419a541b7566bf7f4172e # v0.44.0
         with:
           config-path: .release-config/.github/project.yml
 
@@ -889,7 +889,7 @@ jobs:
 
       - name: Read the released version
         id: config
-        uses: cuioss/cuioss-organization/.github/actions/read-project-config@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@5a641e5da90ae209472419a541b7566bf7f4172e # v0.44.0
         with:
           config-path: .release-config/.github/project.yml
 
