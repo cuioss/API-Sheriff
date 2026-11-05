@@ -21,33 +21,28 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.SEAL
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.descriptorMapping;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.dockerQuietly;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLog;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.loadDescriptor;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.publishedPort;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGatewayWithSigningKeys;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeSealingKeyFile;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.io.Reader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.yaml.snakeyaml.DumperOptions;
-import org.yaml.snakeyaml.Yaml;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
@@ -213,9 +208,6 @@ class BffSessionIdleTimeoutIT {
 
     private static final int OK = 200;
     private static final int UNAUTHENTICATED = 401;
-
-    /** Readable by the gateway image's own user, which is not the uid the build runs as. */
-    private static final String DESCRIPTOR_MODE = "rw-r--r--";
 
     /**
      * The fixed host ports the two gateways publish their application listener on, on every interface.
@@ -471,79 +463,29 @@ class BffSessionIdleTimeoutIT {
     }
 
     /**
-     * Writes the descriptor of one one-off gateway: the committed source descriptor with the idle
-     * timeout declared, the origin triple retargeted at the gateway's own port and, in cookie mode,
-     * the sealing key file retargeted at this suite's own. The source is
-     * asserted to be what the derivation assumes — the session mode, an absolute lifetime far above
-     * the test's duration, no idle timeout of its own — so a change to the committed descriptor fails
-     * here instead of producing a gateway that differs from it in more than the stated ways.
+     * Writes the descriptor of one one-off gateway through the shared derivation,
+     * {@link OneOffGatewayContainers#writeDerivedDescriptor(String, Path, String, int, Map)}: the
+     * committed source descriptor with the origin triple retargeted at the gateway's own port, in cookie
+     * mode the sealing key file retargeted at this suite's own, and the idle timeout declared. The
+     * derivation refuses a source that already declares an idle timeout and checks that the result
+     * differs from the source in exactly those keys. What only this suite assumes of its source — the
+     * session mode and an absolute lifetime far above the test's duration — is asserted here first, so
+     * a change to the committed descriptor fails here instead of producing a gateway that differs from
+     * it in more than the stated ways.
      */
-    private static void writeDerivedDescriptor(Instance instance) throws IOException {
-        Map<String, Object> document = load(instance.sourceDescriptor());
-        Map<String, Object> oidc = mapping(document.get("oidc"), "oidc");
-        Map<String, Object> session = mapping(oidc.get("session"), "oidc.session");
-        Map<String, Object> logout = mapping(oidc.get("logout"), "oidc.logout");
-        Map<String, Object> csrf = mapping(session.get("csrf"), "oidc.session.csrf");
+    private static void writeDerivedDescriptor(Instance instance) {
+        Map<String, Object> session = descriptorMapping(descriptorMapping(
+                loadDescriptor(instance.sourceDescriptor()).get("oidc"), "oidc").get("session"), "oidc.session");
         Integer ttlSeconds = assertInstanceOf(Integer.class, session.get("ttl_seconds"),
                 "oidc.session.ttl_seconds of " + instance.sourceDescriptor() + " must be declared");
         assertAll(instance.sourceDescriptor() + " must be the descriptor the derivation assumes",
                 () -> assertEquals(instance.sessionMode(), session.get("mode"), "oidc.session.mode"),
-                () -> assertFalse(session.containsKey(IDLE_TIMEOUT_KEY),
-                        "no committed descriptor of the stack declares " + IDLE_TIMEOUT_KEY),
                 () -> assertTrue(ttlSeconds >= MINIMUM_SOURCE_TTL_SECONDS, () -> "oidc.session.ttl_seconds must be at "
-                        + "least " + MINIMUM_SOURCE_TTL_SECONDS + ", was " + ttlSeconds),
-                () -> assertEquals(instance.cookieMode(), session.containsKey("key_file"),
-                        "oidc.session.key_file is declared exactly in cookie mode"));
+                        + "least " + MINIMUM_SOURCE_TTL_SECONDS + ", was " + ttlSeconds));
 
-        session.put(IDLE_TIMEOUT_KEY, instance.idleTimeoutSeconds());
-        if (instance.cookieMode()) {
-            session.put("key_file", SEALING_KEY_IN_CONTAINER);
-        }
-        List<?> trustedOrigins = assertInstanceOf(List.class, csrf.get("trusted_origins"),
-                "oidc.session.csrf.trusted_origins must be a list");
-        csrf.put("trusted_origins", trustedOrigins.stream()
-                .map(origin -> retargeted(instance, origin, "oidc.session.csrf.trusted_origins")).toList());
-        session.put("csrf", csrf);
-        logout.put("post_logout_redirect_uri", retargeted(instance, logout.get("post_logout_redirect_uri"),
-                "oidc.logout.post_logout_redirect_uri"));
-        oidc.put("redirect_uri", retargeted(instance, oidc.get("redirect_uri"), "oidc.redirect_uri"));
-        oidc.put("logout", logout);
-        oidc.put("session", session);
-        document.put("oidc", oidc);
-
-        DumperOptions options = new DumperOptions();
-        options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
-        Path derived = instance.derivedDescriptor();
-        Files.createDirectories(derived.getParent());
-        Files.writeString(derived, new Yaml(options).dump(document));
-        Files.setPosixFilePermissions(derived, PosixFilePermissions.fromString(DESCRIPTOR_MODE));
-
-        Map<String, Object> written = mapping(mapping(load(derived).get("oidc"), "oidc").get("session"), "oidc.session");
-        assertEquals(instance.idleTimeoutSeconds(), written.get(IDLE_TIMEOUT_KEY),
-                "the derived descriptor must declare the idle timeout this suite asserts");
-    }
-
-    private static String retargeted(Instance instance, Object value, String key) {
-        String configured = String.valueOf(value);
-        assertTrue(configured.startsWith(instance.sourceOrigin()), () -> key + " of " + instance.sourceDescriptor()
-                + " must name the origin " + instance.sourceOrigin() + ", was " + configured);
-        return instance.origin() + configured.substring(instance.sourceOrigin().length());
-    }
-
-    private static Map<String, Object> load(Path descriptor) throws IOException {
-        try (Reader reader = Files.newBufferedReader(descriptor)) {
-            return mapping(new Yaml().load(reader), descriptor.toString());
-        }
-    }
-
-    /**
-     * Reads a YAML node as a mapping with string keys. The result is a copy, so a changed nested
-     * mapping is written back into its parent by the caller.
-     */
-    private static Map<String, Object> mapping(Object node, String what) {
-        Map<?, ?> raw = assertInstanceOf(Map.class, node, () -> what + " must be a mapping");
-        Map<String, Object> typed = new LinkedHashMap<>();
-        raw.forEach((key, value) -> typed.put(String.valueOf(key), value));
-        return typed;
+        Path derived = OneOffGatewayContainers.writeDerivedDescriptor(instance.name(), instance.sourceDescriptor(),
+                instance.sourceOrigin(), instance.port(), Map.of(IDLE_TIMEOUT_KEY, instance.idleTimeoutSeconds()));
+        assertEquals(instance.derivedDescriptor().toAbsolutePath(), derived.toAbsolutePath(),
+                "the gateway is started from the descriptor the shared derivation wrote");
     }
 }

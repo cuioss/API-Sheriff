@@ -28,9 +28,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Pattern;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -122,6 +124,26 @@ class ComposeFixtureImageBuildWiringTest {
      */
     private static final String SKIP = "<skip>true</skip>";
 
+
+    /**
+     * The {@code docker compose build} options that take their value as the next argument when it is
+     * not attached with {@code =}.
+     */
+    private static final Set<String> OPTIONS_WITH_A_VALUE = Set.of("--build-arg", "--builder", "-m", "--memory",
+            "--progress", "--provenance", "--sbom", "--ssh");
+
+    /**
+     * The {@code docker compose} options, global or of {@code build}, under which compose prints, checks
+     * or simulates and builds nothing. Each counts in its bare form and as {@code --name=value} with
+     * any value other than {@code false}.
+     */
+    private static final Set<String> NON_BUILDING_OPTIONS = Set.of("--help", "-h", "--print", "--dry-run", "--check");
+
+    /** The values pflag reads as false, lower-cased. */
+    private static final Set<String> FALSE_VALUES = Set.of("false", "0", "f");
+
+    /** A group of single-letter flags, such as {@code -qh}. */
+    private static final Pattern SHORT_FLAG_GROUP = Pattern.compile("-[A-Za-z]{2,}");
 
     /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
     private static final String NO_BUILD = "";
@@ -243,6 +265,42 @@ class ComposeFixtureImageBuildWiringTest {
                         "an image-build execution bound to no goal, which Maven never runs, was accepted"));
     }
 
+    @Test
+    @DisplayName("the detector reads compose build options after 'build' as options, not as services")
+    void detectorSkipsBuildOptions() {
+        Set<String> fixtures = servicesStartedFromABuild(SPECIMEN_COMPOSE);
+        String withOptions = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
+                + "<argument>--no-cache</argument><argument>--build-arg</argument><argument>VERSION=1</argument>"
+                + "<argument>--sbom</argument><argument>true</argument><argument>--print=false</argument><argument>--progress=plain</argument><argument>gateway</argument><argument>echo</argument>";
+        String optionsOnly = "<argument>compose</argument><argument>build</argument><argument>--pull</argument>"
+                + "<argument>gateway</argument>";
+
+        assertAll(
+                () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions, withOptions))),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(optionsOnly, withOptions)).isEmpty(),
+                        "a lane whose options hide that it leaves a fixture to 'up -d' was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--print=false", "--print"),
+                        withOptions)).isEmpty(), "a lane whose build only prints its definition was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions, withOptions.replace("--pull",
+                        "--dry-run"))).isEmpty(), "a lane whose build is a dry run was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--help"),
+                        withOptions)).isEmpty(), "a lane whose build prints help was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--check"),
+                        withOptions)).isEmpty(), "a lane whose build only checks its configuration was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--print=false", "--print=true"),
+                        withOptions)).isEmpty(), "a lane whose build prints through --print=true was accepted"),
+                () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions.replace("--pull",
+                        "--print=true"), withOptions)), "--print=true overridden by a later --print=false builds,"
+                        + " and was refused"),
+                () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions.replace("--print=false",
+                        "--print=0"), withOptions)), "--print=0 is false to compose, and was refused"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "-qh"),
+                        withOptions)).isEmpty(), "a lane whose grouped short flags ask for help was accepted"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace(
+                                "<argument>compose</argument>", "<argument>compose</argument><argument>--dry-run</argument>"),
+                        withOptions)).isEmpty(), "a lane whose compose-level dry run builds nothing was accepted"));
+    }
+
     // --- the rule ----------------------------------------------------------------------------------
 
     /**
@@ -262,8 +320,13 @@ class ComposeFixtureImageBuildWiringTest {
                 continue;
             }
             List<String> commandLine = entry.getValue();
-            int build = commandLine.indexOf(BUILD);
-            Set<String> named = new TreeSet<>(commandLine.subList(build + 1, commandLine.size()));
+            List<String> afterBuild = commandLine.subList(commandLine.indexOf(BUILD) + 1, commandLine.size());
+            List<String> nonBuilding = nonBuildingOptions(commandLine);
+            if (!nonBuilding.isEmpty()) {
+                violations.add(lane + " passes " + nonBuilding + " to compose, which then builds no image, so"
+                        + " 'up -d' starts whatever image the daemon already holds.");
+            }
+            Set<String> named = servicesNamed(afterBuild);
             Set<String> missing = new TreeSet<>(fixtures);
             missing.removeAll(named);
             Set<String> extra = new TreeSet<>(named);
@@ -279,6 +342,58 @@ class ComposeFixtureImageBuildWiringTest {
             }
         }
         return violations;
+    }
+
+    /**
+     * The service names among the arguments after {@code build}. Compose takes its options there too, so
+     * an option ({@code --pull}, {@code --no-cache}) is not a service, and neither is the value of an
+     * option that takes one as the next argument ({@code --build-arg KEY=VALUE}).
+     *
+     * @param afterBuild the arguments following {@code build}, in order
+     * @return the service names
+     */
+    /**
+     * The non-building options that are in effect on a compose command line. Compose parses its flags with
+     * pflag, so a repeated flag takes its last value, {@code --name=value} is false for {@code false},
+     * {@code 0} and {@code f} in any case, and grouped short flags such as {@code -qh} each count.
+     *
+     * @param commandLine the whole {@code docker compose} argument list
+     * @return the options, by name, whose effective value makes compose build nothing
+     */
+    private static List<String> nonBuildingOptions(List<String> commandLine) {
+        Map<String, Boolean> effective = new LinkedHashMap<>();
+        for (String argument : commandLine) {
+            if (SHORT_FLAG_GROUP.matcher(argument).matches()) {
+                for (char flag : argument.substring(1).toCharArray()) {
+                    if (NON_BUILDING_OPTIONS.contains("-" + flag)) {
+                        effective.put("-" + flag, true);
+                    }
+                }
+                continue;
+            }
+            int equals = argument.indexOf('=');
+            String name = equals < 0 ? argument : argument.substring(0, equals);
+            if (NON_BUILDING_OPTIONS.contains(name)) {
+                effective.put(name, equals < 0 || !FALSE_VALUES.contains(
+                        argument.substring(equals + 1).toLowerCase(Locale.ROOT)));
+            }
+        }
+        return effective.entrySet().stream().filter(Map.Entry::getValue).map(Map.Entry::getKey).toList();
+    }
+
+    private static Set<String> servicesNamed(List<String> afterBuild) {
+        Set<String> named = new TreeSet<>();
+        boolean optionValue = false;
+        for (String argument : afterBuild) {
+            if (optionValue) {
+                optionValue = false;
+            } else if (argument.startsWith("-")) {
+                optionValue = OPTIONS_WITH_A_VALUE.contains(argument);
+            } else {
+                named.add(argument);
+            }
+        }
+        return named;
     }
 
     // --- reading -----------------------------------------------------------------------------------

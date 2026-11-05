@@ -767,6 +767,126 @@ class OneOffGatewayContainersTest {
                     () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
         }
 
+        @Test
+        @DisplayName("declares a session addition and counts it among the keys the derived document may change")
+        void shouldDeclareASessionAddition() throws Exception {
+            Path derived = OneOffGatewayContainers.writeDerivedDescriptor("harness-test-derived-addition",
+                    REFRESH_SOURCE, REFRESH_ORIGIN, PORT, Map.of("idle_timeout_seconds", 12));
+
+            Map<String, Object> session = child(child(OneOffGatewayContainers.loadDescriptor(derived), "oidc"), "session");
+            assertAll("the derived descriptor with an addition",
+                    () -> assertEquals(12, session.get("idle_timeout_seconds")),
+                    () -> assertEquals(List.of(ORIGIN), child(session, "csrf").get("trusted_origins"),
+                            "the origin triple still moves"));
+        }
+
+        @Test
+        @DisplayName("refuses an addition the source already declares, and writes nothing")
+        void shouldRefuseAnAdditionThatOverridesTheSource() throws Exception {
+            Path wouldBeWritten = cleared("harness-test-derived-override");
+
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-override", REFRESH_SOURCE, REFRESH_ORIGIN, PORT,
+                            Map.of("ttl_seconds", 60)));
+
+            assertAll("the refusal",
+                    () -> assertTrue(refusal.getMessage().contains("oidc.session.ttl_seconds"), refusal::getMessage),
+                    () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
+        }
+
+        @Test
+        @DisplayName("refuses the sealing key file as an addition: the derivation owns that key")
+        void shouldRefuseTheSealingKeyAsAnAddition() {
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-key-addition", REFRESH_SOURCE, REFRESH_ORIGIN, PORT,
+                            Map.of("key_file", "/app/k.key")));
+
+            assertTrue(refusal.getMessage().contains("never declared as an addition"), refusal::getMessage);
+        }
+
+        @ParameterizedTest(name = "refuses the gateway name ''{0}''")
+        @ValueSource(strings = {"Upper", "../escape", "two/levels", "-leading-dash", ""})
+        @DisplayName("refuses a gateway name that is not one lower-case directory name")
+        void shouldRefuseAGatewayNameThatIsNotOneDirectory(String gateway) {
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor(gateway, REFRESH_SOURCE, REFRESH_ORIGIN, PORT));
+
+            assertTrue(refusal.getMessage().contains("one lower-case directory name"), refusal::getMessage);
+        }
+
+        @Test
+        @DisplayName("refuses a server-mode source that declares a sealing key file, and writes nothing")
+        void shouldRefuseAServerModeSourceWithASealingKey() throws Exception {
+            String committed = Files.readString(REFRESH_SOURCE);
+            String withKey = committed.replace("    mode: server\n", "    mode: server\n    key_file: /app/k.key\n");
+            assertNotEquals(committed, withKey, "precondition: the specimen adds oidc.session.key_file");
+            Path specimen = writeReadableByOthers("derived-server-key/gateway.yaml", withKey);
+            Path wouldBeWritten = cleared("harness-test-derived-server-key");
+
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-server-key", specimen, REFRESH_ORIGIN, PORT));
+
+            assertAll("the refusal",
+                    () -> assertTrue(refusal.getMessage().contains(OneOffGatewayContainers.SEALING_KEY_FILE_KEY),
+                            refusal::getMessage),
+                    () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
+        }
+
+        @Test
+        @DisplayName("refuses a cookie-mode source that declares no sealing key file, and writes nothing")
+        void shouldRefuseACookieModeSourceWithoutASealingKey() throws Exception {
+            String committed = Files.readString(COOKIE_REFRESH_SOURCE);
+            String withoutKey = committed.replace("    key_file: /app/signing-keys/cookie-refresh-sealing.key\n", "");
+            assertNotEquals(committed, withoutKey, "precondition: the specimen removes oidc.session.key_file");
+            Path specimen = writeReadableByOthers("derived-cookie-no-key/gateway.yaml", withoutKey);
+            Path wouldBeWritten = cleared("harness-test-derived-cookie-no-key");
+
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-cookie-no-key", specimen, COOKIE_REFRESH_ORIGIN,
+                            PORT));
+
+            assertAll("the refusal",
+                    () -> assertTrue(refusal.getMessage().contains("cookie"), refusal::getMessage),
+                    () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
+        }
+
+        @Test
+        @DisplayName("refuses a source whose trusted origins are not a list, and writes nothing")
+        void shouldRefuseTrustedOriginsThatAreNotAList() throws Exception {
+            String committed = Files.readString(REFRESH_SOURCE);
+            String scalar = committed.replace("trusted_origins: [\"" + REFRESH_ORIGIN + "\"]",
+                    "trusted_origins: \"" + REFRESH_ORIGIN + "\"");
+            assertNotEquals(committed, scalar, "precondition: the specimen makes trusted_origins a scalar");
+            Path specimen = writeReadableByOthers("derived-scalar-origins/gateway.yaml", scalar);
+            Path wouldBeWritten = cleared("harness-test-derived-scalar-origins");
+
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-scalar-origins", specimen, REFRESH_ORIGIN, PORT));
+
+            assertAll("the refusal",
+                    () -> assertTrue(refusal.getMessage().contains("must be a list"), refusal::getMessage),
+                    () -> assertFalse(Files.exists(wouldBeWritten), "a refused derivation writes no descriptor"));
+        }
+
+        @Test
+        @DisplayName("refuses a derivation that leaves the origin keys as they were: the port is the source's own")
+        void shouldRefuseADerivationThatChangesNoOriginKey() {
+            int sourcePort = Integer.parseInt(REFRESH_ORIGIN.substring(REFRESH_ORIGIN.lastIndexOf(':') + 1));
+
+            AssertionError refusal = assertThrows(AssertionError.class, () -> OneOffGatewayContainers
+                    .writeDerivedDescriptor("harness-test-derived-unmoved", REFRESH_SOURCE, REFRESH_ORIGIN, sourcePort));
+
+            assertTrue(refusal.getMessage().contains("must differ from it in exactly the retargeted keys"),
+                    refusal::getMessage);
+        }
+
+        /** Where the derivation for {@code gateway} would write, removed first so a refusal can be seen to write nothing. */
+        private static Path cleared(String gateway) throws IOException {
+            Path wouldBeWritten = MODULE.resolve("target/" + gateway + "/gateway.yaml");
+            Files.deleteIfExists(wouldBeWritten);
+            return wouldBeWritten;
+        }
+
         private static Map<String, Object> child(Map<String, Object> parent, String key) {
             return OneOffGatewayContainers.descriptorMapping(parent.get(key), key);
         }

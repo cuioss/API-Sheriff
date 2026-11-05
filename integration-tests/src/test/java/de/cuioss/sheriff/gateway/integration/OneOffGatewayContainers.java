@@ -790,6 +790,28 @@ final class OneOffGatewayContainers {
      * @return the derived descriptor, readable by others
      */
     static Path writeDerivedDescriptor(String gateway, Path source, String sourceOrigin, int applicationHostPort) {
+        return writeDerivedDescriptor(gateway, source, sourceOrigin, applicationHostPort, Map.of());
+    }
+
+    /**
+     * {@link #writeDerivedDescriptor(String, Path, String, int)}, with further keys declared below
+     * {@code oidc.session}, such as the idle timeout {@code BffSessionIdleTimeoutIT} asserts.
+     * <p>
+     * An addition only ever adds a key: one the source already declares is refused before anything
+     * is written, so an addition cannot quietly override the compose instance's own value. Each
+     * addition is one more key the post-write comparison expects to differ, in dotted form.
+     *
+     * @param gateway             the one-off gateway's container name, and the directory below
+     *                            {@code target/} the descriptor is written to
+     * @param source              the committed compose descriptor
+     * @param sourceOrigin        the gateway origin the source names
+     * @param applicationHostPort the fixed host port the one-off gateway publishes its application
+     *                            listener on
+     * @param sessionAdditions    the keys to declare below {@code oidc.session}, with their values
+     * @return the derived descriptor, readable by others
+     */
+    static Path writeDerivedDescriptor(String gateway, Path source, String sourceOrigin, int applicationHostPort,
+            Map<String, Object> sessionAdditions) {
         assertTrue(GATEWAY_NAME.matcher(gateway).matches(),
                 () -> "the gateway name '" + gateway + "' must be one lower-case directory name");
         String origin = "https://localhost:" + applicationHostPort;
@@ -810,6 +832,13 @@ final class OneOffGatewayContainers {
                 () -> ORIGIN_KEYS.get(2) + " of " + source + " must be a list");
         csrf.put("trusted_origins", trustedOrigins.stream()
                 .map(entry -> retargeted(source, ORIGIN_KEYS.get(2), entry, sourceOrigin, origin)).toList());
+        assertFalse(sessionAdditions.containsKey("key_file"), () -> SEALING_KEY_FILE_KEY
+                + " is derived from the session mode, never declared as an addition");
+        sessionAdditions.forEach((key, value) -> {
+            assertFalse(session.containsKey(key), () -> "oidc.session." + key + " of " + source
+                    + " is already declared; an addition never overrides the source's own value");
+            session.put(key, value);
+        });
         if (cookieMode) {
             session.put("key_file", SEALING_KEY_IN_CONTAINER);
         }
@@ -830,6 +859,7 @@ final class OneOffGatewayContainers {
         }
 
         Set<String> expected = new TreeSet<>(ORIGIN_KEYS);
+        sessionAdditions.keySet().forEach(key -> expected.add("oidc.session." + key));
         if (cookieMode) {
             expected.add(SEALING_KEY_FILE_KEY);
         }
@@ -850,7 +880,8 @@ final class OneOffGatewayContainers {
 
     /**
      * Adds, in dotted form below {@code prefix}, every key whose value differs between two parsed YAML
-     * mappings — present in one only, or present in both with unequal values. Nested mappings are
+     * mappings — present in one only (a key present with a null value counts as present), or present in
+     * both with unequal values. Nested mappings are
      * compared member by member; a list is a value and compared whole.
      */
     private static void collectDifferingKeys(String prefix, Map<String, Object> left, Map<String, Object> right,
@@ -864,7 +895,7 @@ final class OneOffGatewayContainers {
             if (leftValue instanceof Map<?, ?> && rightValue instanceof Map<?, ?>) {
                 collectDifferingKeys(path, descriptorMapping(leftValue, path), descriptorMapping(rightValue, path),
                         differing);
-            } else if (!Objects.equals(leftValue, rightValue)) {
+            } else if (left.containsKey(key) != right.containsKey(key) || !Objects.equals(leftValue, rightValue)) {
                 differing.add(path);
             }
         }
