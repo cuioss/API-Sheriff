@@ -91,7 +91,7 @@ class MirroredResponsePolicyWiringTest {
     @DisplayName("an overlay declaring a top-level security_headers block declares exactly the base block")
     void mirroredGlobalBlockEqualsTheBase() throws Exception {
         // Arrange
-        Object baseBlock = globalBlock(load(BASE_DESCRIPTOR));
+        Object baseBlock = load(BASE_DESCRIPTOR).get(SECURITY_HEADERS);
         List<String> drifted = new ArrayList<>();
 
         // Act
@@ -160,7 +160,7 @@ class MirroredResponsePolicyWiringTest {
                 .count();
 
         // Assert — a guard whose comparison set is empty passes against anything
-        assertNotNull(globalBlock(base), BASE_DESCRIPTOR + " declares no top-level " + SECURITY_HEADERS
+        assertNotNull(base.get(SECURITY_HEADERS), BASE_DESCRIPTOR + " declares no top-level " + SECURITY_HEADERS
                 + " block, so there is nothing for an overlay to mirror");
         assertTrue(globalMirrors > 0, "no overlay under " + DOCKER + " matching '" + OVERLAY_GLOB
                 + "' declares a top-level " + SECURITY_HEADERS + " block, so the global comparison"
@@ -201,7 +201,7 @@ class MirroredResponsePolicyWiringTest {
      */
     private static boolean diverges(Map<?, ?> overlay, Map<?, ?> base) {
         Object overlayGlobal = overlay.get(SECURITY_HEADERS);
-        if (overlayGlobal != null && !overlayGlobal.equals(globalBlock(base))) {
+        if (overlayGlobal != null && !overlayGlobal.equals(base.get(SECURITY_HEADERS))) {
             return true;
         }
         Map<?, ?> baseAnchors = anchors(base);
@@ -246,10 +246,6 @@ class MirroredResponsePolicyWiringTest {
             }
             return fail(descriptor + " is not a YAML mapping");
         }
-    }
-
-    private static Object globalBlock(Map<?, ?> document) {
-        return document.get(SECURITY_HEADERS);
     }
 
     private static Map<?, ?> anchors(Map<?, ?> document) {
