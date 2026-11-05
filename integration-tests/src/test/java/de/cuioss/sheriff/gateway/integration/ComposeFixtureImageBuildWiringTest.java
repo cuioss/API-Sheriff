@@ -28,9 +28,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Pattern;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -136,6 +138,12 @@ class ComposeFixtureImageBuildWiringTest {
      * any value other than {@code false}.
      */
     private static final Set<String> NON_BUILDING_OPTIONS = Set.of("--help", "-h", "--print", "--dry-run", "--check");
+
+    /** The values pflag reads as false, lower-cased. */
+    private static final Set<String> FALSE_VALUES = Set.of("false", "0", "f");
+
+    /** A group of single-letter flags, such as {@code -qh}. */
+    private static final Pattern SHORT_FLAG_GROUP = Pattern.compile("-[A-Za-z]{2,}");
 
     /** The execution id a lane is recorded under when it runs no {@code docker ... build} at all. */
     private static final String NO_BUILD = "";
@@ -271,7 +279,7 @@ class ComposeFixtureImageBuildWiringTest {
                 () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions, withOptions))),
                 () -> assertFalse(violationsOf(fixtures, knownLanes(optionsOnly, withOptions)).isEmpty(),
                         "a lane whose options hide that it leaves a fixture to 'up -d' was accepted"),
-                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--print"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--print=false", "--print"),
                         withOptions)).isEmpty(), "a lane whose build only prints its definition was accepted"),
                 () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions, withOptions.replace("--pull",
                         "--dry-run"))).isEmpty(), "a lane whose build is a dry run was accepted"),
@@ -279,8 +287,15 @@ class ComposeFixtureImageBuildWiringTest {
                         withOptions)).isEmpty(), "a lane whose build prints help was accepted"),
                 () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--check"),
                         withOptions)).isEmpty(), "a lane whose build only checks its configuration was accepted"),
-                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "--print=true"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--print=false", "--print=true"),
                         withOptions)).isEmpty(), "a lane whose build prints through --print=true was accepted"),
+                () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions.replace("--pull",
+                        "--print=true"), withOptions)), "--print=true overridden by a later --print=false builds,"
+                        + " and was refused"),
+                () -> assertEquals(List.of(), violationsOf(fixtures, knownLanes(withOptions.replace("--print=false",
+                        "--print=0"), withOptions)), "--print=0 is false to compose, and was refused"),
+                () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace("--pull", "-qh"),
+                        withOptions)).isEmpty(), "a lane whose grouped short flags ask for help was accepted"),
                 () -> assertFalse(violationsOf(fixtures, knownLanes(withOptions.replace(
                                 "<argument>compose</argument>", "<argument>compose</argument><argument>--dry-run</argument>"),
                         withOptions)).isEmpty(), "a lane whose compose-level dry run builds nothing was accepted"));
@@ -306,8 +321,7 @@ class ComposeFixtureImageBuildWiringTest {
             }
             List<String> commandLine = entry.getValue();
             List<String> afterBuild = commandLine.subList(commandLine.indexOf(BUILD) + 1, commandLine.size());
-            List<String> nonBuilding = commandLine.stream().filter(ComposeFixtureImageBuildWiringTest::buildsNothing)
-                    .toList();
+            List<String> nonBuilding = nonBuildingOptions(commandLine);
             if (!nonBuilding.isEmpty()) {
                 violations.add(lane + " passes " + nonBuilding + " to compose, which then builds no image, so"
                         + " 'up -d' starts whatever image the daemon already holds.");
@@ -338,10 +352,33 @@ class ComposeFixtureImageBuildWiringTest {
      * @param afterBuild the arguments following {@code build}, in order
      * @return the service names
      */
-    private static boolean buildsNothing(String argument) {
-        int equals = argument.indexOf('=');
-        String name = equals < 0 ? argument : argument.substring(0, equals);
-        return NON_BUILDING_OPTIONS.contains(name) && (equals < 0 || !"false".equals(argument.substring(equals + 1)));
+    /**
+     * The non-building options that are in effect on a compose command line. Compose parses its flags with
+     * pflag, so a repeated flag takes its last value, {@code --name=value} is false for {@code false},
+     * {@code 0} and {@code f} in any case, and grouped short flags such as {@code -qh} each count.
+     *
+     * @param commandLine the whole {@code docker compose} argument list
+     * @return the options, by name, whose effective value makes compose build nothing
+     */
+    private static List<String> nonBuildingOptions(List<String> commandLine) {
+        Map<String, Boolean> effective = new LinkedHashMap<>();
+        for (String argument : commandLine) {
+            if (SHORT_FLAG_GROUP.matcher(argument).matches()) {
+                for (char flag : argument.substring(1).toCharArray()) {
+                    if (NON_BUILDING_OPTIONS.contains("-" + flag)) {
+                        effective.put("-" + flag, true);
+                    }
+                }
+                continue;
+            }
+            int equals = argument.indexOf('=');
+            String name = equals < 0 ? argument : argument.substring(0, equals);
+            if (NON_BUILDING_OPTIONS.contains(name)) {
+                effective.put(name, equals < 0 || !FALSE_VALUES.contains(
+                        argument.substring(equals + 1).toLowerCase(Locale.ROOT)));
+            }
+        }
+        return effective.entrySet().stream().filter(Map.Entry::getValue).map(Map.Entry::getKey).toList();
     }
 
     private static Set<String> servicesNamed(List<String> afterBuild) {
