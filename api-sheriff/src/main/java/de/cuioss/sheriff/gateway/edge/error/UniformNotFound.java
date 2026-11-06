@@ -148,12 +148,16 @@ public final class UniformNotFound {
      * processing cost of the pre-trust window, so that every rejection the window can raise has finished
      * before the first step and an unrouted address and a resolved rejection are released on the same
      * step. An answer whose processing ran past a step is held to the next one and counted as an overrun.
-     * The value is measured, not only reasoned: {@code EnumerationOracleIT} drives eight pre-trust paths a
-     * caller can reach on the compose stack — the unrouted address, the verb gate, a path outside
-     * {@code allowed_paths}, a missing, malformed, oversized or unknown-key bearer token and the session
-     * branch's CSRF refusal — and asserts that none of them recorded an overrun on
-     * {@code sheriff_uniform_not_found_overruns_total}; the other closed-set members are not part of that
-     * measurement. A fixed constant of the gateway, like the
+     * The value is measured, not only reasoned: {@code EnumerationOracleIT} drives twelve pre-trust paths
+     * a caller can reach on the compose stack — the unrouted address, the verb gate, a path outside
+     * {@code allowed_paths}, a missing, malformed, oversized or unknown-key bearer token, the session
+     * branch's CSRF refusal, the declared-length fast-reject, a route-scoped filter violation, a
+     * cookie-forwarding same-origin refusal and a missing token on a {@code protocol: grpc} route — and
+     * asserts that every probe is answered as the unrouted {@code 404} and that none of them recorded an
+     * overrun on {@code sheriff_uniform_not_found_overruns_total}. Of the closed set, only
+     * {@link EventType#PARAMETER_LIMIT_EXCEEDED}, inert here, and
+     * {@link EventType#PRE_TRUST_INTERNAL_FAILURE}, an unexpected failure with no known input that raises
+     * it, are not part of that measurement. A fixed constant of the gateway, like the
      * hardening bounds of ADR-0060 and ADR-0064 — no configuration key reaches it.
      */
     public static final Duration RESPONSE_FLOOR = Duration.ofMillis(50);
