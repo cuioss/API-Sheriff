@@ -80,6 +80,18 @@ services:
 
   # --- The gateway, fronting the identity provider ------------------------------------------------
   api-sheriff:
+    environment:
+      # MERGED BY NAME into the base's environment, whose TOPOLOGY_UPSTREAM pass-through therefore
+      # stays in force for this variant too. The variable the variant's topology.properties binds the
+      # IDP alias through (IDP=${TOPOLOGY_IDP:-https://keycloak:8443}) — a BARE pass-through for the
+      # base entry's reason: unset on the host, it stays unset in the container and the default applies.
+      #
+      # ONE KEYCLOAK, TWO ADDRESSES. The alias is what the proxied /auth routes dial; the gateway's own
+      # discovery, PAR, token and revocation calls dial oidc.back_channel_origin in the variant's
+      # gateway.yaml instead. Both name https://keycloak:8443 and must keep naming the same place:
+      # overriding TOPOLOGY_IDP alone sends the browser's login pages to one Keycloak and the
+      # gateway's back channel to another. Move the two together.
+      - TOPOLOGY_IDP
     volumes:
       # MERGED BY TARGET PATH over the base's ./docker/sheriff-config mount: the variant's own,
       # self-contained configuration set replaces it. Read-only, as in the base.

@@ -544,6 +544,16 @@ The path is canonicalised before any route is chosen, so a relative spelling suc
 The realm route is also the only one that forwards cookies, and only Keycloak's login cookies, by
 exact name. The gateway's own `+__Host-sample-session+` cookie never crosses to Keycloak.
 
+The three routes reach Keycloak through the `IDP` alias in the variant's `topology.properties`,
+`${TOPOLOGY_IDP:-https://keycloak:8443}`. The override forwards `TOPOLOGY_IDP` into the gateway
+container as a bare pass-through entry, next to the base file's `TOPOLOGY_UPSTREAM`, so either can be
+exported before the bring-up. One constraint binds `TOPOLOGY_IDP`: the alias *must* name the same
+Keycloak as `oidc.back_channel_origin` in the variant's `gateway.yaml` -- both are
+`https://keycloak:8443`. The routes dial the alias, while the gateway's own discovery, pushed
+authorization request, token and revocation calls dial the back-channel origin, so overriding the
+variable alone would send the browser's login pages to one Keycloak and the gateway's back channel to
+another. Change the two together.
+
 === The admin console and the management port are not published
 
 Keycloak's `ports:` list is replaced by an empty one, so neither the login UI, nor the admin console,
@@ -863,8 +873,11 @@ nothing in it reaches into `integration-tests/` or into the `api-sheriff` module
 directory gives you a working starting point. From there the usual first four changes are:
 
 . Point the `UPSTREAM` alias in `docker/sheriff-config/topology.properties` at your real backend, or
-  override `TOPOLOGY_UPSTREAM` in the environment. It is the one place a backend address is written
-  down.
+  export `TOPOLOGY_UPSTREAM` before the bring-up. It is the one place a backend address is written
+  down. The variable works because `docker-compose.yml` forwards it into the gateway container as a
+  bare pass-through entry -- the placeholder is resolved against the *container's* environment, not
+  the host's. Unset on the host, it stays unset in the container and the file's default applies; set
+  to an empty value, it is *not* treated as unset and the gateway refuses to boot on the empty alias.
 . Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`. You will
   usually need no `forward` block at all: with none declared, every client header and query
   parameter crosses except the gateway-owned

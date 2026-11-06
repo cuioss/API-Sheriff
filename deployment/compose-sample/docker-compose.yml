@@ -215,11 +215,21 @@ services:
       - "127.0.0.1:9000:9000"
     environment:
       # This block is the DEPLOYMENT DOOR, and it is deliberately the same door the release smoke
-      # test drives in .github/workflows/release.yml. The shipped artifact declares nothing about
-      # where its configuration or its key material lives (ADR-0032); the deployment supplies both.
+      # test drives in .github/workflows/release.yml: the container's environment. The shipped
+      # artifact declares nothing about where its configuration or its key material lives
+      # (ADR-0032); the deployment supplies both. The topology pass-through below is an entry of the
+      # same door that a deployment need not set — unset, the in-file default stays in force.
       #
       # Where the gateway's own configuration is mounted.
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # The variable topology.properties binds the UPSTREAM alias through
+      # (UPSTREAM=${TOPOLOGY_UPSTREAM:-http://demo-api:8080}). The gateway resolves that placeholder
+      # against ITS OWN environment, so without this entry a value set on the host never arrives and
+      # the in-file default always wins. A BARE pass-through, deliberately: Compose copies the host's
+      # value when it is set and leaves the variable unset in the container when it is not, so the
+      # default applies. An EMPTY host value is not "unset" — it reaches the gateway, substitutes an
+      # empty URL, and the boot is refused on the malformed alias rather than silently defaulted.
+      - TOPOLOGY_UPSTREAM
       # WHOSE forwarding headers the gateway believes — the whole comma-separated list, supplied by
       # this one variable because the trusted set differs per environment while the mounted
       # gateway.yaml does not (it carries the bare ${SHERIFF_TRUSTED_PROXIES} placeholder and no

@@ -33,8 +33,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Properties;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.AbstractConstruct;
@@ -81,6 +84,9 @@ import org.junit.jupiter.api.Test;
  *       network.</li>
  *   <li>The override mounts the variant's own set over the base set's mount target — Compose merges
  *       {@code volumes} by target, so a different target would leave the base set mounted as well.</li>
+ *   <li>The variable the {@code idp} endpoint's alias binds in {@code topology.properties} is forwarded
+ *       into the gateway as a bare entry, and the alias's default equals {@code oidc.back_channel_origin}
+ *       — the proxied {@code /auth} routes and the gateway's own back-channel calls reach one Keycloak.</li>
  * </ul>
  * Every expectation is <strong>derived from the committed files</strong> and none is mirrored into a
  * constant here: the anchor from {@code endpoints/idp.yaml} and {@code gateway.yaml}, the realm from
@@ -112,6 +118,10 @@ class ComposeSampleAuthFrontedWiringTest {
     private static final Path GATEWAY_YAML = VARIANT_SET.resolve("gateway.yaml");
     private static final Path IDP_ENDPOINT = VARIANT_SET.resolve("endpoints/idp.yaml");
     private static final Path REALM = SAMPLE.resolve("docker/keycloak/sample-realm.json");
+    private static final Path TOPOLOGY = VARIANT_SET.resolve("topology.properties");
+
+    /** One whole {@code ${VAR:-default}} placeholder — the form the topology file binds an alias through. */
+    private static final Pattern DEFAULTED_PLACEHOLDER = Pattern.compile("\\$\\{([A-Za-z_]\\w*):-([^}]*)}");
 
     private static final String KEYCLOAK_SERVICE = "keycloak";
     private static final String GATEWAY_SERVICE = "api-sheriff";
@@ -158,6 +168,12 @@ class ComposeSampleAuthFrontedWiringTest {
     @DisplayName("the override mounts the variant's own set over the base set's mount target")
     void overrideMountsTheVariantSetOverTheBaseSet() throws Exception {
         assertNoFailure(Variant.committed().configMountFailures());
+    }
+
+    @Test
+    @DisplayName("the IDP alias's variable is forwarded into the gateway, and its default is oidc.back_channel_origin")
+    void idpAliasIsForwardedAndEqualsTheBackChannelOrigin() throws Exception {
+        assertNoFailure(Variant.committed().idpTopologyFailures());
     }
 
     private static void assertNoFailure(List<String> failures) {
@@ -265,6 +281,28 @@ class ComposeSampleAuthFrontedWiringTest {
                             .configMountFailures(), "the override mounts beside the base set"));
         }
 
+        @Test
+        @DisplayName("an unforwarded IDP variable, or an IDP alias that differs from the back-channel origin, is reported")
+        void divergedIdpTopologyIsReported() throws Exception {
+            Variant committed = Variant.committed();
+
+            assertAll(
+                    () -> assertReported(committed.withOverride(
+                            text -> replace(text, "      - TOPOLOGY_IDP\n", ""))
+                            .idpTopologyFailures(), "the override no longer forwards TOPOLOGY_IDP"),
+                    () -> assertReported(committed.withOverride(
+                            text -> replace(text, "      - TOPOLOGY_IDP\n", "      - TOPOLOGY_IDP=https://idp.internal:8443\n"))
+                            .idpTopologyFailures(), "TOPOLOGY_IDP is forwarded with a value that overrides the alias"),
+                    () -> assertReported(committed.withTopology(
+                            text -> replace(text, "IDP=${TOPOLOGY_IDP:-https://keycloak:8443}",
+                                    "IDP=${TOPOLOGY_IDP:-https://keycloak:9443}"))
+                            .idpTopologyFailures(), "the IDP alias's default moved off the back-channel origin"),
+                    () -> assertReported(committed.withGateway(
+                            text -> replace(text, "back_channel_origin: https://keycloak:8443",
+                                    "back_channel_origin: https://idp.internal:8443"))
+                            .idpTopologyFailures(), "the back-channel origin moved off the IDP alias"));
+        }
+
         private static void assertReported(List<String> failures, String divergence) {
             assertFalse(failures.isEmpty(), () -> "the check passed a copy in which " + divergence
                     + ", so it cannot detect that drift in the committed files");
@@ -285,7 +323,7 @@ class ComposeSampleAuthFrontedWiringTest {
     }
 
     /**
-     * The texts of the five committed files the bindings read, and the checks over them. Held as text so
+     * The texts of the six committed files the bindings read, and the checks over them. Held as text so
      * a diverged copy is the committed text with one value replaced.
      *
      * @param override the {@code docker-compose.auth-fronted.yml} text
@@ -293,24 +331,70 @@ class ComposeSampleAuthFrontedWiringTest {
      * @param gateway  the variant set's {@code gateway.yaml} text
      * @param idp      the variant set's {@code endpoints/idp.yaml} text
      * @param realm    the imported {@code sample-realm.json} text
+     * @param topology the variant set's {@code topology.properties} text
      */
-    private record Variant(String override, String base, String gateway, String idp, String realm) {
+    private record Variant(String override, String base, String gateway, String idp, String realm, String topology) {
 
         static Variant committed() throws IOException {
             return new Variant(read(OVERRIDE), read(BASE_COMPOSE), read(GATEWAY_YAML), read(IDP_ENDPOINT),
-                    read(REALM));
+                    read(REALM), read(TOPOLOGY));
         }
 
         Variant withOverride(Function<String, String> divergence) {
-            return new Variant(divergence.apply(override), base, gateway, idp, realm);
+            return new Variant(divergence.apply(override), base, gateway, idp, realm, topology);
         }
 
         Variant withGateway(Function<String, String> divergence) {
-            return new Variant(override, base, divergence.apply(gateway), idp, realm);
+            return new Variant(override, base, divergence.apply(gateway), idp, realm, topology);
         }
 
         Variant withRealm(Function<String, String> divergence) {
-            return new Variant(override, base, gateway, idp, divergence.apply(realm));
+            return new Variant(override, base, gateway, idp, divergence.apply(realm), topology);
+        }
+
+        Variant withTopology(Function<String, String> divergence) {
+            return new Variant(override, base, gateway, idp, realm, divergence.apply(topology));
+        }
+
+        /**
+         * The IDP alias is the second address of the same Keycloak: the proxied {@code /auth} routes dial
+         * it, while the gateway's own back-channel calls dial {@code oidc.back_channel_origin}. The two
+         * must name one place, and the variable the alias binds must reach the gateway — as a bare entry,
+         * so the in-file default stays in force while it is unset.
+         */
+        List<String> idpTopologyFailures() {
+            List<String> failures = new ArrayList<>();
+            String alias = String.valueOf(mapping(parseYaml(idp), "endpoint").get("base_url"));
+            Properties aliases = new Properties();
+            try {
+                aliases.load(new StringReader(topology));
+            } catch (IOException e) {
+                throw new AssertionError("cannot parse " + TOPOLOGY, e);
+            }
+            String value = aliases.getProperty(alias);
+            Matcher placeholder = value == null ? null : DEFAULTED_PLACEHOLDER.matcher(value.trim());
+            if (placeholder == null || !placeholder.matches()) {
+                failures.add(TOPOLOGY.getFileName() + " binds the idp endpoint's alias '" + alias + "' to " + value
+                        + ", not to one ${VAR:-default} placeholder, so there is no variable to forward and no "
+                        + "default to compare with the back-channel origin");
+                return failures;
+            }
+            String variable = placeholder.group(1);
+            String aliasDefault = placeholder.group(2);
+            List<String> gatewayEntries = environmentEntries(parseCompose(override), GATEWAY_SERVICE);
+            if (!gatewayEntries.contains(variable)) {
+                failures.add(OVERRIDE.getFileName() + " does not forward " + variable + " into the " + GATEWAY_SERVICE
+                        + " service as a bare entry (found " + gatewayEntries + "), so " + TOPOLOGY.getFileName()
+                        + "'s ${" + variable + "} can never be set from the host — or a value there overrides the "
+                        + "in-file default on every start");
+            }
+            Object origin = mapping(parseYaml(gateway), "oidc").get("back_channel_origin");
+            if (!stripTrailingSlash(aliasDefault).equals(stripTrailingSlash(String.valueOf(origin)))) {
+                failures.add("the IDP alias defaults to " + aliasDefault + " but oidc.back_channel_origin is " + origin
+                        + ". The proxied /auth routes dial the alias and the gateway's own back-channel calls dial "
+                        + "the origin, so a difference splits one Keycloak into two places.");
+            }
+            return failures;
         }
 
         List<String> relativePathFailures() {
@@ -527,6 +611,16 @@ class ComposeSampleAuthFrontedWiringTest {
             }
         }
         return declared;
+    }
+
+    /** A service's {@code environment:} list entries verbatim, so a bare pass-through entry stays distinguishable. */
+    private static List<String> environmentEntries(Map<?, ?> compose, String name) {
+        return service(compose, name).get("environment") instanceof List<?> entries
+                ? entries.stream().map(String::valueOf).toList() : List.of();
+    }
+
+    private static String stripTrailingSlash(String value) {
+        return value.replaceAll("/+$", "");
     }
 
     private static List<String> ports(Map<?, ?> compose) {
