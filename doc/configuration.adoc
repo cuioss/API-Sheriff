@@ -156,12 +156,12 @@ file-and-JSON-pointer error before any immutable value object is built:
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
-  `anchor`, `auth`, `allowed_methods`, `upstream_defaults`, `security_filter`, `forward`,
-  `cookies`) and its `routes[]`, each route's
-  `id`, `protocol`, `anchor`, `match`, `auth`, `security_filter`, `forward`, `cookies`,
-  `keep_identity_headers`, `upstream`, `asset`, `redirect`, the WebSocket-route `websocket` block
-  (which holds `allowed_origins` and `idle_timeout_seconds`), and `rate_limit` (planned, not
-  implemented; it never causes a `429` -- see link:#_rate_limit[`rate_limit`]).
+  `anchor`, `auth`, `scopes`, `allowed_methods`, `upstream_defaults`, `security_filter`,
+  `forward`, `cookies`, `catalog`) and its `routes[]`, each route's `id`, `protocol`, `anchor`,
+  `match`, `auth`, `security_filter`, `forward`, `cookies`, `keep_identity_headers`, `upstream`,
+  `asset`, `redirect`, `websocket` and `rate_limit`. The WebSocket-route `websocket` block holds
+  `allowed_origins` and `idle_timeout_seconds`; `rate_limit` is planned, not implemented, and
+  never causes a `429` -- see link:#_rate_limit[`rate_limit`].
 |===
 
 Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
@@ -3928,8 +3928,10 @@ alone), the framing the gateway re-establishes, and the names the gateway itself
 
 The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
 vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and
-the underscore spellings of the forwarding names. Every name in the set is matched on its
-*separator-folded* spelling -- lower-cased with each `_` mapped to `-` -- so `X_Real_IP` and
+the underscore spellings of the regenerated forwarding names, `X_Forwarded_For`,
+`X_Forwarded_Host`, `X_Forwarded_Proto`, `X_Forwarded_Port` and `X_Forwarded_Prefix`. Every name in
+the set is matched on its *separator-folded* spelling -- lower-cased with each `_` mapped to `-` --
+so `X_Real_IP` and
 `X-Real_IP` are withheld exactly as `X-Real-IP` is, and a backend that folds header names into
 CGI-style variables cannot be reached by respelling one.
 
