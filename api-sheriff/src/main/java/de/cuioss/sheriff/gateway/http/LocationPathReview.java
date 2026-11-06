@@ -50,9 +50,13 @@ import lombok.experimental.UtilityClass;
  *       canonical-path review also holds the reserved OIDC paths ({@code ReservedPathRules}). A refusal
  *       is a {@code ConfigError}.</li>
  * </ul>
- * Each reader hands the review the <em>path portion</em> only ({@link #pathPortion}), so the query
- * and fragment of a reference never reach it: a separator after the {@code ?} cannot form an
- * authority, and refusing it would refuse an ordinary encoded query value.
+ * Each reader hands the review a path without its query and fragment, though not all of them obtain
+ * it the same way. {@code TerminalActionRules}, {@code PortalRules} for a catalog entry and the
+ * gateway-relative branch of {@code sameOrigin} split a reference with {@link #pathPortion};
+ * {@code LocationRewriter} and the absolute-URL branch of {@code sameOrigin} pass the raw path of the
+ * parsed {@link java.net.URI}; {@code PortalRules} reviews {@code portal.path}, a bare path, whole.
+ * Either way the query and fragment of a reference never reach the review: a separator after the
+ * {@code ?} cannot form an authority, and refusing it would refuse an ordinary encoded query value.
  *
  * <h2>Detector, never canonicalizer</h2>
  *
@@ -220,10 +224,10 @@ public class LocationPathReview {
      * The path portion of a gateway-relative reference: everything before the first {@code ?} or
      * {@code #}, or the whole value when it carries neither.
      * <p>
-     * This is the one split every reader of {@link #refusalReason} uses before handing it a
-     * <em>reference</em> rather than a bare path, so the review is scoped to the path the same way
-     * everywhere. The split is purely lexical — the first query or fragment delimiter ends the path,
-     * exactly where a client ends it — and decodes nothing.
+     * This is the split the readers of {@link #refusalReason} use when they hold an unparsed
+     * <em>reference</em> rather than a bare path or a parsed {@link java.net.URI} (the class javadoc
+     * names which readers those are). The split is purely lexical — the first query or fragment
+     * delimiter ends the path, exactly where a client ends it — and decodes nothing.
      *
      * @param reference a gateway-relative reference, possibly carrying a query and a fragment; never
      *                  {@code null}

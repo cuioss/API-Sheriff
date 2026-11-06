@@ -28,7 +28,9 @@ import lombok.experimental.UtilityClass;
  * {@code Location} rewriter and by the route-table join, and the {@code rewrite_location} round trip
  * only holds while all three remove the <em>whole</em> trailing run: stripping one slash in one place
  * and all of them in another maps an upstream {@code /upload/next} onto the gateway and then
- * dispatches the client's follow-up to {@code /upload//next}.
+ * dispatches the client's follow-up to {@code /upload//next}. The upstream asset source joins the
+ * same base path the same way, so an alias reaches one upstream path whether a proxy route or an
+ * asset route serves it.
  * <p>
  * Three operations, each a pure function of its argument:
  * <ul>

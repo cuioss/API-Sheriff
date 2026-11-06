@@ -407,12 +407,12 @@ the re-drive is a *pushed* request. The producer hands `StepUpHandler.initiate` 
 (link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058],
 decision 12).
 
-=== BFF-2 — Catalogued session-lifecycle and CSRF LogRecords are never emitted
+=== BFF-2 — Catalogued session-lifecycle LogRecords are never emitted
 
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: javadoc / false-security (observability)
-|Location |`bff/BffLogMessages.java`; `bff/csrf/CsrfDefence.java:128`
+|Location |`bff/BffLogMessages.java`; the CSRF rejection diagnostic in `bff/csrf/CsrfDefence.java` (`rejected`)
 |===
 
 `INFO.SESSION_CREATED` (10), `INFO.SESSION_DESTROYED` (11) and `INFO.RP_LOGOUT_COMPLETED` (14)

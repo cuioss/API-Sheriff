@@ -15,13 +15,16 @@
  */
 package de.cuioss.sheriff.gateway.bff.login;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
 import java.util.Set;
 
 
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -178,6 +181,26 @@ class ReturnTargetScopesTest {
         @DisplayName("Should fall back for a non-canonical or unparseable path")
         void shouldFallBackForNonCanonicalPath(String returnUrl) {
             assertEquals(OIDC_SCOPES, resolver.resolve(returnUrl));
+        }
+
+        /**
+         * Every value below would select the authenticated {@code app} route if it reached route
+         * selection: its decoded path, or the path a client resolves it to, lies under {@code /app}.
+         * The resolver keeps no encoded-separator or dot-segment check of its own, so the fallback is
+         * owed entirely to the same-origin check refusing each one first — which the first assertion
+         * pins directly, so a fallback reached any other way cannot pass for it.
+         */
+        @ParameterizedTest(name = "\"{0}\" is refused by the same-origin check")
+        @ValueSource(strings = {"/app%2forders", "/app%2Forders", "/app/%5c/orders", "/app/%5C/orders",
+                "/app/./orders", "/app/%2e/orders", "/app/%2E%2E/app/orders", "/x/../app/orders",
+                ORIGIN + "/app/%2e%2e/app/orders", ORIGIN + "/x/../app/orders", ORIGIN + "/app%2forders"})
+        @DisplayName("Should fall back for an encoded separator or a dot segment, refused by the same-origin check alone")
+        void shouldFallBackForPathTheSameOriginCheckRefuses(String returnUrl) {
+            assertAll(
+                    () -> assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, ORIGIN),
+                            "the shared Location review behind sameOrigin refuses the path"),
+                    () -> assertEquals(OIDC_SCOPES, resolver.resolve(returnUrl),
+                            "a refused target selects no route"));
         }
 
         @Test

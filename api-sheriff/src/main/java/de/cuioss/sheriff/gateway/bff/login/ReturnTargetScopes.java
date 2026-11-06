@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.bff.login;
 import java.net.URI;
 import java.util.Collection;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -47,9 +46,8 @@ import org.jspecify.annotations.Nullable;
  *       ({@link PendingAuthorizationRecord#sameOrigin}) — cross-origin, schema-relative, backslash
  *       authority, unparseable, or a path the shared {@code Location} review refuses (an encoded
  *       separator, double encoding, or a dot segment in either spelling);</li>
- *   <li>a path that is not canonical — an encoded separator ({@code %2f}, {@code %5c}), a matrix
- *       parameter ({@code ;}), or a dot-segment that escapes the root — which the gateway's stage-1
- *       floor would reject as a navigation anyway;</li>
+ *   <li>a path carrying a matrix parameter ({@code ;}), which the gateway's stage-1 floor would
+ *       reject as a navigation anyway;</li>
  *   <li>no route matches the path;</li>
  *   <li>the matched route is {@code require: none}.</li>
  * </ul>
@@ -72,8 +70,6 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ReturnTargetScopes {
 
-    private static final String ENCODED_SLASH = "%2f";
-    private static final String ENCODED_BACKSLASH = "%5c";
     private static final char MATRIX_PARAM = ';';
     private static final String ROOT_PATH = "/";
 
@@ -124,9 +120,12 @@ public final class ReturnTargetScopes {
     }
 
     /**
-     * The canonical path of an already same-origin-validated target: the decoded path with dot
-     * segments removed, the query and fragment discarded. Empty when the target does not parse or its
-     * path is not canonical.
+     * The decoded path of an already same-origin-validated target, the query and fragment discarded.
+     * Empty when the target does not parse or its path carries a matrix parameter.
+     * <p>
+     * The path needs no canonicalization of its own: {@link PendingAuthorizationRecord#sameOrigin}
+     * has already refused every encoded separator and every dot segment, in either spelling, through
+     * the shared {@code Location} review, so the decoded path is the one stage-2 selection would see.
      */
     private static Optional<String> canonicalPath(String returnUrl) {
         URI target;
@@ -139,24 +138,10 @@ public final class ReturnTargetScopes {
         if (rawPath == null || rawPath.isEmpty()) {
             return Optional.of(ROOT_PATH);
         }
-        String lowered = rawPath.toLowerCase(Locale.ROOT);
-        if (lowered.contains(ENCODED_SLASH) || lowered.contains(ENCODED_BACKSLASH)
-                || rawPath.indexOf(MATRIX_PARAM) >= 0) {
+        if (rawPath.indexOf(MATRIX_PARAM) >= 0) {
             return Optional.empty();
         }
-        String normalized = target.normalize().getPath();
-        if (normalized == null || !normalized.startsWith(ROOT_PATH) || escapesRoot(normalized)) {
-            return Optional.empty();
-        }
-        return Optional.of(normalized);
-    }
-
-    /**
-     * {@link URI#normalize()} keeps a leading {@code ..} segment it cannot resolve, so a path that
-     * climbs above the root survives normalization as {@code /..} or {@code /../...}.
-     */
-    private static boolean escapesRoot(String normalizedPath) {
-        return "/..".equals(normalizedPath) || normalizedPath.startsWith("/../");
+        return Optional.of(target.getPath());
     }
 
     /**
