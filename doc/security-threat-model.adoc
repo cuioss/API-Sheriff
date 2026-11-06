@@ -2973,7 +2973,9 @@ key. Anything else is refused:
 
 * at the code exchange the callback answers `400` and creates no session and no session cookie; on a
   widening callback it answers the same `400` and merges nothing into the live session, which is
-  left as it was;
+  left as it was. The status was reviewed and kept: it is the answer to every failed code exchange,
+  so the callback does not tell whoever drives it which check failed, and the operator reads the
+  cause from `ApiSheriff-134`; ADR-0058 decision 19 records the reasoning;
 * at a refresh -- near-expiry or scope-driven -- the session ends (`ApiSheriff-111`, reason
   `redeemed-response-refused`), the session cookie is cleared and `oidc.session.refresh.on_failure`
   applies;
@@ -3568,7 +3570,10 @@ the URL:
   pushed-authorization endpoint (`no-par-endpoint`, no network call), a rendered request that cannot
   be split into uniquely named parameters (`invalid-request`, no network call), and every failure of
   the push itself -- a transport failure, a timeout, a non-success answer, an unparsable answer, an
-  answer without a `request_uri` (`push-failed`);
+  answer without a `request_uri` (`push-failed`). The status was reviewed and kept, for the
+  widening's interactive re-drive too: the failure lies with the identity provider the gateway
+  depends on, not with the browser, whose live session stays usable; ADR-0058 decision 11 records
+  the reasoning;
 * the refusal happens *before* the pending-authorization record is stored and before the binding
   cookie is set, so a failed push leaves no login or widening state behind in the gateway, and a
   live session that was to be widened is left as it was;
@@ -3743,8 +3748,7 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   gateway holds no session whose end it could observe, so there a relay is closed at the absolute
   expiry and not by a logout (<<bff-09>>).
 
-*Status:* COVERED, with one statement of the controls above that no test asserts; the end of the
-assertion names it. The limits of the
+*Status:* COVERED. The limits of the
 stateless variant are recorded where they arise and are not repeated here: a sealed cookie cannot be
 withdrawn before its deadlines (<<bff-09>>), and its replay after a refresh is the identity
 provider's to refuse (<<bff-08>>).
@@ -3838,10 +3842,12 @@ those store operations is asserted with the receiver and the callback
 relay held open across them.
 
 An upstream that sends `Set-Cookie` on its `101` and on a refused upgrade reaches the client with no
-upstream `Set-Cookie` (`WebSocketRelayStageTest`).
-
-Not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie -- no page the
-gateway renders sets one today, and every HTML error page is `no-store` by its own envelope.
+upstream `Set-Cookie`, and relaying it turns that test red (`WebSocketRelayStageTest`,
+`UpstreamSetCookie`). A page the gateway renders that sets a cookie -- accumulated on the request or
+the answered exit's own line -- carries exactly one `Cache-Control: no-store` even where its envelope
+declares it cacheable, the same page without a cookie keeps its envelope's value, and removing the
+page writer's `no-store` write turns that test red (`GatewayEdgeGatewayCookieTest`,
+`GatewayRenderedPages`).
 
 [[_html_surface_failure_catalogue]]
 == HTML surface failure catalogue
