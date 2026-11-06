@@ -275,7 +275,7 @@ class IdpFrontingCanonicalPathTest {
 
         @Test
         @DisplayName("a catch-all /auth route added to idp.yaml lets the admin console through")
-        void catchAllRouteIsReported() throws IOException {
+        void catchAllRouteIsReported() throws Exception {
             Path cut = copyOfTheShippedSet(tempDir);
             // The leading line break keeps the appended item off the last line of the shipped file.
             Files.writeString(cut.resolve("endpoints/idp.yaml"), "\n" + CATCH_ALL_ROUTE, StandardCharsets.UTF_8,
@@ -369,7 +369,7 @@ class IdpFrontingCanonicalPathTest {
      * @param reachesIdentityProvider whether the selected route belongs to the {@code idp} endpoint
      */
     record Outcome(Kind kind, @Nullable String canonicalPath, @Nullable String routeId,
-            boolean reachesIdentityProvider) {
+    boolean reachesIdentityProvider) {
     }
 
     /**

@@ -126,37 +126,37 @@ class ComposeSampleAuthFrontedWiringTest {
 
     @Test
     @DisplayName("KC_HTTP_RELATIVE_PATH equals the idp anchor's prefix and the path of KC_HOSTNAME")
-    void relativePathIsTheAnchorPrefixAndTheHostnamePath() throws IOException {
+    void relativePathIsTheAnchorPrefixAndTheHostnamePath() throws Exception {
         assertNoFailure(Variant.committed().relativePathFailures());
     }
 
     @Test
     @DisplayName("oidc.issuer and every token_validation issuer are KC_HOSTNAME plus /realms/<imported realm>")
-    void issuersDeriveFromTheHostname() throws IOException {
+    void issuersDeriveFromTheHostname() throws Exception {
         assertNoFailure(Variant.committed().issuerFailures());
     }
 
     @Test
     @DisplayName("oidc.back_channel_origin is a bare https origin other than the issuer's own")
-    void backChannelOriginIsABareOriginOffTheGatewaysListener() throws IOException {
+    void backChannelOriginIsABareOriginOffTheGatewaysListener() throws Exception {
         assertNoFailure(Variant.committed().backChannelOriginFailures());
     }
 
     @Test
     @DisplayName("Keycloak publishes no host port in the merged model, and the base it clears publishes one")
-    void keycloakPublishesNoHostPort() throws IOException {
+    void keycloakPublishesNoHostPort() throws Exception {
         assertNoFailure(Variant.committed().publishedPortFailures());
     }
 
     @Test
     @DisplayName("KC_PROXY_TRUSTED_ADDRESSES is exactly the gateway's static address on the sample network")
-    void trustedAddressIsTheGatewaysStaticAddress() throws IOException {
+    void trustedAddressIsTheGatewaysStaticAddress() throws Exception {
         assertNoFailure(Variant.committed().trustedAddressFailures());
     }
 
     @Test
     @DisplayName("the override mounts the variant's own set over the base set's mount target")
-    void overrideMountsTheVariantSetOverTheBaseSet() throws IOException {
+    void overrideMountsTheVariantSetOverTheBaseSet() throws Exception {
         assertNoFailure(Variant.committed().configMountFailures());
     }
 
@@ -174,7 +174,7 @@ class ComposeSampleAuthFrontedWiringTest {
 
         @Test
         @DisplayName("a relative path, anchor prefix or hostname path that differs from the other two is reported")
-        void divergedRelativePathIsReported() throws IOException {
+        void divergedRelativePathIsReported() throws Exception {
             Variant committed = Variant.committed();
 
             assertAll(
@@ -192,7 +192,7 @@ class ComposeSampleAuthFrontedWiringTest {
 
         @Test
         @DisplayName("an oidc issuer, a token_validation issuer or a realm name that drifts is reported")
-        void divergedIssuerIsReported() throws IOException {
+        void divergedIssuerIsReported() throws Exception {
             Variant committed = Variant.committed();
 
             assertAll(
@@ -211,7 +211,7 @@ class ComposeSampleAuthFrontedWiringTest {
 
         @Test
         @DisplayName("a back-channel origin carrying a path, or naming the gateway's own listener, is reported")
-        void divergedBackChannelOriginIsReported() throws IOException {
+        void divergedBackChannelOriginIsReported() throws Exception {
             Variant committed = Variant.committed();
 
             assertAll(
@@ -227,7 +227,7 @@ class ComposeSampleAuthFrontedWiringTest {
 
         @Test
         @DisplayName("an untagged keycloak ports: list, which Compose concatenates onto the base, is reported")
-        void untaggedPortsAreReported() throws IOException {
+        void untaggedPortsAreReported() throws Exception {
             Variant diverged = Variant.committed().withOverride(
                     text -> replace(text, "ports: !override []", "ports: []"));
 
@@ -236,7 +236,7 @@ class ComposeSampleAuthFrontedWiringTest {
 
         @Test
         @DisplayName("a trusted-address range, or a gateway address it does not name, is reported")
-        void divergedTrustedAddressIsReported() throws IOException {
+        void divergedTrustedAddressIsReported() throws Exception {
             Variant committed = Variant.committed();
 
             assertAll(
@@ -251,7 +251,7 @@ class ComposeSampleAuthFrontedWiringTest {
 
         @Test
         @DisplayName("an override mounting the base set, or mounting at another target, is reported")
-        void divergedConfigMountIsReported() throws IOException {
+        void divergedConfigMountIsReported() throws Exception {
             Variant committed = Variant.committed();
 
             assertAll(
