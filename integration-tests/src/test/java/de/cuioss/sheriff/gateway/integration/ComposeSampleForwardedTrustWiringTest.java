@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -81,6 +82,18 @@ import org.junit.jupiter.api.Test;
  * nothing would leave the per-key loops asserting nothing while still passing green.
  * <p>
  * It parses the committed descriptors only — it starts no container and reaches no network.
+ *
+ * <h2>The bare pass-through entry</h2>
+ *
+ * The gateway's {@code environment:} list carries two entry shapes, and they are kept apart rather than
+ * folded into one map. A {@code KEY=value} entry is a value the descriptor itself supplies (a blank one
+ * included — that is how an override clears a key). A bare {@code - NAME} entry is Compose's
+ * pass-through form: the host's value is copied in when the host sets one, and the variable is
+ * <em>absent</em> in the container when it does not. A pass-through therefore <strong>supplies
+ * nothing</strong> the descriptor can vouch for, and every assertion below treats it that way: the real
+ * loader runs with it unset (the shipped default an operator who sets nothing gets), and a YAML
+ * placeholder whose variable is only passed through must carry its own {@code :-} default in the
+ * document, or an unset host fails the boot.
  *
  * <h2>The plain-HTTP override</h2>
  *
@@ -167,14 +180,22 @@ class ComposeSampleForwardedTrustWiringTest {
     /** The container port the readiness probe is derived from, which must survive the merge. */
     private static final String MANAGEMENT_PORT = "9000";
 
-    /** Matches a {@code ${VAR}} / {@code ${VAR:-default}} reference, capturing the variable name. */
+    /**
+     * Matches a {@code ${VAR}} / {@code ${VAR:-default}} reference, capturing the variable name and —
+     * as group 2, present only for the defaulted form — the {@code :-} marker.
+     */
     private static final Pattern VARIABLE_REFERENCE =
-            Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)[^}]*}");
+            Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)(:-)?[^}]*}");
+
+    /** The name a bare pass-through {@code environment:} entry must be — Compose's variable-name shape. */
+    private static final Pattern PASS_THROUGH_ENTRY = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
     @Test
     @DisplayName("the shipped sample loads through the real loader and binds the compose-supplied list")
     void sampleLoadsAndBindsTheComposeSuppliedAllowList() throws Exception {
-        Map<String, String> environment = sampleEnvironment();
+        // Pass-through entries are deliberately left out: they supply nothing unless the host sets them,
+        // so the loader runs against the environment an operator who sets nothing actually gets.
+        Map<String, String> environment = sampleEnvironment().values();
         String supplied = environment.get(TRUSTED_PROXIES_VARIABLE);
         assertNotNull(supplied, () -> "the '" + GATEWAY_SERVICE + "' service must supply "
                 + TRUSTED_PROXIES_VARIABLE + " — the sample's gateway.yaml references it with no"
@@ -198,31 +219,69 @@ class ComposeSampleForwardedTrustWiringTest {
     }
 
     @Test
-    @DisplayName("every ${VAR} the sample's YAML config documents reference is supplied by the compose environment block")
+    @DisplayName("every ${VAR} the sample's YAML config documents reference is supplied by the compose environment block,"
+            + " or only passed through with its own in-document default")
     void everyReferencedVariableIsSuppliedByTheComposeFile() throws Exception {
-        Set<String> referenced = variablesReferencedByTheSample();
-        Map<String, String> environment = sampleEnvironment();
+        Map<String, Boolean> referenced = variablesReferencedByTheSample();
+        ServiceEnvironment environment = sampleEnvironment();
 
-        // Vacuity guards on BOTH derived sides — an empty either side makes the loop assert nothing.
+        // Vacuity guards on BOTH derived sides — an empty either side makes the check assert nothing.
         assertFalse(referenced.isEmpty(),
                 () -> "no ${VAR} reference was derived from the sample's YAML config documents ("
                         + GATEWAY_YAML.getFileName() + " and endpoints/*.yaml) — either the parser"
                         + " broke or the sample stopped using the placeholder engine. Until this"
                         + " resolves the wiring below is unchecked, so this is a failure, not a pass.");
-        assertFalse(environment.isEmpty(),
-                () -> "the '" + GATEWAY_SERVICE + "' service declared no environment entries, so the"
-                        + " per-variable check below would pass without checking anything");
+        assertFalse(environment.values().isEmpty(),
+                () -> "the '" + GATEWAY_SERVICE + "' service declared no KEY=value environment entries,"
+                        + " so the per-variable check below would pass without checking anything");
 
-        for (String variable : referenced) {
-            assertTrue(environment.containsKey(variable),
-                    () -> "a YAML config document of the sample references ${" + variable
-                            + "} but the '" + GATEWAY_SERVICE + "' service does not supply it. In the"
-                            + " bare ${VAR} form that fails the stack's boot outright; the sample also"
-                            + " supplies its defaulted placeholders, so that every externally-bound"
-                            + " value is readable from the compose file rather than only from the"
-                            + " document. Add the variable beside the placeholder rather than adding a"
-                            + " default to the document.");
-        }
+        Map<String, String> unsupplied = unsuppliedReferences(referenced, environment);
+
+        assertTrue(unsupplied.isEmpty(),
+                () -> String.join(System.lineSeparator(), unsupplied.values()));
+    }
+
+    @Test
+    @DisplayName("the supply rule refuses an unsupplied variable and a bare reference to a passed-through one")
+    void supplyRuleRefusesUnsuppliedAndBarePassThroughReferences() {
+        ServiceEnvironment environment = new ServiceEnvironment(Map.of("SUPPLIED", "value"),
+                Set.of("PASSED_DEFAULTED", "PASSED_BARE"));
+        Map<String, Boolean> referenced = new LinkedHashMap<>();
+        referenced.put("SUPPLIED", false);
+        referenced.put("PASSED_DEFAULTED", true);
+        referenced.put("PASSED_BARE", false);
+        referenced.put("UNSUPPLIED", true);
+
+        Map<String, String> unsupplied = unsuppliedReferences(referenced, environment);
+
+        assertEquals(Set.of("PASSED_BARE", "UNSUPPLIED"), unsupplied.keySet(),
+                () -> "the supply rule must refuse exactly the two references the compose block cannot"
+                        + " vouch for: a variable it does not declare at all (even one the document"
+                        + " defaults — the sample states every externally-bound value), and a bare"
+                        + " ${VAR} whose variable is only passed through, which an unset host leaves"
+                        + " absent. A rule that passes either has no teeth; one that refuses a supplied"
+                        + " value or a defaulted pass-through refuses the sample's own shape. Got: "
+                        + unsupplied);
+    }
+
+    @Test
+    @DisplayName("the environment parser keeps a bare pass-through entry apart from a KEY=value one, and refuses any other shape")
+    void environmentParserSeparatesPassThroughFromSuppliedEntries() {
+        ServiceEnvironment parsed = parseEnvironment(List.of("SUPPLIED=value", "CLEARED=", "PASSED"),
+                "a synthetic block");
+
+        assertAll("the two Compose list-entry shapes, and the shapes that are neither",
+                () -> assertEquals(Map.of("SUPPLIED", "value", "CLEARED", ""), parsed.values(),
+                        "KEY=value entries — a blank value included — must be read as supplied values"),
+                () -> assertEquals(Set.of("PASSED"), parsed.passThrough(),
+                        "a bare NAME entry must be read as a pass-through, never as a supplied value"
+                                + " and never silently dropped"),
+                () -> assertThrows(AssertionError.class,
+                        () -> parseEnvironment(List.of("=value"), "a synthetic block"),
+                        "an entry with an empty name must be refused"),
+                () -> assertThrows(AssertionError.class,
+                        () -> parseEnvironment(List.of("NOT A NAME"), "a synthetic block"),
+                        "a bare entry that is not a variable name must be refused"));
     }
 
     @Test
@@ -240,8 +299,8 @@ class ComposeSampleForwardedTrustWiringTest {
     @Test
     @DisplayName("the merged plain-HTTP model clears the certificates the base declares, and keeps the management one")
     void mergedPlainHttpModelClearsTheCertificatesTheBaseDeclares() throws Exception {
-        Map<String, String> base = serviceEnvironment(COMPOSE, GATEWAY_SERVICE);
-        Map<String, String> merged = mergedGatewayEnvironment();
+        Map<String, String> base = serviceEnvironment(COMPOSE, GATEWAY_SERVICE).values();
+        Map<String, String> merged = mergedGatewayEnvironment().values();
 
         // Vacuity guards on both derived sides — an empty either side makes the loop assert nothing.
         assertFalse(base.isEmpty(),
@@ -314,7 +373,7 @@ class ComposeSampleForwardedTrustWiringTest {
     @DisplayName("the merged trusted-proxy list is exactly the terminator's declared static address as a /32")
     void mergedTrustedProxiesNamesExactlyTheTerminatorsStaticAddress() throws Exception {
         String address = terminatorStaticAddress();
-        Map<String, String> merged = mergedGatewayEnvironment();
+        Map<String, String> merged = mergedGatewayEnvironment().values();
 
         assertFalse(address.isBlank(),
                 () -> "no ipv4_address was derived for the '" + TERMINATOR_SERVICE + "' service on the"
@@ -383,42 +442,144 @@ class ComposeSampleForwardedTrustWiringTest {
 
     /**
      * Reads the {@code api-sheriff} service's {@code environment:} block out of the committed compose
-     * descriptor, in the {@code KEY=value} list form the sample uses.
+     * descriptor.
      *
-     * @return the declared variables in declaration order
+     * @return the declared entries, split into supplied values and pass-throughs
      * @throws IOException when the descriptor cannot be read
      */
-    private static Map<String, String> sampleEnvironment() throws IOException {
+    private static ServiceEnvironment sampleEnvironment() throws IOException {
         return serviceEnvironment(COMPOSE, GATEWAY_SERVICE);
     }
 
     /**
-     * Reads one service's {@code environment:} block out of one committed descriptor, in the
-     * {@code KEY=value} list form the sample uses. A key with an empty value — the shape an override
-     * clears with — is returned as a present entry with a blank value, which is exactly the
-     * distinction the merged-model assertions turn on.
+     * Reads one service's {@code environment:} block out of one committed descriptor, in the list form
+     * the sample uses.
      *
      * @param descriptor the compose document to read
      * @param service    the service whose block to read
-     * @return the declared variables in declaration order
+     * @return the declared entries, split into supplied values and pass-throughs
      * @throws IOException when the descriptor cannot be read
      */
-    private static Map<String, String> serviceEnvironment(Path descriptor, String service)
+    private static ServiceEnvironment serviceEnvironment(Path descriptor, String service)
             throws IOException {
         Object environment = serviceKey(descriptor, service, "environment");
         List<?> declaredEntries = assertInstanceOf(List.class, environment,
                 () -> "the '" + service + "' service in " + descriptor.getFileName() + " must declare"
-                        + " its environment in the KEY=value list form the neighbouring entries use");
+                        + " its environment in the list form the neighbouring entries use");
+        return parseEnvironment(declaredEntries,
+                "the '" + service + "' service in " + descriptor.getFileName());
+    }
 
-        Map<String, String> declared = new LinkedHashMap<>();
-        for (Object entry : declaredEntries) {
+    /**
+     * Splits a Compose {@code environment:} list into its two legal entry shapes and refuses anything
+     * else. A {@code KEY=value} entry is a supplied value; a key with an empty value — the shape an
+     * override clears with — is kept as a present entry with a blank value, which is exactly the
+     * distinction the merged-model assertions turn on. A bare {@code NAME} entry is Compose's
+     * pass-through form and is kept apart, never folded in as a value: it supplies nothing the
+     * descriptor can vouch for.
+     *
+     * @param entries the parsed list entries
+     * @param where   the block being read, for failure messages
+     * @return the entries in declaration order, split by shape
+     */
+    private static ServiceEnvironment parseEnvironment(List<?> entries, String where) {
+        Map<String, String> values = new LinkedHashMap<>();
+        Set<String> passThrough = new LinkedHashSet<>();
+        for (Object entry : entries) {
             String text = String.valueOf(entry);
             int separator = text.indexOf('=');
-            assertTrue(separator > 0,
-                    () -> "environment entry '" + text + "' is not in KEY=value form");
-            declared.put(text.substring(0, separator), text.substring(separator + 1));
+            if (separator < 0) {
+                assertTrue(PASS_THROUGH_ENTRY.matcher(text).matches(),
+                        () -> "environment entry '" + text + "' of " + where + " is neither in KEY=value"
+                                + " form nor a bare pass-through variable name");
+                passThrough.add(text);
+            } else {
+                assertTrue(separator > 0,
+                        () -> "environment entry '" + text + "' of " + where + " has an empty name");
+                values.put(text.substring(0, separator), text.substring(separator + 1));
+            }
         }
-        return declared;
+        return new ServiceEnvironment(values, passThrough);
+    }
+
+    /**
+     * Applies the supply rule to the referenced variables and returns every reference the compose block
+     * cannot vouch for, keyed by variable name.
+     * <p>
+     * A reference is supplied by a {@code KEY=value} entry — whether or not the document defaults it,
+     * because the sample states every externally-bound value in the compose file rather than only in
+     * the document. A bare pass-through entry supplies <strong>nothing</strong>: Compose leaves the
+     * variable absent in the container when the host does not set it. A variable that is only passed
+     * through therefore counts as supplied only when every reference to it carries its own
+     * {@code :-} default; a bare {@code ${VAR}} reference to it fails the boot on an unset host.
+     *
+     * @param referenced  each referenced variable, mapped to whether EVERY reference to it is defaulted
+     * @param environment the gateway service's declared environment
+     * @return the unsupplied references, each with the reason, in reference order
+     */
+    private static Map<String, String> unsuppliedReferences(Map<String, Boolean> referenced,
+            ServiceEnvironment environment) {
+        Map<String, String> unsupplied = new LinkedHashMap<>();
+        for (Map.Entry<String, Boolean> reference : referenced.entrySet()) {
+            String variable = reference.getKey();
+            if (environment.values().containsKey(variable)) {
+                continue;
+            }
+            if (environment.passThrough().contains(variable)) {
+                if (!reference.getValue()) {
+                    unsupplied.put(variable, "a YAML config document of the sample references ${" + variable
+                            + "} with no default, but the '" + GATEWAY_SERVICE + "' service only passes "
+                            + variable + " through as a bare entry. A pass-through supplies NOTHING: Compose"
+                            + " copies the host's value when one is set and leaves the variable absent in"
+                            + " the container when it is not, so on a host that sets nothing the bare"
+                            + " reference fails the boot. Supply it as " + variable + "=<value> beside the"
+                            + " placeholder, or give every reference its own ${" + variable
+                            + ":-default} in the document.");
+                }
+                continue;
+            }
+            unsupplied.put(variable, "a YAML config document of the sample references ${" + variable
+                    + "} but the '" + GATEWAY_SERVICE + "' service does not supply it. In the"
+                    + " bare ${VAR} form that fails the stack's boot outright; the sample also"
+                    + " supplies its defaulted placeholders, so that every externally-bound"
+                    + " value is readable from the compose file rather than only from the"
+                    + " document. Add the variable beside the placeholder rather than adding a"
+                    + " default to the document.");
+        }
+        return unsupplied;
+    }
+
+    /**
+     * One service's declared environment, split by the two list-entry shapes Compose accepts.
+     *
+     * @param values      the {@code KEY=value} entries — values the descriptor itself supplies, a blank
+     *                    one included
+     * @param passThrough the bare {@code NAME} entries — copied from the host when set there and absent
+     *                    in the container otherwise, so the descriptor supplies no value for them
+     */
+    private record ServiceEnvironment(Map<String, String> values, Set<String> passThrough) {
+
+        /**
+         * Lays an override's entries over this one BY NAME, which is how Compose merges an
+         * {@code environment:} block: whichever shape the override declares a name in replaces the
+         * base's entry for that name.
+         *
+         * @param override the override document's environment
+         * @return the merged environment, base entries first
+         */
+        ServiceEnvironment overlaidBy(ServiceEnvironment override) {
+            Map<String, String> mergedValues = new LinkedHashMap<>(values);
+            Set<String> mergedPassThrough = new LinkedHashSet<>(passThrough);
+            for (Map.Entry<String, String> value : override.values().entrySet()) {
+                mergedPassThrough.remove(value.getKey());
+                mergedValues.put(value.getKey(), value.getValue());
+            }
+            for (String name : override.passThrough()) {
+                mergedValues.remove(name);
+                mergedPassThrough.add(name);
+            }
+            return new ServiceEnvironment(mergedValues, mergedPassThrough);
+        }
     }
 
     /**
@@ -437,13 +598,14 @@ class ComposeSampleForwardedTrustWiringTest {
      * so a {@code ${VAR:-default}} written in prose to explain the rule is documentation and not a
      * reference. Scanning raw text would report it as one and demand a compose variable for it.
      *
-     * @return the referenced variable names, in first-appearance order
+     * @return the referenced variable names, in first-appearance order, each mapped to whether EVERY
+     *         reference to it carries a {@code :-} default — one bare reference makes it required
      * @throws IOException when a document cannot be read
      */
-    private static Set<String> variablesReferencedByTheSample() throws IOException {
+    private static Map<String, Boolean> variablesReferencedByTheSample() throws IOException {
         assertTrue(Files.isRegularFile(GATEWAY_YAML),
                 () -> "cannot read the sample's gateway document: " + GATEWAY_YAML + " does not exist");
-        Set<String> referenced = new LinkedHashSet<>();
+        Map<String, Boolean> referenced = new LinkedHashMap<>();
         for (Path document : substitutedDocuments()) {
             Object parsed;
             try (InputStream in = Files.newInputStream(document)) {
@@ -466,10 +628,11 @@ class ComposeSampleForwardedTrustWiringTest {
      * {@code topology.properties} sits in the same directory and is deliberately <em>not</em> here.
      * It is substituted by {@code TopologyResolver}, not by this loader, and under a different rule:
      * a defaulted {@code ${VAR:-default}} is legitimate there, so the sample's
-     * {@code ${TOPOLOGY_UPSTREAM:-http://demo-api:8080}} is correctly absent from the compose
-     * {@code environment:} block. Including it would demand a variable the sample is right not to
-     * supply and turn this test red — the caller's assertions therefore say "YAML config documents",
-     * never "every document in the directory".
+     * {@code ${TOPOLOGY_UPSTREAM:-http://demo-api:8080}} is correctly given no value by the compose
+     * {@code environment:} block — it is forwarded only as a bare pass-through entry, which
+     * {@code EnvironmentKeySpellingGuardTest} holds it to. Including it would demand a value the sample
+     * is right not to supply and turn this test red — the caller's assertions therefore say "YAML
+     * config documents", never "every document in the directory".
      *
      * @return the readable YAML config documents, gateway first
      * @throws IOException when the endpoints directory cannot be listed
@@ -489,8 +652,11 @@ class ComposeSampleForwardedTrustWiringTest {
         return documents;
     }
 
-    /** Walks a parsed YAML node, collecting the {@code ${VAR}} names any scalar value references. */
-    private static void collectVariableReferences(Object node, Set<String> referenced) {
+    /**
+     * Walks a parsed YAML node, collecting the {@code ${VAR}} names any scalar value references, each
+     * with whether every reference so far is defaulted.
+     */
+    private static void collectVariableReferences(Object node, Map<String, Boolean> referenced) {
         switch (node) {
             case Map<?, ?> mapping -> mapping.values()
                     .forEach(value -> collectVariableReferences(value, referenced));
@@ -499,7 +665,7 @@ class ComposeSampleForwardedTrustWiringTest {
             case String scalar -> {
                 Matcher reference = VARIABLE_REFERENCE.matcher(scalar);
                 while (reference.find()) {
-                    referenced.add(reference.group(1));
+                    referenced.merge(reference.group(1), reference.group(2) != null, Boolean::logicalAnd);
                 }
             }
             default -> {
@@ -563,13 +729,12 @@ class ComposeSampleForwardedTrustWiringTest {
      * exactly how Compose merges an {@code environment:} block. The result is what the deployment
      * actually gets, and is the only model the variant's assertions are computed over.
      *
-     * @return the merged variables, base entries first
+     * @return the merged environment, base entries first
      * @throws IOException when either descriptor cannot be read
      */
-    private static Map<String, String> mergedGatewayEnvironment() throws IOException {
-        Map<String, String> merged = new LinkedHashMap<>(serviceEnvironment(COMPOSE, GATEWAY_SERVICE));
-        merged.putAll(serviceEnvironment(OVERRIDE, GATEWAY_SERVICE));
-        return merged;
+    private static ServiceEnvironment mergedGatewayEnvironment() throws IOException {
+        return serviceEnvironment(COMPOSE, GATEWAY_SERVICE)
+                .overlaidBy(serviceEnvironment(OVERRIDE, GATEWAY_SERVICE));
     }
 
     /**

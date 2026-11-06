@@ -258,7 +258,7 @@ class EnvironmentKeySpellingGuardTest {
      * @param variantPlaceholders the placeholder variables of the variant set's {@code topology.properties}
      */
     private record TopologyForwarding(Map<String, Boolean> baseEnvironment, Map<String, Boolean> overrideEnvironment,
-            List<String> basePlaceholders, List<String> variantPlaceholders) {
+    List<String> basePlaceholders, List<String> variantPlaceholders) {
 
         private static final String GATEWAY_SERVICE = "api-sheriff";
         private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{([A-Za-z_]\\w*)(?::-[^}]*)?}");

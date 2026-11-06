@@ -246,7 +246,7 @@ class ServerModeCookieHeaderCapTest {
                             route.securityConfiguration().maxHeaderValueLength(),
                             "control precondition: the route keeps the strict header-value cap"),
                     () -> assertTrue(KEYCLOAK_RESTART_COOKIE_LENGTH > STRICT.maxHeaderValueLength()
-                                    && KEYCLOAK_RESTART_COOKIE_LENGTH < DECLARED_CAP,
+                            && KEYCLOAK_RESTART_COOKIE_LENGTH < DECLARED_CAP,
                             "control precondition: the cookie sits between the strict cap and the declared cap"),
                     () -> assertDoesNotThrow(() -> drive(serverModeGateway(DECLARED_CAP), route, request),
                             "the declared cap must survive stage 3's re-run under the route's configuration"),
