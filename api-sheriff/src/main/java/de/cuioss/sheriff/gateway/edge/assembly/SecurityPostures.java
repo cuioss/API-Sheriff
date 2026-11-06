@@ -97,8 +97,11 @@ public final class SecurityPostures {
      * inbound hardening control, held as narrow as the pre-route position allows.
      * <p>
      * <strong>The cap is {@code max}-bounded, so the carve-out can only ever ADMIT MORE length.</strong>
-     * The effective cap is {@code max(baseline.maxHeaderValueLength(), budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}.
-     * Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
+     * The effective cap is {@code max(baseline.maxHeaderValueLength(), requested)}, where
+     * {@code requested} depends on the mode: in cookie mode it is the sealed-cookie budget plus the
+     * overhead, {@code max(baseline, budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}; in
+     * server mode it is the declared cap itself,
+     * {@code max(baseline, oidc.session.max_cookie_header_value_length)}. Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
      * gateway: the shipped default budget
      * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}, 4019) plus the overhead is 4531,
      * below that profile's 8192 baseline, so a cookie-mode BFF rejected {@code 400} every request

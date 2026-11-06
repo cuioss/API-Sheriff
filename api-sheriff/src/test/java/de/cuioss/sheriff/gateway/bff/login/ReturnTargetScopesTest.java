@@ -50,6 +50,7 @@ class ReturnTargetScopesTest {
     private static final Set<String> OIDC_SCOPES = Set.of("openid", "profile", "email");
     private static final Set<String> SPECIAL_SCOPES = Set.of("openid", "profile", "email", "special:read");
     private static final Set<String> APP_SCOPES = Set.of("openid", "profile", "email", "app:read");
+    private static final Set<String> REPORTS_SCOPES = Set.of("openid", "profile", "email", "reports:read");
     private static final Set<String> API_SCOPES = Set.of("openid", "profile", "email", "api:read");
     private static final Set<String> HEADER_SCOPES = Set.of("openid", "profile", "email", "tenant:read");
     private static final Set<String> PUBLIC_SCOPES = Set.of("openid", "profile", "email", "public:read");
@@ -60,6 +61,8 @@ class ReturnTargetScopesTest {
      */
     private final ReturnTargetScopes resolver = new ReturnTargetScopes(new RouteTable(List.of(
             route("special", MatchConfig.builder().path("/api/special").build(), Require.SESSION, SPECIAL_SCOPES),
+            route("reports", MatchConfig.builder().pathPrefix("/app/reports").build(), Require.SESSION,
+                    REPORTS_SCOPES),
             route("tenant", MatchConfig.builder().pathPrefix("/tenant")
                             .headers(List.of(new MatchConfig.HeaderMatcher("X-Tenant", null, "acme"))).build(),
                     Require.SESSION, HEADER_SCOPES),
@@ -107,6 +110,31 @@ class ReturnTargetScopesTest {
         @DisplayName("Should ignore the query and fragment when matching")
         void shouldIgnoreQueryForMatching(String returnUrl) {
             assertEquals(APP_SCOPES, resolver.resolve(returnUrl));
+        }
+
+        @Test
+        @DisplayName("Should resolve the longer prefix route over the shorter one covering the same path")
+        void shouldResolveLongerPrefixRoute() {
+            assertEquals(REPORTS_SCOPES, resolver.resolve("/app/reports/monthly"));
+        }
+
+        /**
+         * Stage-1 normalization folds an interior run of {@code /} before route selection, so a
+         * navigation to {@code /app//reports} is selected as {@code /app/reports}. The same-origin
+         * check admits these targets — it refuses only a leading {@code //} — so the resolver must
+         * fold them the same way, or it would match the literal path against the shorter {@code /app}
+         * prefix and resolve a different route than the one the browser lands on.
+         */
+        @ParameterizedTest(name = "\"{0}\" selects the route stage-1 normalization selects")
+        @ValueSource(strings = {"/app//reports", "/app///reports/monthly", "/app//reports//", "/app/reports",
+                ORIGIN + "/app//reports", "/app//reports?tab=open"})
+        @DisplayName("Should fold interior empty segments the way stage-1 normalization does before matching")
+        void shouldFoldInteriorEmptySegments(String returnUrl) {
+            assertAll(
+                    () -> assertTrue(PendingAuthorizationRecord.sameOrigin(returnUrl, ORIGIN),
+                            "the same-origin check admits an interior empty segment"),
+                    () -> assertEquals(REPORTS_SCOPES, resolver.resolve(returnUrl),
+                            "the folded path selects the longer /app/reports prefix, not /app"));
         }
 
         @Test
