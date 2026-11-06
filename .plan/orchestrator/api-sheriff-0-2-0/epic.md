@@ -556,10 +556,11 @@ doc-only or build-light plan for the second and third slots.
    (relay sub-budget and general admission budget). Residue: the general-admission control cannot wait for gateway-side
    admission (Watch). Strike at the next compaction.
 7. > ↪ Relocated to `settled.md` § "Open Defect 7 — the k6 benchmark scripts are an unguarded consumer of the shared gateway configuration (closed 2026-10-30 by #538)" — `BenchmarkScriptConfigContractTest` binds each k6 script to the keys it depends on
-8. **Unverified Sonar claim** — PLAN-06's uncorroborated Sonar claim is still unverified with no
-   recovered evidence, and needs an **operator live-gate check** rather than plan work. Carried
-   rather than closed because "we could not recover the evidence" is not "the claim was false", and
-   closing it would silently convert one into the other.
+8. **CLOSED 2026-11-06 by operator ruling — superseded by a live reading.** PLAN-06's original claim stays unrecoverable; the
+   live state replaces it. SonarCloud on `main` at `2f91ff7d`: quality gate OK on every new-code condition (coverage 96.3 %), but
+   the project carries 19 open issues (1 `yaml:S2068` vulnerability in `release.yml`, very likely the localhost test-truststore
+   password, giving security rating C; 11 production and 7 test code smells; 2 counted as new code). The operator ruled the epic
+   goal is 0 issues; the fix runs as a direct Claude Code session, not a plan. See the SONAR BACKLOG Watch.
 9. > ↪ Relocated to `settled.md` § "Open Defect 9 — `K6BenchmarkLogMessages` outside the catalogue guard (closed 2026-10-30 by #538)" — `LogMessagesCatalogueTest` derives the module set from the root `pom.xml`
 
 18. **LOW, informational** — the `PLAN-V02-51` landing message (`plan-v02-51-lane-conditional-guards-005`) is `complete: false`: `landing-check`
@@ -572,6 +573,11 @@ doc-only or build-light plan for the second and third slots.
     **ANSWERED 2026-10-30:** the `PLAN-V02-48` landing carries `effort=low` and is `complete: true`. The gap was intermittent. Strike at the next compaction.
 
 ## Watches
+
+- **SONAR BACKLOG: 19 OPEN ISSUES ON `main`, TARGET 0 BEFORE THE 0.2.0 CUT** (added 2026-11-06, operator ruling on the live
+  reading that closed Open Defect 8). Fix runs as a direct Claude Code session (no queue row). Close when SonarCloud on `main`
+  reports 0 open issues and security rating A after the fix PR merges. The `ClientHelloSniParser` check from V02-01 D6 is answered
+  by the same reading: no issue in the parser, one minor `S9439` in its test.
 
 - **TWO ADVISORY NITS LEFT ON `main` BY #566** (added 2026-11-06, `PLAN-V02-56` landing). The `IdpFrontingCanonicalPathTest`
   Javadoc says "two" cuts where there are three; a probe comment in the `/auth`-fronted login check says "first and last" where the
@@ -724,8 +730,7 @@ doc-only or build-light plan for the second and third slots.
 - **ACCEPTED BFF RESIDUALS, CARRY TO 0.3.0** (added 2026-11-06, `PLAN-V02-56` D3 report). All three `PLAN-V02-01` D7
   items are still open and publicly documented: a refresh token in a refused response is discarded, not revoked (BFF-14
   residual); logout performs no RFC 7009 revocation (the revocation seam is bound to a no-op); the engine's nonce-retry gaps
-  (ADR-0058 decision 15). The `ClientHelloSniParser` open-Sonar check from V02-01 D6 was never reported; it rides on the
-  operator's Open Defect 8 Sonar check. Candidates for api-sheriff-0-3-0, not 0.2.0 blockers.
+  (ADR-0058 decision 15). The `ClientHelloSniParser` check from V02-01 D6 is answered (see the SONAR BACKLOG Watch). Candidates for api-sheriff-0-3-0, not 0.2.0 blockers.
 
 - **DECLINED REFACTOR FROM #387, NONE STAGED** (added 2026-10-06). CodeRabbit proposed deriving the
   offline validator's NOT CHECKED catalogue from shared refusal descriptors instead of a hand-kept list
