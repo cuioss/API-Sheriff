@@ -26,13 +26,19 @@
 #   6. EXPOSURE (opt-in, --idp-prefix PREFIX only). For a variant whose gateway FRONTS the identity
 #      provider under PREFIX (`start-sample.sh --auth-fronted`, PREFIX /auth). The login above already
 #      proved the allowed paths work for a browser; this step proves the gateway exposes nothing else.
-#      Each allowed namespace must answer from Keycloak — the realm's discovery document with the
-#      issuer the gateway's origin plus PREFIX names, and the resources and well-known namespaces with
-#      any answer that is not the gateway's own. Every path outside the allowlist — the admin console,
-#      the master realm, Keycloak's metrics and health paths, and the console reached through
-#      dot-segment, encoded, doubled-slash, matrix-parameter and backslash spellings, sent verbatim
-#      with --path-as-is — must get the gateway's OWN answer: an RFC 9457 problem document or a
-#      bodiless refusal, never a page Keycloak rendered.
+#      Each allowed path must answer from Keycloak — the realm's discovery document and the realm's
+#      RFC 8414 authorization-server metadata (PREFIX/.well-known/oauth-authorization-server/realms/
+#      REALM), each with the issuer the gateway's origin plus PREFIX names, and the resources namespace
+#      with any answer that is not the gateway's own. Then a DISCRIMINATOR CONTROL: a page that does not
+#      exist under the realm route (PREFIX/realms/REALM/no-such-page) is routed by the gateway and
+#      answered by Keycloak, and that answer must NOT be classified as the gateway's own — otherwise the
+#      classification cannot tell the two sources apart and the refusals below would pass whoever
+#      answered them. Only then is every path outside the allowlist probed — the admin console, the
+#      master realm and its server-level well-known document, the bare well-known namespace, Keycloak's
+#      metrics and health paths, and the console reached through dot-segment, encoded, doubled-slash,
+#      matrix-parameter and backslash spellings, sent verbatim with --path-as-is — and each must get the
+#      gateway's OWN answer: an RFC 9457 problem document or a bodiless refusal, never a page Keycloak
+#      rendered.
 #
 # What it never does: skip TLS verification (every request verifies against the sample's generated
 # certificate with --cacert — never -k), wait without bound (every request carries --max-time), or
@@ -283,8 +289,9 @@ elif command == "json-field":
     sys.stdout.write(value)
 elif command == "gateway-answer":
     # gateway-answer HEADERS BODY -> exit 0 when the response is the gateway's OWN answer: an RFC 9457
-    # problem document, or a status with no body at all (the gateway's bare-status refusals). Keycloak
-    # renders neither, so any other answer came from the identity provider.
+    # problem document, or a status with no body at all (the gateway's bare-status refusals). The
+    # premise that Keycloak renders neither is not taken on trust: step 6's discriminator control
+    # checks it against a Keycloak refusal before any denied probe is classified.
     content_type = ""
     for name, value in read_headers(args[0]):
         if name.strip().lower() == "content-type":
@@ -485,22 +492,50 @@ if [[ -n "$IDP_PREFIX" ]]; then
         fail "the discovery document names issuer '${ISSUER:-<none>}', not ${EXPECTED_ISSUER}"
     fi
 
-    # The other two allowed namespaces. Neither has one stable document to ask for — the theme's paths
-    # carry Keycloak's version — so the assertion is that the gateway routed the request: whatever
-    # answers, it is not the gateway's own refusal.
-    for allowed in "/resources/" "/.well-known/"; do
-        request "${BASE_URL}${IDP_PREFIX}${allowed}" --path-as-is
-        if helper gateway-answer "${HEADERS}" "${BODY}"; then
-            fail "${IDP_PREFIX}${allowed} got the gateway's own ${STATUS} — the allowlisted namespace is not routed to the identity provider"
-        fi
-    done
+    # The well-known route: the ONE server-level document it routes, the sample realm's RFC 8414
+    # authorization-server metadata, must come from Keycloak and name the same issuer. Asserted as a
+    # document rather than as "any answer that is not the gateway's", so this step is also what
+    # establishes that the pinned Keycloak serves the path insertion at all: a Keycloak that did not
+    # would answer 404 here, and the route would be fronting nothing.
+    METADATA_PATH="${IDP_PREFIX}/.well-known/oauth-authorization-server/realms/${REALM}"
+    request "${BASE_URL}${METADATA_PATH}" --path-as-is --header "Accept: application/json"
+    if [[ "${STATUS}" != "200" ]]; then
+        fail "expected the realm's authorization-server metadata (200) at ${METADATA_PATH}, got ${STATUS}"
+    fi
+    if ! ISSUER="$(helper json-field "${BODY}" issuer)" \
+            || [[ "$(helper origin "${ISSUER}")" != "$(helper origin "${EXPECTED_ISSUER}")" \
+                || "$(helper path "${ISSUER}")" != "$(helper path "${EXPECTED_ISSUER}")" ]]; then
+        fail "the authorization-server metadata names issuer '${ISSUER:-<none>}', not ${EXPECTED_ISSUER}"
+    fi
 
-    # Everything else. The first four are the namespaces the allowlist exists to keep out; the rest
+    # The resources namespace has no one stable document to ask for — the theme's paths carry
+    # Keycloak's version — so the assertion is that the gateway routed the request: whatever answers,
+    # it is not the gateway's own refusal.
+    request "${BASE_URL}${IDP_PREFIX}/resources/" --path-as-is
+    if helper gateway-answer "${HEADERS}" "${BODY}"; then
+        fail "${IDP_PREFIX}/resources/ got the gateway's own ${STATUS} — the allowlisted namespace is not routed to the identity provider"
+    fi
+
+    # THE DISCRIMINATOR CONTROL, before any refusal below is believed. gateway-answer classifies a
+    # response by its shape — a problem document or no body — on the premise that Keycloak never
+    # answers in either. This page does not exist, but it lies under the realm route, so the gateway
+    # forwards it and the answer is Keycloak's own refusal: exactly the kind of answer a denied probe
+    # would get had it crossed the gateway. If gateway-answer took it for the gateway's, a crossed probe
+    # would pass the loop below unseen, so the step fails here and the classification must be tightened
+    # before the exposure check means anything.
+    request "${BASE_URL}${IDP_PREFIX}/realms/${REALM}/no-such-page" --path-as-is
+    if helper gateway-answer "${HEADERS}" "${BODY}"; then
+        fail "${IDP_PREFIX}/realms/${REALM}/no-such-page — forwarded to the identity provider — answered ${STATUS} in the gateway's own shape (problem document or no body), so gateway-answer cannot tell Keycloak's refusals from the gateway's and the denied probes below would prove nothing"
+    fi
+
+    # Everything else. The first six are the namespaces the allowlist exists to keep out; the rest
     # spell the admin console so a gateway that resolved them AFTER choosing the realm route would
     # carry them into Keycloak through it. Each must be answered by the gateway itself.
     DENIED=(
         "${IDP_PREFIX}/admin/"
         "${IDP_PREFIX}/realms/master/"
+        "${IDP_PREFIX}/.well-known/oauth-authorization-server/realms/master"
+        "${IDP_PREFIX}/.well-known/"
         "${IDP_PREFIX}/metrics"
         "${IDP_PREFIX}/health"
         "${IDP_PREFIX}/realms/${REALM}/../../admin/"

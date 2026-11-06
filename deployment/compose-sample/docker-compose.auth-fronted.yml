@@ -9,9 +9,10 @@
 # WHAT IT DEMONSTRATES. The gateway fronts the identity provider. Keycloak publishes NO host port at
 # all; the browser reaches its login page through the gateway, under the /auth prefix of the
 # gateway's own origin (https://localhost:8443/auth/...). The gateway exposes an ALLOWLIST of
-# Keycloak's paths there — the sample realm, the static resources and the well-known documents — and
-# nothing else: the admin console, the master realm and the management port are unreachable from
-# outside the bridge network by construction, not by a deny rule
+# Keycloak's paths there — the sample realm, the static resources and the sample realm's RFC 8414
+# authorization-server metadata (one document, not the /auth/.well-known namespace, which also serves
+# the master realm's) — and nothing else: the admin console, the master realm and the management
+# port are unreachable from outside the bridge network by construction, not by a deny rule
 # (docker/sheriff-config-auth-fronted/endpoints/idp.yaml). The load-balancer check is NOT routed:
 # the pinned Keycloak image answers /auth/lb-check with 404.
 #

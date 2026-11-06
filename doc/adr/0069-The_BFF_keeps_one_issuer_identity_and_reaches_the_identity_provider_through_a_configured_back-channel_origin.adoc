@@ -118,9 +118,10 @@ adds no key and no second identity.
 * *The back-channel origin is required, not optional.* The issuer's origin is now the gateway's own, so without `oidc.back_channel_origin: https://keycloak:8443` the gateway would dial its own listener
   for discovery and route every back-channel call through its own `/auth` route. The mapping swaps the origin and keeps the path, so `https://localhost:8443/auth/realms/sample/...` is dialled as
   `https://keycloak:8443/auth/realms/sample/...`, and the DPoP `htu` contract above holds for it as it does for the base sample.
-* *An allowlist, never a catch-all.* `endpoints/idp.yaml` routes `/auth/realms/sample`, `/auth/resources` and `/auth/.well-known` and declares no catch-all, so `/auth/admin/`, `/auth/realms/master/`, Keycloak's
-  `/metrics` and `/health` paths and every other path under `/auth` answer the gateway's unrouted `404`, and Keycloak's ports, its management port `9000` included, are not published. The allowlist is
-  narrower than the one this record held open: it names the one realm the BFF uses rather than every realm, and `/lb-check` is out because the pinned image answers it `404`.
+* *An allowlist, never a catch-all.* `endpoints/idp.yaml` routes `/auth/realms/sample`, `/auth/resources` and `/auth/.well-known/oauth-authorization-server/realms/sample` and declares no catch-all,
+  so `/auth/admin/`, `/auth/realms/master/` and its server-level well-known document, Keycloak's `/metrics` and `/health` paths and every other path under `/auth` answer the gateway's unrouted `404`,
+  and Keycloak's ports, its management port `9000` included, are not published. The allowlist is narrower than the one this record held open: it names the one realm the BFF uses rather than every
+  realm -- its RFC 8414 path-insertion metadata included, which Keycloak serves for every realm under `/auth/.well-known` -- and `/lb-check` is out because the pinned image answers it `404`.
 * *What the gateway relaxes.* The `strict` profile stays gateway-wide. The method gate admits `POST` for the login form, narrowed back to `GET` and `HEAD` on the other anchors, and
   `oidc.session.max_cookie_header_value_length` raises the pre-route cap for `Cookie` values alone, because Keycloak's `KC_RESTART` cookie outgrows the `strict` header-value cap (ADR-0019).
 

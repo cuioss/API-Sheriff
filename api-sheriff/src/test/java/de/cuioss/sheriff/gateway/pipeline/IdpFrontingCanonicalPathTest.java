@@ -61,9 +61,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <p>
  * <strong>The claim.</strong> In that variant the gateway fronts Keycloak under {@code /auth} with an
  * <em>allowlist</em> of Keycloak's path namespaces ({@code endpoints/idp.yaml}): the sample realm, the
- * theme resources and the well-known documents. Nothing else under {@code /auth} is routed, so the admin
- * console ({@code /auth/admin/}) and the master realm ({@code /auth/realms/master/}) are unreachable by
- * construction. That holds only if no SPELLING of an unlisted path can ride an allowlisted route into
+ * theme resources and the sample realm's RFC 8414 authorization-server metadata
+ * ({@code /auth/.well-known/oauth-authorization-server/realms/sample}). Nothing else under {@code /auth}
+ * is routed, so the admin console ({@code /auth/admin/}), the master realm ({@code /auth/realms/master/})
+ * and the master realm's server-level well-known document are unreachable by construction. That holds
+ * only if no SPELLING of an unlisted path can ride an allowlisted route into
  * Keycloak — a dot-segment, an encoded separator or dot, a doubled slash, a matrix parameter, a
  * backslash, a case variant or a double encoding that the gateway matched against
  * {@code /auth/realms/sample} but that Keycloak would resolve to {@code /auth/admin/}.
@@ -85,10 +87,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * cannot pass by refusing everything.
  * <p>
  * <strong>Red against its deliberate cuts.</strong> The {@link DeliberateCuts} drive the same verdict over
- * two broken variants, and each must be reported as a breach: a copy of the shipped set with a catch-all
- * {@code /auth} route added to {@code idp.yaml}, and the shipped set with the canonical-path floor and guard
- * bypassed, so the raw spelling reaches route selection. Without those, a verdict function that reported
- * nothing for any input would pass this class green.
+ * three broken variants, and each must be reported as a breach: a copy of the shipped set with a catch-all
+ * {@code /auth} route added to {@code idp.yaml}, a copy whose well-known route is widened back to the whole
+ * {@code /auth/.well-known} prefix, and the shipped set with the canonical-path floor and guard bypassed,
+ * so the raw spelling reaches route selection. Without those, a verdict function that reported nothing for
+ * any input would pass this class green.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -127,6 +130,15 @@ class IdpFrontingCanonicalPathTest {
                     path: /auth
             """;
 
+    /** The narrowed well-known prefix {@code idp.yaml} routes: the sample realm's RFC 8414 metadata only. */
+    private static final String SAMPLE_REALM_METADATA = "/auth/.well-known/oauth-authorization-server/realms/sample";
+
+    /** The broad prefix the second deliberate cut restores in a copied {@code idp.yaml}. */
+    private static final String BROAD_WELL_KNOWN = "/auth/.well-known";
+
+    /** The master realm's RFC 8414 path-insertion document, which the broad prefix forwarded into Keycloak. */
+    private static final String MASTER_REALM_METADATA = "/auth/.well-known/oauth-authorization-server/realms/master";
+
     private static ConfigBootPipeline.Assembly shipped;
     private static FrontedPipeline shippedPipeline;
 
@@ -158,6 +170,16 @@ class IdpFrontingCanonicalPathTest {
                 "/auth/realms/",
                 // A realm whose name merely starts with the allowlisted one: the prefix is a segment, not a string.
                 "/auth/realms/sample2/",
+                // The server-level well-known namespace outside the sample realm's one document: the master
+                // realm's RFC 8414 path-insertion metadata, another realm's, the OIDC spelling of the same
+                // insertion, and the bare namespace — check-bff-login.sh probes the first and the last.
+                MASTER_REALM_METADATA,
+                "/auth/.well-known/oauth-authorization-server/realms/sample2",
+                "/auth/.well-known/openid-configuration/realms/master",
+                "/auth/.well-known/oauth-authorization-server",
+                "/auth/.well-known",
+                "/auth/.well-known/",
+                "/auth/.well-known/oauth-authorization-server/realms/sample/../master",
                 // The dot-segment, encoded, doubled-slash, matrix and backslash spellings check-bff-login.sh probes.
                 "/auth/realms/sample/../../admin/",
                 "/auth/%2e%2e/admin/",
@@ -215,8 +237,7 @@ class IdpFrontingCanonicalPathTest {
                         "idp-realm-sample"),
                 new AllowedRequest(HttpMethod.GET, "/auth/resources/abc12/login/keycloak.v2/css/styles.css",
                         "idp-resources"),
-                new AllowedRequest(HttpMethod.GET, "/auth/.well-known/oauth-authorization-server/realms/sample",
-                        "idp-well-known"));
+                new AllowedRequest(HttpMethod.GET, SAMPLE_REALM_METADATA, "idp-well-known"));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -289,6 +310,33 @@ class IdpFrontingCanonicalPathTest {
                                     + breaches),
                     () -> assertTrue(breaches.contains("/auth/realms/master/"),
                             () -> "the catch-all route must carry the master realm into Keycloak: " + breaches));
+        }
+
+        @Test
+        @DisplayName("widening the well-known route back to /auth/.well-known lets the master realm's metadata through")
+        void broadWellKnownPrefixIsReported() throws Exception {
+            Path cut = copyOfTheShippedSet(tempDir);
+            Path idpYaml = cut.resolve("endpoints/idp.yaml");
+            String shippedYaml = Files.readString(idpYaml, StandardCharsets.UTF_8);
+            String widened = shippedYaml.replace(SAMPLE_REALM_METADATA, BROAD_WELL_KNOWN);
+            assertNotEquals(shippedYaml, widened,
+                    () -> "the shipped idp.yaml routes no " + SAMPLE_REALM_METADATA + " prefix to widen, so this cut "
+                            + "would compare the shipped set with itself");
+            Files.writeString(idpYaml, widened, StandardCharsets.UTF_8);
+            FrontedPipeline pipeline = new FrontedPipeline(assemble(cut), true);
+
+            List<String> breaches = breachesOf(pipeline);
+
+            assertAll(
+                    () -> assertTrue(breaches.contains(MASTER_REALM_METADATA),
+                            () -> "the broad prefix must carry the master realm's well-known document into Keycloak: "
+                                    + breaches),
+                    () -> assertTrue(breaches.contains("/auth/.well-known/"),
+                            () -> "the broad prefix must carry the bare well-known namespace into Keycloak: "
+                                    + breaches),
+                    () -> assertFalse(breaches.contains("/auth/admin/"),
+                            () -> "the admin console stays unrouted, so the breach above is the widened prefix and "
+                                    + "not a catch-all: " + breaches));
         }
 
         @Test

@@ -480,9 +480,15 @@ the same origin as the application.
 
 The login check runs the same login against this variant, and `--idp-prefix` adds one step that
 probes the exposure from outside: every allowed path under the prefix must answer from Keycloak, and
-the admin console, the master realm and Keycloak's management paths -- including their dot-segment
-and encoded spellings -- must get the gateway's own refusal or its unrouted `404`, never an answer
-from Keycloak:
+the admin console, the master realm and its server-level well-known document, the bare well-known
+namespace and Keycloak's management paths -- including their dot-segment and encoded spellings --
+must get the gateway's own refusal or its unrouted `404`, never an answer from Keycloak.
+
+The step tells the two sources apart by the answer's shape: the gateway refuses with an RFC 9457
+problem document or with no body at all. Before it trusts that, it runs a *discriminator control*: it
+requests a page that does not exist under the realm route, `/auth/realms/sample/no-such-page`, which
+the gateway forwards and Keycloak refuses. If that refusal looked like the gateway's own, the step
+fails right there, because a denied path that did cross the gateway would then look refused too:
 
 [source,bash]
 ----
@@ -507,8 +513,8 @@ The redirect URI registered in the realm does not change, because the gateway's 
 === An allowlist, not a catch-all
 
 The variant's configuration set, `docker/sheriff-config-auth-fronted/`, adds a fourth anchor, `auth`,
-and one endpoint, `endpoints/idp.yaml`. That endpoint routes exactly three of Keycloak's path
-namespaces:
+and one endpoint, `endpoints/idp.yaml`. That endpoint routes exactly three of Keycloak's paths -- two
+namespaces and one document:
 
 [cols="1,3"]
 |===
@@ -521,13 +527,17 @@ namespaces:
 | `/auth/resources`
 | The login theme's stylesheets, scripts and images.
 
-| `/auth/.well-known`
-| Keycloak's server-level well-known documents.
+| `/auth/.well-known/oauth-authorization-server/realms/sample`
+| The sample realm's RFC 8414 authorization-server metadata. One realm's document, not Keycloak's
+  whole server-level well-known namespace: Keycloak serves the same document for every realm, the
+  master realm's included, so a route on `/auth/.well-known` would forward that one too.
 |===
 
 Every other path under `/auth` matches no route and is answered with the gateway's unrouted `404`
 without Keycloak ever seeing the request. That is what keeps the *admin console* (`/auth/admin/`)
-and the *master realm* (`/auth/realms/master/`) out -- not a deny rule, but the absence of a route.
+and the *master realm* (`/auth/realms/master/`, and its well-known document
+`/auth/.well-known/oauth-authorization-server/realms/master`) out -- not a deny rule, but the absence
+of a route.
 The path is canonicalised before any route is chosen, so a relative spelling such as
 `/auth/realms/sample/../../admin/` cannot reach the console through the realm route.
 

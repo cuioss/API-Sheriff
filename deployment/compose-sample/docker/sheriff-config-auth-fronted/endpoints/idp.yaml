@@ -4,7 +4,9 @@
 # AN ALLOWLIST, NEVER A CATCH-ALL. Each route below names one of Keycloak's path namespaces the login
 # flow needs, and nothing else is routed: there is deliberately no route for /auth itself. A request
 # for any other path under /auth — the admin console (/auth/admin/), the master realm
-# (/auth/realms/master/), Keycloak's metrics and health paths — matches no route and is answered with
+# (/auth/realms/master/) and its server-level well-known document
+# (/auth/.well-known/oauth-authorization-server/realms/master), Keycloak's metrics and health paths —
+# matches no route and is answered with
 # the gateway's unrouted 404, so Keycloak never sees it. That holds by construction: no rule has to
 # recognise a dangerous path, because a path nobody listed has no way in.
 #
@@ -74,12 +76,17 @@ endpoint:
         path_prefix: /auth/resources
       upstream:
         path: /auth/resources
-    # Keycloak's server-level well-known documents under its context path, among them the RFC 8414
-    # authorization-server metadata of the sample realm
-    # (/auth/.well-known/oauth-authorization-server/realms/sample). The realm's own discovery document
-    # lies under the realm route above.
+    # The sample realm's RFC 8414 authorization-server metadata, which Keycloak serves at the
+    # server-level path-insertion address /auth/.well-known/oauth-authorization-server/realms/sample.
+    # ONE realm's document, not the namespace: Keycloak answers the same address for every realm, so a
+    # route on /auth/.well-known would also forward the master realm's
+    # (/auth/.well-known/oauth-authorization-server/realms/master). Neither the login flow nor the BFF
+    # reads it — the BFF's discovery travels the back channel, and the realm's OIDC discovery document
+    # lies under the realm route above — so the route is kept only for a browser-side OAuth client that
+    # discovers the authorization server the RFC 8414 way, and narrowed to the realm this sample signs in
+    # to. The prefix matches whole segments, so .../realms/sample2 stays unrouted.
     - id: idp-well-known
       match:
-        path_prefix: /auth/.well-known
+        path_prefix: /auth/.well-known/oauth-authorization-server/realms/sample
       upstream:
-        path: /auth/.well-known
+        path: /auth/.well-known/oauth-authorization-server/realms/sample
