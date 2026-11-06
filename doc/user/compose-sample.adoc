@@ -537,9 +537,15 @@ exact name. The gateway's own `+__Host-sample-session+` cookie never crosses to 
 === The admin console and the management port are not published
 
 Keycloak's `ports:` list is replaced by an empty one, so neither the login UI, nor the admin console,
-nor its management port `9000` is reachable from the host. To inspect the realm in the admin console,
-stop this variant and start the base sample, which publishes the console on the loopback address
-`https://localhost:1443`. Both variants import the same `sample-realm.json` on every start.
+nor its management port `9000` is published on a host port. Unpublished is not the same as
+unreachable: the empty list keeps them off the host's interfaces, but it is not a firewall. On a Linux
+Docker Engine host, the host itself can still open a connection to Keycloak's address on the bridge
+network, and so can every container on that network; on Docker Desktop the bridge lives inside a VM
+and the host cannot. Either way such a connection bypasses the gateway and its allowlist, so what
+keeps the console private is who can reach the Docker host and its networks, not the port list. To
+inspect the realm in the admin console, stop this variant and start the base sample, which publishes
+the console on the loopback address `https://localhost:1443`. Both variants import the same
+`sample-realm.json` on every start.
 
 === What the gateway relaxes, and what it does not
 

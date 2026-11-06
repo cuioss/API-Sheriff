@@ -469,14 +469,19 @@ if [[ -n "$IDP_PREFIX" ]]; then
 
     # The realm route: the discovery document must come from Keycloak and name the issuer the gateway
     # validates — its own origin plus the prefix. A 200 from anything else, or an issuer on another
-    # origin, means the route does not reach the IdP the gateway trusts.
+    # origin, means the route does not reach the IdP the gateway trusts. The origin is compared
+    # without regard to case, as every other origin comparison in this script is, so a --base-url
+    # spelled https://LOCALHOST:8443 still matches the lowercase issuer Keycloak emits; the path is
+    # compared exactly.
     EXPECTED_ISSUER="${BASE_URL}${IDP_PREFIX}/realms/${REALM}"
     request "${EXPECTED_ISSUER}/.well-known/openid-configuration" --path-as-is \
         --header "Accept: application/json"
     if [[ "${STATUS}" != "200" ]]; then
         fail "expected the realm's discovery document (200) through ${IDP_PREFIX}/realms/${REALM}, got ${STATUS}"
     fi
-    if ! ISSUER="$(helper json-field "${BODY}" issuer)" || [[ "${ISSUER}" != "${EXPECTED_ISSUER}" ]]; then
+    if ! ISSUER="$(helper json-field "${BODY}" issuer)" \
+            || [[ "$(helper origin "${ISSUER}")" != "$(helper origin "${EXPECTED_ISSUER}")" \
+                || "$(helper path "${ISSUER}")" != "$(helper path "${EXPECTED_ISSUER}")" ]]; then
         fail "the discovery document names issuer '${ISSUER:-<none>}', not ${EXPECTED_ISSUER}"
     fi
 

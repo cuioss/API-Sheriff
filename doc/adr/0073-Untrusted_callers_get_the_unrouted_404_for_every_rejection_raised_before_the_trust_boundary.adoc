@@ -187,11 +187,13 @@ the integration stack with a fixed number of sequential probes: the unrouted add
 path outside `allowed_paths`, a missing token, a malformed token, a token at the header-size bound, a
 well-formed token naming an unknown key id, the session branch's CSRF refusal, the declared-length
 fast-reject, a route-scoped filter violation, a cookie-forwarding same-origin refusal and a missing
-token on a `protocol: grpc` route. It asserts that every probe is answered as the unrouted `404`, so
-each path is shown to reach the floored answer rather than an honest one the floor never holds, and
-that `sheriff_uniform_not_found_overruns_total` did not move, so each of those paths is answered
-inside the first step. The token at the header-size bound keeps the realm's key id, so its probe
-includes the signature check of a token as large as the `Authorization` carve-out admits. The
+token on a `protocol: grpc` route. It asserts two things and no more: every probe returns status
+`404` -- an honest answer, which the floor never holds, would carry its own status -- and
+`sheriff_uniform_not_found_overruns_total` did not move during the measurement, so each of those
+paths is answered inside the first step. It does not compare the rest of the answer; the identity of
+the answers is the subject of the oracle tests, not of this measurement. The token at the header-size
+bound keeps the realm's key id, so its probe includes the signature check of a token as large as the
+`Authorization` carve-out admits. The
 unknown-key-id path stays inside the measurement because the key-set refresh it may trigger is
 scheduled off the request thread
 (link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
