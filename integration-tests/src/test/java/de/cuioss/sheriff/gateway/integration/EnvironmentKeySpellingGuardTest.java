@@ -241,7 +241,7 @@ class EnvironmentKeySpellingGuardTest {
                         "the check passed a base descriptor that no longer forwards TOPOLOGY_UPSTREAM"),
                 () -> assertFalse(committed.withoutOverrideEntry("TOPOLOGY_IDP").failures().isEmpty(),
                         "the check passed an /auth-fronted override that no longer forwards TOPOLOGY_IDP"),
-                () -> assertFalse(committed.withBaseEntry("TOPOLOGY_UPSTREAM", false).failures().isEmpty(),
+                () -> assertFalse(committed.withValuedBaseEntry("TOPOLOGY_UPSTREAM").failures().isEmpty(),
                         "the check passed a TOPOLOGY_UPSTREAM entry carrying a value, which overrides the "
                                 + "in-file default on every start"));
     }
@@ -285,9 +285,9 @@ class EnvironmentKeySpellingGuardTest {
             return new TopologyForwarding(baseEnvironment, diverged, basePlaceholders, variantPlaceholders);
         }
 
-        TopologyForwarding withBaseEntry(String name, boolean bare) {
+        TopologyForwarding withValuedBaseEntry(String name) {
             Map<String, Boolean> diverged = new LinkedHashMap<>(baseEnvironment);
-            diverged.put(name, bare);
+            diverged.put(name, false);
             return new TopologyForwarding(diverged, overrideEnvironment, basePlaceholders, variantPlaceholders);
         }
 
