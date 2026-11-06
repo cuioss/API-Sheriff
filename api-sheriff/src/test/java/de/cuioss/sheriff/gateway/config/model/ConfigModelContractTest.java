@@ -1257,12 +1257,13 @@ class ConfigModelContractTest {
             // Positional on purpose: the canonical constructor's defensive copy is the subject.
             ForwardConfig cfg = new ForwardConfig(source, null, null, null, Map.of());
             source.add("X-Late");
+            List<String> declared = cfg.headersAllow();
 
             assertAll("a declared list is copied at construction and is unmodifiable afterwards",
-                    () -> assertEquals(List.of("Accept"), cfg.headersAllow(),
+                    () -> assertEquals(List.of("Accept"), declared,
                             "mutating the source after construction must not reach the record"),
                     () -> assertThrows(UnsupportedOperationException.class,
-                            () -> cfg.headersAllow().add("X-Other")));
+                            () -> declared.add("X-Other")));
         }
     }
 

@@ -763,9 +763,9 @@ class ServerTlsDeclarationGateTest {
      */
     private static String messageOfIncoherentPlainHttp(Map<String, String> declared,
             GatewayConfig gateway) {
+        var gate = gateOver(declared, DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED, gateway);
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> gateOver(declared, DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED, gateway)
-                        .assertServerTlsDeclarationIsCoherent(),
+                gate::assertServerTlsDeclarationIsCoherent,
                 "the plain-HTTP opt-in is declared alongside a declaration that can only mean "
                         + "something on a listener that terminates TLS. Resolving that toward either "
                         + "one silently would ship a posture nobody chose, so the boot must be "

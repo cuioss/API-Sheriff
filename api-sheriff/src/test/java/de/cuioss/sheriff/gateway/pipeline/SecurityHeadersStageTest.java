@@ -432,25 +432,6 @@ class SecurityHeadersStageTest {
         }
 
         /**
-         * The seeding half of the stage and its owning half are two lists that must name the same
-         * headers: {@code applyResponseHeaders} decides what stage 0 puts on the response, and the set
-         * behind {@code isGatewayOwned} decides what stage 2a takes off again. A header added to the
-         * first but not the second keeps its GLOBAL value on an anchored route, which is exactly the
-         * leak stage 2a exists to prevent.
-         * <p>
-         * So this guard asserts the SURVIVING KEY SET rather than the four names one by one. Naming
-         * them here would be a third copy of a list the stage already holds twice, and a copy cannot
-         * observe a fifth header added to only one of the two halves — it would keep passing while the
-         * leak shipped. Comparing the whole key set derives both halves from the code under test: any
-         * header stage 0 seeds and stage 2a does not own survives the call and fails here, whatever it
-         * is called.
-         * <p>
-         * Both maps are asserted because a {@code default}-mode header lands in the default-map, so a
-         * guard reading only the set-map would miss half the surface. The block below therefore splits
-         * the four headers across both modes, and the precondition checks both maps were actually
-         * populated — an assertion that passes because nothing was seeded proves nothing.
-         */
-        /**
          * THE MODEL GUARD, and it closes a different gap from the one below. That test derives the
          * seed half and the own half from the code under test, so the two cannot drift apart — but
          * both could drift away from the CONFIGURATION MODEL together: a fifth header property added
@@ -491,6 +472,25 @@ class SecurityHeadersStageTest {
                             + " not treat as a gateway-owned header");
         }
 
+        /**
+         * The seeding half of the stage and its owning half are two lists that must name the same
+         * headers: {@code applyResponseHeaders} decides what stage 0 puts on the response, and the set
+         * behind {@code isGatewayOwned} decides what stage 2a takes off again. A header added to the
+         * first but not the second keeps its GLOBAL value on an anchored route, which is exactly the
+         * leak stage 2a exists to prevent.
+         * <p>
+         * So this guard asserts the SURVIVING KEY SET rather than the four names one by one. Naming
+         * them here would be a third copy of a list the stage already holds twice, and a copy cannot
+         * observe a fifth header added to only one of the two halves — it would keep passing while the
+         * leak shipped. Comparing the whole key set derives both halves from the code under test: any
+         * header stage 0 seeds and stage 2a does not own survives the call and fails here, whatever it
+         * is called.
+         * <p>
+         * Both maps are asserted because a {@code default}-mode header lands in the default-map, so a
+         * guard reading only the set-map would miss half the surface. The block below therefore splits
+         * the four headers across both modes, and the precondition checks both maps were actually
+         * populated — an assertion that passes because nothing was seeded proves nothing.
+         */
         @Test
         @DisplayName("removes every gateway-owned name when the route resolves no block at all — whatever stage 0 seeded")
         void removesSecurityNamesWhenRouteHasNoBlock() {
