@@ -76,6 +76,7 @@ import org.jspecify.annotations.Nullable;
 public final class SecurityHeadersStage {
 
     private static final int NO_CONTENT = 204;
+    private static final String PARAM_REQUEST = "request";
     private static final String WILDCARD_ORIGIN = "*";
     /** The {@code Vary} response-header name, written with the casing every writer here uses. */
     private static final String VARY_HEADER = "Vary";
@@ -230,7 +231,7 @@ public final class SecurityHeadersStage {
      * @param request the in-flight request context
      */
     public void process(PipelineRequest request) {
-        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(request, PARAM_REQUEST);
         if (config == null) {
             return;
         }
@@ -270,7 +271,7 @@ public final class SecurityHeadersStage {
      */
     public void applyRouteHeaders(PipelineRequest request, @Nullable SecurityHeadersConfig routeHeaders,
             List<String> matchHeaderNames) {
-        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(request, PARAM_REQUEST);
         Objects.requireNonNull(matchHeaderNames, "matchHeaderNames");
         request.responseHeaders().keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
         request.responseDefaultHeaders().keySet().removeIf(SecurityHeadersStage::isGatewayOwned);
@@ -300,7 +301,7 @@ public final class SecurityHeadersStage {
      * @param request the in-flight request whose response is portal-rendered
      */
     public static void applyPortalHeaders(PipelineRequest request) {
-        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(request, PARAM_REQUEST);
         String cspName = OwnedHeader.CONTENT_SECURITY_POLICY.headerName();
         String nosniffName = OwnedHeader.CONTENT_TYPE_OPTIONS.headerName();
         removeIgnoringCase(request, cspName);
@@ -389,7 +390,7 @@ public final class SecurityHeadersStage {
      * @param name    the field name to announce
      */
     public static void addVary(PipelineRequest request, String name) {
-        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(request, PARAM_REQUEST);
         Objects.requireNonNull(name, "name");
         request.responseHeaders().put(VARY_HEADER,
                 mergedVary(request.responseHeaders().get(VARY_HEADER), List.of(name)));

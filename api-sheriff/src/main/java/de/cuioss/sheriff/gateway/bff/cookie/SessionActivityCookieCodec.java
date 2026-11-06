@@ -111,6 +111,7 @@ public final class SessionActivityCookieCodec {
     private static final String MAC_ALGORITHM = "HmacSHA256";
     private static final int TAG_BYTES = 32;
     private static final int HEADER_BYTES = 2;
+    private static final String PARAM_SESSION_IDENTITY = "sessionIdentity";
     private static final int SIGNED_VALUE_BYTES = HEADER_BYTES + Long.BYTES + TAG_BYTES;
     private static final String MAX_AGE_ATTRIBUTE = "; Max-Age=";
     private static final String HARDENING_ATTRIBUTES = "; Path=/; Secure; HttpOnly; SameSite=Lax";
@@ -158,7 +159,7 @@ public final class SessionActivityCookieCodec {
      *                                  {@value #SESSION_IDENTITY_BYTES} bytes
      */
     public String sign(String sessionIdentity, Instant lastAccess) {
-        Objects.requireNonNull(sessionIdentity, "sessionIdentity");
+        Objects.requireNonNull(sessionIdentity, PARAM_SESSION_IDENTITY);
         Objects.requireNonNull(lastAccess, "lastAccess");
         long lastAccessMillis = lastAccess.toEpochMilli();
         byte[] value = ByteBuffer.allocate(SIGNED_VALUE_BYTES)
@@ -181,7 +182,7 @@ public final class SessionActivityCookieCodec {
      */
     public Optional<Instant> verify(String cookieValue, String sessionIdentity, Instant now) {
         Objects.requireNonNull(cookieValue, "cookieValue");
-        Objects.requireNonNull(sessionIdentity, "sessionIdentity");
+        Objects.requireNonNull(sessionIdentity, PARAM_SESSION_IDENTITY);
         Objects.requireNonNull(now, "now");
         byte[] identity = identityBytes(sessionIdentity);
         byte[] raw;
@@ -224,7 +225,7 @@ public final class SessionActivityCookieCodec {
      *         verify for this session
      */
     public Optional<Instant> read(@Nullable String cookieHeader, String sessionIdentity, Instant now) {
-        Objects.requireNonNull(sessionIdentity, "sessionIdentity");
+        Objects.requireNonNull(sessionIdentity, PARAM_SESSION_IDENTITY);
         Objects.requireNonNull(now, "now");
         if (cookieHeader == null || cookieHeader.isBlank()) {
             return Optional.empty();
