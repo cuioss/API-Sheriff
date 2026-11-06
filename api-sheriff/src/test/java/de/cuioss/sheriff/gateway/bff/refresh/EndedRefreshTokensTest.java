@@ -42,8 +42,8 @@ class EndedRefreshTokensTest {
         return Generators.letterStrings(24, 48).next();
     }
 
-    private static EndedRefreshTokens.Bounded bounded() {
-        return new EndedRefreshTokens.Bounded(new SecureRandom());
+    private static BoundedEndedRefreshTokens bounded() {
+        return new BoundedEndedRefreshTokens(new SecureRandom());
     }
 
     @Nested
@@ -53,7 +53,7 @@ class EndedRefreshTokensTest {
         @Test
         @DisplayName("Should report a marked token ended and an unmarked one not")
         void shouldHitMarkedTokenOnly() {
-            EndedRefreshTokens.Bounded marker = bounded();
+            BoundedEndedRefreshTokens marker = bounded();
             String ended = token();
             String other = ended + "-successor";
 
@@ -67,7 +67,7 @@ class EndedRefreshTokensTest {
         @Test
         @DisplayName("Should stop reporting a token ended at and after the session's absolute lifetime")
         void shouldExpireAtAbsoluteLifetime() {
-            EndedRefreshTokens.Bounded marker = bounded();
+            BoundedEndedRefreshTokens marker = bounded();
             String ended = token();
 
             marker.markEnded(ended, LIFETIME, NOW);
@@ -81,7 +81,7 @@ class EndedRefreshTokensTest {
         @Test
         @DisplayName("Should not record a token whose session is already past its absolute lifetime")
         void shouldNotRecordExpiredSession() {
-            EndedRefreshTokens.Bounded marker = bounded();
+            BoundedEndedRefreshTokens marker = bounded();
 
             marker.markEnded(token(), NOW, NOW);
 
@@ -91,7 +91,7 @@ class EndedRefreshTokensTest {
         @Test
         @DisplayName("Should neither record nor evict a live marker when the store is full of unexpired markers")
         void shouldDegradeWhenFullOfLiveMarkers() {
-            EndedRefreshTokens.Bounded marker = bounded();
+            BoundedEndedRefreshTokens marker = bounded();
             for (int i = 0; i < EndedRefreshTokens.MAX_ENTRIES; i++) {
                 marker.markEnded("live-" + i, LIFETIME, NOW);
             }
@@ -108,7 +108,7 @@ class EndedRefreshTokensTest {
         @Test
         @DisplayName("Should prune expired markers first and then record when the store is full")
         void shouldPruneExpiredMarkersWhenFull() {
-            EndedRefreshTokens.Bounded marker = bounded();
+            BoundedEndedRefreshTokens marker = bounded();
             Instant shortLifetime = NOW.plusSeconds(10);
             for (int i = 0; i < EndedRefreshTokens.MAX_ENTRIES; i++) {
                 marker.markEnded("short-" + i, shortLifetime, NOW);
@@ -127,8 +127,8 @@ class EndedRefreshTokensTest {
         @DisplayName("Should hold only a per-instance salted digest, never the raw token")
         void shouldKeyOnPerInstanceSaltedDigest() {
             String refreshToken = token();
-            EndedRefreshTokens.Bounded first = bounded();
-            EndedRefreshTokens.Bounded second = bounded();
+            BoundedEndedRefreshTokens first = bounded();
+            BoundedEndedRefreshTokens second = bounded();
 
             String firstDigest = first.digest(refreshToken);
             String secondDigest = second.digest(refreshToken);
@@ -142,8 +142,8 @@ class EndedRefreshTokensTest {
         @Test
         @DisplayName("Should not report a token ended on another instance")
         void shouldBePerInstance() {
-            EndedRefreshTokens.Bounded first = bounded();
-            EndedRefreshTokens.Bounded second = bounded();
+            BoundedEndedRefreshTokens first = bounded();
+            BoundedEndedRefreshTokens second = bounded();
             String ended = token();
 
             first.markEnded(ended, LIFETIME, NOW);

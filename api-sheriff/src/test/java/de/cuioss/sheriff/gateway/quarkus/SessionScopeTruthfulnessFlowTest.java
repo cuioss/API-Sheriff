@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
@@ -122,7 +123,7 @@ class SessionScopeTruthfulnessFlowTest {
             });
     private final SessionBinding binding = new ServerSessionBinding(store,
             new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
-    private final PendingAuthorizationStore.InMemory pendingStore = new PendingAuthorizationStore.InMemory(8);
+    private final InMemoryPendingAuthorizationStore pendingStore = new InMemoryPendingAuthorizationStore(8);
     private final BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
     private final List<WideningCall> wideningCalls = new ArrayList<>();
     private final AtomicInteger refreshGrants = new AtomicInteger();

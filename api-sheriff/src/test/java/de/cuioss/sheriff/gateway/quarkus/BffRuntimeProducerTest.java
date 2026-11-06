@@ -102,7 +102,9 @@ import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
+import de.cuioss.sheriff.gateway.bff.refresh.BoundedEndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
@@ -1276,7 +1278,7 @@ class BffRuntimeProducerTest {
 
             assertAll("each mode's coordinator holds exactly its own marker",
                     () -> assertEquals(1, cookieMarkers.size(), "cookie mode assembles one marker"),
-                    () -> assertInstanceOf(EndedRefreshTokens.Bounded.class, cookieMarkers.getFirst()),
+                    () -> assertInstanceOf(BoundedEndedRefreshTokens.class, cookieMarkers.getFirst()),
                     () -> assertEquals(List.of(EndedRefreshTokens.inert()), serverMarkers,
                             "server mode assembles the inert marker"));
         }
@@ -2176,8 +2178,8 @@ class BffRuntimeProducerTest {
             GatewayException refused = assertThrows(GatewayException.class,
                     () -> runtime.dispatch(ReservedEndpoint.LOGIN, login, now));
 
-            PendingAuthorizationStore.InMemory pendingStore = single(
-                    reachableInstancesOf(runtime, PendingAuthorizationStore.InMemory.class), "pending store");
+            InMemoryPendingAuthorizationStore pendingStore = single(
+                    reachableInstancesOf(runtime, InMemoryPendingAuthorizationStore.class), "pending store");
             assertAll("a login against a provider without a pushed-authorization-request endpoint",
                     () -> assertEquals(EventType.UPSTREAM_ERROR, refused.getEventType()),
                     () -> assertEquals(502, refused.getEventType().httpStatus(), "the edge answers 502"),
@@ -2264,8 +2266,8 @@ class BffRuntimeProducerTest {
 
             GatewayException refused = assertThrows(GatewayException.class, () -> stage.process(request));
 
-            PendingAuthorizationStore.InMemory pendingStore = single(
-                    reachableInstancesOf(runtime, PendingAuthorizationStore.InMemory.class), "pending store");
+            InMemoryPendingAuthorizationStore pendingStore = single(
+                    reachableInstancesOf(runtime, InMemoryPendingAuthorizationStore.class), "pending store");
             assertAll("a widening against a provider without a pushed-authorization-request endpoint",
                     () -> assertEquals(EventType.UPSTREAM_ERROR, refused.getEventType()),
                     () -> assertEquals(502, refused.getEventType().httpStatus(), "the edge answers 502"),
@@ -4586,8 +4588,8 @@ class BffRuntimeProducerTest {
         }
 
         /** The one pending-authorization store of an assembled runtime, located by the bounded walk. */
-        private static PendingAuthorizationStore.InMemory pendingStoreOf(BffRuntime runtime) {
-            return single(reachableInstancesOf(runtime, PendingAuthorizationStore.InMemory.class), "pending store");
+        private static InMemoryPendingAuthorizationStore pendingStoreOf(BffRuntime runtime) {
+            return single(reachableInstancesOf(runtime, InMemoryPendingAuthorizationStore.class), "pending store");
         }
 
         private static int recordsContaining(TestLogLevel level, String part) {

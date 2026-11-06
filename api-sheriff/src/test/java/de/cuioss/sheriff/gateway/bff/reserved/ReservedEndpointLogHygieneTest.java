@@ -33,6 +33,7 @@ import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CallbackOutcome;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CodeExchange;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -87,7 +88,7 @@ class ReservedEndpointLogHygieneTest {
     private final String refreshToken = secret();
     private final String code = secret();
 
-    private PendingAuthorizationStore.InMemory pendingStore;
+    private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
     private SessionBinding sessionBinding;
     private String state;
@@ -100,7 +101,7 @@ class ReservedEndpointLogHygieneTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new PendingAuthorizationStore.InMemory(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         sessionBinding = new ServerSessionBinding(
                 new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {

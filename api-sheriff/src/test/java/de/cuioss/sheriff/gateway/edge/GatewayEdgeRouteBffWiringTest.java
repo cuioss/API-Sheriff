@@ -55,6 +55,7 @@ import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
@@ -760,7 +761,7 @@ public class GatewayEdgeRouteBffWiringTest {
         private static final String SUBJECT = "user-sub-1";
         private final Instant now = Instant.parse("2026-07-25T10:00:00Z");
 
-        private PendingAuthorizationStore.InMemory pendingStore;
+        private InMemoryPendingAuthorizationStore pendingStore;
         private BindingCookieCodec bindingCodec;
         private SessionBinding sessionBinding;
         private BffRuntime runtime;
@@ -769,7 +770,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         @BeforeEach
         void setUp() {
-            pendingStore = new PendingAuthorizationStore.InMemory(16);
+            pendingStore = new InMemoryPendingAuthorizationStore(16);
             bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
             sessionBinding = serverBinding(newStore());
 
@@ -1923,7 +1924,7 @@ public class GatewayEdgeRouteBffWiringTest {
     static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
             SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-        PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(16);
+        PendingAuthorizationStore pendingStore = new InMemoryPendingAuthorizationStore(16);
         Duration ttl = Duration.ofHours(1);
 
         LoginFlow loginFlow = new LoginFlow(scopes -> {

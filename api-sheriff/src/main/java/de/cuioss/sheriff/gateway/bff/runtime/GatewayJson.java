@@ -85,7 +85,11 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
-@Singleton // not @ApplicationScoped: the class is final and immutable, so it needs no client proxy
+// @Singleton rather than @ApplicationScoped: @ApplicationScoped makes ArC generate a client proxy, which needs a
+// non-final class with a no-args constructor. This class is final and immutable (its single constructor takes
+// the mapper), so the pseudo-scope Singleton injects the real instance directly, with no proxy and no native
+// image reflection or class-transformation implications.
+@Singleton // NOSONAR java:S9068 final immutable class, a client proxy is neither possible nor needed
 public final class GatewayJson {
 
     private static final int FIRST_UNESCAPED_CHARACTER = 0x20;

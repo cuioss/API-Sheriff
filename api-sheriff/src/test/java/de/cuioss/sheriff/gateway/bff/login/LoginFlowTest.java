@@ -29,6 +29,7 @@ import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
@@ -58,7 +59,7 @@ class LoginFlowTest {
     /** The scope set a caller names for the login; the flow forwards it to the seam unchanged. */
     private static final List<String> SCOPES = List.of("openid", "profile", "orders:read");
 
-    private PendingAuthorizationStore.InMemory pendingStore;
+    private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
     private FlowContext flowContext;
     private AtomicReference<Collection<String>> requestedScopes;
@@ -67,7 +68,7 @@ class LoginFlowTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new PendingAuthorizationStore.InMemory(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =

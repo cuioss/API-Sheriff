@@ -37,7 +37,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the D2b pending-authorization primitives: the bounded single-use
- * {@link PendingAuthorizationStore.InMemory}, the {@link PendingAuthorizationRecord} contract
+ * {@link InMemoryPendingAuthorizationStore}, the {@link PendingAuthorizationRecord} contract
  * (single-use enforcement, TTL expiry, same-origin return-URL validation, the login-versus-widening
  * marker), and the
  * security-critical cross-browser callback rejection (a valid {@code state} presented in a
@@ -65,7 +65,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should resolve a stored record exactly once (single-use consumption)")
         void shouldConsumeStoredRecordExactlyOnce() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(16);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(16);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
@@ -80,7 +80,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should refuse a record consumed after its TTL has elapsed")
         void shouldRefuseExpiredRecord() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(16);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(16);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
@@ -91,7 +91,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should resolve a record consumed within its TTL")
         void shouldResolveRecordWithinTtl() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(16);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(16);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
@@ -101,7 +101,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should evict the oldest record once the capacity bound is exceeded")
         void shouldEvictOldestBeyondCapacity() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(2);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(2);
             PendingAuthorizationRecord first = pendingRecord("/a", T0);
             PendingAuthorizationRecord second = pendingRecord("/b", T0);
             PendingAuthorizationRecord third = pendingRecord("/c", T0);
@@ -118,15 +118,15 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should return empty for an unknown record id")
         void shouldReturnEmptyForUnknownId() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(4);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
             assertTrue(store.consume("nonexistent", T0).isEmpty());
         }
 
         @Test
         @DisplayName("Should reject a non-positive capacity bound")
         void shouldRejectNonPositiveCapacity() {
-            assertThrows(IllegalArgumentException.class, () -> new PendingAuthorizationStore.InMemory(0));
-            assertThrows(IllegalArgumentException.class, () -> new PendingAuthorizationStore.InMemory(-1));
+            assertThrows(IllegalArgumentException.class, () -> new InMemoryPendingAuthorizationStore(0));
+            assertThrows(IllegalArgumentException.class, () -> new InMemoryPendingAuthorizationStore(-1));
         }
     }
 
@@ -137,7 +137,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should refuse a callback that carries no binding cookie even with a stored record")
         void shouldRefuseCallbackWithoutBindingCookie() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(8);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(8);
             BindingCookieCodec codec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
@@ -154,7 +154,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should resolve the record for the originating browser that carries the binding cookie")
         void shouldResolveForOriginatingBrowser() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(8);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(8);
             BindingCookieCodec codec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
@@ -197,7 +197,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should retain the requested scope set through the store")
         void shouldRetainRequestedScopesThroughStore() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(4);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
@@ -285,7 +285,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should round-trip a widening record through the store with its subject and attempt")
         void shouldRoundTripWideningRecord() {
-            PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(4);
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
             FlowContext flow = flow();
             PendingAuthorizationRecord stored = PendingAuthorizationRecord.createWidening(flow, "/orders",
                     REQUESTED_SCOPES, SUBJECT, Widening.Attempt.SILENT, T0);
