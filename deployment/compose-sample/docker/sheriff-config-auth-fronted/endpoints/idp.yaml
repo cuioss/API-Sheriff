@@ -53,8 +53,10 @@ endpoint:
       #
       # This block decides WHICH cookies cross, not how long the Cookie header may be. The length is
       # checked before any route is selected, so it cannot be set here: gateway.yaml raises it for the
-      # Cookie header alone (oidc.session.max_cookie_header_value_length), because KC_RESTART outgrows
-      # the strict header-value cap.
+      # Cookie header alone (oidc.session.max_cookie_header_value_length), because the browser sends
+      # these cookies together in one header, KC_RESTART beside Keycloak's session cookies, and that
+      # header outgrows the strict header-value cap. The cap is measured against the whole header, the
+      # gateway's own cookies included, not against the cookies this list lets cross.
       cookies:
         allow:
           - AUTH_SESSION_ID

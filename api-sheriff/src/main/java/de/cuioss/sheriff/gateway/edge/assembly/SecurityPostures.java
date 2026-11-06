@@ -68,8 +68,8 @@ public final class SecurityPostures {
      * <p>
      * <strong>The server-mode cap.</strong> A server-mode BFF holds no sealed cookie of its own — its
      * session cookie is an opaque handle — but it may carry a third party's cookies through the gateway:
-     * a fronted identity provider sets cookies (Keycloak's {@code KC_RESTART} measures about 1650
-     * characters) that outgrow the {@code strict} 1024-character cap, so the login flow is rejected
+     * a fronted identity provider sets cookies (a Keycloak login sends a {@code Cookie} header of some
+     * 1700 to 2500 characters) that outgrow the {@code strict} 1024-character cap, so the login flow is rejected
      * {@code 400} here before route selection. The operator-declared
      * {@code max_cookie_header_value_length} is the cap such a gateway asks for; omitted, a server-mode
      * gateway keeps {@code null} exactly as before. Every bound below applies to it unchanged: the

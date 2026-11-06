@@ -574,12 +574,21 @@ The variant keeps the `strict` inbound profile gateway-wide. Two things widen, e
 * *The method gate admits `POST`*, because Keycloak's login form posts the credentials. The `api`,
   `app` and `pages` anchors narrow their own lists back to `GET` and `HEAD`, so `POST` is admitted
   under `/auth` alone.
-* *The `Cookie` header may carry up to 2048 characters*, through
-  link:../configuration.adoc#_oidc[`oidc.session.max_cookie_header_value_length`]. Keycloak's
-  `KC_RESTART` cookie alone runs to some 1650 characters, past the `strict` 1024-character
-  header-value cap, and that cap is applied to every header *before* a route is selected -- so no
-  endpoint-level setting could lift it for `/auth`. The key raises the cap for the `Cookie` header
-  only; every other header, every parameter and every path stays at the `strict` cap.
+* *The `Cookie` header may carry up to 4096 characters*, through
+  link:../configuration.adoc#_oidc[`oidc.session.max_cookie_header_value_length`]. Keycloak's login
+  cookies outgrow the `strict` 1024-character header-value cap, and that cap is applied to every
+  header *before* a route is selected -- so no endpoint-level setting could lift it for `/auth`. The
+  key raises the cap for the `Cookie` header only; every other header, every parameter and every path
+  stays at the `strict` cap.
++
+The value is sized from the headers measured in this variant. A first login peaks at 1726
+characters, on the login-form `POST`, with Keycloak's `KC_RESTART` cookie alone some 1400 of them.
+The larger case is a new login while Keycloak's own session is still live -- after a gateway restart
+dropped its in-memory session, for instance. The browser then sends `KC_RESTART` together with
+`KEYCLOAK_IDENTITY` and `KEYCLOAK_SESSION`: 2409 characters, and 2474 when the stale
+`+__Host-sample-session+` cookie is sent along too. 4096 holds that with some 1600 characters to
+spare and stays half the 8192 ceiling the boot enforces; it is not raised to the ceiling, because
+the cap applies to every request on every route before any route is chosen.
 
 The gateway also dials Keycloak over TLS on its data plane now, so the variant names the same
 `sample-idp` trust profile for that dial (`egress_tls.upstream_tls_profile`) as the base sample names

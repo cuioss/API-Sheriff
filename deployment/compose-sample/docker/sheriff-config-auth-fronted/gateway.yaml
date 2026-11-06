@@ -216,15 +216,28 @@ oidc:
     # this name.
     cookie_name: __Host-sample-session
     # VARIANT. The pre-route cap for Cookie header values, and for no other header. Keycloak's login
-    # cookies reach it through the `auth` anchor now, and its KC_RESTART cookie alone runs to some 1650
-    # characters — past the strict 1024 above, which the gateway applies to every header value BEFORE
-    # it selects a route, so no endpoint-level setting could lift it for /auth. This key raises that
-    # cap for the Cookie header only, to max(strict baseline, 2048); every other header stays at 1024.
+    # cookies reach it through the `auth` anchor now, and the strict 1024 above cannot hold them: the
+    # gateway applies that cap to every header value BEFORE it selects a route, so no endpoint-level
+    # setting could lift it for /auth. This key raises the cap for the Cookie header only, to
+    # max(strict baseline, 4096); every other header stays at 1024.
+    #
+    # Sized from the Cookie headers measured in this lane, as character counts of the whole header
+    # value. A first login peaks at 1726, on the login-form POST: KC_RESTART alone is some 1400
+    # (name, '=' and value) beside AUTH_SESSION_ID, KC_AUTH_SESSION_HASH and the gateway's own
+    # __Host-sheriff-binding. The larger case is a NEW login while Keycloak's session is still live —
+    # the gateway lost its session, say to a restart of its in-memory store. The browser then sends
+    # KC_RESTART TOGETHER with KEYCLOAK_IDENTITY (some 600) and KEYCLOAK_SESSION: 2409 characters, and
+    # 2474 when the stale __Host-sample-session rides along too. Both are past the 2048 this key used to
+    # carry, and the gateway refused that login at its pre-route floor.
+    #
+    # 4096 holds the largest measured header with some 1600 characters to spare — room for an identity
+    # cookie that grows with the claims a realm puts in it — and is still half the 8192 ceiling. It is
+    # not the ceiling because the cap is gateway-wide: every request on every route may send a Cookie
+    # header this long before any route is chosen, so the cap stays as low as the measured need allows.
     #
     # Server session mode only: a cookie-mode BFF derives its Cookie cap from max_cookie_size and
     # refuses this key. The boot also refuses a value below the resolved baseline or above 8192.
-    # 2048 holds Keycloak's cookies with headroom and stays a quarter of that ceiling.
-    max_cookie_header_value_length: 2048
+    max_cookie_header_value_length: 4096
     ttl_seconds: 3600
     # The gateway refreshes the access token it holds before it expires, so a long-lived browser
     # session never forwards an expired token upstream.

@@ -3081,11 +3081,14 @@ See link:#_oidc_client_authentication[Client authentication].
 
   *Why it exists.* A server-mode BFF holds no large cookie of its own -- its session cookie is an
   opaque handle -- but it may carry a third party's cookies through the gateway. The motivating case
-  is a gateway that fronts its own identity provider: Keycloak's `KC_RESTART` cookie measures about
-  1650 characters, so on a `strict` gateway (1024) every login is rejected `400` before route
-  selection. This key lets such a gateway stay on `strict` and raise the cap for `Cookie` alone,
-  instead of moving every header of every route to `lenient`. See the `/auth`-fronted variant in
-  link:user/compose-sample.adoc[the compose sample].
+  is a gateway that fronts its own identity provider: a Keycloak login sends a `Cookie` header of
+  1726 characters, `KC_RESTART` alone some 1400 of them, so on a `strict` gateway (1024) every login
+  is rejected `400` before route selection. This key lets such a gateway stay on `strict` and raise
+  the cap for `Cookie` alone, instead of moving every header of every route to `lenient`. Size it
+  against the *whole* header, not the largest cookie: a login that starts while the identity
+  provider's own session is still live sends its session cookies beside `KC_RESTART`, measured at
+  2409 characters in the `/auth`-fronted variant of
+  link:user/compose-sample.adoc[the compose sample], which declares `4096` for that reason.
 
   *The effective cap is the larger of the baseline and this value*, so the key can only admit more
   length. A value is *refused at boot* (`ApiSheriff-200` at `/oidc/session/max_cookie_header_value_length`):

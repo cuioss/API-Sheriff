@@ -200,12 +200,22 @@ load-balancer check `/auth/lb-check` is not routed: the pinned image answers it 
 it would forward to nothing. The realm route admits Keycloak's login cookies by
 exact name with `same_origin_check: true`, because the credential `POST` carries them.
 
-*The `Cookie` cap is the one relaxation, and it is gateway-level.* `KC_RESTART` runs to about 1650
-characters, past `strict`'s 1024-character header-value cap. That cap is enforced before a route is
-selected, so a route- or endpoint-scoped relaxation cannot reach it; widening the whole profile would
-widen every header, parameter and path. The variant keeps `strict` and declares
-`oidc.session.max_cookie_header_value_length: 2048`, which raises the cap for `Cookie` values only and
+*The `Cookie` cap is the one relaxation, and it is gateway-level.* Keycloak's login cookies run past
+`strict`'s 1024-character header-value cap. That cap is enforced before a route is selected, so a
+route- or endpoint-scoped relaxation cannot reach it; widening the whole profile would widen every
+header, parameter and path. The variant keeps `strict` and declares
+`oidc.session.max_cookie_header_value_length: 4096`, which raises the cap for `Cookie` values only and
 only on a server-mode BFF -- the same three-axis carve-out ADR-0019 records for cookie mode.
+
+The value comes from measuring the whole `Cookie` header in this variant, not one cookie. A first
+login peaks at 1726 characters on the login-form `POST`, where `KC_RESTART` alone is some 1400. A
+login that starts while Keycloak's session is still live -- the gateway lost its in-memory session to
+a restart, say -- sends `KC_RESTART` together with `KEYCLOAK_IDENTITY` and `KEYCLOAK_SESSION`: 2409
+characters, 2474 with the stale `+__Host-sample-session+` cookie alongside. The 2048 this key first
+carried was sized against `KC_RESTART` alone, and the gateway refused exactly that login at its
+pre-route floor (`ApiSheriff-100`, `INPUT_TOO_LONG` at `HEADER_VALUE`). 4096 leaves some 1600
+characters for an identity cookie that grows with the realm's claims and stays half the 8192 boot
+ceiling, because the cap admits a header that long on every route before any route is chosen.
 
 *`POST` is admitted gateway-wide and narrowed back per anchor.* The global method gate runs before
 route selection too, so admitting the login form's `POST` there is unavoidable; the `api`, `app` and

@@ -30,8 +30,9 @@ it.
 * *Some header values are long by design.* The cookie-mode BFF's sealed session cookie is designed to
   a multi-kilobyte budget. A bearer token with its `Bearer ` prefix routinely exceeds the `strict`
   preset's 1024-character value cap. Both fail the pre-route floor on every request. A server-mode
-  BFF that fronts its identity provider carries that provider's cookies -- Keycloak's `KC_RESTART`
-  measures about 1650 characters -- and fails the floor on every login.
+  BFF that fronts its identity provider carries that provider's cookies -- a Keycloak login sends a
+  `Cookie` header measured at 1726 characters, and at 2409 when a login starts while Keycloak's own
+  session is still live -- and fails the floor on every login.
 
 The pre-route floor (`BasicChecksStage`) runs before route selection, so route selection decides on
 canonical, validated input. At that point no route or anchor exists to scope a relaxation to. That

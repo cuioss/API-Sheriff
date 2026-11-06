@@ -3703,8 +3703,9 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   cookies does not flood the log.
 * *A server-mode gateway raises the `Cookie` cap only on an explicit, bounded opt-in.* By default a
   server-mode BFF measures `Cookie` values at the resolved baseline (1024 under `strict`), like every
-  other header. A gateway that fronts its identity provider carries that provider's cookies --
-  Keycloak's `KC_RESTART` measures about 1650 characters -- and may declare
+  other header. A gateway that fronts its identity provider carries that provider's cookies -- a
+  Keycloak login sends a `Cookie` header measured at 1726 characters, and at 2409 when it starts
+  while Keycloak's own session is still live -- and may declare
   `oidc.session.max_cookie_header_value_length` to admit them without leaving `strict`. The relaxation
   is the ADR-0019 cookie carve-out with a server-mode budget key: it reaches `Cookie` / `Set-Cookie`
   values only, changes the length cap alone (every non-length validator still runs on the value), and

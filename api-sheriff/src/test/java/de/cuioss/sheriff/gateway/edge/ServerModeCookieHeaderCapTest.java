@@ -62,8 +62,10 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>Why the key exists.</strong> A server-mode BFF that fronts its identity provider (the
  * {@code /auth}-fronted compose sample) carries the provider's own cookies through the gateway. Keycloak's
- * {@code KC_RESTART} cookie measures about 1650 characters, so on a {@code strict} gateway — 1024-character
- * header values — the login flow is rejected {@code 400} at the floor before route selection. The only
+ * {@code KC_RESTART} cookie pair alone measures some 1400 characters, so on a {@code strict} gateway —
+ * 1024-character header values — the login flow is rejected {@code 400} at the floor before route
+ * selection. The whole {@code Cookie} header the sample sends is longer still; the sample sizes its own
+ * declared cap against that header, not against this one cookie. The only
  * {@code Cookie} carve-out that existed belonged to cookie mode; this key gives a server-mode BFF the same,
  * equally narrow relaxation instead of moving the whole gateway to {@code lenient}.
  * <p>
@@ -74,10 +76,16 @@ import org.junit.jupiter.api.Test;
 @DisplayName("Server-mode BFF Cookie header cap — oidc.session.max_cookie_header_value_length")
 class ServerModeCookieHeaderCapTest {
 
-    /** The size of Keycloak's {@code KC_RESTART} cookie pair measured on the {@code /auth}-fronted sample. */
-    private static final int KEYCLOAK_RESTART_COOKIE_LENGTH = 1650;
+    /**
+     * The size of Keycloak's {@code KC_RESTART} cookie pair ({@code name=value}) measured on the
+     * {@code /auth}-fronted sample.
+     */
+    private static final int KEYCLOAK_RESTART_COOKIE_LENGTH = 1403;
 
-    /** A declared cap above the Keycloak cookie with headroom, and above the strict baseline. */
+    /**
+     * A declared cap above the Keycloak cookie with headroom, and above the strict baseline. A test value,
+     * not the sample's: the sample declares a larger cap sized against its whole {@code Cookie} header.
+     */
     private static final int DECLARED_CAP = 2048;
 
     private static final SecurityConfiguration STRICT = SecurityProfile.STRICT.preset();
