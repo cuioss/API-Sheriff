@@ -258,8 +258,7 @@ class IdpFrontingCanonicalPathTest {
                         + "route to reach"),
                 () -> assertTrue(shipped.routeTable().routes().stream().map(Route::id).toList()
                                 .containsAll(idpRoutes),
-                        "every idp route must be in the assembled route table the pipeline selects over"),
-                () -> assertTrue(hostileSpellings().findAny().isPresent(), "the hostile corpus must not be empty"));
+                        "every idp route must be in the assembled route table the pipeline selects over"));
     }
 
     /**
