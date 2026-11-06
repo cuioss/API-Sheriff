@@ -182,6 +182,14 @@ public final class ConfigLoader {
     private static final char MAP_PAIR_SEPARATOR = '=';
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     /**
+     * The endpoint-id pattern {@code endpoint.schema.json} declares on {@code endpoint.id}
+     * ({@code ^[a-z][a-z0-9-]*$}), applied with whole-input {@link java.util.regex.Matcher#matches()}
+     * semantics. It gates whether the name-equals-id refusal may offer the file stem as the replacement
+     * id. Kept local rather than shared with the validation rules: the {@code load} package must not
+     * depend on {@code validation.rule}, which already depends on it.
+     */
+    private static final Pattern ENDPOINT_ID = Pattern.compile("[a-z][a-z0-9-]*");
+    /**
      * Bound on {@code $ref} indirections followed when resolving a destination type. The bundled
      * schemas nest one level deep; the cap simply stops a malformed or cyclic reference from spinning.
      */
@@ -353,12 +361,17 @@ public final class ConfigLoader {
      * path. Refusing a mismatch here, where the actual file is still known, is what makes that name
      * the file actually loaded: an operator who renamed {@code legacy.yaml}'s id to {@code redirects}
      * would otherwise be pointed at an {@code endpoints/redirects.yaml} that does not exist. The
-     * refusal is reported against the file actually loaded, names both values and the rename that
-     * fixes it, and drops the endpoint so no later rule reports against the wrong name.
+     * refusal is reported against the file actually loaded, names the declared id, the file name and
+     * the rename that fixes it, and drops the endpoint so no later rule reports against the wrong name.
+     * Setting the id to the file stem is offered as the second fix only when the stem is itself a legal
+     * endpoint id ({@link #ENDPOINT_ID}); a stem the schema would refuse — the empty stem of a file named
+     * exactly {@code .yaml}, an upper-case or underscore stem, a leading digit — is never suggested, so
+     * the refusal cannot point the operator at a value the next boot refuses.
      * <p>
      * Neither echoed value can carry a secret or forge a log line: the id has already passed the
      * endpoint schema, whose {@code ^[a-z][a-z0-9-]*$} pattern admits no control character, and the
-     * stem is the name of the file the error is already reported against.
+     * file name is the name of the file the error is already reported against. A stem echoed as the
+     * suggested id has passed that same pattern.
      *
      * @return {@code true} when the declared id equals the file stem; otherwise {@code false}, with one
      *         {@link ConfigError} recorded against {@code file}
@@ -371,10 +384,11 @@ public final class ConfigLoader {
         if (stem.equals(id)) {
             return true;
         }
+        String idFix = ENDPOINT_ID.matcher(stem).matches() ? ", or set the id to '%s'".formatted(stem) : "";
         errors.add(new ConfigError(file, ENDPOINT_ID_POINTER,
                 ("endpoint id '%s' differs from its file name '%s': an endpoint file is named after the id "
-                        + "it declares — rename the file to endpoints/%s.yaml, or set the id to '%s'")
-                        .formatted(id, stem, id, stem)));
+                        + "it declares — rename the file to endpoints/%s.yaml%s")
+                        .formatted(id, fileName, id, idFix)));
         return false;
     }
 

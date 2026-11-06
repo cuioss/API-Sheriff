@@ -2823,12 +2823,56 @@ class ConfigLoaderTest {
         List<ConfigError> errors = exception.errors();
         assertEquals(1, errors.size(), () -> "expected exactly one error, got: " + errors);
         ConfigError error = errors.getFirst();
-        assertAll("the refusal names the file actually loaded, both values and the fix",
+        assertAll("the refusal names the file actually loaded, both values and both fixes",
                 () -> assertEquals("endpoints/legacy.yaml", error.file()),
                 () -> assertEquals("/endpoint/id", error.pointer()),
                 () -> assertTrue(error.message().contains("'redirects'"), error::message),
-                () -> assertTrue(error.message().contains("'legacy'"), error::message),
-                () -> assertTrue(error.message().contains("endpoints/redirects.yaml"), error::message));
+                () -> assertTrue(error.message().contains("'legacy.yaml'"), error::message),
+                () -> assertTrue(error.message().contains("endpoints/redirects.yaml"), error::message),
+                () -> assertTrue(error.message().contains("set the id to 'legacy'"),
+                        () -> "a stem that is itself a legal id is offered as the replacement id: "
+                                + error.message()));
+    }
+
+    /**
+     * The id suggestion is offered only when the file stem is itself a legal endpoint id. A stem the
+     * endpoint schema's {@code ^[a-z][a-z0-9-]*$} pattern refuses — the empty stem of a file named
+     * exactly {@code .yaml}, an upper-case or underscore stem, a leading digit — would point the
+     * operator at a value the next boot refuses, so only the rename is suggested, and the refusal
+     * names the actual file rather than an empty or illegal quoted stem.
+     */
+    @ParameterizedTest(name = "endpoints/{0} declaring id: redirects suggests only the rename")
+    @ValueSource(strings = {".yaml", "My_Redirects.yaml", "1redirects.yaml"})
+    void neverSuggestsAnIdTheEndpointSchemaRefuses(String fileName) throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/" + fileName, """
+                endpoint:
+                  id: redirects
+                  auth:
+                    require: none
+                  routes:
+                    - id: redirects-home
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: 307
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+        List<ConfigError> errors = exception.errors();
+        assertEquals(1, errors.size(), () -> "expected exactly one error, got: " + errors);
+        ConfigError error = errors.getFirst();
+        assertAll("the refusal names the actual file and suggests only the rename",
+                () -> assertEquals("endpoints/" + fileName, error.file()),
+                () -> assertEquals("/endpoint/id", error.pointer()),
+                () -> assertTrue(error.message().contains("'" + fileName + "'"), error::message),
+                () -> assertTrue(error.message().contains("endpoints/redirects.yaml"), error::message),
+                () -> assertFalse(error.message().contains("set the id to"),
+                        () -> "a stem outside the endpoint-id pattern must not be offered as the id: "
+                                + error.message()));
     }
 
     /** Control: the same endpoint under its own name loads, so the refusal above is the name alone. */
