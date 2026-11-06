@@ -39,6 +39,10 @@ It carries the same *security* directives as the three above -- non-root, `cap_d
 the upstream and unlike the gateway, declares *no resource limits*, for the reason given just above.
 See <<_the_plain_http_variant>>.
 
+A second override file adds no service at all. It puts the identity provider *behind* the gateway:
+Keycloak publishes no host port, and the browser reaches its login pages through the gateway under
+`/auth`. See <<_the_auth_fronted_variant>>.
+
 WARNING: Every credential and every piece of key material in this sample is a placeholder. Read
 <<_what_must_change_before_this_is_real>> before this stack is reachable by anything you care about.
 
@@ -192,6 +196,12 @@ python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
 `API_SHERIFF_IMAGE=IMAGE` into the bring-up, exactly as Route B does by hand. CI uses it to run the
 sample against the image it has just built -- see <<_after_a_keycloak_update>>.
 
+`-Dcompose-sample.variant=auth-fronted` runs the profile as <<_the_auth_fronted_variant>>: the
+bring-up layers that variant's override file on top, and the login check signs in through the
+identity provider's pages under the gateway's `/auth` prefix. It combines with
+`-Dcompose-sample.image`. The property selects the variant by that exact value; no other value
+selects a variant.
+
 Without `-Pcompose-sample` the `deployment` module is a no-op: the default build starts no container
 and costs no measurable time.
 
@@ -300,10 +310,13 @@ CI brings the base sample up on every pull request. After the integration suite 
 stack down, the `integration-tests` workflow runs the `compose-sample` profile against the native
 image that job has just built from the pull request's source
 (`-Dcompose-sample.image=api-sheriff:distroless`), so the sample's Keycloak is started and a real
-login through the BFF is checked. A Keycloak bump pull request reaches the sample through that job
-and no other; the configuration-validation workflow still validates only the gateway configuration
-set. CI does *not* bring up <<_the_plain_http_variant>> -- check that one by hand after a bump that
-touches it.
+login through the BFF is checked. The same job then runs the profile a second time as
+<<_the_auth_fronted_variant>> (`-Dcompose-sample.variant=auth-fronted`), against the same image, so
+a bump that changes how Keycloak serves under a context path or behind a proxy fails there. A
+Keycloak bump pull request reaches the sample through that job and no other; the
+configuration-validation workflow validates the two gateway configuration sets but starts no
+Keycloak. CI does *not* bring up <<_the_plain_http_variant>> -- check that one by hand after a bump
+that touches it.
 
 So after pulling a Keycloak bump, tear the sample down with `stop-sample.sh` before the next start.
 The script runs `down -v`, and that matters here: the `keycloak-quarkus` named volume holds
@@ -429,6 +442,174 @@ For what this mode does to the rest of the edge -- how it interacts with passthr
 mTLS, the management interface and the forwarded-header handling -- see
 link:tls-edge.adoc#_interactions_with_the_rest_of_the_edge[the interaction verdicts in TLS Edge].
 They are stated once there rather than restated here.
+
+[[_the_auth_fronted_variant]]
+== The /auth-fronted variant -- the gateway fronts the identity provider
+
+In the base sample the browser talks to two origins: the gateway on `8443`, and Keycloak's login page
+on `1443`. The variant in `deployment/compose-sample/docker-compose.auth-fronted.yml` removes the
+second one. Keycloak publishes *no* host port, and the browser reaches its login pages through the
+gateway, under the `/auth` prefix of the gateway's own origin -- `https://localhost:8443/auth/...`.
+That is the shape a deployment has when its identity provider sits on the same private network as
+its backends and the gateway is the single way in.
+
+It is an override file, layered on the base like the plain-HTTP one:
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/start-sample.sh --auth-fronted
+----
+
+which composes exactly this:
+
+[source,bash]
+----
+cd deployment/compose-sample
+docker compose -f docker-compose.yml -f docker-compose.auth-fronted.yml up -d --wait
+----
+
+Through the build, the same variant is `-Dcompose-sample.variant=auth-fronted` on the
+`compose-sample` profile. Stopping is unchanged: `stop-sample.sh` tears it down.
+
+=== What the browser sees
+
+Open `https://localhost:8443/app` and sign in as `sample-user`, exactly as in
+<<_logging_in_through_the_bff>>. The difference is that the browser warns about the self-signed
+certificate *once*: the login page is now served from `https://localhost:8443/auth/realms/sample/...`,
+the same origin as the application.
+
+The login check runs the same login against this variant, and `--idp-prefix` adds one step that
+probes the exposure from outside: every allowed path under the prefix must answer from Keycloak, and
+the admin console, the master realm and its server-level well-known document, the bare well-known
+namespace and Keycloak's management paths -- including their dot-segment and encoded spellings --
+must get the gateway's own refusal or its unrouted `404`, never an answer from Keycloak.
+
+The step tells the two sources apart by the answer's shape: the gateway refuses with an RFC 9457
+problem document or with no body at all. Before it trusts that, it runs a *discriminator control*: it
+requests a page that does not exist under the realm route, `/auth/realms/sample/no-such-page`, which
+the gateway forwards and Keycloak refuses. If that refusal looked like the gateway's own, the step
+fails right there, because a denied path that did cross the gateway would then look refused too:
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/check-bff-login.sh --idp-prefix /auth
+----
+
+=== One identity, under the gateway's origin
+
+Keycloak's identity moves from `https://localhost:1443` to `https://localhost:8443/auth`
+(`KC_HOSTNAME`), so the realm issuer becomes `https://localhost:8443/auth/realms/sample`. The
+variant's `gateway.yaml` validates that issuer, and its `oidc.issuer` names the same value.
+`KC_HTTP_RELATIVE_PATH=/auth` makes Keycloak *serve* under that same prefix, so the gateway forwards
+`/auth/...` to `keycloak:8443/auth/...` with the path unchanged and never rewrites a URL Keycloak
+minted.
+
+The gateway's *own* calls to Keycloak -- discovery, the pushed authorization request, the code
+exchange, refresh, revocation and the key-set fetch -- do not go round through its own `/auth` route.
+They keep going to `keycloak:8443` on the internal network through `oidc.back_channel_origin`, which
+swaps the origin and keeps the path; every issuer check still compares against the identity above.
+The redirect URI registered in the realm does not change, because the gateway's origin did not move.
+
+=== An allowlist, not a catch-all
+
+The variant's configuration set, `docker/sheriff-config-auth-fronted/`, adds a fourth anchor, `auth`,
+and one endpoint, `endpoints/idp.yaml`. That endpoint routes exactly three of Keycloak's paths -- two
+namespaces and one document:
+
+[cols="1,3"]
+|===
+| Route prefix | What it serves
+
+| `/auth/realms/sample`
+| The one realm the BFF signs users in to: the authorization endpoint, the login form and its
+  credential `POST`, the realm's discovery document and its other browser-facing pages.
+
+| `/auth/resources`
+| The login theme's stylesheets, scripts and images.
+
+| `/auth/.well-known/oauth-authorization-server/realms/sample`
+| The sample realm's RFC 8414 authorization-server metadata. One realm's document, not Keycloak's
+  whole server-level well-known namespace: Keycloak serves the same document for every realm, the
+  master realm's included, so a route on `/auth/.well-known` would forward that one too.
+|===
+
+Every other path under `/auth` matches no route and is answered with the gateway's unrouted `404`
+without Keycloak ever seeing the request. That is what keeps the *admin console* (`/auth/admin/`)
+and the *master realm* (`/auth/realms/master/`, and its well-known document
+`/auth/.well-known/oauth-authorization-server/realms/master`) out -- not a deny rule, but the absence
+of a route.
+The path is canonicalised before any route is chosen, so a relative spelling such as
+`/auth/realms/sample/../../admin/` cannot reach the console through the realm route.
+
+The realm route is also the only one that forwards cookies, and only Keycloak's login cookies, by
+exact name. The gateway's own `+__Host-sample-session+` cookie never crosses to Keycloak.
+
+The three routes reach Keycloak through the `IDP` alias in the variant's `topology.properties`,
+`${TOPOLOGY_IDP:-https://keycloak:8443}`. The override forwards `TOPOLOGY_IDP` into the gateway
+container as a bare pass-through entry, next to the base file's `TOPOLOGY_UPSTREAM`, so either can be
+exported before the bring-up. One constraint binds `TOPOLOGY_IDP`: the alias *must* name the same
+Keycloak as `oidc.back_channel_origin` in the variant's `gateway.yaml` -- both are
+`https://keycloak:8443`. The routes dial the alias, while the gateway's own discovery, pushed
+authorization request, token and revocation calls dial the back-channel origin, so overriding the
+variable alone would send the browser's login pages to one Keycloak and the gateway's back channel to
+another. Change the two together.
+
+=== The admin console and the management port are not published
+
+Keycloak's `ports:` list is replaced by an empty one, so neither the login UI, nor the admin console,
+nor its management port `9000` is published on a host port. Unpublished is not the same as
+unreachable: the empty list keeps them off the host's interfaces, but it is not a firewall. On a Linux
+Docker Engine host, the host itself can still open a connection to Keycloak's address on the bridge
+network, and so can every container on that network; on Docker Desktop the bridge lives inside a VM
+and the host cannot. Either way such a connection bypasses the gateway and its allowlist, so what
+keeps the console private is who can reach the Docker host and its networks, not the port list. To
+inspect the realm in the admin console, stop this variant and start the base sample, which publishes
+the console on the loopback address `https://localhost:1443`. Both variants import the same
+`sample-realm.json` on every start.
+
+=== What the gateway relaxes, and what it does not
+
+The variant keeps the `strict` inbound profile gateway-wide. Two things widen, each narrowly:
+
+* *The method gate admits `POST`*, because Keycloak's login form posts the credentials. The `api`,
+  `app` and `pages` anchors narrow their own lists back to `GET` and `HEAD`, so `POST` is admitted
+  under `/auth` alone.
+* *The `Cookie` header may carry up to 4096 characters*, through
+  link:../configuration.adoc#_oidc[`oidc.session.max_cookie_header_value_length`]. Keycloak's login
+  cookies outgrow the `strict` 1024-character header-value cap, and that cap is applied to every
+  header *before* a route is selected -- so no endpoint-level setting could lift it for `/auth`. The
+  key raises the cap for the `Cookie` header only; every other header, every parameter and every path
+  stays at the `strict` cap.
++
+The value is sized from the headers measured in this variant. A first login peaks at 1726
+characters, on the login-form `POST`, with Keycloak's `KC_RESTART` cookie alone some 1400 of them.
+The larger case is a new login while Keycloak's own session is still live -- after a gateway restart
+dropped its in-memory session, for instance. The browser then sends `KC_RESTART` together with
+`KEYCLOAK_IDENTITY` and `KEYCLOAK_SESSION`: 2409 characters, and 2474 when the stale
+`+__Host-sample-session+` cookie is sent along too. 4096 holds that with some 1600 characters to
+spare and stays half the 8192 ceiling the boot enforces; it is not raised to the ceiling, because
+the cap applies to every request on every route before any route is chosen.
+
+The gateway also dials Keycloak over TLS on its data plane now, so the variant names the same
+`sample-idp` trust profile for that dial (`egress_tls.upstream_tls_profile`) as the base sample names
+for the key-set fetch and the back channel. Hostname verification stays on.
+
+=== Keycloak believes the gateway's forwarding headers, and nobody else's
+
+Keycloak records a client address in its events and its brute-force detection. Behind the gateway,
+every request would otherwise come from the gateway's address. The variant therefore sets
+`KC_PROXY_HEADERS=xforwarded` and trusts exactly one sender: `KC_PROXY_TRUSTED_ADDRESSES=10.89.0.20`,
+the static address the override gives the gateway. Like the plain-HTTP variant, it declares an
+explicit subnet, `10.89.0.0/24`, because Docker honours a static address only on a network with one.
+The subnet, the gateway's address and the trusted address are one decision -- change them together.
+
+Two consequences follow from that network, and both are the plain-HTTP variant's too:
+
+* *Docker Compose 2.24.4 or newer.* Keycloak's empty port list uses the `!override` merge tag, and an
+  older Compose ignores it and keeps publishing the admin console. `start-sample.sh --auth-fronted`
+  refuses an older Compose.
+* *A teardown between variants.* The base sample creates the network without a subnet, and Compose
+  does not reconfigure an existing network. Run `stop-sample.sh` before switching.
 
 [[_reading_the_container_health_signal]]
 == Reading the container health signal
@@ -701,8 +882,11 @@ nothing in it reaches into `integration-tests/` or into the `api-sheriff` module
 directory gives you a working starting point. From there the usual first four changes are:
 
 . Point the `UPSTREAM` alias in `docker/sheriff-config/topology.properties` at your real backend, or
-  override `TOPOLOGY_UPSTREAM` in the environment. It is the one place a backend address is written
-  down.
+  export `TOPOLOGY_UPSTREAM` before the bring-up. It is the one place a backend address is written
+  down. The variable works because `docker-compose.yml` forwards it into the gateway container as a
+  bare pass-through entry -- the placeholder is resolved against the *container's* environment, not
+  the host's. Unset on the host, it stays unset in the container and the file's default applies; set
+  to an empty value, it is *not* treated as unset and the gateway refuses to boot on the empty alias.
 . Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`. You will
   usually need no `forward` block at all: with none declared, every client header and query
   parameter crosses except the gateway-owned

@@ -37,9 +37,12 @@
 # VARIANTS. With no arguments this brings up the base sample, in which the gateway terminates TLS
 # itself. `--plain-http` layers docker-compose.plain-http.yml on top, which takes that termination
 # away and puts a TLS-terminating nginx hop in front of the gateway instead — the ingress / sidecar
-# deployment shape. The variant changes WHICH files compose reads and nothing else about this script:
-# the readiness contract below is still derived from the resolved model (the readiness-gate rules),
-# so it follows the merged model automatically rather than needing a per-variant branch.
+# deployment shape. `--auth-fronted` layers docker-compose.auth-fronted.yml on top instead, which puts
+# Keycloak behind the gateway: Keycloak publishes no host port and the browser reaches its login pages
+# under the gateway's /auth prefix. The two are mutually exclusive — each is a different answer to who
+# the browser talks to. A variant changes WHICH files compose reads and nothing else about this
+# script: the readiness contract below is still derived from the resolved model (the readiness-gate
+# rules), so it follows the merged model automatically rather than needing a per-variant branch.
 #
 # Invoked by the deployment module's opt-in `compose-sample` Maven profile at pre-integration-test,
 # and directly by an operator following doc/user/compose-sample.adoc. Both paths are the same path.
@@ -56,14 +59,15 @@ cd "${SAMPLE_DIR}"
 # every step below is variant-agnostic because it derives what it needs from the resolved model.
 VARIANT="default"
 COMPOSE_FILES=(-f docker-compose.yml)
-# The Compose release that implements the `!override` merge tag the plain-HTTP override depends on.
-# Older releases do not honour it, and do so QUIETLY — see the guard below.
+# The Compose release that implements the `!override` merge tag BOTH override files depend on. Older
+# releases do not honour it, and do so QUIETLY — see the guard below.
 #
 # 2.24.4, not 2.24.0. The two tags landed in different releases: `!reset` in 2.24.0 and `!override` in
-# 2.24.4. The override document uses `!override` deliberately (it must keep the loopback management
-# publication the readiness probe is derived from, which `!reset` would drop), so a floor of 2.24.0
-# would let 2.24.0-2.24.3 pass this guard and then ignore the tag — admitting exactly the port
-# collision the guard exists to prevent.
+# 2.24.4. The plain-HTTP override uses `!override` deliberately (it must keep the loopback management
+# publication the readiness probe is derived from, which `!reset` would drop), and the /auth-fronted
+# override uses it to empty Keycloak's port list. A floor of 2.24.0 would let 2.24.0-2.24.3 pass this
+# guard and then ignore the tag — admitting exactly the port collision, or the still-published admin
+# console, the guard exists to prevent.
 COMPOSE_MERGE_TAG_MIN_VERSION="2.24.4"
 
 # The compose-file KEY of the network both variants attach to. A selector, like the management
@@ -73,19 +77,44 @@ COMPOSE_MERGE_TAG_MIN_VERSION="2.24.4"
 SAMPLE_NETWORK="api-sheriff"
 
 usage() {
-    echo "Usage: ${0##*/} [--plain-http]"
+    echo "Usage: ${0##*/} [--plain-http | --auth-fronted]"
     echo ""
     echo "  (no arguments)  The base sample: the gateway terminates TLS itself on 8443."
     echo "  --plain-http    Layer docker-compose.plain-http.yml on top: the gateway serves plain"
     echo "                  HTTP internally and an nginx hop terminates TLS on 8443 in front of it."
-    echo "                  Requires Docker Compose ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer."
+    echo "  --auth-fronted  Layer docker-compose.auth-fronted.yml on top: Keycloak publishes no host"
+    echo "                  port and the browser reaches its login pages through the gateway under"
+    echo "                  https://localhost:8443/auth."
+    echo ""
+    echo "  The two variants are mutually exclusive. Each requires Docker Compose"
+    echo "  ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer."
+}
+
+# Selects a variant, refusing a second one. Both overrides answer the same question differently — who
+# terminates the browser's TLS, and whom the browser reaches for its login — so layering both would
+# compose a stack neither file describes.
+select_variant() {
+    local requested="$1"
+    if [[ "$VARIANT" != "default" && "$VARIANT" != "$requested" ]]; then
+        echo "❌ --${VARIANT} and --${requested} are mutually exclusive; choose one variant"
+        echo ""
+        usage
+        exit 1
+    fi
+    if [[ "$VARIANT" == "$requested" ]]; then
+        return
+    fi
+    VARIANT="$requested"
+    COMPOSE_FILES+=(-f "docker-compose.${requested}.yml")
 }
 
 for arg in "$@"; do
     case "$arg" in
         --plain-http)
-            VARIANT="plain-http"
-            COMPOSE_FILES+=(-f docker-compose.plain-http.yml)
+            select_variant "plain-http"
+            ;;
+        --auth-fronted)
+            select_variant "auth-fronted"
             ;;
         -h|--help)
             usage
@@ -109,27 +138,36 @@ else
     exit 1
 fi
 
-# The plain-HTTP override drops the gateway's published 8443 with the `!override` merge tag. A
-# Compose too old to implement it does NOT reject the file — it ignores the tag, the base's port list
-# survives the merge, and the gateway ends up publishing 8443 alongside the terminator's binding on
-# the same host port. That surfaces as an opaque port conflict, or as a published container port that
-# answers nothing. Checking the version here turns it into one line naming the actual cause.
+# Both overrides clear a port list with the `!override` merge tag: the plain-HTTP one drops the
+# gateway's published 8443, the /auth-fronted one empties Keycloak's. A Compose too old to implement
+# the tag does NOT reject the file — it ignores the tag and the base's port list survives the merge.
+# For plain-HTTP the gateway then publishes 8443 alongside the terminator's binding on the same host
+# port, which surfaces as an opaque port conflict; for /auth-fronted Keycloak's admin console stays
+# published on 127.0.0.1:1443, which surfaces as nothing at all — the one exposure the variant exists
+# to remove would quietly remain. Checking the version here turns both into one line naming the cause.
 #
 # Compared with `sort -V` rather than lexically: "2.9.0" is NEWER than "2.24.0" lexically and older
 # numerically, which is exactly the comparison a string test gets wrong.
-if [[ "$VARIANT" == "plain-http" ]]; then
+if [[ "$VARIANT" != "default" ]]; then
+    case "$VARIANT" in
+        plain-http)
+            MERGE_TAG_EFFECT="drop the gateway's published 8443, so the gateway would collide with the TLS terminator on that host port"
+            ;;
+        auth-fronted)
+            MERGE_TAG_EFFECT="empty Keycloak's port list, so its admin console would stay published on 127.0.0.1:1443"
+            ;;
+    esac
     COMPOSE_VERSION="$("${COMPOSE_CMD[@]}" version --short 2>/dev/null || echo "")"
     COMPOSE_VERSION="${COMPOSE_VERSION#v}"
     if [[ -z "$COMPOSE_VERSION" ]]; then
-        echo "⚠️  Could not determine the Docker Compose version; --plain-http needs"
+        echo "⚠️  Could not determine the Docker Compose version; --${VARIANT} needs"
         echo "   ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer for the !override merge tag."
     elif [[ "$(printf '%s\n%s\n' "$COMPOSE_MERGE_TAG_MIN_VERSION" "$COMPOSE_VERSION" \
               | sort -V | head -n1)" != "$COMPOSE_MERGE_TAG_MIN_VERSION" ]]; then
-        echo "❌ --plain-http needs Docker Compose ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer"
+        echo "❌ --${VARIANT} needs Docker Compose ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer"
         echo "   (found ${COMPOSE_VERSION})."
         echo "   Older releases silently ignore the !override merge tag that"
-        echo "   docker-compose.plain-http.yml uses to drop the gateway's published 8443, so the"
-        echo "   gateway would collide with the TLS terminator on that host port."
+        echo "   docker-compose.${VARIANT}.yml uses to ${MERGE_TAG_EFFECT}."
         echo "   Note 2.24.0 is NOT enough: that release implements !reset, and !override — the tag"
         echo "   this override actually uses — arrived in ${COMPOSE_MERGE_TAG_MIN_VERSION}."
         exit 1
@@ -147,11 +185,12 @@ fi
 
 # ---- 0b. Preflight the variant's network IPAM ---------------------------------------------------
 # Compose does not RECONFIGURE an existing network. The base file declares the sample network with no
-# IPAM at all; the plain-HTTP override declares an explicit subnet, because the terminator holds a
-# static address on it and the gateway's trusted-proxy entry is that address as an exact /32.
+# IPAM at all; both overrides declare an explicit subnet, because each pins one container to a static
+# address on it — the plain-HTTP terminator, whose address the gateway's trusted-proxy /32 names, and
+# the /auth-fronted gateway, whose address Keycloak's KC_PROXY_TRUSTED_ADDRESSES names.
 #
-# So after running the base variant, `--plain-http` reuses the subnet-less network that is already
-# there and the terminator cannot start: the daemon rejects it with "user specified IP address is
+# So after running the base variant, a variant reuses the subnet-less network that is already there
+# and its pinned container cannot start: the daemon rejects it with "user specified IP address is
 # supported only when connecting to networks with user configured subnets". Nothing in that message
 # says which network, which variant, or that a teardown is what fixes it. Checking here turns it into
 # one line naming the cause and the one command that resolves it — the same shape as the version and
@@ -159,7 +198,7 @@ fi
 #
 # The network's real name and the subnet it must carry are both DERIVED from the resolved model, the
 # same derive-don't-restate rule the image preflight and the readiness discovery follow.
-if [[ "$VARIANT" == "plain-http" ]]; then
+if [[ "$VARIANT" != "default" ]]; then
     if ! NETWORK_EXPECTATION="$("${COMPOSE_CMD[@]}" config --format json | python3 -c '
 import json
 import sys
@@ -181,11 +220,11 @@ if not name or not subnets:
     # The override is what declares this IPAM. A model carrying none means the override changed, and
     # this guard would then check nothing at all -- fail rather than pass a check that cannot run.
     sys.exit("the resolved Compose model declares no name or no IPAM subnet for the %r network. The "
-             "plain-HTTP override is what declares it, and the terminator needs it to hold the "
-             "static address the trusted-proxy /32 names." % SAMPLE_NETWORK)
+             "%s override is what declares it, and its pinned container needs it to hold a static "
+             "address." % (SAMPLE_NETWORK, sys.argv[2]))
 
 sys.stdout.write("%s %s" % (name, subnets[0]))
-' "${SAMPLE_NETWORK}")"; then
+' "${SAMPLE_NETWORK}" "${VARIANT}")"; then
         echo "❌ Could not derive the ${SAMPLE_NETWORK} network requirement from the compose model (see above)"
         exit 1
     fi
@@ -201,8 +240,8 @@ sys.stdout.write("%s %s" % (name, subnets[0]))
             echo "   A network's IPAM is fixed when it is created and Compose does not reconfigure an"
             echo "   existing one, so switching BETWEEN the two variants needs a teardown first —"
             echo "   this network was almost certainly created by the base sample, which declares no"
-            echo "   subnet. Without it the TLS terminator cannot hold the static address the"
-            echo "   gateway's trusted-proxy /32 names, and it would fail to start."
+            echo "   subnet. Without it the --${VARIANT} variant's pinned container cannot hold its"
+            echo "   static address, and it would fail to start."
             echo "   Tear the stack down, then re-run this script:"
             echo "     ./scripts/stop-sample.sh"
             exit 1
@@ -398,6 +437,9 @@ capture_sample_diagnostics() {
 if [[ "$VARIANT" == "plain-http" ]]; then
     echo "🐳 Starting the compose sample, plain-HTTP variant"
     echo "   (api-sheriff behind tls-terminator, keycloak, demo-api)..."
+elif [[ "$VARIANT" == "auth-fronted" ]]; then
+    echo "🐳 Starting the compose sample, /auth-fronted variant"
+    echo "   (api-sheriff fronting keycloak under /auth, demo-api)..."
 else
     echo "🐳 Starting the compose sample (api-sheriff, keycloak, demo-api)..."
 fi
@@ -457,11 +499,22 @@ if [[ "$VARIANT" == "plain-http" ]]; then
     echo "   Try it:  curl -k https://localhost:8443/api"
     echo "   TLS is terminated by the tls-terminator hop; the gateway itself serves plain HTTP"
     echo "   on the internal network only and publishes no port off-host except management."
+elif [[ "$VARIANT" == "auth-fronted" ]]; then
+    echo "🎉 The API Sheriff compose sample is ready (/auth-fronted variant)."
+    echo "   Try it:  curl -k https://localhost:8443/api"
+    # The login page now lives under the gateway's own origin. Keycloak publishes no port, so this is
+    # the only address it answers on from the host.
+    echo "   The identity provider's login pages are served by the gateway at"
+    echo "   https://localhost:8443/auth/realms/sample/ — Keycloak publishes no host port."
 else
     echo "🎉 The API Sheriff compose sample is ready."
     echo "   Try it:  curl -k https://localhost:8443/api"
 fi
-# The BFF entry point is the same in both variants: the browser addresses https://localhost:8443
+# The BFF entry point is the same in every variant: the browser addresses https://localhost:8443
 # whichever component answers the TLS handshake, and the login check takes that URL as its default.
 echo "   Log in through the BFF:  https://localhost:8443/app  (in a browser, as sample-user)"
-echo "   Prove a real login:      ./scripts/check-bff-login.sh"
+if [[ "$VARIANT" == "auth-fronted" ]]; then
+    echo "   Prove a real login:      ./scripts/check-bff-login.sh --idp-prefix /auth"
+else
+    echo "   Prove a real login:      ./scripts/check-bff-login.sh"
+fi

@@ -85,8 +85,16 @@ config/
 The configuration directory is selected by the `sheriff.config.dir` property (a Quarkus
 configuration property; default `config`). Under it, `gateway.yaml` and `topology.properties`
 are read by exact name, and every *`.yaml`* file directly under `endpoints/` is loaded as an
-endpoint file in filename-sorted order -- files with any other extension, and nested
-subdirectories, are ignored.
+endpoint file in filename-sorted order. A `.yml` file there *fails the boot* with a request to
+rename it to `.yaml`; files with any other extension, and nested subdirectories, are ignored.
+
+*An endpoint file is named after the `id` it declares*: `endpoints/<id>.yaml` holds the endpoint
+whose `endpoint.id` is `<id>`, and no other. A file whose declared `id` differs from its file name
+*fails the boot* -- and the offline check (link:user/offline-config-validation.adoc[`--validate-config`]) --
+with one error reported against the file actually loaded, at `/endpoint/id`, naming both values
+and the rename that fixes it. The rule is what lets every later configuration error name the file
+it concerns: those errors are reported against `endpoints/<id>.yaml`, which therefore is always
+the file that was read.
 
 == Loading, Resolution and Validation
 
@@ -148,12 +156,12 @@ file-and-JSON-pointer error before any immutable value object is built:
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
-  `anchor`, `auth`, `allowed_methods`, `upstream_defaults`, `security_filter`, `forward`,
-  `cookies`) and its `routes[]`, each route's
-  `id`, `protocol`, `anchor`, `match`, `auth`, `security_filter`, `forward`, `cookies`,
-  `keep_identity_headers`, `upstream`, `asset`, `redirect`, the WebSocket-route `websocket` block
-  (which holds `allowed_origins` and `idle_timeout_seconds`), and `rate_limit` (planned, not
-  implemented; it never causes a `429` -- see link:#_rate_limit[`rate_limit`]).
+  `anchor`, `auth`, `scopes`, `allowed_methods`, `upstream_defaults`, `security_filter`,
+  `forward`, `cookies`, `catalog`) and its `routes[]`, each route's `id`, `protocol`, `anchor`,
+  `match`, `auth`, `security_filter`, `forward`, `cookies`, `keep_identity_headers`, `upstream`,
+  `asset`, `redirect`, `websocket` and `rate_limit`. The WebSocket-route `websocket` block holds
+  `allowed_origins` and `idle_timeout_seconds`; `rate_limit` is planned, not implemented, and
+  never causes a `429` -- see link:#_rate_limit[`rate_limit`].
 |===
 
 Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
@@ -1970,10 +1978,13 @@ neither relaxation can be scoped per route or per anchor
 | Header | Budget key | Bound
 
 | `Cookie` / `Set-Cookie`
-| `oidc.session.max_cookie_size` (plus a fixed cookie-header overhead)
-| Present *only* in an active cookie-mode BFF; a bearer-only or server-mode gateway keeps the
-  resolved baseline on every header. A sealed session cookie is designed to a multi-kilobyte budget
-  the baseline would otherwise reject on every authenticated request.
+| `oidc.session.max_cookie_size` (plus a fixed cookie-header overhead) in cookie mode;
+  `oidc.session.max_cookie_header_value_length` in server mode
+| Present *only* in an active BFF: always in cookie mode, where a sealed session cookie is designed
+  to a multi-kilobyte budget the baseline would otherwise reject on every authenticated request; in
+  server mode only when the operator declares a cap, for a gateway that carries a fronted identity
+  provider's cookies. A bearer-only gateway, and a server-mode gateway that declares no cap, keeps
+  the resolved baseline on every header.
 
 | `Authorization`
 | `security_defaults.max_authorization_header_value_length` (default `8192`)
@@ -3043,9 +3054,10 @@ See link:#_oidc_client_authentication[Client authentication].
 
   The raised cap is scoped twice, and is *not* a general widening of inbound header validation:
 
-  * *By mode* -- only a gateway that resolves an active cookie-mode BFF raises it. A bearer-only or
-    `session.mode: server` gateway keeps the resolved baseline `max_header_value_length` on every
-    header, unchanged (see <<_preset_limits>> for the per-preset figure).
+  * *By mode* -- only a gateway that resolves an active cookie-mode BFF raises it from this key. A
+    bearer-only gateway keeps the resolved baseline `max_header_value_length` on every header,
+    unchanged (see <<_preset_limits>> for the per-preset figure), and so does a
+    `session.mode: server` gateway unless it declares `session.max_cookie_header_value_length`.
   * *By header* -- within a cookie-mode gateway only `Cookie` and `Set-Cookie` header *values* use
     the raised cap. Every other header keeps the resolved baseline, and every non-length validator
     (null-byte, control-character, injection-pattern) still applies to the cookie value. The
@@ -3060,6 +3072,43 @@ See link:#_oidc_client_authentication[Client authentication].
   a cookie-mode gateway raises the `Cookie` cap for every route it serves. The per-anchor
   `security_filter.max_header_value_length` knob is a different control, applied post-route.
   ====
+
+| `session.max_cookie_header_value_length`
+| *Server mode only.* The pre-route cap on the length of an inbound `Cookie` header value, in
+  characters. Optional integer; *omitted, there is no `Cookie` carve-out* and a server-mode gateway
+  measures `Cookie` values at the resolved baseline `max_header_value_length` like every other
+  header -- the secure default, and the behaviour before the key existed.
+
+  *Why it exists.* A server-mode BFF holds no large cookie of its own -- its session cookie is an
+  opaque handle -- but it may carry a third party's cookies through the gateway. The motivating case
+  is a gateway that fronts its own identity provider: a Keycloak login sends a `Cookie` header of
+  1726 characters, `KC_RESTART` alone some 1400 of them, so on a `strict` gateway (1024) every login
+  is rejected `400` before route selection. This key lets such a gateway stay on `strict` and raise
+  the cap for `Cookie` alone, instead of moving every header of every route to `lenient`. Size it
+  against the *whole* header, not the largest cookie: a login that starts while the identity
+  provider's own session is still live sends its session cookies beside `KC_RESTART`, measured at
+  2409 characters in the `/auth`-fronted variant of
+  link:user/compose-sample.adoc[the compose sample], which declares `4096` for that reason.
+
+  *The effective cap is the larger of the baseline and this value*, so the key can only admit more
+  length. A value is *refused at boot* (`ApiSheriff-200` at `/oidc/session/max_cookie_header_value_length`):
+
+  * below the resolved baseline `max_header_value_length` -- `1024` under `strict`, `8192` under
+    `lenient` -- because it would read like a relaxation while making `Cookie` the most restricted
+    header;
+  * above `8192`, the `lenient` profile's own cap, so the relaxation never admits a header value the
+    loosest shipped profile would reject (the schema states the same maximum);
+  * in any mode other than `server` -- cookie mode derives its `Cookie` cap from
+    `session.max_cookie_size`, the one number that also bounds the sealed value, and a gateway that
+    is no server-mode BFF never reads the key.
+
+  It is scoped exactly like the cookie-mode cap above: *by header* -- `Cookie` and `Set-Cookie`
+  header values only, every non-length validator still applying to them -- and *by validator* --
+  only the length cap differs from the baseline. Like that cap, it is *gateway-wide, not per-anchor*:
+  the pre-route stage runs before route selection, so a server-mode gateway that declares the key
+  admits the longer `Cookie` value on every route, the post-route `security_filter` re-check
+  included. Choose the smallest value that covers the cookies you actually carry, and state the
+  headroom you left.
 
 | `session.ttl_seconds`
 | *Absolute* session lifetime, counted from a login timestamp stored inside the session record
@@ -3882,8 +3931,10 @@ alone), the framing the gateway re-establishes, and the names the gateway itself
 
 The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
 vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and
-the underscore spellings of the forwarding names. Every name in the set is matched on its
-*separator-folded* spelling -- lower-cased with each `_` mapped to `-` -- so `X_Real_IP` and
+the underscore spellings of the regenerated forwarding names, `X_Forwarded_For`,
+`X_Forwarded_Host`, `X_Forwarded_Proto`, `X_Forwarded_Port` and `X_Forwarded_Prefix`. Every name in
+the set is matched on its *separator-folded* spelling -- lower-cased with each `_` mapped to `-` --
+so `X_Real_IP` and
 `X-Real_IP` are withheld exactly as `X-Real-IP` is, and a backend that folds header names into
 CGI-style variables cannot be reached by respelling one.
 

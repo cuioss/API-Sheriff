@@ -34,15 +34,19 @@
  *       ({@code PendingAuthorizationRecord.sameOrigin}, which {@code OidcClientRules} also applies
  *       to {@code oidc.login.default_return_url} at boot).</li>
  *   <li>{@link de.cuioss.sheriff.gateway.http.GatewayCookies} — the gateway's own cookies, which an
- *       upstream may neither set nor receive, read by the response relay in {@code edge}.</li>
+ *       upstream may neither set nor receive, read by the response relay's {@code Set-Cookie} filter
+ *       in {@code edge}, by the request-direction rebuild of the {@code Cookie} header
+ *       ({@code ForwardPolicyStage}) in {@code forward}, and by the boot rule that refuses a gateway
+ *       cookie in a {@code cookies.allow} list ({@code CookieRules}) in
+ *       {@code config.validation}.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders} — the upstream response
  *       headers that name the server software behind the gateway, read by the proxy relay in
  *       {@code edge} and the upstream-backed asset envelope in {@code asset}.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.http.PathSlashes} — the leading- and trailing-slash
  *       trimming every path join and split is built from, read by the route-table join in
  *       {@code config}, the {@code Location} mapping in {@code routing}, the match-key remainder and
- *       upstream request URI in {@code edge}, and the asset confinement and index lookup in
- *       {@code asset}.</li>
+ *       upstream request URI in {@code edge}, and the asset confinement, index lookup and upstream
+ *       asset URI in {@code asset}.</li>
  * </ul>
  * All five exist for the same reason: a mirrored copy is what lets two paths quietly disagree about
  * one rule (issue #172 was exactly that, for a response header the proxy path stripped and the asset

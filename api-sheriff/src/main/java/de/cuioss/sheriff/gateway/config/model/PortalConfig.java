@@ -43,7 +43,7 @@ import org.jspecify.annotations.Nullable;
  * @param templateDir  the directory holding an operator-authored {@code portal.html}, {@code null}
  *                     when the built-in template renders
  * @param cacheSeconds the {@code Cache-Control: max-age} for a session-free page, {@code null} when
- *                     omitted (resolves to {@link #DEFAULT_CACHE_SECONDS})
+ *                     omitted (resolves to {@code 0}, no caching)
  * @param errorPages   whether eligible gateway-originated errors render as HTML on a page
  *                     navigation, {@code null} when omitted (resolves to {@code false})
  * @author API Sheriff Team
@@ -59,7 +59,7 @@ String title,
 @Nullable Boolean errorPages) {
 
     /** The {@code cache_seconds} applied when the operator declares none: no caching. */
-    public static final int DEFAULT_CACHE_SECONDS = 0;
+    private static final int DEFAULT_CACHE_SECONDS = 0;
 
     /**
      * Canonical constructor requiring the two mandatory members.
@@ -70,7 +70,7 @@ String title,
     }
 
     /**
-     * @return the declared {@code cache_seconds}, or {@link #DEFAULT_CACHE_SECONDS} when omitted
+     * @return the declared {@code cache_seconds}, or {@code 0} (no caching) when omitted
      */
     public int effectiveCacheSeconds() {
         return cacheSeconds != null ? cacheSeconds : DEFAULT_CACHE_SECONDS;

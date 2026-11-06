@@ -35,6 +35,7 @@ import io.grpc.stub.ClientCalls;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -64,6 +65,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -79,16 +81,16 @@ import org.junit.jupiter.params.provider.MethodSource;
  * names, not values, because {@code Date} differs between any two answers. The comparison is made
  * twice: as a JSON client, and as a browser navigation ({@code Accept: text/html}), which the portal's
  * {@code error_pages: true} answers with the HTML error page. The cases are a selection of the pre-trust
- * rejections a bearer route can raise: no token, a garbage token, a method outside
- * {@code allowed_methods}, a path outside {@code allowed_paths}, a declared body over the route's
- * inherited strict cap, and a {@code protocol: grpc} route, which is answered with the HTTP {@code 404}
- * and never the trailers-only status a gRPC rejection otherwise carries. The list is not exhaustive:
- * the route-scoped security-filter refusal ({@code SECURITY_FILTER_VIOLATION}) and the CSRF and cookie
- * same-origin refusals ({@code CSRF_REJECTED}) are not compared here. The byte comparison of the filter
- * refusal and of the session CSRF refusal against the unrouted address is made in-process by
- * {@code GatewayEdgeUniformNotFoundTest}; on the IT stack the filter refusal is held to the unrouted
- * problem document and its true event by {@code StrictQueryAcceptanceIT} and
- * {@code SecurityProfileModeIT}.
+ * rejections a caller can raise after route selection: no token, a garbage token, a method outside
+ * {@code allowed_methods}, a path outside {@code allowed_paths}, a declared {@code Content-Length} over
+ * the bearer route's inherited strict cap (the declared-length fast-reject), a {@code protocol: grpc}
+ * route, which is answered with the HTTP {@code 404} and never the trailers-only status a gRPC rejection
+ * otherwise carries, a query the route-scoped strict filter refuses ({@code SECURITY_FILTER_VIOLATION})
+ * on the anonymous {@code httpbin-forward-all} route, and a cross-site unsafe request carrying a cookie
+ * the {@code cookie-policy-every} route forwards, which its same-origin check refuses
+ * ({@code CSRF_REJECTED}). The session-branch CSRF refusal is not compared here, only measured below;
+ * its byte comparison against the unrouted address is made in-process by
+ * {@code GatewayEdgeUniformNotFoundTest}.
  * <p>
  * <strong>What is still reported.</strong> The cause is withheld from the caller only: every case moves
  * {@code sheriff_errors_total} under its TRUE event on the route it selected, and never under
@@ -104,8 +106,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <strong>Timing.</strong> No unrouted {@code 404}, genuine or resolved, leaves the edge before the
  * response-timing floor. The floor is {@link #RESPONSE_FLOOR}, restated here as the shipped constant a
  * black-box caller observes; it is asserted as a lower bound on the round trip only, so a slow runner
- * cannot make the assertion flaky. The floor is also <em>measured</em>: eight enumerated pre-trust
- * paths a caller can drive on this stack are each probed {@link #MEASUREMENT_PROBES} times in sequence, and
+ * cannot make the assertion flaky. The floor is also <em>measured</em>: {@value #MEASURED_PATHS}
+ * enumerated pre-trust paths a caller can drive on this stack — the unrouted address, every comparison
+ * case above, two crafted tokens and the session-branch CSRF refusal — are each probed
+ * {@link #MEASUREMENT_PROBES} times in sequence; every probe must be answered as the unrouted
+ * {@code 404}, so each path is shown to reach the floored answer, and
  * {@code sheriff_uniform_not_found_overruns_total} must not move — no probe was released after the
  * first floor step. A run on a loaded machine can move it without the floor being too low; only an
  * overrun that reproduces on a quiet run is evidence for raising the floor.
@@ -151,6 +156,32 @@ class EnumerationOracleIT extends BaseIntegrationTest {
 
     /** One byte over the strict preset's inherited 1 MiB body cap of the bearer route. */
     private static final int OVER_STRICT_BODY_CAP = 1048577;
+
+    /**
+     * The anonymous {@code httpbin-forward-all} route of {@code endpoints/httpbin.yaml}, which resolves the
+     * strict preset, with a query value decoding to NUL: its route-scoped filter refuses it, as
+     * {@code StrictQueryAcceptanceIT} proves case by case. Sent with URL encoding disabled.
+     */
+    private static final String FILTER_VIOLATING_PATH = "/proxy/forward-all?q=%00";
+    private static final String FORWARD_ALL_ROUTE = "httpbin-forward-all";
+
+    /**
+     * The upstream echo below the {@code cookie-policy-every} route of {@code endpoints/cookie-policy.yaml}:
+     * {@code cookies.allow: all} with the same-origin check on, so an unsafe request carrying a cookie the
+     * route forwards must come from the origin it was received on.
+     */
+    private static final String COOKIE_FORWARDING_PATH = "/proxy/cookie-policy/every/anything";
+    private static final String COOKIE_FORWARDING_ROUTE = "cookie-policy-every";
+
+    /** An application cookie the {@code cookie-policy-every} route forwards, which arms its same-origin check. */
+    private static final String FORWARDED_COOKIE = "app-theme=dark";
+
+    /**
+     * How many pre-trust paths the floor measurement probes: the unrouted address, the eight comparison
+     * cases, the token at the {@code Authorization} cap, the unknown key id and the session-branch CSRF
+     * refusal.
+     */
+    private static final int MEASURED_PATHS = 12;
 
     private static final String JSON_ACCEPT = "application/json";
     private static final String BROWSER_ACCEPT = "text/html";
@@ -211,10 +242,15 @@ class EnumerationOracleIT extends BaseIntegrationTest {
                 new PreTrustCase("wrong method", "PATCH", BEARER_PATH, Map.of(), null, BEARER_ROUTE, "METHOD_NOT_ALLOWED"),
                 new PreTrustCase("off-allowlist path", "GET", OFF_ALLOWLIST_PATH, Map.of(), null, FILTERED_ROUTE,
                         "PATH_NOT_ALLOWED"),
-                new PreTrustCase("route-scoped oversized body", "POST", BEARER_PATH, Map.of("Content-Type", "text/plain"),
+                new PreTrustCase("declared-length fast-reject", "POST", BEARER_PATH, Map.of("Content-Type", "text/plain"),
                         overCap, BEARER_ROUTE, "CONTENT_TOO_LARGE"),
                 new PreTrustCase("protocol: grpc route", "POST", GRPC_BEARER_PATH,
-                        Map.of("Content-Type", "application/grpc"), null, GRPC_BEARER_ROUTE, "TOKEN_MISSING"));
+                        Map.of("Content-Type", "application/grpc"), null, GRPC_BEARER_ROUTE, "TOKEN_MISSING"),
+                new PreTrustCase("route-scoped filter violation", "GET", FILTER_VIOLATING_PATH, Map.of(), null,
+                        FORWARD_ALL_ROUTE, "SECURITY_FILTER_VIOLATION"),
+                new PreTrustCase("cookie-forwarding same-origin refusal", "POST", COOKIE_FORWARDING_PATH,
+                        Map.of("Cookie", FORWARDED_COOKIE, "Origin", FOREIGN_ORIGIN, "Content-Type", "application/json"),
+                        "{}".getBytes(StandardCharsets.UTF_8), COOKIE_FORWARDING_ROUTE, "CSRF_REJECTED"));
     }
 
     /**
@@ -353,32 +389,36 @@ class EnumerationOracleIT extends BaseIntegrationTest {
     }
 
     /**
-     * The measurement of the floor: eight enumerated pre-trust paths a caller can drive on this stack
-     * are each probed {@link #MEASUREMENT_PROBES} times, one request after the other, and the overrun counter must not
-     * move. The slowest round trip of each path is reported when it does, so a failure names the path.
+     * The measurement of the floor: {@value #MEASURED_PATHS} enumerated pre-trust paths a caller can drive
+     * on this stack — the unrouted address, every {@link #preTrustCases() comparison case}, two crafted
+     * tokens and the session-branch CSRF refusal — are each probed {@link #MEASUREMENT_PROBES} times, one
+     * request after the other. Every probe must be answered as the unrouted {@code 404}, which shows the
+     * path reached the floored answer rather than an honest one the floor never holds, and the overrun
+     * counter must not move. The verdict is collected per path, so a run in which several paths answer
+     * honestly names each of them; the slowest round trip of each path is reported when the counter
+     * moves, so that failure names the path too.
      */
     @Test
     @DisplayName("the floor is measured: no caller-drivable pre-trust path is released after the first floor step")
     void noPreTrustPathOverrunsTheFloor() {
         JwtParts real = JwtParts.of(BearerValidationIT.mintIntegrationRealmAccessToken(BearerValidationIT.OIDC_SCOPE));
-        List<Probe> probes = List.of(
-                probe("unrouted address", "GET", UniformNotFoundAssertions.UNROUTED_PATH, Map.of()),
-                probe("verb gate", "PATCH", BEARER_PATH, Map.of()),
-                probe("path not allowed", "GET", OFF_ALLOWLIST_PATH, Map.of()),
-                probe("missing token", "GET", BEARER_PATH, Map.of()),
-                probe("malformed token", "GET", BEARER_PATH, Map.of("Authorization", BEARER + "not-a-real-jwt")),
-                probe("token at the Authorization cap", "GET", BEARER_PATH,
-                        Map.of("Authorization", atAuthorizationCap(real))),
-                probe("unknown key id", "GET", BEARER_PATH, Map.of("Authorization", unknownKeyId(real))),
-                new Probe("session-branch CSRF refusal", () -> BffKeycloakLoginFlow.gateway(Map.of())
-                        .header("Origin", FOREIGN_ORIGIN)
-                        .header("Accept", JSON_ACCEPT)
-                        .redirects().follow(false)
-                        .when()
-                        .post(CSRF_PATH)
-                        .then()
-                        .extract()));
+        List<Probe> probes = new ArrayList<>();
+        probes.add(probe("unrouted address", "GET", UniformNotFoundAssertions.UNROUTED_PATH, Map.of()));
+        preTrustCases().map(EnumerationOracleIT::probe).forEach(probes::add);
+        probes.add(probe("token at the Authorization cap", "GET", BEARER_PATH,
+                Map.of("Authorization", atAuthorizationCap(real))));
+        probes.add(probe("unknown key id", "GET", BEARER_PATH, Map.of("Authorization", unknownKeyId(real))));
+        probes.add(new Probe("session-branch CSRF refusal", () -> BffKeycloakLoginFlow.gateway(Map.of())
+                .header("Origin", FOREIGN_ORIGIN)
+                .header("Accept", JSON_ACCEPT)
+                .redirects().follow(false)
+                .when()
+                .post(CSRF_PATH)
+                .then()
+                .extract()));
+        assertEquals(MEASURED_PATHS, probes.size(), "precondition: the measurement probes every enumerated path");
         Map<String, Duration> slowest = new LinkedHashMap<>();
+        Map<String, Set<Integer>> answered = new LinkedHashMap<>();
         double overrunsBefore = overruns(PrometheusScrape.scrape());
 
         for (Probe probe : probes) {
@@ -386,18 +426,22 @@ class EnumerationOracleIT extends BaseIntegrationTest {
                 long sentAt = System.nanoTime();
                 ExtractableResponse<Response> response = probe.send().get();
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - sentAt);
-                assertEquals(UniformNotFoundAssertions.UNROUTED_STATUS, response.statusCode(),
-                        () -> probe.name() + " must be answered as the unrouted 404");
+                answered.computeIfAbsent(probe.name(), name -> new TreeSet<>()).add(response.statusCode());
                 slowest.merge(probe.name(), elapsed, (kept, next) -> kept.compareTo(next) >= 0 ? kept : next);
             }
         }
 
         double overrunsAfter = overruns(PrometheusScrape.scrape());
-        assertEquals(overrunsBefore, overrunsAfter,
+        List<Executable> verdicts = new ArrayList<>();
+        answered.forEach((name, statuses) -> verdicts.add(() -> assertEquals(
+                Set.of(UniformNotFoundAssertions.UNROUTED_STATUS), statuses,
+                () -> name + " must be answered as the unrouted 404 on every probe; it was answered " + statuses)));
+        verdicts.add(() -> assertEquals(overrunsBefore, overrunsAfter,
                 () -> "no pre-trust path may be released after the first floor step of " + RESPONSE_FLOOR.toMillis()
                         + " ms; slowest round trip per path: " + slowest.entrySet().stream()
                         .map(entry -> entry.getKey() + "=" + entry.getValue().toMillis() + " ms")
-                        .collect(Collectors.joining(", ")));
+                        .collect(Collectors.joining(", "))));
+        assertAll("the floor measurement over " + MEASURED_PATHS + " pre-trust paths", verdicts);
     }
 
     @Test
@@ -483,9 +527,13 @@ class EnumerationOracleIT extends BaseIntegrationTest {
                 .collect(Collectors.toCollection(TreeSet::new));
     }
 
-    /** Sends the case's request to {@code path} and measures the round trip. */
+    /**
+     * Sends the case's request to {@code path} and measures the round trip. URL encoding is disabled, so
+     * the gateway sees exactly the spelling of the path, a raw query included.
+     */
     private static Timed send(PreTrustCase rejection, String path, String accept) {
         RequestSpecification spec = given()
+                .urlEncodingEnabled(false)
                 .headers(rejection.headers())
                 .header("Accept", accept)
                 .redirects().follow(false);
@@ -503,6 +551,11 @@ class EnumerationOracleIT extends BaseIntegrationTest {
 
     /** One caller-drivable pre-trust path of the floor measurement, and how to send it. */
     private record Probe(String name, Supplier<ExtractableResponse<Response>> send) {
+    }
+
+    /** A probe sending a comparison case's request, as a JSON client, to the path it is raised on. */
+    private static Probe probe(PreTrustCase rejection) {
+        return new Probe(rejection.name(), () -> send(rejection, rejection.path(), JSON_ACCEPT).response());
     }
 
     /** A probe on the primary instance with the given method, path and headers beside {@code Accept}. */

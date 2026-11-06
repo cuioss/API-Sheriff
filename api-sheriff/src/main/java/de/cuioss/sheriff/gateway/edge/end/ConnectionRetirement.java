@@ -199,10 +199,12 @@ public final class ConnectionRetirement {
     /**
      * Applies the connection mark {@link #rejectFramingAndRetire} left on the request: retires the
      * HTTP/1.x connection; a no-op for every other request. Called by the gateway-originated error
-     * writers on the event loop, immediately before they end the response. A request body that outlived
-     * the request-body deadline after the hand-over carries no such mark: it is recorded by
-     * {@link #recordRetirement} and the failed relay's end retires its connection on the late refusal's
-     * event instead (see {@code TerminalDispatch.retireFailedRelayConnection}).
+     * writers on the event loop, immediately before they end the response. The end of a failed relay
+     * never reads it: both callers of {@link #markFramingRejection} rethrow the rejection, so a marked
+     * request never starts a relay. A request body that outlived the request-body deadline after the
+     * hand-over carries no such mark either: it is recorded by {@link #recordRetirement} and the failed
+     * relay's end retires its connection on the late refusal's event instead (see
+     * {@code TerminalDispatch.retireFailedRelayConnection}).
      *
      * @param ctx the request being answered
      */

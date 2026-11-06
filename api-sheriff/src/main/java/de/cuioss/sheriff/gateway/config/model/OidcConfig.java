@@ -275,6 +275,15 @@ List<String> scopes,
      *                      {@code null} when omitted. Read it through
      *                      {@link Session#effectiveMaxSessionsPerSubject()}, which resolves the
      *                      omitted case — never directly
+     * @param maxCookieHeaderValueLength the server-mode pre-route {@code Cookie} header-value cap
+     *                      ({@code oidc.session.max_cookie_header_value_length}), {@code null} when
+     *                      omitted — a server-mode BFF then measures {@code Cookie} values at the
+     *                      resolved baseline like every other header. It exists for a server-mode
+     *                      BFF that carries a third party's cookies through the gateway — an
+     *                      identity provider it fronts, whose own cookies outgrow a {@code strict}
+     *                      header-value cap. Boot validation refuses it outside server mode (cookie
+     *                      mode derives its cap from {@code max_cookie_size}), below the resolved
+     *                      baseline and above {@link #MAX_COOKIE_HEADER_VALUE_LENGTH_CEILING}
      * @author API Sheriff Team
      * @since 1.0
      */
@@ -291,13 +300,26 @@ List<String> scopes,
     @Nullable Integer maxSessions,
     @Nullable Integer maxCookieSize,
     @Nullable Integer idleTimeoutSeconds,
-    @Nullable Integer maxSessionsPerSubject) {
+    @Nullable Integer maxSessionsPerSubject,
+    @Nullable Integer maxCookieHeaderValueLength) {
 
         /** The stateless cookie session mode, in its one canonical spelling. */
         public static final String MODE_COOKIE = "cookie";
 
         /** The server-side store session mode, in its one canonical spelling. */
         public static final String MODE_SERVER = "server";
+
+        /**
+         * The largest {@code max_cookie_header_value_length} a server-mode BFF may declare.
+         * <p>
+         * The number is the {@code lenient} preset's own {@code maxHeaderValueLength}, for the reason
+         * {@code SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH} carries it: the
+         * relaxation never admits a header value the loosest <em>shipped</em> profile would itself
+         * reject, and it sits well inside the gateway's 16 KiB inbound header-block limit, so a value
+         * that clears the cap can still actually arrive. Declared on the model because the bundled
+         * schema's {@code maximum} and the boot rule both state it and must not drift apart.
+         */
+        public static final int MAX_COOKIE_HEADER_VALUE_LENGTH_CEILING = 8192;
 
         /**
          * The absolute session lifetime applied when {@code ttl_seconds} is omitted, in seconds.

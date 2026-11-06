@@ -48,6 +48,10 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
+import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
+import de.cuioss.sheriff.gateway.portal.PortalResponseEnvelope;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -65,6 +69,7 @@ import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.ext.web.Router;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -88,7 +93,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       upstream line at all.</li>
  * </ul>
  * The stub upstream answers every request with a cacheable policy and with whatever
- * {@code Set-Cookie} lines the case configures, so each rule is observed next to its control.
+ * {@code Set-Cookie} lines the case configures, so each rule is observed next to its control. The
+ * pages the gateway renders itself follow the first rule too; they are written through the portal
+ * page writer directly ({@link GatewayRenderedPages}).
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — a gateway cookie makes the response uncacheable, and no upstream can set one")
@@ -705,6 +712,95 @@ class GatewayEdgeGatewayCookieTest {
                     () -> assertTrue(printed.contains("location=present"), printed),
                     () -> assertTrue(printed.contains("setCookieHeaders=" + response.setCookieHeaders().size()),
                             printed));
+        }
+    }
+
+    /**
+     * Every page the gateway renders itself — the portal overview and each HTML error page — is written
+     * by {@link ErrorResponseWriter#writePortal}, and that writer marks a page that sets a cookie
+     * {@code no-store} whatever the page's own envelope declared. An HTML error page is {@code no-store}
+     * by its envelope already, so the writer's rule is observable only on a page whose envelope is
+     * cacheable: the session-free overview, {@code max-age} for {@code cache_seconds}. No page the
+     * gateway renders today combines that envelope with a cookie; the cases pin the writer's rule so a
+     * page that comes to combine them cannot be stored.
+     * <p>
+     * The page is written through the writer on a live Vert.x server, with the cookie accumulated on the
+     * pipeline request and with the cookie as the answered exit's own line, beside the same page with no
+     * cookie at all.
+     */
+    @Nested
+    @DisplayName("gateway-rendered pages — a page that sets a cookie is no-store, whatever its envelope declares")
+    class GatewayRenderedPages {
+
+        private static final int CACHE_SECONDS = 600;
+        private static final String CACHEABLE_PAGE_POLICY = "max-age=" + CACHE_SECONDS;
+        private static final String PAGE_COOKIE = BINDING_COOKIE_NAME
+                + "=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax";
+
+        /** The session-free overview as {@code PortalEndpoint} answers it: cacheable, varying on Cookie. */
+        private final PortalEndpoint.PortalResponse sessionFreePage = new PortalEndpoint.PortalResponse(200,
+                new PortalResponseEnvelope(CACHE_SECONDS, true)
+                        .headers(PortalResponseEnvelope.Cacheability.SESSION_FREE),
+                "<!DOCTYPE html><title>Portal</title>");
+        /** The cookies accumulated on the pipeline request of the next page written. */
+        private final List<String> stageCookies = new CopyOnWriteArrayList<>();
+        /** The cookies the answered exit emits itself on the next page written. */
+        private final List<String> exitCookies = new CopyOnWriteArrayList<>();
+
+        @BeforeEach
+        void startPageWriter() throws Exception {
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> {
+                PipelineRequest request = PipelineRequest.builder().method(HttpMethod.GET)
+                        .requestPath(ctx.request().path()).build();
+                stageCookies.forEach(request::addResponseSetCookie);
+                ErrorResponseWriter.writePortal(ctx, request, sessionFreePage, List.copyOf(exitCookies));
+            });
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the page-writing server to start listening");
+        }
+
+        @Test
+        @DisplayName("a page whose request accumulated a cookie is no-store instead of its envelope's max-age")
+        void pageWithAStageCookieIsNotStored() throws Exception {
+            stageCookies.add(PAGE_COOKIE);
+
+            Answer answer = get("/portal", null);
+
+            assertAll("the page that carries the stage's cookie",
+                    () -> assertEquals(CACHEABLE_PAGE_POLICY,
+                            sessionFreePage.headers().get(CACHE_CONTROL),
+                            "precondition: the page's own envelope declares it cacheable"),
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertEquals(List.of(PAGE_COOKIE), answer.setCookies(), "the cookie arrives"),
+                    () -> assertEquals(List.of(NO_STORE), answer.cacheControl(),
+                            "exactly one Cache-Control line, and it is no-store"));
+        }
+
+        @Test
+        @DisplayName("a page whose answered exit sets a cookie of its own is no-store instead of its envelope's max-age")
+        void pageWithAnExitCookieIsNotStored() throws Exception {
+            exitCookies.add(PAGE_COOKIE);
+
+            Answer answer = get("/portal", null);
+
+            assertAll("the page that carries the exit's own cookie",
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertEquals(List.of(PAGE_COOKIE), answer.setCookies(), "the cookie arrives"),
+                    () -> assertEquals(List.of(NO_STORE), answer.cacheControl(),
+                            "exactly one Cache-Control line, and it is no-store"));
+        }
+
+        @Test
+        @DisplayName("control: the same page setting no cookie keeps its envelope's max-age")
+        void pageWithoutACookieKeepsItsEnvelopePolicy() throws Exception {
+            Answer answer = get("/portal", null);
+
+            assertAll("the page without a cookie",
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertEquals(List.of(), answer.setCookies(), "precondition: the page sets no cookie"),
+                    () -> assertEquals(List.of(CACHEABLE_PAGE_POLICY), answer.cacheControl(),
+                            "the envelope's policy is written unchanged"));
         }
     }
 

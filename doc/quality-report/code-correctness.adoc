@@ -118,13 +118,23 @@ only the leg that browsers cannot attack (JS cannot set `Authorization` on a Web
 handshake). Independently found by the security-posture pass as SEC-1 (see
 link:security-posture.adoc[security posture]).
 
-=== CFG-5 — Validator fabricates endpoint file names in error locations
+=== CFG-5 — Validator fabricates endpoint file names in error locations (RESOLVED)
 
 [cols="1,4"]
 |===
 |Severity |LOW — Confidence HIGH — Category: consistency
-|Location |`config/validation/ConfigValidator.java:1468-1470`
+|Location |`config/validation/rule/RuleSupport.java` (`endpointFile`); `config/load/ConfigLoader.java` (`loadEndpoint`)
 |===
+
+*Resolved by refusal.* `ConfigLoader.loadEndpoint` now refuses an endpoint whose declared `id`
+differs from its file name: one `ConfigError` against the file actually loaded, at
+`/endpoint/id`, naming both values and the rename that fixes it, and the endpoint is dropped
+before any validation rule runs. Every endpoint a rule sees was therefore loaded from
+`endpoints/<id>.yaml`, so `RuleSupport.endpointFile` names the real file by construction and the
+two attribution schemes cannot disagree. The rule is documented in
+link:../configuration.adoc[the configuration model], and `ConfigLoaderTest` pins the refusal
+against `endpoints/legacy.yaml` declaring `id: redirects`. The finding as originally written
+follows (the helper has since moved from `ConfigValidator` to `RuleSupport`).
 
 `endpointFile()` fabricates the error location as `"endpoints/" + endpoint.id() + ".yaml"`, but
 nothing enforces that an endpoint's file name equals its `id` — `ConfigLoader.loadEndpoint` uses
@@ -397,12 +407,12 @@ the re-drive is a *pushed* request. The producer hands `StepUpHandler.initiate` 
 (link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058],
 decision 12).
 
-=== BFF-2 — Catalogued session-lifecycle and CSRF LogRecords are never emitted
+=== BFF-2 — Catalogued session-lifecycle LogRecords are never emitted
 
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: javadoc / false-security (observability)
-|Location |`bff/BffLogMessages.java`; `bff/csrf/CsrfDefence.java:128`
+|Location |`bff/BffLogMessages.java`; the CSRF rejection diagnostic in `bff/csrf/CsrfDefence.java` (`rejected`)
 |===
 
 `INFO.SESSION_CREATED` (10), `INFO.SESSION_DESTROYED` (11) and `INFO.RP_LOGOUT_COMPLETED` (14)

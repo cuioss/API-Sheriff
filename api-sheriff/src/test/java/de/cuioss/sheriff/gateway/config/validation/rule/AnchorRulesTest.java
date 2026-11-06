@@ -17,9 +17,11 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
 import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.singleRefusalAt;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -27,6 +29,7 @@ import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
+import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -79,16 +82,50 @@ class AnchorRulesTest {
     @DisplayName("The anchor namespace and auth-floor rules (ADR-0007)")
     class AnchorNamespaceAndFloor {
 
+        // --- Rule 1: both operand orders of the overlap check ----------------------------------------
+        // The pair loop visits each unordered pair once, so which operand of its `||` catches an
+        // overlap depends on which anchor comes first. GatewayConfig copies the anchors with
+        // Map.copyOf, whose iteration order is unspecified and varies between JVM runs, so declaring
+        // the shorter prefix first does not make it come first. These two cases therefore fix the key
+        // set and its insertion order — so the copy iterates both maps in the same order within one
+        // run — and swap only which anchor holds the shorter prefix. Whatever that order is, one case
+        // reaches the overlap through the first operand and the other through the second, so cutting
+        // either operand fails exactly one of them.
+
+        /** Two anchors, {@code alpha} then {@code beta}, whose prefixes nest one inside the other. */
+        private static GatewayConfig gatewayWithNestedAnchors(String alphaPrefix, String betaPrefix) {
+            Map<String, AnchorConfig> anchors = new LinkedHashMap<>();
+            anchors.put("alpha", anchor("alpha", alphaPrefix, null));
+            anchors.put("beta", anchor("beta", betaPrefix, null));
+            return gatewayWithAnchors(anchors);
+        }
+
         @Test
-        @DisplayName("Rule 1: Should reject anchor prefixes where one contains another")
-        void shouldRejectOverlappingAnchorPrefixes() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of(
-                    "api", anchor("api", "/api", null),
-                    "apiv1", anchor("apiv1", "/api/v1", null)));
+        @DisplayName("Rule 1: Should reject nested anchor prefixes when 'alpha' holds the shorter one")
+        void shouldRejectNestedAnchorPrefixesWhenAlphaHoldsTheShorterPrefix() {
+            GatewayConfig gateway = gatewayWithNestedAnchors("/api", "/api/v1");
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
-            assertHasError(errors, "/anchors", "pairwise disjoint");
+            String message = singleRefusalAt(errors, "/anchors").message();
+            assertAll(
+                    () -> assertTrue(message.contains("pairwise disjoint"), message),
+                    () -> assertTrue(message.contains("'alpha' (/api)"), message),
+                    () -> assertTrue(message.contains("'beta' (/api/v1)"), message));
+        }
+
+        @Test
+        @DisplayName("Rule 1: Should reject nested anchor prefixes when 'beta' holds the shorter one")
+        void shouldRejectNestedAnchorPrefixesWhenBetaHoldsTheShorterPrefix() {
+            GatewayConfig gateway = gatewayWithNestedAnchors("/api/v1", "/api");
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            String message = singleRefusalAt(errors, "/anchors").message();
+            assertAll(
+                    () -> assertTrue(message.contains("pairwise disjoint"), message),
+                    () -> assertTrue(message.contains("'alpha' (/api/v1)"), message),
+                    () -> assertTrue(message.contains("'beta' (/api)"), message));
         }
 
         @Test

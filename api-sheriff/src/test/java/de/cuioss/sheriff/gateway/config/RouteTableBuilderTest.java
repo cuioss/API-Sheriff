@@ -1115,6 +1115,27 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should WARN for the proxy route only, not for an asset or redirect route beside it, under an endpoint cookies override")
+        void shouldNotWarnCookiesOverrideOnTerminalRoutes() {
+            RouteConfig asset = RouteConfig.builder().id("static").match(match("/api/static", HttpMethod.GET))
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv/www", null, null, null)).build();
+            RouteConfig redirect = RouteConfig.builder().id("moved").match(match("/api/moved", HttpMethod.GET))
+                    .redirect(RedirectConfig.builder().location("/home").status(302).build()).build();
+            EndpointConfig endpoint = anchoredEndpointSeed("orders", "ORDERS", "api")
+                    .cookies(new CookiesConfig(CookieAllow.ALL, null, null))
+                    .routes(List.of(apiRoute().build(), asset, redirect)).build();
+
+            build(gatewayWithAnchorCookies(new CookiesConfig(new CookieAllow.Named(List.of("app")), null, null)),
+                    endpoint);
+
+            // The asset and redirect routes resolve allow: none whatever any scope declares, so neither
+            // the anchor's block nor the endpoint's applies to them and there is no replacement to
+            // announce. The proxy route beside them does run the endpoint's block, and keeps its WARN.
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, OVERRIDE_WARN_ID);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("cookies", "endpoint"));
+        }
+
+        @Test
         @DisplayName("Should not WARN for a cookies block on an unanchored route")
         void shouldNotWarnForUnanchoredCookies() {
             EndpointConfig endpoint = openEndpointSeed("orders", "ORDERS")

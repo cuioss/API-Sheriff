@@ -42,6 +42,7 @@ import javax.net.ssl.SSLContext;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.http.PathSlashes;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -250,9 +251,13 @@ public final class UpstreamAssetSource implements AssetSource {
                 .map(confined -> "/" + CONFINEMENT_BASE.relativize(confined).toString().replace('\\', '/'));
     }
 
+    /**
+     * Joins the confined remainder onto the upstream base path. The base loses its whole trailing run
+     * of slashes, exactly as the proxy dispatch strips the same base ({@link PathSlashes}), so one
+     * topology alias reaches one upstream path whichever terminal action serves it.
+     */
     private URI upstreamUri(String urlRemainder) throws URISyntaxException {
-        String base = upstream.basePath();
-        String prefix = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+        String prefix = PathSlashes.stripTrailing(upstream.basePath());
         String path = "/".equals(urlRemainder) && prefix.isEmpty() ? "/" : prefix + urlRemainder;
         return new URI(upstream.scheme(), null, upstream.host(), upstream.port(), path, null, null);
     }

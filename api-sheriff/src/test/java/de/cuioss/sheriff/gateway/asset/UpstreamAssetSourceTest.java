@@ -23,6 +23,7 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource.UpstreamFetcher;
@@ -31,6 +32,8 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Tests for {@link UpstreamAssetSource}: the gateway governs every upstream-asset
@@ -99,6 +102,37 @@ class UpstreamAssetSourceTest {
             map.put(pairs[i], pairs[i + 1]);
         }
         return map;
+    }
+
+    @ParameterizedTest(name = "base ''{0}'' + remainder ''{1}'' -> {2}")
+    @CsvSource({
+            "/static, app.js, /static/app.js",
+            "/static/, app.js, /static/app.js",
+            "/static//, app.js, /static/app.js",
+            "/static, css/site.css, /static/css/site.css",
+            "'', app.js, /app.js",
+            "/, app.js, /app.js"
+    })
+    @DisplayName("Should join the confined remainder onto the base path on exactly one slash, as the proxy dispatch strips the base")
+    void shouldJoinRemainderOntoBasePathOnOneSlash(String basePath, String remainder, String expectedPath) {
+        AtomicReference<URI> fetched = new AtomicReference<>();
+        UpstreamFetcher capturing = target -> {
+            fetched.set(target);
+            return new UpstreamFetcher.Fetched(OK, Map.of(), BODY, false);
+        };
+        UpstreamAssetSource source = new UpstreamAssetSource(
+                new ResolvedUpstream("https", "assets.internal", 443, basePath), AccessLevel.PUBLIC,
+                new PathConfinement(), capturing, MAX_BYTES, Map.of(), false);
+
+        AssetSource.Served served = source.serve(HttpMethod.GET, remainder);
+
+        URI target = fetched.get();
+        assertAll(
+                () -> assertEquals(OK, served.status()),
+                () -> assertNotNull(target, "the upstream must be fetched"),
+                () -> assertEquals(expectedPath, target.getPath(),
+                        "the base keeps no trailing slash of its own and the remainder brings exactly one"),
+                () -> assertEquals("assets.internal", target.getHost(), "the host comes from the topology alone"));
     }
 
     @Test

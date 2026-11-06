@@ -63,7 +63,17 @@ public final class SecurityPostures {
 
     /**
      * Derives the pre-route {@code Cookie} header-value policy from the gateway document, returning
-     * {@code null} for every gateway that is not an active cookie-mode BFF.
+     * {@code null} for every gateway that is neither an active cookie-mode BFF nor an active server-mode
+     * BFF declaring {@code oidc.session.max_cookie_header_value_length}.
+     * <p>
+     * <strong>The server-mode cap.</strong> A server-mode BFF holds no sealed cookie of its own — its
+     * session cookie is an opaque handle — but it may carry a third party's cookies through the gateway:
+     * a fronted identity provider sets cookies (a Keycloak login sends a {@code Cookie} header of some
+     * 1700 to 2500 characters) that outgrow the {@code strict} 1024-character cap, so the login flow is rejected
+     * {@code 400} here before route selection. The operator-declared
+     * {@code max_cookie_header_value_length} is the cap such a gateway asks for; omitted, a server-mode
+     * gateway keeps {@code null} exactly as before. Every bound below applies to it unchanged: the
+     * same {@code max} against the baseline, the same header scope, the same baseline seeding.
      * <p>
      * <strong>Why this exists.</strong> Stage 1 validates every inbound header value against the
      * resolved baseline {@code maxHeaderValueLength} — whatever {@code security_defaults.profile}
@@ -75,11 +85,11 @@ public final class SecurityPostures {
      * {@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}) now drives BOTH ends of the round
      * trip — the codec's seal-time budget and this pre-route cap.
      * <p>
-     * <strong>The relaxation is scoped twice.</strong> By MODE: a bearer-only or server-mode gateway
-     * gets {@code null}, so no cookie carve-out exists there and its {@code Cookie} /
-     * {@code Set-Cookie} values are measured at the resolved baseline like any other header. By
-     * HEADER: within a cookie-mode gateway the raised cap reaches the {@code Cookie} /
-     * {@code Set-Cookie} values only. {@link BasicChecksStage} selects the value pipeline on the
+     * <strong>The relaxation is scoped twice.</strong> By MODE: a bearer-only gateway, and a
+     * server-mode gateway that declares no cap, gets {@code null}, so no cookie carve-out exists there
+     * and its {@code Cookie} / {@code Set-Cookie} values are measured at the resolved baseline like any
+     * other header. By HEADER: within a gateway that has a carve-out the raised cap reaches the
+     * {@code Cookie} / {@code Set-Cookie} values only. {@link BasicChecksStage} selects the value pipeline on the
      * header NAME across three branches — an {@code Authorization} value takes the separate,
      * unconditional carve-out of {@link #authorizationHeaderConfigurationFor}, and every OTHER header
      * keeps the resolved baseline policy. Every non-length validator (null-byte, control-character,
@@ -87,8 +97,11 @@ public final class SecurityPostures {
      * inbound hardening control, held as narrow as the pre-route position allows.
      * <p>
      * <strong>The cap is {@code max}-bounded, so the carve-out can only ever ADMIT MORE length.</strong>
-     * The effective cap is {@code max(baseline.maxHeaderValueLength(), budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}.
-     * Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
+     * The effective cap is {@code max(baseline.maxHeaderValueLength(), requested)}, where
+     * {@code requested} depends on the mode: in cookie mode it is the sealed-cookie budget plus the
+     * overhead, {@code max(baseline, budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}; in
+     * server mode it is the declared cap itself,
+     * {@code max(baseline, oidc.session.max_cookie_header_value_length)}. Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
      * gateway: the shipped default budget
      * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}, 4019) plus the overhead is 4531,
      * below that profile's 8192 baseline, so a cookie-mode BFF rejected {@code 400} every request
@@ -114,32 +127,33 @@ public final class SecurityPostures {
      * Public so the edge root wires it and {@code GatewayEdgeRouteTest} asserts the seeding directly
      * instead of only through a booted edge, matching {@link #securityPostureFor}.
      *
-     * @param gatewayConfig the bound gateway document supplying the cookie budget
-     * @param bffRuntime    the BFF runtime whose active-cookie-mode state gates the carve-out
+     * @param gatewayConfig the bound gateway document supplying the cookie budget or the server-mode cap
+     * @param bffRuntime    the BFF runtime whose active state gates the carve-out
      * @param baseline      the gateway's resolved baseline configuration the returned policy is
      *                      seeded from, so it differs from the baseline in
      *                      {@code maxHeaderValueLength} and nothing else
      * @return the {@code Cookie} / {@code Set-Cookie} value policy, or {@code null} for a gateway
-     *         that is not an active cookie-mode BFF
+     *         that is neither an active cookie-mode BFF nor an active server-mode BFF declaring a cap
      */
     public static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
             BffRuntime bffRuntime, SecurityConfiguration baseline) {
         OidcConfig oidc = gatewayConfig.oidc();
         OidcConfig.Session session = oidc == null ? null : oidc.session();
-        // The SHARED cookie-mode predicate on the config model — never a locally-declared constant
-        // compared here. A private constant plus a local comparison is what let this cap relax for a
-        // mode spelling boot validation had already skipped.
-        boolean cookieMode = bffRuntime.isActive() && session != null && session.isCookieMode();
-        if (!cookieMode) {
+        if (!bffRuntime.isActive() || session == null) {
             return null;
         }
-        Integer declaredBudget = session.maxCookieSize();
-        int budget = declaredBudget != null ? declaredBudget : SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
+        // The SHARED mode predicates on the config model — never a locally-declared constant compared
+        // here. A private constant plus a local comparison is what let this cap relax for a mode
+        // spelling boot validation had already skipped.
+        Integer requestedCap = requestedCookieCap(session);
+        if (requestedCap == null) {
+            return null;
+        }
         // max(), not an outright set: a carve-out may only ever ADMIT MORE length. The default budget
         // plus the overhead is 4531, which sits BELOW the lenient profile's 8192 baseline, so setting
         // the cap outright turned this carve-out into a per-header TIGHTENING on every shipped-default
         // lenient cookie-mode gateway. Same bound as ThoroughChecksStage.carveOutConfigurationFor.
-        int cap = Math.max(baseline.maxHeaderValueLength(), budget + COOKIE_HEADER_OVERHEAD_BYTES);
+        int cap = Math.max(baseline.maxHeaderValueLength(), requestedCap);
         // Seeded component-by-component from the RESOLVED baseline, so this differs from it in
         // maxHeaderValueLength and nothing else — which is what makes ADR-0019's "only the length cap
         // changes" bound structurally true. Seeding from SecurityConfiguration.builder() instead (its
@@ -148,6 +162,26 @@ public final class SecurityPostures {
         return SecurityConfigurations.builderSeededFrom(baseline)
                 .maxHeaderValueLength(cap)
                 .build();
+    }
+
+    /**
+     * The {@code Cookie} cap a session mode asks for, before the {@code max} against the baseline:
+     * the sealed-cookie budget plus {@value #COOKIE_HEADER_OVERHEAD_BYTES} in cookie mode, the declared
+     * {@code max_cookie_header_value_length} in server mode, and {@code null} — no carve-out — for a
+     * server-mode session that declares no cap or a session in no recognised mode. Cookie mode never
+     * reads the server-mode key: boot validation refuses it there, and the sealed budget stays the
+     * one source of that mode's cap.
+     */
+    private static @Nullable Integer requestedCookieCap(OidcConfig.Session session) {
+        if (session.isCookieMode()) {
+            Integer declaredBudget = session.maxCookieSize();
+            int budget = declaredBudget != null ? declaredBudget : SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
+            return budget + COOKIE_HEADER_OVERHEAD_BYTES;
+        }
+        if (session.isServerMode()) {
+            return session.maxCookieHeaderValueLength();
+        }
+        return null;
     }
 
     /**

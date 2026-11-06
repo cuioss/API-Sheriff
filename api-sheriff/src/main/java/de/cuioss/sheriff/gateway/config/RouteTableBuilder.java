@@ -597,7 +597,8 @@ public final class RouteTableBuilder {
      * block is announced once, not twice, naming the nearest declaring scope: the one the block is
      * actually resolved from ({@link PolicyBlock#declared}). The record also names the owning
      * endpoint, so the operator can find the replacing declaration. An unanchored route has no
-     * anchor policy to override.
+     * anchor policy to override, and a block the route does not resolve from its scope chain
+     * ({@link #resolvesFromChain}) has no replacement to announce.
      *
      * @param chain the route's scope chain
      */
@@ -607,7 +608,7 @@ public final class RouteTableBuilder {
             return;
         }
         for (PolicyBlock<?> block : PolicyBlock.ALL) {
-            if (!block.overrideWarn()) {
+            if (!block.overrideWarn() || !resolvesFromChain(block, chain.route())) {
                 continue;
             }
             Set<PolicyBlock.Scope> declaring = block.declaringScopes(chain);
@@ -616,6 +617,21 @@ public final class RouteTableBuilder {
                         chain.endpoint().id(), anchor.name(), block.yamlKey(), nearestScope(declaring));
             }
         }
+    }
+
+    /**
+     * Whether a route takes this block from its scope chain at all. An asset or redirect route has no
+     * upstream to hand a cookie to or relay one from, so {@link #resolveRoute} gives it the
+     * nothing-crosses {@code cookies} block whatever any scope declares: neither the anchor's
+     * declaration nor a nearer one applies to it, and announcing that the nearer one replaces the
+     * anchor's would report a policy the route never runs.
+     *
+     * @param block the opted-in block
+     * @param route the route being resolved
+     * @return {@code false} only for the {@code cookies} block on a route that is not a proxy route
+     */
+    private static boolean resolvesFromChain(PolicyBlock<?> block, RouteConfig route) {
+        return block != PolicyBlock.COOKIES || route.isProxyRoute();
     }
 
     /**

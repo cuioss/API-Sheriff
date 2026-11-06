@@ -77,7 +77,8 @@ cleartext opt-in.
 
 === The Keycloak side
 
-The identity provider publishes one static identity: a full-URL `KC_HOSTNAME` (the published `https://localhost:1443` in this repository's stacks), no realm `frontendUrl` and no
+The identity provider publishes one static identity: a full-URL `KC_HOSTNAME` (the published `https://localhost:1443` in this repository's stacks, `https://localhost:8443/auth` in the compose sample's
+/auth-fronted variant), no realm `frontendUrl` and no
 `hostname-backchannel-dynamic`. Every advertised endpoint, revocation included, then lies on the issuer's origin and is mapped. A realm `frontendUrl` would override the static hostname for every
 advertised URL, so no realm import declares one. `BackChannelOriginActivationWiringTest` asserts it.
 
@@ -108,9 +109,27 @@ against the URL the request was received on (`StubIdentityProvider`, `StubIdenti
 
 === Whether the gateway fronts the identity provider
 
-That is not part of this decision. No shipped topology fronts the identity provider, and the gateway ships none. A variant serving it under an `/auth` prefix is held and has no implementation. If it lands, it
-consumes the back-channel origin, because the gateway would otherwise dial its own listener for discovery. Its exposure must be an allowlist, never a catch-all: `/realms/`, `/resources/`, `/.well-known/` and
-`/lb-check` are in, and `/admin/`, `/realms/master/`, `/metrics`, `/health` and the management port are out. That allowlist is the rule the variant must follow and is unproven here.
+It can, and the compose sample ships the variant that does: `deployment/compose-sample/docker-compose.auth-fronted.yml` with its own configuration set,
+`docker/sheriff-config-auth-fronted/`. The gateway serves Keycloak under `/auth` of its own origin and Keycloak publishes no host port. The decision above holds unchanged in that topology; the variant
+adds no key and no second identity.
+
+* *One identity.* Keycloak's `KC_HOSTNAME` is `https://localhost:8443/auth`, the gateway's origin plus the prefix, and `KC_HTTP_RELATIVE_PATH=/auth` makes it serve under the same path. The realm issuer
+  is `https://localhost:8443/auth/realms/sample`, and `oidc.issuer` and the validated issuer both name it.
+* *The back-channel origin is required, not optional.* The issuer's origin is now the gateway's own, so without `oidc.back_channel_origin: https://keycloak:8443` the gateway would dial its own listener
+  for discovery and route every back-channel call through its own `/auth` route. The mapping swaps the origin and keeps the path, so `https://localhost:8443/auth/realms/sample/...` is dialled as
+  `https://keycloak:8443/auth/realms/sample/...`, and the DPoP `htu` contract above holds for it as it does for the base sample.
+* *An allowlist, never a catch-all.* `endpoints/idp.yaml` routes `/auth/realms/sample`, `/auth/resources` and `/auth/.well-known/oauth-authorization-server/realms/sample` and declares no catch-all,
+  so `/auth/admin/`, `/auth/realms/master/` and its server-level well-known document, Keycloak's `/metrics` and `/health` paths and every other path under `/auth` answer the gateway's unrouted `404`,
+  and Keycloak's ports, its management port `9000` included, are not published. The allowlist is narrower than the one this record held open: it names the one realm the BFF uses rather than every
+  realm -- its RFC 8414 path-insertion metadata included, which Keycloak serves for every realm under `/auth/.well-known` -- and `/lb-check` is out because the pinned image answers it `404`.
+* *What the gateway relaxes.* The `strict` profile stays gateway-wide. The method gate admits `POST` for the login form, narrowed back to `GET` and `HEAD` on the other anchors, and
+  `oidc.session.max_cookie_header_value_length` raises the pre-route cap for `Cookie` values alone, because Keycloak's `KC_RESTART` cookie outgrows the `strict` header-value cap (ADR-0019).
+
+*Evidence.* On the pinned `26.8.1@sha256:79c623a2...d244`, before any other file of the variant was written: discovery served at `keycloak:8443/auth` returned the issuer
+`https://localhost:8443/auth/realms/sample` with every advertised endpoint on that origin, and a full BFF login -- discovery, the pushed authorization request and the code exchange with DPoP and
+`private_key_jwt` through the back channel -- completed against `/auth` with no Keycloak DPoP error. The `integration-tests` workflow runs the variant on every pull request
+(`-Dcompose-sample.variant=auth-fronted`), and its login check (`check-bff-login.sh --idp-prefix /auth`) asserts the allowlist from outside, dot-segment and encoded spellings of the console path
+included.
 
 == Alternatives rejected
 
@@ -200,7 +219,9 @@ without one, the realm settings first established on a throwaway 26.5.7 containe
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel TLS posture for the mapped host
 * link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: the per-scope-set client configuration factory that carries the origin
 * link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]: the FAPI 2.0 controls, including the DPoP binding whose `htu` this record settles
-* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the reserved-path model a fronting variant would respect
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the reserved-path model the fronting variant respects
+* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]: the `Cookie` header-length relaxation the fronting variant declares
+* `deployment/compose-sample/docker-compose.auth-fronted.yml` and `doc/development/compose-sample.adoc`: the fronting variant and the rationale behind each of its settings
 * TokenSheriff ADR-0015, _DPoP htu names the back-channel URL actually contacted_: the upstream `htu` decision and its Keycloak evidence
 * link:../configuration.adoc[Configuration reference]: `oidc.back_channel_origin` and `oidc.back_channel_allow_insecure_http`
 * `integration-tests/docker-compose.yml` and `deployment/compose-sample/docker-compose.yml`: the Keycloak pin and the static `KC_HOSTNAME`

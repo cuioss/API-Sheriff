@@ -195,7 +195,10 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * {@code ttl_seconds}. An omitted key is always accepted, because it resolves to a value inside that
  * range. The per-subject session bound (owned by {@link OidcSessionRules} as well) follows the same
  * shape: a declared {@code oidc.session.max_sessions_per_subject} must be at least {@code 1} and at
- * most the effective {@code max_sessions}, and is refused in cookie mode.
+ * most the effective {@code max_sessions}, and is refused in cookie mode. The server-mode
+ * {@code Cookie} header-value cap (owned by {@link OidcSessionRules} too) does the same for
+ * {@code oidc.session.max_cookie_header_value_length}: at least the resolved header-value baseline, at
+ * most {@code 8192}, and refused outside server mode.
  * <p>
  * Pre-boot: the offline {@code --validate-config} check runs this validator before the framework
  * starts (ADR-0061, ADR-0062), so the rule set is supplied at construction and the validator carries
@@ -245,6 +248,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxSessionsPerSubject(gateway,
                     errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxCookieSize(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxCookieHeaderValueLength(
+                    gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionCookieName(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcClientRules.validateClientAuthentication(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcClientRules.validateSigningKeyFilesDistinct(gateway,

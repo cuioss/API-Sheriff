@@ -241,23 +241,27 @@ IDP_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
 if [[ "$IDP_MGMT_SCHEME" == "https" ]]; then
     # -k is load-bearing on an HTTPS management interface: it serves a self-signed localhost bundle,
     # and without it curl fails certificate validation and this wait degrades into a silent
-    # 120-attempt timeout against a perfectly healthy container.
+    # full-budget timeout against a perfectly healthy container.
     IDP_PROBE_OPTS+=(-k)
 fi
 IDP_HEALTH_URL="${IDP_MGMT_SCHEME}://localhost:${IDP_MGMT_PORT}/health/ready"
 
+# The Keycloak retry budget as ONE number, for the same reason as GATEWAY_READY_ATTEMPTS below: the
+# loop bound, the give-up check and both messages read it, so they cannot drift apart.
+IDP_READY_ATTEMPTS=120
+
 echo "⏳ Waiting for ${DEMO_IDP_SERVICE} to be ready (management ${IDP_MGMT_SCHEME} on ${IDP_MGMT_PORT})..."
-for i in {1..120}; do
+for ((i = 1; i <= IDP_READY_ATTEMPTS; i++)); do
     if curl "${IDP_PROBE_OPTS[@]}" "${IDP_HEALTH_URL}" > /dev/null 2>&1; then
         echo "✅ ${DEMO_IDP_SERVICE} is ready!"
         break
     fi
-    if [ "$i" -eq 120 ]; then
-        echo "❌ ${DEMO_IDP_SERVICE} did not answer ${IDP_HEALTH_URL} within 120 attempts"
+    if [ "$i" -eq "$IDP_READY_ATTEMPTS" ]; then
+        echo "❌ ${DEMO_IDP_SERVICE} did not answer ${IDP_HEALTH_URL} within ${IDP_READY_ATTEMPTS} attempts"
         echo "Check logs with: ${COMPOSE_CMD} logs ${DEMO_IDP_SERVICE}"
         exit 1
     fi
-    echo "⏳ Waiting for ${DEMO_IDP_SERVICE}... (attempt $i/120)"
+    echo "⏳ Waiting for ${DEMO_IDP_SERVICE}... (attempt $i/${IDP_READY_ATTEMPTS})"
     sleep 1
 done
 

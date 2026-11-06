@@ -368,7 +368,7 @@ class TopologyResolverTest {
 
     @Test
     @DisplayName("An unresolvable enabled-endpoint alias still fails alongside a resolvable additional alias")
-    void stillThrowsForUnresolvableEnabledEndpointAliasAlongsideSkippedAdditionalAlias() throws Exception {
+    void stillThrowsForUnresolvableEnabledEndpointAliasAlongsideResolvableAdditionalAlias() throws Exception {
         Path file = topologyFile("SECURE=https://secure.internal\n");
         TopologyResolver resolver = resolverWith(Map.of());
         List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"));

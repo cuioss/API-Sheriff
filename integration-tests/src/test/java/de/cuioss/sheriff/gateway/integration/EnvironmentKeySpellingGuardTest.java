@@ -33,6 +33,9 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.AbstractConstruct;
@@ -82,6 +85,11 @@ import org.junit.jupiter.api.Test;
  * Every derived set is fronted by a vacuity guard in the idiom
  * {@code ComposeSampleForwardedTrustWiringTest} establishes: a parser that found nothing would leave
  * the per-key loop asserting nothing while still passing green, which is worse than a red test.
+ * <p>
+ * <strong>The same silence, one level up.</strong> A key spelled correctly binds nothing if the container
+ * never receives it: the compose sample's topology files name in-file placeholders the gateway resolves
+ * against its own environment, so {@link #everyTopologyPlaceholderIsForwardedIntoTheGateway} holds every
+ * such placeholder variable to a bare pass-through entry on the gateway service.
  * <p>
  * It parses the committed descriptors only — it starts no container and reaches no network.
  *
@@ -193,6 +201,158 @@ class EnvironmentKeySpellingGuardTest {
                                 + " a quote open, so the property never resolves at boot. If this leg"
                                 + " passes, the discriminator has no teeth and the descriptor scan above"
                                 + " is green whatever the descriptors contain."));
+    }
+
+    /**
+     * The compose sample's topology files bind their aliases through in-file placeholders
+     * ({@code UPSTREAM=${TOPOLOGY_UPSTREAM:-...}}), and the gateway resolves those against ITS OWN
+     * process environment. A placeholder whose variable the gateway service does not forward is
+     * therefore unreachable: a value set on the host never arrives, and the in-file default always wins
+     * while the file invites an override. Every placeholder variable of each mounted topology file must
+     * be forwarded into the {@code api-sheriff} service of the descriptors that mount it, as a BARE
+     * pass-through entry — so an unset host variable stays unset in the container and the in-file
+     * default applies, rather than a value in the descriptor overriding the file on every start.
+     * <p>
+     * The variable names are derived from the topology files, never listed here, so a placeholder added
+     * to either file is covered the moment it lands.
+     */
+    @Test
+    @DisplayName("every placeholder variable of the compose sample's topology files is forwarded into the gateway, bare")
+    void everyTopologyPlaceholderIsForwardedIntoTheGateway() throws Exception {
+        TopologyForwarding forwarding = TopologyForwarding.committed();
+
+        assertAll(
+                () -> assertFalse(forwarding.basePlaceholders().isEmpty(),
+                        "the base topology file names no placeholder, so the check below asserts nothing"),
+                () -> assertFalse(forwarding.variantPlaceholders().isEmpty(),
+                        "the /auth-fronted topology file names no placeholder, so the check below asserts nothing"),
+                () -> assertTrue(forwarding.failures().isEmpty(),
+                        () -> String.join(System.lineSeparator(), forwarding.failures())));
+    }
+
+    /** The red run of the guard above, on every build: a copy with one forwarded entry removed is reported. */
+    @Test
+    @DisplayName("a topology placeholder variable missing from the gateway's environment is reported")
+    void unforwardedTopologyPlaceholderIsReported() throws Exception {
+        TopologyForwarding committed = TopologyForwarding.committed();
+
+        assertAll(
+                () -> assertFalse(committed.withoutBaseEntry("TOPOLOGY_UPSTREAM").failures().isEmpty(),
+                        "the check passed a base descriptor that no longer forwards TOPOLOGY_UPSTREAM"),
+                () -> assertFalse(committed.withoutOverrideEntry("TOPOLOGY_IDP").failures().isEmpty(),
+                        "the check passed an /auth-fronted override that no longer forwards TOPOLOGY_IDP"),
+                () -> assertFalse(committed.withValuedBaseEntry("TOPOLOGY_UPSTREAM").failures().isEmpty(),
+                        "the check passed a TOPOLOGY_UPSTREAM entry carrying a value, which overrides the "
+                                + "in-file default on every start"));
+    }
+
+    /**
+     * The gateway service's environment in the base descriptor and in the /auth-fronted override, each as
+     * declared name to "is a bare pass-through entry", and the placeholder variables of the topology file
+     * each one mounts. The override merges into the base BY NAME, so the variant's environment is the
+     * base's with the override's entries laid over it.
+     *
+     * @param baseEnvironment     the base descriptor's {@code api-sheriff} environment
+     * @param overrideEnvironment the {@code /auth}-fronted override's {@code api-sheriff} environment
+     * @param basePlaceholders    the placeholder variables of {@code docker/sheriff-config/topology.properties}
+     * @param variantPlaceholders the placeholder variables of the variant set's {@code topology.properties}
+     */
+    private record TopologyForwarding(Map<String, Boolean> baseEnvironment, Map<String, Boolean> overrideEnvironment,
+    List<String> basePlaceholders, List<String> variantPlaceholders) {
+
+        private static final String GATEWAY_SERVICE = "api-sheriff";
+        private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{([A-Za-z_]\\w*)(?::-[^}]*)?}");
+
+        static TopologyForwarding committed() throws IOException {
+            return new TopologyForwarding(
+                    gatewayEnvironment(SAMPLE.resolve("docker-compose.yml")),
+                    gatewayEnvironment(SAMPLE.resolve("docker-compose.auth-fronted.yml")),
+                    placeholders(SAMPLE.resolve("docker/sheriff-config/topology.properties")),
+                    placeholders(SAMPLE.resolve("docker/sheriff-config-auth-fronted/topology.properties")));
+        }
+
+        TopologyForwarding withoutBaseEntry(String name) {
+            Map<String, Boolean> diverged = new LinkedHashMap<>(baseEnvironment);
+            assertNotNull(diverged.remove(name), () -> "the base descriptor no longer forwards " + name
+                    + ", so this diverged copy would equal the committed one — re-point the control");
+            return new TopologyForwarding(diverged, overrideEnvironment, basePlaceholders, variantPlaceholders);
+        }
+
+        TopologyForwarding withoutOverrideEntry(String name) {
+            Map<String, Boolean> diverged = new LinkedHashMap<>(overrideEnvironment);
+            assertNotNull(diverged.remove(name), () -> "the override no longer forwards " + name
+                    + ", so this diverged copy would equal the committed one — re-point the control");
+            return new TopologyForwarding(baseEnvironment, diverged, basePlaceholders, variantPlaceholders);
+        }
+
+        TopologyForwarding withValuedBaseEntry(String name) {
+            Map<String, Boolean> diverged = new LinkedHashMap<>(baseEnvironment);
+            diverged.put(name, false);
+            return new TopologyForwarding(diverged, overrideEnvironment, basePlaceholders, variantPlaceholders);
+        }
+
+        List<String> failures() {
+            Map<String, Boolean> variantEnvironment = new LinkedHashMap<>(baseEnvironment);
+            variantEnvironment.putAll(overrideEnvironment);
+            List<String> failures = new ArrayList<>();
+            report("docker-compose.yml", baseEnvironment, "docker/sheriff-config", basePlaceholders, failures);
+            report("docker-compose.yml + docker-compose.auth-fronted.yml", variantEnvironment,
+                    "docker/sheriff-config-auth-fronted", variantPlaceholders, failures);
+            return failures;
+        }
+
+        private static void report(String descriptors, Map<String, Boolean> environment, String set,
+                List<String> placeholders, List<String> failures) {
+            for (String variable : placeholders) {
+                Boolean bare = environment.get(variable);
+                if (bare == null) {
+                    failures.add(set + "/topology.properties binds ${" + variable + "}, but the " + GATEWAY_SERVICE
+                            + " service of " + descriptors + " does not forward it, so a value set on the host never "
+                            + "reaches the gateway and the in-file default always wins");
+                } else if (!bare) {
+                    failures.add(variable + " is forwarded with a value by " + descriptors + ", which overrides the "
+                            + "in-file default of " + set + "/topology.properties on every start — forward it as a "
+                            + "bare '- " + variable + "' entry so an unset host variable leaves the default in force");
+                }
+            }
+        }
+
+        private static Map<String, Boolean> gatewayEnvironment(Path descriptor) throws IOException {
+            Object document;
+            try (InputStream in = Files.newInputStream(descriptor)) {
+                document = composeParser().load(in);
+            }
+            Map<?, ?> root = assertInstanceOf(Map.class, document, () -> descriptor + " must parse as a mapping");
+            Object services = root.get("services");
+            Object gateway = services instanceof Map<?, ?> declared ? declared.get(GATEWAY_SERVICE) : null;
+            Object environment = gateway instanceof Map<?, ?> definition ? definition.get("environment") : null;
+            Map<String, Boolean> entries = new LinkedHashMap<>();
+            if (environment instanceof List<?> declared) {
+                for (Object entry : declared) {
+                    String text = String.valueOf(entry);
+                    int separator = text.indexOf('=');
+                    entries.put(separator < 0 ? text : text.substring(0, separator), separator < 0);
+                }
+            }
+            return entries;
+        }
+
+        private static List<String> placeholders(Path topologyFile) throws IOException {
+            assertTrue(Files.isRegularFile(topologyFile), () -> topologyFile + " does not exist");
+            Properties properties = new Properties();
+            try (InputStream in = Files.newInputStream(topologyFile)) {
+                properties.load(in);
+            }
+            List<String> variables = new ArrayList<>();
+            for (String alias : properties.stringPropertyNames()) {
+                Matcher matcher = PLACEHOLDER.matcher(properties.getProperty(alias));
+                while (matcher.find()) {
+                    variables.add(matcher.group(1));
+                }
+            }
+            variables.sort(Comparator.naturalOrder());
+            return variables;
+        }
     }
 
     /**

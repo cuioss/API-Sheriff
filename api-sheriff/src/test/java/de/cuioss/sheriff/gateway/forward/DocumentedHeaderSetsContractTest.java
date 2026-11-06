@@ -24,26 +24,35 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 
+import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
  * Binds the header inventories {@code doc/configuration.adoc} enumerates by hand to the Java sets that
- * enforce them: the response-direction identity set to {@link UpstreamIdentityHeaders#NAMES}, and the
- * two tiers of the gateway-understood protocol set to
- * {@link ForwardPolicyStage#UNCONDITIONAL_PROTOCOL_HEADERS} and
+ * enforce them: the request-direction never-forward set to {@link ConnectionHeaders#REQUEST_STRIP}, the
+ * response-direction connection set to {@link ConnectionHeaders#RESPONSE_STRIP}, the response-direction
+ * identity set to {@link UpstreamIdentityHeaders#NAMES}, and the two tiers of the gateway-understood
+ * protocol set to {@link ForwardPolicyStage#UNCONDITIONAL_PROTOCOL_HEADERS} and
  * {@link ForwardPolicyStage#CONDITIONAL_HEADERS}. A header added to or removed from one of those
- * constants turns this test red until the reference documents the change.
+ * constants turns this test red until the reference documents the change, and so does a name added to
+ * or removed from the reference.
  * <p>
  * <strong>No vacuous pass.</strong> Each extraction is anchored on a literal sentence fragment of the
  * reference and ends at a second one. When either anchor is missing, or the span between them names no
- * header, the test fails naming the anchor rather than comparing an empty set.
+ * header, the test fails naming the anchor rather than comparing an empty set. A header-shaped token is
+ * a backticked name of letters and digits joined by {@code -} or {@code _}, kept only when it carries a
+ * separator or starts upper case, so a key path such as {@code not_modified} or a word such as
+ * {@code h2c} is skipped while {@code TE}, {@code HTTP2-Settings} and {@code X_Forwarded_For} are read.
+ * Two negative controls feed copies of the reference whose never-forward and response-direction spans
+ * gained or lost one name back through the same extraction and assert the comparison fails.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -73,8 +82,30 @@ class DocumentedHeaderSetsContractTest {
     /** Closes the conditional tier's header list: the end of its first sentence. */
     private static final String CONDITIONAL_END = ". On";
 
-    /** A backticked token shaped like a header name: letters, optionally joined by hyphens. */
-    private static final Pattern BACKTICKED_HEADER = Pattern.compile("`([A-Za-z]+(?:-[A-Za-z]+)*)`");
+    /** Opens the request-direction never-forward set. */
+    private static final String NEVER_FORWARD_START = "*Request direction.* These client headers are withheld";
+
+    /** Closes the never-forward enumeration, ahead of the separator-folding example spellings. */
+    private static final String NEVER_FORWARD_END = "Every name in";
+
+    /** Opens the response-direction connection set. */
+    private static final String RESPONSE_STRIP_START = "*Response direction.* These upstream response headers are never placed";
+
+    /** Closes the response-direction connection set's header list. */
+    private static final String RESPONSE_STRIP_END = "and any HTTP/2 pseudo-header";
+
+    /** A never-forward member the first negative control removes from its span. */
+    private static final String REMOVED_NEVER_FORWARD = "`Host`, ";
+
+    /** A name the second negative control adds to the response-direction span; no constant holds it. */
+    private static final String ADDED_RESPONSE_STRIP = " `X-Diverged`,";
+
+    /**
+     * A backticked token shaped like a header name: letters and digits, starting with a letter,
+     * optionally joined by hyphens or underscores.
+     */
+    private static final Pattern BACKTICKED_HEADER = Pattern
+            .compile("`([A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*)`");
 
     @Test
     @DisplayName("the identity set in configuration.adoc names exactly UpstreamIdentityHeaders.NAMES")
@@ -88,6 +119,68 @@ class DocumentedHeaderSetsContractTest {
         // Assert
         assertEquals(new TreeSet<>(UpstreamIdentityHeaders.NAMES), documented,
                 "the identity set documented in " + CONFIGURATION_ADOC + " must match UpstreamIdentityHeaders.NAMES");
+    }
+
+    @Test
+    @DisplayName("the never-forward set in configuration.adoc names exactly ConnectionHeaders.REQUEST_STRIP")
+    void neverForwardSetMatchesTheRequestStrip() throws Exception {
+        // Arrange
+        String document = configurationAdoc();
+
+        // Act
+        Set<String> documented = lowerCased(headersBetween(document, NEVER_FORWARD_START, NEVER_FORWARD_END));
+
+        // Assert
+        assertEquals(new TreeSet<>(ConnectionHeaders.REQUEST_STRIP), documented,
+                "the never-forward set documented in " + CONFIGURATION_ADOC
+                        + " must match ConnectionHeaders.REQUEST_STRIP");
+    }
+
+    @Test
+    @DisplayName("the response-direction set in configuration.adoc names exactly ConnectionHeaders.RESPONSE_STRIP")
+    void responseDirectionSetMatchesTheResponseStrip() throws Exception {
+        // Arrange
+        String document = configurationAdoc();
+
+        // Act
+        Set<String> documented = lowerCased(headersBetween(document, RESPONSE_STRIP_START, RESPONSE_STRIP_END));
+
+        // Assert
+        assertEquals(new TreeSet<>(ConnectionHeaders.RESPONSE_STRIP), documented,
+                "the response-direction set documented in " + CONFIGURATION_ADOC
+                        + " must match ConnectionHeaders.RESPONSE_STRIP");
+    }
+
+    @Test
+    @DisplayName("negative control: a never-forward span that lost a member no longer matches REQUEST_STRIP")
+    void neverForwardSpanMissingAMemberIsUnequal() throws Exception {
+        // Arrange
+        String diverged = withinSpan(configurationAdoc(), NEVER_FORWARD_START, NEVER_FORWARD_END,
+                span -> removedOnce(span, REMOVED_NEVER_FORWARD));
+
+        // Act
+        Set<String> documented = lowerCased(headersBetween(diverged, NEVER_FORWARD_START, NEVER_FORWARD_END));
+
+        // Assert
+        assertNotEquals(new TreeSet<>(ConnectionHeaders.REQUEST_STRIP), documented,
+                "a member removed from the documented never-forward set must make the comparison unequal");
+        assertFalse(documented.contains("host"), "precondition: the diverged span no longer names Host");
+    }
+
+    @Test
+    @DisplayName("negative control: a response-direction span that gained a name no longer matches RESPONSE_STRIP")
+    void responseDirectionSpanWithAnExtraNameIsUnequal() throws Exception {
+        // Arrange
+        String diverged = withinSpan(configurationAdoc(), RESPONSE_STRIP_START, RESPONSE_STRIP_END,
+                span -> span.replaceFirst(Pattern.quote(":"), Matcher.quoteReplacement(":" + ADDED_RESPONSE_STRIP)));
+
+        // Act
+        Set<String> documented = lowerCased(headersBetween(diverged, RESPONSE_STRIP_START, RESPONSE_STRIP_END));
+
+        // Assert
+        assertNotEquals(new TreeSet<>(ConnectionHeaders.RESPONSE_STRIP), documented,
+                "a name added to the documented response-direction set must make the comparison unequal");
+        assertTrue(documented.contains("x-diverged"), "precondition: the diverged span names the added header");
     }
 
     @Test
@@ -156,6 +249,25 @@ class DocumentedHeaderSetsContractTest {
         }
         assertFalse(headers.isEmpty(), () -> "no header named between '" + start + "' and '" + end + "'");
         return headers;
+    }
+
+    /**
+     * Returns a copy of {@code document} whose span between the two anchors was rewritten by {@code edit};
+     * the rest of the document is unchanged, so the edit cannot reach a span another binding reads.
+     */
+    private static String withinSpan(String document, String start, String end, UnaryOperator<String> edit) {
+        int from = document.indexOf(start);
+        assertTrue(from >= 0, () -> "anchor not found in " + CONFIGURATION_ADOC + ": " + start);
+        int spanStart = from + start.length();
+        int to = document.indexOf(end, spanStart);
+        assertTrue(to >= 0, () -> "closing anchor not found after '" + start + "': " + end);
+        return document.substring(0, spanStart) + edit.apply(document.substring(spanStart, to))
+                + document.substring(to);
+    }
+
+    private static String removedOnce(String span, String token) {
+        assertTrue(span.contains(token), () -> "precondition: the span names " + token);
+        return span.replaceFirst(Pattern.quote(token), "");
     }
 
     private static Set<String> lowerCased(Set<String> names) {

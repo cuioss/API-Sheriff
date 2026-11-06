@@ -156,8 +156,11 @@ public final class GatewayCookies {
      * {@code Set-Cookie} filter so the gateway-cookie test and the {@code allow} test read one name.
      *
      * @param setCookieLine the value of one {@code Set-Cookie} header line
-     * @return the cookie name, or the empty string for a nameless line — one whose pair holds no
-     *         {@code =}
+     * @return the cookie name, or the empty string for a nameless line — one whose pair names no
+     *         cookie, because it holds no {@code =} or because only spaces and tabs precede its first
+     *         {@code =} ({@code =theme=dark} is nameless too). An empty name therefore does not say
+     *         whether the pair holds an {@code =}: a caller that needs the value reads it off the
+     *         pair itself, as {@link #namesGatewayCookie} does
      */
     public static String setCookieName(String setCookieLine) {
         Objects.requireNonNull(setCookieLine, "setCookieLine");

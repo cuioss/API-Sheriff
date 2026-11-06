@@ -117,7 +117,7 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 | `OidcSessionRules`
 | `validateSessionMode`, `validateSessionMaxSessions`, `validateSessionIdleTimeout`,
   `validateSessionMaxSessionsPerSubject`, `validateSessionMaxCookieSize`,
-  `validateSessionCookieName`
+  `validateSessionMaxCookieHeaderValueLength`, `validateSessionCookieName`
 | `oidc.session.*`
 | extracted
 

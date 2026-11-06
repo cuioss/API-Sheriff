@@ -1,14 +1,15 @@
 = Test Quality Report
-:toc: macro
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
 
 Review of all three test surfaces — `api-sheriff/src/test/java` (249 files),
 `integration-tests/src` (~50 files), `benchmarks/src` — against the project's own testing
 doctrine (`doc/development/declared-limit-assertion-coverage.adoc`,
 `doc/development/test-corpus-integrity.adoc`) and the CLAUDE.md testing standard. See
 link:README.adoc[the index] for conventions.
-
-toc::[]
 
 == Verdict
 
@@ -192,9 +193,9 @@ mutable static state in ITs, no exception-swallowing catch blocks.
 |===
 
 The at-budget test uses 4096 against a 4608 cap and over-cap at 4609 — exact at-cap admission
-(4608) is never asserted at unit level; the Authorization within-cap probe is 2007 chars, not
-8192. Fully compensated by `DeclaredLimitBoundaryIT` (8192/8193 and 1024/1025 exactly, with the
-401-vs-400 discriminator).
+(4608) is never asserted at unit level; the Authorization within-cap probe is 2007 chars, not the
+8192 limit. Fully compensated by `DeclaredLimitBoundaryIT` (8192/8193 and 1024/1025 exactly, with
+the 401-vs-400 discriminator).
 
 === TST-10 — Vacuous-marker backlog: spot-check confirms low yield
 
@@ -401,10 +402,12 @@ all pass in the same run, so the state is recorded here with the date of each ru
   the sources as this change commits them: 301 tests, no failure, no error, none skipped.
   `JwksLateIdpReadinessIT` (M-48) and `JwksEgressMismatchIT`, whose gateway start this change also
   altered, passed in the same run.
+
 * *M-41, passed in a full run of the lane on 2026-10-10:* both test methods of
   `BffPendingLoginBoundIT`, in 76 seconds. The run was `verify -Pintegration-tests -pl
   integration-tests -am` on the developer build host, not in CI, on the sources that add the suite:
   285 tests, no failure, no error, none skipped.
+
 * *M-62 and M-64, passed in a targeted run of the lane on 2026-10-12:* the three test methods of
   `BffUnboundTokenResponseIT` (77 seconds) and the pushed-request count of `BffRefreshScopeWireIT`
   (51 seconds). The run was `verify -Pintegration-tests -pl integration-tests -am` restricted with

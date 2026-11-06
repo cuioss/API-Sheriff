@@ -18,11 +18,11 @@ package de.cuioss.sheriff.gateway.bff.login;
 import java.net.URI;
 import java.util.Collection;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -47,9 +47,8 @@ import org.jspecify.annotations.Nullable;
  *       ({@link PendingAuthorizationRecord#sameOrigin}) — cross-origin, schema-relative, backslash
  *       authority, unparseable, or a path the shared {@code Location} review refuses (an encoded
  *       separator, double encoding, or a dot segment in either spelling);</li>
- *   <li>a path that is not canonical — an encoded separator ({@code %2f}, {@code %5c}), a matrix
- *       parameter ({@code ;}), or a dot-segment that escapes the root — which the gateway's stage-1
- *       floor would reject as a navigation anyway;</li>
+ *   <li>a path carrying a matrix parameter ({@code ;}), which the gateway's stage-1 floor would
+ *       reject as a navigation anyway;</li>
  *   <li>no route matches the path;</li>
  *   <li>the matched route is {@code require: none}.</li>
  * </ul>
@@ -57,7 +56,9 @@ import org.jspecify.annotations.Nullable;
  * <strong>Matching.</strong> The target is matched the way stage-2 route selection would match a
  * {@code GET} navigation to it on the gateway host: the routes are walked in the route table's
  * exact-first, then longest-prefix-first order, the first match wins, and the query part of the
- * target never takes part. A route declaring {@code match.headers} is skipped, because a header
+ * target never takes part. An interior run of {@code /} is folded to one first, as stage-1
+ * normalization folds it on the inbound path, so {@code /app//reports} is matched as
+ * {@code /app/reports}. A route declaring {@code match.headers} is skipped, because a header
  * matcher cannot be evaluated for a request that has not happened yet — it is treated as
  * non-matching rather than guessed.
  * <p>
@@ -72,10 +73,11 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ReturnTargetScopes {
 
-    private static final String ENCODED_SLASH = "%2f";
-    private static final String ENCODED_BACKSLASH = "%5c";
     private static final char MATRIX_PARAM = ';';
     private static final String ROOT_PATH = "/";
+
+    /** A run of two or more {@code /} — an empty path segment stage-1 normalization drops. */
+    private static final Pattern SLASH_RUN = Pattern.compile("/{2,}");
 
     private final List<Candidate> candidates;
     private final String gatewayOrigin;
@@ -124,9 +126,16 @@ public final class ReturnTargetScopes {
     }
 
     /**
-     * The canonical path of an already same-origin-validated target: the decoded path with dot
-     * segments removed, the query and fragment discarded. Empty when the target does not parse or its
-     * path is not canonical.
+     * The decoded path of an already same-origin-validated target, the query and fragment discarded,
+     * with every run of {@code /} folded to a single {@code /}. Empty when the target does not parse
+     * or its path carries a matrix parameter.
+     * <p>
+     * {@link PendingAuthorizationRecord#sameOrigin} has already refused every encoded separator and
+     * every dot segment, in either spelling, through the shared {@code Location} review — but it
+     * refuses only a <em>leading</em> {@code //}, so an interior empty segment ({@code /app//reports})
+     * reaches this method. Stage-1 normalization drops such empty segments before route selection, so
+     * folding them here is the one remaining step that makes the result the path stage-2 selection
+     * would see.
      */
     private static Optional<String> canonicalPath(String returnUrl) {
         URI target;
@@ -139,24 +148,10 @@ public final class ReturnTargetScopes {
         if (rawPath == null || rawPath.isEmpty()) {
             return Optional.of(ROOT_PATH);
         }
-        String lowered = rawPath.toLowerCase(Locale.ROOT);
-        if (lowered.contains(ENCODED_SLASH) || lowered.contains(ENCODED_BACKSLASH)
-                || rawPath.indexOf(MATRIX_PARAM) >= 0) {
+        if (rawPath.indexOf(MATRIX_PARAM) >= 0) {
             return Optional.empty();
         }
-        String normalized = target.normalize().getPath();
-        if (normalized == null || !normalized.startsWith(ROOT_PATH) || escapesRoot(normalized)) {
-            return Optional.empty();
-        }
-        return Optional.of(normalized);
-    }
-
-    /**
-     * {@link URI#normalize()} keeps a leading {@code ..} segment it cannot resolve, so a path that
-     * climbs above the root survives normalization as {@code /..} or {@code /../...}.
-     */
-    private static boolean escapesRoot(String normalizedPath) {
-        return "/..".equals(normalizedPath) || normalizedPath.startsWith("/../");
+        return Optional.of(SLASH_RUN.matcher(target.getPath()).replaceAll(ROOT_PATH));
     }
 
     /**

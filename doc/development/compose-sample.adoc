@@ -21,8 +21,10 @@ channel.
 
 One dial runs the other way: Keycloak calls the gateway. To verify the `private_key_jwt` assertion
 the BFF authenticates with, it fetches the gateway's client JWKS at `/bff/jwks` over the internal
-network -- `api-sheriff:8443` in the base sample, `tls-terminator:8443` in the plain-HTTP variant. The
-topology diagram predates the BFF and does not draw that edge.
+network -- `api-sheriff:8443` in the base sample and the /auth-fronted variant, `tls-terminator:8443`
+in the plain-HTTP variant. The topology diagram predates the BFF and does not draw that edge, nor the
+/auth-fronted variant, in which Keycloak publishes no host port and the browser reaches it through
+the gateway (see <<_the_auth_fronted_variant>>).
 
 == Why this is not the integration-test stack
 
@@ -146,13 +148,99 @@ rather than "the upstream answered".
 
 *It derives every URL after the first.* The authorization URL, the login form's action and the
 callback all come from a `Location` header or the page Keycloak served, so the script names neither a
-variant nor an identity-provider host. The plain-HTTP variant, and any later variant that moves the
-identity provider, reuse it unchanged, and `start-sample.sh` stays the one bring-up.
+variant nor an identity-provider host. The plain-HTTP variant and the /auth-fronted variant reuse the
+login unchanged, and `start-sample.sh` stays the one bring-up. The /auth-fronted variant adds one
+opt-in step, `--idp-prefix /auth`, which is not part of the login: it probes the fronted exposure
+from outside (see <<_the_auth_fronted_variant>>).
+
+*The exposure step proves it can tell the two answers apart before it relies on that.* A denied path
+passes when the gateway answered it, and the step recognises the gateway's answer by shape: an RFC
+9457 problem document or no body. That holds only while Keycloak answers in neither, so the step first
+requests `/auth/realms/sample/no-such-page`, which the realm route forwards and Keycloak refuses, and
+fails unless that refusal is classified as Keycloak's. Without the control, a Keycloak that refused a
+crossed probe with an empty-bodied `4xx` would pass the whole step.
 
 It verifies TLS against the generated certificate rather than passing `-k`, bounds every request
 with `--max-time`, keeps the jar and the credentials in a private `mktemp -d` directory removed on
 every exit, and on failure prints the step, the status and the response headers with cookie values
 and URL queries removed -- never a token, a code or a password.
+
+[[_the_auth_fronted_variant]]
+== The /auth-fronted variant: why each decision is what it is
+
+`docker-compose.auth-fronted.yml` puts Keycloak behind the gateway. It is the sample's evidence for
+the shape ADR-0069 held open -- whether the gateway can front the identity provider it is a client of
+while keeping one issuer identity -- and each decision below is one that shape forces.
+
+*Keycloak's identity carries the prefix, and so does the path it serves.* `KC_HOSTNAME` is the full
+URL `https://localhost:8443/auth`, and `KC_HTTP_RELATIVE_PATH=/auth` makes Keycloak serve under the
+same prefix. With the two equal, the gateway forwards `/auth/...` unchanged, no `Location` header
+needs mapping back, and `oidc.back_channel_origin: https://keycloak:8443` maps every advertised
+endpoint by swapping the origin alone -- which is the only mapping that key performs. The alternative,
+stripping the prefix at the gateway, would have Keycloak mint URLs the gateway then had to rewrite.
+This was settled against the pinned 26.8.1 image before
+any other file was written: discovery under `keycloak:8443/auth` advertises every endpoint on
+`https://localhost:8443/auth`, and a full login -- discovery, PAR, the code exchange with DPoP and
+`private_key_jwt` through the back channel -- completed with no DPoP error.
+
+*An allowlist of routes, and no catch-all.* `endpoints/idp.yaml` routes `/auth/realms/sample`,
+`/auth/resources` and `/auth/.well-known/oauth-authorization-server/realms/sample`, nothing else. The
+last is one document, not a namespace, on purpose: Keycloak serves RFC 8414 authorization-server
+metadata at that server-level path-insertion address for *every* realm, so a route on
+`/auth/.well-known` forwarded the master realm's document as well. Neither the login nor the BFF reads
+the document -- the BFF's discovery runs over the back channel, and the realm's OIDC discovery
+document lies under the realm route -- so dropping the route was the alternative. It is narrowed
+instead, so a browser-side OAuth client discovering the sample realm the RFC 8414 way still finds it,
+and the login check asserts the document's issuer, which is also what shows the pinned image serves
+the path insertion at all. A deny rule for `/auth/admin/` would have to
+recognise every spelling of the console path; an allowlist is closed by construction, and the
+canonical-path guard reduces or refuses a dot-segment, an encoded separator or a doubled slash before
+route selection, so a relative spelling cannot reach the console through the realm route. The
+load-balancer check `/auth/lb-check` is not routed: the pinned image answers it `404`, so a route for
+it would forward to nothing. The realm route admits Keycloak's login cookies by
+exact name with `same_origin_check: true`, because the credential `POST` carries them.
+
+*The `Cookie` cap is the one relaxation, and it is gateway-level.* Keycloak's login cookies run past
+`strict`'s 1024-character header-value cap. That cap is enforced before a route is selected, so a
+route- or endpoint-scoped relaxation cannot reach it; widening the whole profile would widen every
+header, parameter and path. The variant keeps `strict` and declares
+`oidc.session.max_cookie_header_value_length: 4096`, which raises the cap for `Cookie` values only and
+only on a server-mode BFF -- the same three-axis carve-out ADR-0019 records for cookie mode.
+
+The value comes from measuring the whole `Cookie` header in this variant, not one cookie. A first
+login peaks at 1726 characters on the login-form `POST`, where `KC_RESTART` alone is some 1400. A
+login that starts while Keycloak's session is still live -- the gateway lost its in-memory session to
+a restart, say -- sends `KC_RESTART` together with `KEYCLOAK_IDENTITY` and `KEYCLOAK_SESSION`: 2409
+characters, 2474 with the stale `+__Host-sample-session+` cookie alongside. The 2048 this key first
+carried was sized against `KC_RESTART` alone, and the gateway refused exactly that login at its
+pre-route floor (`ApiSheriff-100`, `INPUT_TOO_LONG` at `HEADER_VALUE`). 4096 leaves some 1600
+characters for an identity cookie that grows with the realm's claims and stays half the 8192 boot
+ceiling, because the cap admits a header that long on every route before any route is chosen.
+
+*`POST` is admitted gateway-wide and narrowed back per anchor.* The global method gate runs before
+route selection too, so admitting the login form's `POST` there is unavoidable; the `api`, `app` and
+`pages` anchors restate `GET` and `HEAD` so the widening stops at `/auth`.
+
+*The proxied dial needs its own trust profile.* The data-plane client that forwards `/auth` requests
+is not the JWKS client or the BFF back channel, and keeps the JVM default trust store unless told
+otherwise, so `egress_tls.upstream_tls_profile: sample-idp` names the sample certificate for it. The
+demo upstream is plain `http`, so the gateway-wide profile changes no other dial in the sample.
+
+*Keycloak trusts one forwarding address.* `KC_PROXY_HEADERS=xforwarded` lets Keycloak record the
+browser's address rather than the gateway's; `KC_PROXY_TRUSTED_ADDRESSES` names the gateway's static
+address `10.89.0.20` alone, which needs the explicit `10.89.0.0/24` IPAM subnet -- the plain-HTTP
+variant's, for the same reason. A range would trust every co-located container.
+
+*Nothing of Keycloak is published.* `ports: !override []` replaces the base's loopback `1443`
+binding with an empty list: an override that omitted `ports:` would concatenate with the base and
+keep the admin console published, the one exposure the variant exists to remove. That is also why it
+needs Compose 2.24.4, the first release that implements `!override`.
+
+*A self-contained configuration set.* `docker/sheriff-config-auth-fronted/` replaces the base mount
+rather than overlaying single files, and carries its own copies of the three base endpoints, the
+signed-out page and `topology.properties`. The configuration-validation workflow therefore validates
+it as it lies, and an operator copying the variant copies one directory. The copies carry a header
+naming their original; change both together.
 
 == Probes: three different answers to the same question
 
@@ -303,13 +391,23 @@ the exported variable wins over the file, and `start-sample.sh` preflights which
 Without `-Pcompose-sample` there is no bound execution to merge into, so the property on its own
 starts nothing.
 
-CI runs the profile. The `integration-tests` workflow appends
+A third profile, `compose-sample-variant`, works the same way for the /auth-fronted variant. It is
+activated by `compose-sample.variant` carrying the *value* `auth-fronted`, and merges arguments only:
+`--auth-fronted` into `start-sample` and `--idp-prefix /auth` into `check-bff-login`. It is
+value-activated rather than presence-activated because the IdP prefix belongs to that one variant;
+a presence-activated profile would hand `/auth` to any later variant whose identity provider sits
+behind no prefix. It composes with `compose-sample-image`, which sets the environment of the same
+`start-sample` execution rather than its arguments.
+
+CI runs the profile twice. The `integration-tests` workflow appends
 `verify -Pcompose-sample -pl deployment -Dcompose-sample.image=api-sheriff:distroless` to its Maven
 lines, after the integration suite: by then the suite has torn its stack down, freeing the sample's
 host ports (`8443`, `127.0.0.1:9000`, `127.0.0.1:1443`), and the native image the integration build
 produced from the pull request's source is still in the daemon. So every pull request brings the
-base sample up on the image it built and logs in through its BFF. The plain-HTTP variant is not
-part of that run.
+base sample up on the image it built and logs in through its BFF. A fourth line runs the same
+profile with `-Dcompose-sample.variant=auth-fronted`, after the base lane, whose success-path teardown
+has freed the ports and removed the subnet-less network the variant could not reuse. The plain-HTTP
+variant is not part of either run.
 
 The skip is *two layers*, matching the convention `demo-client` establishes: the profile means a
 default build has no executions to skip at all, and `skipComposeSample` -- defaulting to `true` at

@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The single endpoint this sample proxies — /auth-fronted variant.
+#
+# A verbatim copy of docker/sheriff-config/endpoints/demo-api.yaml, kept here so this variant's
+# configuration set is self-contained and validates on its own. Change both copies together.
+#
+# One endpoint, one route. A request to https://localhost:8443/api reaches the gateway, is filtered
+# under the strict inbound profile, and is forwarded to the UPSTREAM alias — which topology.properties
+# resolves to the demo-api responder on the internal network. The response comes back through the
+# gateway's own envelope. That round trip is the whole demonstration.
+endpoint:
+  id: demo-api
+  enabled: true
+  # Resolved through topology.properties. Never a literal address here.
+  base_url: UPSTREAM
+  # Joins the public proxy namespace declared in gateway.yaml.
+  anchor: api
+  # The `api` anchor is access: public, so a public anchor carries no auth block and the endpoint
+  # declares the posture itself. Every route inherits it.
+  #
+  # THIS IS THE FIRST THING TO CHANGE when adapting the sample: switch to `require: bearer` and the
+  # route below is gated on a token from the issuer gateway.yaml declares.
+  auth:
+    require: none
+  routes:
+    - id: demo-api-get
+      match:
+        path_prefix: /api
+      # FORWARD MODE — both lists are DECLARED EMPTY, which is a positive-list naming nothing, not
+      # the absent state. The distinction is the whole of it: an absent list means forward-all (every
+      # client header and query parameter crosses), an empty one means no client entry crosses at
+      # all. This sample declares them empty on purpose, because the demo upstream serves a canned
+      # document and reads neither — the values below are unchanged by the three-mode model and its
+      # behaviour is exactly what it always was.
+      #
+      # This is the STRICTEST of the three modes, chosen here to make the distinction visible, not
+      # because it is the recommended starting point. A real backend usually wants no forward block
+      # at all: HTTP mechanics (Accept, Accept-Encoding, Accept-Language, Content-Type, Range) cross
+      # on their own, the conditional validators join them once the route enables not_modified, and
+      # the gateway-owned never-forward set still withholds Cookie and the hop-by-hop names whatever
+      # the mode — an inbound Authorization only crosses where a positive-list names it.
+      # Reach for a list to NARROW that — headers_deny /
+      # query_deny to withhold specific names, or these positive-lists when the backend's input is a
+      # closed set you want to state.
+      forward:
+        headers_allow: []
+        query_allow: []

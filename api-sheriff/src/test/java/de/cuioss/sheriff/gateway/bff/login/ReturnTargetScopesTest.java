@@ -15,18 +15,28 @@
  */
 package de.cuioss.sheriff.gateway.bff.login;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 
+import java.net.URI;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.pipeline.BasicChecksStage;
+import de.cuioss.sheriff.gateway.pipeline.CanonicalPathGuard;
+import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import org.junit.jupiter.api.DisplayName;
@@ -50,6 +60,7 @@ class ReturnTargetScopesTest {
     private static final Set<String> OIDC_SCOPES = Set.of("openid", "profile", "email");
     private static final Set<String> SPECIAL_SCOPES = Set.of("openid", "profile", "email", "special:read");
     private static final Set<String> APP_SCOPES = Set.of("openid", "profile", "email", "app:read");
+    private static final Set<String> REPORTS_SCOPES = Set.of("openid", "profile", "email", "reports:read");
     private static final Set<String> API_SCOPES = Set.of("openid", "profile", "email", "api:read");
     private static final Set<String> HEADER_SCOPES = Set.of("openid", "profile", "email", "tenant:read");
     private static final Set<String> PUBLIC_SCOPES = Set.of("openid", "profile", "email", "public:read");
@@ -58,8 +69,10 @@ class ReturnTargetScopesTest {
      * The table in route-selection order, exactly as the route-table builder freezes it: every exact
      * route first, then prefixes longest-first.
      */
-    private final ReturnTargetScopes resolver = new ReturnTargetScopes(new RouteTable(List.of(
+    private static final List<Route> ROUTES = List.of(
             route("special", MatchConfig.builder().path("/api/special").build(), Require.SESSION, SPECIAL_SCOPES),
+            route("reports", MatchConfig.builder().pathPrefix("/app/reports").build(), Require.SESSION,
+                    REPORTS_SCOPES),
             route("tenant", MatchConfig.builder().pathPrefix("/tenant")
                             .headers(List.of(new MatchConfig.HeaderMatcher("X-Tenant", null, "acme"))).build(),
                     Require.SESSION, HEADER_SCOPES),
@@ -67,7 +80,28 @@ class ReturnTargetScopesTest {
             route("app", MatchConfig.builder().pathPrefix("/app").build(), Require.SESSION, APP_SCOPES),
             route("api", MatchConfig.builder().pathPrefix("/api").build(), Require.BEARER, API_SCOPES),
             route("tenant-fallback", MatchConfig.builder().pathPrefix("/tenant").build(), Require.SESSION,
-                    APP_SCOPES))), ORIGIN, OIDC_SCOPES);
+                    APP_SCOPES));
+
+    private final ReturnTargetScopes resolver = new ReturnTargetScopes(new RouteTable(ROUTES), ORIGIN, OIDC_SCOPES);
+
+    /**
+     * The route the edge's inbound pipeline selects for a {@code GET} navigation to {@code returnUrl}:
+     * its raw path (the query never takes part in selection) through the strict stage-1 floor, the
+     * canonical-path guard and stage-2 route selection over {@link #ROUTES}, wired in the edge's order.
+     */
+    private static Route selectedByTheInboundPipeline(String returnUrl) {
+        SecurityConfiguration strict = SecurityProfile.STRICT.preset();
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath(URI.create(returnUrl).getRawPath())
+                .queryParameters(List.of())
+                .headers(Map.of())
+                .build();
+        new BasicChecksStage(strict, new SecurityEventCounter(), null, strict).process(request);
+        new CanonicalPathGuard().process(request);
+        new RouteSelectionStage(ROUTES).process(request);
+        return Objects.requireNonNull(request.selectedRoute(), "the pipeline selected no route");
+    }
 
     private static Route route(String id, MatchConfig match, Require require, Set<String> neededScopes) {
         return Route.builder()
@@ -107,6 +141,55 @@ class ReturnTargetScopesTest {
         @DisplayName("Should ignore the query and fragment when matching")
         void shouldIgnoreQueryForMatching(String returnUrl) {
             assertEquals(APP_SCOPES, resolver.resolve(returnUrl));
+        }
+
+        @Test
+        @DisplayName("Should resolve the longer prefix route over the shorter one covering the same path")
+        void shouldResolveLongerPrefixRoute() {
+            assertEquals(REPORTS_SCOPES, resolver.resolve("/app/reports/monthly"));
+        }
+
+        /**
+         * Stage-1 normalization folds an interior run of {@code /} before route selection, so a
+         * navigation to {@code /app//reports} is selected as {@code /app/reports}. The same-origin
+         * check admits these targets — it refuses only a leading {@code //} — so the resolver must
+         * fold them the same way, or it would match the literal path against the shorter {@code /app}
+         * prefix and resolve a different route than the one the browser lands on.
+         */
+        @ParameterizedTest(name = "\"{0}\" selects the route stage-1 normalization selects")
+        @ValueSource(strings = {"/app//reports", "/app///reports/monthly", "/app//reports//",
+                ORIGIN + "/app//reports", "/app//reports?tab=open"})
+        @DisplayName("Should fold interior empty segments the way stage-1 normalization does before matching")
+        void shouldFoldInteriorEmptySegments(String returnUrl) {
+            assertAll(
+                    () -> assertTrue(PendingAuthorizationRecord.sameOrigin(returnUrl, ORIGIN),
+                            "the same-origin check admits an interior empty segment"),
+                    () -> assertEquals(REPORTS_SCOPES, resolver.resolve(returnUrl),
+                            "the folded path selects the longer /app/reports prefix, not /app"));
+        }
+
+        /**
+         * The resolver's fold is a re-statement of what the inbound pipeline does, so it is checked
+         * against the pipeline itself rather than against an expected set written here: each target's
+         * raw path is driven through the real stage-1 floor ({@link BasicChecksStage}), the
+         * canonical-path guard and stage-2 {@link RouteSelectionStage} over the same routes, and the
+         * scopes of the route the pipeline selects must be the scopes the resolver returns. A resolver
+         * that stopped folding — or a pipeline that started folding differently — selects a different
+         * route on one side only and fails here, which an expected-set assertion cannot notice.
+         */
+        @ParameterizedTest(name = "\"{0}\" resolves to the scopes of the route the inbound pipeline selects")
+        @ValueSource(strings = {"/app//reports", "/app///reports/monthly", "/app//reports//",
+                ORIGIN + "/app//reports", "/app//reports?tab=open", "/app/reports", "/app/orders"})
+        @DisplayName("Should resolve the scopes of the route stage-1 normalization and route selection select")
+        void shouldMatchTheRouteTheInboundPipelineSelects(String returnUrl) {
+            Route selected = selectedByTheInboundPipeline(returnUrl);
+
+            Set<String> selectedScopes = selected.effectiveAuth().require() == Require.NONE
+                    ? OIDC_SCOPES
+                    : selected.neededScopes();
+            assertEquals(selectedScopes, resolver.resolve(returnUrl),
+                    () -> "the resolver must land on the route the pipeline selects for " + returnUrl
+                            + ", which is " + selected.id());
         }
 
         @Test
@@ -178,6 +261,26 @@ class ReturnTargetScopesTest {
         @DisplayName("Should fall back for a non-canonical or unparseable path")
         void shouldFallBackForNonCanonicalPath(String returnUrl) {
             assertEquals(OIDC_SCOPES, resolver.resolve(returnUrl));
+        }
+
+        /**
+         * Every value below would select the authenticated {@code app} route if it reached route
+         * selection: its decoded path, or the path a client resolves it to, lies under {@code /app}.
+         * The resolver keeps no encoded-separator or dot-segment check of its own, so the fallback is
+         * owed entirely to the same-origin check refusing each one first — which the first assertion
+         * pins directly, so a fallback reached any other way cannot pass for it.
+         */
+        @ParameterizedTest(name = "\"{0}\" is refused by the same-origin check")
+        @ValueSource(strings = {"/app%2forders", "/app%2Forders", "/app/%5c/orders", "/app/%5C/orders",
+                "/app/./orders", "/app/%2e/orders", "/app/%2E%2E/app/orders", "/x/../app/orders",
+                ORIGIN + "/app/%2e%2e/app/orders", ORIGIN + "/x/../app/orders", ORIGIN + "/app%2forders"})
+        @DisplayName("Should fall back for an encoded separator or a dot segment, refused by the same-origin check alone")
+        void shouldFallBackForPathTheSameOriginCheckRefuses(String returnUrl) {
+            assertAll(
+                    () -> assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, ORIGIN),
+                            "the shared Location review behind sameOrigin refuses the path"),
+                    () -> assertEquals(OIDC_SCOPES, resolver.resolve(returnUrl),
+                            "a refused target selects no route"));
         }
 
         @Test

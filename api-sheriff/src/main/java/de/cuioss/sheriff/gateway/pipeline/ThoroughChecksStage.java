@@ -119,9 +119,10 @@ public final class ThoroughChecksStage {
      * @param defaultConfiguration the stage-1 default policy, used to skip a route whose config matches
      * @param eventCounter         the shared cui-http security event counter (never a local instance)
      * @param cookieHeaderConfiguration the gateway's pre-route {@code Cookie} / {@code Set-Cookie}
-     *                             carve-out policy, or {@code null} for a gateway that is not an
-     *                             active cookie-mode BFF and therefore has no cookie carve-out to
-     *                             carry forward. Only its {@code maxHeaderValueLength} is read, as
+     *                             carve-out policy, or {@code null} for a gateway that is neither an
+     *                             active cookie-mode BFF nor an active server-mode BFF declaring
+     *                             {@code oidc.session.max_cookie_header_value_length}, and therefore
+     *                             has no cookie carve-out to carry forward. Only its {@code maxHeaderValueLength} is read, as
      *                             the carve-out BUDGET; every other dimension applied to a cookie
      *                             value here comes from the ROUTE's configuration
      * @param authorizationHeaderConfiguration the gateway's pre-route {@code Authorization} carve-out
