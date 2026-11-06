@@ -35,6 +35,7 @@ block (<<_second_consumer>>).
 |===
 
 The package imports no Vert.x, CDI, Micrometer or other framework type. The clock is an injected
+
 `LongSupplier` reading monotonic nanoseconds (`System::nanoTime` in production) and a trip is handed
 to a plain `Consumer<SourceTrip>`. Metering, logging and the wire are the consumer's.
 
@@ -58,6 +59,7 @@ consumer, so both consumers key a request on the same source. The chosen address
   keys. The *residual*: a site holding a `/48` still controls 65,536 `/64` prefixes and can spread
   across that many keys. The bound below caps what that costs the gateway; it does not make such a
   source trip. An IPv4-mapped IPv6 address is an IPv4 address and is kept whole;
+
 * an absent, blank or unparseable address folds to the one fixed source `unknown`. The text is parsed
   as an address literal only, so a host name is never resolved.
 
@@ -206,22 +208,28 @@ What the substrate serves it:
 * *Its own ledger.* `ThreatClassifier` builds a `SourceLedger` of its own, with the threshold and
   window of the `threat_classification` block and the action `observe`. Nothing is shared with the
   recon ledger except the key derivation.
+
 * *The shared key.* `SourceKeys` resolves the key once and stashes it, and runs whenever either
   consumer is enabled. The threat score therefore does not depend on `enumeration_detection` being
   on.
+
 * *Weighted admission.* `ThreatWeights.weightOf` gives each rejection the threat feed is handed the
   weight of its event category, judged on the true event, before and after the trust boundary alike.
   It gives `0` to the categories and events that are not caller behaviour and to a static resource,
   except a filter verdict on the content the caller sent (`ThreatWeights.STATIC_SCORED_EVENTS`), and a
   `0` is never admitted. The `ThreatWeights` Javadoc holds the exact sets, including the rejections
   that are answered without reaching the feed.
+
 * *The recon trip as an input.* The recon ledger's `SourceTrip` is admitted to the threat ledger
   with the weight `weights.recon_trip` under the tag `SOURCE_TRIPPED`, for the tripped key. A recon
   trip raises the score; it is never an ALERT of its own.
+
 * *Dedup.* A trip is emitted once per `CLEAR` period, so the ALERT tier, `ThreatAlerts`, raises one
   ALERT per episode, not per event.
+
 * *The per-tag breakdown.* The trip's contributions become the `contributions` and `categories`
   breakdown of the ALERT document.
+
 * *The overflow count.* An admission that returns `UNTRACKED` is reported to the ALERT tier, which
   counts it and logs the first one per process.
 
@@ -231,6 +239,7 @@ What the consumer does itself, because the substrate deliberately does not serve
   ALERT document
   (link:../architecture/observability-and-errors.adoc#_threat_alert_document[Observability -- the
   threat ALERT document]). The OCSF mapping is documented, not emitted.
+
 * *Cross-node correlation* -- the state is per process; a SIEM that receives every node's ALERTs
   owns it.
 
@@ -238,3 +247,62 @@ What neither the substrate nor the consumer serves:
 
 * *An exact sliding window* -- the bucket approximates one.
 * *Persistence across restarts* -- a restart clears every bucket.
+
+[[_threat_alert_schema]]
+=== ECS 8.17.0 ALERT Document and OCSF Mapping
+
+`edge.admission.ThreatAlertDocument` renders each threat trip (`WARN ApiSheriff-143`) through
+`GatewayJson` using Elastic Common Schema (ECS) `8.17.0` field names plus the `api_sheriff.threat`
+namespace:
+
+[cols="2,3", options="header"]
+|===
+| Field | Value
+
+| `@timestamp` | The wall-clock instant of the trip, ISO-8601.
+| `ecs.version` | `8.17.0`.
+| `log.level` | `warn`.
+| `message` | The fixed text `A source reached the threat classification threshold`.
+| `event.kind` | `alert`.
+| `event.category` | `["intrusion_detection", "web"]`.
+| `event.type` | `["info"]` -- not `denied`, because the ALERT refuses nothing.
+| `event.action` | `threat-classification-threshold-reached`.
+| `event.dataset` | `api_sheriff.threat`.
+| `event.module` | `api_sheriff`.
+| `event.severity` | `47`, fixed: medium on the 0 to 100 scale.
+| `event.risk_score` | The source's score right after the admission that tripped it.
+| `source.address` | The canonical source text, always: an IPv4 address, an IPv6 `/64` prefix
+  (`a:b:c:d::/64`) or `unknown`.
+| `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 `/64` prefix or
+  `unknown` is not a valid ECS `ip` value).
+| `url.domain` | The folded host, *only* when it is a declared `match.host`; absent for `*`.
+| `threat.framework` | `MITRE ATT&CK`.
+| `threat.tactic.id` / `threat.tactic.name` | `["TA0043"]` / `["Reconnaissance"]`.
+| `threat.technique.id` / `threat.technique.name` | `["T1595"]` / `["Active Scanning"]`.
+| `api_sheriff.threat.score` | The score at the trip, as in `event.risk_score`.
+| `api_sheriff.threat.threshold` | The configured threshold.
+| `api_sheriff.threat.window_seconds` | The configured window.
+| `api_sheriff.threat.host` | The folded host, `*` included.
+| `api_sheriff.threat.contributions` | The weight each event type contributed during the episode,
+  keyed by the `EventType` name; a recon trip appears as `SOURCE_TRIPPED`.
+| `api_sheriff.threat.categories` | The same weights folded by event category slug, with `recon_trip`
+  for the recon trip.
+|===
+
+A pipeline normalizing to the Open Cybersecurity Schema Framework (OCSF) maps the document as
+follows:
+
+[cols="2,3", options="header"]
+|===
+| OCSF | From the ALERT document
+
+| class: Detection Finding (`class_uid` 2004), activity Create | `event.kind: alert`
+| `severity_id` 3 (Medium) | `event.severity: 47`
+| `finding_info.title` | `message`
+| `finding_info.analytic.name` | `event.action`
+| `src_endpoint.ip` | `source.ip`, when present
+| `risk_score` | `event.risk_score`
+| `attacks[].tactic`, `attacks[].technique` | `threat.tactic.*`, `threat.technique.*`
+| `time` | `@timestamp`
+| `unmapped` | `api_sheriff.threat.*`
+|===
