@@ -191,12 +191,6 @@ class LoopbackEphemeralBindArchTest {
     private static final Path TEST_SOURCE_ROOT = Path.of("src", "test", "java");
 
     /**
-     * Collapses a matched offender to one line for the failure message. Hoisted out of the scan loop
-     * so the pattern is compiled once rather than per offender.
-     */
-    private static final Pattern WHITESPACE_RUN = Pattern.compile("\\s+");
-
-    /**
      * The wrapped specimen's call, required to still contain a newline inside its argument list.
      * Exists because the count assertion cannot see layout: joining that call onto one line leaves
      * the violation count unchanged, so only a shape-specific check can tell that the multi-line
@@ -853,6 +847,22 @@ class LoopbackEphemeralBindArchTest {
                             + "the rest of the tree covers less than it appears to. Found "
                             + matches + ".");
 
+            assertTrue(WRAPPED_WILDCARD_CALL.matcher(content).find(),
+                    "The wrapped specimen no longer spans multiple physical lines. The count "
+                            + "assertion above cannot detect that — joining the call leaves four "
+                            + "violations and still passes — so this shape needs its own check. "
+                            + "Without it a formatter could silently retire the multi-line coverage "
+                            + "while every count stayed green.");
+        }
+
+        /**
+         * The scanner's host-argument extraction, pinned against literal fixtures so it does not depend
+         * on any specimen file: every call shape, comment and literal form the walk has to read
+         * correctly or refuse.
+         */
+        @Test
+        @DisplayName("The scanner extracts the host argument whatever shape the call is written in")
+        void scannerExtractsTheHostArgumentWhateverTheShape() {
             assertAll("the scanner extracts the host argument whatever shape it is written in",
                     () -> assertEquals(List.of("\"0.0.0.0\""), hostsOf("s.listen(0, \"0.0.0.0\");")),
                     () -> assertEquals(List.of("\"::\""), hostsOf("s.listen(0, \"::\");")),
@@ -901,7 +911,15 @@ class LoopbackEphemeralBindArchTest {
                             "A close-paren inside a text block. Java 25 text blocks open with three "
                                     + "quotes, which a single-quote-at-a-time string lexer reads as "
                                     + "an empty string followed by an opening quote."));
+        }
 
+        /**
+         * The Unicode-escape guard: a Unicode escape is translated before lexing (JLS 3.3), so an escaped
+         * selector must be refused while an escaped backslash must not be.
+         */
+        @Test
+        @DisplayName("A Unicode-escaped selector is refused, and an escaped backslash is not")
+        void unicodeEscapedSelectorIsRefusedAndEscapedBackslashIsNot() {
             assertAll("a Unicode-escaped selector is refused, and an escaped backslash is not",
                     () -> assertTrue(unicodeEscapeIn("server.\\u006cisten(0, \"\");") >= 0,
                             "javac translates \\uXXXX before lexing (JLS 3.3), so this compiles as a "
@@ -921,7 +939,12 @@ class LoopbackEphemeralBindArchTest {
                     () -> assertTrue(unicodeEscapeIn("x = \"\\\\\\u0041\";") >= 0,
                             "THREE backslashes: the first two are an escaped backslash, the third is "
                                     + "eligible and does begin an escape."));
+        }
 
+        /** The allow-list direction: only the single-owner constant passes. */
+        @Test
+        @DisplayName("The allow-list rejects every host that is not the approved constant")
+        void allowListRejectsEveryHostThatIsNotTheApprovedConstant() {
             assertAll("the allow-list rejects every host that is not the approved constant",
                     () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"0.0.0.0\");").getFirst()),
                     () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"::\");").getFirst()),
@@ -940,7 +963,12 @@ class LoopbackEphemeralBindArchTest {
                     () -> assertEquals(APPROVED_HOST, hostsOf("s.listen(0, LoopbackHost.ADDRESS);").getFirst(),
                             "The one approved spelling must pass, or the allow-list fails every "
                                     + "fixture in the tree and the guard is useless rather than strict."));
+        }
 
+        /** Separator spellings a formatter would not preserve in a source specimen, pinned in strings. */
+        @Test
+        @DisplayName("The sweep matches separator forms a formatter would not preserve in a specimen")
+        void sweepMatchesSeparatorFormsAFormatterWouldNotPreserve() {
             assertAll("separator forms a formatter would not preserve in a source specimen",
                     () -> assertTrue(WILDCARD_HOST_LISTEN
                                     .matcher("server./* c */listen(0, \"0.0.0.0\")").find(),
@@ -965,13 +993,6 @@ class LoopbackEphemeralBindArchTest {
                             + "and its coverage disappears while the violation count stays green — "
                             + "the same silent retirement the multi-line check below exists to catch. "
                             + "A shape the formatter will not preserve has to be pinned in a string.");
-
-            assertTrue(WRAPPED_WILDCARD_CALL.matcher(content).find(),
-                    "The wrapped specimen no longer spans multiple physical lines. The count "
-                            + "assertion above cannot detect that — joining the call leaves four "
-                            + "violations and still passes — so this shape needs its own check. "
-                            + "Without it a formatter could silently retire the multi-line coverage "
-                            + "while every count stayed green.");
         }
 
         /**
