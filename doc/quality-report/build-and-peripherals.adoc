@@ -163,7 +163,7 @@ authenticated write-capable CLI surface driven by attacker-authorable comment te
 |===
 
 `user: "0:0"` with in-file rationale (bind-mount writability, no published ports, ephemeral).
-All seven gateway instances, by contrast, are exemplary: distroless `USER nonroot`,
+All twelve gateway instances, by contrast, are exemplary: distroless `USER nonroot`,
 `cap_drop: ALL`, `no-new-privileges`, `read_only` + sized tmpfs, resource limits.
 
 === PER-11 — Digest-pinning inconsistent in the IT stack

@@ -8,16 +8,16 @@
 # This instance exists because the admission budget is a property of the whole gateway process. The
 # production defaults (2048 general permits, 512 relay permits) are far too large for a test to
 # exhaust: proving the WebSocket relay returns its permits at teardown would need thousands of
-# sequential upgrades. Shrinking the caps to single digits turns that proof into a handful of
-# connections — but a gateway with an 8-request admission budget cannot serve the rest of the IT
-# suite, so the small budget lives on this separate instance (published on 10447) while the primary
-# instance (10443) keeps the production-shaped defaults.
+# sequential upgrades. Single-digit caps turn that proof into a handful of connections, but a
+# gateway with an 8-request admission budget cannot serve the rest of the IT suite, so the small
+# budget lives on this instance (10447) while the primary (10443) keeps the production defaults.
 #
-# The anchors, token_validation and oidc blocks are a faithful copy of the primary gateway.yaml so
-# the shared endpoints/ resolve identically and the offline it-static JWKS issuer reaches readiness
-# without Keycloak. The intentional differences are exactly two: the edge_hardening block below, and
-# the absence of tls.passthrough_sni (the SNI front never starts, so Quarkus terminates directly on
-# the public port — matching the mTLS and cookie instances).
+# Against the primary gateway.yaml, the anchors (bar the api anchor's security_headers) and
+# token_validation match, so the shared endpoints/ resolve and it-static is ready without Keycloak.
+# Added: edge_hardening below. Absent: security_defaults (incl. allow_get_with_content_length_body:
+# true), tls.min_version, tls.cipher_suites, tls.passthrough_sni (no SNI front, so Quarkus
+# terminates on the public port), asset_defaults, global security_headers, portal, oidc.step_up.
+# Values differ: config_version, the oidc origins (10447 not 10443), oidc.logout.final_redirect: /.
 version: 1
 metadata:
   config_version: "integration-test-ws-admission"
