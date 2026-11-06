@@ -24,9 +24,8 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.SilentSatisfaction;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.StepUpInitiation;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.StepUpOutcome;
