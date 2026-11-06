@@ -133,9 +133,10 @@ completed WebSocket upgrade and L4 passthrough bypass it:
 . *Emit end and `NO_ERROR` reset together.* Write `END_STREAM` followed immediately by `RST_STREAM
   (NO_ERROR)` (RFC 9113 §8.1) so other streams on the connection continue unaffected.
 
-*Abortive upstream close on HTTP/1.1.* Resetting an HTTP/1.1 upstream request closes that upstream
-connection with `SO_LINGER 0` (TCP `RST`), freeing the local ephemeral port immediately instead of
-holding it in `TIME_WAIT` (see
+*Abortive upstream close on HTTP/1.1.* Resetting an HTTP/1.1 upstream request once body transfer has
+begun closes that upstream connection with `SO_LINGER 0` (TCP `RST`), freeing the local ephemeral
+port immediately instead of holding it in `TIME_WAIT` (if the reset fires before the first body chunk
+is written, the clean connection returns to the pool; see
 link:terminal-actions-and-protocols.adoc#_downstream_client[Downstream Client] and
 link:../adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#abortive-upstream-close[ADR-0066]).
 
@@ -158,8 +159,9 @@ for the benchmark comparison against a fixed 2 MiB window).
   ENHANCE_YOUR_CALM` on breach). Gateway-issued `NO_ERROR` resets do not count.
 
 [[_http2_unread_upload_release]]
-*Unread upload credit release.* An HTTP/2 upload refused `503` at admission or reset by its client
-while awaiting a pooled upstream connection returns its stream credit to the connection window and
+*Unread upload credit release.* An HTTP/2 upload refused `503` at admission returns its stream credit
+to the connection window once ended (having never acquired an admission permit), and an admitted
+upload reset by its client while awaiting a pooled upstream connection returns its stream credit and
 releases its admission permit immediately
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#unread-upload-bodies[ADR-0060]).
 
@@ -168,10 +170,11 @@ releases its admission permit immediately
 [[_dispatch_body_framing]]
 *Dispatch body framing.* A `GET` or `HEAD` without a positive declared `Content-Length` is sent
 upstream with no body; its first inbound body byte refuses the request with `400`
-(`SECURITY_FILTER_VIOLATION`). Every other request declaring `Content-Length` is framed by that exact
-byte count: a byte beyond it refuses the request (`400`), and a body ending short of it resets the
-upstream request (`INBOUND_BODY_ABORTED`). Requests without a declared length keep chunked/streamed
-framing.
+(`SECURITY_FILTER_VIOLATION`) before upstream response handover, or resets the HTTP/2 stream with
+`CANCEL` (and closes HTTP/1.x) if it arrives after handover. Every other request declaring
+`Content-Length` is framed by that exact byte count: a byte beyond it refuses the request (`400`
+before handover, or stream reset after handover), and a body ending short of it resets the upstream
+request (`INBOUND_BODY_ABORTED`). Requests without a declared length keep chunked/streamed framing.
 
 [[_aborted_inbound_body]]
 *Aborted inbound body.* When the inbound body stream fails after dispatch began (client disconnect
@@ -206,9 +209,9 @@ stream-idle-timeout`
 [[_per_source_detection]]
 == Per-Source Detection (Enumeration Detection)
 
-The gateway counts pre-trust reconnaissance rejections per source in a framework-free in-memory
-leaky-bucket substrate and answers tripped sources according to `enumeration_detection`. The full
-substrate contract is in
+The gateway counts pre-trust reconnaissance rejections per source in a framework-free, per-instance
+in-memory leaky-bucket substrate (thresholds apply per gateway instance and reset on restart) and
+answers tripped sources according to `enumeration_detection`. The full substrate contract is in
 link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract] and
 the design decision in
 link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076].
@@ -218,7 +221,8 @@ image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key 
 * *Keying and bounds.* Requests are keyed by `(source, host)`: client IPv4, IPv6 `/64` prefix, or
   `unknown` (honouring `forwarded.trusted_proxies`), paired with a declared `match.host` or `*`. The
   ledger tracks at most 65,536 keys, draining linearly at `threshold / window` per second and
-  transitioning `CLEAR -> TRIPPED -> BLOCKED` at most once per `CLEAR` period.
+  transitioning `CLEAR -> TRIPPED` (and `-> BLOCKED` when `action` is `block`) at most once per
+  `CLEAR` period.
 
 * *Feed.* Pre-trust rejections in the closed recon set add weight `1` (tagged by their true
   `EventType`, even when rendered as the uniform `404`). Post-trust rejections, upstream/boot
@@ -262,8 +266,8 @@ link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episo
 |===
 | Category / Signal | Default weight | Rationale
 
-| `input-validation` | `10` | Malformed or injection-shaped requests are the clearest probe signal (scored even on static/asset paths).
-| `routing` | `1` | Crawlers or stale links also draw unrouted answers.
+| `input-validation` | `10` | Malformed or injection-shaped requests are the clearest probe signal (scored even on static/asset paths; `REQUEST_BODY_TIMEOUT` and `INBOUND_BODY_ABORTED` are excluded with fixed weight `0` so network stalls alone cannot raise an ALERT).
+| `routing` | `1` | Crawlers or stale links also draw unrouted answers (`PRE_TRUST_INTERNAL_FAILURE` is excluded with weight `0`).
 | `authentication` / `authorization` | `2` | Expired tokens behind a shared address stay below the drain rate.
 | `recon_trip` (`SOURCE_TRIPPED`) | `50` | Each enumeration-detection trip feeds into the threat score.
 | `upstream`, `rate-limiting`, `configuration` | fixed `0` | Not caller behaviour or boot-only.

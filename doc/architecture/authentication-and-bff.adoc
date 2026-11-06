@@ -36,16 +36,26 @@ link:../adr/0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configurati
 
 * *Session check.* Compares the session's active scope set `A` against `neededScopes` on every
   request after near-expiry refresh, regardless of `auth.token_relay`:
-  ** When `missing ⊆ S` (the session's granted scope set) and transparent refresh is enabled, the
-     gateway runs a scope-driven refresh requesting `A ∪ missing` and re-checks the returned session
-     (dropping any scope the IdP did not return from `S`).
-  ** Otherwise, a browser navigation redirects `302` into a live-session widening (`prompt=none`
-     first, then at most one interactive attempt via PAR), while a non-navigation request is
-     rejected `403 SCOPE_MISSING` with `missing_scopes` and optional `step_up_url`.
+
+** When no scopes are missing, the request continues without contacting the IdP.
+
+** When scopes are missing, `missing ⊆ S` (the session's granted scope set), transparent refresh is
+   enabled, the session holds a refresh token, and the request still carries the current binding
+   cookie (not already rebound by a near-expiry refresh on the same request), the gateway runs a
+   scope-driven refresh requesting `A ∪ missing` and re-checks the returned session (removing from
+   `S` only requested scopes absent from an explicit `scope` field in the response; an omitted
+   `scope` field removes nothing).
+
+** When a scope-driven refresh is not eligible or still leaves a required scope missing, a browser
+   navigation redirects `302` into a live-session widening (`prompt=none` first, then at most one
+   interactive attempt via PAR), while a non-navigation request is rejected `403 SCOPE_MISSING` with
+   `missing_scopes` and optional `step_up_url`.
 
 * *Session login and return-target resolution.* Navigating to an unauthenticated `require: session`
-  route or `/bff/login?returnUrl=` resolves the target route's `neededScopes` (or `oidc.scopes`
-  fallback) so the initial authorization request asks for the target's full scope set up front.
+  route requests that route's `neededScopes`. For `/bff/login?returnUrl=`, the gateway matches the
+  same-origin target path as a `GET` (skipping routes with header matchers) to resolve the target
+  route's `neededScopes` (or `oidc.scopes` fallback); if the eventual request selects a different
+  route requiring additional scopes, the session check above widens or refreshes on demand.
 
 * *Termination wins over concurrent updates.* In server mode, refresh and widening writes replace an
   existing stored session and never recreate one destroyed by a concurrent logout
@@ -78,8 +88,9 @@ guide] and link:../development/bff-cookie.adoc[cookie-mode contributor guide]):
 
 image::../resources/diagrams/bff-runtime-wiring.svg[BFF runtime wiring: edge dispatch through BffRuntime and the reserved-path registry, the SessionBinding seam in server and cookie mode, and the engine with its IdP-facing controls, align=center]
 
-* *Session-resolution seam (`SessionBinding`).* Every reserved endpoint, CSRF check, refresh/step-up
-  coordinator, and stage-4 session check binds to one mode-neutral `SessionBinding` interface.
+* *Session-resolution seam (`SessionBinding`).* Every session-aware reserved endpoint (all except the
+  session-independent `/bff/jwks` endpoint), CSRF check, refresh/step-up coordinator, and stage-4
+  session check binds to one mode-neutral `SessionBinding` interface.
   `oidc.session.mode` selects the implementation at boot: *server* mode maps an opaque cookie handle
   to a bounded in-memory session store (<<_bff_session_store>>), while *cookie* mode unseals the
   AES-256-GCM session cookie per request with no server-side session store. Both modes use the
@@ -127,8 +138,8 @@ The `SessionBinding` contract separates session creation from updates
 
 * *Cookie handle vs session identity (server mode).* The session cookie holds a random handle, never
   the internal session identity. Re-issuing on privilege widening swaps the handle atomically while
-  preserving the session identity, `sid`/`sub` index entries, expiry deadlines, and refresh
-  single-flight key.
+  preserving the session identity, `sub` index entry, expiry deadlines, and refresh single-flight key
+  (replacing the `sid` index entry if the widening ID token carries a new `sid`).
 
 * *Two deadlines and bounds.* Every session expires at the earlier of its absolute lifetime or
   `oidc.session.idle_timeout_seconds` since the last admitted request. In server mode, a periodic
@@ -138,9 +149,10 @@ The `SessionBinding` contract separates session creation from updates
 
 * *Activity cookie (cookie mode).* Idle timeout in cookie mode is tracked via a companion
   `<cookie_name>-activity` cookie authenticated with HMAC-SHA-256 under a dedicated key and bound to
-  the derived session identity (unencrypted, consuming no AES-GCM nonce budget), re-issued at most
-  once per 60 s (or half the idle timeout; see link:../development/bff-cookie.adoc#activity-cookie[the
-  cookie-mode contributor guide]).
+  the derived session identity (unencrypted, consuming no AES-GCM nonce budget). To limit
+  `Set-Cookie` churn for well-behaved clients without per-session server state, it is re-issued only
+  when the presented cookie's timestamp is at least 60 s old (or half the idle timeout if shorter;
+  see link:../development/bff-cookie.adoc#activity-cookie[the cookie-mode contributor guide]).
 
 [[_bff_client_controls]]
 === Client Authentication, Pushed Requests and Sender Constraint

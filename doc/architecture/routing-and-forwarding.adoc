@@ -117,10 +117,10 @@ image::../resources/diagrams/cookie-and-response-header-policy.svg[Cookie rebuil
   validation refuses a `cookies.allow` list naming them, the request rebuild drops them before
   consulting the mode, and the response filter drops any upstream `Set-Cookie` naming them.
 
-* *Request rebuild (stage 5).* The inbound `Cookie` header is split on `;`, gateway-owned crumbs are
-  dropped, and pairs admitted by the route's mode (`none`, explicit list, or `all`) are rejoined
-  with `"; "` in inbound order into a single `Cookie` header across HTTP proxy, gRPC, and WebSocket
-  upgrades.
+* *Request rebuild (stage 5).* Stage 5 reads the first inbound `Cookie` header value, splits it on
+  `;`, drops gateway-owned crumbs, and rejoins pairs admitted by the route's mode (`none`, explicit
+  list, or `all`) with `"; "` in inbound order into a single `Cookie` header across HTTP proxy, gRPC,
+  and WebSocket upgrades.
 
 * *Response predicate and identity headers (stage 7).* Across HTTP response headers, gRPC leading
   headers, and gRPC trailers, upstream `Set-Cookie` headers are filtered by the route's mode and
@@ -135,9 +135,10 @@ image::../resources/diagrams/cookie-and-response-header-policy.svg[Cookie rebuil
 * *Same-origin check on cookie-forwarding routes.* Every non-WebSocket route that forwards cookies
   and keeps `same_origin_check` on requires a matching `Origin` (or `Sec-Fetch-Site: same-origin`
   when `Origin` is absent) against the request's own origin plus `additional_origins` on unsafe
-  methods whenever at least one cookie pair is forwarded. A mismatch raises `CSRF_REJECTED` (`403`,
-  or the unrouted `404` while `security_defaults.uniform_not_found` is on). Cookie-forwarding
-  WebSocket routes require a non-empty `websocket.allowed_origins` instead.
+  methods whenever at least one cookie pair is forwarded. A mismatch raises `CSRF_REJECTED`
+  (rendered as the unrouted `404` while `security_defaults.uniform_not_found` is on; when disabled,
+  HTTP `403` or trailers-only `grpc-status: PERMISSION_DENIED` on `protocol: grpc` routes).
+  Cookie-forwarding WebSocket routes require a non-empty `websocket.allowed_origins` instead.
 
 [[_response_security_headers]]
 == Response Security Headers and Location Rewrite
@@ -159,9 +160,10 @@ overwrites any upstream value, `default` applies only when the upstream response
 Gateway-authored responses and WebSocket upgrades apply both maps.
 
 *`Location` rewrite in the relay.* On a proxy route with `upstream.rewrite_location: true`, the HTTP
-relay rewrites an upstream `Location` whose path-absolute value (or same-origin absolute URI without
-user-info) lies inside the effective upstream base path on a segment boundary onto the route's match
-key as a gateway-relative path with query and fragment preserved. Foreign origins, user-info URIs,
+relay rewrites an upstream `Location` whose path-absolute value (or absolute URI matching the
+route's upstream origin without user-info) matches the effective upstream base path (on a segment
+boundary for prefix routes, or by exact path equality for exact routes) onto the route's match key
+as a gateway-relative path with query and fragment preserved. Foreign origins, user-info URIs,
 scheme-relative `//host`, relative references, paths outside the base path, and paths containing dot
 segments or ambiguous separators (`\`, `%2f`, `%5c`) are relayed unchanged (see
 link:../security-threat-model.adoc#gw-13[GW-13]). The gRPC relay never rewrites `Location`.

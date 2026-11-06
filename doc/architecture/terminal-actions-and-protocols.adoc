@@ -110,8 +110,9 @@ force `Cache-Control: no-store`.
 The configured `location` is written verbatim (appending the raw query only when `keep_query: true`)
 and validated against open-redirect vectors at boot (link:../security-threat-model.adoc#gw-13[GW-13]):
 without `allow_external: true`, it must be a single-slash gateway path free of backslashes, encoded
-slashes, dot-segments, whitespace and control characters; with `allow_external: true`, it may be an
-absolute `http`/`https` URI without user-info (`keep_query` is refused alongside `allow_external`).
+slashes, dot-segments, whitespace and control characters; with `allow_external: true`, it may also be
+an absolute `http`/`https` URI with a non-empty host and no user-info (`keep_query` is refused
+alongside `allow_external`).
 
 [[_protocol_support]]
 == Protocol Support

@@ -16,10 +16,8 @@ that feeds metrics and error mapping without an external broker:
 
 image::../resources/diagrams/event-categories-and-consumers.svg[Failure event categories, event types and consumers, align=center]
 
-* *Categories and slugs.* `EventCategory` groups failure events by impact (`INPUT_VALIDATION`,
-  `ROUTING`, `AUTHENTICATION`, `AUTHORIZATION`, `UPSTREAM`, `RATE_LIMITING`, `CONFIGURATION`). Each
-  category carries one slug (`input-validation`, `routing`, `authentication`, `authorization`,
-  `upstream`, `rate-limiting`, `configuration`) used in the RFC 9457 problem type
+* *Categories and slugs.* `EventCategory` groups failure events by impact and supplies the lowercase
+  hyphenated slug (e.g. `input-validation` for `INPUT_VALIDATION`) used in the RFC 9457 problem type
   (`urn:api-sheriff:problem:<slug>`), the `category` label of `sheriff_errors_total`, and
   `grpc-message` on `protocol: grpc` routes. `CONFIGURATION` events occur at boot only and never
   surface as an HTTP response.
@@ -46,8 +44,9 @@ WebSocket relay-cap `503`s, and direct reserved-path `404`/`405` answers).
 
 image::../resources/diagrams/rejection-rendering-and-trust-boundary.svg[Rejection rendering: record true event, apply pre-trust uniform 404 with timing floor, and select response shape, align=center]
 
-A rejection raised after route selection and before the trust boundary is rendered to the caller as
-the unrouted `404` while `security_defaults.uniform_not_found` is on, the shipped default
+A rejection raised after route selection and before the trust boundary (except session-branch
+authentication rejections, which keep their `302` / `401`) is rendered to the caller as the unrouted
+`404` while `security_defaults.uniform_not_found` is on, the shipped default
 (<<_trust_boundary_rejections>>):
 
 [cols="1,2,2", options="header"]
@@ -60,10 +59,11 @@ the unrouted `404` while `security_defaults.uniform_not_found` is on, the shippe
   link:tls-and-inbound-security.adoc#_dispatch_body_framing[Dispatch body framing]); proxied request
   body failing after dispatch (`INBOUND_BODY_ABORTED`, see
   link:tls-and-inbound-security.adoc#_aborted_inbound_body[Aborted inbound body]); or a rejected
-  back-channel logout token (`LOGOUT_TOKEN_INVALID`) or unbound callback token response. Route-scoped
-  `allowed_paths` and post-route security-filter `400`s render as the unrouted `404` before the trust
-  boundary (<<_trust_boundary_rejections>>); pre-route floor, framing-gate and reserved-path `400`s
-  stay `400`.
+  back-channel logout token (`LOGOUT_TOKEN_INVALID`). Route-scoped `allowed_paths` and post-route
+  security-filter `400`s render as the unrouted `404` before the trust boundary
+  (<<_trust_boundary_rejections>>); pre-route floor, framing-gate and back-channel logout `400`s
+  stay `400` (an unbound token response on the OIDC callback is a separate BFF callback `400`
+  without an `EventType`).
 | `INPUT_VALIDATION` (`AUTHENTICATION` for `LOGOUT_TOKEN_INVALID`)
 
 | `401`
@@ -141,8 +141,9 @@ the unrouted `404` while `security_defaults.uniform_not_found` is on, the shippe
 === Rejections Before the Trust Boundary (Uniform 404)
 
 An honest status on a matched route tells an unauthenticated caller that the route exists. To close
-that endpoint-existence oracle, the edge renders every rejection raised in the *pre-trust window* as
-the unrouted `404` while `security_defaults.uniform_not_found` (default `true`) is enabled
+that endpoint-existence oracle, the edge renders every rejection raised in the *pre-trust window*
+(except session-branch authentication rejections, which keep their `302` / `401`) as the unrouted
+`404` while `security_defaults.uniform_not_found` (default `true`) is enabled
 (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073];
 contributor mechanics in
 link:../development/README.adoc#_rejections_before_the_trust_boundary[Contributor Guide --
@@ -152,7 +153,7 @@ Rejections Before the Trust Boundary]):
   validates a token, or when stage 4 completes on any branch (a live session or an anonymous route).
   The pre-trust window runs from route selection (stage 2) up to that point, covering the verb gate
   (2b), post-route checks (3), CSRF / cookie same-origin defence, and the bearer branch prior to
-  token validation.
+  token validation (session authentication failures are exempt and keep their `302` / `401`).
 
 * *True-event metering and unrouted rendering.* The rejection is first recorded under its *true*
   event (event counter, log record, and `sheriff_errors_total{event}`), then pre-route response
@@ -188,26 +189,18 @@ Rejections Before the Trust Boundary]):
 
 With `portal.error_pages: true` (see link:README.adoc#_application_portal[Application portal]), a
 gateway-originated error renders the portal HTML error page instead of `application/problem+json`
-when error pages are enabled on an active portal, the exit is `HTML_ELIGIBLE`, and the request's
-`Accept` header explicitly lists `text/html` with quality > 0 (`+*/*+` and `+text/*+` never qualify,
-so `fetch()`, XHR and REST clients keep the problem body):
+when error pages are enabled on an active portal, the exit is classified as HTML-eligible, and the
+request's `Accept` header explicitly lists `text/html` with quality > 0 (`+*/*+` and `+text/*+`
+never qualify, so `fetch()`, XHR and REST clients keep the problem body):
 
-[cols="1,3", options="header"]
-|===
-| Classification | Exits
+* *`HTML_ELIGIBLE`.* Browser-facing authorization (`403` scope/CSRF), routing (`404` including
+  pre-trust rejections rewritten to the unrouted `404`, and routed `405`), payload-size (`413` route
+  body cap), and upstream (`502`/`503`/`504`) rejections, plus failed OIDC callbacks and `source:
+  directory` asset misses (`404`).
 
-| `HTML_ELIGIBLE`
-| `SCOPE_MISSING` and `CSRF_REJECTED` (`403`); `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED`
-  (`404`, including pre-trust rejections rewritten to `NO_ROUTE_MATCHED`); routed
-  `METHOD_NOT_ALLOWED` (`405`); `CONTENT_TOO_LARGE` (`413`); `UPSTREAM_ERROR` (`502`),
-  `UPSTREAM_CIRCUIT_OPEN` (`503`), `UPSTREAM_TIMEOUT` (`504`); failed OIDC callback; `source:
-  directory` asset miss (`404`).
-
-| `KEEP_SHAPE`
-| Every other event (`400` security-filter/parameter/aborted-body rejections, `401` token rejections,
-  `RESERVED_BODY_TOO_LARGE`, WebSocket rejections, unparseable-method `405`), origin-relayed responses,
-  post-head relay failures, gRPC trailers-only rejections, admission `503`, and internal failures.
-|===
+* *`KEEP_SHAPE`.* Machine-facing input-validation (`400`), bearer/session token (`401`), reserved
+  body-cap, WebSocket, and unparseable-method (`405`) rejections, origin-relayed responses, post-head
+  relay failures, gRPC trailers-only rejections, bare admission `503`s, and internal failures.
 
 Error pages preserve the HTTP status, render anonymously with a fixed per-status title (no problem
 detail, exception message, or upstream address), and set `Cache-Control: no-store`,
@@ -352,7 +345,9 @@ link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episo
   Substrate -- ECS 8.17.0 ALERT Document and OCSF Mapping] and the operator view in
   link:../user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes].
 
-* *Zero request bytes and bounded volume.* Every value in the document is gateway-derived (canonical
-  source/host keys, enum names, ledger numbers, and fixed constants -- never a raw path, `Host`, or
-  header), eliminating log-injection vectors, and the 65,536-source ledger caps volume to at most
-  one ALERT per tracked source per episode.
+* *Zero request bytes, fallback marker, and bounded volume.* Every value in the document is
+  gateway-derived (canonical source/host keys, enum names, ledger numbers, and fixed constants --
+  never a raw path, `Host`, or header), eliminating log-injection vectors. Should JSON rendering
+  ever fail, the warning log still fires with the fallback marker `<document unavailable>` and
+  `sheriff_threat_alerts_total` is still incremented. The 65,536-source ledger caps volume to at
+  most one ALERT per tracked source per episode.
