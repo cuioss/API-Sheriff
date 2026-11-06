@@ -29,9 +29,9 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord.Widening;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint.StepUpOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -87,7 +87,7 @@ class StepUpEndpointTest {
     private record SeamCall(Collection<String> scopes, boolean silent) {
     }
 
-    private PendingAuthorizationStore.InMemory pendingStore;
+    private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
@@ -98,7 +98,7 @@ class StepUpEndpointTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new PendingAuthorizationStore.InMemory(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         FlowContext flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =

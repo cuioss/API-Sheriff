@@ -27,9 +27,9 @@ import java.util.Set;
 
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord.Widening;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -68,7 +68,7 @@ class SessionWideningTest {
     private record SeamCall(Collection<String> scopes, boolean silent) {
     }
 
-    private PendingAuthorizationStore.InMemory pendingStore;
+    private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
     private FlowContext flowContext;
     private List<SeamCall> seamCalls;
@@ -78,7 +78,7 @@ class SessionWideningTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new PendingAuthorizationStore.InMemory(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =

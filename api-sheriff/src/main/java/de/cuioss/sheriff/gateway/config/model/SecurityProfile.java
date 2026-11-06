@@ -163,7 +163,7 @@ public enum SecurityProfile {
         if (effective != MINIMAL) {
             return effective;
         }
-        return fallback != MINIMAL ? fallback : STRICT;
+        return fallback == MINIMAL ? STRICT : fallback;
     }
 
     /**

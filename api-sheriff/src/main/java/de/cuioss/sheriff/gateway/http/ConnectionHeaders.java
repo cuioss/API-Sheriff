@@ -65,6 +65,8 @@ import lombok.experimental.UtilityClass;
 @UtilityClass
 public class ConnectionHeaders {
 
+    private static final String PARAM_HEADER_NAME = "headerName";
+
     /**
      * The connection-specific and framing response headers, all lower case.
      * <p>
@@ -202,7 +204,7 @@ public class ConnectionHeaders {
      * @return the lower-cased, separator-folded name the gateway-owned sets are keyed by
      */
     public static String separatorFolded(String headerName) {
-        Objects.requireNonNull(headerName, "headerName");
+        Objects.requireNonNull(headerName, PARAM_HEADER_NAME);
         return headerName.toLowerCase(Locale.ROOT).replace('_', '-');
     }
 
@@ -228,7 +230,7 @@ public class ConnectionHeaders {
      *         member
      */
     public static boolean isRequestStripped(String headerName) {
-        Objects.requireNonNull(headerName, "headerName");
+        Objects.requireNonNull(headerName, PARAM_HEADER_NAME);
         return REQUEST_STRIP.contains(headerName.toLowerCase(Locale.ROOT))
                 || REQUEST_STRIP.contains(separatorFolded(headerName));
     }
@@ -244,7 +246,7 @@ public class ConnectionHeaders {
      *         inside a normal header block
      */
     public static boolean isConnectionSpecific(String headerName) {
-        Objects.requireNonNull(headerName, "headerName");
+        Objects.requireNonNull(headerName, PARAM_HEADER_NAME);
         return headerName.startsWith(":")
                 || RESPONSE_STRIP.contains(headerName.toLowerCase(Locale.ROOT));
     }

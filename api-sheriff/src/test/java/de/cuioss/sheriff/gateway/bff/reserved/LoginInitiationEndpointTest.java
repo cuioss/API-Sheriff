@@ -31,8 +31,8 @@ import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.AuthorizationInitiation;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint.LoginInitiationOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -86,7 +86,7 @@ class LoginInitiationEndpointTest {
     /** The {@code neededScopes} of the session route under {@code /dashboard}. */
     private static final Set<String> DASHBOARD_SCOPES = Set.of("openid", "profile", "dashboard:read");
 
-    private PendingAuthorizationStore.InMemory pendingStore;
+    private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
@@ -97,7 +97,7 @@ class LoginInitiationEndpointTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new PendingAuthorizationStore.InMemory(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         FlowContext flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =

@@ -24,8 +24,8 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.SilentSatisfaction;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.StepUpInitiation;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.StepUpOutcome;
@@ -61,12 +61,12 @@ class StepUpCoordinatorTest {
     /** The static {@code oidc.scopes} the step-up authorization request is built from. */
     private static final List<String> STEP_UP_SCOPES = List.of("openid", "profile", "email");
 
-    private PendingAuthorizationStore.InMemory pendingStore;
+    private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
 
     @BeforeEach
     void setUp() {
-        pendingStore = new PendingAuthorizationStore.InMemory(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
     }
 

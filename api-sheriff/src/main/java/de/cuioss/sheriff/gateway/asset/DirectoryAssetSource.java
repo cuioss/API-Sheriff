@@ -561,7 +561,12 @@ public final class DirectoryAssetSource implements AssetSource {
         private static ConfinedAsset descend(SecureDirectoryStream<Path> top, Path relative) throws IOException {
             SecureDirectoryStream<Path> dir = top;
             boolean owned = true;
-            try {
+            // Not a try-with-resources: the descriptor is re-bound on every step of
+            // the descent and, on success, its ownership transfers to the returned DescriptorAsset, so it
+            // must stay open on the normal path; a resource-scoped close would release it. The clean-up
+            // close must also be demoted (closeQuietly) so it cannot supersede the walk failure, which
+            // try-with-resources suppression semantics would invert.
+            try { // NOSONAR java:S2093 ownership of the descriptor transfers to the returned asset
                 for (int i = 0; i < relative.getNameCount() - 1; i++) {
                     SecureDirectoryStream<Path> parent = dir;
                     dir = parent.newDirectoryStream(relative.getName(i), LinkOption.NOFOLLOW_LINKS);

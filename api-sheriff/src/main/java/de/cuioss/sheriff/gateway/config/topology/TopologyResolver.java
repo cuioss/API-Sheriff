@@ -278,7 +278,7 @@ public final class TopologyResolver {
                         .formatted(alias, scheme));
                 return null;
             }
-            int port = uri.getPort() != -1 ? uri.getPort() : defaultPort(scheme);
+            int port = uri.getPort() == -1 ? defaultPort(scheme) : uri.getPort();
             String basePath = uri.getPath() == null ? "" : uri.getPath();
             return new ResolvedUpstream(scheme, uri.getHost(), port, basePath);
         }

@@ -45,8 +45,8 @@ import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CallbackOutcome;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CodeExchange;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -116,7 +116,7 @@ class CallbackEndpointTest {
     private record WideningCall(Set<String> scopes, boolean silent, FlowContext context) {
     }
 
-    private PendingAuthorizationStore.InMemory pendingStore;
+    private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
@@ -131,7 +131,7 @@ class CallbackEndpointTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new PendingAuthorizationStore.InMemory(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
         sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {

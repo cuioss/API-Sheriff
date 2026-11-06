@@ -231,7 +231,7 @@ public final class UnreachablePort {
             probe.setReuseAddress(false);
             probe.bind(new InetSocketAddress(LoopbackHost.ADDRESS, port));
             return true;
-        } catch (IOException e) {
+        } catch (IOException _) {
             return false;
         }
     }

@@ -117,14 +117,14 @@ class BuildParentContractTest {
      */
     private static final Path PACKAGED_APPLICATION_PROPERTIES = Path.of("target/classes/application.properties");
 
+    /** The suffix distinguishing a development version from the released one it becomes. */
+    private static final String SNAPSHOT_SUFFIX = "-SNAPSHOT";
+
     /**
      * The {@code groupId} half of the coordinate the worked example must inherit from.
      *
      * @see #BUILD_PARENT_ARTIFACT_ID
      */
-    /** The suffix distinguishing a development version from the released one it becomes. */
-    private static final String SNAPSHOT_SUFFIX = "-SNAPSHOT";
-
     private static final String BUILD_PARENT_GROUP_ID = "de.cuioss.sheriff.gateway";
 
     /**

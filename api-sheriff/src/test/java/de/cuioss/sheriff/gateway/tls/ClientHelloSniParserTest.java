@@ -336,7 +336,7 @@ class ClientHelloSniParserTest {
         @DisplayName("fails closed when a name entry declares a length past the list end")
         void nameEntryLengthPastList() {
             // Arrange — the single name entry declares a 0x007F-byte name but carries no name bytes.
-            byte[] entry = new byte[]{0x00, 0x00, 0x7F};
+            byte[] entry = {0x00, 0x00, 0x7F};
             byte[] hello = ClientHelloFixture.withRawExtensions(
                     ClientHelloFixture.serverNameExtensionFromEntries(entry));
 

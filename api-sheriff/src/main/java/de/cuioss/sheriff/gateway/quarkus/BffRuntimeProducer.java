@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
+import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
@@ -576,7 +577,7 @@ public class BffRuntimeProducer {
             // Server mode only: cookie mode holds no session to sweep.
             registerSessionSweep(sessionStore, clock);
         }
-        PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
+        PendingAuthorizationStore pendingStore = new InMemoryPendingAuthorizationStore(DEFAULT_MAX_PENDING);
 
         // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
         // widening, the step-up endpoint and the RFC 9470 step-up re-drive all fall back to the same
@@ -1442,7 +1443,11 @@ public class BffRuntimeProducer {
             if (existing != null) {
                 return existing;
             }
-            synchronized (cache) {
+            // Not an AtomicReference update: the delegate performs OIDC discovery (network I/O)
+            // and must run exactly once while concurrent callers wait for its result. AtomicReference.updateAndGet
+            // or compareAndSet would let racing callers each run the delegate, so the check-and-run is a
+            // multi-step critical section that only a lock keeps atomic.
+            synchronized (cache) { // NOSONAR java:S2442 multi-step critical section, see above
                 T current = cache.get();
                 if (current == null) {
                     current = Objects.requireNonNull(delegate.get(), "memoized supplier produced null");
