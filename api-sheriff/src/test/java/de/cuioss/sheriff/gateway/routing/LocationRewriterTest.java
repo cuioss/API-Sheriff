@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -38,6 +37,8 @@ class LocationRewriterTest {
 
     private static final ResolvedUpstream UPSTREAM = new ResolvedUpstream("https", "backend", 8443, "/svc/v1");
     private static final LocationRewriter REWRITER = new LocationRewriter(UPSTREAM, "/api", false);
+    /** Plain HTTP on a non-default port with an empty base path. */
+    private static final ResolvedUpstream BACKEND_UPSTREAM = new ResolvedUpstream("http", "backend", 8080, "");
 
     @Nested
     @DisplayName("base-path match")
@@ -134,7 +135,7 @@ class LocationRewriterTest {
         @Test
         @DisplayName("maps onto a root exact match key")
         void mapsOntoRootExactMatchKey() {
-            var rootRewriter = new LocationRewriter(ConfigFixtures.backendUpstream(), "/", true);
+            var rootRewriter = new LocationRewriter(BACKEND_UPSTREAM, "/", true);
 
             assertEquals("/", rootRewriter.rewrite("http://backend:8080/"));
             assertEquals("http://backend:8080/login", rootRewriter.rewrite("http://backend:8080/login"),
@@ -211,7 +212,7 @@ class LocationRewriterTest {
          * separator lands at the front of a gateway-relative value.
          */
         private final LocationRewriter rootRewriter =
-                new LocationRewriter(ConfigFixtures.backendUpstream(), "/", false);
+                new LocationRewriter(BACKEND_UPSTREAM, "/", false);
 
         /**
          * The origin-change arm, and the one the mapping would <em>manufacture</em>: each value below is
@@ -393,7 +394,7 @@ class LocationRewriterTest {
     class EmptyBasePath {
 
         private final LocationRewriter rewriter =
-                new LocationRewriter(ConfigFixtures.backendUpstream(), "/app/", false);
+                new LocationRewriter(BACKEND_UPSTREAM, "/app/", false);
 
         @ParameterizedTest(name = "{0} -> {1}")
         @CsvSource({
@@ -428,7 +429,7 @@ class LocationRewriterTest {
         @Test
         @DisplayName("never emits a scheme-relative mapping")
         void neverEmitsSchemeRelativeMapping() {
-            var rootRewriter = new LocationRewriter(ConfigFixtures.backendUpstream(), "/", false);
+            var rootRewriter = new LocationRewriter(BACKEND_UPSTREAM, "/", false);
             String location = "http://backend:8080//evil.example/steal";
 
             assertEquals(location, rootRewriter.rewrite(location),

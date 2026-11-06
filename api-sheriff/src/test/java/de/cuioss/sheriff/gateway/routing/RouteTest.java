@@ -64,6 +64,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 @DisplayName("Route — the one per-route record")
 class RouteTest {
 
+    /**
+     * A seed route under {@code /api} with a generated id, for a case about the {@link Route} record itself.
+     * It carries no terminal action, so the caller adds the one its case needs.
+     */
+    private static Route.RouteBuilder baseRoute() {
+        return ConfigFixtures.route(Generators.letterStrings(3, 12).next(), "/api");
+    }
+
     @Nested
     @DisplayName("Defaults")
     class Defaults {
@@ -490,7 +498,7 @@ class RouteTest {
         void shouldAcceptEachSingleTerminalAction() {
             Route proxy = proxyRoute().build();
             Route asset = assetRoute().build();
-            Route redirect = ConfigFixtures.baseRoute().redirect(redirect()).build();
+            Route redirect = baseRoute().redirect(redirect()).build();
 
             assertAll("exactly one terminal action",
                     () -> assertEquals(upstream(), proxy.upstream(), "A proxy route carries its upstream"),
@@ -502,7 +510,7 @@ class RouteTest {
         @DisplayName("Should refuse a route with no terminal action")
         void shouldRefuseZeroTerminalActions() {
             String id = Generators.letterStrings(3, 12).next();
-            var builder = ConfigFixtures.baseRoute().id(id);
+            var builder = baseRoute().id(id);
 
             var thrown = assertThrows(IllegalArgumentException.class, builder::build,
                     "A route resolving no terminal action is refused");
@@ -513,10 +521,10 @@ class RouteTest {
         @Test
         @DisplayName("Should refuse a route with two or three terminal actions")
         void shouldRefuseSeveralTerminalActions() {
-            var upstreamAndAsset = ConfigFixtures.baseRoute().upstream(upstream()).asset(asset());
-            var upstreamAndRedirect = ConfigFixtures.baseRoute().upstream(upstream()).redirect(redirect());
-            var assetAndRedirect = ConfigFixtures.baseRoute().asset(asset()).redirect(redirect());
-            var allThree = ConfigFixtures.baseRoute().upstream(upstream()).asset(asset()).redirect(redirect());
+            var upstreamAndAsset = baseRoute().upstream(upstream()).asset(asset());
+            var upstreamAndRedirect = baseRoute().upstream(upstream()).redirect(redirect());
+            var assetAndRedirect = baseRoute().asset(asset()).redirect(redirect());
+            var allThree = baseRoute().upstream(upstream()).asset(asset()).redirect(redirect());
 
             assertAll("several terminal actions",
                     () -> assertThrows(IllegalArgumentException.class, upstreamAndAsset::build,
@@ -892,11 +900,11 @@ class RouteTest {
     }
 
     private static Route.RouteBuilder proxyRoute() {
-        return ConfigFixtures.baseRoute().upstream(upstream());
+        return baseRoute().upstream(upstream());
     }
 
     private static Route.RouteBuilder assetRoute() {
-        return ConfigFixtures.baseRoute().asset(asset());
+        return baseRoute().asset(asset());
     }
 
     private static Route fullyResolvedProxyRoute() {

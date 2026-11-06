@@ -126,25 +126,6 @@ public final class ConfigFixtures {
     }
 
     /**
-     * A seed route under {@code /api} with a generated id, for a case about the {@link Route} record itself.
-     * It carries no terminal action, so the caller adds the one its case needs.
-     *
-     * @return the seeded builder
-     */
-    public static Route.RouteBuilder baseRoute() {
-        return route(Generators.letterStrings(3, 12).next(), "/api");
-    }
-
-    /**
-     * The upstream of the location-rewriter cases: plain HTTP on a non-default port with an empty base path.
-     *
-     * @return the upstream {@code http://backend:8080}
-     */
-    public static ResolvedUpstream backendUpstream() {
-        return new ResolvedUpstream("http", "backend", 8080, "");
-    }
-
-    /**
      * A seed anchor: a {@code proxy} anchor at {@code /<name>} with {@code access: authenticated} and no
      * policy block, so the caller states the one block its case resolves. Unlike {@link #anchor}, it is
      * not kept consistent with the access-to-auth matrix, because route-table assembly and policy
@@ -180,7 +161,8 @@ public final class ConfigFixtures {
     }
 
     /**
-     * A seed endpoint on an anchor that declares no {@code auth} block, so the anchor's floor governs it.
+     * A seed endpoint on an anchor; the endpoint declares no {@code auth} block, so the anchor's floor
+     * governs it.
      *
      * @param id         the endpoint id
      * @param alias      the {@code base_url} topology alias

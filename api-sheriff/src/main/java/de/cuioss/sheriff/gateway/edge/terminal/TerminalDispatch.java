@@ -782,19 +782,21 @@ public final class TerminalDispatch {
      * connection of a request whose body outlived the request-body deadline after the hand-over
      * ({@link EventType#REQUEST_BODY_TIMEOUT}), told by the event the late callback stashed under
      * {@link #LATE_BODY_REFUSAL_KEY} rather than by a mark on the request's context data, which that
-     * callback — running on the upstream request's event loop — must not write; every other failure
-     * retires the connection only where the request carries the mark an earlier rejection left (see
-     * {@link ConnectionRetirement#retireMarkedConnection}). Runs on the event loop, before the response is
-     * ended.
+     * callback — running on the upstream request's event loop — must not write. Runs on the event loop,
+     * before the response is ended.
+     * <p>
+     * No other failure retires the connection here. The context-data mark the gateway's own error
+     * writers act on ({@link ConnectionRetirement#retireMarkedConnection}) cannot be present: it is left
+     * only by {@link ConnectionRetirement#markFramingRejection}, whose two callers — the framing gate and
+     * {@link #dispatchMarkingUnreadBody} — both rethrow the rejection, so a marked request never starts a
+     * relay that could fail.
      *
      * @param ctx         the request whose relay failed
      * @param lateRefusal the event of the request's late body refusal, or {@code null} when none was made
      */
-    static void retireFailedRelayConnection(RoutingContext ctx, @Nullable EventType lateRefusal) {
+    private static void retireFailedRelayConnection(RoutingContext ctx, @Nullable EventType lateRefusal) {
         if (lateRefusal == EventType.REQUEST_BODY_TIMEOUT && ResponseEnds.isHttp1(ctx.request().version())) {
             ConnectionRetirement.retireConnectionAfterResponse(ctx);
-        } else {
-            ConnectionRetirement.retireMarkedConnection(ctx);
         }
     }
 

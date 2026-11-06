@@ -67,7 +67,6 @@ import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.smallrye.faulttolerance.api.Guard;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
@@ -117,9 +116,10 @@ import org.junit.jupiter.api.Test;
  * late refusal's event, and neither side writes the request's context data from an event loop or reads
  * a retirement mark from it. {@link ThroughTheDispatchPath} drives that through the dispatch path
  * itself, on HTTP/1.x and on prior-knowledge HTTP/2, over a live stub upstream and an observed routing
- * context. The marked-request case alone drives the retirement call against fakes, because no dispatch
- * can reach it: the mark is left only by {@code ConnectionRetirement.markFramingRejection}, whose two
- * callers both rethrow the rejection, so a marked request never starts a relay that could fail.
+ * context. No case drives a request carrying the retirement mark an earlier rejection leaves, and the
+ * failed relay's end does not read that mark: it is left only by
+ * {@code ConnectionRetirement.markFramingRejection}, whose two callers both rethrow the rejection, so a
+ * marked request never starts a relay that could fail.
  */
 @DisplayName("TerminalDispatch — the connection close and the answer after a request body outlived its deadline")
 @Tag("isolated-fork")
@@ -199,23 +199,6 @@ class TerminalDispatchLateBodyTimeoutTest {
         assertAll("the written head of a failed relay",
                 () -> assertEquals(List.of(), response.statuses, "no status is set on a written head"),
                 () -> assertTrue(response.headers.contains(CONTENT_LENGTH), "the written head is not changed"));
-    }
-
-    @Test
-    @DisplayName("any other relay failure retires the connection only where an earlier rejection marked the request")
-    void otherFailureRetiresOnlyAMarkedRequest() {
-        RetiringExchange marked = new RetiringExchange();
-        marked.markedForRetirement = true;
-        RetiringExchange unmarked = new RetiringExchange();
-
-        TerminalDispatch.retireFailedRelayConnection(marked.routingContext(), null);
-        marked.endHandlers.forEach(handler -> handler.handle(null));
-        TerminalDispatch.retireFailedRelayConnection(unmarked.routingContext(), null);
-        unmarked.endHandlers.forEach(handler -> handler.handle(null));
-
-        assertAll("a relay that failed for another reason",
-                () -> assertEquals(1, marked.closes.get(), "a marked request's connection is closed"),
-                () -> assertEquals(0, unmarked.closes.get(), "an unmarked request's connection is left open"));
     }
 
     /**
@@ -566,51 +549,6 @@ class TerminalDispatchLateBodyTimeoutTest {
             }
             // put returns the context itself; hand back the observed one so chained calls stay observed.
             return result == delegate ? self : result;
-        }
-    }
-
-    /**
-     * An HTTP/1.1 request on a fake connection and its routing context, its response head unwritten: the
-     * handlers registered for its end and the closes of the connection. A context datum reads as the
-     * retirement mark exactly when {@link #markedForRetirement} is set; a write to the context data fails
-     * the case.
-     */
-    private static final class RetiringExchange {
-
-        private final AtomicInteger closes = new AtomicInteger();
-        private final List<Handler<AsyncResult<Void>>> endHandlers = new ArrayList<>();
-        private boolean markedForRetirement;
-        private final HttpConnection connection = fake(HttpConnection.class, (name, args) -> {
-            if ("close".equals(name) && args.length == 0) {
-                closes.incrementAndGet();
-                return Future.succeededFuture();
-            }
-            throw new UnsupportedOperationException("the connection fake does not answer " + name);
-        });
-
-        RoutingContext routingContext() {
-            HttpServerRequest request = fake(HttpServerRequest.class, (name, args) -> switch (name) {
-                case "version" -> HttpVersion.HTTP_1_1;
-                case "connection" -> connection;
-                default -> throw new UnsupportedOperationException("the request fake does not answer " + name);
-            });
-            HttpServerResponse response = fake(HttpServerResponse.class, (name, args) -> switch (name) {
-                case "headWritten" -> false;
-                case "putHeader" -> null;
-                default -> throw new UnsupportedOperationException("the response fake does not answer " + name);
-            });
-            return fake(RoutingContext.class, (name, args) -> switch (name) {
-                case "request" -> request;
-                case "response" -> response;
-                case "get" -> markedForRetirement ? Boolean.TRUE : null;
-                case "addEndHandler" -> {
-                    @SuppressWarnings("unchecked") // the fake hands back what the caller registered
-                    Handler<AsyncResult<Void>> handler = (Handler<AsyncResult<Void>>) args[0];
-                    endHandlers.add(handler);
-                    yield endHandlers.size(); // the id Vert.x hands back for the registered handler
-                }
-                default -> throw new UnsupportedOperationException("the routing context fake does not answer " + name);
-            });
         }
     }
 
