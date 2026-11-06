@@ -17,16 +17,26 @@ package de.cuioss.sheriff.gateway.bff.login;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.net.URI;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.pipeline.BasicChecksStage;
+import de.cuioss.sheriff.gateway.pipeline.CanonicalPathGuard;
+import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import org.junit.jupiter.api.DisplayName;
@@ -59,7 +69,7 @@ class ReturnTargetScopesTest {
      * The table in route-selection order, exactly as the route-table builder freezes it: every exact
      * route first, then prefixes longest-first.
      */
-    private final ReturnTargetScopes resolver = new ReturnTargetScopes(new RouteTable(List.of(
+    private static final List<Route> ROUTES = List.of(
             route("special", MatchConfig.builder().path("/api/special").build(), Require.SESSION, SPECIAL_SCOPES),
             route("reports", MatchConfig.builder().pathPrefix("/app/reports").build(), Require.SESSION,
                     REPORTS_SCOPES),
@@ -70,7 +80,28 @@ class ReturnTargetScopesTest {
             route("app", MatchConfig.builder().pathPrefix("/app").build(), Require.SESSION, APP_SCOPES),
             route("api", MatchConfig.builder().pathPrefix("/api").build(), Require.BEARER, API_SCOPES),
             route("tenant-fallback", MatchConfig.builder().pathPrefix("/tenant").build(), Require.SESSION,
-                    APP_SCOPES))), ORIGIN, OIDC_SCOPES);
+                    APP_SCOPES));
+
+    private final ReturnTargetScopes resolver = new ReturnTargetScopes(new RouteTable(ROUTES), ORIGIN, OIDC_SCOPES);
+
+    /**
+     * The route the edge's inbound pipeline selects for a {@code GET} navigation to {@code returnUrl}:
+     * its raw path (the query never takes part in selection) through the strict stage-1 floor, the
+     * canonical-path guard and stage-2 route selection over {@link #ROUTES}, wired in the edge's order.
+     */
+    private static Route selectedByTheInboundPipeline(String returnUrl) {
+        SecurityConfiguration strict = SecurityProfile.STRICT.preset();
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath(URI.create(returnUrl).getRawPath())
+                .queryParameters(List.of())
+                .headers(Map.of())
+                .build();
+        new BasicChecksStage(strict, new SecurityEventCounter(), null, strict).process(request);
+        new CanonicalPathGuard().process(request);
+        new RouteSelectionStage(ROUTES).process(request);
+        return Objects.requireNonNull(request.selectedRoute(), "the pipeline selected no route");
+    }
 
     private static Route route(String id, MatchConfig match, Require require, Set<String> neededScopes) {
         return Route.builder()
@@ -135,6 +166,30 @@ class ReturnTargetScopesTest {
                             "the same-origin check admits an interior empty segment"),
                     () -> assertEquals(REPORTS_SCOPES, resolver.resolve(returnUrl),
                             "the folded path selects the longer /app/reports prefix, not /app"));
+        }
+
+        /**
+         * The resolver's fold is a re-statement of what the inbound pipeline does, so it is checked
+         * against the pipeline itself rather than against an expected set written here: each target's
+         * raw path is driven through the real stage-1 floor ({@link BasicChecksStage}), the
+         * canonical-path guard and stage-2 {@link RouteSelectionStage} over the same routes, and the
+         * scopes of the route the pipeline selects must be the scopes the resolver returns. A resolver
+         * that stopped folding — or a pipeline that started folding differently — selects a different
+         * route on one side only and fails here, which an expected-set assertion cannot notice.
+         */
+        @ParameterizedTest(name = "\"{0}\" resolves to the scopes of the route the inbound pipeline selects")
+        @ValueSource(strings = {"/app//reports", "/app///reports/monthly", "/app//reports//",
+                ORIGIN + "/app//reports", "/app//reports?tab=open", "/app/reports", "/app/orders"})
+        @DisplayName("Should resolve the scopes of the route stage-1 normalization and route selection select")
+        void shouldMatchTheRouteTheInboundPipelineSelects(String returnUrl) {
+            Route selected = selectedByTheInboundPipeline(returnUrl);
+
+            Set<String> selectedScopes = selected.effectiveAuth().require() == Require.NONE
+                    ? OIDC_SCOPES
+                    : selected.neededScopes();
+            assertEquals(selectedScopes, resolver.resolve(returnUrl),
+                    () -> "the resolver must land on the route the pipeline selects for " + returnUrl
+                            + ", which is " + selected.id());
         }
 
         @Test

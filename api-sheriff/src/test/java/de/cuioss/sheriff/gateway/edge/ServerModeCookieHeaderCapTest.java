@@ -20,22 +20,33 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.lang.reflect.RecordComponent;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.edge.assembly.SecurityPostures;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.BasicChecksStage;
+import de.cuioss.sheriff.gateway.pipeline.CanonicalPathGuard;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
+import de.cuioss.sheriff.gateway.pipeline.ThoroughChecksStage;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
@@ -199,6 +210,86 @@ class ServerModeCookieHeaderCapTest {
     }
 
     /**
+     * Past route selection. Stage 3 re-validates every header under the ROUTE's configuration whenever
+     * it diverges from the gateway baseline, so a carve-out the pre-route floor grants would be undone
+     * there unless stage 3 carries the same budget. The edge resolves the carve-out once and hands the
+     * same policy to both stages ({@code GatewayEdgeRoute}); these cases wire the chain the same way —
+     * the floor, the canonical-path guard, route selection and {@link ThoroughChecksStage}, all fed from
+     * one {@link SecurityPostures#cookieHeaderConfigurationFor} result — over a route whose posture
+     * diverges from the strict baseline in its body cap alone, the shape that first exposed the
+     * post-route regression for {@code Authorization}.
+     */
+    @Nested
+    @DisplayName("past route selection, on a route whose posture diverges from the strict baseline")
+    class PostRoute {
+
+        private static final String ROUTE_PREFIX = "/auth/realms/sample";
+
+        @Test
+        @DisplayName("key declared: a Cookie value between the strict cap and the declared cap is admitted post-route too")
+        void declaredKeyAdmitsTheKeycloakCookiePastRouteSelection() {
+            Route route = divergentRoute();
+            PipelineRequest request = requestWithHeader("Cookie", keycloakRestartCookie());
+
+            assertAll(
+                    () -> assertNotEquals(STRICT, route.securityConfiguration(),
+                            "control precondition: the route posture must diverge, or stage 3 skips its re-run"),
+                    () -> assertEquals(STRICT.maxHeaderValueLength(),
+                            route.securityConfiguration().maxHeaderValueLength(),
+                            "control precondition: the route keeps the strict header-value cap"),
+                    () -> assertTrue(KEYCLOAK_RESTART_COOKIE_LENGTH > STRICT.maxHeaderValueLength()
+                                    && KEYCLOAK_RESTART_COOKIE_LENGTH < DECLARED_CAP,
+                            "control precondition: the cookie sits between the strict cap and the declared cap"),
+                    () -> assertDoesNotThrow(() -> drive(serverModeGateway(DECLARED_CAP), route, request),
+                            "the declared cap must survive stage 3's re-run under the route's configuration"),
+                    () -> assertEquals(route.id(), Objects.requireNonNull(request.selectedRoute()).id(),
+                            "the request must have been selected onto the divergent route, so stage 3 ran"));
+        }
+
+        @Test
+        @DisplayName("key omitted: the same Cookie value on the same route is rejected (matched control)")
+        void omittedKeyRejectsTheKeycloakCookie() {
+            Route route = divergentRoute();
+            PipelineRequest request = requestWithHeader("Cookie", keycloakRestartCookie());
+
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> drive(serverModeGateway(null), route, request));
+
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+            assertTrue(thrown.getMessage().contains("INPUT_TOO_LONG"),
+                    () -> "the refusal must be the length check, got: " + thrown.getMessage());
+        }
+
+        /** The edge's inbound chain up to and including stage 3, with one carve-out policy for both stages. */
+        private void drive(GatewayConfig gateway, Route route, PipelineRequest request) {
+            SecurityConfiguration cookiePolicy =
+                    SecurityPostures.cookieHeaderConfigurationFor(gateway, activeRuntime(), STRICT);
+            SecurityConfiguration authorizationPolicy =
+                    SecurityPostures.authorizationHeaderConfigurationFor(gateway, STRICT);
+            new BasicChecksStage(STRICT, counter, cookiePolicy, authorizationPolicy).process(request);
+            new CanonicalPathGuard().process(request);
+            new RouteSelectionStage(List.of(route)).process(request);
+            new ThoroughChecksStage(STRICT, counter, cookiePolicy, authorizationPolicy).process(request, List.of());
+        }
+
+        /** A strict route whose posture differs from the baseline in its body cap alone. */
+        private Route divergentRoute() {
+            SecurityConfiguration raisedBodyCap = SecurityConfigurations.builderSeededFrom(STRICT)
+                    .maxBodySize(STRICT.maxBodySize() * 2)
+                    .build();
+            return Route.builder()
+                    .id("idp-realm-sample")
+                    .match(MatchConfig.builder().pathPrefix(ROUTE_PREFIX).build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("https", "keycloak", 8443, ROUTE_PREFIX))
+                    .securityConfiguration(raisedBodyCap)
+                    .securityProfile(SecurityProfile.STRICT)
+                    .build();
+        }
+    }
+
+    /**
      * A {@code Cookie} header value of exactly {@link #KEYCLOAK_RESTART_COOKIE_LENGTH} characters, shaped
      * like the cookie pair Keycloak sets on its login page.
      */
@@ -211,6 +302,7 @@ class ServerModeCookieHeaderCapTest {
         return PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/auth/realms/sample/login-actions/authenticate")
+                .queryParameters(List.of())
                 .headers(Map.of(name, List.of(value)))
                 .build();
     }
