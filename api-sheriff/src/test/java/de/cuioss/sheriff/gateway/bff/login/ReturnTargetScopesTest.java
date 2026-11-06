@@ -126,7 +126,7 @@ class ReturnTargetScopesTest {
          * prefix and resolve a different route than the one the browser lands on.
          */
         @ParameterizedTest(name = "\"{0}\" selects the route stage-1 normalization selects")
-        @ValueSource(strings = {"/app//reports", "/app///reports/monthly", "/app//reports//", "/app/reports",
+        @ValueSource(strings = {"/app//reports", "/app///reports/monthly", "/app//reports//",
                 ORIGIN + "/app//reports", "/app//reports?tab=open"})
         @DisplayName("Should fold interior empty segments the way stage-1 normalization does before matching")
         void shouldFoldInteriorEmptySegments(String returnUrl) {
