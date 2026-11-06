@@ -174,6 +174,7 @@ needs no translation.
 - **2026-11-05 — the five `PLAN-V02-55` advisories MERGED as #562 (`341f06a5`); their Watch is struck.** Fixed outside the plan lifecycle on the operator's direct instruction. The concurrency contract test now reads the effective JUnit parallel settings from every source (plugin and execution `configurationParameters`, `systemPropertyVariables`, `argLine`, the root POM and `junit-platform.properties`). The fixture-image wiring test reads compose flags with pflag semantics. Descriptor derivation is one shared helper, with tests for its guards. The stale `BffTokenRefreshIT` javadoc is corrected. All CI passed, SonarCloud included. CodeRabbit's last finding (an attached short-option value such as `-psheriff`) was answered as out of scope and resolved: no POM uses that spelling, and the guard fails loudly on it rather than silently. `PLAN-V02-53` is emittable from main at or after `341f06a5`.
 - **2026-11-05 — operator rulings after the V02-53 start; `PLAN-V02-56` staged as the epic's final cleanup plan.** (1) The red Integration Tests push run `41340502392` stays a Watch. (2) Pre-commit formatter churn is CLOSED: #559 applied the layout on main and no plan has reported it since; both churn Watches are struck. A new recurrence is a new Watch, not a reopening. (3) `PLAN-V02-12`'s held D3 goes into a final cleanup plan, together with the other Watches that are code, test or doc work with no external trigger: `PLAN-V02-56` (WS-01, 9 deliverables, depends on `PLAN-V02-53` merged because it shares nine files with it; its spec lists what stays a Watch and why). Each Watch it retires is tagged `[OWNER PLAN-V02-56 Dn]`. (4) Housekeeping done: the `plan-v02-49-part-c` worktree is removed, and the kidicap `PLAN-29` D6 hand-off text went to the operator, so that Watch is struck (this ledger wrote nothing to kidicap's). (5) The ADR-0059 Watch is struck: the record reads `Accepted` on `origin/main` at `954d7d88`.
 - **2026-11-05 — `PLAN-V02-53` LANDED as #565 (`7a5d52ad`); verified with D2 cut; `PLAN-V02-55` verification (c) settled.** Six of eight deliverables shipped. D2 (#324) was cut under its split guard and is a Watch. #323, #325, #326, #327 and #328 are closed; #329 was already closed by #561. The operator owes the #325 title edit ("four places"). The `main` Maven Build and Integration Tests at `7a5d52ad` are green, and so is the PR-attached benchmark. The two `main` IT runs after `d70d2f16` (`954d7d88`, `7a5d52ad`) settle V02-55 (c): all five moved classes and the control pass inside their baselines, so `landings/PLAN-V02-55.md` is now verified and its Watch struck. The #558 benchmark Watch is struck too, because the later PR-attached benchmarks (`41984815064`, `42088188951`) succeeded. Folded into `PLAN-V02-56`: the four #565 code-review advisories (D7) and the unformatted `TerminalActionRulesRedirectTest.java` (D9). That file arrived unformatted via #561's fork commits, so it is not a recurrence of the closed churn class. Inbox: 10 messages drained. 001 and 002 are local recurrences of Standing Rule 3; 003-006, 008 and 009 are routed to plan-marshall `lessons-routing`; 007 is folded into V02-56 D9; 010 is the landing. See `landings/PLAN-V02-53.md`.
+- **2026-11-06 — `PLAN-V02-56` LANDED as #566 (`793612f6`); verified; the epic's queue is empty.** All 11 deliverables (the spec's nine, D1 split into parts) shipped in one PR of 74 files; the operator waived the split guard. The `/auth`-fronted Keycloak sample ships as an overlay of the compose sample with a CI login lane. Eight Watches owned by the plan are struck (config errors name the loaded file; the uniform-404 floor is now twelve paths; the inventories are bound by contract tests; the V02-21, V02-23 and V02-53 advisories and the V02-49 advisories are fixed; the `DispatchStage` re-review found nothing to change; the ws-admission header and doc residue are corrected). The V02-01 D7 residue is replaced by a 0.3.0 carry Watch. Scope added under the operator's "Hold the line" ruling: the server-mode key `oidc.session.max_cookie_header_value_length` (schema, `doc/configuration.adoc`, ADR-0019), set to 4096 in the sample from a measured 2474-character worst case. Breaking (pre-1.0): an endpoint file whose name differs from its id is refused at load. The RELEASE-GUARD DOCS Watch is also struck: #563 (`0113f51b`) moved the `cuioss-organization` pins to v0.44.0, updated `release-process.adoc` in the same PR, and passed the guard-docs check. Main CI at `793612f6` is green; the PR-attached benchmark `42232032139` succeeded.
 - **2026-11-04 — Outside PR #555 TAKEN (operator: "do as proposed"); `PLAN-V02-53` D7 shrunk.** The orchestrator read the #555 diff: 3 commits on `d70d2f16`, `TerminalActionRules`, `TerminalActionRulesRedirectTest`, `doc/configuration.adoc`, +98/-1. It refuses only a route-scope `forward` block on a redirect route, keeps endpoint scope accepted, leaves asset routes out, and follows the `cookies` precedent. Its scope matches D7. A text read found no route-level `forward` on any committed redirect route, so it breaks no committed config. Before merge it owes: approval of its workflow runs (only CodeRabbit (skipped), Sourcery and the CLA check report so far), green Maven Build, Integration Tests and SonarCloud, and a CodeRabbit review. Approving and merging are the operator's actions; the orchestrator does no write-side CI. D7 in the spec was rewritten to the remainder (a) to (c), and D8 no longer closes #329. Expected Surface unchanged: `TerminalActionRules` and its test stay declared for the (c) check, so the declaration over-covers rather than under-covers.
 - **2026-11-04 — `PLAN-V02-55` landed and analyzed, partly verified; #423 closed.** Inbox landing complete (`landing-check` complete: true, no missing keys). #558 merged as `d70d2f16` through the merge queue, and the `main` push run `41489416591` is green. Per-class times were re-read from `cuioss/cuioss.github.io` `api-sheriff/integration-tests-2026-11-02-1733-2780/failsafe-reports/`: IdleTimeout 162.9, TokenRefresh 48.3, FapiControls 27.7, ClientSecretMode 26.9, TlsRelaxation 34.8, RefreshReuse control 72.7 s. All five moved classes carry `sleep-bound`. Surface delta `expansion_detected` (declared 8, realized 16, 9 added: `OneOffGatewayContainers`, its test, two wiring tests, two further ITs, two dev docs and ADR-0070; `FailsafeConcurrencyContractTest` declared but untouched). The footprint shares 11 files with `PLAN-V02-53`, which is sequenced after it already, so this is no unpredicted collision; `PLAN-V02-53` must re-read those files from `main` at or after `d70d2f16`. The PR-attached benchmark run `41489422457` failed on a Maven Central 502 before any benchmark ran (Watch). The five code-review advisories are unstaged and left to the operator (Watch).
 - **2026-11-01 — `PLAN-V02-52` landed and analyzed; `PLAN-V02-55` emitted on the operator's standing instruction.** `PLAN-V02-52` shipped as #554 (`48715de4`, 98 files): `0022` and `0030` relocated, ADR-0079 written, 71 records, zero amendment-label citations left (content search on `origin/main`), 266 occurrences rewritten. Landing: `landings/PLAN-V02-52.md`. The CodeRabbit merge-risk lead on #544 was real (ADR-0008's timeout sentence), and the plan corrected it although the spec had reserved that sentence for kidicap `PLAN-29` D6. Surface delta `expansion_detected` (26 undeclared files, 15 of them in `integration-tests/` or in tests other staged plans own); I read every hunk and all of them are comment, Javadoc, string or `@DisplayName` text, so neither `PLAN-V02-55` nor `PLAN-V02-53` is invalidated. The `Integration Tests` push run on the merge commit failed in `generate-mtls-certificates` (Watch). Gate for `PLAN-V02-55`: `corpus cross-check` run again, all 55 specs declarative and comparable, nothing running, 0 shared files, no overlap prompt, no blocking verdict; duplicate-run guard clean (no worktree, PR or plan directory). Recorded `launched`, not `running`. `PLAN-V02-53` stays staged: it waits for `PLAN-V02-55` and for the operator's ruling on outside PR #555 (which does `PLAN-V02-53` deliverable 7).
@@ -571,8 +572,21 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
+- **TWO ADVISORY NITS LEFT ON `main` BY #566** (added 2026-11-06, `PLAN-V02-56` landing). The `IdpFrontingCanonicalPathTest`
+  Javadoc says "two" cuts where there are three; a probe comment in the `/auth`-fronted login check says "first and last" where the
+  script probes the second-to-last entry. Left so the merged head would not move. Fold into the next plan that touches either file.
+
+- **DEPENDABOT SECURITY UPDATE FOR `minimatch` IN `/demo-client` FAILS** (added 2026-11-06, `PLAN-V02-56` landing). The
+  `Dependabot Updates` security job (npm, `/demo-client`, `minimatch` advisories) failed at `update_files` on 2026-11-05 21:17 and
+  again on 2026-11-06 14:13 (run `42232049339`, on `793612f6`); the version-update jobs between them passed. Not a required check
+  and not a gateway runtime dependency (demo-client e2e tooling). Before the 0.2.0 cut: read the job log or the repository's
+  Dependabot alerts and decide whether the transitive `minimatch` needs a manual override.
+
+- **`marshal.json` IS STALE AGAINST THE PLUGIN** (added 2026-11-06, `PLAN-V02-56` landing advisory). Recorded 0.1.1986, plugin
+  0.1.2036. Operator action: run `/marshall-steward` before the next plan. Re-check `build.map`'s four hand-added entries
+  afterwards (CLAUDE.md, `BuildGateCoverageContractTest`).
+
 - **#324 OPEN: THE DECLARED-LIMIT INVENTORY GUARD STILL PARTITIONS FILES, NOT KEYS** (added 2026-11-05, `PLAN-V02-53` landing). D2 was cut under the spec's split guard: key-level derivation means about 1,000 (file, key) rows over 22 limit-bearing descriptors, the matrix's key column is non-uniform, and YAML anchors resolve one literal to several qualified paths. #324 carries the reason in a comment. It is a 0.3.0 candidate; carry it at close.
-- **[OWNER `PLAN-V02-56` D2] CONFIG ERRORS NAME `endpoints/{id}.yaml`, NOT THE FILE THAT WAS LOADED** (added 2026-11-04, CodeRabbit on #555). `RuleSupport.endpointFile(endpoint)` derives the reported file from the endpoint id, and the loader accepts any `.yaml` name, so an endpoint `id: redirects` loaded from `endpoints/legacy.yaml` is reported against `endpoints/redirects.yaml`. It affects every endpoint-scoped boot rule (45 call sites). Unverified by the orchestrator beyond reading the helper. A fix carries the source file through `EndpointConfig`, or the loader enforces file name = id. No plan is staged; the operator decides.
 - **MAIN PUSH RUN OF `Integration Tests` IS RED AT `48715de4`, A "Broken pipe" IN `generate-mtls-certificates` BEFORE ANY TEST RAN** (added 2026-11-01, `PLAN-V02-52` landing). The `merge_group` run on the same tree passed. The step is `exec:3.6.4:exec` of the certificate script in `integration-tests`; the merged footprint is comments and prose, so I read it as a flake of that step, on one run of evidence. Nobody re-ran it. If a re-run is green, strike this; if the step breaks again on any commit, it is a defect of the script or of the runner and wants a plan. Closing it needs a re-run of run `41340502392`, which the orchestrator does not do. **Operator ruling 2026-11-05: stays a Watch** (not struck as a flake, no plan); a second failure of the step on any commit makes it a defect.
 - **CODERABBIT'S MERGE-RISK TEXT ON #544 NAMES INACCURACIES IT DOES NOT LOCATE** (added 2026-10-30, `PLAN-V02-48` landing).
   The benchmark half of this Watch is closed: the PR-attached run for #544's head (`41091771555`) concluded `success`, read 2026-10-31. CodeRabbit's final summary on #544 says
@@ -608,21 +622,11 @@ doc-only or build-light plan for the second and third slots.
   before classifying it as a flake; the plan's local notes hold a second candidate cause. **Recurrence note 2026-10-30:** the
   same class failed again in `declaredBodyReachesTheUpstreamWithItsLength` (see the Watch above), so the class has now
   shown two failures in two landings.
-- **[OWNER `PLAN-V02-56` D4] UNIFORM-404 FLOOR MEASURED ON EIGHT PATHS ONLY** (added 2026-10-29, `PLAN-V02-50` landing, residual D8.R1). The declared-length
-  fast-reject, a route-scoped filter violation, the cookie-forwarding same-origin refusal and the `protocol: grpc` route are
-  caller-drivable pre-trust paths outside `EnumerationOracleIT`'s measurement. ADR-0073 A1 and `gw-16` state the scope as eight.
-  No owner; fold into the next plan that touches `edge/error/` or the oracle IT. `PLAN-V02-07` landed (#537) and touched `ErrorResponseWriter` but not the oracle IT or
-  the floor, so this stays open; the threat feed changes no answer, which its `ErrorResponseWriterTest::threatFeedChangesNoAnswer` pins.
 - **FINAL-TREE INTEGRATION SUITE NOT RUN LOCALLY FOR #532** (added 2026-10-29, `PLAN-V02-50` landing, residual D4.R1). CI's
   integration lane (JDK 25 and 26, native image) and the post-merge `main` run are green, so this is informational; it is the
   same environmental block `PLAN-V02-11` reported. Retire it with the first plan that runs `-Pintegration-tests` locally to green.
 - **`gw-02` PARTIAL: UPSTREAM RESET PINNED AGAINST AN HTTP/1.1 UPSTREAM ONLY** (added 2026-10-29, `PLAN-V02-50` landing). The
   threat model names the open clause. No owner; a later hardening plan (`PLAN-V02-07` landed without touching it).
-- **[OWNER `PLAN-V02-56` D9] LOW-BUDGET FIXTURE HEADER OVERSTATES ITS FIDELITY** (added 2026-10-28, inbox
-  `plan-v02-11-resource-exhaustion-test-home-001` item 1). `integration-tests/src/main/docker/sheriff-config-ws-admission/gateway.yaml`
-  says the overlay differs from the primary `gateway.yaml` in "exactly two" things; it also lacks
-  `allow_get_with_content_length_body: true` and the TLS `min_version` / `cipher_suites` pins. ADR-0075 was corrected; the comment
-  was not. Comment fix only, no owner; fold into the next plan touching `integration-tests/src/main/docker/**`.
 - **GENERAL-ADMISSION NEGATIVE CONTROL CANNOT WAIT FOR GATEWAY-SIDE ADMISSION** (added 2026-10-28, same message, item 2). The
   control counts a held request once the client subscribed to the withheld body; nothing confirms `EdgeAdmission.tryAdmit()` ran.
   The race can only fail the control loudly, never pass it vacuously (accepted on #534). If it flakes, the fix is an in-flight
@@ -633,14 +637,9 @@ doc-only or build-light plan for the second and third slots.
   last two passed but were not shown failing, so "nothing a test proves is lost" rests on that comparison plus an independent read, not on a final-tree measurement. Re-measure from a clean tree
   (`clean verify -Pcoverage -pl api-sheriff -am`, lesson `2026-10-25-22-001`) if coverage of `config/` or `routing/` is ever in question. (2) `GatewayEdgeEarlyResponseResetTest.uploadsStillSendingWhenAnsweredStayOnOneConnectionUnderTheEdgesOptions`
   failed once in a unit run under host load around 30 (part C), passed alone and on rerun, file untouched, cause not established; same family as the HTTP/2 early-reset Watches above, a recurrence is a suspected
-  production defect, reproduce under `ActiveProcessorCount=1`. (3) Done 2026-11-05: the `plan-v02-49-part-c` worktree and branch were removed (clean, head `0aca31d0` = #549's head, merged as `9e95440a`). (4) OWNER `PLAN-V02-56` D8. Advisories the plan left open: `ConfigFixtures.anchoredEndpointSeed` Javadoc says anchor where endpoint is meant, `baseRoute` and `backendUpstream`
+  production defect, reproduce under `ActiveProcessorCount=1`. (3) Done 2026-11-05: the `plan-v02-49-part-c` worktree and branch were removed (clean, head `0aca31d0` = #549's head, merged as `9e95440a`). (4) Done 2026-11-06 by #566 (`PLAN-V02-56` D8): the advisories below were fixed and the `DispatchStage` re-review found nothing to change. Advisories the plan left open: `ConfigFixtures.anchoredEndpointSeed` Javadoc says anchor where endpoint is meant, `baseRoute` and `backendUpstream`
   have one consumer each, `TopologyResolverTest.stillThrows...AlongsideSkippedAdditionalAlias` is misnamed (its alias resolves), `PortalConfig.DEFAULT_CACHE_SECONDS` has no reader outside its class, the marked outcome of
   `retireFailedRelayConnection` looks unreachable from the dispatch path, and the `test-quality.adoc` format validator reports existing header and list warnings.
-- **[OWNER `PLAN-V02-56` D5] HAND-MAINTAINED INVENTORIES NOT BOUND BY A TEST — NO OWNER** (added 2026-10-27, inbox
-  `plan-v02-05-response-hygiene-012`). `DocumentedHeaderSetsContractTest` binds the identity set and both protocol tiers to
-  their constants. The route-field inventory (`doc/configuration.adoc`, `endpoint.schema.json`) and the never-forward and
-  response-strip sets are still hand-maintained, and the repository's review bot re-raises such lists until a test binds
-  them. Bind them in whichever plan next touches those sets.
 - **FLAKY `GatewayEdgeRouteTest$RelayStartFailure.relayThatFailsToStartReleasesTheUpstreamResponse` — FIXED BY `PLAN-V02-50` (#532), WATCH 1 MORE RUN** (added
   2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`; fixed 2026-10-29). The test is rewritten to a deterministic shape
   (a 4 MiB unread upstream body, an awaited condition) and the relay release path it exposed was fixed
@@ -685,22 +684,6 @@ doc-only or build-light plan for the second and third slots.
   sample runs only against a local build through `API_SHERIFF_IMAGE`. CI proves the HTTPS variant's login
   only; the plain-HTTP variant (`start-sample.sh --plain-http`) was proven locally.
 
-- **RELEASE-GUARD DOCS CHECK FAILS A PIN MOVE UNTIL THE SECTION IS RE-CHECKED** (added 2026-10-22, from the
-  `PLAN-V02-22` landing, #512). New workflow `.github/workflows/release-guard-docs.yml` runs on pull
-  requests into `main` that touch `release.yml`, `doc/development/release-process.adoc` or itself, with
-  `ReleaseGuardPinDocsContractTest` behind it. When the `cuioss-organization` release workflow or the
-  `release-guard` pin moves, the pins and quoted reason lines in the section must be re-read first. The
-  check is intended; the Watch exists so that the first pin bump (Renovate or manual) is not read as a
-  broken build. It is path-triggered, so an absent check-run is not a pass (standing rule 2). Close it
-  once one pin bump has gone through the check.
-
-- **[OWNER `PLAN-V02-56` D9] `PLAN-V02-21` DOCUMENTATION LEFTOVERS, NONE STAGED** (added 2026-10-13, from the landing).
-  ADR-0031 line 115 still says the integration stack runs "seven gateway instances"; there are twelve.
-  `demo-client/scripts/start-dev-environment.sh` keeps a literal `120` for its Keycloak wait (lines
-  244–260), against the amended ADR-0031's one-named-constant rule. Both are still present at `abf911dc`:
-  `PLAN-V02-22` (#512) edited the script but did not take the literal. No owner; fold them into the next
-  plan that touches ADR-0031 or the script, or into `PLAN-V02-04`'s truth check for the ADR.
-
 - **HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS, NONE STAGED** (added 2026-10-13). The `main` push
   `Maven Build` on `09edaea9` (#431, run 38364519502) failed in `build (25)`:
   `GatewayEdgeFramingCorpusTest.wellFramedControl` — *"the drain request must be proxied: HTTP/1.1
@@ -728,15 +711,6 @@ doc-only or build-light plan for the second and third slots.
   whether an early answer plus the abortive upstream close can still send CANCEL or GOAWAY to unrelated
   streams. Same owner rule as above. Source: inbox `plan-v02-46-upstream-close-after-early-answer-001`.
 
-- **[OWNER `PLAN-V02-56` D7] `PLAN-V02-23` (#515) ADVISORIES LEFT UNFIXED, NONE STAGED** (added 2026-10-24, from the landing). The
-  plan left 7 code-review and 15 functional-review advisories open. The landing names these: commit messages
-  that still say `ApiSheriff-123` (history, not fixable); the reader list in `http/package-info.java`;
-  `RouteTableBuilder` emitting `ApiSheriff-101` on terminal routes; the `@return` wording of `setCookieName`;
-  the BFF-2 heading in `doc/quality-report/`; the outline's D2 change note. Read the full list in the plan's
-  archived findings before acting. Owner: whichever plan next touches `config/RouteTableBuilder`, `http/` or
-  `doc/quality-report/`, or a dedicated cleanup. The security audit also recorded one design follow-up; it is
-  in the git-ignored local security notes only.
-
 - **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy
   key-material generators from TokenSheriff, proposal 7) and #423 (IT concurrency not realised: the
   idle-timeout legs and four sequential suites). Quality points the brief's "no decrease" rule
@@ -747,14 +721,11 @@ doc-only or build-light plan for the second and third slots.
   which the PR body itself retracts. The cause is `<append>true</append>` on one `target/jacoco.exec` with no `clean` in the coverage command (corroborated 2026-10-25 from `pom.xml`); `PLAN-V02-27` hit it again and lesson `2026-10-25-22-001` records the rule (measure with `clean`). A profile that resets its own exec data would be a build change and has no plan. Fourteen tests were removed as duplicates, each with a named
   survivor in the hygiene commit message — not re-read here.
 
-- **[OWNER `PLAN-V02-56` D3] `PLAN-V02-01` D7 RESIDUE, NONE STAGED** (added 2026-10-09, from the landing). Not found in the
-  landed diff: a recorded verdict on `PLAN-V02-08`'s two status choices (`502` on a refused widening
-  re-drive push, `400` with ApiSheriff-134 for an unbound token on a widening callback); whether the
-  refresh-revocation and nonce-retry items folded into D7 on 2026-10-06 were handled was not
-  checked. `BFF-21` itself names two controls no test asserts (`no-store` on a gateway-rendered page
-  that sets a cookie; no upstream `Set-Cookie` relayed on a WebSocket upgrade). D6's check of
-  `ClientHelloSniParser` for open Sonar findings was not reported. The per-attack-class audit
-  catalogue is an operator-only document and is not in the repository. Stage a plan when wanted.
+- **ACCEPTED BFF RESIDUALS, CARRY TO 0.3.0** (added 2026-11-06, `PLAN-V02-56` D3 report). All three `PLAN-V02-01` D7
+  items are still open and publicly documented: a refresh token in a refused response is discarded, not revoked (BFF-14
+  residual); logout performs no RFC 7009 revocation (the revocation seam is bound to a no-op); the engine's nonce-retry gaps
+  (ADR-0058 decision 15). The `ClientHelloSniParser` open-Sonar check from V02-01 D6 was never reported; it rides on the
+  operator's Open Defect 8 Sonar check. Candidates for api-sheriff-0-3-0, not 0.2.0 blockers.
 
 - **DECLINED REFACTOR FROM #387, NONE STAGED** (added 2026-10-06). CodeRabbit proposed deriving the
   offline validator's NOT CHECKED catalogue from shared refusal descriptors instead of a hand-kept list
@@ -762,12 +733,6 @@ doc-only or build-light plan for the second and third slots.
   Stage a plan when the hand-kept list drifts or the refusal paths are touched anyway.
 
 - > ↪ Relocated to `settled.md` § "Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512"
-- **[OWNER `PLAN-V02-56` D8] OPERATOR DECISION OWED: a simplification in `DispatchStage`'s inbound-body handling** (added
-  2026-10-05, inbox `fix-four-audit-findings-and-bff-flaky-test-001.md`). The plan behind #385 left one
-  simplification finding there for an operator decision instead of changing it. The finding text is
-  not in this ledger; read it in that plan's archived findings. `DispatchStage` is shared with live
-  work, so decide before another plan touches the edge relay.
-
 - **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08` — FOLDED 2026-10-06: the refresh-revocation, nonce-retry and two status-code items into `PLAN-V02-01` D7; the same-key-file refusal and the `cnf` cookie size into `PLAN-V02-20` D3a (shipped in #527); the canonical-form check into `PLAN-V02-12` D4; login rate limiting to kidicap `PLAN-21`; the three imprecise texts and the conformance-suite run stay here, unstaged** (added 2026-10-03; the plan's claims,
   each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
   which now drives one outbound pushed request per call (threat model `BFF-20`) — owned by the sibling
