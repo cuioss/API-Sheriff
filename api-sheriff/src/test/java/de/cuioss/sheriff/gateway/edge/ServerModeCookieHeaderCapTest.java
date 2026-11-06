@@ -259,9 +259,10 @@ class ServerModeCookieHeaderCapTest {
         void omittedKeyRejectsTheKeycloakCookie() {
             Route route = divergentRoute();
             PipelineRequest request = requestWithHeader("Cookie", keycloakRestartCookie());
+            GatewayConfig gateway = serverModeGateway(null);
 
             GatewayException thrown = assertThrows(GatewayException.class,
-                    () -> drive(serverModeGateway(null), route, request));
+                    () -> drive(gateway, route, request));
 
             assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
             assertTrue(thrown.getMessage().contains("INPUT_TOO_LONG"),
