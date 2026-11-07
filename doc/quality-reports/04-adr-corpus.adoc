@@ -1,225 +1,66 @@
-= Group 4 Review — Architectural Decision Records (`doc/adr/*.adoc`)
+= Group 4 -- Architectural Decision Records
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents
 :sectnums:
 :source-highlighter: highlight.js
 
-== Scope & Quantitative Summary
+== Scope
 
-This report audits all 71 Architectural Decision Records in `doc/adr/*.adoc` (`12,962` lines, ordinal range `0001`–`0078` with 7 unused numbers `0013, 0016, 0020, 0021, 0022, 0041, 0042`) against `doc/development/adr-writing.adoc`, `engineering-narrative.md`, and the ADR index in `doc/README.adoc`.
+`doc/adr/` holds 71 records (13,043 lines). Their filenames are the decision sentence, for example `0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc`. The template and rules are in `doc/development/adr-writing.adoc`:
 
-[cols="2,1,1,2", options="header"]
+* the skeleton is Status, Decision, Alternatives rejected, Consequences, Links;
+* the template prescribes `:toc-title:` and `:source-highlighter:`;
+* the hard ceiling is 500 body lines (`AdrRecordLengthContractTest`), and there is no smaller line target.
+
+ADRs are point-in-time records, so slimming removes only material that is verbatim duplicated elsewhere.
+
+== Metadata
+
+* [ ] *G4-01*: ADR-0057 says in its body (≈101) that it supersedes part of ADR-0049, but its `// supersedes:` line is empty. Fill it in.
+* [ ] *G4-02*: Normalise `// supersedes:` in ADR-0062 (`5`) and ADR-0074 (`27`) to zero-padded ordinals (`0005`, `0027`), as ADR-0035 does.
+* [ ] *G4-03*: Verify each candidate forward link in the ADR bodies before adding it: 0008 to 0060/0066, 0018 to 0058/0072, 0027/0039/0063 to 0074, and 0076 to 0078.
+
+== Structure
+
+* [ ] *G4-04*: ADR-0005 uses `--` as the title separator. Align it with the corpus convention.
+* [ ] *G4-05*: Six records (0017, 0025, 0027, 0028, 0032, 0038) have `:toclevels: 2` and lack `:toc-title:` and `:source-highlighter:`. Align them with the template.
+* [ ] *G4-06*: ADR-0027 (345 lines) has extra top-level sections (`== Readiness ...` ≈288, `== References`). Fold them into the template skeleton and keep `[[_live_key_set_readiness]]`.
+
+== Wording
+
+* [ ] *G4-07*: Remove the filler "simply" at 0003 ≈86, 0027 ≈219, 0029 ≈109, 0034 ≈88, 0054 ≈139, 0061 ≈29 and 0063 ≈31/37.
+
+== Slimming
+
+Fifteen records exceed 250 lines:
+
+[cols="1,1", options="header"]
 |===
-| Metric / Category | Current State | Target State | Planned Action
+| ADR | Lines
 
-| Total ADR files (`doc/adr/*.adoc`)
-| 71 files
-| 70 files
-| Relocate `ADR-0075` (testing convention, not an architectural decision) into `doc/development/test-corpus-integrity.adoc`.
-
-| Total line count
-| 12,962 lines
-| ~7,500 lines (-42%)
-| Slim the 15 ADRs exceeding 250 lines to `<= 180` lines and compress chatty patch-archaeology / rhetorical filler across all 70 surviving ADRs while preserving all `[[_...]]` anchors.
-
-| Broken internal cross-reference anchors
-| 3 broken links
-| 0 broken links
-| Fix `0036:106` (`_consequences`), `0048:69` (`_risks`), and `0057:103` (`_accepted_costs`).
-
-| Stale status labels in `doc/README.adoc`
-| 6 mismatches
-| 0 mismatches
-| Update `0010, 0017, 0018, 0019, 0036, 0037` from `proposed` to `accepted` in `doc/README.adoc`.
-
-| Missing/inconsistent supersession & cross-links
-| 7 gaps
-| 0 gaps
-| Fix `0049 -> 0057` header, normalize `0062` & `0074` metadata, and add bidirectional links (`0008`, `0018`, `0027/0039/0063`, `0076`).
-
-| Structural / heading-depth violations
-| 2 ADRs (`0005`, `0027`)
-| 0 violations
-| Flatten `====` in `0005` (`L78, 95`), fix title separator in `0005`, and rewrite `0027` to the 4-section ADR skeleton (`:toclevels: 3`).
-
-| Template instructional comments left in files
-| 28 ADRs (`0001`–`0035`)
-| 0 ADRs
-| Strip `// Maintain the metadata block...` boilerplate comments.
-
-| `asciidoc validate` errors / warnings in `doc/adr/`
-| 69 files with errors/warnings
-| 0 errors, 0 warnings
-| Add `:toc-title: Table of Contents` and `:source-highlighter: highlight.js` to 69 ADRs and run `asciidoc format --type lists`.
-|===
-
-== Contract-Test Constraints on `doc/adr/`
-
-1. *`AdrOrdinalUniquenessContractTest`*: Every file in `doc/adr/` must begin with a unique 4-digit prefix `^\d{4}-`.
-2. *`AdrRecordLengthContractTest`*: Every file in `doc/adr/` must have a `== Status` heading, at least one subsequent `== ` heading, and at most `500` body lines.
-3. *Inbound Deep-Link Anchors (`[[...]]`)*: Architecture, user, development, and sibling ADR documents deep-link to specific section anchors inside `doc/adr/*.adoc` (for example, `0027#_live_key_set_readiness`, `0058#_cookie_envelope_wire_format`, `0060#_why_not_in_memory_sliding_window_rate_limiting`, `0069#_accepted_costs`, `0073#_why_four_separate_executors`). Every existing `[[_...]]` anchor inside `doc/adr/*.adoc` *must* be preserved when slimming.
-
-== Detailed Findings and Actionable Tasks
-
-=== 1. Broken Internal Links in `doc/adr/` (3 Bugs)
-
-`pm-documents:ref-asciidoc:asciidoc verify-links` fails on three internal cross-references where an ADR's `== Decision` section references a heading anchor from an older template:
-
-1. `doc/adr/0036-header-sanitization-and-identity-propagation.adoc:106` references anchor `_consequences`, but the section at `L139` is titled `== Trade-offs and Limitations`.
-2. `doc/adr/0048-gateway-request-pipeline-stages.adoc:69` references anchor `_risks`, but the section at `L88` is titled `== Trade-offs and Limitations`.
-3. `doc/adr/0057-virtual-thread-pinned-carrier-gate.adoc:103` references anchor `_accepted_costs`, but the section at `L130` is titled `== Trade-offs and Limitations`.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G4-01*: Update the broken internal cross-references (`_consequences` at `0036:106`, `_risks` at `0048:69`, and `_accepted_costs` at `0057:103`) to point to `_trade_offs_and_limitations` (`Trade-offs and Limitations`).
-
-=== 2. Supersession Metadata & Bidirectional Cross-Link Repairs
-
-==== Findings
-
-* *`ADR-0049` & `ADR-0057`*: `ADR-0049` (`0049-netty-event-loop-blocking-detection.adoc:13`) states `Superseded by ADR-0057`, and `ADR-0057` (`L137`) states it supersedes `ADR-0049`, but `0057` is missing `// supersedes: 0049` in its progressive-disclosure metadata header.
-* *`ADR-0062` & `ADR-0074` metadata format*: Use `// supersedes: ADR-0005` and `// supersedes: ADR-0027 (partially)` instead of bare 4-digit numbers (`0005`, `0027`) as specified in `doc/development/adr-writing.adoc`.
-* *Missing forward/backward amendment links*:
-  - `ADR-0008` (`0008-rate-limiting-architecture.adoc`) was substantially amended by `ADR-0060` (trusted-proxy IP extraction) and `ADR-0066` (atomic sliding-window buckets), but `0008` never links forward to `0060` or `0066`.
-  - `ADR-0018` (`0018-bff-token-handler-mode.adoc`) does not link forward to `ADR-0072` (which amended cookie key-rotation map schema) alongside `ADR-0058`.
-  - `ADR-0027`, `ADR-0039`, and `ADR-0063` are partially superseded/amended by `ADR-0074` (JWKS readiness & discovery health state), but do not link forward to `ADR-0074`.
-  - `ADR-0076` (BFF refresh single-flight & reuse interval) is refined by `ADR-0078` (`reuse_interval` grace window), but `0076` does not link forward to `0078`.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G4-02*: Add `// supersedes: 0049` to `0057-virtual-thread-pinned-carrier-gate.adoc`, and normalize `// supersedes:` in `0062` and `0074` to 4-digit identifiers (`0005`, `0027`).
-* [ ] *TASK-G4-03*: Add forward amendment callouts under `== Status` in `ADR-0008` (-> `0060, 0066`), `ADR-0018` (-> `0058, 0072`), `ADR-0027` / `ADR-0039` / `ADR-0063` (-> `0074`), and `ADR-0076` (-> `0078`).
-
-=== 3. Structural Violations (`ADR-0005`, `ADR-0027`, and `ADR-0075`)
-
-==== Findings
-
-* *`ADR-0005` (`0005-quarkus-extension-selection.adoc`)*:
-  - Uses `--` instead of `:` in its level-0 title (`= ADR-0005 -- Quarkus Extension Selection`).
-  - Contains two level-4 headings (`====`) at `L78` and `L95`, violating `:toclevels: 3`.
-  - Is already `superseded by 0062` (`198` lines -> can be slimmed to a `~70`-line historical record).
-
-* *`ADR-0027` (`0027-startup-configuration-validation-and-readiness.adoc`, 306 lines)*:
-  - Sets `:toclevels: 2` instead of `:toclevels: 3`.
-  - Uses non-standard top-level headings (`== Summary`, `== Validation Split: Startup vs Readiness`, `== Readiness Gate Semantics`, `== Alternatives Considered`) instead of the required 4-section skeleton (`== Status`, `== Context`, `== Decision`, `== Trade-offs and Limitations`).
-  - Must preserve `[[_live_key_set_readiness]]` (`L137`), which is targeted by `doc/architecture/security-model.adoc` and `doc/configuration.adoc`.
-
-* *`ADR-0075` (`0075-integration-test-placement-and-naming-convention.adoc`, 278 lines)*:
-  - Documents a JUnit/Failsafe test-naming convention (`*IT` vs `*Test`), not an architectural decision of the gateway runtime, and spends 120 lines listing historical test renames.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G4-04*: Fix `ADR-0005` title syntax (`= ADR-0005: Quarkus Extension Selection`), flatten `====` at `L78` and `L95`, and slim the superseded body from `198` to `~70` lines.
-* [ ] *TASK-G4-05*: Restructure `ADR-0027` (`306 -> ~190` lines) into the canonical 4-section ADR skeleton (`== Status`, `== Context`, `== Decision`, `== Trade-offs and Limitations`) with `:toclevels: 3`, preserving `[[_live_key_set_readiness]]` and linking to `doc/development/boot-validation-rules.adoc` instead of repeating validator method inventories.
-* [ ] *TASK-G4-06*: Fold the active `*IT` vs `*Test` placement rule from `ADR-0075` into `doc/development/test-corpus-integrity.adoc`, delete `doc/adr/0075-integration-test-placement-and-naming-convention.adoc`, and update its references in `doc/README.adoc` and `doc/development/README.adoc`.
-
-=== 4. Slimming the 14 Remaining ADRs Over 250 Lines
-
-`doc/development/adr-writing.adoc` sets a target range of `80–250` lines per ADR (`AdrRecordLengthContractTest` enforces a hard ceiling of `500` lines). Excluding `ADR-0075` (relocated above) and `ADR-0027` (covered in `TASK-G4-05`), 13 ADRs currently exceed `250` lines because they inline full YAML reference manuals, Java implementation code, or architecture tables now covered in `doc/architecture/` and `doc/configuration/`:
-
-[cols="1,3,1,1,3", options="header"]
-|===
-| ADR | File | Current Lines | Target Lines | Duplication / Bloat to Remove
-
-| `0018`
-| `0018-bff-token-handler-mode.adoc`
-| 411
-| ~210
-| Remove full YAML reference tables and endpoint specifications duplicated in `doc/configuration/authentication-and-oidc.adoc` and `doc/architecture/security-model.adoc`.
-
-| `0037`
-| `0037-fapi-2-security-profile-alignment.adoc`
-| 408
-| ~200
-| Remove requirement-by-requirement status matrices duplicated in `doc/fapi_status.adoc`; update `fapi_next_steps.adoc` links (`L354`, `L383`) to `fapi_status.adoc`.
-
-| `0058`
-| `0058-bff-encrypted-cookie-session-storage.adoc`
-| 367
-| ~210
-| Preserve `[[_cookie_envelope_wire_format]]`; replace operator YAML walkthroughs and key-rotation tutorials with links to `doc/user/bff-cookie.adoc`.
-
-| `0073`
-| `0073-executor-isolation-per-blocking-concern.adoc`
-| 343
-| ~200
-| Preserve `[[_why_four_separate_executors]]`; replace executor configuration tables and test inventories with a link to `doc/architecture/README.adoc`.
-
-| `0060`
-| `0060-trusted-proxy-ip-extraction-and-forwarded-headers.adoc`
-| 309
-| ~190
-| Preserve `[[_why_not_in_memory_sliding_window_rate_limiting]]`; remove duplicated `Forwarded` parser grammar and YAML examples covered in `doc/configuration/security-and-edge-hardening.adoc`.
-
-| `0066`
-| `0066-rate-limiter-concurrency-and-eviction-hardening.adoc`
-| 289
-| ~180
-| Remove CAS loop pseudocode and JUnit test method lists.
-
-| `0074`
-| `0074-jwks-readiness-and-oidc-discovery-health.adoc`
-| 287
-| ~180
-| Strip GitHub issue numbers and version chronology (`0.2.3`/`0.2.4`); link to `doc/architecture/observability-and-errors.adoc` for health payload schema.
-
-| `0076`
-| `0076-bff-token-refresh-concurrency-and-rotation.adoc`
-| 285
-| ~180
-| Remove Java `CompletableFuture` implementation walkthroughs and link to `bff-token-refresh-singleflight.svg`.
-
-| `0046`
-| `0046-cors-preflight-and-origin-validation.adoc`
-| 269
-| ~175
-| Remove full `cors.*` YAML option tables duplicated in `doc/configuration/security-and-edge-hardening.adoc`.
-
-| `0078`
-| `0078-bff-refresh-reuse-interval-grace-window.adoc`
-| 265
-| ~170
-| Remove step-by-step test timeline tables and internal class field inventories.
-
-| `0019`
-| `0019-api-key-and-basic-authentication.adoc`
-| 261
-| ~170
-| Remove YAML configuration reference tables duplicated in `doc/configuration/authentication-and-oidc.adoc`.
-
-| `0040`
-| `0040-security-headers-and-response-hardening.adoc`
-| 256
-| ~165
-| Remove default header value tables duplicated in `doc/configuration/security-and-edge-hardening.adoc`.
-
-| `0036`
-| `0036-header-sanitization-and-identity-propagation.adoc`
-| 252
-| ~165
-| Remove the 5 header-set lists duplicated in `doc/configuration/routing-and-forwarding.adoc`.
+| 0018 | 405
+| 0037 | 403
+| 0058 | 378
+| 0073 | 367
+| 0060 | 348
+| 0066 | 345
+| 0027 | 345
+| 0074 | 343
+| 0076 | 306
+| 0046 | 287
+| 0078 | 283
+| 0040 | 256
+| 0019 | 256
+| 0036 | 255
+| 0075 | 254
 |===
 
-==== Actionable Tasks
+* [ ] *G4-08*: In these records, replace YAML field tables, test inventories and version chronology that `doc/configuration/*` or `doc/architecture/*` already holds verbatim with links. Keep every `[[...]]` anchor.
 
-* [ ] *TASK-G4-07*: Slim the 13 ADRs in the table above so every ADR in `doc/adr/` is `<= 250` lines while preserving all `[[_...]]` anchors.
+== Rejected Findings of the Earlier Draft
 
-=== 5. `engineering-narrative.md` & AsciiDoc Hygiene Across `doc/adr/`
-
-==== Findings
-
-* *First-person pronouns (`we` / `us`)*:
-  - `0051-downstream-maven-build-parent.adoc:34` (`"gives us a single place"`)
-  - `0054-compose-sample-and-release-image-pinning.adoc:100` (`"lets us verify"`)
-
-* *Empty filler words (`"simply"`)*: Present in `0007:66`, `0015:52`, `0028:74`, `0031:61`, `0038:83`, and `0044:91`.
-* *Historical commit/verification diary section*: `0069-test-started-gateway-container-consolidation.adoc:198–207` contains a `=== Verified on` execution diary block.
-* *Leftover template instructional comments*: 28 ADRs (`0001` through `0035`) still carry the 5-line `// Maintain the metadata block...` template instruction comment block at the top of the file.
-* *Missing standard AsciiDoc header attributes*: 69 of the 71 ADRs omit `:toc-title: Table of Contents` and `:source-highlighter: highlight.js`, causing `138` `asciidoc validate` errors across `doc/adr/`.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G4-08*: Rewrite first-person pronouns in `0051:34` and `0054:100` into third-person actor subjects, delete `"simply"` in `0007, 0015, 0028, 0031, 0038, 0044`, delete `=== Verified on` (`L198–207`) in `0069`, and apply sentence-level compression across `doc/adr/*.adoc` (stripping rhetorical lecturing and replacing multi-clause prose lists with compact tables) to bring the ADR corpus to `~7,500` lines (`~105` lines/ADR average).
-* [ ] *TASK-G4-09*: Strip the `// Maintain the metadata block...` instructional template comments from all 28 early ADRs (`0001`–`0035`), keeping only the machine-readable metadata lines (`// status:`, `// date:`, `// tags:`, `// affects:`, `// supersedes:`).
-* [ ] *TASK-G4-10*: Add `:toc-title: Table of Contents` and `:source-highlighter: highlight.js` to all 69 ADRs missing them, and run `python3 .plan/execute-script.py pm-documents:ref-asciidoc:asciidoc format --path doc/adr --type lists --no-backup` so `doc/adr/` validates with `0 errors, 0 warnings`.
+* `<<_consequences>>` (0036), `<<_risks>>` (0048) and `<<_accepted_costs>>` (0057) resolve to auto-generated section IDs. `verify-links` reports them broken because it does not model auto-generated IDs.
+* ADR-0075 records where resource-exhaustion detection is owned. It is not a test-naming convention and stays an ADR.
+* No ADR carries a `// Maintain the metadata block` comment. The progressive-disclosure and authoring-discipline comments come from the template.
+* The "we/us" hits in 0051 and 0054 are inside quotations.

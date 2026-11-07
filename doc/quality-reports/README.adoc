@@ -5,381 +5,178 @@
 :sectnums:
 :source-highlighter: highlight.js
 
-== Scope and Review Objectives
+== Scope
 
-Following the architecture documentation streamlining in PR `#571` (`d9cd9e5f`), this review audits the remaining repository documentation across four groups:
+This review audits the repository documentation outside `doc/architecture/` (streamlined in PR `#571`) in four groups:
 
-* link:01-root-and-reference-docs.adoc[Group 1 — Root & Top-Level Reference Docs] (`README.adoc`, `doc/README.adoc`, `doc/configuration.adoc`, `doc/security-threat-model.adoc`, `doc/technical_aspects.adoc`, `doc/features-analysis.adoc`, `doc/fapi_status.adoc`, `doc/fapi_next_steps.adoc`, `doc/LogMessages.adoc`, and `doc/quality-report/*.adoc`)
-* link:02-operator-and-variants-docs.adoc[Group 2 — Operator Guides & Deployment Variants] (`doc/user/*.adoc` and `doc/variants/*.adoc`)
-* link:03-development-and-module-docs.adoc[Group 3 — Contributor Guides & Module Docs] (`doc/development/*.adoc`, `benchmarks/README.adoc`, `benchmarks/doc/*`, `demo-client/README.adoc`, and `demo-client/doc/*`)
-* link:04-adr-corpus.adoc[Group 4 — Architectural Decision Records] (`doc/adr/*.adoc` and ADR index parity in `doc/README.adoc`)
+* link:01-root-and-reference-docs.adoc[Group 1 -- Root & reference docs]: `README.adoc`, `doc/README.adoc`, `doc/configuration.adoc`, `doc/security-threat-model.adoc`, `doc/technical_aspects.adoc`, `doc/features-analysis.adoc`, `doc/fapi_status.adoc`, `doc/fapi_next_steps.adoc`, `doc/LogMessages.adoc`, `doc/quality-report/`
+* link:02-operator-and-variants-docs.adoc[Group 2 -- Operator guides & variants]: `doc/user/*.adoc` (15 files), `doc/variants/*.adoc` (4 files)
+* link:03-development-and-module-docs.adoc[Group 3 -- Contributor & module docs]: `doc/development/*.adoc`, `benchmarks/`, `demo-client/`
+* link:04-adr-corpus.adoc[Group 4 -- ADR corpus]: `doc/adr/*.adoc` (71 records)
 
-Every document is evaluated against six release-readiness criteria:
+Every finding is verified against the tree at `f438a1ab`. Line numbers are approximate (`≈`) and only locate content. Each task must re-locate its target by heading or anchor before editing.
 
-1. *Correctness, completeness, and consistency* against the current codebase and across sibling documents.
-2. *Splitting overly large documents* so no reference or guide acts as a monolithic wall of text.
-3. *Adding SVG diagrams where sensible* — prioritizing sequence, flow, swim-lane, state, and decision diagrams over static box diagrams so human readers grasp multi-hop protocols, precedence chains, and failure paths immediately.
-4. *Compliance with `engineering-narrative.md`* — three-part arc (concrete problem -> structural response -> honest limit), third-person present tense, actors as subjects, maximum heading depth `<= 3` (`===`), and zero marketing fluff, lecturing prose, or empty filler phrases ("Floskeln").
-5. *Overall size reduction* by replacing prose repetition with concise tables, cross-links, and diagrams.
-6. *Elimination of duplication, ambiguity, and historical overhead* — removing pre-1.0 deprecation/migration essays, dated audit logs, PR review diaries, and internal implementation class/test inventories from operator-facing and architectural prose.
+== Review Criteria
 
-== Corpus-Wide Quantitative Summary
+. *Correctness*: the docs agree with the code and with each other.
+. *Structure*: no monolithic file. Heading depth stays at `===` or above, with deeper levels only where nesting is genuine.
+. *Diagrams*: embed the existing SVGs in `doc/resources/diagrams/` (31 files) before drawing new ones.
+. *Voice*: follow `pm-documents:ref-narrative-styles`. That is reference-spec for `doc/configuration*` and `doc/LogMessages.adoc`, tutorial-walkthrough for `doc/user/`, and engineering-narrative for architecture, development and ADRs.
+. *Size*: replace repetition with tables, cross-links and diagrams.
+. *History*: remove pre-1.0 migration notes, dated lab notebooks, PR disposition logs and leaked tooling or prompt text from current-state prose.
 
-[cols="2,1,1,1,1,1,1,2", options="header"]
+== Quantitative Summary
+
+[cols="3,1,1,2", options="header"]
 |===
-| Group | Current Files | Target Files | Current Lines | Structural Dedup Only | Target Lines (With Prose Compression) | Line Delta | SVG Diagrams (Current -> Target)
+| Group | Files | Lines | Realistic target
 
-| link:01-root-and-reference-docs.adoc[01 — Root & Reference Docs]
-| 16
-| 13
-| 14,653
-| ~5,050
-| *~3,300*
-| *-77%*
-| 0 -> 8 (+8 new SVGs)
-
-| link:02-operator-and-variants-docs.adoc[02 — Operator & Variants Docs]
-| 16
-| 18
-| 11,802
-| ~7,450
-| *~4,600*
-| *-61%*
-| 6 -> 27 (+12 embedded existing, +9 new SVGs)
-
-| link:03-development-and-module-docs.adoc[03 — Development & Module Docs]
-| 25
-| 22
-| 13,604
-| ~4,310
-| *~3,100*
-| *-77%*
-| 9 -> 13 (+4 new SVGs)
-
-| link:04-adr-corpus.adoc[04 — ADR Corpus (`doc/adr/`)]
-| 71
-| 70
-| 12,962
-| ~10,100
-| *~7,500*
-| *-42%*
-| 0 -> 0 (cross-links to architecture/user SVGs)
-
-| *Total Reviewed Corpus*
-| *128*
-| *123*
-| *53,021*
-| *~26,910 (-49%)*
-| *~18,500*
-| *-65%*
-| *15 -> 48 (+33 diagram placements)*
+| 01 -- Root & reference | 16 | 14,650 | ~-45% (config split, threat-model archaeology, `doc/quality-report/` retired)
+| 02 -- Operator & variants | 19 | 11,795 | ~-35% (BFF common guide, edge-security guide, history removal)
+| 03 -- Contributor & modules | 25 | 13,600 | ~-40% (audit tables, lab notebooks, diary sections)
+| 04 -- ADR corpus | 71 | 13,043 | ~-10% (verbatim duplication only; ADRs stay point-in-time records)
 |===
 
-NOTE: In addition to line count reduction, `doc/LogMessages.adoc` shrinks from `90.4 KB` to `~22 KB` (-75% byte size) by replacing 1,000–3,900-character single-cell implementation essays with 1–3 sentence operator-focused descriptions.
+== Verified Cross-Cutting Findings
 
-== Cross-Cutting Findings
+=== Historical Overhead
 
-=== Pre-1.0 Historical Overhead and Audit Diaries
+* *Frozen audit snapshot*: `doc/quality-report/` (6 files, 2,554 lines, cut 2026-08-15 at `b54eb12`).
+* *Completed audit passes*: about 84% of `doc/development/test-corpus-integrity.adoc` is completed census, classification and pass tables. Its live sections are linked from ADRs, architecture, `maven.yml` and test Javadoc, and must survive.
+* *Dated lab notebook*: `doc/development/build-gate-discipline.adoc` ≈238–860, the `-T1` flake saga dated 2026-08-31 to 09-23.
+* *Self-review diaries*: `doc/development/integration-test-topology.adoc` has 8 "Diagram check" sections (≈1509–1716) and the PR `#408` dispositions (≈1717–1775).
+* *Lab log*: `doc/security-threat-model.adoc` `[#gw-07-fin-first-reproduction]` (≈1441–1523, orbstack).
+* *Pre-1.0 migration passages* in `doc/user/bff-cookie.adoc`, `endpoint-routes.adoc`, `compose-sample.adoc` and `doc/variants/README.adoc` (located in Group 2).
+* *Leaked tooling and prompt text*: `doc/development/README.adoc` ≈189–195 (`pm-documents:ref-svg-diagrams`) and `benchmarks/README.adoc` ≈96 ("Per Clarification 1").
 
-The single largest source of bloat across the documentation tree is historical narration that violates the repository's Pre-1.0 rules and `engineering-narrative.md`:
+=== Verified Duplication Clusters
 
-* *Pre-1.0 migration and rename essays*: `README.adoc` (`L202–264`), `doc/configuration.adoc` (`L1034–1057`), `doc/user/bff-cookie.adoc` (`L129–158`, `L305–366`, `L699–720`, `L742–757`, `L801–826`, `L847–879`), `doc/user/endpoint-routes.adoc` (`L153–166`, `L533–554`, `L784–792`), and `doc/user/compose-sample.adoc` (`L739–761`) explain removed YAML keys, renamed Quarkus properties, and upgrade paths between `0.1.x` and `0.2.x` snapshots.
-* *Dated audit logs, pass-by-pass ledger dumps, and lab notebooks*: `doc/development/test-corpus-integrity.adoc` (`2,836` lines, of which `2,576` lines are completed Pass 1/2/3 audit tables and empty backlogs), `doc/development/build-gate-discipline.adoc` (`680` lines of dated OpenRewrite diffs and refuted macOS kernel hypotheses), `doc/development/integration-test-topology.adoc` (`288` lines of `"=== Diagram check for the ... change"` read-back sections and PR `#408` disposition logs), `doc/development/release-process.adoc` (`110` lines of pre-merge/post-merge execution diaries), `doc/security-threat-model.adoc` (`55` lines of `orbstack` kernel lab notes), and `doc/quality-report/*.adoc` (`2,560` lines of a frozen `2026-08-15` snapshot at `commit b54eb12`).
-* *Skill and prompt leaks in committed prose*: `doc/development/README.adoc:402` references `pm-documents:ref-svg-diagrams`; `benchmarks/README.adoc:223` opens with `"Per Clarification 1, no benchmark gates the build"`.
-
-=== Sentence-Level Chattiness and Genre-Voice Misalignment (~8,400 Lines of Compressible Prose)
-
-Even after removing historical blocks and cross-document duplicates, the surviving prose in `doc/configuration.adoc`, `doc/user/*.adoc`, `doc/security-threat-model.adoc`, and `doc/adr/*.adoc` is 35–40% too verbose due to five sentence-level habits that every wave must compress:
-
-1. *Genre-Voice Misalignment (`engineering-narrative` Applied to Lookup Specs and Operator Guides)*:
-   Every YAML key in `doc/configuration.adoc` and every setup step in `doc/user/*.adoc` is currently written as an argumentative essay with bolded philosophical thesis sentences. Enforce `reference-spec.md` on `doc/configuration/`, `doc/variants/`, and `doc/LogMessages.adoc` (signature/key, semantics, boundary/default), and `tutorial-walkthrough.md` on `doc/user/` (start state, ordered steps, observable checkpoint).
-
-2. *Rhetorical Lecturing & Negative Preambles ("X is Y, not a licence to Z")*:
-   Strip dramatic lecturing that argues against strawman misconfigurations (for example, `doc/user/tls-edge.adoc:83–125` spending 42 lines lecturing on why plain HTTP is not inferred instead of a 6-line rule + refusal table).
-
-3. *Provenance & Test-Harness Chatter Inside Operator Prose*:
-   Strip meta-commentary explaining how the author derived a table from source code or how internal ArchUnit tests (`EgressTlsPostureArchTest` in `doc/configuration.adoc:1322–1377`) scan AST call sites.
-
-4. *Patch-by-Patch Archaeology Inside Current-State Sections*:
-   Strip chronological accounts of how a control evolved across earlier bugs or ADRs (`"The coverage exception was first written path-geometrically... Before ADR-0047 they were not..."` in `doc/security-threat-model.adoc:415–470`). State only the invariant that holds today.
-
-5. *Prose Enumerations Instead of Flat Tables*:
-   Convert multi-clause semicolon paragraphs listing boot refusals, input constraints, or flag interactions (`doc/user/portal.adoc:88–99`, `doc/user/tls-edge.adoc:88–125`, `doc/configuration.adoc`) into compact 3-column tables (`Condition` | `Behavior / Refusal` | `Log ID`).
-
-=== Cross-Document Duplication & Single-Source-of-Truth (SSOT) Matrix
-
-Tracing topics across the entire repository (`doc/configuration.adoc` ↔ `doc/user/*` ↔ `doc/variants/*` ↔ `doc/development/*` ↔ `doc/architecture/*` ↔ `doc/adr/*`) reveals *10 major cross-document duplication clusters* totaling over `12,000` lines of repeated explanations.
-
-The root cause is that `doc/configuration.adoc` currently embeds full multi-page operator tutorials and architecture essays alongside field definitions, while `doc/user/`, `doc/variants/`, and `doc/development/` maintain parallel files with identical filenames (`bff-cookie.adoc`, `bff-session.adoc`, `compose-sample.adoc`, `tls-edge.adoc`, `context-path*.adoc`) that re-explain the same concepts from scratch.
-
-To eliminate cross-document duplication permanently, each layer must enforce a strict Single-Source-of-Truth (SSOT) boundary:
-
-* *`doc/configuration/` (Schema & Field Dictionary)*: Key name, type, default, allowed values, boot validation rule, and a 1-sentence summary with a link to `doc/user/`. Zero multi-paragraph tutorials or architectural rationale.
-* *`doc/user/` (Task-Oriented Operator How-To)*: Actionable configuration recipes and operational procedures. Zero Java class names, build-step internals, or duplicated schema tables.
-* *`doc/variants/` (PostureDatasheets)*: Compact 1-page (~150-line) posture datasheets (topology SVG + minimal YAML delta + properties summary + links to `doc/user/`). Zero re-explanation of OIDC, PAR, DPoP, or cookie mechanics.
-* *`doc/architecture/` (Runtime Design & Invariants)*: Component boundaries, request pipeline stages, and runtime guarantees.
-* *`doc/development/` (Contributor Playbooks & Verification Harnesses)*: How to extend code, run test rigs, and maintain fitness functions. Zero repetition of operator guides or architecture docs.
-* *`doc/adr/` (Point-in-Time Decision Rationale)*: Context, decision, and trade-offs (`<= 250` lines). Zero inline YAML manuals or code inventories.
-
-[cols="2,3,2,2", options="header"]
+[cols="2,3,3", options="header"]
 |===
-| Duplicated Topic Cluster | Files Currently Duplicating the Topic (with Line Ranges) | Total Duplicated Footprint | Canonical Owner (SSOT) & Dedup Action
+| Topic | Where it repeats | Resolution
 
-| *1. BFF OIDC Client, Keys, PAR, DPoP, Refresh & Cookie Sealing*
-| * `doc/configuration.adoc` (`=== oidc`, `L2657–3775`, 1,118L)
+| BFF confidential client, signing keys, client secret, refresh rotation, operations, private-CA IdP
+| `doc/user/bff-session.adoc` and `doc/user/bff-cookie.adoc`: about 350-400 near-identical lines
+| New `doc/user/bff-oidc-common.adoc`. The two guides keep only their storage model.
 
-* `doc/user/bff-session.adoc` (`L36–940`, 904L)
-* `doc/user/bff-cookie.adoc` (`L42–879`, 837L)
-* `doc/variants/02-bff-session.adoc` (`L26–428`, 402L)
-* `doc/variants/03-bff-cookie.adoc` (`L27–335`, 308L)
-* `doc/development/bff-session.adoc` (`L185–355`, 170L)
-* `doc/development/bff-cookie.adoc` (`L111–274`, 163L)
-* `doc/fapi_status.adoc` + `fapi_next_steps.adoc` (476L)
-* `ADR-0018`, `0037`, `0058`, `0076`, `0078` (1,736L)
-| ~6,100 lines across 14 files
-| * *Operator setup*: `doc/user/bff-oidc-common.adoc` (shared IdP/keys/PAR/DPoP/refresh) + storage-specific `bff-session.adoc` / `bff-cookie.adoc`.
+| Security-filter mode set (`strict`/`paranoid`/`lenient`/`minimal`)
+| `doc/configuration.adoc` ≈282, ≈1857, ≈4956, ≈5117
+| One definition. The contract-tested YAML comment and table stay.
 
-* *Field dictionary*: `doc/configuration/authentication-and-oidc.adoc` (tables only; strip 800L of tutorials).
-* *Variants*: Trim `02-bff-session.adoc` & `03-bff-cookie.adoc` to ~180L posture datasheets linking to `doc/user/`.
-* *Architecture*: `doc/architecture/authentication-and-bff.adoc` (owns wire format & runtime seams; strip from `doc/development/bff-*.adoc`).
-* *Planned Tasks*: `TASK-G1-10`, `TASK-G1-23`, `TASK-G2-05..07`, `TASK-G2-24`, `TASK-G3-14..15`, `TASK-G4-07`.
+| Uniform 404, enumeration detection, threat classification, edge-hardening defaults, inbound filter modes
+| `doc/user/endpoint-routes.adoc` ≈746-932 and ≈1119-1261; `doc/user/README.adoc` ≈185-465
+| New `doc/user/edge-security.adoc`. Anchors move with the content.
 
-| *2. Inbound TLS (`tls`), Egress TLS (`egress_tls`), Management Port & Trust Profiles*
-| * `doc/configuration.adoc` (`L787–1741` & `L2483–2620`, 1,092L; repeats trust profiles 4x)
+| Operator tutorials inside the field reference
+| `doc/configuration.adoc` (`oidc`, `tls`/`egress_tls`, `forward`, `security_defaults`)
+| Split into `doc/configuration/*.adoc` and link to `doc/user/*`.
 
-* `doc/user/tls-edge.adoc` (`L24–568`, 544L)
-* `doc/user/tls-scenarios.adoc` (`L20–890`, 870L)
-* `doc/user/environment-variable-overrides.adoc` (`L405–480`, 75L)
-* `doc/development/tls-edge.adoc` (`L22–209`, 188L)
-* `doc/architecture/tls-and-inbound-security.adoc` (`L11–51`, 41L)
-| ~2,810 lines across 6 files
-| * *Field dictionary & 6-leg table*: `doc/configuration/tls-and-egress.adoc` (defined once).
+| Downstream POM and native build
+| `doc/user/context-path.adoc` Route A (≈138-371) and `doc/user/downstream-parent.adoc`
+| `downstream-parent.adoc` owns it. `context-path.adoc` keeps only the delta.
 
-* *Operator recipes*: Merge overlapping prose in `doc/user/tls-edge.adoc` and `doc/user/tls-scenarios.adoc` (or keep `tls-edge.adoc` for concepts/legs and `tls-scenarios.adoc` strictly as copy-paste recipes).
-* *Runtime internals*: `doc/architecture/tls-and-inbound-security.adoc` owns the SNI split and two-seam binding; retire or slim `doc/development/tls-edge.adoc` to contributor extension steps only.
-* *Planned Tasks*: `TASK-G1-10`, `TASK-G2-14..15`, `TASK-G3-18`.
-
-| *3. `security_defaults` (`profile`, `minimal`, `GET` body, extended ASCII, `uniform_not_found`) & `asset_defaults`*
-| * `doc/user/README.adoc` (`L185–465`, 280L)
-
-* `doc/configuration.adoc` (`L4504–4552` & `L4944–5238`, 343L)
-* `doc/user/endpoint-routes.adoc` (`L747–797` & `L1028–1180`, 203L)
-* `doc/development/README.adoc` (`L356–444` & `L526–595`, 158L)
-* `doc/architecture/observability-and-errors.adoc` (`L141–187`, 47L)
-| ~1,030 lines across 5 files
-| * *Operator guide*: `doc/user/edge-security.adoc` (relocate non-contract prose from `doc/user/README.adoc` and `endpoint-routes.adoc`, keeping only the `DocumentedSetsContractTest` tables in `doc/user/README.adoc`).
-
-* *Field dictionary*: `doc/configuration/security-and-edge-hardening.adoc` (concise field tables).
-* *Architecture*: `doc/architecture/tls-and-inbound-security.adoc` & `observability-and-errors.adoc` (strip duplicate stage rationale from `doc/development/README.adoc:356–444`).
-* *Planned Tasks*: `TASK-G1-10`, `TASK-G2-04`, `TASK-G2-08`, `TASK-G3-10`.
-
-| *4. Enumeration Detection (`enumeration_detection`) & Threat Classification (`threat_classification` / ECS `ALERT`)*
-| * `doc/configuration.adoc` (`L4599–4826`, 228L)
-
-* `doc/user/endpoint-routes.adoc` (`L798–932`, 135L)
-* `doc/development/source-detection-substrate.adoc` (`L13–308`, 296L)
-* `doc/architecture/tls-and-inbound-security.adoc` (`L210–280`, 71L)
-* `doc/architecture/observability-and-errors.adoc` (`L332–353`, 22L)
-| ~750 lines across 5 files
-| * *Operator tuning & SIEM forwarding*: `doc/user/edge-security.adoc`.
-
-* *Field dictionary*: `doc/configuration/security-and-edge-hardening.adoc`.
-* *Architecture & ECS schema*: `doc/architecture/tls-and-inbound-security.adoc` and `observability-and-errors.adoc`.
-* *Contributor SPI*: Slim `doc/development/source-detection-substrate.adoc` to internal bucket/CAS mechanics not already in `doc/architecture/`.
-* *Planned Tasks*: `TASK-G1-10`, `TASK-G2-08`, `TASK-G3-17`.
-
-| *5. Route Matching, `forward`, `cookies`, `keep_identity_headers`, `upstream`, `asset`, `redirect`*
-| * `doc/configuration.adoc` (`L3776–4503`, 728L)
-
-* `doc/user/endpoint-routes.adoc` (`L198–746` & `L973–1027`, 604L)
-* `doc/architecture/routing-and-forwarding.adoc` (`169L`)
-* `doc/architecture/terminal-actions-and-protocols.adoc` (`148L`)
-| ~1,650 lines across 4 files
-| * *Field dictionary & contract-tested header slices*: `doc/configuration/routing-and-forwarding.adoc` (strip 400L of tutorial prose).
-
-* *Operator route authoring*: `doc/user/endpoint-routes.adoc`.
-* *Runtime behavior*: `doc/architecture/routing-and-forwarding.adoc` and `terminal-actions-and-protocols.adoc`.
-* *Planned Tasks*: `TASK-G1-09..10`, `TASK-G2-10`, `TASK-G4-07`.
-
-| *6. WebSocket & gRPC Protocol Routes (`protocol`, `websocket`, `grpc`)*
-| * `doc/user/protocol-routes.adoc` (`255L`)
-
-* `doc/configuration.adoc` (`L1742–1839`, 98L)
-* `doc/development/protocol-processors.adoc` (`201L`)
-* `doc/architecture/terminal-actions-and-protocols.adoc` (`L118–148`, 31L)
-* `doc/architecture/observability-and-errors.adoc` (`L211–236`, 26L)
-| ~610 lines across 5 files
-| * *Operator configuration*: `doc/user/protocol-routes.adoc`.
-
-* *Field dictionary*: `doc/configuration/routing-and-forwarding.adoc`.
-* *Contributor SPI*: `doc/development/protocol-processors.adoc` (focus strictly on `ProtocolProcessor` SPI extension, linking to `doc/architecture/` for relay/trailer behavior).
-* *Planned Tasks*: `TASK-G1-09..10`, `TASK-G3-19`.
-
-| *7. Application Portal (`portal`, `endpoint.catalog`) & HTML Error Pages (`error_pages`)*
-| * `doc/user/portal.adoc` (`404L`)
-
-* `doc/configuration.adoc` (`L685–786`, 102L)
-* `doc/architecture/README.adoc` (`L124–135`) & `observability-and-errors.adoc` (`L188–210`)
-| ~540 lines across 4 files
-| * *Operator configuration & Qute authoring*: `doc/user/portal.adoc`.
-
-* *Field dictionary*: `doc/configuration.adoc` (compact field table linking to `doc/user/portal.adoc`).
-* *Planned Tasks*: `TASK-G1-09..10`.
-
-| *8. Custom Context Path & Downstream Maven Rebuild (`context-path`, `downstream-parent`, `context-path-verification`)*
-| * `doc/user/context-path.adoc` (`829L`: `Route A` POM rebuild `L138–371` + `How it works` internals `L476–829`)
-
-* `doc/user/downstream-parent.adoc` (`447L`: repeats downstream POM + native rebuild `L34–161`, `L316–428`)
-* `doc/development/context-path-verification.adoc` (`421L`: repeats the 6 verification cases)
-| ~1,700 lines across 3 files
-| * *Downstream Maven build*: `doc/user/downstream-parent.adoc` owns the `build-parent` POM and native image build (`context-path.adoc` links to it instead of repeating the POM/Dockerfile).
-
-* *Context-path config*: `doc/user/context-path.adoc` (~300L, operator prefix rules only; delete `L476–829` internals).
-* *Contributor verification runbook*: `doc/development/context-path-verification.adoc` (~160L).
-* *Planned Tasks*: `TASK-G2-17`, `TASK-G2-19`, `TASK-G3-16`.
-
-| *9. Docker Compose Sample (`doc/user/compose-sample.adoc` vs `doc/development/compose-sample.adoc`)*
-| * `doc/user/compose-sample.adoc` (`947L`: includes `/auth-fronted` design rationale `L447–614` & health probe internals `L615–680`)
-
-* `doc/development/compose-sample.adoc` (`455L`: repeats topology, `/auth-fronted` decisions `L169–244`, and health probes `L245–366`)
-| ~1,400 lines across 2 files
-| * *Operator runbook*: `doc/user/compose-sample.adoc` (how to start, exercise, and switch overlays).
-
-* *Contributor maintenance*: `doc/development/compose-sample.adoc` (~180L; only CI profile wiring `-Pcompose-sample` and container hardening constraints; remove duplicated `/auth-fronted` and probe essays).
-* *Planned Tasks*: `TASK-G2-11..12`, `TASK-G3-16`.
-
-| *10. Test Lanes, Defect Classes & Inbound Stage Placement (`doc/development/README.adoc` vs child docs)*
-| * `doc/development/README.adoc` (`L217–355` test lanes, `L356–444` inbound validation stages, `L526–595` pre-trust rejections)
-
-* `doc/development/cookie-deliverability-blindness.adoc` (`477L`)
-* `doc/development/test-corpus-integrity.adoc` (`2,835L`)
-* `doc/adr/0075-integration-test-placement-and-naming-convention.adoc` (`278L`)
-| ~3,900 lines across 4 files
-| * *Contributor index*: `doc/development/README.adoc` (~180L index + `Adding a Policy Block`; move test-lane rules to `test-corpus-integrity.adoc` and remove inbound validation / uniform-404 sections that duplicate `doc/architecture/`).
-
-* *Testing standards & lanes*: `doc/development/test-corpus-integrity.adoc` (~260L; absorbs `cookie-deliverability-blindness.adoc` and `ADR-0075`).
-* *Planned Tasks*: `TASK-G3-01..03`, `TASK-G3-10..11`, `TASK-G4-06`.
+| 0.2.4 image caveats, Compose 2.24.4 notes
+| `doc/user/compose-sample.adoc` ≈30-90, ≈361-376, ≈608-610
+| One prerequisites callout.
 |===
 
-=== Automated AsciiDoc & Link Validation Baseline
+=== Validation Baseline
 
-Running `pm-documents:ref-asciidoc:asciidoc validate` and `verify-links` across `doc/` on `main` (`d9cd9e5f`) surfaces:
+* `asciidoc validate` over `doc/` reports 188 `missing_header` errors in 88 files and 1,208 `list_formatting` warnings.
+** Most list warnings are heuristic false positives: a wrapped list item resets the checker.
+** The header errors are real against the house template.
+* `asciidoc verify-links --recursive` reports 3 "broken" anchors (ADR 0036, 0048, 0057). These are tool false positives: `_consequences`, `_risks` and `_accepted_costs` resolve to auto-generated section IDs.
+* A full anchor/link/image check of every `.adoc` and every doc path in `*.java`, `*.md` and `*.yml` finds one real error: a column-0 `= ` line in `doc/security-threat-model.adoc` ≈2909 (inside BFF-12), which AsciiDoc parses as a second level-0 title.
 
-* *88 non-compliant `.adoc` files* (`188` missing standard header attribute errors across `doc/adr/`, `doc/development/`, and top-level docs; `1,208` list-continuation/blank-line formatting warnings).
-* *65 level-4/5 (`====` / `=====`) headings* violating the `engineering-narrative.md` maximum heading depth of `<= 3` (`56` in `doc/configuration.adoc`, `3` in `doc/user/endpoint-routes.adoc`, `2` in `doc/adr/0005-...adoc`, `1` in `doc/development/release-process.adoc`, `1` in `doc/development/protocol-processors.adoc`, `2` in `doc/quality-report/findings.adoc`).
-* *1 critical AsciiDoc level-0 title syntax error*: `doc/security-threat-model.adoc:2909` starts a line at column 0 with `= \`version‖kid‖iat_ms‖random_16B‖tag_16B\``, which AsciiDoc parses as a second level-0 document title (`= ...`).
-* *3 broken internal anchors in `doc/adr/`*:
-  1. `doc/adr/0036-header-sanitization-and-identity-propagation.adoc:106` -> target `_consequences`
-  2. `doc/adr/0048-gateway-request-pipeline-stages.adoc:69` -> target `_risks`
-  3. `doc/adr/0057-virtual-thread-pinned-carrier-gate.adoc:103` -> target `_accepted_costs`
+== Contract Tests Reading Documentation
 
-== Repository Contract-Test Constraint Matrix
+A doc-only change does not trigger the CI build, so the anchors below must be checked as text before every push.
 
-Any split, slimming, or file retirement *must* preserve or update the following 15 Java contract tests and 1 CI workflow that parse documentation files directly.
-
-[cols="2,2,3,2", options="header"]
+[cols="2,2,3", options="header"]
 |===
-| Test / Workflow | Target Document(s) | Asserted Anchors / Markers / Structure | Required Action During Doc Refactoring
+| Test | Document | Reads
 
-| `DocumentedSetsContractTest`
-(`api-sheriff/.../config/`)
-| `doc/configuration.adoc`,
-`doc/security-threat-model.adoc`,
-`doc/user/README.adoc`,
-`doc/user/bff-cookie.adoc`,
-`doc/architecture/observability-and-errors.adoc`
-| * `SKELETON_ANCHOR = "== Gateway Configuration"` + schema-valid YAML with `"max_cookie_size:"`
+| `DocumentedSetsContractTest` (`api-sheriff/.../config/`)
+| `doc/configuration.adoc`, `doc/user/README.adoc`, `doc/user/bff-cookie.adoc`, `doc/architecture/observability-and-errors.adoc`, `doc/security-threat-model.adoc`
+| `SKELETON_ANCHOR`, `CONFIG_PROFILE_ANCHOR`, `CONFIG_DISCOVERY_ANCHOR`, `CONFIG_EXTENSION_ANCHOR`, the four array-override anchors, `JWKS_REFRESH_*` anchors, `ARCHITECTURE_DISCOVERY_ANCHOR`, `THREAT_MODEL_DISCOVERY_ANCHOR`, `README_EXTENSION_ANCHOR`, `README_PROFILE_MODE_SET_ANCHOR`, `COOKIE_EXHIBIT_ANCHOR`
 
-* `CONFIG_PROFILE_ANCHOR = "profile: strict"` + `#` comment with `\|`-separated modes + table rows `\| \`<mode>\``
-* `CONFIG_DISCOVERY_ANCHOR = "\`oidc_discovery\` -- what the most recent"` + table rows `\| \`not-attempted\``, `\| \`resolved\``, `\| \`failed\``
-* `CONFIG_EXTENSION_ANCHOR = "-entry extension map"` preceded by `21` + parenthesised backticked extension list
-* `ARRAY_TOTAL_ANCHOR = "such keys, of which"` (`19`), `GATEWAY_STRING_KEYS_ANCHOR = "declare string items and are the usable set:"` (`18`), `ENDPOINT_OWN_KEYS_ANCHOR = "further string-item keys of its own:"` (`7`), `OBJECT_ARRAYS_ANCHOR = "are arrays of *objects* rather than strings ("` (`3`)
-* `JWKS_REFRESH_BULLET_ANCHOR = "A declared \`token_validation.issuers[].jwks."` .. `"keys declared on a \`source: file\` issuer fails the boot"`
-* `THREAT_MODEL_DISCOVERY_ANCHOR = "and \`oidc_discovery\` ("`
-* `README_EXTENSION_ANCHOR = "built-in extensions --"`
-* `README_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly"` + mode table
-* `COOKIE_EXHIBIT_ANCHOR = "A minimal cookie-based configuration:"` + schema-valid YAML with `"max_cookie_size:"`
-| Keep anchors verbatim in their target files; when splitting `doc/configuration.adoc` into `doc/configuration/*.adoc`, either retain the anchored exhibits in `doc/configuration.adoc` (index) or update the path constants in `DocumentedSetsContractTest` in the same PR.
-
-| `DocumentedHeaderSetsContractTest`
-(`api-sheriff/.../forward/`)
+| `DocumentedHeaderSetsContractTest` (`api-sheriff/.../forward/`)
 | `doc/configuration.adoc`
-| 5 exact slice boundaries (`NEVER_FORWARD_START..END`, `RESPONSE_STRIP_START..END`, `IDENTITY_START..END`, `UNCONDITIONAL_START..END`, `CONDITIONAL_START..END`) and backticked lowercase header tokens.
-| Preserve the 5 slice start/end phrases and header lists verbatim in `doc/configuration/routing-and-forwarding.adoc` (and update the path constant in `DocumentedHeaderSetsContractTest` if moved).
+| Five START/END header-set slices (≈3924-4012)
 
 | `RouteFieldInventoryContractTest`
-(`api-sheriff/.../config/`)
 | `doc/configuration.adoc`
-| Paragraph bounded by `"and its \`routes[]\`, each route's"` and `". The WebSocket-route \`websocket\` block holds"`, asserting backticked field sets against `RouteConfig.yml` and `WebSocketRouteConfig.yml`.
-| Preserve the exact bounded prose paragraph in `doc/configuration/README.adoc` (or `routing-and-forwarding.adoc` with path update).
+| The paragraph bounded by "and its \`routes[]\`, each route's" .. ". The WebSocket-route \`websocket\` block holds" (≈160)
 
 | `PolicyBlockSchemaContractTest`
-(`api-sheriff/.../config/`)
 | `doc/user/anchors.adoc`
-| Section `[[_policy_block_scopes]]` and its 3-column table (`\| Policy block \| Declared at \`gateway.*\` \| Declared at \`endpoints[].routes[].*\``).
-| Preserve `[[_policy_block_scopes]]` and its table structure verbatim in `doc/user/anchors.adoc`.
+| `[[_policy_block_scopes]]` and its table
 
-| `BuildParentContractTest`
-(`integration-tests/.../buildparent/`)
+| `BuildParentContractTest` (`integration-tests`)
 | `doc/user/downstream-parent.adoc`
-| `ANCHOR_SENTENCE = "switches every one of them off as an inherited default:"` + `<property>` lines, and `LEFT_ALONE_HEADING = "Five switches are deliberately *left alone*"` + `\|===` table.
-| Preserve both anchors and their property blocks verbatim when slimming `doc/user/downstream-parent.adoc`.
+| "switches every one of them off as an inherited default:" and `^(\w+) switches are deliberately \*left alone\*` with its table
 
-| `DescriptorInventoryWiringTest`
-(`integration-tests/.../criptors/`)
+| `DescriptorInventoryWiringTest` (`integration-tests`)
 | `doc/development/declared-limit-assertion-coverage.adoc`
-| 3 AsciiDoc tag regions: `// tag::inventory[]`, `// tag::limit-key-regex[]`, and `// tag::limit-bearing[]`.
+| Tag regions `inventory`, `limit-key-regex`, `limit-bearing`
 
-| Preserve all 3 `// tag::...[]` / `// end::...[]` regions and their tables verbatim.
-
-| `OneOffGatewayContainersTest`
-(`integration-tests/.../topology/`)
+| `OneOffGatewayContainersTest` (`integration-tests`)
 | `doc/development/integration-test-topology.adoc`
-
-| AsciiDoc tag region `// tag::test-started-host-ports[]` .. `// end::test-started-host-ports[]`.
-| Preserve the `test-started-host-ports` tag region and table verbatim.
+| Tag region `test-started-host-ports`
 
 | `BootValidationConcernMapContractTest`
-(`api-sheriff/.../config/`)
 | `doc/development/boot-validation-rules.adoc`
-| `== The concern map` table (`\|===`), columns 0 (`Concern`) and 1 (`Validator method`) matched against `GatewayConfigValidator.java`.
-| Preserve `== The concern map` and its table verbatim.
+| `== The concern map` table
 
-| `ReleaseGuardPinDocsContractTest` + `.github/workflows/release-guard-docs.yml`
+| `ReleaseGuardPinDocsContractTest`, `.github/workflows/release-guard-docs.yml`
 | `doc/development/release-process.adoc`
-| Anchor `[#guard-refusal-predicates]` through the closing `\|===` table (every `die "..."` literal in `.github/scripts/release-guard.sh` must appear in backticks).
-| Preserve `[#guard-refusal-predicates]` and its table verbatim.
+| `[#guard-refusal-predicates]` up to the next heading
 
 | `ReviewerRosterDocsContractTest`
-(`api-sheriff/.../docs/`)
-| `doc/development/re-review-on-loopback.adoc`,
-`doc/development/README.adoc`
-| `re-review-on-loopback.adoc` must exist; `doc/development/README.adoc` must have a table row starting with `\| link:re-review-on-loopback.adoc[` containing `CodeRabbit (required)` and `Sourcery (optional)`.
-| Keep `doc/development/re-review-on-loopback.adoc` and its row in `doc/development/README.adoc`.
+| `doc/development/README.adoc`, `doc/development/re-review-on-loopback.adoc`
+| The row `\| link:re-review-on-loopback.adoc[`
 
-| `AdrOrdinalUniquenessContractTest` & `AdrRecordLengthContractTest`
-| `doc/adr/*.adoc`
-| Unique 4-digit prefix `^\d{4}-`, `== Status` heading + at least one more `== ` heading, and `<= 500` body lines per ADR.
-| Keep all ADR filenames unique, preserve `== Status`, and slim every ADR to `<= 250` lines (well below the 500-line ceiling).
+| `DocumentedTokenValidationCategoriesContractTest`
+| `doc/architecture/observability-and-errors.adoc`
+| Token-validation category table
+
+| `EdgeSubPackageArchTest`
+| `doc/architecture/README.adoc`
+| `=== Edge Package Structure`
 
 | `ReactorModuleListContractTest`
 | `AGENTS.md`, `CLAUDE.md`
-| Module list under `Modules, as declared in the root \`pom.xml\`:`.
-| Unchanged by `doc/` refactoring; mirror the same 6-module list in `README.adoc`.
+| The module list
+
+| `AdrOrdinalUniquenessContractTest`, `AdrRecordLengthContractTest`
+| `doc/adr/*.adoc`
+| A unique `^\d{4}-` prefix; `== Status` plus at least one more `==` heading; body of 500 lines or fewer
 |===
 
-== Execution Roadmap
+== Protected Live Content
 
-To keep pull requests under the 150-file ceiling and verify contract tests cleanly at each step, execute the remediation in four PR waves matching the four review documents:
+These sections are cited from ADRs, architecture docs, workflows, skills or test Javadoc. Slimming may condense them but must keep their anchors:
 
-1. *Wave 1 — Root & Top-Level Reference Docs (`link:01-root-and-reference-docs.adoc[01-root-and-reference-docs.adoc]`)*:
-   Retire `doc/quality-report/`, `doc/features-analysis.adoc`, and `doc/fapi_next_steps.adoc`; split `doc/configuration.adoc` into `doc/configuration/*.adoc`; slim `doc/security-threat-model.adoc`, `doc/LogMessages.adoc`, `doc/technical_aspects.adoc`, `doc/fapi_status.adoc`, `README.adoc`, and `doc/README.adoc`; add 8 SVGs.
+* `doc/development/test-corpus-integrity.adoc`: `[[search-form-constraint]]`, `[[fitness-function-shape]]`, `[[awaits-reassertion-guard]]`, `[[cumulative-finding]]`, the Shape (e)-2 section, the strengthened-assertion standard
+* `doc/development/integration-test-topology.adoc`: `[[upstream-path-integration-endpoints]]`, `[#test-started-host-ports]`
+* `doc/development/build-gate-discipline.adoc`: `[[fixed-point-2026-09-21]]`, `[[linux-relay-race-occurrence]]`, and the three mechanisms, three consequences and recipe-scoping trap cited by `CLAUDE.md`
+* `doc/development/bff-session.adoc`: `[[adr-0058-residuals]]`, `[[observed-on-the-integration-stack]]`
+* `doc/development/README.adoc`: Test Lanes, Inbound Validation, Rejections Before the Trust Boundary (linked from `doc/architecture/`)
+* `doc/development/release-process.adoc`: `[#guard-refusal-predicates]`, `#guard-negative-control`, `#guard-negative-control-limits`
+* `doc/security-threat-model.adoc`: every `gw-*`, `bff-*`, `html-*` anchor, including `gw-07-fin-first-reproduction` (ADR-0066)
+* `doc/features-analysis.adoc`: 16 inbound anchor links; it is kept
+* Every `[[...]]` anchor in `doc/adr/`
 
-2. *Wave 2 — Operator Guides & Deployment Variants (`link:02-operator-and-variants-docs.adoc[02-operator-and-variants-docs.adoc]`)*:
-   Extract `doc/user/bff-oidc-common.adoc`; split `doc/user/edge-security.adoc` from `endpoint-routes.adoc`; deduplicate `context-path.adoc`, `downstream-parent.adoc`, `compose-sample.adoc`, `tls-scenarios.adoc`, `tls-edge.adoc`, `environment-variable-overrides.adoc`, and `doc/variants/*.adoc`; embed 12 existing SVGs and add 9 new SVGs.
+== Execution
 
-3. *Wave 3 — Contributor Guides & Module Docs (`link:03-development-and-module-docs.adoc[03-development-and-module-docs.adoc]`)*:
-   Retire `cookie-deliverability-blindness.adoc`, `local-test-environment-caveats.adoc`, and `benchmarks/doc/performance-scoring.adoc`; strip historical audit tables and lab notebooks from `test-corpus-integrity.adoc`, `build-gate-discipline.adoc`, `declared-limit-assertion-coverage.adoc`, `integration-test-topology.adoc`, `release-process.adoc`, `bff-cookie.adoc`, and `bff-session.adoc`; slim `benchmarks/` and `demo-client/` docs; add 4 SVGs.
+The work ships in two pull requests to save review quota:
 
-4. *Wave 4 — ADR Corpus & Link Hygiene (`link:04-adr-corpus.adoc[04-adr-corpus.adoc]`)*:
-   Fix the 3 broken internal anchors (`0036`, `0048`, `0057`), repair supersession headers and bidirectional links, fix `ADR-0005` and `ADR-0027` structure, relocate `ADR-0075` to `doc/development/test-corpus-integrity.adoc`, slim the 14 remaining ADRs over 250 lines, and bring all files to zero `asciidoc validate` errors/warnings.
+* *PR A*: Groups 1 and 2, coupled through the configuration split and the link repointing it forces.
+* *PR B*: Groups 3 and 4. It also deletes `doc/quality-reports/`.
+
+Each PR must pass the following before it is pushed:
+
+. `asciidoc validate` reports no new errors on the touched files.
+. The full anchor/link/image check passes with zero errors.
+. Every contract-test anchor is present as text.
+. The PR touches fewer than 100 files.

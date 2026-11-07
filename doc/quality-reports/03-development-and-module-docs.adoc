@@ -1,299 +1,79 @@
-= Group 3 Review — Contributor Guides (`doc/development/`) & Module Docs (`benchmarks/`, `demo-client/`)
+= Group 3 -- Contributor Guides & Module Docs
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents
 :sectnums:
 :source-highlighter: highlight.js
 
-== Scope & Quantitative Summary
-
-This report audits the 19 contributor guides in `doc/development/*.adoc` (`11,914` lines), the benchmark documentation in `benchmarks/` (`760` lines across 2 files), and the demo-client documentation in `demo-client/` (`930` lines across 4 files).
-
-[cols="2,1,1,1,2", options="header"]
-|===
-| Document | Current Lines | Target Lines | Action | Primary Rationale
-
-| `doc/development/test-corpus-integrity.adoc`
-| 2,836
-| ~260
-| Strip 91% audit history
-| Delete 2,576 lines of completed Pass 1/2/3 audit tables, commit mutation logs, and empty backlogs (`L260–2836`); fold 6-row lane table from `cookie-deliverability-blindness.adoc` and testing convention from `ADR-0075`.
-
-| `doc/development/integration-test-topology.adoc`
-| 1,796
-| ~680
-| Strip diaries & slim
-
-| Preserve `// tag::test-started-host-ports[]` (`OneOffGatewayContainersTest`); delete 288L of `"=== Diagram check..."` read-back logs and PR `#408` dispositions (`L1509–1796`); condense per-rig prose to reference tables.
-
-| `doc/development/declared-limit-assertion-coverage.adoc`
-| 1,370
-| ~380
-| Strip math essay & sweep logs
-| Preserve all 3 `DescriptorInventoryWiringTest` tag regions; delete the 264L `×4` overlay math essay and historical sweep rankings.
-
-| `doc/development/build-gate-discipline.adoc`
-| 964
-| ~240
-| Strip lab notebooks
-| Delete 680L of dated OpenRewrite diffs and refuted `2026-09-01`/`03`/`23` macOS kernel lab logs; fold 3 active caveats from `local-test-environment-caveats.adoc`; add `build-gate-decision-flow.svg`.
-
-| `doc/development/README.adoc`
-| 655
-| ~260
-| Strip ledger dump & skill leak
-| Preserve `ReviewerRosterDocsContractTest` row; remove `pm-documents:ref-svg-diagrams` skill leak (`L402`) and 93L epic-ledger dump (`L307–399`).
-
-| `doc/development/release-process.adoc`
-| 618
-| ~340
-| Strip execution diary
-| Preserve `[#guard-refusal-predicates]` (`ReleaseGuardPinDocsContractTest`); delete 110L pre-merge/post-merge diary (`L489–598`); fix `====` at `L116`; add `release-pipeline-flow.svg`.
-
-| `doc/development/bff-cookie.adoc`
-| 516
-| ~260
-| Strip design debate
-| Delete 162L 4-route rejected design debate (`L137–298`); add `bff-same-origin-topology.svg`.
-
-| `doc/development/bff-session.adoc`
-| 506
-| ~260
-| Strip ADR-0058 raw log
-| Delete 150L ADR-0058 raw research notes (`L356–506`); embed `bff-token-refresh-singleflight.svg`.
-
-| `doc/development/cookie-deliverability-blindness.adoc`
-| 478
-| 0 (retire)
-| Fold & delete
-| Historical post-mortem; fold the 6-row test-lane boundary table into `test-corpus-integrity.adoc` and delete file.
-
-| `doc/development/compose-sample.adoc`
-| 456
-| ~220
-| Slim & deduplicate
-| Remove duplication with `doc/user/compose-sample.adoc` and historical compose-v2 debugging stories.
-
-| `doc/development/context-path-verification.adoc`
-| 422
-| ~160
-| Slim & deduplicate
-| Keep the canonical verification contract and bytecode check; delete historical investigation logs.
-
-| `doc/development/adr-writing.adoc`
-| 390
-| ~280
-| Slim
-| Trim repetitive meta-commentary while keeping the 4-section template and progressive-disclosure header spec.
-
-| `doc/development/source-detection-substrate.adoc`
-| 309
-| ~180
-| Slim
-| Condense AST/regex substrate rules into a compact reference table.
-
-| `doc/development/tls-edge.adoc`
-| 210
-| ~150
-| Strip `Certificate` obituary
-| Delete the pre-1.0 `Certificate` record removal obituary (`L145–210`).
-
-| `doc/development/protocol-processors.adoc`
-| 202
-| ~160
-| Fix heading depth
-| Flatten `====` at `L95` to `===` and add standard AsciiDoc header attributes.
-
-| `doc/development/boot-validation-rules.adoc`
-| 190
-| ~170
-| Preserve contract table
-| Preserve `== The concern map` table (`BootValidationConcernMapContractTest`); add standard header attributes.
+== Scope
 
-| `doc/development/sonar-quality-gate.adoc`
-| 130
-| ~110
-| Fix `CLAUDE.md` citation
-| Replace `CLAUDE.md` reference with `AGENTS.md`; add standard header attributes.
+This group covers `doc/development/*.adoc` (19 files), `benchmarks/README.adoc` and `benchmarks/doc/`, and `demo-client/README.adoc` with `demo-client/doc/{integration-sample,playwright-suite}.adoc`.
 
-| `doc/development/local-test-environment-caveats.adoc`
-| 116
-| 0 (retire)
-| Fold & delete
-| Fold the 3 active local Docker/macOS caveats into `build-gate-discipline.adoc` and delete file.
+== `test-corpus-integrity.adoc` (2,835 lines)
 
-| `doc/development/re-review-on-loopback.adoc`
-| 59
-| ~50
-| Preserve contract file
-| Required by `ReviewerRosterDocsContractTest`; add standard header attributes.
+About 84% of the file is the completed audit:
 
-| `benchmarks/README.adoc` + `benchmarks/doc/performance-scoring.adoc`
-| 760 (754 + 6)
-| ~380 (1 file)
-| Delete broken stub & slim
-| Delete 6-line broken TokenSheriff JWT stub `performance-scoring.adoc`; remove `"Per Clarification 1"` prompt leak (`L223`) and wrk-to-k6 history (`L494–563`); add `benchmark-architecture.svg`.
+* Census ≈97
+* Taxonomy ≈253
+* Selection ≈355
+* Classification ≈502
+* What Was Strengthened ≈694
+* Integration-lane pass ≈841
+* Unit-lane audit ≈1273
+* Unit-lane inversion audit ≈1946
+* Rows changed after the passes ≈2344
+* Empty `[[backlog]]` ≈2548
 
-| `demo-client/README.adoc` + `demo-client/doc/*.adoc` (4 files)
-| 930
-| ~500
-| Deduplicate & slim
-| Eliminate 3-way repetition between `demo-client/README.adoc`, `architecture.adoc`, and `playwright-e2e.adoc`; remove stale phase labels.
+Live content that is cited elsewhere:
 
-| *Total*
-| *13,604*
-| *~3,100*
-| *-77% lines*
-| *9 -> 13 SVG placements (+4 new SVGs)*
-|===
+* `[[search-form-constraint]]` ≈85
+* `[[fitness-function-shape]]` ≈2133. Cited by ADRs 0027, 0040, 0044, 0045, 0068, 0071, 0074 and 0075, by `doc/architecture/README.adoc`, `doc/configuration.adoc` and `build-gate-discipline.adoc`, and by about 10 test Javadocs.
+* `[[awaits-reassertion-guard]]` ≈2258
+* `[[cumulative-finding]]` ≈2747
+* The Shape (e)-2 section, cited from `cookie-deliverability-blindness.adoc`
+* `[[relaxed-tls-census]]` ≈1164
+* The Standard for a Strengthened Assertion ≈2815
+* The target of `.github/workflows/maven.yml` ≈178
 
-== Detailed Findings and Actionable Tasks by Document
+* [ ] *G3-01*: Keep the live content and its anchors. Delete the completed pass, census and classification tables and the empty backlog, after grepping every anchor in the deleted range.
 
-=== `doc/development/test-corpus-integrity.adoc` (2,836 lines -> ~260 lines)
+== `integration-test-topology.adoc` (1,795 lines)
 
-==== Findings
+* [ ] *G3-02*: Delete "Keeping the Diagram Honest" and its 8 "Diagram check" sections (≈1497-1716), and the PR `#408` dispositions (≈1717-1775). Resolve the cross-reference to `#diagram-check-signing-keys` (≈1139).
+* [ ] *G3-03*: Keep `[[upstream-path-integration-endpoints]]` (≈1776, linked from ADR-0004) and the `test-started-host-ports` tag region (≈547-631).
 
-* *91% of the file (`L260–2836`, `2,576` lines) is a completed multi-pass historical audit log*:
-  - Pass 1, Pass 2, and Pass 3 file-by-file tables listing historical weak assertions that were already fixed (`L260–1980`).
-  - Mutation-kill commit logs and historical PR tallies (`L1981–2650`).
-  - Empty backlog sections where every item is marked `"None — drained"` (`L2651–2836`).
+== `declared-limit-assertion-coverage.adoc` (1,369 lines)
 
-* The active, enduring content is `L1–259` (`== Core Principles`, `== Repository Invariants as Fitness Functions`, and `=== AwaitsReassertionArchTest`), which is cross-linked from `doc/adr/0060`, `0066`, `0069`, `0073`, and `0078`.
+* [ ] *G3-04*: Keep the tag regions `inventory`, `limit-key-regex` and `limit-bearing` (`DescriptorInventoryWiringTest`), and `=== Citation notation`, the legend of the coverage matrix. Remove the plan-scoped "The Gap Count and This Plan's Selection" (≈1024-1116).
 
-==== Actionable Tasks
+== `build-gate-discipline.adoc` (963 lines) and `local-test-environment-caveats.adoc` (115 lines)
 
-* [ ] *TASK-G3-01*: Delete `L260–2836` (`2,576` lines of completed Pass 1/2/3 audit tables and drained backlogs) from `doc/development/test-corpus-integrity.adoc`.
-* [ ] *TASK-G3-02*: Fold the 6-row test-lane boundary table (Unit vs Weld CDI vs Quarkus `@QuarkusTest` vs Testcontainers IT vs Playwright E2E) from `doc/development/cookie-deliverability-blindness.adoc` and the integration-test placement rule from `doc/adr/0075-integration-test-placement-and-naming-convention.adoc` into `doc/development/test-corpus-integrity.adoc`.
-* [ ] *TASK-G3-03*: Delete `doc/development/cookie-deliverability-blindness.adoc` (`478` lines) and update its single inbound link in `doc/development/README.adoc`.
+* [ ] *G3-05*: Condense the dated `-T1` flake notebook (≈238-860, 2026-08-31 to 09-23) to the rule it established. Keep `[[fixed-point-2026-09-21]]` and `[[linux-relay-race-occurrence]]`. Keep what `CLAUDE.md` cites: the three mechanisms, the three consequences and the recipe-scoping trap.
+* [ ] *G3-06*: Fold the single caveat class of `local-test-environment-caveats.adoc` (loopback port collisions) into `build-gate-discipline.adoc`. Delete the file after repointing its links.
 
-=== `doc/development/integration-test-topology.adoc` (1,796 lines -> ~680 lines)
+== `doc/development/README.adoc` (654 lines)
 
-==== Contract-Test Constraints
+* [ ] *G3-07*: Remove the leaked skill reference (≈189-195).
+* [ ] *G3-08*: Condense `=== Instances and open defects behind the decision` (≈312-354).
+* [ ] *G3-09*: Keep Test Lanes (≈216), Inbound Validation (≈356) and Rejections Before the Trust Boundary (≈525). `doc/architecture/` and ADR-0075 link to them. Keep the `re-review-on-loopback` row (`ReviewerRosterDocsContractTest`).
 
-* `OneOffGatewayContainersTest` (`integration-tests`) parses the AsciiDoc tag region `// tag::test-started-host-ports[]` .. `// end::test-started-host-ports[]` (`L547–631`) and verifies that every `GenericContainer` test class matches the table rows.
-* Already embeds 8 SVG diagrams (`it-rig-taxonomy.svg`, `it-multi-gateway-rig-topology.svg`, `it-keycloak-endpoints.svg`, `it-fapi-rig-topology.svg`, `it-mtls-rig-topology.svg`, `it-lifecycle-timeline.svg`, `it-port-allocation-map.svg`, `it-cert-generation-flow.svg`).
+== Other Contributor Guides
 
-==== Findings
+* [ ] *G3-10* `bff-cookie.adoc`: "Four routes" (≈275-436). Collapse the three rejected routes into a short alternatives table. Keep Route 4 (settled and built), because `README.adoc` links to it.
+* [ ] *G3-11* `bff-session.adoc`: Condense without losing `[[adr-0058-residuals]]` or `[[observed-on-the-integration-stack]]`. Fix the `doc/quality-report/` reference (Group 1).
+* [ ] *G3-12* `release-process.adoc`: Keep `[#guard-refusal-predicates]` and the negative-control anchors. Condense the dated evidence. `release-publish-flow.svg` is already embedded.
+* [ ] *G3-13*: Add the missing house header attributes across the surviving files.
 
-* *288 lines of self-review diaries and PR disposition logs at the bottom of the file*:
-  - `L1509–1716` contains six `"=== Diagram check for the ... change"` sections that narrate whether an earlier PR needed to redraw each SVG.
-  - `L1717–1796` contains a PR `#408` review comment disposition log.
+== Module Docs
 
-* *Verbose per-rig war stories (`L632–1508`)*: Repeats container port/env details in long paragraphs that duplicate the 8 embedded SVG diagrams and the `test-started-host-ports` table.
+* [ ] *G3-14* `benchmarks/README.adoc`: Remove "Per Clarification 1" (≈96). Reduce `== The wrk-to-k6 swap` (≈683-752) to its result. Add the house header attributes.
+* [ ] *G3-15* `demo-client/doc/integration-sample.adoc`: Embed the three unused diagrams `demo-client-login-flow.svg`, `demo-client-logout-flow.svg` and `demo-client-userinfo-probe.svg`.
 
-==== Actionable Tasks
+== Rejected Findings of the Earlier Draft
 
-* [ ] *TASK-G3-04*: Delete `L1509–1796` (`288` lines of `"=== Diagram check..."` diaries and PR `#408` dispositions) from `doc/development/integration-test-topology.adoc`.
-* [ ] *TASK-G3-05*: Condense the per-rig prose sections (`L632–1508`) into concise summary tables aligned with the 8 existing SVG diagrams, while keeping `// tag::test-started-host-ports[]` .. `// end::test-started-host-ports[]` (`L547–631`) untouched.
-
-=== `doc/development/declared-limit-assertion-coverage.adoc` (1,370 lines -> ~380 lines)
-
-==== Contract-Test Constraints
-
-* `DescriptorInventoryWiringTest` (`integration-tests`) parses three AsciiDoc tag regions in `doc/development/declared-limit-assertion-coverage.adoc`:
-  1. `// tag::inventory[]` .. `// end::inventory[]` (`L50–99`)
-  2. `// tag::limit-key-regex[]` .. `// end::limit-key-regex[]` (`L133–135`)
-  3. `// tag::limit-bearing[]` .. `// end::limit-bearing[]` (`L139–162`)
-
-==== Findings
-
-* Outside the 3 contract-tested tag regions (~120 lines total), the remaining `1,250` lines consist of a 264-line combinatorial math essay (`=== Why ×4 overlay multiplication happens`) and historical pass-by-pass sweep rankings explaining how the inventory was originally populated.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G3-06*: Preserve all three `// tag::...[]` / `// end::...[]` regions (`inventory`, `limit-key-regex`, `limit-bearing`) verbatim in `doc/development/declared-limit-assertion-coverage.adoc`, and strip the ~990 lines of historical sweep logs and combinatorial math essays.
-
-=== `doc/development/build-gate-discipline.adoc` (964 -> ~240L) & `local-test-environment-caveats.adoc` (116 -> Retire)
-
-==== Findings
-
-* `doc/development/build-gate-discipline.adoc` contains `680` lines of dated OpenRewrite recipe diff transcripts (`L180–460`) and chronological macOS/OrbStack kernel debugging diaries dated `2026-09-01`, `2026-09-03`, and `2026-09-23` (`L461–860`) where earlier hypotheses are proposed and later refuted in-place.
-* `doc/development/local-test-environment-caveats.adoc` (`116` lines) covers 3 local Docker/macOS test caveats that belong directly in `build-gate-discipline.adoc`.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G3-07*: Strip the 680 lines of dated OpenRewrite diffs and chronological kernel debugging diaries from `doc/development/build-gate-discipline.adoc`, retaining only the active build-gate rules, OpenRewrite marker resolution table, and current macOS/Docker socket tuning requirements.
-* [ ] *TASK-G3-08*: Fold the 3 active local environment caveats from `doc/development/local-test-environment-caveats.adoc` into `doc/development/build-gate-discipline.adoc`, delete `doc/development/local-test-environment-caveats.adoc`, and update `doc/development/README.adoc`.
-* [ ] *TASK-G3-09*: Create and embed `image::../resources/diagrams/build-gate-decision-flow.svg[]` (decision flowchart showing which Maven profile/gate to run for unit, pre-commit, coverage, integration-tests, e2e-demo, and compose-sample changes).
-
-=== `doc/development/README.adoc` (655 lines -> ~260 lines)
-
-==== Contract-Test Constraints
-
-* `ReviewerRosterDocsContractTest` asserts that `doc/development/README.adoc` contains a table row starting with `| link:re-review-on-loopback.adoc[` and mentioning `CodeRabbit (required)` and `Sourcery (optional)` (`L47–53`).
-
-==== Findings
-
-* *Skill name leak (`L402`)*: Cites the internal agent skill `pm-documents:ref-svg-diagrams`.
-* *93-line epic ledger dump (`L307–399`)*: Contains a historical workstream/epic completion table that belongs in git history, not the contributor index.
-* *Cross-document duplication with `doc/architecture/` and `test-corpus-integrity.adoc` (`L217–595`)*:
-  - `== Test Lanes: Which Lane Owns Which Defect Class` (`L217–355`, `138` lines) duplicates `doc/development/test-corpus-integrity.adoc` and `doc/development/cookie-deliverability-blindness.adoc`.
-  - `== Inbound Validation: Where the Code Lives and Why` (`L356–444`, `89` lines) duplicates `doc/architecture/tls-and-inbound-security.adoc` (`== Inbound Security Filter`) and `doc/user/README.adoc` (`minimal` mode rules).
-  - `== Rejections Before the Trust Boundary` (`L526–595`, `70` lines) duplicates `doc/architecture/observability-and-errors.adoc` (`=== Rejections Before the Trust Boundary (Uniform 404)`).
-
-==== Actionable Tasks
-
-* [ ] *TASK-G3-10*: In `doc/development/README.adoc`:
-  - Remove the `pm-documents:ref-svg-diagrams` skill citation (`L402`) and the 93-line epic ledger dump (`L307–399`).
-  - Consolidate `== Test Lanes: Which Lane Owns Which Defect Class` (`L217–355`) into `doc/development/test-corpus-integrity.adoc`.
-  - Delete `== Inbound Validation: Where the Code Lives and Why` (`L356–444`) and `== Rejections Before the Trust Boundary` (`L526–595`), replacing them with links to `doc/architecture/tls-and-inbound-security.adoc` and `doc/architecture/observability-and-errors.adoc` (keeping `=== Giving a new EventType its disposition` if needed for contributor extension).
-
-* [ ] *TASK-G3-11*: Remove rows for the 2 retired files (`cookie-deliverability-blindness.adoc` and `local-test-environment-caveats.adoc`) while preserving the `| link:re-review-on-loopback.adoc[` row for `ReviewerRosterDocsContractTest`.
-
-=== `doc/development/release-process.adoc` (618 lines -> ~340 lines)
-
-==== Contract-Test Constraints
-
-* `ReleaseGuardPinDocsContractTest` and `.github/workflows/release-guard-docs.yml` parse `[#guard-refusal-predicates]` through the end of its `|===` table (`L428–488`), verifying that every `die "..."` message in `.github/scripts/release-guard.sh` is documented in backticks.
-
-==== Findings
-
-* `L489–598` (`110` lines) is a dated pre-merge/post-merge execution diary from the workflow rollout.
-* `L116` uses a level-4 heading (`====`), violating the `<= 3` heading-depth rule.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G3-12*: Preserve `[#guard-refusal-predicates]` and its table (`L428–488`) verbatim in `doc/development/release-process.adoc`.
-* [ ] *TASK-G3-13*: Delete the 110-line rollout diary (`L489–598`), flatten `====` at `L116` to `===`, and embed `image::../resources/diagrams/release-pipeline-flow.svg[]` (sequence/gate diagram showing tag push -> `release-guard.sh` predicate checks -> Maven Central staging -> native image build & Cosign signing).
-
-=== `doc/development/bff-cookie.adoc` (516 -> ~260L) & `doc/development/bff-session.adoc` (506 -> ~260L)
-
-==== Findings
-
-* `doc/development/bff-cookie.adoc` spends `162` lines (`L137–298`) debating 4 candidate routing designs (3 of which were rejected) before describing the shipped SPA/BFF same-origin topology.
-* `doc/development/bff-session.adoc` appends `150` lines (`L356–506`) of raw ADR-0058 research notes and historical token-store alternatives.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G3-14*: In `doc/development/bff-cookie.adoc` (`516 -> ~200L`), delete the 162-line rejected-design debate (`L275–436`), replace `== The sealed-cookie wire format` (`L191–274`) with a link to `doc/architecture/authentication-and-bff.adoc` and `ADR-0058`, and embed `image::../resources/diagrams/bff-same-origin-topology.svg[]` (request routing flow across `/auth/*`, `/api/*`, and SPA static assets).
-* [ ] *TASK-G3-15*: In `doc/development/bff-session.adoc` (`506 -> ~200L`), delete the 150-line raw research log (`L356–506`), replace duplicated OIDC signing-key/PAR/DPoP prose (`L185–288`) with links to `doc/architecture/authentication-and-bff.adoc`, and embed `image::../resources/diagrams/bff-token-refresh-singleflight.svg[]` (existing).
-
-=== Remaining `doc/development/*.adoc` Files (`compose-sample`, `context-path-verification`, `adr-writing`, `source-detection-substrate`, `tls-edge`, `protocol-processors`, `boot-validation-rules`, `sonar-quality-gate`, `re-review-on-loopback`)
-
-==== Actionable Tasks
-
-* [ ] *TASK-G3-16*: In `doc/development/compose-sample.adoc` (`456 -> ~180L`), remove `== The /auth-fronted variant` (`L169–244`) and `== Probes: three different answers to the same question` (`L245–366`) where they duplicate `doc/user/compose-sample.adoc` (`L447–680`), keeping only contributor-facing `-Pcompose-sample` profile wiring and container hardening rules. Slim `doc/development/context-path-verification.adoc` (`422 -> ~160L`) by removing historical debugging narratives while keeping the verification scripts and invariants.
-* [ ] *TASK-G3-17*: Slim `doc/development/adr-writing.adoc` (`390 -> ~280L`) and `doc/development/source-detection-substrate.adoc` (`309 -> ~160L`, removing the ECS 8.17.0 `ALERT` and `enumeration_detection` prose at `L108–140` and `L201–308` that duplicates `doc/architecture/tls-and-inbound-security.adoc` and `doc/architecture/observability-and-errors.adoc`).
-* [ ] *TASK-G3-18*: In `doc/development/tls-edge.adoc` (`210 -> ~100L`), delete the pre-1.0 `Certificate` record removal obituary (`L145–210`) and replace the duplicated `== The Accept-Time L4/L7 Split`, `== Fail-Closed Selection (GW-06)`, and `== Server-TLS Policy Binding (Two Seams)` sections with links to `doc/architecture/tls-and-inbound-security.adoc` (`L11–51`).
-* [ ] *TASK-G3-19*: In `doc/development/protocol-processors.adoc` (`202 -> ~160L`), flatten `====` at `L95` to `===`.
-* [ ] *TASK-G3-20*: In `doc/development/sonar-quality-gate.adoc` (`130 -> ~110L`), replace the `CLAUDE.md` citation with `AGENTS.md`.
-* [ ] *TASK-G3-21*: Add missing standard AsciiDoc header attributes (`:toc: left`, `:toclevels: 3`, `:toc-title: Table of Contents`, `:sectnums:`, `:source-highlighter: highlight.js`) across all surviving `doc/development/*.adoc` files while preserving `== The concern map` in `boot-validation-rules.adoc` (`BootValidationConcernMapContractTest`).
-
-=== Module Docs: `benchmarks/` (760 -> ~380L) and `demo-client/` (930 -> ~500L)
-
-==== Findings
-
-* *`benchmarks/doc/performance-scoring.adoc` (6 lines — Broken Stub)*: A 6-line stub copied from `OAuthSheriff` (`"TokenSheriff JWT validation performance scoring..."`) with a broken link to a non-existent file.
-* *`benchmarks/README.adoc` (754 lines)*:
-  - Contains a prompt/clarification leak at `L223`: `"Per Clarification 1, no benchmark gates the build"`.
-  - Contains a 70-line historical migration section (`=== Why k6 replaced wrk`, `L494–563`).
-  - Uses an ASCII diagram (`L45–75`) instead of an SVG diagram.
-
-* *`demo-client/` (`README.adoc`, `doc/architecture.adoc`, `doc/playwright-e2e.adoc`, `doc/token-inspector.adoc` — 930 lines)*:
-  - Repeats the same SPA route table, BFF login flow, and Playwright container startup instructions across `demo-client/README.adoc`, `demo-client/doc/architecture.adoc`, and `demo-client/doc/playwright-e2e.adoc`.
-
-==== Actionable Tasks
-
-* [ ] *TASK-G3-22*: Delete the broken 6-line stub `benchmarks/doc/performance-scoring.adoc`.
-* [ ] *TASK-G3-23*: In `benchmarks/README.adoc` (`754 -> ~380L`), remove `"Per Clarification 1, "` at `L223`, delete the `wrk`-to-`k6` historical section (`L494–563`), add standard AsciiDoc header attributes, and replace the ASCII box diagram (`L45–75`) with `image::../doc/resources/diagrams/benchmark-architecture.svg[]`.
-* [ ] *TASK-G3-24*: Deduplicate `demo-client/README.adoc`, `demo-client/doc/architecture.adoc`, `demo-client/doc/playwright-e2e.adoc`, and `demo-client/doc/token-inspector.adoc` (`930 -> ~450L`) so `demo-client/README.adoc` is a concise quick-start index (~100L) linking to the 3 focused `demo-client/doc/*.adoc` guides, and compress chatty rhetorical preambles across all surviving `doc/development/*.adoc` files to bring Group 3 down to `~3,100` lines (`-77%`).
+* `tls-edge.adoc` has no `Certificate` obituary.
+* `protocol-processors.adoc` and `release-process.adoc` nest their `====` headings correctly.
+* `sonar-quality-gate.adoc` cites neither `CLAUDE.md` nor `AGENTS.md`.
+* `demo-client/` has no 3-way duplication, and the files named earlier do not exist.
+* `benchmarks/README.adoc` has no ASCII diagram.
+* `integration-test-topology.adoc` embeds one SVG, not eight. No `it-*.svg` files exist.
