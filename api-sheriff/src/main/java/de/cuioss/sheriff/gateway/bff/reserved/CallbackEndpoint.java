@@ -150,7 +150,12 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>Error, silent attempt.</strong> {@code login_required}, {@code interaction_required},
  *       {@code consent_required} or {@code account_selection_required} re-drives exactly one
  *       interactive attempt through {@link SessionWidening#redriveInteractive}, with the same return
- *       URL and scopes, answered as a {@code 302} carrying a new binding cookie.</li>
+ *       URL and scopes, answered as a {@code 302} carrying a new binding cookie. The re-drive stores a
+ *       new pending record counted under the callback request's quota key; when the pending store is
+ *       full of live records it raises
+ *       {@link de.cuioss.sheriff.gateway.events.EventType#PENDING_AUTHORIZATION_SATURATED} out of
+ *       {@link #handle}, no binding cookie is set, the live session is unchanged, and the edge answers
+ *       {@code 503} with {@code Retry-After: 30}.</li>
  *   <li><strong>Any other error, or any error on the interactive attempt</strong>, is terminal:
  *       {@code 403}, no {@code Set-Cookie}, the live session unchanged and no further redirect.</li>
  *   <li><strong>Success.</strong> The live session is resolved from the request {@code Cookie}
@@ -290,14 +295,22 @@ public final class CallbackEndpoint {
      * @param rawParameters the raw callback parameter string — the untouched query string of the
      *                      {@code response_mode=query} GET callback, never map-collapsed (BFF-13)
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
+     * @param quotaKey     the callback request's quota key, the key the pending record of an
+     *                     interactive widening re-drive is counted under
      * @param now         the reference instant (TTL anchor for pending resolution and session expiry)
      * @return the redirect outcome on success or on the interactive re-drive of a silent widening, a
      *         {@code 400}/{@code 403} error outcome when the callback is rejected or a widening is
      *         refused, or a {@code 500} error outcome when the validated session could not be bound
      *         or persisted (e.g. the sealed cookie-mode value exceeds the cookie-size budget)
+     * @throws de.cuioss.sheriff.gateway.events.GatewayException with
+     *                                                           {@code PENDING_AUTHORIZATION_SATURATED}
+     *                                                           when an interactive re-drive finds the
+     *                                                           pending store full of live records
      */
-    public CallbackOutcome handle(String rawParameters, @Nullable String cookieHeader, Instant now) {
+    public CallbackOutcome handle(String rawParameters, @Nullable String cookieHeader, String quotaKey,
+            Instant now) {
         Objects.requireNonNull(rawParameters, "rawParameters");
+        Objects.requireNonNull(quotaKey, "quotaKey");
         Objects.requireNonNull(now, "now");
 
         CallbackParameters params;
@@ -335,7 +348,7 @@ public final class CallbackEndpoint {
         // Only now — the binding cookie resolved the record and the state matched — is an IdP error
         // response honoured, so a forged error from another browser can never drive a re-drive.
         if (params.hasError()) {
-            return answerError(params, pending, now);
+            return answerError(params, pending, quotaKey, now);
         }
 
         AuthorizationCodeFlow.AuthenticationResult result;
@@ -355,7 +368,8 @@ public final class CallbackEndpoint {
      * widening, exactly one interactive re-drive when a silent attempt needs interaction, otherwise a
      * terminal {@code 403} leaving the live session unchanged.
      */
-    private CallbackOutcome answerError(CallbackParameters params, PendingAuthorizationRecord pending, Instant now) {
+    private CallbackOutcome answerError(CallbackParameters params, PendingAuthorizationRecord pending,
+            String quotaKey, Instant now) {
         String error = params.error();
         String reason = error != null && KNOWN_AUTHORIZATION_ERRORS.contains(error) ? error : REASON_OTHER;
         PendingAuthorizationRecord.Widening widening = pending.widening();
@@ -365,7 +379,7 @@ public final class CallbackEndpoint {
         }
         if (widening.attempt() == PendingAuthorizationRecord.Widening.Attempt.SILENT
                 && INTERACTION_NEEDED.contains(reason)) {
-            LoginRedirect redrive = sessionWidening.redriveInteractive(pending, now);
+            LoginRedirect redrive = sessionWidening.redriveInteractive(pending, quotaKey, now);
             LOGGER.debug("Silent session widening needs interaction (%s) — re-driving one interactive attempt",
                     reason);
             return CallbackOutcome.redirect(redrive.authorizationUrl(), redrive.setCookieHeaders());

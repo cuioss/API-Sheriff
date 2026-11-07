@@ -32,6 +32,7 @@ import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.OnFailur
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.RefreshResult;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -360,7 +361,29 @@ class SessionAuthenticationStageScopeEnforcementTest {
                             "the widening is asked for the route's needed scopes"),
                     () -> assertEquals(List.of("/app/orders"), widening.returnUrls,
                             "the browser returns to the requested path"),
+                    () -> assertEquals(List.of(SourceKey.UNKNOWN_SOURCE), widening.quotaKeys,
+                            "the widening is counted under the request's quota key — unknown without a peer"),
                     () -> assertTrue(request.mediatedBearer().isEmpty(), "no bearer is recorded on a redirect"));
+        }
+
+        @Test
+        @DisplayName("propagates a saturated pending store's refusal of the widening: no 302, no binding cookie")
+        void propagatesSaturatedWideningRefusal() {
+            SessionRecord live = session(SESSION_TOKEN, Set.of(OPENID), Set.of(OPENID));
+            SessionAuthenticationStage.WideningInitiation refusing = (session, returnUrl, needed, quotaKey, now) -> {
+                throw new GatewayException(EventType.PENDING_AUTHORIZATION_SATURATED);
+            };
+            SessionAuthenticationStage stage = stage(bindingWith(live), unreachableScopeRefresh(), refusing);
+            PipelineRequest request = sessionRequest(NEEDED, navigationHeaders(), null);
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll("the refused widening reaches the edge, which answers 503 with Retry-After",
+                    () -> assertEquals(EventType.PENDING_AUTHORIZATION_SATURATED, thrown.getEventType()),
+                    () -> assertTrue(request.shortCircuitStatus().isEmpty(), "no 302 into the identity provider"),
+                    () -> assertNull(request.responseHeaders().get("Location"), "no redirect target is set"),
+                    () -> assertTrue(request.responseSetCookies().isEmpty(), "no binding cookie is emitted"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty(), "no bearer is recorded"));
         }
 
         @Test
@@ -558,16 +581,18 @@ class SessionAuthenticationStageScopeEnforcementTest {
         SessionAuthenticationStage.ScopeRefresh scopeRefresh = unreachableScopeRefresh();
         SessionAuthenticationStage.LoginInitiation login = redirectLogin();
         SessionAuthenticationStage.WideningInitiation widening = unreachableWidening();
+        PendingQuotaKeys quotaKeys = untrustingQuotaKeys();
 
         assertAll(
                 () -> assertThrows(NullPointerException.class, () -> new SessionAuthenticationStage(binding, refresh,
-                                null, login, widening, OnFailure.REAUTHENTICATE, STEP_UP_PATH, CLOCK),
+                                null, login, widening, quotaKeys, OnFailure.REAUTHENTICATE, STEP_UP_PATH, CLOCK),
                         "the scope-refresh seam is mandatory"),
                 () -> assertThrows(NullPointerException.class, () -> new SessionAuthenticationStage(binding, refresh,
-                                scopeRefresh, login, null, OnFailure.REAUTHENTICATE, STEP_UP_PATH, CLOCK),
+                                scopeRefresh, login, null, quotaKeys, OnFailure.REAUTHENTICATE, STEP_UP_PATH, CLOCK),
                         "the widening seam is mandatory"),
                 () -> assertDoesNotThrow(() -> new SessionAuthenticationStage(binding, refresh, scopeRefresh, login,
-                        widening, OnFailure.REAUTHENTICATE, null, CLOCK), "an unset step-up path is a valid shape"));
+                        widening, quotaKeys, OnFailure.REAUTHENTICATE, null, CLOCK),
+                        "an unset step-up path is a valid shape"));
     }
 
     private static SessionAuthenticationStage stage(SessionBinding binding,
@@ -580,7 +605,7 @@ class SessionAuthenticationStageScopeEnforcementTest {
             SessionAuthenticationStage.TokenRefresh tokenRefresh, SessionAuthenticationStage.ScopeRefresh scopeRefresh,
             SessionAuthenticationStage.WideningInitiation widening, OnFailure onFailure, @Nullable String stepUpPath) {
         return new SessionAuthenticationStage(binding, tokenRefresh, scopeRefresh, redirectLogin(), widening,
-                onFailure, stepUpPath, CLOCK);
+                untrustingQuotaKeys(), onFailure, stepUpPath, CLOCK);
     }
 
     /** The session cookie of the shared fixtures with the given {@code Accept} value. */
@@ -628,12 +653,15 @@ class SessionAuthenticationStageScopeEnforcementTest {
         private final List<SessionRecord> liveSessions = new ArrayList<>();
         private final List<String> returnUrls = new ArrayList<>();
         private final List<Set<String>> neededScopes = new ArrayList<>();
+        private final List<String> quotaKeys = new ArrayList<>();
 
         @Override
-        public LoginChallenge initiate(SessionRecord live, String returnUrl, Set<String> needed, Instant now) {
+        public LoginChallenge initiate(SessionRecord live, String returnUrl, Set<String> needed, String quotaKey,
+                Instant now) {
             liveSessions.add(live);
             returnUrls.add(returnUrl);
             neededScopes.add(Set.copyOf(needed));
+            quotaKeys.add(quotaKey);
             return new LoginChallenge(WIDENING_LOCATION, List.of(WIDENING_COOKIE));
         }
     }

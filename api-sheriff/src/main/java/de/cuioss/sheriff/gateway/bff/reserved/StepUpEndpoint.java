@@ -73,6 +73,12 @@ import org.jspecify.annotations.Nullable;
  * {@link de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests}, before a pending record is
  * stored and before a cookie is set; the live session is left as it was.
  * <p>
+ * <strong>Refused when the pending store is full.</strong> The widening's pending record is counted
+ * under the request's quota key. When the pending store already holds its capacity of live records,
+ * the widening raises {@link de.cuioss.sheriff.gateway.events.EventType#PENDING_AUTHORIZATION_SATURATED}
+ * out of {@link #handle} after the push; no cookie is set, the live session is left as it was, and the
+ * edge answers {@code 503} with {@code Retry-After: 30}.
+ * <p>
  * The endpoint is framework-agnostic (a raw {@code returnUrl} parameter and a raw {@code Cookie}
  * header in, a {@link StepUpOutcome} the edge renders out — no JAX-RS/Vert.x coupling), so it is
  * unit-testable without a container; the session runtime wires it to the request/response edge.
@@ -131,14 +137,21 @@ public final class StepUpEndpoint {
      * @param returnUrl    the raw {@code returnUrl} target the browser asked to be widened for, may be
      *                     absent
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
+     * @param quotaKey     the request's quota key, the key a widening's pending record is counted under
      * @param now          the reference instant (session-resolution TTL anchor and the widening pending
      *                     record's TTL anchor)
      * @return a {@code 401} {@code application/problem+json} without a live session; otherwise a
      *         {@code 302} straight to the validated return URL (no cookies) when its route's needed
      *         scopes lie inside the granted set, or to the IdP authorization URL carrying the binding
      *         {@code Set-Cookie} for a silent widening
+     * @throws de.cuioss.sheriff.gateway.events.GatewayException with
+     *                                                           {@code PENDING_AUTHORIZATION_SATURATED}
+     *                                                           when a widening finds the pending store
+     *                                                           full of live records
      */
-    public StepUpOutcome handle(@Nullable String returnUrl, @Nullable String cookieHeader, Instant now) {
+    public StepUpOutcome handle(@Nullable String returnUrl, @Nullable String cookieHeader, String quotaKey,
+            Instant now) {
+        Objects.requireNonNull(quotaKey, "quotaKey");
         Objects.requireNonNull(now, "now");
 
         Optional<SessionRecord> session = sessionBinding.resolve(cookieHeader, now);
@@ -156,7 +169,8 @@ public final class StepUpEndpoint {
             return StepUpOutcome.redirect(target, List.of());
         }
 
-        LoginRedirect widening = sessionWidening.initiate(live, target, needed, Widening.Attempt.SILENT, now);
+        LoginRedirect widening = sessionWidening.initiate(live, target, needed, Widening.Attempt.SILENT, quotaKey,
+                now);
         LOGGER.debug("step-up target needs a scope outside the granted set — starting a silent widening");
         return StepUpOutcome.redirect(widening.authorizationUrl(), widening.setCookieHeaders());
     }

@@ -113,6 +113,9 @@ class UniformNotFoundTest {
         table.put(EventType.SOURCE_TRIPPED, informational);
         table.put(EventType.SOURCE_BLOCKED,
                 "raised before route selection and admission, keyed by the source: identical for every address");
+        table.put(EventType.PENDING_AUTHORIZATION_SATURATED,
+                "a reserved path has no selected route, and the session branch already discloses the route by its "
+                        + "302 into the identity provider");
         return table;
     }
 

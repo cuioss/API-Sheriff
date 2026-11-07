@@ -1159,7 +1159,7 @@ class GatewayEdgeRouteTest {
             String bindingSetCookie = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL)
                     .toSetCookieHeader(PendingAuthorizationRecord.create(
                             FlowContext.create("https://gw.example.com/auth/callback"), "/", List.of("openid"),
-                            Instant.now()).id());
+                            "192.0.2.10", Instant.now()).id());
             String bindingPair = bindingSetCookie.substring(0, bindingSetCookie.indexOf(';'));
             String activityPair = activityCodec.cookieName() + "="
                     + activityCodec.sign(sessionIdentity, Instant.now());

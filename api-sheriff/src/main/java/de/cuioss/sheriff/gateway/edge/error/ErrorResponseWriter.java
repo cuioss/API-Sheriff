@@ -22,6 +22,7 @@ import java.util.OptionalLong;
 import java.util.function.Consumer;
 
 
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement;
@@ -121,7 +122,10 @@ public final class ErrorResponseWriter {
 
     private static final CuiLogger LOGGER = new CuiLogger(ErrorResponseWriter.class);
 
-    /** The {@code Retry-After} response header an open-circuit {@code 503} carries. */
+    /**
+     * The {@code Retry-After} response header an open-circuit {@code 503} and a saturated
+     * pending-store {@code 503} carry.
+     */
     public static final String RETRY_AFTER_HEADER = "Retry-After";
     private static final String PROBLEM_JSON = "application/problem+json";
     /** The request header whose explicit {@code text/html} range selects an HTML error page. */
@@ -457,28 +461,38 @@ public final class ErrorResponseWriter {
     }
 
     /**
-     * Gives the {@code 503} of an open circuit ({@link EventType#UPSTREAM_CIRCUIT_OPEN}) its
-     * {@code Retry-After} header, as the error contract in
-     * {@code doc/architecture/observability-and-errors.adoc} states: the
+     * Gives the {@code 503} of an open circuit ({@link EventType#UPSTREAM_CIRCUIT_OPEN}) and the
+     * {@code 503} of a saturated pending-authorization store
+     * ({@link EventType#PENDING_AUTHORIZATION_SATURATED}) their {@code Retry-After} header, as the error
+     * contract in {@code doc/architecture/observability-and-errors.adoc} states: the
      * header is seeded onto the request's {@linkplain PipelineRequest#responseHeaders() response-header
      * map}, which every writer of a gateway-authored answer applies — the problem document, the
      * negotiated HTML error page and the trailers-only gRPC status alike. Every other rejection is left
      * as it is.
      * <p>
-     * The value is {@value UpstreamGuards#BREAKER_RESET_SECONDS}, the whole seconds the breaker stays
-     * open ({@link UpstreamGuards#BREAKER_RESET_SECONDS}); a delay in seconds is the one form of the
-     * header that needs no clock (RFC 9110 §10.2.3). It is a constant of the gateway and carries nothing
-     * of the request or of the upstream.
+     * The value for an open circuit is {@value UpstreamGuards#BREAKER_RESET_SECONDS}, the whole seconds
+     * the breaker stays open ({@link UpstreamGuards#BREAKER_RESET_SECONDS}); the value for a saturated
+     * pending store is {@value PendingAuthorizationStore#SATURATED_RETRY_AFTER_SECONDS}
+     * ({@link PendingAuthorizationStore#SATURATED_RETRY_AFTER_SECONDS}), a short wait in which pending
+     * records are consumed or expire. A delay in seconds is the one form of the header that needs no
+     * clock (RFC 9110 §10.2.3). Both are constants of the gateway and carry nothing of the request or of
+     * the upstream.
      * <p>
      * Public like {@link #problemBody}; the header is asserted directly by {@code ErrorResponseWriterTest}.
      *
      * @param request   the rejected request, {@code null} for a rejection answered before one was
-     *                  built — such a rejection is never an open circuit and gets no header
+     *                  built — such a rejection is neither of the two and gets no header
      * @param eventType the event the rejection reports
      */
     public static void seedRetryAfter(@Nullable PipelineRequest request, EventType eventType) {
-        if (request != null && eventType == EventType.UPSTREAM_CIRCUIT_OPEN) {
+        if (request == null) {
+            return;
+        }
+        if (eventType == EventType.UPSTREAM_CIRCUIT_OPEN) {
             request.responseHeaders().put(RETRY_AFTER_HEADER, Integer.toString(UpstreamGuards.BREAKER_RESET_SECONDS));
+        } else if (eventType == EventType.PENDING_AUTHORIZATION_SATURATED) {
+            request.responseHeaders().put(RETRY_AFTER_HEADER,
+                    Integer.toString(PendingAuthorizationStore.SATURATED_RETRY_AFTER_SECONDS));
         }
     }
 
@@ -537,8 +551,9 @@ public final class ErrorResponseWriter {
      * fires before route selection (no selected route) always renders problem+json. A gRPC status has
      * no place for extension members, so they are not rendered there.
      * <p>
-     * An open circuit's {@code 503} is given its {@code Retry-After} header first
-     * ({@link #seedRetryAfter}), so it rides on whichever of the three shapes answers.
+     * An open circuit's {@code 503} and a saturated pending store's {@code 503} are given their
+     * {@code Retry-After} header first ({@link #seedRetryAfter}), so it rides on whichever of the three
+     * shapes answers.
      * <p>
      * A {@code heldUntilNanos} the per-source feed returned holds the answer in every one of the three
      * shapes; in the two problem shapes it combines with the uniform {@code 404}'s release time, the

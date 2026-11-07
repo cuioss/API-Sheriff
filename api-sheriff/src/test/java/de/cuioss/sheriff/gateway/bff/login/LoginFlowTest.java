@@ -57,6 +57,9 @@ class LoginFlowTest {
     private static final String CONFIGURED_DEFAULT = "/home";
     /** The scope set a caller names for the login; the flow forwards it to the seam unchanged. */
     private static final List<String> SCOPES = List.of("openid", "profile", "orders:read");
+    /** The requester source the login is counted under. */
+    private static final String QUOTA_KEY = "192.0.2.10";
+    private static final String OTHER_QUOTA_KEY = "198.51.100.20";
 
     private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -94,7 +97,7 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should redirect to the engine authorization URL and set the binding cookie")
         void shouldRedirectToAuthorizationUrl() {
-            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, T0);
+            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0);
 
             assertEquals(AUTHORIZATION_URL, result.authorizationUrl(), "the URL comes from the engine, unchanged");
             assertEquals(1, result.setCookieHeaders().size());
@@ -104,7 +107,7 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should persist the engine FlowContext as a single-use pending record bound to the browser")
         void shouldPersistPendingRecord() {
-            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, T0);
+            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0);
 
             PendingAuthorizationRecord pending = consumeBoundRecord(result);
             assertSame(flowContext, pending.flowContext(), "the record wraps the engine context, never re-invents it");
@@ -113,9 +116,18 @@ class LoginFlowTest {
         }
 
         @Test
+        @DisplayName("Should record the requester's quota key on the stored pending record")
+        void shouldRecordQuotaKey() {
+            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0);
+
+            assertEquals(QUOTA_KEY, consumeBoundRecord(result).quotaKey(),
+                    "the store counts the record under the source that started the login");
+        }
+
+        @Test
         @DisplayName("Should forward the requested scope set to the authorization seam unchanged")
         void shouldForwardScopesToSeam() {
-            loginFlow.initiate("/dashboard", SCOPES, T0);
+            loginFlow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0);
 
             assertEquals(SCOPES, requestedScopes.get(), "the seam receives exactly the scope set the caller named");
         }
@@ -140,7 +152,7 @@ class LoginFlowTest {
             }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
 
             GatewayException thrown =
-                    assertThrows(GatewayException.class, () -> failing.initiate("/dashboard", SCOPES, T0));
+                    assertThrows(GatewayException.class, () -> failing.initiate("/dashboard", SCOPES, QUOTA_KEY, T0));
 
             assertSame(refusal, thrown, "the refusal reaches the caller as it was raised — no redirect, so no Set-Cookie");
             assertEquals(0, pendingStore.size(), "nothing is stored for a request that was never pushed");
@@ -149,10 +161,34 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should store exactly one pending record when the seam yields a redirect (matched control)")
         void shouldStoreOneRecordWhenTheSeamYieldsARedirect() {
-            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, T0);
+            LoginRedirect result = loginFlow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0);
 
             assertEquals(1, pendingStore.size(), "the store does count a record, so the zero above is observed");
             assertEquals(1, result.setCookieHeaders().size(), "and the redirect carries the binding cookie");
+        }
+    }
+
+    @Nested
+    @DisplayName("A saturated pending store")
+    class SaturatedStore {
+
+        @Test
+        @DisplayName("Should propagate the store's refusal after the push and yield no binding cookie")
+        void shouldPropagateSaturationRefusal() {
+            InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1);
+            PendingAuthorizationRecord held = PendingAuthorizationRecord.create(flowContext, "/held", SCOPES,
+                    OTHER_QUOTA_KEY, T0);
+            saturated.store(held, T0);
+            LoginFlow flow = new LoginFlow(authorization, saturated, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+
+            GatewayException thrown =
+                    assertThrows(GatewayException.class, () -> flow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0));
+
+            assertEquals(EventType.PENDING_AUTHORIZATION_SATURATED, thrown.getEventType(),
+                    "the refusal reaches the caller instead of a redirect, so no Set-Cookie is returned");
+            assertEquals(SCOPES, requestedScopes.get(), "the refusal follows the push, like the 502 path");
+            assertEquals(1, saturated.size(), "no record was added");
+            assertTrue(saturated.consume(held.id(), T0).isPresent(), "the other source's live record was not evicted");
         }
     }
 
@@ -165,7 +201,7 @@ class LoginFlowTest {
                 "https://gw.example.com/app"})
         @DisplayName("Should record a same-origin return URL verbatim, query included")
         void shouldRecordSameOriginReturnUrl(String returnUrl) {
-            LoginRedirect result = loginFlow.initiate(returnUrl, SCOPES, T0);
+            LoginRedirect result = loginFlow.initiate(returnUrl, SCOPES, QUOTA_KEY, T0);
 
             assertEquals(returnUrl, consumeBoundRecord(result).returnUrl());
         }
@@ -174,7 +210,7 @@ class LoginFlowTest {
         @ValueSource(strings = {"https://evil.example.com/app", "//evil.example.com", "javascript:alert(1)"})
         @DisplayName("Should fall back to the configured default for a cross-origin or unparseable return URL")
         void shouldFallBackForOffOrigin(String returnUrl) {
-            LoginRedirect result = loginFlow.initiate(returnUrl, SCOPES, T0);
+            LoginRedirect result = loginFlow.initiate(returnUrl, SCOPES, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
         }
@@ -182,7 +218,7 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should fall back to the configured default when no return URL is supplied")
         void shouldFallBackForNull() {
-            LoginRedirect result = loginFlow.initiate(null, SCOPES, T0);
+            LoginRedirect result = loginFlow.initiate(null, SCOPES, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
         }
@@ -192,8 +228,8 @@ class LoginFlowTest {
         void shouldFallBackToRootDefault() {
             LoginFlow rootDefault = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, "/");
 
-            LoginRedirect absent = rootDefault.initiate(null, SCOPES, T0);
-            LoginRedirect offOrigin = rootDefault.initiate("https://evil.example.com/app", SCOPES, T0);
+            LoginRedirect absent = rootDefault.initiate(null, SCOPES, QUOTA_KEY, T0);
+            LoginRedirect offOrigin = rootDefault.initiate("https://evil.example.com/app", SCOPES, QUOTA_KEY, T0);
 
             assertEquals("/", consumeBoundRecord(absent).returnUrl(), "an absent target lands on '/'");
             assertEquals("/", consumeBoundRecord(offOrigin).returnUrl(), "an off-origin target lands on '/'");
@@ -213,14 +249,21 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
-            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", SCOPES, null));
+            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", SCOPES, QUOTA_KEY, null));
         }
 
         @Test
         @DisplayName("Should reject a null scope set before reaching the seam")
         void shouldRejectNullScopes() {
-            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", null, T0));
+            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", null, QUOTA_KEY, T0));
             assertNull(requestedScopes.get(), "the seam is never reached without a scope set");
+        }
+
+        @Test
+        @DisplayName("Should reject a null quota key before reaching the seam")
+        void shouldRejectNullQuotaKey() {
+            assertThrows(NullPointerException.class, () -> loginFlow.initiate("/dashboard", SCOPES, null, T0));
+            assertNull(requestedScopes.get(), "the seam is never reached without a quota key");
         }
 
         @Test

@@ -30,6 +30,10 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -39,6 +43,7 @@ import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CallbackOutcome;
+import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -52,6 +57,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
@@ -250,15 +256,19 @@ class SessionScopeTruthfulnessFlowTest {
         return new SessionAuthenticationStage(binding,
                 BffRuntimeProducer.nearExpiryRefresh(coordinator),
                 BffRuntimeProducer.scopeRefresh(coordinator),
-                (returnUrl, scopes, now) -> {
+                (returnUrl, scopes, quotaKey, now) -> {
                     throw new AssertionError("a live session must never be sent into a fresh login");
                 },
-                (live, returnUrl, neededScopes, now) -> {
+                (live, returnUrl, neededScopes, quotaKey, now) -> {
                     LoginFlow.LoginRedirect redirect = sessionWidening.initiate(live, returnUrl, neededScopes,
-                            PendingAuthorizationRecord.Widening.Attempt.SILENT, now);
+                            PendingAuthorizationRecord.Widening.Attempt.SILENT, quotaKey, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
+                new PendingQuotaKeys(new TcpPeerGate(List.of()), new ForwardedHeaderResolver(
+                        ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                                .securityConfig(SecurityConfiguration.defaults()).build(),
+                        new SecurityEventCounter())),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE, STEP_UP_PATH, CLOCK);
     }
 
@@ -272,7 +282,7 @@ class SessionScopeTruthfulnessFlowTest {
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> authorizationGrant(grantScope),
                 pendingStore, bindingCodec, binding, SESSION_TTL, sessionWidening);
         CallbackOutcome outcome = callback.handle("code=widening-code&state=" + state,
-                bindingCookie + "; " + sessionCookie, NOW);
+                bindingCookie + "; " + sessionCookie, "192.0.2.10", NOW);
         // A merged widening re-issues the session cookie value; the browser holds the returned one from
         // here on, and the previous value resolves nothing.
         outcome.setCookieHeaders().stream()

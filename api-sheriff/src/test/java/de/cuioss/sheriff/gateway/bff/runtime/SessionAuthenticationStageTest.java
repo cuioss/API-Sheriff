@@ -31,6 +31,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -49,6 +53,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -78,6 +83,8 @@ class SessionAuthenticationStageTest {
     private static final String MEDIATED_TOKEN = "mediated-access-token";
     private static final String REFRESHED_TOKEN = "refreshed-access-token";
     private static final String NEEDED_SCOPE = "orders:read";
+    /** The TCP peer of a request, which an untrusting gateway keys the pending quota on. */
+    private static final String PEER_ADDRESS = "192.0.2.10";
     private static final String LOGIN_LOCATION = "https://idp.example/authorize?client_id=sheriff";
     private static final String BINDING_COOKIE = "__Host-sheriff-binding=binding-value; Path=/; Secure; HttpOnly; SameSite=Lax";
     private static final String RESEAL_COOKIE = "__Host-sheriff-session=re-sealed-value; Path=/; Secure; HttpOnly; SameSite=Lax";
@@ -366,10 +373,11 @@ class SessionAuthenticationStageTest {
         void requestsRouteNeededScopesAtLogin() {
             Set<String> neededScopes = Set.of("openid", "profile", NEEDED_SCOPE);
             AtomicReference<Collection<String>> requested = new AtomicReference<>();
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, scopes, now) -> {
-                requested.set(scopes);
-                return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
-            });
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(),
+                    (returnUrl, scopes, quotaKey, now) -> {
+                        requested.set(scopes);
+                        return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+                    });
             PipelineRequest request = sessionRequest(neededScopes, navigationHeaders());
 
             stage.process(request);
@@ -384,7 +392,7 @@ class SessionAuthenticationStageTest {
             Set<String> neededScopes = Set.of("openid", NEEDED_SCOPE);
             AtomicReference<Collection<String>> requested = new AtomicReference<>();
             SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), sessionEndedRefresh(),
-                    (returnUrl, scopes, now) -> {
+                    (returnUrl, scopes, quotaKey, now) -> {
                         requested.set(scopes);
                         return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
                     });
@@ -393,6 +401,48 @@ class SessionAuthenticationStageTest {
             stage.process(request);
 
             assertEquals(neededScopes, Set.copyOf(requested.get()));
+        }
+
+        @Test
+        @DisplayName("hands the login seam the request's quota key, derived from its TCP peer")
+        void handsQuotaKeyToLoginSeam() {
+            AtomicReference<String> quotaKeySeen = new AtomicReference<>();
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(),
+                    (returnUrl, scopes, quotaKey, now) -> {
+                        quotaKeySeen.set(quotaKey);
+                        return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+                    });
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.GET)
+                    .requestPath("/app/orders")
+                    .headers(navigationHeaders())
+                    .peerAddress(PEER_ADDRESS)
+                    .build();
+            request.canonicalPath("/app/orders");
+            request.selectedRoute(sessionRoute(AuthConfig.builder().require(Require.SESSION).build(), Set.of()));
+
+            stage.process(request);
+
+            assertEquals(PEER_ADDRESS, quotaKeySeen.get(),
+                    "the pending record of the navigation login is counted under the requester's source");
+        }
+
+        @Test
+        @DisplayName("propagates a saturated pending store's refusal: no 302, no binding cookie")
+        void propagatesSaturatedRefusal() {
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(),
+                    (returnUrl, scopes, quotaKey, now) -> {
+                        throw new GatewayException(EventType.PENDING_AUTHORIZATION_SATURATED);
+                    });
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertEquals(EventType.PENDING_AUTHORIZATION_SATURATED, thrown.getEventType(),
+                    "the refusal reaches the edge, which answers 503 with Retry-After");
+            assertTrue(request.shortCircuitStatus().isEmpty(), "no 302 into the identity provider");
+            assertNull(request.responseHeaders().get("Location"), "no redirect target is set");
+            assertTrue(request.responseSetCookies().isEmpty(), "no binding cookie is emitted");
         }
 
         @Test
@@ -614,8 +664,23 @@ class SessionAuthenticationStageTest {
             SessionAuthenticationStage.LoginInitiation login = redirectLogin();
             SessionAuthenticationStage.WideningInitiation widening = unreachableWidening();
 
+            PendingQuotaKeys quotaKeys = untrustingQuotaKeys();
+
             assertThrows(NullPointerException.class, () -> new SessionAuthenticationStage(binding, refresh,
-                    scopeRefresh, login, widening, null, null, CLOCK));
+                    scopeRefresh, login, widening, quotaKeys, null, null, CLOCK));
+        }
+
+        @Test
+        @DisplayName("rejects a null quota-key derivation")
+        void rejectsNullQuotaKeys() {
+            SessionBinding binding = emptyBinding();
+            SessionAuthenticationStage.TokenRefresh refresh = identityRefresh();
+            SessionAuthenticationStage.ScopeRefresh scopeRefresh = unreachableScopeRefresh();
+            SessionAuthenticationStage.LoginInitiation login = redirectLogin();
+            SessionAuthenticationStage.WideningInitiation widening = unreachableWidening();
+
+            assertThrows(NullPointerException.class, () -> new SessionAuthenticationStage(binding, refresh,
+                    scopeRefresh, login, widening, null, OnFailure.REAUTHENTICATE, null, CLOCK));
         }
 
         @Test
@@ -676,10 +741,11 @@ class SessionAuthenticationStageTest {
 
         private String recordedReturnUrl(String path, List<QueryParameter> query) {
             AtomicReference<String> recorded = new AtomicReference<>();
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), (returnUrl, scopes, now) -> {
-                recorded.set(returnUrl);
-                return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
-            });
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(),
+                    (returnUrl, scopes, quotaKey, now) -> {
+                        recorded.set(returnUrl);
+                        return new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+                    });
             PipelineRequest request = PipelineRequest.builder()
                     .method(HttpMethod.GET)
                     .requestPath(path)
@@ -1085,7 +1151,18 @@ class SessionAuthenticationStageTest {
             SessionAuthenticationStage.TokenRefresh refresh, SessionAuthenticationStage.LoginInitiation login,
             OnFailure onFailure) {
         return new SessionAuthenticationStage(binding, refresh, unreachableScopeRefresh(), login,
-                unreachableWidening(), onFailure, null, CLOCK);
+                unreachableWidening(), untrustingQuotaKeys(), onFailure, null, CLOCK);
+    }
+
+    /**
+     * The quota-key derivation of a gateway that trusts no forwarder, so every request is keyed on its
+     * TCP peer — the derivation the stage hands both initiation seams.
+     */
+    static PendingQuotaKeys untrustingQuotaKeys() {
+        return new PendingQuotaKeys(new TcpPeerGate(List.of()), new ForwardedHeaderResolver(
+                ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                        .securityConfig(SecurityConfiguration.defaults()).build(),
+                new SecurityEventCounter()));
     }
 
     static SessionAuthenticationStage.TokenRefresh identityRefresh() {
@@ -1102,7 +1179,7 @@ class SessionAuthenticationStageTest {
 
     /** A widening seam that fails the test when reached — the request must not be redirected into a widening. */
     static SessionAuthenticationStage.WideningInitiation unreachableWidening() {
-        return (live, returnUrl, neededScopes, now) -> {
+        return (live, returnUrl, neededScopes, quotaKey, now) -> {
             throw new AssertionError("the widening seam must not be reached");
         };
     }
@@ -1118,7 +1195,7 @@ class SessionAuthenticationStageTest {
     }
 
     static SessionAuthenticationStage.LoginInitiation redirectLogin() {
-        return (returnUrl, scopes, now) -> new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
+        return (returnUrl, scopes, quotaKey, now) -> new LoginChallenge(LOGIN_LOCATION, List.of(BINDING_COOKIE));
     }
 
     private static SessionBinding emptyBinding() {
@@ -1209,7 +1286,7 @@ class SessionAuthenticationStageTest {
     private static SessionAuthenticationStage stageAt(Clock clock, SessionBinding binding,
             SessionAuthenticationStage.TokenRefresh refresh) {
         return new SessionAuthenticationStage(binding, refresh, unreachableScopeRefresh(), redirectLogin(),
-                unreachableWidening(), OnFailure.REAUTHENTICATE, null, clock);
+                unreachableWidening(), untrustingQuotaKeys(), OnFailure.REAUTHENTICATE, null, clock);
     }
 
     private static Clock clockAt(Instant instant) {

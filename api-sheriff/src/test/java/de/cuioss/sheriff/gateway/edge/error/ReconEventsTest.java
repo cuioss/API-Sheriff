@@ -99,6 +99,9 @@ class ReconEventsTest {
         table.put(EventType.SOURCE_TRIPPED, notARejection);
         table.put(EventType.SOURCE_BLOCKED,
                 "the refusal of a source already blocked: counting it would extend the block by the requests it refuses");
+        table.put(EventType.PENDING_AUTHORIZATION_SATURATED,
+                "a capacity refusal of the pending-authorization store: it describes how many logins are in flight, "
+                        + "not which addresses exist");
         table.put(EventType.PRE_TRUST_INTERNAL_FAILURE,
                 "an operator-side failure is not caller behaviour and carries no detection weight");
         return table;

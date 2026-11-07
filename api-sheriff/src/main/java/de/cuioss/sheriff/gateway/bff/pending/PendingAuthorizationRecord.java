@@ -57,6 +57,12 @@ import org.jspecify.annotations.Nullable;
  * {@link #createWidening} belongs to a live session widening its scopes: it carries the live
  * session's {@code sub} and the {@linkplain Widening.Attempt attempt} it was issued for, and its
  * callback merges into that live session instead of minting one.
+ * <p>
+ * <strong>Quota key.</strong> Every record carries the canonical source of the request that created
+ * it ({@link #quotaKey()}): the client address a trusted forwarder resolved, else the TCP peer, else
+ * {@code unknown} — IPv4 whole, IPv6 reduced to its {@code /64}. The store caps the live records per
+ * quota key, so one source's login flood can only displace that source's own records. The key is
+ * an address-derived value and is never logged.
  *
  * @param id              the unguessable record id (store key and binding-cookie value)
  * @param flowContext     the engine transaction DTO owning {@code state}/{@code nonce}/PKCE
@@ -65,6 +71,8 @@ import org.jspecify.annotations.Nullable;
  *                        parameter
  * @param createdAt       the instant the record was created (TTL anchor)
  * @param ttl             the short fixed lifetime before the record expires
+ * @param quotaKey        the canonical source of the requester, the key the store's per-source cap
+ *                        counts under
  * @param widening        the widening marker, or {@code null} for a plain login
  * @author API Sheriff Team
  * @since 1.0
@@ -78,6 +86,7 @@ String returnUrl,
 Set<String> requestedScopes,
 Instant createdAt,
 Duration ttl,
+String quotaKey,
 @Nullable Widening widening) {
 
     /**
@@ -105,6 +114,7 @@ Duration ttl,
         requestedScopes = immutableScopes(requestedScopes);
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(ttl, "ttl");
+        Objects.requireNonNull(quotaKey, "quotaKey");
     }
 
     /**
@@ -113,13 +123,15 @@ Duration ttl,
      * @param flowContext     the engine transaction DTO
      * @param returnUrl       the already same-origin-validated post-login redirect target
      * @param requestedScopes the scope set the authorization request carried; duplicates collapse
+     * @param quotaKey        the canonical source of the requester (see {@link #quotaKey()})
      * @param createdAt       the creation instant (TTL anchor)
      * @return a new plain-login pending-authorization record ({@link #widening()} is {@code null})
      */
     public static PendingAuthorizationRecord create(FlowContext flowContext, String returnUrl,
-            Collection<String> requestedScopes, Instant createdAt) {
+            Collection<String> requestedScopes, String quotaKey, Instant createdAt) {
         Set<String> scopes = immutableScopes(requestedScopes);
-        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, scopes, createdAt, FIXED_TTL, null);
+        return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, scopes, createdAt, FIXED_TTL,
+                quotaKey, null);
     }
 
     /**
@@ -132,14 +144,16 @@ Duration ttl,
      *                        collapse
      * @param sub             the live session's subject, the identity the callback must land on
      * @param attempt         the attempt this authorization request was issued for
+     * @param quotaKey        the canonical source of the requester (see {@link #quotaKey()})
      * @param createdAt       the creation instant (TTL anchor)
      * @return a new widening pending-authorization record
      */
     public static PendingAuthorizationRecord createWidening(FlowContext flowContext, String returnUrl,
-            Collection<String> requestedScopes, String sub, Widening.Attempt attempt, Instant createdAt) {
+            Collection<String> requestedScopes, String sub, Widening.Attempt attempt, String quotaKey,
+            Instant createdAt) {
         Set<String> scopes = immutableScopes(requestedScopes);
         return new PendingAuthorizationRecord(newId(), flowContext, returnUrl, scopes, createdAt, FIXED_TTL,
-                new Widening(sub, attempt));
+                quotaKey, new Widening(sub, attempt));
     }
 
     /** Rejects a {@code null} scope collection by argument name and copies it into an immutable set. */

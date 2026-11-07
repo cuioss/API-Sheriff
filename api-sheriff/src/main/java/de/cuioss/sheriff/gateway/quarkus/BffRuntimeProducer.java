@@ -30,6 +30,10 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
@@ -69,6 +73,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
+import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -77,12 +82,18 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
+import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.validation.rule.OidcClientRules;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
@@ -200,6 +211,13 @@ import org.jspecify.annotations.Nullable;
  * widening seam to the runtime's one {@link SessionWidening}, always starting with a silent attempt.
  * {@code oidc.step_up.path} is handed to the stage as the path its {@code 403} answer names; when the
  * key is absent the answer names no step-up URL.
+ * <p>
+ * <strong>A fair pending-authorization store.</strong> The runtime's one
+ * {@link InMemoryPendingAuthorizationStore} keeps its global bound and caps the live records per
+ * requester source, so one source's login flood cannot evict another user's live login. The source a
+ * pending record is counted under is derived by one {@link PendingQuotaKeys}, built from the global
+ * {@code forwarded.trusted_proxies} exactly as the edge's forward stage reads them, and handed to the
+ * session stage and to the runtime, which puts it on every reserved-path request.
  * <p>
  * <strong>Response mode.</strong> The authorization-URL seams are wired with the gateway-owned
  * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
@@ -660,21 +678,25 @@ public class BffRuntimeProducer {
         // widening seam. A session route enforces its needed scopes on every request: missing scopes
         // inside the granted set are refreshed, anything else is widened through the runtime's ONE
         // SessionWidening (silent attempt first) or refused 403 naming oidc.step_up.path.
+        // One quota-key derivation for every producer of a pending record: the session stage hands it to
+        // both navigation seams, and the runtime exposes it to the edge for the reserved paths.
+        PendingQuotaKeys pendingQuotaKeys = pendingQuotaKeys();
         OidcConfig.StepUp stepUp = oidc.stepUp();
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                 tokenRefresh,
                 scopeRefresh,
-                (returnUrl, scopes, now) -> {
-                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, now);
+                (returnUrl, scopes, quotaKey, now) -> {
+                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, quotaKey, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
-                (live, returnUrl, neededScopes, now) -> {
+                (live, returnUrl, neededScopes, quotaKey, now) -> {
                     LoginFlow.LoginRedirect redirect = sessionWidening.initiate(live, returnUrl, neededScopes,
-                            PendingAuthorizationRecord.Widening.Attempt.SILENT, now);
+                            PendingAuthorizationRecord.Widening.Attempt.SILENT, quotaKey, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
+                pendingQuotaKeys,
                 onFailure,
                 stepUp == null ? null : stepUp.path(),
                 clock);
@@ -761,7 +783,34 @@ public class BffRuntimeProducer {
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint, stepUpEndpoint,
-                clientCredential.jwksEndpoint(), gatewayJson, sessionRelays, sessionHeld);
+                clientCredential.jwksEndpoint(), gatewayJson, sessionRelays, sessionHeld, pendingQuotaKeys);
+    }
+
+    /**
+     * Builds the derivation of the quota key a pending-authorization record is counted under, from the
+     * global {@code forwarded.trusted_proxies}: a {@link TcpPeerGate} and a {@link ForwardedHeaderResolver}
+     * configured with the same trusted proxies and the same resolved {@code security_defaults}
+     * configuration the edge builds its forward stage with ({@code GatewayEdgeRoute}), so the address a
+     * pending record is counted under is the one the gateway regenerates {@code X-Forwarded-For} from. The
+     * resolver has a security-event counter of its own, so a malformed forwarding header of a trusted
+     * proxy is not counted twice.
+     *
+     * @return the quota-key derivation the session stage and the reserved paths share
+     */
+    private PendingQuotaKeys pendingQuotaKeys() {
+        ForwardedConfig forwardedConfig = gatewayConfig.forwarded();
+        List<String> trustedProxies = forwardedConfig == null ? List.of() : forwardedConfig.trustedProxies();
+        SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
+        SecurityDefaultsConfig securityDefaults = gatewayConfig.securityDefaults();
+        Boolean allowExtendedAscii = securityDefaults == null ? null : securityDefaults.allowExtendedAscii();
+        SecurityConfiguration securityConfiguration = SecurityConfigurations.withDeclaredCharacterPolicy(
+                SecurityProfile.limitsProfile(globalProfile, globalProfile).preset(), allowExtendedAscii);
+        ForwardedResolverConfig resolverConfig = ForwardedResolverConfig.builder()
+                .trustedProxies(Set.copyOf(trustedProxies))
+                .securityConfig(securityConfiguration)
+                .build();
+        return new PendingQuotaKeys(new TcpPeerGate(trustedProxies),
+                new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()));
     }
 
     /**

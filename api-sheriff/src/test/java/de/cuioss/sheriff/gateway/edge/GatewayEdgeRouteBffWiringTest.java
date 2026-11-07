@@ -39,6 +39,10 @@ import javax.crypto.spec.SecretKeySpec;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
@@ -69,6 +73,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
+import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -87,6 +92,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -161,6 +167,8 @@ public class GatewayEdgeRouteBffWiringTest {
     private static final String STEP_UP_PATH = "/auth/step-up";
     /** The id of {@link #sessionRoute()}, the {@code route} tag its metered failures carry. */
     private static final String SESSION_ROUTE_ID = "s";
+    /** The quota key a directly-dispatched reserved request carries (the edge derives it from the peer). */
+    private static final String QUOTA_KEY = "192.0.2.10";
     /** Where the engine-free session stage redirects an unauthenticated navigation. */
     private static final String LOGIN_CHALLENGE_LOCATION = "/login";
     /** Where the engine-free session stage redirects a navigation whose session needs widening. */
@@ -629,7 +637,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("CALLBACK with a stateless query yields 400 from the callback handler")
         void shouldDispatchCallback() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET", QUOTA_KEY), now);
             assertEquals(400, response.status());
         }
 
@@ -653,7 +661,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("BACKCHANNEL_LOGOUT with no form body yields 400 and is uncacheable")
         void shouldDispatchBackchannel() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "POST"), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "POST", QUOTA_KEY), now);
             assertEquals(400, response.status());
             assertEquals("no-store", response.headers().get("Cache-Control"));
         }
@@ -667,10 +675,10 @@ public class GatewayEdgeRouteBffWiringTest {
                     .expiresAt(now.plus(Duration.ofHours(1))).build(), cookieHandle, now);
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET", QUOTA_KEY), now);
             BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.LOGIN,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
-                            null, null, "GET"), now);
+                            null, null, "GET", QUOTA_KEY), now);
 
             assertEquals(302, response.status());
             // "The validated return URL" is a value, not a presence: asserting only that SOME Location
@@ -702,7 +710,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("STEP_UP without a session yields 401 problem+json and no redirect")
         void shouldDispatchStepUpWithoutSession() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "/home", null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/home", null, null, "GET", QUOTA_KEY), now);
 
             assertAll(
                     () -> assertEquals(401, response.status()),
@@ -721,10 +729,10 @@ public class GatewayEdgeRouteBffWiringTest {
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET", QUOTA_KEY), now);
             BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.STEP_UP,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
-                            null, null, "GET"), now);
+                            null, null, "GET", QUOTA_KEY), now);
 
             assertEquals(302, response.status());
             assertEquals(Optional.of("/home"), response.locationOptional(),
@@ -734,7 +742,7 @@ public class GatewayEdgeRouteBffWiringTest {
         }
 
         private BffRuntime.ReservedHttpRequest request(String cookie, String claims) {
-            return new BffRuntime.ReservedHttpRequest("", cookie, claims, null, null, null, "GET");
+            return new BffRuntime.ReservedHttpRequest("", cookie, claims, null, null, null, "GET", QUOTA_KEY);
         }
     }
 
@@ -777,8 +785,8 @@ public class GatewayEdgeRouteBffWiringTest {
             FlowContext flow = FlowContext.create(ORIGIN + CALLBACK_PATH);
             state = flow.state();
             PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, List.of("openid"),
-                    now);
-            pendingStore.store(pending);
+                    QUOTA_KEY, now);
+            pendingStore.store(pending, now);
             bindingCookieHeader = bindingCodec.toSetCookieHeader(pending.id()).split(";", 2)[0];
 
             runtime = callbackRuntime();
@@ -786,7 +794,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** A {@code response_mode=query} callback: GET, {@code code}/{@code state} in the raw query, no body. */
         private BffRuntime.ReservedHttpRequest queryCallback(String rawQuery) {
-            return new BffRuntime.ReservedHttpRequest(rawQuery, bindingCookieHeader, null, null, null, null, "GET");
+            return new BffRuntime.ReservedHttpRequest(rawQuery, bindingCookieHeader, null, null, null, null, "GET", QUOTA_KEY);
         }
 
         @Test
@@ -852,7 +860,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("A stray POST to the callback arrives bodyless and is rejected 400, never 500")
         void shouldRejectStrayPostBodyless() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null, null, "POST"), now);
+                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null, null, "POST", QUOTA_KEY), now);
 
             assertEquals(400, response.status(),
                     "an absent form body normalizes to the empty string and fails for a missing state");
@@ -899,7 +907,8 @@ public class GatewayEdgeRouteBffWiringTest {
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
                     () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
                     engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld(),
-                    gatewayJson(), new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true);
+                    gatewayJson(), new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true,
+                    untrustingQuotaKeys());
         }
     }
 
@@ -1867,6 +1876,90 @@ public class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * A login start refused by a saturated pending-authorization store, observed through a live edge: the
+     * store's {@link EventType#PENDING_AUTHORIZATION_SATURATED} propagates out of the reserved login path
+     * and out of the session stage's navigation login to the edge's rejection path, which answers
+     * {@code 503} with {@code Retry-After: 30} and the {@code rate-limiting} problem type — never the
+     * {@code 302} into the identity provider, and never a binding cookie.
+     */
+    @Nested
+    @DisplayName("a saturated pending store answers a login start 503 with Retry-After through the edge")
+    class SaturatedPendingStoreOverEdge {
+
+        private static final String RATE_LIMITING_TYPE = "urn:api-sheriff:problem:rate-limiting";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private HttpClient client;
+
+        /** The edge's answer as the client saw it. */
+        private record Answer(int status, @Nullable String retryAfter, @Nullable String location,
+                List<String> setCookies, JsonObject body) {
+        }
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .routes(new RouteTable(List.of(sessionRoute())))
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(saturatedStoreRuntime(serverBinding(newStore()))).serve();
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("the reserved login path answers 503, Retry-After: 30 and the rate-limiting problem type")
+        void reservedLoginPathIsRefused() throws Exception {
+            Answer answer = get(LOGIN_PATH + "?returnUrl=%2Fs%2Fpage", "application/json");
+
+            assertRefused(answer);
+        }
+
+        @Test
+        @DisplayName("a session-route navigation answers 503, Retry-After: 30 and the rate-limiting problem type")
+        void sessionRouteNavigationIsRefused() throws Exception {
+            Answer answer = get("/s/page", "text/html");
+
+            assertRefused(answer);
+        }
+
+        private void assertRefused(Answer answer) {
+            assertAll("a refused login start, never a redirect into the identity provider",
+                    () -> assertEquals(503, answer.status()),
+                    () -> assertEquals("30", answer.retryAfter(), "the client is told when to retry"),
+                    () -> assertEquals(RATE_LIMITING_TYPE, answer.body().getString("type")),
+                    () -> assertEquals(503, answer.body().getInteger("status")),
+                    () -> assertNull(answer.location(), "no 302 into the identity provider"),
+                    () -> assertTrue(answer.setCookies().stream()
+                                    .noneMatch(cookie -> cookie.startsWith(BindingCookieCodec.COOKIE_NAME + "=")),
+                            "no binding cookie is minted: " + answer.setCookies()));
+        }
+
+        private Answer get(String uri, String accept) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+            return Awaits.connect(client.request(options)
+                    .compose(request -> request.putHeader("Accept", accept).send())
+                    .compose(response -> response.body().map(body -> new Answer(response.statusCode(),
+                            response.getHeader("Retry-After"), response.getHeader("Location"),
+                            List.copyOf(response.headers().getAll("Set-Cookie")), body.toJsonObject()))),
+                    "the edge response to GET " + uri);
+        }
+    }
+
     private static OidcConfig fullOidc() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
                 .path(LOGOUT_PATH)
@@ -1923,15 +2016,51 @@ public class GatewayEdgeRouteBffWiringTest {
      */
     static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
             SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
+        return assembleRuntime(binding, clientJwksEndpoint, sessionRelays, sessionHeld,
+                new InMemoryPendingAuthorizationStore(16), scopes -> {
+                    throw new AssertionError("engine authorize must not be reached");
+                }, false);
+    }
+
+    /**
+     * An engine-free active runtime whose pending store already holds its full capacity of live records
+     * of another source. Its login seam yields a redirect instead of throwing, and its session stage
+     * starts a navigation login through the runtime's real {@link LoginFlow}, so both the reserved login
+     * path and a session-route navigation reach the store — which refuses them.
+     */
+    private static BffRuntime saturatedStoreRuntime(SessionBinding binding) {
+        InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1);
+        Instant now = Instant.now();
+        saturated.store(PendingAuthorizationRecord.create(FlowContext.create(ORIGIN + CALLBACK_PATH),
+                ROOT_RETURN_TARGET, List.of("openid"), "203.0.113.99", now), now);
+        return assembleRuntime(binding, ClientJwksEndpoint.withheld(), new SessionRelayRegistry(16, Clock.systemUTC()),
+                sessionId -> true, saturated, scopes -> new AuthorizationCodeFlow.AuthorizationRedirect(
+                        "https://idp.example.com/authorize", FlowContext.create(ORIGIN + CALLBACK_PATH)),
+                true);
+    }
+
+    /**
+     * Assembles the engine-free active runtime over {@code pendingStore}, with {@code authorization} as
+     * the login flow's push seam. When {@code stageLoginThroughFlow} is set, the session stage's
+     * navigation login goes through that login flow as production wires it; otherwise it answers the
+     * fixed {@link #LOGIN_CHALLENGE_LOCATION} without storing anything.
+     */
+    @SuppressWarnings("java:S107") // fixture assembly, one call site per runtime shape
+    private static BffRuntime assembleRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
+            SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld, PendingAuthorizationStore pendingStore,
+            LoginFlow.AuthorizationInitiation authorization, boolean stageLoginThroughFlow) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-        PendingAuthorizationStore pendingStore = new InMemoryPendingAuthorizationStore(16);
         Duration ttl = Duration.ofHours(1);
 
-        LoginFlow loginFlow = new LoginFlow(scopes -> {
-            throw new AssertionError("engine authorize must not be reached");
-        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+        LoginFlow loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
 
-        SessionAuthenticationStage sessionStage = engineFreeSessionStage(binding);
+        SessionAuthenticationStage sessionStage = stageLoginThroughFlow
+                ? engineFreeSessionStage(binding, (returnUrl, scopes, quotaKey, instant) -> {
+                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, quotaKey, instant);
+                    return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
+                            redirect.setCookieHeaders());
+                })
+                : engineFreeSessionStage(binding);
 
         CsrfDefence csrf = new CsrfDefence(Set.of(ORIGIN));
 
@@ -1963,7 +2092,18 @@ public class GatewayEdgeRouteBffWiringTest {
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
                 userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson(),
-                sessionRelays, sessionHeld);
+                sessionRelays, sessionHeld, untrustingQuotaKeys());
+    }
+
+    /**
+     * The quota-key derivation of a gateway with no {@code forwarded.trusted_proxies}: every request is
+     * keyed on its TCP peer, exactly as the producer builds it for that configuration.
+     */
+    private static PendingQuotaKeys untrustingQuotaKeys() {
+        return new PendingQuotaKeys(new TcpPeerGate(List.of()), new ForwardedHeaderResolver(
+                ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                        .securityConfig(SecurityConfiguration.defaults()).build(),
+                new SecurityEventCounter()));
     }
 
     /**
@@ -1983,15 +2123,22 @@ public class GatewayEdgeRouteBffWiringTest {
      * reserves.
      */
     private static SessionAuthenticationStage engineFreeSessionStage(SessionBinding binding) {
+        return engineFreeSessionStage(binding, (returnUrl, scopes, quotaKey, instant) ->
+                new SessionAuthenticationStage.LoginChallenge(LOGIN_CHALLENGE_LOCATION, List.of()));
+    }
+
+    /** As {@link #engineFreeSessionStage(SessionBinding)}, with the navigation-login seam the caller supplies. */
+    private static SessionAuthenticationStage engineFreeSessionStage(SessionBinding binding,
+            SessionAuthenticationStage.LoginInitiation login) {
         return new SessionAuthenticationStage(binding,
                 (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
                 (session, cookieHeader, requestedScopes, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
-                (returnUrl, scopes, instant) ->
-                        new SessionAuthenticationStage.LoginChallenge(LOGIN_CHALLENGE_LOCATION, List.of()),
-                (live, returnUrl, neededScopes, instant) ->
+                login,
+                (live, returnUrl, neededScopes, quotaKey, instant) ->
                         new SessionAuthenticationStage.LoginChallenge(WIDENING_CHALLENGE_LOCATION, List.of()),
+                untrustingQuotaKeys(),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 STEP_UP_PATH,
                 Clock.systemUTC());

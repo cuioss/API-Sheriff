@@ -122,7 +122,8 @@ class EventTypeTest {
             arguments(EventType.UPSTREAM_ERROR, 502, EventCategory.UPSTREAM),
             arguments(EventType.UPSTREAM_CIRCUIT_OPEN, 503, EventCategory.UPSTREAM),
             arguments(EventType.UPSTREAM_TIMEOUT, 504, EventCategory.UPSTREAM),
-            arguments(EventType.SOURCE_BLOCKED, 429, EventCategory.RATE_LIMITING));
+            arguments(EventType.SOURCE_BLOCKED, 429, EventCategory.RATE_LIMITING),
+            arguments(EventType.PENDING_AUTHORIZATION_SATURATED, 503, EventCategory.RATE_LIMITING));
 
     static Stream<EventType> successEvents() {
         return SUCCESS_EVENTS.stream();
@@ -305,5 +306,22 @@ class EventTypeTest {
                         "A blocked source is a rate-limiting failure"),
                 () -> assertTrue(EventType.SOURCE_BLOCKED.isFailure(), "A blocked source is a failure"),
                 () -> assertEquals(429, EventType.SOURCE_BLOCKED.httpStatus(), "A blocked source is answered 429"));
+    }
+
+    @Test
+    @DisplayName("Should map a saturated pending-authorization store to a 503 rate-limiting failure")
+    void shouldMapThePendingStoreSaturation() {
+        // Stated literally beside the error-contract row: it pins the problem type the edge renders for the
+        // refusal, which the row's category alone does not name.
+        EventType saturated = EventType.PENDING_AUTHORIZATION_SATURATED;
+
+        assertAll("saturated pending store",
+                () -> assertEquals(EventCategory.RATE_LIMITING, saturated.category(),
+                        "a capacity refusal, counted under rate limiting"),
+                () -> assertTrue(saturated.isFailure(), "a refused login start is a failure"),
+                () -> assertTrue(saturated.hasHttpMapping(), "it is rendered as itself"),
+                () -> assertEquals(503, saturated.httpStatus(), "answered 503, the store is temporarily full"),
+                () -> assertEquals(0, saturated.wsCloseCode(), "no WebSocket-close mapping"),
+                () -> assertEquals("urn:api-sheriff:problem:rate-limiting", saturated.category().problemType()));
     }
 }

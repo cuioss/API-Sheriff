@@ -60,6 +60,8 @@ class StepUpCoordinatorTest {
     private static final String CONFIGURED_DEFAULT = "/home";
     /** The static {@code oidc.scopes} the step-up authorization request is built from. */
     private static final List<String> STEP_UP_SCOPES = List.of("openid", "profile", "email");
+    /** The requester source the re-drive pending record is counted under. */
+    private static final String QUOTA_KEY = "192.0.2.10";
 
     private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -145,7 +147,8 @@ class StepUpCoordinatorTest {
                         throw new IllegalStateException("re-drive must not be attempted when silent satisfaction works");
                     });
 
-            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), REPLAY_URL, NOW);
+            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), REPLAY_URL,
+                    QUOTA_KEY, NOW);
 
             assertTrue(outcome.isSatisfied());
             assertEquals(StepUpOutcome.Kind.SATISFIED, outcome.kind());
@@ -163,7 +166,8 @@ class StepUpCoordinatorTest {
         void shouldReDriveWhenSilentFails() {
             StepUpCoordinator coordinator = reDrivingCoordinator();
 
-            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), REPLAY_URL, NOW);
+            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), REPLAY_URL,
+                    QUOTA_KEY, NOW);
 
             assertFalse(outcome.isSatisfied());
             assertEquals(StepUpOutcome.Kind.RE_DRIVE, outcome.kind());
@@ -176,10 +180,12 @@ class StepUpCoordinatorTest {
         void shouldRecordSameOriginReplayUrl() {
             StepUpCoordinator coordinator = reDrivingCoordinator();
 
-            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), REPLAY_URL, NOW);
+            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), REPLAY_URL,
+                    QUOTA_KEY, NOW);
 
             PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
             assertEquals(REPLAY_URL, pending.returnUrl(), "the validated replay URL is recorded as the return target");
+            assertEquals(QUOTA_KEY, pending.quotaKey(), "the re-drive record is counted under its requester");
         }
 
         @Test
@@ -188,7 +194,7 @@ class StepUpCoordinatorTest {
             StepUpCoordinator coordinator = reDrivingCoordinator();
 
             StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(),
-                    "https://evil.example.com/steal", NOW);
+                    "https://evil.example.com/steal", QUOTA_KEY, NOW);
 
             PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
             assertEquals(CONFIGURED_DEFAULT, pending.returnUrl(),
@@ -200,7 +206,8 @@ class StepUpCoordinatorTest {
         void shouldFallBackForAbsentReplayUrl() {
             StepUpCoordinator coordinator = reDrivingCoordinator();
 
-            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), null, NOW);
+            StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), null, QUOTA_KEY,
+                    NOW);
 
             PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
             assertEquals(CONFIGURED_DEFAULT, pending.returnUrl());
@@ -215,7 +222,7 @@ class StepUpCoordinatorTest {
                     .expiresAt(NOW.plusSeconds(28800)).activeScopes(Set.of("openid", "profile", "email", "orders:read"))
                     .build();
 
-            StepUpOutcome outcome = coordinator.coordinate(scopedSession, challenge(), REPLAY_URL, NOW);
+            StepUpOutcome outcome = coordinator.coordinate(scopedSession, challenge(), REPLAY_URL, QUOTA_KEY, NOW);
 
             PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
             assertEquals(Set.copyOf(STEP_UP_SCOPES), pending.requestedScopes(),
@@ -245,7 +252,7 @@ class StepUpCoordinatorTest {
             StepUpChallenge challenge = challenge();
 
             GatewayException thrown = assertThrows(GatewayException.class,
-                    () -> coordinator.coordinate(session, challenge, REPLAY_URL, NOW));
+                    () -> coordinator.coordinate(session, challenge, REPLAY_URL, QUOTA_KEY, NOW));
 
             assertSame(refusal, thrown, "the refusal reaches the caller as it was raised — no outcome, so no Set-Cookie");
             assertEquals(0, pendingStore.size(), "nothing is stored for a request that was never pushed");
@@ -255,7 +262,7 @@ class StepUpCoordinatorTest {
         @DisplayName("Should store exactly one pending record when the seam yields a request (matched control)")
         void shouldStoreOneRecordWhenTheSeamYieldsARequest() {
             StepUpOutcome outcome =
-                    reDrivingCoordinator().coordinate(session("urn:example:silver"), challenge(), REPLAY_URL, NOW);
+                    reDrivingCoordinator().coordinate(session("urn:example:silver"), challenge(), REPLAY_URL, QUOTA_KEY, NOW);
 
             assertEquals(1, pendingStore.size(), "the store does count a record, so the zero above is observed");
             assertEquals(1, outcome.setCookieHeaders().size(), "and the re-drive carries the binding cookie");
@@ -274,11 +281,13 @@ class StepUpCoordinatorTest {
             var validChallenge = challenge();
 
             assertThrows(NullPointerException.class,
-                    () -> coordinator.coordinate(null, validChallenge, REPLAY_URL, NOW));
+                    () -> coordinator.coordinate(null, validChallenge, REPLAY_URL, QUOTA_KEY, NOW));
             assertThrows(NullPointerException.class,
-                    () -> coordinator.coordinate(validSession, null, REPLAY_URL, NOW));
+                    () -> coordinator.coordinate(validSession, null, REPLAY_URL, QUOTA_KEY, NOW));
             assertThrows(NullPointerException.class,
-                    () -> coordinator.coordinate(validSession, validChallenge, REPLAY_URL, null));
+                    () -> coordinator.coordinate(validSession, validChallenge, REPLAY_URL, null, NOW));
+            assertThrows(NullPointerException.class,
+                    () -> coordinator.coordinate(validSession, validChallenge, REPLAY_URL, QUOTA_KEY, null));
         }
 
         @Test

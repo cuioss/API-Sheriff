@@ -84,6 +84,8 @@ class ErrorPageClassifierTest {
         table.put(EventType.SOURCE_TRIPPED, KEEP_SHAPE);
         // Answered 429 before admission, before any pipeline request exists to negotiate with.
         table.put(EventType.SOURCE_BLOCKED, KEEP_SHAPE);
+        // Answers the browser navigation that starts a login, so a refused navigation can land on the page.
+        table.put(EventType.PENDING_AUTHORIZATION_SATURATED, HTML_ELIGIBLE);
         // Never rendered as itself: the answer is NO_ROUTE_MATCHED's, which negotiates on its own row.
         table.put(EventType.PRE_TRUST_INTERNAL_FAILURE, KEEP_SHAPE);
         return table;

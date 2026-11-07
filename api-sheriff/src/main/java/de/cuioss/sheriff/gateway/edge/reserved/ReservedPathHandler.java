@@ -147,7 +147,10 @@ public final class ReservedPathHandler {
      * Dispatches a matched reserved OIDC path (D16): extracts the raw request pieces each handler
      * consumes, drives the {@link BffRuntime#dispatch reserved dispatch}, and renders the normalized
      * response. Runs on the virtual thread (the handler may reach the confidential-client engine), then
-     * hops the response mutation back onto the event loop like every other terminal path.
+     * hops the response mutation back onto the event loop like every other terminal path. The request's
+     * pending quota key rides on the reserved request, so a login, step-up or callback re-drive counts
+     * its pending record under the requester's source; a refusal of a saturated pending store
+     * propagates as its {@code GatewayException} to the edge's rejection path.
      */
     private void dispatchReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind) {
         String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
@@ -161,7 +164,8 @@ public final class ReservedPathHandler {
         String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? ReservedBodyReader.readFormBody(ctx) : null;
         BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
                 ctx.request().query(), cookieHeader, firstQueryParam(ctx, CLAIMS_PARAM),
-                firstQueryParam(ctx, RETURN_URL_PARAM), firstQueryParam(ctx, STATE_PARAM), rawFormBody, method);
+                firstQueryParam(ctx, RETURN_URL_PARAM), firstQueryParam(ctx, STATE_PARAM), rawFormBody, method,
+                bffRuntime.pendingQuotaKey(request));
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
         renderReserved(ctx, request, kind, response);
     }
