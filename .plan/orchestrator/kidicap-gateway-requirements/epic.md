@@ -158,6 +158,7 @@ decision.
     dropping the leg.
   - **PLAN-21: HOLD until `PLAN-V02-06` ships, then do all of it as one plan.** Alternatives offered: split
     observability now and cap later (the recommendation), or option (a) with its own cookie.
+    *V02-06 shipped as #528 — the hold condition is met (see the cross-epic hold entry, update 2026-11-07).*
   Consequence for sequencing: PLAN-26 now touches `BffRuntimeProducer` and `BffLogMessages`, shared with the
   running V02-06 and V02-20, so it is no longer a free filler; PLAN-29 must run before sibling `PLAN-V02-48`.
 - 2026-10-15 — **PLAN-32 shipped** as PR #466 / 73233f1e, closing #455. The inbound HTTP/2 connection window
@@ -397,6 +398,14 @@ decision.
   runs V02-05, V02-06 and V02-20 (three of three slots) and the gate finds a 4 to 20 file overlap with each, so
   an emit needs a free slot and the operator's overlap answer. Never two WS-04 plans at once (PLAN-20, -21, -26).
   The reason for the PLAN-31 hold (V02-12, V02-23, V02-44) is gone for the same reason.
+  **Update 2026-11-07 (sibling `api-sheriff-0-2-0` closed and archived; written on operator instruction by
+  that epic's close-out session):** every sibling plan this entry and the 2026-10-26 decisions name has
+  shipped — V02-05 (#526), V02-06 (#528), V02-20 (#527), V02-12 (#450, #492), V02-45 (#506), V02-48 (#544)
+  — so **PLAN-21's hold condition (V02-06 shipped) is met** and no sibling plan is running. The "running
+  siblings V02-05, V02-06 and V02-20" overlap statements above, at the 2026-10-26 decisions and in the
+  PLAN-20, -21, -26, -29 and -31 specs are therefore stale: re-ground those specs (cleanup) against what
+  V02-06 and V02-20 actually landed before emitting. The sibling's ledger is now at
+  `.plan/archived-orchestrators/api-sheriff-0-2-0/`; its open work moved to `api-sheriff-0-3-0`.
 
 - **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
   FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`
