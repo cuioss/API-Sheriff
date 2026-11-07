@@ -283,7 +283,7 @@ failure of the read is the `unreadable-access-token` refusal.
 `StepUpCoordinator` is assembled with the same request builder and the same PAR adapter as the login
 leg, so its re-drive is a pushed request. *No edge code calls it.* The path is proven at unit level
 and is not reachable in a running gateway
-(link:../quality-report/code-correctness.adoc[code-correctness report, BFF-1]).
+(link:../fapi_status.adoc#_open_gaps_and_next_steps[FAPI status, open gaps]).
 
 [[adr-0058-residuals]]
 == The premises behind the FAPI controls

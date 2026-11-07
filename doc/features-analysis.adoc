@@ -248,7 +248,7 @@ Two qualifications belong to every reading of that sentence:
 * No conformance-suite run exists, so no conformance claim is made.
 
 See link:fapi_status.adoc[FAPI 2.0 Status] for the requirement-by-requirement position and
-link:fapi_next_steps.adoc[FAPI 2.0 Next Steps] for what remains open.
+link:fapi_status.adoc#_open_gaps_and_next_steps[Open Gaps and Next Steps] for what remains open.
 ====
 +
 *Competitor reality (verified):* three of the six evaluated gateways
