@@ -278,6 +278,7 @@ admission.
 
 == Links
 
+* link:0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078 -- Per-source threat classification] -- the second consumer of this substrate: one ECS alert per episode from its own ledger.
 * link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract] --
   keying, bounds, state machine, query API and emit shape
 * link:../architecture/tls-and-inbound-security.adoc#_per_source_detection[Architecture -- Per-Source Detection] and
