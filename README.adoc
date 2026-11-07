@@ -187,7 +187,7 @@ credentials: no forward mode copies the browser `Cookie` -- it crosses only as t
 block admits it, and the gateway's own cookies never do -- an inbound `Authorization` is re-admitted
 only where a route declares a positive-list naming it, and the hop-by-hop, framing and provenance
 headers the gateway owns are withheld regardless (see
-link:doc/configuration.adoc#_never_forward_set[the never-forward set]). Note also that a *declared-empty* list is not the
+link:doc/configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward set]). Note also that a *declared-empty* list is not the
 absent state: `headers_allow: []` is a positive-list naming nothing, and keeps forwarding nothing.
 +
 *Mitigation, one line:* declare a positive-list (`headers_allow` / `query_allow`) on any route
@@ -202,7 +202,7 @@ browser*. The gateway's own cookies cross under no block in either direction.
 +
 *Mitigation, one line:* declare `cookies: { allow: [<the names>] }` on every route whose upstream
 relies on its own cookies. See
-link:doc/configuration.adoc#_cookies[Configuration -- `cookies`] and
+link:doc/configuration/routing-and-forwarding.adoc#_cookies[Configuration -- `cookies`] and
 link:doc/adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037].
 
 Upstream response headers are relayed except for gateway-owned names::
@@ -211,7 +211,7 @@ names, plus, on the request side, the credentials and provenance headers the gat
 response side also strips the upstream's identity headers, `Server` and `X-Powered-By`, by default --
 on the HTTP relay, the gRPC relay and an asset route with `source: upstream`. A route keeps them only
 by setting `keep_identity_headers: true` (see
-link:doc/configuration.adoc#_identity_set[Configuration -- the identity set]). Beyond those sets the
+link:doc/configuration/routing-and-forwarding.adoc#_identity_set[Configuration -- the identity set]). Beyond those sets the
 two directions differ: a route can *narrow* what crosses on the request side (`headers_deny` /
 `headers_allow`), while on the HTTP and gRPC relays every other upstream response header -- a
 framework header outside the identity set, such as `X-AspNet-Version` -- reaches the client
