@@ -210,7 +210,7 @@ collector is registered and publishes for the gateway validator.
 * link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027, live key-set readiness]:
   readiness reads a live, non-fetching per-issuer key-set state and reports `DOWN` while any issuer
   has no key set. `GatewayReadinessCheck` stays the only JWKS readiness coverage. The operator-facing
-  contract is in link:../configuration.adoc#_jwks_readiness[the configuration reference].
+  contract is in link:../configuration/authentication-and-oidc.adoc#_jwks_readiness[the configuration reference].
 * The eager-boot, fail-closed assembly: `TokenValidatorProducer.onStartup` forces the validator into
   existence at boot, and a misconfigured issuer is a boot refusal.
 * The fail-closed `jwks.tls_profile` resolution: `JwksTrustProfileResolver` refuses a name it cannot
@@ -334,7 +334,7 @@ and with it a second package to re-read on every upgrade.
   -- the fitness-function rule the rewritten scheduled-job assertion follows
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
   -- the `token_validation` surface the gateway validator is built from
-* link:../configuration.adoc#_jwks_readiness[Configuration reference] -- the readiness contract
+* link:../configuration/authentication-and-oidc.adoc#_jwks_readiness[Configuration reference] -- the readiness contract
 * link:../architecture/observability-and-errors.adoc#_metrics[Architecture] -- the metrics and health surfaces
 * `api-sheriff/src/main/resources/application.properties` -- the exclusion and its rationale
 * `ExtensionUnqualifiedBeanExclusionTest`, `DefaultProfileReadinessTest` -- the in-process pins

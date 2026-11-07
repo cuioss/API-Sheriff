@@ -70,7 +70,7 @@ link:../architecture/observability-and-errors.adoc#_html_error_pages[Architectur
 | `cui-http` pipelines (path, parameter, header) + parameter/header count limits,
   driven by the route's resolved `security_filter` block -- its own, else its endpoint's, else its
   anchor's (see link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). See
-  link:../configuration.adoc#_security_filtering[Security Filtering].
+  link:../configuration/security-and-edge-hardening.adoc#_security_filtering[Security Filtering].
 
 | Path whitelisting
 | The route's `allowed_paths` list -- the manifest's "WAF via path white-listing". A validated,
@@ -88,17 +88,17 @@ link:../architecture/observability-and-errors.adoc#_html_error_pages[Architectur
   maps to `403` and a `SCOPE_MISSING` event, with the RFC 6750 challenge
   `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` naming only the missing
   scopes; the upstream is not contacted. An empty set skips the check. See
-  link:../configuration.adoc#_endpoint_scopes[`endpoint.scopes`].
+  link:../configuration/authentication-and-oidc.adoc#_endpoint_scopes[`endpoint.scopes`].
 
 | Forwarding
 | A filter *inside* an already-authorised route, not an admission gate, declared on the route or
   as a default on its endpoint: each of headers and query parameters independently resolves a
   positive-list, a negative-list, or -- when the resolved block declares neither -- forward-all. Whatever the mode, the gateway-owned
-  link:../configuration.adoc#_never_forward_set[never-forward set] still withholds the hop-by-hop,
+  link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set] still withholds the hop-by-hop,
   framing and provenance names. An inbound `Authorization` is the set's *single* re-admittable
   member, and only where the route declares a positive-list naming it; under a negative-list or
   forward-all it is withheld. The browser `Cookie` is no forward mode's to copy: it reaches the
-  upstream only as the route's link:../configuration.adoc#_cookies[`cookies`] block admits it --
+  upstream only as the route's link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`] block admits it --
   under the default `allow: none` not at all. The HTTP mechanics the gateway understands cross
   without an entry, unless the route denies one by name. Inbound `Forwarded` /
   `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s forwarded resolver,

@@ -172,7 +172,7 @@ replacement] before relying on it.
   certificate.
 * The CA bundle as a PEM file, mounted read-only at a path that stays the same in every environment
   -- `client_ca` is a path reference, not the material (see
-  link:../configuration.adoc#_client_ca_carve_out[the `client_ca` carve-out]).
+  link:../configuration/tls-and-egress.adoc#_client_ca_carve_out[the `client_ca` carve-out]).
 * Client certificates issued under that CA and staged to every client *before* you switch the
   requirement on.
 * `QUARKUS_HTTP_INSECURE_REQUESTS` is not `enabled`.
@@ -448,12 +448,12 @@ see <<_scenario_relax_hostname_verification>>.
 * Nothing extra when the provider sits on a private address: with `allowed_egress_hosts` omitted, the
   host of `jwks.url` is the derived egress allowance. Declare the list only to pin that allowance --
   a declared list is authoritative and never merged with the `jwks.url` host (see
-  link:../configuration.adoc#_token_validation[`allowed_egress_hosts`]). The shipped block below
+  link:../configuration/authentication-and-oidc.adoc#_token_validation[`allowed_egress_hosts`]). The shipped block below
   declares it on purpose, as the explicit form.
 * For the BFF back-channel, either a trust profile of its own -- `egress_tls.oidc_tls_profile`, see
   <<_scenario_bff_oidc_back_channel>> -- or a store the JVM default trust manager can use. The default
   store *replaces* the platform bundle, so build it to keep the public roots you still need -- see
-  link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES
+  link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES
   the platform bundle].
 
 === Configuration
@@ -509,7 +509,7 @@ egress_tls:
 The other lever is the JVM default trust store, which reaches every leg that names no profile of its
 own; on the native image it has to arrive as command-line `-D` arguments. No shipped descriptor
 supplies a store for this purpose. The key set, and the recipe for a store that keeps the public
-roots, are in link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store
+roots, are in link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store
 REPLACES the platform bundle].
 
 === Failure mode
@@ -518,7 +518,7 @@ REPLACES the platform bundle].
   the profile and the `+quarkus.tls.<name>.trust-store.*+` key to set. It never falls back to default
   trust.
 * *The bound profile carries no anchors, or sets `trust-all`.* `JwksTrustProfileResolver` refuses it
-  for the same reason (see link:../configuration.adoc#_jwks_trust_profiles[Trust profiles]).
+  for the same reason (see link:../configuration/authentication-and-oidc.adoc#_jwks_trust_profiles[Trust profiles]).
 * *`tls_profile` on an `http` issuer while `egress_tls.jwks_verify_hostname` is `false`.*
   `TokenValidatorProducer` refuses the boot, naming both keys and the issuer.
 * *A declared `allowed_egress_hosts` that does not name the `jwks.url` host of a private-address
@@ -645,7 +645,7 @@ Pick the profile when only proxied upstreams use the corporate CA. Pick the defa
 asset origin does too. The BFF back-channel to the identity provider has a profile key of its own
 (<<_scenario_bff_oidc_back_channel>>), and the default store reaches it only when that key is omitted. Do not name a profile holding only the corporate CA
 while a proxied upstream still needs a public CA (see
-link:../configuration.adoc#_upstream_trust_profile_replaces[A named profile replaces the client's
+link:../configuration/tls-and-egress.adoc#_upstream_trust_profile_replaces[A named profile replaces the client's
 anchors]).
 
 === Preconditions
@@ -684,7 +684,7 @@ environment:
 
 *Deployment, default trust store* -- no shipped descriptor supplies a store for this purpose. The
 minimal key set below is copied from
-link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
 platform bundle], which also has the recipe for a store that keeps the public roots. The Quarkus TLS
 registry's `<default>` bucket is a second, independent lever with its own spelling,
 `QUARKUS_TLS_TRUST_STORE_P12_PATH`; that section explains when you need it.
@@ -726,7 +726,7 @@ cluster-internal service name, a container alias or a load-balancer address its 
 name. Never pick it to reach a self-signed or private-CA peer -- the chain is still verified, so that
 is <<_scenario_corporate_ca_upstreams>> or <<_scenario_private_ca_idp>>. Fixing the certificate's
 names is always the better answer. Both keys are gateway-wide: there is no per-route or per-issuer
-override (see link:../configuration.adoc#_egress_tls_hostname_scope[What disabling hostname
+override (see link:../configuration/tls-and-egress.adoc#_egress_tls_hostname_scope[What disabling hostname
 verification does and does not do]). Which key reaches which egress leg is tabled in
 link:tls-edge.adoc#_egress_tls[TLS Edge -- Egress TLS].
 
@@ -743,7 +743,7 @@ in <<_scenario_bff_oidc_back_channel>>.
   private CA and the relaxation has no supported combination on the JWKS leg: the library relaxes
   hostname matching only on the default-trust-store context it derives itself. Fix the certificate's
   names, or put the CA into the JVM default trust store and name no profile on that issuer (see
-  link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+  link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
   platform bundle]). The flag is global, so every other `http` issuer must then name no profile either.
 
 === Configuration
@@ -760,7 +760,7 @@ egress_tls:
 ----
 
 *Policy* -- the JWKS leg. No shipped descriptor sets this key; the key is copied from
-link:../configuration.adoc#_egress_tls[`egress_tls`], whose field table documents `false`.
+link:../configuration/tls-and-egress.adoc#_egress_tls[`egress_tls`], whose field table documents `false`.
 
 [source,yaml]
 .doc/configuration.adoc (egress_tls)
@@ -810,7 +810,7 @@ Pick exactly one. The pair -- `oidc_verify_hostname: false` together with a name
 -- is refused at boot. A provider that needs both a private CA and a relaxed name check has no
 supported combination: fix the certificate's names, or put the CA into the JVM default trust store and
 omit the profile (see
-link:../configuration.adoc#_oidc_profile_collision[The relaxation and a profile are refused together]).
+link:../configuration/tls-and-egress.adoc#_oidc_profile_collision[The relaxation and a profile are refused together]).
 
 Neither key reaches the JWKS fetch. The same provider's signing keys keep their own per-issuer
 `jwks.tls_profile` (<<_scenario_private_ca_idp>>) and `jwks_verify_hostname`
@@ -829,7 +829,7 @@ both. A bearer-only gateway builds no identity-provider client, and on it both k
 
 A deployment uses one of the two blocks below, not both. No shipped descriptor sets
 `oidc_verify_hostname`, so the relaxation is copied from
-link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel]. The integration
+link:../configuration/tls-and-egress.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel]. The integration
 descriptors name the trust profile, so that block and its binding are copied from them.
 
 *Policy* -- the hostname relaxation.

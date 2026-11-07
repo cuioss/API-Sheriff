@@ -8,7 +8,7 @@ An operator guide to the TLS edge: the *TLS policy keys* (protocol floor, cipher
 client certificate on terminated connections), *egress TLS* (the posture of every TLS connection the
 gateway dials), and the *management interface* (health and metrics on their own port). This topic
 describes how to *configure and operate* these keys; the authoritative
-field contract lives in the link:../configuration.adoc#_tls[Configuration Reference `tls` section],
+field contract lives in the link:../configuration/tls-and-egress.adoc#_tls[Configuration Reference `tls` section],
 and the design rationale in the link:../development/tls-edge.adoc[developer TLS-edge topic].
 
 To start from a deployment goal instead of from a key -- "require client certificates", "run behind
@@ -58,7 +58,7 @@ Operating rules:
   `quarkus.tls.*` policy key left in the shipped configuration -- the competing route is a deployment
   variable, not something API Sheriff ships. Declare the key here rather than setting both. The
   disposition of every key that used to live there is recorded in
-  link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
+  link:../configuration/tls-and-egress.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
 [[_tls_and_http2_fingerprints]]
 === TLS and HTTP/2 fingerprints
@@ -125,7 +125,7 @@ asked for, and the record is there so it is never a surprise in a log nobody rea
 
 The mechanism -- which seam refuses, why it has to act before the listener is built, and why
 inference was rejected -- is in
-link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts] and in the seam
+link:../configuration/tls-and-egress.adoc#_server_tls_key_verdicts[Server-TLS key verdicts] and in the seam
 amendment to
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
 
@@ -254,7 +254,7 @@ still moves between environments unedited, provided the mount point is stable --
 stable convention (a fixed mount point) rather than an environment-specific one, or you have made
 `gateway.yaml` environment-specific through the back door. This is a named exception to the
 neutral-names rule, recorded in
-link:../configuration.adoc#_client_ca_carve_out[the `client_ca` carve-out].
+link:../configuration/tls-and-egress.adoc#_client_ca_carve_out[the `client_ca` carve-out].
 
 == Operator Consideration: Emergency Trust-Root Replacement
 
@@ -301,7 +301,7 @@ with the JWKS leg in
 link:../adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]
 and the BFF back channel in
 link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045].
-The field contract is in link:../configuration.adoc#_egress_tls[the `egress_tls` reference]. To start
+The field contract is in link:../configuration/tls-and-egress.adoc#_egress_tls[the `egress_tls` reference]. To start
 from a goal instead -- a corporate CA, a private-CA identity provider, a name the certificate does not
 carry -- see link:tls-scenarios.adoc[TLS Scenarios].
 
@@ -438,7 +438,7 @@ image has no `update-ca-trust`, why the JDK triple must arrive as command-line `
 runner (and why `JAVA_TOOL_OPTIONS` is silently ignored by a native executable), how to build a store
 that keeps the public roots *and* adds a private CA, and which boot records tell you which store is
 actually in force -- is in
-link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
 platform bundle]. Read `ApiSheriff-17` and `ApiSheriff-122` in the boot log after any trust change.
 
 Before you build a default store for the identity provider, know that you may not need one. The
@@ -448,7 +448,7 @@ authorization-code exchange, refresh and refresh-token revocation -- has a trust
 `jwks.tls_profile` does not cover it. Naming that profile keeps the private CA off every other leg;
 the default store is the alternative, and it reaches every leg that names no profile. Both *replace*
 anchors rather than adding to them. See
-link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel] for the key and
+link:../configuration/tls-and-egress.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel] for the key and
 link:bff-session.adoc#_private_ca_self_signed_idp[BFF session management] for the operator steps.
 
 *Logout is deliberately absent from that list: it is not a back-channel leg and does not depend on

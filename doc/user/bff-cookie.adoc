@@ -6,7 +6,7 @@
 A task-oriented guide for operators standing up the *cookie-based BFF* (Variant 3): API Sheriff as
 an OIDC confidential client that keeps no server-side session store and hands the browser a sealed
 cookie that *is* the session. It tells you *how* to configure and run the variant; the field-by-field
-contract lives in the link:../configuration.adoc#_oidc[Configuration Reference (`oidc`)] and the
+contract lives in the link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration Reference (`oidc`)] and the
 design rationale in link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based].
 
 == When to choose this variant
@@ -515,7 +515,7 @@ to use a DPoP key generated at startup.
 
 The remaining refusals -- among them a directory instead of a file, a file above 16 KiB, a second block of the
 same kind, any other PEM block, text outside a block -- are listed in
-link:../configuration.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys].
+link:../configuration/authentication-and-oidc.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys].
 
 === Register the client at the identity provider
 
@@ -880,7 +880,7 @@ cookie. All other responses keep the upstream's cache policy.
 `max_cookie_size` plus 512 bytes. The activity cookie takes 88 of those 512 bytes under the default
 name. The application cookies a route forwards travel in the same header, and the upstream receives
 only those pairs -- but they may still be larger than the upstream's own header limits accept (see
-link:../configuration.adoc#_cookies_size[Forwarded cookies and the cookie-size cap]).
+link:../configuration/routing-and-forwarding.adoc#_cookies_size[Forwarded cookies and the cookie-size cap]).
 
 *A WebSocket or a streamed response counts once, when it starts.* An open WebSocket does not keep
 the session alive. On a session route the gateway closes a WebSocket at the session's absolute
@@ -927,7 +927,7 @@ unreachable or answers `5xx`, the session is kept: requests keep using the curre
 it expires, then are answered as unauthenticated *without* the cookie being cleared, and the next
 attempt waits five seconds (`ApiSheriff-127`, per instance). `on_failure` picks how a failing request
 is answered -- `reauthenticate` redirects navigations to login and answers API calls `401`, `reject`
-answers `401` to everything. See link:../configuration.adoc#_refresh_failure_dispositions[the
+answers `401` to everything. See link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the
 per-kind table].
 
 [[_what_is_unavailable_in_this_variant]]
@@ -1045,7 +1045,7 @@ that happens after the gate, not at it. So a retired format is never mis-parsed.
   reaches an upstream under any `cookies` policy, and an upstream `Set-Cookie` naming one is dropped.
   The application's own cookies cross only as the route's `cookies` block admits them (see
   link:bff-session.adoc#gateway-cookies[The gateway's cookies and your application] and
-  link:../configuration.adoc#_never_forward_set[the never-forward set]).
+  link:../configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward set]).
 * *Scopes are enforced as in the server-session variant.* A session lacking a scope the route needs
   is refreshed, widened or refused `403` exactly as
   link:bff-session.adoc#scope-enforcement[the server-session guide] describes. One case is specific
@@ -1072,7 +1072,7 @@ for both routes; they are identical in both variants.
 
 == See also
 
-* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract.
+* link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract.
 * link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- design and flow rationale.
 * link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF architecture] -- why the variant is shaped this way.
 * link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- BFF security relaxations] -- the accepted trade-offs.

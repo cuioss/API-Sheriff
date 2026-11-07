@@ -488,7 +488,7 @@ Two test-support types matter for this code:
   path in `ReservedPathRegistry.from(...)`, write a handler in `bff.reserved` that takes raw request
   pieces and returns a rendered response,
   wire it in `BffRuntimeProducer`, and route its kind in `BffRuntime.dispatch(...)`. Document the new
-  key in link:../configuration.adoc#_oidc[Configuration -- `oidc`] and grow the reserved-path list.
+  key in link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration -- `oidc`] and grow the reserved-path list.
   A handler that sets a cookie needs nothing further for caching: `BffRuntime.dispatch` sends every
   reserved answer that carries a `Set-Cookie` with `Cache-Control: no-store`.
 * *A new session-runtime capability* -- write it against `SessionBinding`, so both session modes get

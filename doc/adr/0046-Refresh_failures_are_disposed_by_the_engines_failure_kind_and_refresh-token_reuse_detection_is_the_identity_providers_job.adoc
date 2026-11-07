@@ -280,7 +280,7 @@ provider holds the refresh-token lineage, so it owns reuse detection.
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the `SessionBinding` seam that persists and destroys the rotated session
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel client configuration the refresh and the revocation are built from
 * link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]: the scope-driven refresh leg
-* link:../configuration.adoc#_refresh_failure_dispositions[Configuration reference]: the per-kind table and `session.refresh.on_failure`
+* link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[Configuration reference]: the per-kind table and `session.refresh.on_failure`
 * link:../security-threat-model.adoc[Security threat model]: BFF-08, refresh-token rotation and reuse detection
 * link:../variants/03-bff-cookie.adoc[Variant 3]: the concurrent-refresh race
 * link:../user/bff-session.adoc[Server-session BFF operator guide] and link:../user/bff-cookie.adoc[Cookie-based BFF operator guide]: the strict-rotation operator step

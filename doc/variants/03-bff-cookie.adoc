@@ -105,12 +105,12 @@ An API call carries the encrypted token cookie. The gateway:
 . If the token is near expiry, transparently refreshes it and re-seals the cookie.
 . Injects `Authorization: Bearer <token>` and forwards, applying the same
   link:01-base-gateway.adoc[base-gateway] filtering and per-route
-  link:../configuration.adoc#_forward[forward policy]. The sealed token cookie the gateway just
+  link:../configuration/routing-and-forwarding.adoc#_forward[forward policy]. The sealed token cookie the gateway just
   decrypted, and the activity cookie beside it, are the gateway's own cookies and reach no upstream
   under *any* policy or mode -- that is what keeps the sealed cookie away from the backend. The
-  browser's other cookies cross only as the route's link:../configuration.adoc#_cookies[`cookies`]
+  browser's other cookies cross only as the route's link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`]
   block admits them, and under the default `allow: none` not at all (see
-  link:../configuration.adoc#_never_forward_set[the never-forward set]). The mediated bearer is
+  link:../configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward set]). The mediated bearer is
   merged last, so it wins over any inbound `Authorization` a route's mode admitted.
 
 image::../resources/diagrams/bff-token-mediation.svg[Session-based versus cookie-based token mediation compared side by side, align=center]
@@ -299,7 +299,7 @@ the activity cookie first -- whatever the IdP offers, as there -- and
 redirects to the `end_session_endpoint` with
 `id_token_hint`, the pre-registered gateway-owned `post_logout_redirect_uri`, and a
 session-bound `state` verified on return (carried across the round-trip in the short-lived
-logout cookie described in link:../configuration.adoc#_oidc[`logout.path`] -- stateless, so
+logout cookie described in link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`] -- stateless, so
 identical in this variant). As there, the flow calls a token-revocation seam that the shipped
 runtime binds to a no-op, so the gateway itself revokes nothing at the IdP on logout today.
 
@@ -331,7 +331,7 @@ Identical to the link:02-bff-session.adoc#_csrf_defence[session-based variant]: 
 verification against `session.csrf.trusted_origins` on unsafe methods plus a `SameSite=Lax`
 cookie, fixed behaviour on every `auth.require: session` route. A route that forwards the browser's
 own application cookies carries the separate per-route same-origin check of the `cookies` block as
-well (see link:../configuration.adoc#_cookies_same_origin_check[The same-origin check]).
+well (see link:../configuration/routing-and-forwarding.adoc#_cookies_same_origin_check[The same-origin check]).
 
 == Configuration
 
@@ -392,7 +392,7 @@ mode: the gateway mints a key at boot, so sessions are dropped on every restart 
 shared with another replica. There is no second, decrypt-only key -- replacing the key file
 invalidates every outstanding cookie, but only once every replica has restarted: the file is read at
 startup alone, so a running replica keeps the key it read. See
-link:../configuration.adoc#_oidc[the configuration reference] for the authoritative validation rules
+link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration reference] for the authoritative validation rules
 and link:../user/bff-cookie.adoc#_key_material[the operator guide] for creating and mounting the file.
 
 == Properties

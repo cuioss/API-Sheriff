@@ -174,7 +174,7 @@ The policy replaces any `content_security_policy` the global block declares, in 
 `header_modes` mode, and the response carries exactly one value for each name. The other
 gateway-owned headers (`Strict-Transport-Security`, `X-Frame-Options`) keep the global block, because
 the portal answers before route selection and no anchor block applies to it (see
-link:../configuration.adoc#_security_headers[`security_headers`]).
+link:../configuration/security-and-edge-hardening.adoc#_security_headers[`security_headers`]).
 
 The policy has consequences for a template:
 

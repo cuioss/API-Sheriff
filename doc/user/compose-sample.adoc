@@ -575,7 +575,7 @@ The variant keeps the `strict` inbound profile gateway-wide. Two things widen, e
   `app` and `pages` anchors narrow their own lists back to `GET` and `HEAD`, so `POST` is admitted
   under `/auth` alone.
 * *The `Cookie` header may carry up to 4096 characters*, through
-  link:../configuration.adoc#_oidc[`oidc.session.max_cookie_header_value_length`]. Keycloak's login
+  link:../configuration/authentication-and-oidc.adoc#_oidc[`oidc.session.max_cookie_header_value_length`]. Keycloak's login
   cookies outgrow the `strict` 1024-character header-value cap, and that cap is applied to every
   header *before* a route is selected -- so no endpoint-level setting could lift it for `/auth`. The
   key raises the cap for the `Cookie` header only; every other header, every parameter and every path
@@ -814,7 +814,7 @@ recognise a replayed refresh token: a confidential client only ever sees the tok
 itself, and a stateless cookie-mode instance keeps no token family to compare against. An identity
 provider enforcing strict rotation refuses the replay with `invalid_grant`, and the gateway disposes
 that refusal as a credential rejection -- it ends the session and records `ApiSheriff-111` with reason
-`credential-rejected` (see link:../configuration.adoc#_oidc[`session.refresh.on_failure`]). Against
+`credential-rejected` (see link:../configuration/authentication-and-oidc.adoc#_oidc[`session.refresh.on_failure`]). Against
 Keycloak the defence reaches further than the replayed copy: the integration suite
 `BffRefreshReuseIT` observed that a detected replay also revokes the successor refresh token, so the
 legitimate holder's session ends too, while the Keycloak user session survives.
@@ -890,7 +890,7 @@ directory gives you a working starting point. From there the usual first four ch
 . Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`. You will
   usually need no `forward` block at all: with none declared, every client header and query
   parameter crosses except the gateway-owned
-  link:../configuration.adoc#_never_forward_set[never-forward set] (an inbound `Authorization` on
+  link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set] (an inbound `Authorization` on
   any route declaring no positive-list naming it, and the hop-by-hop and framing names), and the
   HTTP mechanics -- `Accept`, `Accept-Encoding`, `Accept-Language`,
   `Content-Type`, `Range`, `If-Range`, `If-Match` and `If-Unmodified-Since` -- cross without being
@@ -898,9 +898,9 @@ directory gives you a working starting point. From there the usual first four ch
   route's `not_modified` toggle is enabled. Add a `forward` block only to
   *narrow* that: `headers_deny` / `query_deny` to withhold specific names, or
   `headers_allow` / `query_allow` for a strict positive-list. See
-  link:../configuration.adoc#_forward[the `forward` reference]. The browser `Cookie` is not
+  link:../configuration/routing-and-forwarding.adoc#_forward[the `forward` reference]. The browser `Cookie` is not
   decided there: no cookie crosses unless the route's
-  link:../configuration.adoc#_cookies[`cookies` block] admits it, and the gateway's own cookies
+  link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies` block] admits it, and the gateway's own cookies
   never do.
 +
 [IMPORTANT]

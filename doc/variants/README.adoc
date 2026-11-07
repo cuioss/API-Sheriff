@@ -40,7 +40,7 @@ last column names which one each realizes.
 
 "Variant" names the authentication posture of a *route*, selected by its effective
 `auth.require` (`none` | `bearer` | `session`) -- declared once per endpoint file and
-overridable per route (see link:../configuration.adoc#_auth[Configuration -- `auth`]); one
+overridable per route (see link:../configuration/authentication-and-oidc.adoc#_auth[Configuration -- `auth`]); one
 deployment may serve bearer routes and session routes side by side. What *is* global is `oidc.session.mode` (`server` | `cookie`) -- it decides which BFF
 shape handles all `session` routes, so a single deployment runs at most one of Variant 2 and
 Variant 3 at a time. A deployment with no `session` routes is a pure Variant 1 gateway and

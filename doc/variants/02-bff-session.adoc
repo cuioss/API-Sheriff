@@ -69,7 +69,7 @@ usable target. See link:../user/bff-session.adoc#scopes[the operator guide].
 === Login-initiation entry point
 
 A browser can start a login explicitly by navigating to the gateway-owned `oidc.login.path`
-(a link:../configuration.adoc#_oidc[reserved gateway path], the mirror of the callback that
+(a link:../configuration/authentication-and-oidc.adoc#_oidc[reserved gateway path], the mirror of the callback that
 *lands* the login). A caller that already holds a live session is redirected straight to a
 *same-origin-validated* return URL -- no fresh auth-code flow is run and no cookies are set --
 so re-entering the login URL while signed in is not an open redirect and not a redundant
@@ -140,11 +140,11 @@ Once the session exists, an API call carries only the session cookie. The gatewa
   refuses (see <<_scope_enforcement>>).
 . Injects `Authorization: Bearer <token>` and forwards, applying the same
   link:01-base-gateway.adoc[base-gateway] filtering and per-route
-  link:../configuration.adoc#_forward[forward policy]. The session cookie the gateway just
+  link:../configuration/routing-and-forwarding.adoc#_forward[forward policy]. The session cookie the gateway just
   consumed is one of the gateway's own cookies and reaches no upstream under *any* policy or mode --
   that is what makes the BFF premise hold. The browser's other cookies cross only as the route's
-  link:../configuration.adoc#_cookies[`cookies`] block admits them, and under the default
-  `allow: none` not at all (see link:../configuration.adoc#_never_forward_set[the never-forward
+  link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`] block admits them, and under the default
+  `allow: none` not at all (see link:../configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward
   set]). The mediated bearer is merged last, so it wins over any inbound
   `Authorization` a route's mode admitted. A route resolving `auth.token_relay: false` skips this
   injection: the session is still required and still held to the route's scopes, but the upstream
@@ -176,7 +176,7 @@ cookie carries a handle the store resolves.
 | Bounds
 | `oidc.session.max_sessions` bounds the store. `oidc.session.max_sessions_per_subject` bounds the
   live sessions of one subject: a login beyond it ends that subject's oldest session first. Both
-  are in link:../configuration.adoc#_oidc[the configuration reference].
+  are in link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration reference].
 
 | Trade-off
 | A shared store (e.g. Redis) reintroduces an external dependency -- exactly what the
@@ -225,7 +225,7 @@ a cookie, every `auth.require: session` route applies *origin verification* on u
   defaulting to the origin of `oidc.redirect_uri`. The `Origin` header names the *calling
   page's* origin, so an SPA served from `https://app.example.com` calling a gateway at
   `https://gw.example.com` must have `https://app.example.com` listed (see
-  link:../configuration.adoc#_oidc[`session.csrf.trusted_origins`]). Comparison is exact,
+  link:../configuration/authentication-and-oidc.adoc#_oidc[`session.csrf.trusted_origins`]). Comparison is exact,
   full-origin (scheme + host + port).
 * If `Origin` is absent, `Sec-Fetch-Site: same-origin` is accepted (that header is an enum --
   `same-origin` / `same-site` / `cross-site` / `none` -- not an origin, so no origin comparison
@@ -245,7 +245,7 @@ A route that forwards the browser's *own* application cookies to its upstream th
 block carries a second, per-route same-origin check with the same proof, trusting the origin the
 request was received on plus the block's `additional_origins` rather than `trusted_origins`. It runs
 only on an unsafe request that carries a cookie the route forwards, and `same_origin_check: false`
-removes it (see link:../configuration.adoc#_cookies_same_origin_check[The same-origin check]). The
+removes it (see link:../configuration/routing-and-forwarding.adoc#_cookies_same_origin_check[The same-origin check]). The
 session-route defence above is unaffected by it.
 
 NOTE: CSRF and CORS are the two halves of the cross-origin story. `trusted_origins` governs
@@ -331,7 +331,7 @@ A request left without a token is answered by `oidc.session.refresh.on_failure`:
 `reauthenticate` (the default) a *navigation* request is re-driven through the login flow while an
 API/XHR request receives `401` `application/problem+json` (the same content negotiation as
 `require: session`); with `reject` every request receives the `401`. See
-link:../configuration.adoc#_refresh_failure_dispositions[the per-kind table].
+link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the per-kind table].
 
 *Refresh-token reuse detection is the identity provider's job.* The gateway keeps no token family
 and cannot recognise a replayed refresh token; in this variant the refresh token never leaves the
@@ -412,7 +412,7 @@ link:../features-analysis.adoc#_differentiators[differentiator] no competitor co
 == User-Info Endpoint
 
 The gateway serves the browser a *curated identity view* at the gateway-owned `oidc.user_info.path`
-(a link:../configuration.adoc#_oidc[reserved gateway path]), assembled from the session's tokens --
+(a link:../configuration/authentication-and-oidc.adoc#_oidc[reserved gateway path]), assembled from the session's tokens --
 never a passthrough of the raw ID/userinfo claims, and never a way for the browser to reach token
 material. What it may disclose is bounded by an *operator-owned* claim allowlist whose secure
 default is *closed*:

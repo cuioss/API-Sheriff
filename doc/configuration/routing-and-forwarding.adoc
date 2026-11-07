@@ -1,0 +1,1070 @@
+= API Sheriff -- Configuration Reference: Routing and Forwarding
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+Route protocols and WebSocket settings, the route matcher, the `forward`, `cookies` and identity-header policies, the terminal actions (`upstream`, `asset`, `redirect`) with their gateway-level defaults, the method allow-list and the forwarded-header policy. The operator guide is link:../user/endpoint-routes.adoc[Endpoint route configuration].
+
+Part of the link:../configuration.adoc[Configuration Model]; the annotated link:../configuration.adoc#_gateway_configuration_gateway_yaml[`gateway.yaml` skeleton] shows every block in place.
+
+[[_protocols]]
+== `protocol`
+
+Each route declares the protocol it serves: `http` (the default), `graphql`, `grpc`, or
+`websocket`. All four are supported *from the start*
+(link:../features-analysis.adoc#_initial_scope[Feature Analysis -- Initial Scope]);
+HTTP/3 is deferred. The value selects handshake/streaming behaviour only (WebSocket upgrade,
+gRPC streaming); the semantics of each protocol -- and what the security filter does and does
+not inspect -- are defined once in
+link:../architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support].
+
+A `protocol: websocket` route carries one additional per-route block --
+link:#_websocket[`websocket`] -- holding both WebSocket keys:
+link:#_allowed_origins[`allowed_origins`] (a mandatory `Origin` allowlist on bearer and session
+WebSocket routes) and `idle_timeout_seconds` (the established-relay idle-timeout bound). Both are
+documented immediately below.
+
+[[_allowed_origins]]
+== `websocket.allowed_origins` (WebSocket routes)
+
+A per-route `Origin` allowlist for a `protocol: websocket` route. It is *mandatory* when the route's
+*effective* auth is `require: bearer` or `require: session`, and optional on a `require: none`
+route (link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]). It is declared *inside
+the route's `websocket` block* -- `allowed_origins` is
+not a route-level key, and writing it as a sibling of `websocket` fails the boot as an unknown
+key. It is *`security_headers`-adjacent* -- an `Origin`-header check performed at the handshake,
+not a routing matcher -- but, unlike the gateway/anchor-scoped
+link:security-and-edge-hardening.adoc#_security_headers[`security_headers`] block, it is scoped *per route*: the set of browser
+origins allowed to open a socket is a property of the individual WebSocket route. The
+check runs on the HTTP upgrade request, *before* the upstream is dialled. A session route does not
+inherit `oidc.session.csrf.trusted_origins`; it declares this list itself.
+
+[cols="1,3"]
+|===
+| Attribute | Value
+
+| Type
+| A *list* of origin strings, each `scheme://host[:port]`.
+
+| Default
+| *None.* There is deliberately no "any origin" default. On a bearer or session WebSocket route
+  the field is *mandatory and non-empty* (see Fail-closed).
+
+| Allowed values / matching
+| *Exact match*, compared as full origins (scheme + host + port). The *host* is compared
+  *case-insensitively* (hostnames are case-insensitive per RFC 6066); the *scheme and port* are
+  compared exactly. There are *no wildcards*, no suffix forms, and no regular expressions -- list
+  each permitted origin in full.
+
+| Fail-closed / validation
+| The upgrade request's `Origin` header must *exactly match* a listed origin or the *handshake is
+  rejected* before any upstream dial. An *absent or empty* `websocket.allowed_origins` on a
+  WebSocket route whose effective auth is `require: bearer` or `require: session` *fails the boot*
+  -- deny-by-default: an authenticated socket with no allowlist would otherwise admit every origin,
+  which is never the intended posture. The refusal names the route and its effective auth. A
+  `require: none` WebSocket route may omit the list, and its upgrade then proceeds without an
+  `Origin` check; a list it does declare is enforced like any other. A `websocket` block on a
+  non-`websocket` route is a configuration error and fails the boot.
+|===
+
+[source,yaml]
+----
+# a bearer WebSocket route (endpoints/*.yaml); a require: session route declares the same block
+- id: live-updates
+  protocol: websocket
+  match: { path_prefix: /api/stream, host: api.example.com }
+  auth: { require: bearer }
+  websocket:                       # BOTH WebSocket keys live inside this block
+    allowed_origins:               # MANDATORY, non-empty on a bearer or session WS route; exact origins
+      - https://app.example.com    #   (scheme+host+port), host case-insensitive, no wildcards
+    idle_timeout_seconds: 300      # optional; default 300 (see "websocket" below)
+  upstream: { path: /stream }
+----
+
+[[_websocket]]
+== `websocket` (WebSocket routes)
+
+The per-route WebSocket block. It carries *both* WebSocket keys -- the
+link:#_allowed_origins[`allowed_origins`] allowlist documented above and the idle-timeout bound
+below. It is valid only on a `protocol: websocket` route.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `allowed_origins`
+| The fail-closed `Origin` allowlist -- *mandatory and non-empty* on a bearer or session WebSocket
+  route.
+  Documented in full under link:#_allowed_origins[`websocket.allowed_origins`] above.
+
+| `idle_timeout_seconds`
+| *Per-route integer, default `300`.* Bounds an established bidirectional relay: when *no frame
+  travels in either direction* for this many seconds, the relay is closed. WebSocket
+  *ping/pong counts as activity*, so an application- or gateway-level heartbeat keeps the socket
+  open. When declared it must be a *positive integer*; when omitted, the default `300` applies. It
+  is valid *only* on a `protocol: websocket` route.
+|===
+
+[[_match]]
+== `match`
+
+Matchers compose with AND semantics; a route matches only if every declared matcher holds.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `path_prefix`
+| Literal path prefix, compared segment-wise against the validated, normalized path
+  (`/api` matches `/api/orders` but not `/apifoo`). Also the precedence key among prefix routes
+  (longest first, see link:../user/endpoint-routes.adoc#_route_ordering[Route ordering]). Mutually
+  exclusive with `path`.
+
+| `path`
+| *Exact* path: the route matches this one address only, by an *un-normalized* string comparison
+  against the canonical request path -- `/a` and `/a/` are distinct addresses, and `path: /a`
+  matches neither `/a/` nor `/a/b`. Every exact route is selected *before* every prefix route, so for
+  the same address an exact route always wins. Exactly one of `path_prefix` and `path` must be
+  declared; both, or neither, fail the boot at schema load.
+
+| `methods`
+| HTTP method list; omitted means all methods.
+
+| `host`
+| Exact match against the request `Host` header / SNI.
+
+| `headers`
+a| Header matchers, each naming a request header by `name` plus a `present` flag, an exact `value`,
+  or both. All listed matchers must hold, and within one matcher the declared fields compose with
+  AND:
+
+  * `name` is lower-cased once at boot with `toLowerCase(Locale.ROOT)` and looked up in the
+    request's lower-case-keyed header map. For ASCII names -- the characters an RFC 9110 field
+    name is made of -- matching is therefore case-insensitive: `X-Tenant`, `x-tenant` and
+    `X-TENANT` name the same header. A non-ASCII name is compared by that lower-cased form, not by
+    per-character case folding: a name spelled with `U+0130` (capital I with dot above) names a
+    different header than its plain-I twin `X-Id`.
+  * `present: true` requires the header to be present; `present: false` requires it to be
+    *absent* -- a request carrying the header does not match.
+  * `value` requires that exact value, compared *case-sensitively*, and therefore also requires the
+    header to be present.
+  * A matcher declaring `present: false` together with `value` could never match, so it is
+    *refused at boot*, naming the route and the header. `present: true` together with `value` is
+    valid.
+  * Two matchers of *one route* that name the same header (compared after `Locale.ROOT`
+    lower-casing, as the runtime reads the name) and can never both hold -- two different values,
+    or one requiring the header (`present: true` or a `value`) while the other forbids it
+    (`present: false`) -- leave the route unable to match any request, so the route is *refused at
+    boot*, naming the route and both matchers, one error per conflicting pair. Redundant but compatible pairs (`value` with `present: true`, identical
+    values, identical presence flags) are valid.
+
+  A route selected on a header matcher announces that header in its response's `Vary`, by its
+  lower-case name. Two same-prefix routes are disjoint on a header when one matcher requires it
+  (`present: true` or a `value`) and the other forbids it (`present: false`) -- so an exact `value`
+  and `present: false` on one header are disjoint -- or when both declare different values; see
+  link:../user/endpoint-routes.adoc#_route_ordering[Route ordering].
+|===
+
+[[_forward]]
+== `forward`
+
+*A filter inside a route the request is already authorised for* -- not the gateway's
+deny-by-default boundary. That boundary is route matching: a request matching no route is
+rejected `404` and reaches no upstream at all (see link:../user/endpoint-routes.adoc#_route_ordering[Route ordering]). By
+the time `forward` runs, the route has been selected and the auth posture enforced, so this
+block decides only *which of the client's own headers and query parameters survive the trip*
+(link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
+The `Cookie` header is the one exception: the link:#_cookies[`cookies`] block decides it.
+
+*Where it is declared.* The block is declarable on an endpoint and on a route. A route runs its own
+block when it declares one, else its endpoint's, taken whole: a route block replaces the endpoint
+block wholesale, so a route block naming only `headers_allow` drops an endpoint `query_deny`. With
+neither declared, both dimensions are forward-all. There is no anchor or gateway scope -- forward
+filtering is upstream-specific. The rule is the one every policy block follows (see
+link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). *The endpoint scope is a
+breaking change* to the endpoint-document surface; both boot refusals below -- the two lists of one
+dimension together, and an `Authorization` re-admitted on a `token_relay: false` route (see
+link:authentication-and-oidc.adoc#_auth_token_relay[`auth.token_relay`]) -- apply to an endpoint block exactly as to a route
+block. The modes below are stated for "the route", meaning the block the route resolves.
+
+A route-scope `forward` block is refused at boot on a redirect route: a redirect answers with a
+plain status and `Location`, contacts no upstream, and consumes no forward policy, so the block
+would parse and then never be read. An endpoint-scope block stays accepted -- it governs that
+endpoint's proxy routes.
+
+=== The three modes
+
+Headers and query parameters are *independent dimensions*. Each resolves exactly one of three
+modes from what the route declares -- and a route may mix them, e.g. a positive-list on headers
+with forward-all on query.
+
+[cols="1,2,2"]
+|===
+| Mode | Selected by | Behaviour
+
+| *Positive-list*
+| `headers_allow` / `query_allow` declared
+| Only the named entries cross.
+
+| *Negative-list*
+| `headers_deny` / `query_deny` declared
+| Every client entry crosses *except* the named ones.
+
+| *Forward-all*
+| Neither list declared for that dimension
+| Every client entry crosses. This is the baseline: omit the `forward` block entirely and both
+  dimensions are forward-all.
+|===
+
+*Declaring both lists for one dimension fails the boot.* `headers_allow` together with
+`headers_deny` (or `query_allow` with `query_deny`) is not a stricter policy but an ambiguous
+one, so the configuration validator refuses it rather than resolving it to a guess. The two
+dimensions are judged separately -- `headers_allow` plus `query_deny` is legal.
+
+*An absent list is not an empty one.* `query_allow: []` is a *positive-list admitting nothing*;
+an omitted `query_allow` is *forward-all*. The two are opposite behaviours, so the distinction
+is carried in the model and never normalised away
+(link:../adr/0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]).
+
+Header names match *case-insensitively* on both list modes, as RFC 9110 field names require. A
+`headers_deny` entry also matches every `-`/`_` spelling of the name it lists: both sides are
+compared *separator-folded* -- lower-cased with each `_` mapped to `-` -- so
+`headers_deny: [X-Debug]` withholds `X_Debug` and `x_debug` too, and an entry written `X_Debug`
+withholds `X-Debug`. A backend that folds header names into CGI-style variables reads all of these
+as one name, so each of them is the denied header. Query-parameter names match *case-sensitively* on both modes -- query names are case-sensitive
+in HTTP, and making only one side insensitive would let a route's two lists disagree about what
+a name is.
+
+Query-parameter names are compared in their *percent-decoded* form (strict UTF-8, `+` read as a
+space), because that is the name the upstream acts on; the pair that crosses keeps its raw spelling
+(link:../adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]). Matching the
+raw spelling instead would let `%74oken=x` evade a `query_deny: [token]`. A percent-escape is formed
+only by two ASCII hex digits, so an escape spelled with full-width or other non-ASCII digits is
+malformed rather than decoded. A name with no well-formed decoding crosses only under forward-all:
+it can neither be admitted by a positive-list nor proven absent from a negative one.
+
+Each pair is judged on its own and the query is never regrouped by name: the pairs that cross keep
+the order they arrived in, interleaved repeated names included, so `a=1&b=2&a=3` under a list that
+keeps both names reaches the upstream as `a=1&b=2&a=3`, not `a=1&a=3&b=2`.
+
+[[_never_forward_set]]
+=== The never-forward set
+
+This section is the one place the gateway-owned never-forward rule is listed. Every other page
+links here rather than restating it
+(link:../adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+
+*Request direction.* These client headers are withheld under *every* forward mode, whatever a
+route declares: `Authorization`, `Connection`, `Proxy-Connection`, `Keep-Alive`,
+`Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`,
+`HTTP2-Settings`, `Content-Length`, `Host`, `Origin`, `Referer` and `Date` -- the credential the
+gateway terminates or mediates, the hop the gateway terminates rather than the message it forwards
+(`HTTP2-Settings` is the settings payload of a cleartext `h2c` upgrade, which belongs to that hop
+alone), the framing the gateway re-establishes, and the names the gateway itself owns.
+
+The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
+vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and
+the underscore spellings of the regenerated forwarding names, `X_Forwarded_For`,
+`X_Forwarded_Host`, `X_Forwarded_Proto`, `X_Forwarded_Port` and `X_Forwarded_Prefix`. Every name in
+the set is matched on its *separator-folded* spelling -- lower-cased with each `_` mapped to `-` --
+so `X_Real_IP` and
+`X-Real_IP` are withheld exactly as `X-Real-IP` is, and a backend that folds header names into
+CGI-style variables cannot be reached by respelling one.
+
+Two members carry value- or mode-dependent behaviour:
+
+* *`Authorization` is the single re-admittable member*, and only where the route declares a
+  *positive*-list naming it -- a legitimate choice for a pure-proxy route. Under a negative-list
+  or forward-all there is no positive-list, so a permissive route can never leak an inbound
+  credential. On a `require: session` route the mediated bearer is merged *last* and overwrites
+  it regardless, so the upstream still sees only the mediated credential.
+* *`TE` crosses only as the exact `trailers` token* -- the one value RFC 9110 admits end-to-end,
+  and what gRPC-over-HTTP/2 requires. Any other value negotiates a transfer coding for the hop
+  the gateway terminates and is withheld.
+
+*The browser `Cookie` is not a member, and no forward mode copies it.* The browser's `Cookie`
+reaches an upstream *only as the route's link:#_cookies[`cookies`] policy admits it*, and the
+gateway's own cookies *never*: every cookie under the reserved `+__Host-sheriff-+` prefix, the
+configured `oidc.session.cookie_name` and its `-activity` sibling -- in both session modes, since an
+activity cookie issued before a switch from cookie to server mode stays live until it expires -- are
+dropped under every policy and every mode. A cookie name is read the way a user agent reads it: the
+`+__Host-+` and `+__Secure-+` prefixes compare without regard to case, so a respelled prefix does not
+take a gateway cookie past the drop. Stage 5 rebuilds the header from the pairs that remain,
+so the upstream receives at most the application cookies the route names. Under the default
+`allow: none` no `Cookie` reaches the upstream at all. A `forward.headers_allow`,
+`forward.headers_deny` or `forward.set_headers` entry naming `Cookie` is refused at boot: the
+`cookies` block is the one place that decides which cookies cross.
+
+*Response direction.* These upstream response headers are never placed on the client's
+connection, whatever the upstream sends: `Connection`, `Proxy-Connection`, `Keep-Alive`,
+`Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade` and
+`Content-Length`, and any HTTP/2 pseudo-header an upstream reports among its headers. The set is
+declared once and read by every path that answers a client -- the proxy relay and the asset terminal
+action -- and each path re-establishes the framing it can honour. An upstream `Set-Cookie` line
+reaches the client only as the route's `cookies` policy admits the cookie it names, never when it
+names one of the gateway's own cookies, and always with its `Domain` attribute removed; under the
+default `allow: none` no upstream `Set-Cookie` is relayed. That rule holds on the HTTP relay, on
+the gRPC leading headers and on the gRPC trailers, and a WebSocket upgrade relays no upstream
+response header at all. An asset route with `source: upstream` relays no upstream `Set-Cookie`
+under any policy.
+
+[[_identity_set]]
+*Response direction -- the identity set.* These upstream response headers name the server software
+or framework behind the gateway, and are removed before the response reaches the client: `Server`
+and `X-Powered-By`. They are dropped, never rewritten to a neutral value. The strip is the default
+on every path that relays upstream response headers -- the HTTP relay, the gRPC leading headers and
+trailers, and an asset route with `source: upstream` -- and a route keeps them only by setting
+link:#_keep_identity_headers[`keep_identity_headers: true`]. The set is separate from the
+response-direction set above: those names are wrong on the client's connection and no route may
+keep them, while an identity header is well-formed and is removed only because it discloses the
+upstream's fingerprint
+(link:../adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+An error the gateway answers itself carries neither header.
+
+=== What crosses regardless of the mode
+
+Three gateway-owned sets bound every mode, and they are what makes the forward-all baseline safe
+to offer
+(link:../adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]):
+the link:#_never_forward_set[never-forward set] above, the gateway-understood protocol set and the
+regenerated forwarding headers.
+
+*The gateway-understood protocol set.* These cross *without* being named, so a route never
+enumerates HTTP mechanics to make an ordinary backend work:
+
+* *Unconditional* -- `Accept`, `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Range`,
+  and the three RFC 9110 §13 preconditions `If-Range`, `If-Match` and `If-Unmodified-Since`.
+  They cross whatever the `not_modified` toggle says: withholding `If-Match` or
+  `If-Unmodified-Since` would turn a conditional write into an unconditional one, and withholding
+  `If-Range` would leave `Range` to fetch a `206` slice of a changed representation.
+* *Conditional* -- the two validators a `304` answers, `If-None-Match` and `If-Modified-Since`. On
+  a `GET` or `HEAD` they are admitted only when the route's
+  link:#_upstream_defaults[`not_modified`] toggle is enabled; with the toggle disabled they are
+  withheld there under every mode and every `-`/`_` spelling, even where a forward list would admit
+  them. On every other method no `304` can answer them (RFC 9110 §13.1.2, §13.1.3), so they cross
+  like the unconditional tier whatever the toggle says: `If-None-Match` is there a write
+  precondition answered `412` -- a create-only `PUT` carrying `If-None-Match: *` keeps its guard --
+  and the origin ignores `If-Modified-Since`, which is defined only for `GET` and `HEAD`.
+
+Membership answers *"does the gateway know what this header means?"*, not "does a backend need
+it" -- the latter rule would admit `Cookie` and `Authorization`. `User-Agent` is deliberately
+outside the set on that test; a backend that genuinely needs it names it in `headers_allow`. The
+set is a fixed constant with no configuration surface: to withhold one of these, *deny it by
+name*. A `headers_deny` entry naming a protocol header wins, under any spelling of the entry; a `headers_allow` is deliberately
+not consulted, since crossing without being named is the set's whole purpose.
+
+*The regenerated forwarding headers.* The client's `X-Forwarded-*` / `Forwarded` copies never
+cross under any mode -- the gateway emits its own freshly regenerated set per the
+link:#_forwarded_headers[`forwarded`] policy, so forward-all is not a way to smuggle a spoofed
+`X-Forwarded-For` upstream.
+
+=== `set_headers`, and what wins
+
+`set_headers` adds *static*, gateway-controlled headers. Two injections are never written here
+and never listed in `headers_allow`: the mediated `Authorization: Bearer` on `require: session`
+routes (set from the session's access token), and the regenerated forwarding-header set.
+
+*`set_headers` is not bounded by the never-forward set, and that is deliberate.* The strip governs
+*client input*; an operator's static value is gateway configuration and is merged after it, so
+`set_headers` can place any header name except `Cookie` -- including `Authorization` for a backend
+behind a static credential, `Host` for a backend expecting a particular vhost, or `X-Real-IP` for
+one that reads it. `Cookie` is the one name refused here, because the
+link:#_cookies[`cookies`] block alone decides which cookies cross. What this cannot do is leak the
+*caller's* value: the entry is a fixed string from the route's YAML, so a client's credential or
+provenance claim still never crosses. Two consequences follow. A hop-by-hop or framing name set here (`Transfer-Encoding`, `Content-Length`,
+`Connection`, `Upgrade`) is written onto a request whose framing the gateway otherwise owns and is
+never a sensible entry -- it is not refused at boot, so do not write one. And declaring the same
+field twice under different casing (`Content-Type` and `content-type`) leaves which value wins
+unspecified; declare each field once.
+
+The stage merges in a pinned order -- the mode copy with the never-forward strip, then the
+`Cookie` rebuilt from the route's link:#_cookies[`cookies`] policy, then the protocol set, then
+`set_headers`, then the regenerated forwarding headers, then the mediated bearer -- and that order
+is one rule stated twice:
+
+. *Operator configuration beats client input.* `set_headers` merges after everything sourced
+  from the request, so an operator's `Content-Type` *replaces* a client's `content-type` rather
+  than riding alongside it. The outbound map is keyed case-insensitively, so the replacement
+  happens whatever either side spelled.
+. *Gateway-owned transport truth beats operator configuration.* The regenerated forwarding
+  headers and the mediated bearer merge after `set_headers`, the bearer last.
+
+[[_cookies]]
+== `cookies`
+
+*Which browser cookies reach the upstream, and which upstream `Set-Cookie` lines reach the
+browser.* The block decides both directions from one declaration
+(link:../adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+The gateway's own cookies are outside it: they cross under no policy, in either direction (see
+link:#_never_forward_set[The never-forward set]).
+
+[source,yaml]
+----
+cookies:
+  allow: [SESSIONID, theme]        # none | all | a list of cookie names
+  same_origin_check: true          # optional, default true; only with allow other than none
+  additional_origins:              # optional; exact origins trusted beside the received one
+    - https://app.example.com
+----
+
+*Where it is declared.* The block is declarable at the gateway, an anchor, an endpoint and a
+route -- the one policy block present at all four scopes. A route runs the nearest declared block,
+taken whole: a route block naming one cookie replaces an anchor block naming three, it never
+extends it. With no block declared anywhere the route resolves `allow: none`. The rule is the one
+every policy block follows (see link:../user/anchors.adoc#_policy_block_resolution[Policy-block
+resolution]). An asset or redirect route has no upstream and always resolves `allow: none`,
+whatever a broader scope declares.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `allow`
+| *Mandatory.* The mode, typed by YAML:
+
+  * the scalar `none` -- no browser cookie reaches the upstream and no upstream `Set-Cookie`
+    reaches the browser;
+  * a *list* of cookie names -- exactly the listed cookies cross, in both directions. Names are
+    compared exactly and case-sensitively, and each must be an RFC 6265 cookie name. A list is a
+    list of names, so `[all]` and `[none]` name the cookies `all` and `none`. A declared empty list
+    is refused at load, because it would spell `none` a second way;
+  * the scalar `all` -- every cookie crosses except the gateway's own. Refused at the gateway
+    scope, where it would hand every browser cookie of the host to every upstream; accepted at the
+    anchor, endpoint and route scopes, which name the upstreams it reaches.
+
+  Any other scalar is refused at load.
+
+| `same_origin_check`
+| *Optional* boolean, *default `true`*. Whether the gateway refuses a cross-site unsafe request
+  that carries a forwarded cookie on this route (see link:#_cookies_same_origin_check[The same-origin
+  check] below). `false` removes the check and logs `WARN ApiSheriff-139` naming the route.
+  Declaring the key on a block whose `allow` is `none` is refused at boot: nothing is forwarded, so
+  the check never runs.
+
+| `additional_origins`
+| *Optional* list of exact origins -- `scheme://host[:port]`, `http` or `https`, no path (not even
+  `/`), no query, no fragment and no user-info -- trusted by the same-origin check beside the origin
+  the request was received on. Compared exactly, without wildcards. Lower-cased once at load. An
+  entry of any other shape is refused at boot, and so is the key on a block whose `allow` is `none`.
+|===
+
+*The request side.* Stage 5 never copies the client's `Cookie`. It reads the first `Cookie` value,
+splits it into pairs on `;`, drops every pair that names one of the gateway's own cookies, keeps
+the pairs the mode admits, and writes one `Cookie` header from them, joined by `"; "` in their
+inbound order with duplicates kept. A pair without `=` is a nameless crumb: a list never admits
+one, and `all` keeps it unless it is a gateway cookie's name -- a server reads a bare crumb as a
+cookie of that name with an empty value. When nothing is
+kept, no `Cookie` header is sent. The rebuilt header reaches the upstream on every dispatch path --
+the HTTP proxy, gRPC and the WebSocket upgrade -- and the `forward` mode has no part in it.
+
+*The response side.* One shared predicate decides which upstream response headers reach the
+client, read on the HTTP relay, on the gRPC leading headers and on the gRPC trailers. An upstream
+`Set-Cookie` line is relayed only when the route's `allow` admits the cookie it names and that
+cookie is not one of the gateway's own, and every relayed line has its `Domain` attribute removed
+-- the attribute name is matched without regard to case, every occurrence goes, and `Path` and the
+other attributes stay as sent. An upstream therefore can neither set a gateway cookie nor widen a
+cookie past the host the browser addressed. A WebSocket upgrade relays no upstream response
+header, `Set-Cookie` included.
+
+[IMPORTANT]
+====
+*The default `allow: none` relays no upstream `Set-Cookie` at all.* This is a breaking change: an
+upstream that sets cookies today -- its own session, a CSRF token, a preference -- stops having them
+reach the browser, and stops receiving them back, until its route, endpoint or anchor declares a
+`cookies` block naming them. Before upgrading, list the cookies each upstream sets and relies on
+and declare them.
+====
+
+[[_cookies_same_origin_check]]
+=== The same-origin check
+
+Once a browser cookie reaches an upstream, a page on another site can make the browser send it
+there -- the ambient-credential shape cross-site request forgery rests on. Every route whose
+effective block forwards a cookie (`allow` is a list or `all`) therefore carries a gateway-side
+same-origin check, built once per route when the route table is assembled. A WebSocket route is the
+exception, settled below.
+
+* *Trusted origins.* The origin the request was received on -- the inbound scheme, host and port,
+  rendered `scheme://host[:port]` with the default port (`:443` for `https`, `:80` for `http`)
+  dropped on both sides of the comparison -- plus exactly the block's `additional_origins`.
+  `oidc.session.csrf.trusted_origins` is not consulted.
+* *The proof.* An unsafe request (any method but `GET`, `HEAD` and `OPTIONS`) passes when its
+  `Origin` is a trusted origin, or, with no `Origin`, when it carries `Sec-Fetch-Site:
+  same-origin`. Anything else is refused `403` as a `CSRF_REJECTED` event before authentication
+  and before the upstream. The refusal is recorded by the `CSRF_REJECTED` event counter and a
+  DEBUG diagnostic naming its disposition only -- no `ApiSheriff-xxx` log record is written, and the
+  `Origin` value is never logged. Because the check runs before authentication, the `403` is
+  answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found`
+  is on; the true event stays in `sheriff_errors_total{event}` (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). That
+  holds on a gRPC route too, which answers the HTTP `404` rather than a trailers-only status; with
+  the switch off a gRPC route answers the refusal as a trailers-only `PERMISSION_DENIED`.
+* *When it runs.* The check applies *only to an unsafe request that carries at least one cookie the
+  route would forward* -- read after the gateway's own cookies are dropped and the policy filter has
+  run, through the same reading stage 5 rebuilds the header from, so the check and the rebuild
+  cannot disagree. An unsafe request with no forwardable cookie -- no `Cookie` at all, only gateway
+  cookies, or only names the route's list does not admit -- passes unchecked: it hands the
+  upstream no ambient browser credential, so there is nothing for a cross-site page to forge. A
+  non-browser client -- a gRPC service or a server-to-server caller that sends no `Origin` and no
+  cookie -- therefore needs neither. Safe methods are never checked.
+* *Turning it off.* `same_origin_check: false` removes the check from the cookie-forwarding routes
+  the block reaches, and route-table assembly logs `WARN ApiSheriff-139` once per such route other
+  than a WebSocket route, naming it. Defending that upstream against cross-site request forgery is
+  then the upstream's own job.
+
+*Behind a TLS-offloading proxy* the received scheme is `http` while the browser sends an `https`
+`Origin`, so every unsafe request carrying a forwarded cookie is refused. List the public origin in
+`additional_origins` -- for example `https://app.example.com` -- to admit it.
+
+*A WebSocket route is settled differently, and the condition above does not reach it.* Its upgrade
+is already gated by the exact-match link:#_allowed_origins[`websocket.allowed_origins`] allowlist,
+which is stricter -- an absent `Origin` is always refused. A `protocol: websocket` route whose
+effective block forwards any cookie must declare a non-empty `websocket.allowed_origins`, and boot is
+refused otherwise -- on a `require: none` route too, which could otherwise boot with the list empty.
+`same_origin_check` and `additional_origins` do not act on a WebSocket route.
+
+[[_cookies_boot_rules]]
+=== Boot refusals and WARNs
+
+Every refusal is reported through `ApiSheriff-200` at the pointer of the offending key, collected
+with every other violation in one pass. A configured value echoed into a message is escaped first.
+Each rule that judges the content of a block is applied at every scope the block is declarable at.
+
+[cols="2,3", options="header"]
+|===
+| Refused | Reason
+
+| `allow: all` at the gateway scope
+| It would forward every browser cookie to every upstream; declare it on the anchor, endpoint or
+  route whose upstream needs it, or list the names.
+
+| A listed name that is not an RFC 6265 cookie name (a non-empty token, no whitespace, separator or
+  control character)
+| A browser never sends such a cookie, so the entry would admit nothing.
+
+| A listed name that is one of the gateway's own cookies
+| The gateway's own cookies never reach an upstream, so the entry would admit nothing while reading
+  as if a session credential were handed on.
+
+| `same_origin_check` or `additional_origins` on a block whose `allow` is `none`
+| No cookie is forwarded, so the check they configure never runs.
+
+| An `additional_origins` entry that is not a serialized origin
+| A browser's `Origin` is always serialized, so any other shape could never match.
+
+| A route-level `cookies` block on an asset or redirect route
+| The route has no upstream; it always resolves `allow: none`.
+
+| A cookie-forwarding `protocol: websocket` route without a non-empty `websocket.allowed_origins`
+| The allowlist is the only origin gate on the upgrade.
+
+| `Cookie`, in any letter case, in an endpoint or route `forward.headers_allow`,
+  `forward.headers_deny` or `forward.set_headers`
+| The `cookies` block is the one place that decides which cookies cross.
+
+| `allow: []`, any other scalar than `none` or `all`, a non-string list entry, or an unknown key
+| Refused at load by the bundled schemas.
+|===
+
+Two WARNs make the remaining choices visible, neither of which refuses the boot:
+
+* `ApiSheriff-101` -- an endpoint or route block replaces an anchor's `cookies` block (see
+  link:../user/anchors.adoc#_policy_block_override_warn[The override WARN]).
+* `ApiSheriff-139` -- a cookie-forwarding route runs with `same_origin_check: false`.
+
+[[_cookies_size]]
+=== Forwarded cookies and the cookie-size cap
+
+A forwarded cookie travels in the same inbound `Cookie` header as the gateway's own. On a
+cookie-mode BFF gateway the pre-route header check raises the `Cookie` value cap to
+`oidc.session.max_cookie_size` plus a fixed headroom (see xref:security-and-edge-hardening.adoc#_pre_route_header_carve_outs[Pre-route header-name carve-outs]), so the
+gateway admits a `Cookie` header larger than the baseline cap. The upstream receives only the pairs
+the route forwards, but those pairs may still exceed what the upstream's own header limits accept,
+and the upstream may refuse a request the gateway admitted. Keep the cookies a route forwards small,
+and size the upstream's header limits for them.
+
+[[_keep_identity_headers]]
+== `keep_identity_headers`
+
+A per-route boolean that opts the route out of the link:#_identity_set[identity-header strip]. It is
+declared on the route itself, beside `id` and `match`; there is no endpoint, anchor or gateway scope.
+
+[cols="1,3"]
+|===
+| Attribute | Value
+
+| Type
+| Boolean.
+
+| Default
+| *Absent, which means strip.* An absent key behaves like `false`: `Server` and `X-Powered-By` are
+  removed from the upstream response.
+
+| `true`
+| The route keeps its upstream's identity headers on all three paths that relay upstream response
+  headers: the HTTP relay, the gRPC relay (leading headers and trailers) and an asset route with
+  `source: upstream`.
+
+| Boot refusal
+| Declaring the key -- with either value -- on a `redirect` route, an asset route with
+  `source: directory` or a `protocol: websocket` route *fails the boot*, naming the route. None of
+  them relays an upstream response header, so the key could never act.
+|===
+
+[source,yaml]
+----
+- id: legacy-portal
+  match: { path_prefix: /legacy }
+  keep_identity_headers: true      # this upstream's clients read its Server banner
+  upstream: { path: /portal }
+----
+
+When to set it is covered in
+link:../user/endpoint-routes.adoc#_keep_identity_headers[Keeping an upstream's identity headers].
+
+[[_upstream]]
+== `upstream`
+
+The target is `resolved(endpoint.base_url) + upstream.path + remainder`
+(link:../adr/0004-topology-indirection.adoc#_upstream_path_append[ADR-0004]). The resolved alias
+supplies the scheme, host, port and *base path*; `upstream.path` is *appended* to that base path,
+joined on exactly one `/` whichever side carries a slash; an omitted or blank `upstream.path` keeps
+the alias base path unchanged. *Remainder* is the request path after stripping the route's match key
+(`match.path_prefix`, or the whole `match.path` on an exact route, whose remainder is empty) -- so
+path parameters survive the mapping: `/api/orders/42` on `path_prefix: /api/orders` with
+`upstream.path: /orders` behind `APP1=https://app1.internal:8443/app1` reaches
+`https://app1.internal:8443/app1/orders/42`. The query parameters the route's
+link:#_forward[`forward`] mode admits are appended unchanged, in the raw spelling the security
+filter validated (see link:security-and-edge-hardening.adoc#_query_validation_raw_form[Query parameters]). Worked examples and the migration from
+the former replace semantics are in
+link:../user/endpoint-routes.adoc#_upstream_path[Endpoint Routes -- Upstream path].
+
+`rewrite_location` is a boolean, *default `false`*. When `true`, an upstream `Location` response
+header that points inside this route's upstream is mapped back onto the gateway: a path-absolute
+value, or an absolute URI whose scheme, host and effective port equal the route upstream, whose path
+equals the effective upstream base path (alias base path + `upstream.path`) or continues it on a
+segment boundary, is rewritten to the route's match key plus the remainder, emitted as a
+gateway-relative path with query and fragment kept verbatim. A foreign origin, a scheme-relative
+`//host` value, an unparseable value, a path outside the effective base path, and a path carrying a
+dot segment or an ambiguous separator (a backslash, or a percent-encoded `/` or `\`, either case) are
+relayed unchanged. It is valid on `http` and `graphql` routes; declaring it on a `grpc` or `websocket` route
+fails the boot. See link:../user/endpoint-routes.adoc#_rewrite_location[Rewriting upstream `Location`
+headers].
+
+`connect_timeout_ms` / `read_timeout_ms` are declared in milliseconds for the shared
+per-upstream-tuple data-plane client
+(link:../adr/0008-data-plane-transport.adoc[ADR-0008]); the client is built without them (see the
+note below). `retry` maps to the resilience guard
+assembled at boot (SmallRye Fault Tolerance, programmatic -- ADR-0008): retry applies to
+idempotent methods only (GET, HEAD, OPTIONS, PUT, DELETE; never POST or
+PATCH) *and* only while no attempt has taken up the request body: the inbound body stream is
+one-shot, so once an attempt has subscribed it no retry follows, even when none of its bytes reached
+the upstream. A request without a body never subscribes it. The guard's fixed 30 s
+timeout bounds each attempt, so a retried attempt gets its own 30 s.
+
+NOTE: today only `retry.enabled` takes effect. `connect_timeout_ms`, `read_timeout_ms`,
+`retry.max_attempts` and `retry.idempotent_only` are bound and validated but act on nothing: the
+guard uses fixed values.
+link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]
+records them as undecided.
+
+A route declares *no* circuit-breaker settings. The breaker in front of an upstream is the
+gateway's fixed policy
+(link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
+it judges a rolling window of the last 20 calls, opens when half or more of them failed, stays open
+for 5 seconds -- the `Retry-After` of the `503` it answers meanwhile -- and closes after two
+successful trial calls. Its state is per upstream target on each gateway node. An `upstream` block
+that declares `circuit_breaker` is refused at boot as an unknown key
+(see link:../architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
+written literally here -- only the alias-relative `path`.
+
+An `upstream` block belongs to a *proxy* route. A route declaring a `redirect` block must not declare
+one -- the pair fails the boot, since a redirect contacts no upstream and the settings would be
+silently ignored.
+
+[[_asset]]
+== `asset`
+
+The static-content terminal action
+(link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014]); how to author it is in
+link:../user/endpoint-routes.adoc#_asset_terminal_action[Endpoint Routes -- Asset terminal action]. A
+route declaring an `asset` block rides a `type: asset` anchor.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `source`
+| *Mandatory.* `directory` (a local directory / volume mount) or `upstream` (a secondary origin
+  reached through the SSRF-controlled data plane).
+
+| `directory`
+| The directory root for `source: directory`; required by that source. The request sub-path is
+  canonicalized and confined under the root; any escape is a `404`.
+
+| `upstream`
+| The topology alias of the secondary origin for `source: upstream`; required by that source and
+  must resolve at boot.
+
+| `index`
+| *Optional, `source: directory` only.* A file name answering a *directory address* -- the bare
+  route prefix, a sub-path ending in `/`, or a sub-path naming an existing directory -- with that file
+  from the addressed directory. A directory without the file is a `404`; without `index`, every
+  directory address is a `404`.
+
+| `fallback`
+| *Optional, `source: directory` only.* A file name answering a request whose target does not exist
+  *and whose last path segment has no `.` extension*, with that file from the directory *root* -- the
+  single-page-application fallback. A missing path *with* an extension (`/app.js`) stays a `404`.
+|===
+
+`index` and `fallback` are served through the same confinement chain as any other asset, and each
+must be a *single file-name segment* -- no `/`, no `\`, no `..`, no control characters, not empty.
+Either key on a `source: upstream` block, or a value that is not a single segment, fails the boot.
+
+[[_redirect]]
+== `redirect`
+
+The redirect terminal action
+(link:../adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]): the gateway
+answers the request itself with `status` and a `Location` header and contacts no upstream. How to
+author it -- status choice, the context-path convention and the review table -- is in
+link:../user/endpoint-routes.adoc#_redirect_terminal_action[Endpoint Routes -- Redirect terminal action].
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `location`
+| *Mandatory.* The `Location` value, written *verbatim*: never prefixed with the application context
+  path and carrying no request placeholder. Without `allow_external` it must be a gateway path
+  starting with exactly one `/`, with no backslash, no percent-encoded `/` or `\`, no dot-segment
+  (`.`, `..` or their `%2E` spellings), and only printable ASCII without whitespace. A violation fails
+  the boot, echoing the value in escaped form.
+
+| `status`
+| *Mandatory*, one of `301`, `302`, `303`, `307`, `308`. There is no default because `301` and `308`
+  are cached by browsers, so permanence must be an explicit choice. Any other value fails the boot at
+  schema load.
+
+| `keep_query`
+| *Boolean, default `false`.* When `true`, the raw inbound query string is appended to `location`,
+  joined with `?` -- or with `&` when `location` already carries a query. A `location` containing `#`
+  together with `keep_query: true` fails the boot.
+
+| `allow_external`
+| *Boolean, default `false`.* When `true`, `location` may additionally be an absolute `http` or
+  `https` URI with a non-empty host and no user-info; every other scheme stays refused. Opting in
+  emits `WARN ApiSheriff-128` at boot, naming the route id but never the location.
+|===
+
+A route declares *exactly one* terminal action: a `redirect` block together with an `asset` block or
+an `upstream` block fails the boot. A redirect is admitted under every anchor `type` and on
+unanchored routes, but only on `protocol: http` -- a `grpc`, `websocket` or `graphql` route declaring
+one fails the boot. The redirect is answered *after* authentication, so under an authenticated anchor
+an unauthenticated caller is rejected before the location is disclosed; the route's `forward` block
+is not consulted.
+
+[[_upstream_defaults]]
+== `upstream_defaults`
+
+Two upstream behaviour toggles -- upstream *retry* and HTTP *304 Not Modified* handling --
+declarable at two scopes, `gateway.yaml` (global) and per `endpoint`, and overridable per route.
+Each route's effective value is materialized *once* at boot into the route table, so the request
+pipeline reads a single resolved `true`/`false` and never re-derives the inheritance.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `retry.enabled`
+| Whether idempotent upstream calls for the route are retried. This toggle only *gates* retry;
+  the retry *policy* is fixed in the gateway -- two retries 100 ms apart, idempotent methods only,
+  and only while no attempt has taken up the one-shot request body, even when none of its bytes
+  reached the upstream. The route's
+  `upstream.retry.max_attempts` and `upstream.retry.idempotent_only` are read by nothing --
+  see link:#_upstream[`upstream`].
+
+| `not_modified.enabled`
+| End-to-end conditional-request *pass-through* for the route
+  (link:../adr/0008-data-plane-transport.adoc[ADR-0008],
+  link:../adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+  *Enabled* (default): the two `304` validators (`If-None-Match`, `If-Modified-Since`) are
+  admitted by the gateway-understood protocol set -- they cross without appearing in any
+  `forward` list -- and upstream `304` responses plus the validator response headers (`ETag`,
+  `Last-Modified`) relay untouched. *Disabled*: the response half strips `ETag` /
+  `Last-Modified`, and the request half withholds those two validators on `GET` and `HEAD`,
+  deliberately forcing full `200` exchanges -- for upstreams whose ETags are
+  inconsistent across nodes or leak inode/version detail. Gating both halves on one flag is what
+  stops the gateway asking a question whose answer it then discards. In *neither* state does the
+  gateway cache response bodies or answer `304` from a cache -- gateway-side response caching is
+  rejected by design (ADR-0008).
+
+  *On `GET` and `HEAD` the `304` validators are withheld under every forward mode.* With the
+  toggle disabled, the gateway removes `If-None-Match` and `If-Modified-Since` -- in every
+  `-`/`_` spelling -- from the client's headers of a `GET` or `HEAD` after the mode copy, so
+  neither reaches the upstream -- not under forward-all, not under a negative-list that does not
+  name it, and not under a positive-list that names it in `headers_allow`. No `headers_deny`
+  entry is needed to withhold them. On every other method a `304` cannot answer the request, so
+  the two validators cross in either state: `If-None-Match` is a write precondition answered
+  `412`, so a create-only `PUT` with `If-None-Match: *` keeps its guard, and the origin ignores
+  `If-Modified-Since`, which is defined only for `GET` and `HEAD`. A `set_headers` entry naming a
+  validator is operator configuration and still crosses. `If-Match`, `If-Unmodified-Since` and
+  `If-Range` are not governed by the toggle on any method: they cross in either state, so a
+  conditional write keeps its `412` protection and `If-Range` stays paired with `Range`.
+|===
+
+*Resolution.* The `upstream_defaults` block itself follows the rule every policy block follows (see
+link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]): the endpoint's block when
+the endpoint declares one, replacing the global block wholesale for that endpoint's routes, else the
+global `gateway.upstream_defaults` block, else the built-in default -- both toggles *enabled*. There
+is no anchor scope: upstream behaviour belongs to the upstream, which the endpoint owns. On top of
+the resolved block, a route's own `upstream.retry.enabled` / `upstream.not_modified.enabled`
+overrides the one toggle it declares, field by field -- a
+link:../user/anchors.adoc#_policy_block_field_level_exceptions[documented exception] to whole-block
+replacement, so that a route setting one toggle keeps the other at the block's value.
+
+Both `upstream_defaults` blocks (global and per endpoint) share one shape; an omitted toggle
+defaults to `true`:
+
+[source,yaml]
+----
+upstream_defaults:
+  retry: { enabled: true }
+  not_modified: { enabled: false }
+----
+
+[[_asset_defaults]]
+== `asset_defaults`
+
+The operator's *add-only* extension of the gateway's built-in asset content-type map, declarable
+only at the global scope (`gateway.yaml`). It solves one problem: an asset whose extension the
+gateway does not know is served as `application/octet-stream`, which browsers download rather than
+render. Declaring the extension here gives it the right `Content-Type`.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `content_types`
+| A map of *lowercase extension* (without the dot) to the `Content-Type` served for it. Keys are
+  constrained to lowercase alphanumerics by the schema and lowercased on binding, so a key's case
+  can never decide whether a mapping applies. Values are bounded twice: the schema caps them at 255
+  characters and refuses anything that is not a control-character-free `type/subtype…` shape, and the
+  configuration validator then enforces the precise RFC 9110 media-type grammar, naming the offending
+  extension and value. Both bounds *fail the boot* -- the value is served verbatim as the asset's
+  `Content-Type` response header, so a CR/LF or non-media-type value would be a response-header
+  injection vector. Omitted (or an empty map) means the built-in map governs alone.
+|===
+
+[source,yaml]
+----
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
+    avif: image/avif
+----
+
+*Add-only -- and the built-ins are refused, not ignored.* The gateway's own 21-entry extension map
+(`html`, `htm`, `css`, `js`, `mjs`, `json`, `map`, `xml`, `txt`, `svg`, `png`, `jpg`, `jpeg`,
+`gif`, `webp`, `ico`, `woff`, `woff2`, `ttf`, `pdf`, `wasm`) is consulted *first* and always wins.
+An `asset_defaults.content_types` entry naming any of those extensions *fails the boot*, with a
+message naming the offending extension; it collects with every other violation in the same
+single-pass report rather than failing on the first. An extension *neither* map carries still falls
+back to `application/octet-stream`.
+
+The refusal is deliberate, and it is a *security* bound rather than an ergonomic one. The built-in
+map is precisely what makes an asset's `Content-Type` gateway-governed instead of source-dictated.
+Permitting an override would hand an operator (or anyone who can edit the mounted descriptor) a
+*stored-XSS lever* on a security gateway: remapping `svg` away from `image/svg+xml`, or pointing
+any built-in extension at `text/html`, turns a file served from a directory mount or a secondary
+origin into a script-executing document on the gateway's own origin. Add-only removes that lever
+while still solving the stated problem. Refusing at boot -- rather than silently ignoring the entry
+at request time -- is what makes the bound *visible*: the operator learns the mapping did not take
+effect instead of shipping a descriptor that reads as though it did.
+
+[[_allowed_methods]]
+== `allowed_methods`
+
+A *positive allowlist of HTTP verbs*, declarable at three scopes -- `gateway.yaml` (global),
+per link:../user/anchors.adoc#_anchors[anchor], and per `endpoint` -- with *explicit no-inheritance semantics*.
+It is a coarse, defence-in-depth verb gate that sits *above* the per-route `match.methods`
+matcher: `match.methods` selects which route serves a verb; `allowed_methods` decides whether
+the gateway will serve the verb *at all* for that endpoint.
+
+*Resolution.* Each route's *effective* `allowed_methods` is materialized once at boot by the rule
+every policy block follows (see link:../user/anchors.adoc#_policy_block_resolution[Policy-block
+resolution]): the nearest declared list -- the endpoint's, else the anchor's, else the global
+`gateway.allowed_methods` -- replaces every broader list wholesale (no merge, no union, no
+intersection), an empty list counts as not declared, and with none declared the standard set
+`{GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS}` applies. An endpoint list replacing an anchor list
+is announced by the `ApiSheriff-101` boot WARN.
+
+Because the endpoint list *replaces* rather than narrows, an endpoint may permit a verb the
+global default omits (global `[GET, POST, PUT]`, endpoint `[PUT, DELETE, HEAD]` -> that
+endpoint serves `DELETE`/`HEAD` and *not* `GET`/`POST`; other endpoints keep the global list).
+
+*Runtime.* After route selection, a request whose method is not in the matched route's
+effective `allowed_methods` is rejected with `405 Method Not Allowed` and an `Allow` header
+listing the effective set (`METHOD_NOT_ALLOWED`, a `ROUTING` event); the upstream is never called.
+The verb gate runs before authentication, so that `405` is answered as the unrouted `404`, without
+`Allow`, to an untrusted caller while `security_defaults.uniform_not_found` is on; the true event
+stays in `sheriff_errors_total{event}` (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). `TRACE` and
+`CONNECT` are *never* permitted -- they are not proxyable through the data plane and cannot
+appear in any `allowed_methods` list (listing either fails the boot).
+
+*Boot validation.* The check applies only to *explicitly declared* `match.methods`: every method
+*listed* in a route's `match.methods` must be a member of that route's effective
+`allowed_methods` -- a route that matches a verb its endpoint forbids is a contradiction and
+*fails the boot* (fail-fast, rather than a route that can never fire). A route that *omits*
+`match.methods` (so it would match all methods) does *not* fail the boot against a narrower
+`allowed_methods`; it simply serves the effective set and the verb gate rejects the rest at runtime
+(`405`, or the uniform `404` above). So `allowed_methods` is the way to blanket-restrict verbs across an endpoint's
+routes without restating `match.methods` on each.
+
+[[_forwarded_headers]]
+== `forwarded`
+
+Forwarded-header handling is *delivered by `cui-http`'s `de.cuioss.http.forwarded` package*
+(`ForwardedHeaderResolver` -> immutable `ResolvedForwarding`, configured by a
+`ForwardedResolverConfig`); the gateway wires configuration in and consumes the resolved
+result -- it implements no parsing of its own. The authoritative behaviour specification is
+`cui-http/doc/forwarded-header-resolution.adoc`; the design rationale (why `X-Forwarded-*` is
+the sane emission default) is link:../adr/0003-forwarded-headers.adoc[ADR-0003].
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `trusted_proxies`
+| *Required whenever a `forwarded` block is present* (the `forwarded` block itself is optional) --
+  a CIDR allowlist (IPv4 + IPv6), mapped to `ForwardedResolverConfig.trustedProxies`.
+  It drives the *client-IP trust walk*: the `X-Forwarded-For` (or RFC 7239 `for`) chain is
+  walked right-to-left, skipping trusted hops; the first non-trusted, well-formed address is
+  the client. An *empty* list means no client IP is ever resolved from headers -- the TCP peer
+  is the client (fail-safe). The gateway additionally consults forwarding headers only when
+  the *immediate TCP peer* is in this list -- a *gateway-side* gate: the transport-agnostic
+  resolver consumes only a header accessor and never sees the peer, so this check is API
+  Sheriff code, and without it a direct client's spoofed `X-Forwarded-For` would be honored.
+  Never trust-all (`0.0.0.0/0` or its IPv6 twin `::/0`) -- the canonical footgun -- and keep the list as *narrow* as
+  possible (the exact proxy addresses, not a whole RFC 1918 block): every host inside a listed range
+  that can reach the gateway directly can spoof forwarding headers. Each listed proxy must
+  also *manage* the `X-Forwarded-*` family (append or strip) -- see the mixed-family
+  requirement in link:../adr/0003-forwarded-headers.adoc[ADR-0003].
+
+  *A broad entry warns at boot.* An entry shorter than `/16` (IPv4) or `/48` (IPv6) emits
+  `ApiSheriff-102` during startup validation -- a WARN, not a boot failure. The thresholds mark
+  the point at which one entry spans more than a single operator-provisioned network: `/16` is
+  the widest single IPv4 network in routine use (an AWS VPC's maximum, Docker's default bridge
+  `172.17.0.0/16`, the RFC 1918 `192.168.0.0/16` block), and `/48` is the canonical IPv6 site
+  allocation. So `172.16.0.0/12` and `10.0.0.0/8` warn, and `2001:db8::/32` warns.
+
+  *What is deliberately left un-warned*: an IPv4 `/16` (65,536 addresses) and an IPv6 `/48`.
+  Both are still real exposure -- every host inside them that can reach the gateway directly
+  can spoof forwarding headers -- and they are un-warned because they are *legible* exposures
+  an operator chose, not because they are safe. Warning on a routine, correct configuration is
+  how a guard gets trained into background noise. Narrow the list regardless of whether it warns.
+
+  *A range supplied through an environment variable gets exactly the same treatment.* The
+  validator sees the value after `${VAR}` substitution, where a substituted range and a literal one
+  are the same string, so there is no stricter rule for it: the same `ApiSheriff-102` warning
+  beyond `/16` / `/48`, the same trust-all refusal, and the same un-warned `/16` / `/48` residual. A
+  wider refusal threshold applied to every range would refuse legitimate pod-network trust -- a
+  `10.0.0.0/8` pod network is a correct configuration where it is the network the proxy tier runs
+  on -- while stopping nothing the warning and the trust-all refusal do not already surface. What
+  differs is review: a range that arrives through the environment passed through no change to
+  `gateway.yaml` anyone approved, so the boot warning is the only signal it ever gets. Read the boot
+  log of an environment-supplied deployment for that reason. The principle behind both thresholds,
+  the residual and this posture are recorded in
+  link:../adr/0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044].
+
+  *The whole list can be supplied by one `${VAR}`.* Because this field declares an `array`, a
+  placeholder written as its value is typed from that destination and split on `,`, with each
+  element stripped -- so `trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"` with
+  `SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32` binds the two-element list. This is the
+  deployment-bound case the mechanism exists for: the trusted set genuinely differs per
+  environment while the mounted document does not. Use the *bare* `${VAR}` form. An *empty
+  resolution* -- an unset-and-defaulted `${VAR:-}`, or a variable resolving to an empty value or
+  carrying an empty comma-separated element -- is *refused at the substitution site* and fails
+  the boot, naming this pointer and never echoing the resolved value. That refusal is deliberate
+  and cannot be delegated to validation: this field declares no `minItems`, so an explicit `[]`
+  is legal and a validator reading the bound list cannot tell a list you wrote empty from one a
+  variable emptied. Writing `trusted_proxies: []` yourself therefore remains valid and still
+  means *no proxy is trusted*.
+
+| `trust_scheme_host`
+| Maps to `ForwardedResolverConfig.trustAll`: honor the *sanitized* forwarded scheme / host /
+  port / context-path prefix. Off by default (secure default: nothing is honored); enable only
+  when the gateway sits fully behind trusted proxies. cui-http's finer-grained
+  `allowedContextPaths` (honor specific prefixes without `trustAll`) is deliberately not
+  exposed initially.
+
+| `emit`
+| Canonical output: `x-forwarded` (default) or `both`. `x-forwarded` emits the
+  `ResolvedForwarding` serialization `toXForwardedHeaders()`
+  (`X-Forwarded-Proto/-Host/-Port/-Prefix/-For`, present fields only); `both` additionally
+  emits `toForwardedHeader()` -- a single strictly encoded RFC 7239 `Forwarded` value. There is
+  deliberately no `Forwarded`-only mode: XFF-only downstreams would silently lose client
+  information (link:../adr/0003-forwarded-headers.adoc[ADR-0003]).
+|===
+
+*Inbound header family and precedence.* The resolver understands `X-Forwarded-Proto/-Host/
+-Port/-Prefix/-For`, RFC 7239 `Forwarded` (`proto`, `host`, `for` -- the RFC defines no prefix
+directive), and the NiFi-proprietary `X-ProxyScheme/-Host/-Port/-ContextPath`. Precedence is
+*per field*, first present non-blank value wins:
+
+[cols="1,4"]
+|===
+| Field | Precedence
+
+| scheme      | `X-Forwarded-Proto` -> `X-ProxyScheme` -> RFC 7239 `proto`
+| host        | `X-Forwarded-Host` -> `X-ProxyHost` -> RFC 7239 `host`
+| port        | `X-Forwarded-Port` -> `X-ProxyPort` -> port carried by the resolved host
+| prefix      | `X-ProxyContextPath` -> `X-Forwarded-Prefix` (RFC 7239: none)
+| client IP   | `X-Forwarded-For` chain -> RFC 7239 `for` chain
+|===
+
+*The `prefix` field is not this gateway's context path.* It is an *inbound* hint a trusted proxy
+sends about where it published the gateway, honored only under `trust_scheme_host` and used only when
+composing forwarded values -- it never moves where this gateway itself serves; the gateway's own
+application and management context paths (`/` and `/q/...` by default) are build-time and are moved
+only by rebuilding, see link:../user/context-path.adoc[The Context Path].
+
+*Sanitization (fail-safe, never throws).* Every honored value passes the `cui-http`
+header-value pipeline (CR/LF, NUL, control characters, over-length, suspicious patterns; the
+pipeline is configured from the *gateway-wide* `security_defaults` profile -- forwarded-header
+handling is gateway-wide, so no per-route `profile`, `minimal` included, changes it), plus fixed
+fail-secure field guards that no profile can relax: scheme must be `http`/`https`, port `1..65535`, host
+must carry no path separators or whitespace, and the context-path rejects protocol-relative
+(`//host`) and backslash values on the *raw* value, before the sanitization pipeline -- whose
+normalization would otherwise collapse `//host` to `/host` and mask the attack (honoring
+`//attacker.com` would compose into a protocol-relative URL and exfiltrate the request).
+Rejected values are *dropped, never honored*: pipeline sanitization failures increment the
+shared `SecurityEventCounter` feeding the gateway metrics, the raw-value guards log
+`HTTP-120`..`HTTP-123` WARNs, and plain trust misses (e.g. a forwarded host with
+`trust_scheme_host: false`) are simply not honored, without noise.
+
+*Emission is regeneration, never propagation.* The gateway does not append to or forward
+inbound chains: it emits freshly generated headers from the *resolved, sanitized* facts --
+`X-Forwarded-For` carries exactly the one resolved client IP. Any sabotage payload smuggled
+into inbound headers therefore dies at the gateway instead of reaching the upstream. Because
+emission carries *present fields only*, what appears depends on the trust config: under the
+secure default (`trust_scheme_host: false`) only the client IP resolves, so only
+`X-Forwarded-For` / `Forwarded: for=...` are emitted. The example below assumes
+`trust_scheme_host: true` and a trusted proxy that sent `X-Forwarded-Host: gw.example.com` /
+`X-Forwarded-Proto: https` for client `192.0.2.60`, with `emit: both`:
+
+[source,text]
+----
+X-Forwarded-For: 192.0.2.60
+X-Forwarded-Host: gw.example.com
+X-Forwarded-Proto: https
+Forwarded: for=192.0.2.60;host=gw.example.com;proto=https
+----
+
+RFC 7239 encoding is strict (IPv6 client addresses bracketed *and* quoted; other values quoted
+only when not a valid token). Two asymmetries are inherent: `Forwarded` cannot carry the
+context-path prefix (the RFC defines no directive -- the prefix travels only as
+`X-Forwarded-Prefix`), and no `by=` parameter is emitted at all, which avoids the internal
+topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation the RFC suggests.

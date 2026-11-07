@@ -1,0 +1,1676 @@
+= API Sheriff -- Configuration Reference: Authentication and OIDC
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+Route authentication (`auth`), endpoint scopes, offline token validation (`token_validation`) and the BFF confidential client (`oidc`). Operator setup lives in link:../user/bff-session.adoc[Server-Session BFF] and link:../user/bff-cookie.adoc[Cookie-Based BFF].
+
+Part of the link:../configuration.adoc[Configuration Model]; the annotated link:../configuration.adoc#_gateway_configuration_gateway_yaml[`gateway.yaml` skeleton] shows every block in place.
+
+== `auth`
+
+Whether authentication is required is defined *per endpoint file*: `endpoint.auth` is
+mandatory (unless the endpoint's anchor declares an `auth` block -- see
+link:../user/anchors.adoc#_anchors[Anchors]) and is the default posture for every route in the file. A route-level `auth` block
+replaces the endpoint default wholesale for that route (no field merging). "Effective auth"
+below means the nearest declared block -- the route's own, else the endpoint's, else the anchor's
+(see link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]); a route none of the
+three supplies one for fails the boot. The block carries three keys:
+`require`, `token_relay` (see <<_auth_token_relay>>) and `session_fallback` (see
+<<_auth_session_fallback>>). Scopes are *not* part of it: they are the
+endpoint-level, additive link:#_endpoint_scopes[`endpoint.scopes`], so a route-level `auth` override
+never drops them. Weakening overrides (a lower `require`) are legal -- a health route under a
+bearer endpoint is the normal case -- but every one is called out in the boot log, so weakening is
+always an explicit, audited choice.
+
+[cols="1,3"]
+|===
+| Value | Behaviour
+
+| `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block, and without an anchor-provided one, fails the boot (see link:../user/endpoint-routes.adoc#_defaults_for_omitted_blocks[Defaults for omitted blocks]).
+| `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; then check the route's needed scope set, `oidc.scopes ∪ endpoint.scopes` (`endpoint.scopes` alone without an `oidc` block). A missing or invalid token is `401` with `WWW-Authenticate: Bearer`, answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found` is on; the true event (`TOKEN_MISSING` / `TOKEN_INVALID`) stays in `sheriff_errors_total{event}` (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). A valid token missing any member is answered `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the missing scopes, and the upstream is never contacted; an empty needed set skips the check. Because the set includes `oidc.scopes`, a BFF-mode gateway rejects a bearer token lacking them -- a `client_credentials` token among them. link:../variants/01-base-gateway.adoc[Variant 1].
+| `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. A session route *enforces* its needed scope set, `oidc.scopes ∪ endpoint.scopes`: it is what a login started on the route requests from the IdP, and every request's live session is compared against it before anything is relayed. A missing scope inside the session's granted set is obtained by a refresh; any other missing scope redirects a navigation into a widening of the live session and answers every other request `403` `application/problem+json` with the extension members `missing_scopes` and, when link:#_oidc[`oidc.step_up.path`] is configured, `step_up_url` -- with no `WWW-Authenticate` header. A session short of a needed scope is never relayed (see link:../user/bff-session.adoc#scope-enforcement[When a session lacks a scope the route needs]). With `token_relay: false` the session is still required and still scope-checked, but no token is relayed.
+|===
+
+[[_auth_token_relay]]
+=== `auth.token_relay`
+
+[cols="1,3"]
+|===
+| Aspect | Contract
+
+| Type / default | Boolean, default `true`.
+| Scope | Part of the `auth` block, so it is declared at route, endpoint or anchor level and resolved with the block's wholesale cascade (route -> endpoint -> anchor); never merged on its own.
+| Effect | Acts on `require: session` routes and on the SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route. `true` relays the session's access token upstream as `Authorization: Bearer`. `false` keeps the session required -- missing-session redirect/`401`, refresh, cookie clearing and the enforcement of the route's needed scope set (refresh, widening or `403`) all unchanged -- but suppresses only the session-mediated `Authorization`: the gateway relays no session token. It does not filter operator configuration, so a static `Authorization` the route itself declares in `forward.set_headers` still crosses upstream. It never governs a BEARER branch: the BEARER branch of a `session_fallback` route always forwards the validated client token. No effect on plain `require: bearer` routes or on `none` routes.
+| Boot rule | A route whose effective `token_relay` is `false` while its effective `forward.headers_allow` -- the route's own `forward` block, else its endpoint's -- names `Authorization` (any letter case) is refused (`CONFIG_INVALID`): that list would re-admit the browser's own `Authorization` header to an origin the route promises no token.
+| Upstream contract | The relayed access token is sender-constrained: it carries a `cnf.jkt` claim naming the gateway's DPoP proof key (see link:#_oidc_sender_constraint[The sender constraint and the token-binding check]). The gateway relays it as `Authorization: Bearer` and sends no DPoP proof with it. An upstream *must not check `cnf`*: a `cnf`-blind upstream accepts the token unchanged, and an upstream that enforces DPoP would have to reject it for want of a proof. Nothing downstream of the identity provider checks a proof when the token is used, so the token is as usable on the upstream hop as a bearer token is; the control on that hop is transport security. `token_relay: false` is the per-route way to relay no token at all.
+|===
+
+See link:../user/bff-session.adoc#token-relay[Server-Session BFF -- Enforce login without handing the origin a token].
+
+[[_auth_session_fallback]]
+=== `auth.session_fallback`
+
+One `require: bearer` route that also serves BFF browsers. With `session_fallback: true` the route
+carries two authentication branches, and each request takes exactly one of them, chosen from a
+single input: whether the request carries an `Authorization` header.
+
+[cols="1,3"]
+|===
+| Aspect | Contract
+
+| Type / default | Boolean, default `false`.
+| Scope | Part of the `auth` block, so it is declared at route, endpoint or anchor level and resolved with the block's wholesale cascade (route -> endpoint -> anchor); never merged on its own. A route-level `auth` block that omits the key resolves to `false`, even under an anchor or endpoint that declares it.
+| Applies to | `require: bearer` only. On every route without the key -- every plain `require: bearer` route included -- nothing changes: the inbound `Authorization` is still withheld unless `forward.headers_allow` names it, and no mediated bearer is set.
+| Preconditions | The route is held to *both* backing blocks: its bearer posture needs a link:#_token_validation[`token_validation`] block with at least one issuer, and its session branch needs an link:#_oidc[`oidc`] block, exactly as a `require: session` route does.
+| Boot rules | Two refusals, each reported through `ApiSheriff-200` with a fixed detail text that names the owning anchor, endpoint or route and never echoes a configured value (see link:../LogMessages.adoc[Log Messages]): `session_fallback: true` on a posture other than `require: bearer` (`none` and `session` have no bearer posture to split), and `session_fallback: true` on a gateway that declares no `oidc` block. A block violating both yields both. Each declared block is judged where it is declared, so an anchor default that no route inherits is still refused. The anchor floor rule is unchanged: it compares `require` only, so a `require: bearer, session_fallback: true` route passes under a `session` or `bearer` anchor floor.
+| Boot log | The per-route posture line `ApiSheriff-3` reports the resolved flag for every route, e.g. `auth.require='bearer', auth.session_fallback=true`, so the second authentication branch is visible at boot.
+| Metric | `sheriff_auth_branch_total{route,branch}` counts the selected branch (`bearer` or `session`) once per request, on `session_fallback` routes only (see link:../architecture/observability-and-errors.adoc#_metrics[Metrics]).
+|===
+
+*The branch table.* The header's *presence* decides -- not its scheme, not its value:
+
+[cols="2,3"]
+|===
+| Request | Behaviour
+
+| `Authorization` present (any scheme, any value, an empty value included) -- *BEARER branch*
+| Exactly a plain `require: bearer` route: the token is validated offline, a token missing a member of the route's needed scope set is `403 insufficient_scope`, and a missing, malformed, non-`Bearer` or empty credential is `401` with `WWW-Authenticate: Bearer` -- answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found` is on, the true event staying in `sheriff_errors_total{event}` (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). No session is looked up, the session branch's fixed CSRF defence does not run, the gateway writes no session `Set-Cookie` and no login redirect is ever issued -- a live session cookie never rescues a failed bearer. An upstream `Set-Cookie` is still relayed when the route's `cookies` policy admits the cookie it names, as on every route (see xref:routing-and-forwarding.adoc#_cookies[`cookies`]). The route's cookie same-origin check is not a session check and still applies, as on every route: an unsafe request carrying a cookie the route's `cookies` policy forwards is checked before authentication (see xref:routing-and-forwarding.adoc#_cookies_same_origin_check[The same-origin check]). An admitted token is forwarded upstream as exactly the validated client token, through the same mediated-bearer seam the session branch uses; no `headers_allow` entry is needed for it, and the browser `Cookie` crosses only as the route's `cookies` policy admits it, as on every route (see xref:routing-and-forwarding.adoc#_never_forward_set[The never-forward set]).
+| `Authorization` absent -- *SESSION branch*
+| Exactly a `require: session` route: the fixed CSRF defence on unsafe methods, a live session mediates its token upstream when the effective `token_relay` is `true` (with `false` the session is still required but no session token is relayed), an unauthenticated navigation is redirected into the auth-code flow and any other unauthenticated request is `401` `application/problem+json`. A login started on the route requests the route's needed scope set (see <<_endpoint_scopes>>), and -- as on every session route -- the branch enforces that set on every request: a live session whose token lacks a member is not relayed. A missing scope inside the session's granted set is obtained by a refresh; any other missing scope redirects a navigation into a widening of the live session and answers every other request `403` `application/problem+json` naming `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`. Both branches therefore hold a caller to the same set, each with its own answer: the BEARER branch's `403` carries `WWW-Authenticate: Bearer error="insufficient_scope"`, the SESSION branch's carries no `WWW-Authenticate`. `token_relay` governs whether this branch relays the token, not whether it checks the scopes.
+|===
+
+Selection never reads the credential, so no value a client sends -- a malformed token, a `Basic`
+credential, an empty header -- can move a request onto the session branch; the only way onto it
+is to send no `Authorization` at all, which is what a browser does. See
+link:../user/bff-session.adoc#session-fallback[Server-Session BFF -- Serving API clients and browsers on one route]
+and
+link:../adr/0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055].
+
+Routes with different `require` values may coexist in one deployment; the canonical statement
+of the variants-are-route-postures rule is in link:../variants/README.adoc[Variants].
+
+[[_endpoint_scopes]]
+== `endpoint.scopes`
+
+[cols="1,3"]
+|===
+| Aspect | Contract
+
+| Type / default | Array of strings on the `endpoint` block, *outside* `auth`. Default empty.
+| Syntax | Every entry -- here and in `oidc.scopes` -- must be an RFC 6749 §3.3 `scope-token`: one or more printable ASCII characters (`0x21`-`0x7E`) other than the double quote and the backslash, so no space, control character or non-ASCII. The bundled schemas carry the pattern, so a malformed name (`orders read`, say) is refused at load with a pointer to the entry.
+| Cascade | None. It is endpoint-level only and *additive*: every route of the endpoint needs `needed = oidc.scopes ∪ endpoint.scopes`, materialized once at boot (`endpoint.scopes` alone when the gateway declares no `oidc` block). An endpoint can add scopes but never remove an `oidc.scopes` member, and a route-level `auth` override does not affect the set.
+| `require: bearer` | The validated token must carry every member of `needed`; a shortfall is `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` (the missing names only, sorted, taken from boot config -- never from the token). An empty `needed` skips the check.
+| `require: session` | `needed` is the `scope` a login started on the route requests (and, through `oidc.login.path`, a login whose `returnUrl` lands on the route), and the set every session request is held to. The session's active scope set -- the scopes of its current access token -- must carry every member of `needed`, whatever `token_relay` says. A shortfall inside the session's granted set -- the scopes the IdP is known to grant it -- costs a refresh requesting the active set plus the missing scopes; a scope that refresh asks for and the IdP does not return leaves the granted set. Any other shortfall widens the live session for a navigation and answers every other request `403` `application/problem+json` with `missing_scopes` (the missing names only, sorted, taken from boot config -- never from the token) and, when `oidc.step_up.path` is configured, `step_up_url`. No `WWW-Authenticate` header is sent. An empty `needed` is always satisfied. The SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route is held to the same rule. See link:../user/bff-session.adoc#scope-enforcement[When a session lacks a scope the route needs].
+| Boot rule | An enabled endpoint declaring a non-empty `scopes` whose every route resolves `require: none` is refused (`CONFIG_INVALID`) -- the scopes could never act.
+|===
+
+The `auth` block declares no scope list; a scope key inside `auth` is refused by the schema. See
+link:../user/endpoint-routes.adoc#_endpoint_scopes[Endpoint scopes] and
+link:../user/bff-session.adoc#scopes[Server-Session BFF -- Scopes].
+
+[[_token_validation]]
+== `token_validation`
+
+Configures offline bearer validation for `require: bearer` routes; it materializes the
+`token-sheriff-validation` `IssuerConfig`/`TokenValidator` wiring described in
+link:../variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effective* auth is
+`require: bearer`.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `issuers[].name`
+| Unique label, used in logs and metrics.
+
+| `issuers[].issuer`
+| The expected `iss` claim (maps to `IssuerConfig.issuerIdentifier`). Multiple issuers are
+  supported; the validator selects by the token's `iss`.
+
+| `issuers[].audience`
+| The expected `aud` claim (maps to `IssuerConfig.expectedAudience`). *The `aud` claim is
+  required once an audience is configured*: `IssuerConfig.azpAudienceFallbackEnabled` is `false`,
+  so a matching `azp` does *not* substitute for a missing `aud` -- an `azp`-only token is
+  rejected. If your IdP issues `azp`-only tokens, either configure it to emit `aud`, or omit
+  the `audience` key entirely -- omitting it disables audience validation wholesale.
+
+| `issuers[].jwks`
+| Key material for signature verification: `source: http` with a `url` (cached, periodically
+  refreshed), or `source: file` -- the latter for air-gapped deployments.
+
+| `issuers[].jwks.allowed_egress_hosts`
+| SSRF egress allowance for `source: http`, applied on the initial JWKS fetch *and* every
+  background refresh. The JWKS client refuses a JWKS URL resolving to a loopback, link-local,
+  site-local, any-local, multicast, or unique-local address, except for the hosts this allowance
+  exempts. The field has two forms:
+
+  * *Absent or empty -- the allowance is derived.* The host of the issuer's own `jwks.url` is the
+    single exempted host, spelled as the URL spells it with any port dropped
+    (`https://keycloak:8443/...` exempts `keycloak`). The issuer's key endpoint is therefore
+    reachable wherever it resolves, a private network included, with nothing declared. A `jwks.url`
+    that names no host (`file:/x`, `https:///path`) gives nothing to derive from and *fails the
+    boot* with `CONFIG_INVALID`; the message names the issuer and never echoes the URL.
+  * *Non-empty -- the list is authoritative.* Each entry exempts exactly the one host it names --
+    host-exact, with no wildcard or suffix form -- and the `jwks.url` host is *never* merged into
+    it. A list that does not name the `jwks.url` host keeps that host refused whenever it resolves
+    to a private address. Declaring the list is how an operator pins the allowance: a later edit of
+    `jwks.url` to another host then fails closed instead of silently moving the exemption with it.
+    A blank or whitespace-only entry and a `host:port` entry are *refused at boot*, naming the
+    offending entry (a bare IPv6 literal such as `fd00::1` is admitted).
+
+  *The trade-off of the derived form.* It exempts the `jwks.url` host from the private-address
+  check in *every* deployment, including one whose IdP is public: a public IdP hostname that
+  resolves to an internal address -- through a DNS change, a split-horizon resolver or a poisoned
+  cache -- was refused before this default existed and is now dialled. The allowance widens
+  nothing else. Certificate trust is unchanged: chain validation and hostname verification still
+  apply to the dialled host, so an endpoint presenting an untrusted or name-mismatched certificate
+  is still refused. No dedicated key restores the no-exemption posture for an `http` issuer; an
+  operator who wants a narrower allowance declares an explicit list, which is authoritative. See
+  link:../security-threat-model.adoc#gw-05[GW-05],
+  link:../security-threat-model.adoc#bff-07[BFF-07] and the
+  link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc#_derived_egress_allowance[ADR-0011].
+
+| `issuers[].jwks.tls_profile`
+| Name of the logical *trust profile* used to verify the IdP's server certificate when fetching
+  the JWKS over `source: http`. Omit it for an IdP presenting a publicly-trusted certificate --
+  the JWKS client then uses the JVM default trust store. Name a profile when the IdP presents a
+  certificate from an internal or corporate CA. See link:#_jwks_trust_profiles[Trust profiles]
+  below for how a name is bound to concrete anchors.
+
+| `issuers[].jwks.refresh_interval_seconds`
+| *Optional* integer, `source: http` only. The interval, in seconds, at which the JWKS client
+  re-fetches the issuer's key set in the background. *Range `60`-`86400`; omitted, the token
+  library's default of `600` applies.* It also caps the retry delay of a failed load (see
+  link:#_jwks_readiness[Key-set loading and readiness]). Refused at boot on `source: file`.
+
+| `issuers[].jwks.key_rotation_grace_period_seconds`
+| *Optional* integer, `source: http` only. How long, in seconds, a key set that a rotation replaced
+  keeps verifying tokens signed with its keys. *Range `0`-`3600`; omitted, the token library's own
+  default applies -- `300` at the pinned library version.* `0` retires the replaced keys at once.
+  Refused at boot on `source: file`.
+
+| `issuers[].jwks.unknown_kid_refresh_window_seconds`
+| *Optional* integer, `source: http` only. The per-issuer window, in seconds, within which a token
+  naming a key id the gateway does not hold triggers at most one refresh of the key set. *Range
+  `5`-`3600`; omitted, `30` applies.* Refused at boot on `source: file`. See
+  link:#_jwks_key_rotation[Key rotation and the refresh cadence] below.
+|===
+
+The BFF variants read this block too. The tokens a BFF retrieves -- the access and ID tokens of a
+login, a widening or a refresh -- are validated by the same validator this block configures, and a
+back-channel logout token is verified against the same issuers' key sets. A BFF gateway therefore
+declares the issuer configured in link:#_oidc[`oidc`] here as well.
+
+[[_jwks_readiness]]
+=== Key-set loading and readiness
+
+The validator is *assembled* at boot, and a misconfigured JWKS source -- a missing `url`, a `url`
+without a host while `allowed_egress_hosts` is absent or empty, an unresolvable `tls_profile` --
+still aborts startup. The key sets themselves are *fetched*
+asynchronously, so a gateway can finish booting before an identity provider answers. Two behaviours
+cover that window:
+
+* *Readiness is `DOWN` while any configured issuer has no key set.* The readiness check reports
+  `jwks: loading` (no attempt has produced a key set yet) or `jwks: unavailable` (an issuer's most
+  recent attempt failed), together with the bounded counts `issuers` and `issuers_loaded`. It turns
+  `UP` with `jwks: ready` once every issuer has a key set. The payload never names an issuer, a URL
+  or a host, and reading it never triggers a fetch. An orchestrator therefore holds traffic back
+  from a gateway that could not validate a single token rather than routing requests to it.
+* *A failed load is retried fast.* A load attempt is not a single request: the HTTP client beneath
+  the token library retries the fetch itself, with a jittered backoff of roughly 1, 2, 4 and 8
+  seconds across five tries (logged as `HTTP-112`), so an attempt against an unreachable provider
+  reports failure only after about 17 seconds. The gateway's own retry starts from that point: the
+  next attempt follows 1 second after a failed one and the delay doubles per attempt, capped at 30
+  seconds and never above the issuer's refresh interval, so a late identity provider is picked up
+  within seconds of an attempt ending rather than after a whole refresh interval -- and a provider
+  that appears while an attempt is still retrying internally is picked up by that attempt. Retries
+  are driven by a scheduler only -- never by bearer requests or by the readiness probe -- with at most
+  one attempt in flight per issuer. Each scheduled retry logs `WARN ApiSheriff-129`, and a gateway
+  retry that finally loads the key set logs `INFO ApiSheriff-18` (see
+  link:../LogMessages.adoc[Log messages]); a key set loaded by the very first attempt logs neither. Once
+  a key set is loaded, the regular background refresh keeps it current.
+
+Until an issuer's key set loads, a bearer token from that issuer is rejected `401` (`TOKEN_INVALID`),
+answered as the unrouted `404` while `security_defaults.uniform_not_found` is on (see
+xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). A `file`-sourced
+issuer loads from disk and normally reports `ready` immediately.
+
+*Readiness reports key-set availability, not key-set freshness.* Once an issuer's key set has loaded,
+a later background-refresh failure keeps the loaded keys in service and readiness stays `UP` -- the
+held keys still validate the tokens they signed. An identity provider that becomes unreachable after
+boot, or a stalled key rotation, is therefore not visible through readiness; alert on it separately
+(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027]).
+A stalled rotation has a log record to alert on: `WARN ApiSheriff-136`, described
+under link:#_jwks_key_rotation[Key rotation and the refresh cadence].
+
+*A BFF deployment reports its provider-metadata state, and readiness does not gate on it.* A
+deployment with an active BFF runtime -- `oidc.session.mode: server` or `oidc.session.mode: cookie`
+-- adds two data to the payload, on `UP` and `DOWN` alike and with or without `token_validation`:
+
+* `oidc=<mode>` -- `oidc: server` or `oidc: cookie`, the mode of the active runtime.
+* `oidc_discovery` -- what the most recent resolution of the identity provider's metadata
+  (`.well-known/openid-configuration`) did. The BFF resolves it lazily, on the first engine use, so
+  a gateway boots without its identity provider.
++
+[cols="1,3", options="header"]
+|===
+| Value | Meaning
+
+| `not-attempted`
+| No engine use has asked for the metadata yet. A freshly started instance reports this until the
+  first use of the BFF engine, typically the first login.
+
+| `resolved`
+| The most recent attempt produced the metadata.
+
+| `failed`
+| The most recent attempt threw. A failed attempt is not kept, so the next engine use resolves
+  again. The payload carries no cause.
+|===
+
+`oidc_discovery` never changes the `UP`/`DOWN` verdict. A failed resolution stops only the
+identity-provider legs -- login, refresh and step-up -- while bearer-only and public routes keep
+working, so an orchestrator that pulled the instance for it would turn an identity-provider outage
+into a full outage. Alert on `failed` instead
+(link:../adr/0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]).
+The datum is read from a view that records each
+resolution attempt and never triggers one, so polling readiness sends no discovery request. It is a
+fixed token: it names no issuer, URL or cause. The key-set state above is not a stand-in for it
+either way -- a loaded key set stays loaded through later refresh failures, and a missing one says
+nothing about whether the provider metadata resolves. A bearer-only deployment, or a session mode
+that built no BFF runtime, carries neither datum.
+
+[[_jwks_key_rotation]]
+=== Key rotation and the refresh cadence
+
+Three optional keys of an `http`-sourced issuer's `jwks` block decide how quickly the gateway follows
+a signing-key change at the identity provider, and how long it keeps accepting the previous key
+(link:../adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
+
+[cols="2,1,1,3", options="header"]
+|===
+| Key | Default | Range | Effect
+
+| `refresh_interval_seconds`
+| `600`
+| `60`-`86400`
+| The interval of the background re-fetch of the key set. The default is the token library's and is
+  not restated by the gateway: an omitted key passes nothing to the library.
+
+| `key_rotation_grace_period_seconds`
+| the token library's (`300` at the pinned version)
+| `0`-`3600`
+| How long a replaced key set keeps verifying the tokens its keys signed. `0` drops the replaced
+  keys at once.
+
+| `unknown_kid_refresh_window_seconds`
+| `30`
+| `5`-`3600`
+| The per-issuer window of the refresh described below.
+|===
+
+[source,yaml]
+----
+token_validation:
+  issuers:
+    - name: main
+      issuer: https://idp.example.com/realms/main
+      jwks:
+        source: http
+        url: https://idp.example.com/realms/main/protocol/openid-connect/certs
+        refresh_interval_seconds: 300            # re-fetch every five minutes
+        key_rotation_grace_period_seconds: 600   # previous key accepted for ten more minutes
+        unknown_kid_refresh_window_seconds: 10   # at most one on-demand refresh per ten seconds
+----
+
+*Boot refusals.* A value outside its range is refused at boot with `ApiSheriff-200` at
+`/token_validation/issuers/<index>/jwks/<key>`; the message names the issuer, the key, the value and
+the admitted range, and never the JWKS URL. The schema declares the three keys as integers without
+bounds, so a non-integer is refused by the schema and an out-of-range integer by the validator. Each
+of the three keys declared on a `source: file` issuer is refused at boot at the same pointer,
+whatever value it holds: a file source is read once and never re-fetched, so the key would parse and
+never act. Every violation of every issuer is reported in one pass.
+
+*What happens when a token names an unknown key id.* The lookup that verifies a token never fetches.
+It is answered from the key sets the gateway holds at that moment -- the current one, then a
+replaced one still inside its grace period -- so a token naming a key id neither holds is rejected
+`401` (`TOKEN_INVALID`). The caller holds no validated token at that point, so while
+`security_defaults.uniform_not_found` is on it receives the unrouted `404` instead, and the true
+event stays in `sheriff_errors_total{event}` (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). When the issuer's key set
+is loaded, that same lookup tries to claim the issuer's window:
+
+* *The first unknown key id in a window* logs `WARN ApiSheriff-136` and schedules one refresh of the
+  key set, off the request thread -- unless the refresh of an earlier window is still running, in
+  which case none is added. The request that triggered it is still rejected.
+* *Every further unknown key id inside the window* schedules nothing and is logged at `DEBUG` only.
+  The window is claimed when the token arrives, not when the refresh completes, so the bound holds
+  whatever the refresh's outcome, the request rate and the number of distinct key ids.
+* *The refresh replaces the key set only if it holds the key id that triggered it.* A refresh that
+  fails, or that loads a key set without that key id, changes nothing: the loaded key set and a
+  replaced one in its grace period both stay in service.
+* *A replaced key set stays in service for the grace period.* Tokens signed with the previous key
+  are accepted until `key_rotation_grace_period_seconds` has passed, then the replaced key set is
+  dropped. At most one replaced key set is held per issuer: a second replacement inside the grace
+  period drops the older one.
+
+A token signed with a new key is therefore accepted once a refresh it triggered has loaded that key:
+after the fetch when the window was free, and after at most one further window when it was not. A
+client whose request with such a token is rejected -- `404` on the shipped default, `401` with
+`uniform_not_found: false` -- succeeds by retrying. A refresh triggered by a token that
+names a key id the identity provider never published is discarded even when the key set it fetched
+holds a newly rotated key; that key is then picked up by the next window a token signed with it
+claims or, at the latest, by the background refresh.
+
+The same key sets verify the ID token of a BFF login whose issuer is declared in this block, so a
+login whose ID token is signed with a new key recovers the same way.
+
+*`ApiSheriff-136` is the signal of a stalled rotation.* Readiness stays `UP` throughout: the gateway
+holds a loaded key set, and readiness reports availability, not freshness (see above). The record
+names the issuer's configured `name` and the instant the gateway's own loader last saw a load of that
+issuer's key set succeed -- the first load, a retry after a failed load, or a refresh triggered by an
+unknown key id. The token library's background refresh is not reflected in that instant. The record
+is emitted at most once per issuer per window and never carries the JWKS URL, the key id or key
+material. One record after a key change is expected; a record in every window means tokens keep
+naming a key the identity provider's key set does not serve -- check the provider's published key
+set and the issuer's `jwks.url` -- or that a caller is presenting tokens with invented key ids (see
+link:../security-threat-model.adoc#gw-07-jwks-refresh[the threat model]).
+
+*A `file` source.* A `file`-sourced issuer has nothing to fetch, so no refresh is scheduled for it.
+A token naming a key id its key set does not hold is still rejected and still reported by
+`ApiSheriff-136`, at most once per 30 seconds per issuer.
+
+[[_jwks_trust_profiles]]
+=== Trust profiles (`jwks.tls_profile`)
+
+By default the JWKS client verifies the IdP's certificate against the JVM's default trust store.
+That is correct when the IdP presents a certificate from a public CA, and wrong in two common
+deployments: an IdP fronted by an *internal or corporate CA*, and a *cluster-internal IdP* whose
+certificate is issued by the cluster's own authority. In both cases the fetch fails PKIX path
+building, the key set never loads, and every bearer request is rejected -- a failure that looks
+like a token problem but is a trust problem.
+
+`tls_profile` fixes that by naming the trust anchors to use:
+
+[source,yaml]
+----
+token_validation:
+  issuers:
+    - name: corporate
+      issuer: https://idp.corp.internal/realms/main
+      jwks:
+        source: http
+        url: https://idp.corp.internal/realms/main/protocol/openid-connect/certs
+        allowed_egress_hosts: [idp.corp.internal]   # optional: derived from url when omitted; declared, it pins the allowance (GW-05)
+        tls_profile: corporate-idp                  # internal CA -> name the trust anchors
+----
+
+==== The name is not the material
+
+`tls_profile` is a *logical* name in API Sheriff's own vocabulary. It carries no trust store path,
+no password, and no runtime detail. The deployment binds the name to concrete trust material:
+
+[source,properties]
+----
+quarkus.tls.corporate-idp.trust-store.p12.path=/etc/sheriff/corporate-ca.p12
+quarkus.tls.corporate-idp.trust-store.p12.password=${TRUSTSTORE_PASSWORD}
+----
+
+So the mapping runs `gateway.yaml` name -> deployment binding -> trust anchors -> JWKS client.
+`gateway.yaml` expresses *intent* ("verify this IdP against the corporate anchors"); the
+deployment supplies *material*. That split is deliberate, and it buys three things:
+
+* *Secrets stay out of `gateway.yaml`.* A trust-store password never appears in the document you
+  edit, review, and commit.
+* *No second key-store implementation.* Loading, formats, reloads, and rotation are already solved
+  on the deployment side; API Sheriff consumes the result rather than growing a weaker copy.
+* *Portability.* The same `gateway.yaml` moves between environments that bind the same profile
+  name to different anchors -- dev, staging, production -- with no edit.
+
+NOTE: `gateway.yaml` and its JSON schema deliberately never name the mechanism that binds the
+profile; that binding is an implementation detail behind a single seam. Startup *diagnostics*
+deliberately do name it, because an operator staring at an unbound profile needs the exact knob to
+set, not an abstraction.
+
+==== When the profile is not bound
+
+A named profile that the deployment does not define is a *startup failure*, not a fallback:
+
+[source,text]
+----
+Issuer 'corporate' names jwks.tls_profile 'corporate-idp' but no such trust profile is
+configured — define it via quarkus.tls.corporate-idp.trust-store.*
+----
+
+The gateway refuses to start, consistent with how every other configuration violation is handled.
+Falling back to default trust would be worse than failing: it would either surface later as an
+obscure JWKS fetch error, or -- if the IdP happens to chain to a public CA -- quietly succeed
+against anchors the operator never intended to trust.
+
+==== When the profile is bound but carries no anchors
+
+A profile that exists but supplies no trust material is refused too -- for exactly the same reason,
+and this is the case that is easy to reach by accident. The runtime registers a named bucket as
+soon as *any* `quarkus.tls.<name>.*` key is present, so a bucket that sets only, say, a reload
+period is a real, resolvable profile with nothing in it:
+
+[source,properties]
+----
+# a bound profile with no anchors -- refused, not silently accepted
+quarkus.tls.corporate-idp.reload-period=24H
+----
+
+[source,text]
+----
+Issuer 'corporate' names jwks.tls_profile 'corporate-idp' but that profile carries no trust
+material — it would verify the IdP against the JVM default trust store instead of the anchors
+the name promises; define it via quarkus.tls.corporate-idp.trust-store.*
+----
+
+Without this check the deployment would start and the JWKS client would verify the IdP against the
+JVM default trust store -- the very fallback the previous section refuses -- while `gateway.yaml`
+still reads as though corporate anchors were in force. A named profile therefore means *these
+anchors*, never *whatever the JVM happens to trust*.
+
+==== When the profile disables verification entirely
+
+A profile that sets `trust-all` is refused as well. It is the same failure one step worse: the
+bucket resolves, it does carry trust options, and the SSL context it yields accepts *any*
+certificate.
+
+[source,properties]
+----
+# a bound profile that verifies nothing -- refused, not silently accepted
+quarkus.tls.corporate-idp.trust-all=true
+----
+
+[source,text]
+----
+Issuer 'corporate' names jwks.tls_profile 'corporate-idp' but that profile sets
+quarkus.tls.corporate-idp.trust-all — the JWKS client would accept any certificate, so a machine
+on the path to the IdP could serve its own signing keys; bind the profile to real anchors via
+quarkus.tls.corporate-idp.trust-store.*
+----
+
+This is a man-in-the-middle vector on the JWKS path rather than a merely weakened check. The key
+set fetched over that connection is what every bearer token is validated against, so an on-path
+machine free to serve its own JWKS chooses the signing keys the gateway will accept -- and
+certificate verification is the only thing standing in its way.
+
+The check runs *before* the anchor-free check above, and that order is load-bearing rather than
+incidental. A `trust-all` bucket carries trust material -- the runtime binds it to a
+trust-everything configuration -- so it satisfies the anchor-free guard and would slip past it
+undetected. Testing for it first is what keeps the worse failure from hiding behind the weaker
+one. A named profile means *these anchors*; it never means *no verification at all*.
+
+An issuer that omits `tls_profile` is unaffected: no trust configuration is applied at all, and
+the JWKS client keeps the JVM default trust store. That is the one supported way to ask for default
+trust -- by saying nothing, not by naming an empty profile.
+
+==== Relationship to `allowed_egress_hosts`
+
+The two settings are independent, because they solve different halves of the same deployment.
+`allowed_egress_hosts` answers *"may I connect to this address?"* (the SSRF egress guard, which
+refuses private addresses except for the hosts the allowance exempts); `tls_profile` answers *"do I
+trust the certificate I get back?"*. Neither answers the other's question: the egress allowance --
+declared or derived -- never widens certificate trust, and a trust profile never admits an address
+the egress guard refuses. A cluster-internal IdP on a private address behind an internal CA needs a
+`tls_profile`; its address is reachable through the allowance derived from `jwks.url`, or through an
+explicit list when the operator pins it. A public-internet IdP behind a public CA needs neither key.
+
+[[_jwks_deferred_knobs]]
+=== Loader knobs the gateway does not expose
+
+The token library's `HttpJwksLoaderConfig` builder has knobs this block deliberately does not expose,
+so none of them can be set from `gateway.yaml`
+(link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]).
+Several are production-significant, and their absence is a known gap rather than an oversight:
+
+[cols="1,3", options="header"]
+|===
+| Knob | What its absence means
+
+| `connectTimeoutSeconds`, `readTimeoutSeconds`
+| Production-significant. A slow or black-holed IdP cannot be bounded from configuration.
+
+| `retryConfig`
+| Production-significant. Retry behaviour on a failed JWKS fetch is not configurable.
+
+| `maxRetiredKeySets`
+| Production-significant. This half of the tolerance for IdP key rotation is not configurable;
+  `key_rotation_grace_period_seconds` is the half that is.
+
+| `wellKnownUri`
+| Discovery-based issuer configuration. The gateway requires an explicit JWKS URL instead.
+
+| `allowLoopbackEgress`
+| Deliberately not exposed. `allowed_egress_hosts` covers the legitimate cases host-exactly, and a
+  blanket loopback opening is a broader widening than any known deployment needs.
+
+| `tlsVersions`
+| Protocol-version selection for the JWKS client. The runtime's defaults apply.
+
+| `parserConfig`
+| JWKS parsing limits.
+|===
+
+[[_oidc]]
+== `oidc`
+
+The confidential-client block used by the BFF variants
+(link:../variants/02-bff-session.adoc[Variant 2] and link:../variants/03-bff-cookie.adoc[Variant 3]).
+No login is driven when no route's effective auth is `require: session`, but `oidc.scopes` is never
+ignored: it joins every route's needed scope set, so bearer routes check it too (see
+link:#_endpoint_scopes[`endpoint.scopes`]). The TLS posture of the gateway's own
+dial to the identity provider is deliberately *not* in this block: it lives with every other
+outbound posture key, as `egress_tls.oidc_verify_hostname` and `egress_tls.oidc_tls_profile` -- see
+link:tls-and-egress.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel].
+
+Three things hold for every BFF gateway, whatever else the block declares
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]):
+
+* *Every authorization request is pushed* (RFC 9126) -- a login's and a session widening's alike. The
+  browser is redirected with `client_id` and `request_uri` only. The identity provider must offer a pushed-authorization-request endpoint; without
+  one every login is refused with `502`.
+* *Every access token is bound to one DPoP key* (RFC 9449), and a token response that is not bound to
+  that key is refused -- see link:#_oidc_sender_constraint[The sender constraint and the token-binding
+  check].
+* *The client authenticates with `private_key_jwt`*, unless `client_secret` is configured -- see
+  link:#_oidc_client_authentication[Client authentication].
+
+*The reserved paths are exact-match carve-outs, not an anchor.* Every path this block names -- the
+`redirect_uri` callback, `logout.path`, the `post_logout_redirect_uri` return leg,
+`logout.backchannel_path`, `user_info.path`, `login.path`, `step_up.path` and the client JWKS path --
+is matched by exact equality on the OIDC host (the host of `redirect_uri`; the back-channel receiver
+and the client JWKS path on every host) and resolved *ahead of the route table*. Each claims its one
+path and nothing beneath it: no namespace, no prefix, no anchor-level auth floor or security filter,
+and a sibling path no key names is routed by the route table like any other request. The samples in
+this repository spell them under `/bff/*` -- `/bff/callback`, `/bff/logout`, `/bff/logout/return`,
+`/bff/backchannel`, `/bff/session` (the user-info view), `/bff/login`, `/bff/step-up` and the
+default client JWKS path `/bff/jwks`. That spelling is a naming convention nothing validates: any
+canonical gateway path works, and keeping the application's own routes under a separate anchor
+(`/app` in the samples) keeps the two namespaces visibly apart.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `issuer`, `client_id`, `scopes`, `redirect_uri`
+| The OIDC confidential-client identity.
+  `redirect_uri` is the gateway's own callback route, registered exactly at the IdP.
+  `scopes` are *requested*, not pre-approved: the IdP grants what the client may have, and the
+  token carries only that. Every login requests at least `scopes`; a login for a route whose
+  endpoint declares link:#_endpoint_scopes[`endpoint.scopes`] requests their union. Because the same
+  union is every route's needed set, a `require: bearer` route answers `403 insufficient_scope` to a
+  token lacking any `scopes` member, and a session route holds every live session to it as well. Each `scopes` entry must be an RFC 6749 §3.3 `scope-token` --
+  printable ASCII without space, double quote or backslash -- or the load is refused (see the syntax row of
+  link:#_endpoint_scopes[`endpoint.scopes`]).
+  *Register it as a plain redirect target reached by a `GET`*: the gateway drives the
+  authorization request with `response_mode=query`, so the IdP must be free to answer a `302`
+  carrying `code` and `state` in the query string. An IdP client pinned to force `form_post`
+  breaks the flow. *There is no configuration knob for the response mode* -- it is fixed in code
+  (see link:../architecture/authentication-and-bff.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response
+  mode]), deliberately, because it is coupled to the `SameSite=Lax` browser-binding cookie. The
+  response mode travels inside the pushed authorization request.
+
+| `back_channel_origin`
+| *Optional* string. The origin at which the *gateway* reaches the identity provider when that
+  address differs from the one the browser uses. It is transport, not identity: `issuer` stays the
+  one identity every issuer check compares against (RFC 8414 §3.3, RFC 9068, RFC 9207), and the
+  browser keeps the advertised authorization and end-session endpoints. The gateway's own calls --
+  discovery, the pushed authorization request, the token endpoint (code exchange and refresh) and
+  RFC 7009 revocation -- are sent to this origin with path and query unchanged, but only when the
+  identity provider advertises them on the issuer's own origin; an endpoint advertised elsewhere is
+  dialled as advertised. The gateway never calls the identity provider's userinfo endpoint, and the
+  key-set fetch stays on `token_validation.issuers[].jwks.url`. The mapped host is dialled under
+  `egress_tls.oidc_verify_hostname` and `egress_tls.oidc_tls_profile`. A DPoP proof on a mapped call
+  names the URL actually dialled, which is what Keycloak compares; an identity provider that compares
+  `htu` with a configured public URL must not be given this key for a DPoP-constrained client.
+  *Refused at boot*, with a fixed text that never echoes the value: a blank value; anything but an
+  absolute `http` or `https` URI naming a host; a user-info, path, query or fragment component (one
+  trailing `/` is accepted); and an `http` origin without `back_channel_allow_insecure_http: true`.
+  Omitted, every call goes to the advertised endpoints. See
+  link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069].
+
+| `back_channel_allow_insecure_http`
+| *Optional* boolean, default `false`. The explicit opt-in that admits an `http` `back_channel_origin`.
+  An admitted `http` origin boots with `WARN` `ApiSheriff-138`, because the engine's cleartext switch
+  applies to the *whole* identity-provider client, not only to the mapped calls. *Refused at boot*
+  when `true` without a `back_channel_origin`, or with an `https` one.
+
+| `client_authentication.key_file`
+| *Optional* string, at least one character. The path of a PEM file on a mount that holds the key
+  the gateway signs its `private_key_jwt` client assertion with. Omitted, a key is generated at
+  startup, which suits a single node only. The value is a location, not a secret, and may be written
+  literally or through a placeholder. Read in key mode only: together with `client_secret` it is
+  *refused at boot*. File format, key types, boot refusals and the key modes are in
+  link:#_oidc_signing_keys[Signing keys].
+
+| `client_authentication.jwks_path`
+| *Optional* string; *default `/bff/jwks`*. The reserved gateway path of the client JWKS endpoint,
+  at which the identity provider fetches the client-authentication public key. An absolute path
+  starting with a single `/`, without a query and without a fragment. Reserved on *every* host, in
+  both client-authentication modes. A path that another reserved OIDC path or `portal.path` already
+  claims is *refused at boot*, for the default path as well, and so is a path that is not a
+  canonical gateway path. See link:#_oidc_client_jwks[The client JWKS endpoint].
+
+| `sender_constraint.key_file`
+| *Optional* string, at least one character. The path of a PEM file on a mount that holds the key
+  the gateway signs its DPoP proofs with -- the key every access token it obtains is bound to. Same file
+  format, key types and boot refusals as `client_authentication.key_file`; omitted, a key is
+  generated at startup. Read in *both* client-authentication modes. In key mode it must name a
+  different file holding a different key than `client_authentication.key_file`, one key per purpose
+  (FAPI 2.0 §6.8): one file named by both fields is *refused at boot* at
+  `/oidc/sender_constraint/key_file` -- decided by the file system when both files exist, otherwise
+  only by paths equal after normalisation with no `..` segment -- and the same key in two files is
+  refused when the BFF runtime reads both keys (`CONFIG_INVALID`). Both messages name
+  the two fields and neither a path nor a key id. The DPoP key is never published. See link:#_oidc_signing_keys[Signing keys] and
+  link:#_oidc_sender_constraint[The sender constraint and the token-binding check].
+
+| `client_secret`
+a| *Optional.* A bare `${ENV_VAR}` reference -- never a literal and never a defaulted placeholder.
+Configuring it selects client-secret authentication (`client_secret_basic`). There is no separate
+switch: the presence of the key is the selection.
+
+[WARNING]
+====
+Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
+====
+
+* *Only client authentication changes.* Pushed authorization requests and the DPoP sender constraint
+  stay in effect, and `sender_constraint.key_file` is handled exactly as in key mode.
+* *Refused together with `client_authentication.key_file`.* A document that declares both does not
+  boot. A secret that resolves to a blank value does not boot either.
+* *The client JWKS path answers `404`.* There is no client-authentication key to publish.
+* *The gateway logs `WARN` `ApiSheriff-133` at every boot.* Removing `client_secret` silences it and
+  selects `private_key_jwt`.
+
+See link:#_oidc_client_authentication[Client authentication].
+
+| `login.path`
+| Gateway-owned *login-initiation* entry point -- the reserved path a browser navigates to in
+  order to *start* a login (the mirror of the `redirect_uri` callback that *lands* it). A caller
+  that already holds a live session is redirected straight to the same-origin-validated return
+  URL (no fresh auth-code flow); an unauthenticated caller is driven into the authorization-code
+  flow. Optional -- omit it and the deployment simply has no gateway-owned login-start URL.
+  Registered as a reserved gateway path when present. The login it starts requests the needed scope
+  set of the authenticated route the `returnUrl` target lands on (matched as a `GET` on the gateway
+  host, query ignored, `match.headers` routes never selected), or `oidc.scopes` alone when the target
+  is absent, cross-origin, unparseable, unmatched or lands on a `require: none` route.
+
+| `login.default_return_url`
+| Where the browser lands after a login that carries no usable return target -- an absent,
+  cross-origin or unparseable `returnUrl`, or a step-up replay without one. String; *default `/`*.
+  Must be same-origin with `redirect_uri`: a gateway path starting with a single `/`, or an absolute
+  URL on the `redirect_uri` origin. A scheme-relative, backslash, blank or cross-origin value is
+  refused at boot (`CONFIG_INVALID`), so the fallback can never become an open redirect. A login
+  started by a session-route navigation returns to the requested path *plus its raw query, byte for
+  byte*, and does not use the default. The same default replaces an absent or off-origin `returnUrl`
+  given to `step_up.path`. See
+  link:../user/bff-session.adoc#return-url[Where the browser lands after login].
+
+| `user_info.path`
+| Gateway-served *user-info* endpoint returning the curated identity view assembled from the
+  session's tokens -- never a passthrough of the raw ID/userinfo claims. Registered as a
+  reserved gateway path when present; omit it and no user-info endpoint is exposed. Every
+  disclosed claim keeps the JSON type it has in the validated ID token -- arrays, objects, numbers
+  and booleans are not flattened to strings, and numeric date claims such as `exp`, `iat` and
+  `auth_time` are JSON numbers. See link:../user/bff-session.adoc#_serve_a_curated_identity_view_to_the_spa[Serve
+  a curated identity view to the SPA] for an example response.
+
+| `user_info.allowed_claims`
+| The operator claim *allowlist* bounding what `user_info.path` may ever disclose. The secure
+  default is *closed*: an empty (or omitted) allowlist discloses *nothing*, so the operator --
+  never the browser client -- widens disclosure. A claim absent from this list is never returned,
+  regardless of what the caller requests.
+
+| `user_info.default_view`
+| The claim selector returned when the caller requests no explicit claims. Every entry *must* lie
+  within `user_info.allowed_claims` (a default-view claim outside the allowlist fails the boot),
+  so the curated default can never exceed the disclosure ceiling.
+
+| `logout.path`
+| Gateway-served logout endpoint (default `/logout`): destroys the local session/cookie and
+  redirects to the IdP `end_session_endpoint` with
+  `id_token_hint`, `post_logout_redirect_uri`, and a *session-bound `state`* (per `CLIENT-13`).
+  The flow also calls a token-revocation seam, which the shipped runtime binds to a no-op, so the
+  gateway itself revokes no token at the IdP on logout today.
+  Because the session is already destroyed at that point, the `state` is sealed into a
+  short-lived (60 s), single-use `+__Host-sheriff-logout+` cookie set alongside the redirect;
+  the return leg verifies against that cookie and clears it -- stateless, so it works
+  identically in both session modes.
+
+  *The local session is always ended first.* The endpoint destroys the session and clears every
+  cookie of the session binding before it builds the redirect, so a logout never fails for a reason
+  that lies at the IdP. When the IdP publishes no usable `end_session_endpoint` -- none, a blank
+  one, or one that is not an absolute `http` or `https` URI with a host -- the answer is a `302` to
+  `logout.final_redirect` and the gateway logs `WARN` `ApiSheriff-135` once per process; repeats stay
+  at `DEBUG`. A discovery failure, a session without an ID token and any failure while the redirect
+  is built land on `logout.final_redirect` the same way, logged at `DEBUG`; discovery is tried again
+  at the next logout. In all of these the session at the IdP is not ended.
+
+  The redirect to the IdP stays a redirect: the ID token travels in its URL as `id_token_hint`.
+  That one response carries `Referrer-Policy: no-referrer`, whatever `security_headers` sets for
+  the name, and every logout answer is `Cache-Control: no-store`.
+
+| `logout.post_logout_redirect_uri`
+| The return leg from the IdP. It must be a *gateway-owned* path -- the gateway has to see the
+  return to verify the session-bound `state` -- pre-registered at the IdP and compared by
+  *exact string match*, never pattern or prefix (open-redirect defence). After verification the
+  browser is redirected to `logout.final_redirect`.
+
+| `logout.final_redirect`
+| The application URL the browser lands on after the verified logout round-trip. Optional;
+  defaults to `/`.
+
+| `logout.backchannel_path`
+| Receiver for OIDC back-channel logout tokens from the IdP. Meaningful in `mode: server`
+  only, where a validated logout token destroys the matching session; in `mode: cookie` the
+  endpoint is *disabled* (`404`) -- there is no server-side state a logout token could
+  destroy. See the statelessness limitation in link:../variants/03-bff-cookie.adoc[Variant 3].
+
+  Unlike the browser-facing reserved paths, this one is served on *every* host the gateway answers on,
+  not only the host of `redirect_uri`: the IdP reaches it server-to-server at whatever address
+  you registered as the client's back-channel logout URL, which in a container deployment is an
+  internal service name. Register that address with the IdP with this path, and reserve the path
+  somewhere no proxied namespace needs it on any host (ADR-0018, back-channel-host amendment).
+
+  The logout token must be signed by the IdP, name the configured issuer and client, carry an `iat`
+  within two minutes of the gateway's clock, an `exp` that has not passed, a `jti`, and `sub` or
+  `sid`. A `typ` header is optional; one that is present must be `logout+jwt`. A token acts once per
+  gateway instance. Any other token is answered `400` and logged as `ApiSheriff-112`. See
+  link:../user/bff-session.adoc#backchannel-logout[Back-channel logout: what the identity provider must
+  send].
+
+| `session.csrf.trusted_origins`
+| The browser origins allowed to make *unsafe-method* (non-GET/HEAD/OPTIONS) calls to
+  `require: session` routes -- i.e. the origins the SPA is served from. Defaults to the origin
+  of `redirect_uri`. The `Origin` header carries the *calling page's* origin, so an
+  application served from a different host than the gateway must be listed here.
+  Compared as full origins (scheme + host + port), exact match. A *cross-origin* SPA needs
+  *both* halves configured: this list (what the gateway *accepts* -- CSRF) and
+  `security_headers.cors` enabled with `allow_credentials: true` (what the browser *permits*).
+  This works only for *same-site* origins -- a different origin under the same registrable
+  domain, e.g. `app.example.com` calling `gw.example.com` -- because the session cookie is
+  fixed at `SameSite=Lax`: a truly *cross-site* SPA (different registrable domain) never gets
+  the cookie attached to its calls, by design. Host the application under the same site as the
+  gateway. An unsafe call from an origin outside the list is refused as `CSRF_REJECTED` (`403`)
+  before authentication, so it is answered as the unrouted `404` to an untrusted caller while
+  `security_defaults.uniform_not_found` is on; the true event stays in `sheriff_errors_total{event}`
+  (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
+
+| `session.mode`
+| `cookie` (Variant 3, encrypted-cookie state) or `server` (Variant 2, server-side store).
+  Global -- one deployment runs one BFF shape.
+
+| `session.store`
+| *Required* when `session.mode: server` -- the boot fails if a server-mode session omits it; it is
+  unused in `cookie` mode. `memory` (single-node or sticky-session deployments) is the only initial
+  value; a shared external store is deliberately unsupported for now (see the trade-off in
+  link:../variants/02-bff-session.adoc[Variant 2]). There is no implicit default -- server mode must
+  name its store explicitly.
+
+| `session.max_sessions`
+| *Server mode only.* Upper bound on the number of concurrently stored sessions -- a
+  denial-of-service guard on the in-memory store, so an unbounded stream of logins cannot exhaust
+  node memory. Unused in `cookie` mode (there is no server-side store to bound). Optional integer;
+  *default `10000`*.
+
+  The bound counts *live* sessions, not accumulated ones. A session past its absolute lifetime or
+  its idle timeout is removed when it is next looked up, and otherwise by a periodic sweep that runs
+  once a minute, so an expired session frees its slot within a minute. A login arriving at a full
+  store sweeps once more and is admitted if that freed a slot. A store still full afterwards is
+  genuinely full of live sessions and the login is refused fail-closed, so size this against
+  expected peak concurrency. The sweep interval is fixed; no key configures it. Updating a session
+  the store already holds -- the write a token refresh or a widening makes -- replaces its record in
+  place, consumes no new capacity and is admitted at the bound without consulting it. That write
+  never creates a session: when a logout has destroyed the session meanwhile, nothing is stored.
+
+| `session.max_sessions_per_subject`
+| *Server mode only.* Upper bound on the live sessions one subject (`sub`) holds at the same time.
+  Optional integer; *default `10`*, or `max_sessions` when that is lower. Range `1` to the effective
+  `max_sessions`; a declared value outside it is *refused at boot*. No value switches the bound
+  off; declaring it equal to `max_sessions` has that effect.
+
+  A login that would be the subject's next session beyond the bound ends that subject's *oldest*
+  session first -- the one created first, not the one used least recently -- and is then admitted.
+  The ended session's cookie resolves nothing from then on, so its browser is answered as
+  unauthenticated. Expired sessions of the subject do not count. The bound is applied before
+  `max_sessions`, so a subject at its own bound is never refused by a full store. A login in a
+  browser that already presents a session ends that session before the new one is counted (see
+  link:../user/bff-session.adoc#login-replaces[A login ends the session the browser presents]).
+
+  Raise the key for an account that is used from more than ten browsers at once, a shared or
+  technical account for example. In `cookie` mode the key is *refused at boot* when declared: that
+  mode holds no sessions to count, and a declared bound that nothing enforces would read as a
+  control in force.
+
+| `session.cookie_name`
+| Name of the session cookie, in *both* session modes. Optional; omitted, it resolves to
+  `+__Host-sheriff-session+`. A declared name is written verbatim into `Set-Cookie`, so it is
+  *refused at boot* unless it:
+
+  * starts with the case-sensitive `+__Host-+` prefix followed by a name -- the prefix is what makes
+    the browser *enforce* `Secure`, `Path=/` and no `Domain` rather than merely receive them, so a
+    name without it (`sheriff-session`, `+__host-x+`, `+__Secure-x+`) drops a guarantee the
+    gateway-owned cookies keep;
+  * is a non-empty RFC 9110 token -- no whitespace, control characters or separators such as `;` or
+    `=`, any of which would be response-header injection; and
+  * differs from the two gateway-owned cookies `+__Host-sheriff-binding+` and
+    `+__Host-sheriff-logout+`, since a collision would let one cookie silently overwrite another.
+
+  Every requirement a name fails is reported in one violation at `/oidc/session/cookie_name`, with
+  the offending value escaped before it is echoed. This refusal is the only guard: the BFF runtime
+  consumes the name verbatim, and the schema declares the key an unrestricted string. A longer name
+  also widens the header overhead `session.max_cookie_size` is measured against (see below).
+
+  In `cookie` mode the gateway sets a second cookie named after this one: the *activity cookie*,
+  `<cookie_name>-activity` -- `+__Host-sheriff-session-activity+` under the default name. It has no
+  key of its own. See `session.idle_timeout_seconds` below.
+
+| `session.key_file`
+| `cookie` mode only. Optional string: the path of the key file holding the AES-256-GCM sealing key
+  (ADR-0072). The value is a *location, not a secret*: it may be written literally or as a `${VAR}`
+  placeholder, like the two signing-key paths, and the secret rule below does not cover it. Both
+  key-material modes are fully supported production options:
+
+  * *Provided key file* -- `key_file` is set. Sessions survive a restart and the key can be shared
+    across replicas by mounting the same file on each. This is the mode a multi-replica deployment
+    must use.
+  * *Generate on startup* -- `key_file` is omitted. A fresh AES-256 key is generated at boot and
+    `ApiSheriff-16` is logged. Two consequences the operator must accept: *all sessions are dropped
+    on every restart*, and *the key cannot be shared across replicas*, so a load-balanced deployment
+    would reject every cookie sealed by another instance.
+
+  *File format.* One line of base64 -- the standard alphabet of RFC 4648 section 4 -- that decodes
+  to *exactly 32 bytes*. Whitespace around the line, a trailing LF or CRLF included, is stripped;
+  nothing else is allowed. `openssl rand -base64 32 > session.key` writes a valid file. The file is
+  read once, at boot, and may hold at most 256 bytes; the bounded read takes one byte more, at most
+  257, to detect a larger file.
+
+  *Refusals.* Each of these fails the boot with `CONFIG_INVALID`: a value that is not a usable path;
+  a path that does not exist, does not name a regular file or cannot be read; a file larger than 256 bytes; a file that holds no key
+  after stripping; content that is not one token of strict base64 (a line break or space inside it,
+  a character outside the alphabet, a PEM block); content that decodes to anything but 32 bytes. The
+  message names `oidc.session.key_file` and the defect -- never the path, the file content or a
+  decoder message -- and the gateway never falls back to a generated key. In `server` mode a
+  declared `key_file` is *refused at boot* at `/oidc/session/key_file`: that mode never reads the
+  sealing key, so the key would parse and do nothing. A document from an earlier release that still
+  carries the sealing key as a configuration value is refused as declaring an unknown key; see
+  link:../user/bff-cookie.adoc#_migrating_to_a_key_file[the migration note] for moving that key
+  into a file unchanged.
+
+  There is exactly *one* sealing key -- no decrypt-only companion key and no rotation window.
+  Replacing it is a clean break: cookies sealed under the withdrawn key carry a key id the gateway
+  no longer holds, are refused as "no session", and those users log in again. The file is read only
+  at boot, so a replacement takes effect when the gateway restarts: replace the file on every
+  replica and restart every replica. Moving the same key into another file changes nothing.
+
+| `session.max_cookie_size`
+| *Cookie mode only.* The sealed cookie-value size budget in bytes. Optional; range `40`--`8192`,
+  default `4019` -- the browser-safe value budget derived below, not the round 4096. A value outside the range fails the boot
+  with a message naming this key: below the floor no structurally valid sealed value could ever be
+  emitted, and above the ceiling the derived header cap would exceed what the inbound
+  request-header block (16 KiB, shared with every other header) will carry.
+
+  *This key is a VALUE budget; the browser's ~4096 is a HEADER budget.* RFC 6265 6.1 budgets a
+  cookie's name, value and attributes together. Under the default cookie name that costs 77 bytes
+  (23 for `+__Host-sheriff-session=+`, 54 for
+  `+; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax+`), so the largest value budget whose
+  emitted header still fits the guarantee is *4019*, not 4096 -- which is why that is the shipped
+  default. A custom `session.cookie_name` or a
+  TTL past 9999 seconds shifts the overhead by its own length difference, *and the warning threshold
+  moves with it*: boot validation derives the overhead from the resolved `cookie_name` /
+  `ttl_seconds` pair through the same arithmetic that assembles the header, so 4019 is the
+  default-configuration answer rather than a fixed threshold. A gateway running a 48-byte cookie
+  name is warned from 3994 upwards.
+
+  A value *inside* the range but above this gateway's derived threshold boots and is warned rather than refused
+  (`ApiSheriff-124`), because the range's upper half is only reachable safely by a client that keeps
+  whatever it is sent: a browser is required to keep 4096 header bytes and discards anything larger
+  silently, with no error on either side, so raising this budget moves the failure out of the
+  gateway -- where `ApiSheriff-114` would have refused the seal loudly -- and into the browser,
+  where nothing observes it.
+
+  *The warning reads the effective budget, so omitting the key is not a way out of it.* The gateway
+  emits the same header whether the number was written down or left to the default, and the check
+  reflects that. It does not fire on the default configuration -- 4019 plus the default 77-byte
+  overhead lands exactly on the guarantee -- but it does fire on a gateway that left this key omitted
+  and runs a longer `cookie_name` or a wider `ttl_seconds`, which is the case that used to pass in
+  silence. Before, the default was 4096 and the check skipped omitted keys, so every default
+  cookie-mode gateway emitted a header 77 bytes past the guarantee with nothing anywhere saying so.
+
+  This is *one declared number driving two limits*. It is both the seal-time budget -- a sealed
+  value over it fails the seal with a logged warning, never a silent truncation -- *and* the source
+  of the gateway's pre-route `Cookie` header-value cap (the budget plus a fixed 512-byte headroom
+  for the cookie name and any co-resident cookies). Encoding the two limits independently is what
+  previously made cookie mode unusable: the pre-route filter rejected every request carrying a live
+  sealed cookie with `400` before any BFF logic ran.
+
+  The activity cookie shares that headroom; the cap itself is unchanged. Its value is always 56
+  characters, so under the default cookie name the pair `name=value` takes 88 of the 512 bytes.
+  Under the default configuration a full-budget session cookie, the login-binding cookie and the
+  activity cookie in one `Cookie` header leave at least 256 bytes of the headroom free for cookies
+  the application sets.
+
+  The raised cap is scoped twice, and is *not* a general widening of inbound header validation:
+
+  * *By mode* -- only a gateway that resolves an active cookie-mode BFF raises it from this key. A
+    bearer-only gateway keeps the resolved baseline `max_header_value_length` on every header,
+    unchanged (see xref:security-and-edge-hardening.adoc#_preset_limits[Preset limits] for the per-preset figure), and so does a
+    `session.mode: server` gateway unless it declares `session.max_cookie_header_value_length`.
+  * *By header* -- within a cookie-mode gateway only `Cookie` and `Set-Cookie` header *values* use
+    the raised cap. Every other header keeps the resolved baseline, and every non-length validator
+    (null-byte, control-character, injection-pattern) still applies to the cookie value. The
+    `Authorization` carve-out described in xref:security-and-edge-hardening.adoc#_pre_route_header_carve_outs[Pre-route header-name carve-outs] is the one other
+    exception, and it is independent of session mode.
+
+  [IMPORTANT]
+  ====
+  *Enforcement is gateway-wide, not per-anchor.* The key sits on the global `oidc.session` block,
+  but the cap it drives is applied by the pre-route stage that runs *before* route selection --
+  at which point no anchor is resolved. Do not read the key's placement as per-anchor scoping;
+  a cookie-mode gateway raises the `Cookie` cap for every route it serves. The per-anchor
+  `security_filter.max_header_value_length` knob is a different control, applied post-route.
+  ====
+
+| `session.max_cookie_header_value_length`
+| *Server mode only.* The pre-route cap on the length of an inbound `Cookie` header value, in
+  characters. Optional integer; *omitted, there is no `Cookie` carve-out* and a server-mode gateway
+  measures `Cookie` values at the resolved baseline `max_header_value_length` like every other
+  header -- the secure default, and the behaviour before the key existed.
+
+  *Why it exists.* A server-mode BFF holds no large cookie of its own -- its session cookie is an
+  opaque handle -- but it may carry a third party's cookies through the gateway. The motivating case
+  is a gateway that fronts its own identity provider: a Keycloak login sends a `Cookie` header of
+  1726 characters, `KC_RESTART` alone some 1400 of them, so on a `strict` gateway (1024) every login
+  is rejected `400` before route selection. This key lets such a gateway stay on `strict` and raise
+  the cap for `Cookie` alone, instead of moving every header of every route to `lenient`. Size it
+  against the *whole* header, not the largest cookie: a login that starts while the identity
+  provider's own session is still live sends its session cookies beside `KC_RESTART`, measured at
+  2409 characters in the `/auth`-fronted variant of
+  link:../user/compose-sample.adoc[the compose sample], which declares `4096` for that reason.
+
+  *The effective cap is the larger of the baseline and this value*, so the key can only admit more
+  length. A value is *refused at boot* (`ApiSheriff-200` at `/oidc/session/max_cookie_header_value_length`):
+
+  * below the resolved baseline `max_header_value_length` -- `1024` under `strict`, `8192` under
+    `lenient` -- because it would read like a relaxation while making `Cookie` the most restricted
+    header;
+  * above `8192`, the `lenient` profile's own cap, so the relaxation never admits a header value the
+    loosest shipped profile would reject (the schema states the same maximum);
+  * in any mode other than `server` -- cookie mode derives its `Cookie` cap from
+    `session.max_cookie_size`, the one number that also bounds the sealed value, and a gateway that
+    is no server-mode BFF never reads the key.
+
+  It is scoped exactly like the cookie-mode cap above: *by header* -- `Cookie` and `Set-Cookie`
+  header values only, every non-length validator still applying to them -- and *by validator* --
+  only the length cap differs from the baseline. Like that cap, it is *gateway-wide, not per-anchor*:
+  the pre-route stage runs before route selection, so a server-mode gateway that declares the key
+  admits the longer `Cookie` value on every route, the post-route `security_filter` re-check
+  included. Choose the smallest value that covers the cookies you actually carry, and state the
+  headroom you left.
+
+| `session.ttl_seconds`
+| *Absolute* session lifetime, counted from a login timestamp stored inside the session record
+  (server mode) or the encrypted cookie payload (cookie mode) -- enforcement is server-side,
+  since cookie attributes are client-advisory. Optional integer; *default `3600`*. It is not the
+  idle timeout -- that is `session.idle_timeout_seconds` -- and neither a token refresh nor a request
+  extends it. On each `Set-Cookie` (including re-seals after refresh, and the cookie value a
+  server-mode step-up or widening re-issues) the cookie `Max-Age` is set to the *remaining*
+  lifetime, so no later cookie extends the session. On expiry the user re-authenticates via the
+  login flow.
+
+| `session.idle_timeout_seconds`
+| *Idle* session lifetime, in *both* session modes: a session ends when this many seconds have
+  passed without a request that was let through on a session route. Optional integer; *default
+  `1800`*. Omitted, it resolves to the smaller of `1800` and the effective `ttl_seconds`, so a
+  deployment whose `ttl_seconds` is below 1800 keeps booting and keeps its lifetime. A declared
+  value is *refused at boot* in two cases: below `1`, and above the effective `ttl_seconds` (it
+  could never take effect). No value switches the idle timeout off; declaring it equal to
+  `ttl_seconds` has that effect.
+
+  Only a request the gateway lets through to a `require: session` route, or to the session branch
+  of a `session_fallback` route, counts as an access. A request that is refused, challenged or
+  redirected into a login or a widening does not, and neither does a call to a reserved path such
+  as `user_info.path`. A WebSocket upgrade or a streamed response counts once, when it starts. A
+  request on an idle-expired session gets the ordinary unauthenticated answer. `ttl_seconds` still
+  applies: activity never moves the absolute deadline.
+
+  *Server mode* keeps the last access in the session store. *Cookie mode* keeps it in the activity
+  cookie -- `<cookie_name>-activity`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, with `Max-Age`
+  set to the session's remaining absolute lifetime -- which the gateway sets on a session-route
+  response once the recorded access is one interval old: 60 seconds, or half the idle timeout
+  where that is shorter. The recorded access can therefore be up to one interval older than the
+  latest request, and the idle deadline is exact to within that interval. Requests that arrive in
+  parallel with the same activity cookie each receive a new one.
+  The session cookie itself is not set again on an access. Without a readable activity cookie the
+  idle timeout is measured from the login. See
+  link:../user/bff-cookie.adoc#idle-timeout[Cookie-Based BFF -- Idle timeout and the activity cookie].
+
+| `session.refresh.enabled` / `leeway_seconds`
+| Transparent refresh: when the access token is within `leeway_seconds` of expiry, refresh it
+  (with rotation) during the request. `enabled` defaults to `true` -- omitting the key, or the
+  whole `refresh` block, leaves refresh on. Setting it to `false` switches off the entire path:
+  the refresh token the code exchange returned is *not* retained on the session (so in cookie
+  mode nothing extra is sealed into the browser cookie), and no refresh coordinator is
+  assembled, so the gateway never refreshes mid-session. A session then keeps the access token
+  its login -- or a later widening -- issued until it ends, at `session.ttl_seconds` at the
+  latest: the gateway neither refreshes that token nor re-checks its expiry. A session route's
+  scope enforcement then has no refresh to obtain a missing scope with: every shortfall goes
+  straight to a widening of the live session, or to `403`.
+
+| `session.refresh.on_failure`
+| How the *request during which* refresh fails is answered when it is left with no token to
+  mediate. Whether the *session* survives is not this key's decision: it follows from what the
+  identity provider did with the refresh token -- see <<_refresh_failure_dispositions>>.
+  `reauthenticate` (default, also when the key is omitted): treat the request as unauthenticated --
+  navigation requests are redirected into a fresh authorization-code flow, others get `401` (the
+  same content negotiation as `require: session`). `reject`: always answer `401`
+  `application/problem+json`, even for navigations -- for deployments whose SPA handles re-login
+  entirely itself. Any other value is refused at boot.
+
+| `step_up.enabled` / `step_up.honor_upstream_challenge`
+| RFC 9470: honour an upstream `401` + `insufficient_user_authentication` challenge by silent
+  refresh, then re-authorization with elevated `acr_values`/`max_age`. See
+  link:../variants/02-bff-session.adoc[Variant 2]. The two keys govern this leg only and do not gate
+  `step_up.path`.
+
+| `step_up.path`
+| Gateway-served *step-up* entry point -- the reserved path a browser holding a live session
+  navigates to in order to have that session *widened*: `<path>?returnUrl=<target>` asks the IdP
+  for the session's granted scope set plus the needed scope set of the route
+  `<target>` lands on, merges the grant into the same session, and returns the browser to
+  `<target>`. It is the target of the `step_up_url` member a session route names in its `403`
+  `application/problem+json` answer when a non-navigation request lacks a needed scope (see
+  link:#_endpoint_scopes[`endpoint.scopes`]). Optional string. Its presence alone registers the
+  reserved path; omitted, no step-up endpoint exists and no `step_up_url` is ever named.
+  When present it must be an absolute gateway path starting with a single `/` and carrying no query
+  (`?`) and no fragment (`#`), no backslash (`+\+`), no control character and no whitespace -- a
+  blank, relative or scheme-relative (`//host`) value, a value holding a `?` or a `#` anywhere (a
+  bare trailing one included), and a value holding a backslash, a control character or whitespace
+  anywhere, is refused at boot with `ApiSheriff-200` at `/oidc/step_up/path`. The path is matched
+  exactly against the request path, which carries neither a query nor a fragment, and `step_up_url`
+  appends `?returnUrl=...` to the configured value -- so a path holding either would name an
+  endpoint no request reaches and a `step_up_url` that does not carry the return target. A browser
+  reads a backslash as `/` and drops a tab or line break before parsing a URL, so `/\host` -- and
+  `//host` with a tab between its two slashes -- would be read as the scheme-relative `//host`.
+
+  The endpoint serves a live session only: without one it answers `401`
+  `application/problem+json` and never redirects to the IdP. `returnUrl` is same-origin-validated
+  like a login's and falls back to `login.default_return_url`. The route `<target>` lands on is
+  resolved as for `login.path` (matched as a `GET` on the gateway host, query ignored,
+  `match.headers` routes never selected, `oidc.scopes` alone otherwise). When that route's needed
+  set already lies inside the session's granted scope set, the answer is a `302` straight to
+  `<target>`; otherwise the widening starts with a `prompt=none` authorization request -- pushed to
+  the identity provider like a login's, so the redirect carries `client_id` and `request_uri` only
+  and a failed push answers `502` with the session unchanged -- followed by
+  exactly one interactive attempt when the IdP answers `login_required`, `interaction_required`,
+  `consent_required` or `account_selection_required`. Any other IdP refusal ends in a terminal
+  `403` that leaves the session unchanged. See link:../user/bff-session.adoc#step-up-path[Server-Session BFF -- The step-up path] and
+  link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
+|===
+
+[[_oidc_client_authentication]]
+=== Client authentication: key mode and client-secret mode
+
+The gateway presents one client credential on every authenticated back-channel call to the identity
+provider: the pushed authorization request, the authorization-code exchange, the refresh grant and RFC 7009
+revocation. Which credential it is follows from the document alone. There is no mode key.
+
+[cols="2,2,3", options="header"]
+|===
+| The `oidc` block declares | Mode | Credential
+
+| no `client_secret`, and a `client_authentication.key_file`
+| *Key mode* (the default)
+| `private_key_jwt`, signed with the key in that file.
+
+| no `client_secret`, and no `client_authentication.key_file`
+| *Key mode* (the default)
+| `private_key_jwt`, signed with a key generated at startup.
+
+| a `client_secret`, and no `client_authentication.key_file`
+| *Client-secret mode*
+| `client_secret_basic`. The gateway logs `WARN` `ApiSheriff-133` at every boot.
+
+| a `client_secret` *and* a `client_authentication.key_file`
+| *Refused at boot*
+| None. The two keys select different authentications, and the gateway does not choose between them.
+|===
+
+*Key mode.* The client assertion is signed with the client-authentication key, under the algorithm
+and the key id derived from that key (see link:#_oidc_signing_keys[Signing keys]). Its `iss` and
+`sub` are `client_id`. Its `aud` is the configured `issuer`, sent as a single string, on every leg.
+The identity provider verifies the assertion with the public key it fetches from
+link:#_oidc_client_jwks[the client JWKS endpoint]. The identity provider needs the public key only.
+What it stores beside that key is not in the gateway's hands. Keycloak 26.5.7 generates and stores a
+secret for a client imported without one, and refuses that secret at the token endpoint for a
+client registered for signed-assertion authentication. That was seen on the integration stack; no
+test asserts it.
+
+*Client-secret mode.* The secret travels as an HTTP Basic credential on each of those calls.
+
+[WARNING]
+====
+Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
+====
+
+What the secret changes, and what it does not:
+
+* *Only the client credential changes.* Every authorization request is still pushed, every token
+  request still carries a DPoP proof, and a token response that is not bound to the proof key is
+  still refused. `sender_constraint.key_file` is handled exactly as in key mode.
+* *No client-authentication key exists.* None is read and none is generated, so the client JWKS path
+  answers `404`. The identity-provider client is registered for secret authentication and names no
+  key-set URL.
+* *The mode is announced at every boot.* `ApiSheriff-133` reads: `The BFF authenticates to the
+  identity provider with oidc.client_secret. Client-secret authentication is not FAPI 2.0 conformant
+  and may weaken security. Pushed authorization requests and the DPoP sender constraint stay in
+  effect. Removing oidc.client_secret selects private_key_jwt`. The template takes no parameter, so
+  it cannot carry the secret. It is a warning and never a boot refusal. Removing `client_secret` is
+  the one way to silence it.
+* *A copied descriptor selects the mode.* A `gateway.yaml` taken from another deployment that
+  carries `client_secret` selects client-secret authentication without anyone deciding it. The boot
+  warning is the signal.
+
+*The two boot refusals.* Both are reported through `ApiSheriff-200` at `/oidc/client_secret`, with a
+fixed text that carries neither the secret nor the configured path:
+
+* `client_secret` together with `client_authentication.key_file`. The message names both keys and
+  both ways out: remove `oidc.client_secret` to authenticate with the key, or remove
+  `oidc.client_authentication.key_file` to authenticate with the secret.
+* A `client_secret` that resolves to a blank value -- a referenced variable set to the empty string.
+  A declared secret selects `client_secret_basic` and must carry a value. Set the variable, or remove
+  `oidc.client_secret`.
+
+A `client_secret` whose variable is not set at all fails earlier, at load, under the secrets rule.
+
+[[_oidc_signing_keys]]
+=== Signing keys: `client_authentication.key_file` and `sender_constraint.key_file`
+
+The gateway holds up to two signing keys, one per purpose. Each has its own configuration key.
+
+[cols="2,2,2,2", options="header"]
+|===
+| Configuration key | The key signs | Read in | Public half
+
+| `client_authentication.key_file`
+| the `private_key_jwt` client assertion
+| key mode only
+| published at the client JWKS endpoint
+
+| `sender_constraint.key_file`
+| the DPoP proofs, so every access token is bound to it
+| both modes
+| travels in each proof; never published
+|===
+
+In key mode the two keys must be two keys: one file named by both fields, or the same key under two
+paths, is refused at boot (see <<_oidc_signing_key_separation>>).
+
+==== Two modes per key
+
+Each key is in exactly one of two modes. Both are supported production modes.
+
+* *Provided* -- `key_file` names a PEM file on a mount. The gateway reads the file once, at boot. The
+  key survives a restart and can be given to every replica.
+* *Generated* -- `key_file` is omitted. The gateway generates an EC P-256 key at boot and logs `INFO`
+  `ApiSheriff-21` once for that purpose, naming the purpose and the mode and never the key. Two
+  consequences follow: *the key is replaced on every restart*, and *it cannot be shared across
+  replicas*. The generated mode is for a single node.
+
+There is at most one key per purpose. No second, retiring key is published or accepted, so replacing
+a key is a clean break with no overlap.
+
+==== The reference is a path, and a path is not a secret
+
+`key_file` is a file path. Write it literally, or through a `${VAR}` or `${VAR:-default}`
+placeholder:
+
+[source,yaml]
+----
+oidc:
+  client_authentication:
+    key_file: /etc/sheriff/keys/client-auth.pem        # a literal path
+  sender_constraint:
+    key_file: ${SHERIFF_DPOP_KEY_FILE}                 # the same, supplied by the deployment
+----
+
+The value is not a secret-classified field. It names a location on a mount and discloses nothing
+else, so the secrets rule -- bare `${VAR}` only, no literal, no default -- does not apply to it, and
+`gateway.yaml` stays a document that can be committed. The secret is the *key material* in the file.
+It never enters `gateway.yaml`, a log line or an error message, and a boot refusal names the
+configuration key and the defect, never the configured path.
+
+The gateway does not check the file's permissions. Mount the file read-only, readable by the
+gateway's user and by nothing else that does not need it.
+
+==== The file format: one private block and one public block
+
+A key file holds *exactly one* unencrypted PKCS#8 `PRIVATE KEY` block *and exactly one* `PUBLIC KEY`
+block, the two halves of one key, and nothing else but whitespace. The file is limited to 16 KiB.
+
+[source,text]
+----
+<one PEM block labelled PRIVATE KEY: the unencrypted PKCS#8 private key>
+<one PEM block labelled PUBLIC KEY: the public half of the same key>
+----
+
+The exhibit describes the two blocks instead of printing their `BEGIN` and `END` armour lines, so
+that a secret scanner does not take this page for a key file. The commands below write the real
+armour.
+
+*The `PUBLIC KEY` block is mandatory for every key type, RSA included.* The gateway publishes the
+public half of the client-authentication key at the JWKS endpoint and embeds that of the proof key in
+every DPoP proof, and it derives neither from the private key. At boot it proves by one sign-and-verify round that the two blocks belong
+together, and it refuses to start when they do not.
+
+These commands produce such a file. Each set writes a PKCS#8 private key and appends its public
+half to the same file:
+
+[source,bash]
+----
+# RSA, 2048 bits -- the gateway signs PS256 with it
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out client-auth.pem
+openssl pkey -in client-auth.pem -pubout -out client-auth.pub
+cat client-auth.pub >> client-auth.pem
+rm client-auth.pub
+
+# EC, curve P-256 -- the gateway signs ES256 with it
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve \
+  -out dpop.pem
+openssl pkey -in dpop.pem -pubout -out dpop.pub
+cat dpop.pub >> dpop.pem
+rm dpop.pub
+----
+
+Check the result before mounting it: the file must begin with `-----BEGIN PRIVATE KEY-----` and
+contain `-----BEGIN PUBLIC KEY-----`. An OpenSSL build that writes a traditional `RSA PRIVATE KEY` or
+`EC PRIVATE KEY` block produces a file the gateway refuses.
+
+An existing key in a traditional block, or in an encrypted block, is converted with
+`openssl pkcs8 -topk8 -nocrypt -in old.pem`, and its public half is written with
+`openssl pkey -in old.pem -pubout`.
+
+==== Key types, minimum sizes, algorithm and key id
+
+[cols="2,2,3", options="header"]
+|===
+| Key type | Minimum | Signing algorithm
+
+| RSA
+| a modulus of 2048 bits
+| `PS256`
+
+| EC
+| curve P-256, and no other curve
+| `ES256`
+|===
+
+* *The algorithm follows the key type.* There is no algorithm setting. `RS256` and its family cannot
+  be selected, and `PS384`, `ES384` and their larger siblings cannot either.
+* *Ed25519 is not accepted.* A file holding an `EdDSA` key is refused at boot.
+* *The key id is derived and cannot be set.* It is the RFC 7638 thumbprint of the public key. A PEM
+  file carries no key id and no configuration key sets one. The id therefore changes exactly when the
+  key does, which is what lets an identity provider that caches the client key by `kid` notice a
+  replaced key.
+* *Both modes are held to the same floor.* A generated key is an EC P-256 key and signs `ES256`.
+
+==== Boot refusals
+
+A key file the gateway cannot use stops the boot. The gateway never falls back to a generated key,
+because the identity provider was never given that key. The refusal is raised while the BFF runtime
+is assembled, after the configuration validator has run, so it is not part of the collected
+`ApiSheriff-200` violations. The boot log carries the message and the process exits non-zero without
+serving. Every message starts with the configuration key --
+`oidc.client_authentication.key_file` or `oidc.sender_constraint.key_file` -- followed by the text
+below.
+
+[cols="2,3,3", options="header"]
+|===
+| Defect | The message continues with | Fix
+
+| The file is absent
+| `names a file that does not exist`
+| Mount the file, or correct the path.
+
+| The path is a directory or another non-file
+| `does not name a regular file`
+| Point the key at the file itself.
+
+| The file cannot be read
+| `names a file that cannot be read`
+| Make the file readable by the gateway's user. Check the mount and its permissions.
+
+| The value is not a usable path
+| `does not name a usable file path`
+| Correct the value. Check what a placeholder resolves to.
+
+| The file is larger than 16 KiB
+| `names a file larger than the 16384 byte limit`
+| Supply a file that holds the two blocks and nothing else.
+
+| The `PUBLIC KEY` block is missing
+| `holds no PUBLIC KEY block`
+| Append the public half: `openssl pkey -in key.pem -pubout`.
+
+| The `PRIVATE KEY` block is missing
+| `holds no PRIVATE KEY block`
+| Supply the PKCS#8 private key in the same file.
+
+| A block occurs twice
+| `holds more than one PRIVATE KEY block`, or the same for `PUBLIC KEY`
+| Keep one key per file.
+
+| The private key is encrypted
+| `holds an ENCRYPTED PRIVATE KEY block; an encrypted key is not supported`
+| Convert it: `openssl pkcs8 -topk8 -nocrypt`.
+
+| A traditional private-key block
+| `holds a block labelled RSA PRIVATE KEY; that key format is not supported`, or the same for
+  `EC PRIVATE KEY`
+| Convert it: `openssl pkcs8 -topk8 -nocrypt`.
+
+| Any other PEM block, a certificate for example
+| `holds an unsupported PEM block '<label>'`
+| Remove it. The file holds the two key blocks only.
+
+| Text outside a block
+| `holds content outside a PEM block`
+| Remove it. Only whitespace may surround the two blocks.
+
+| A malformed or unclosed block, or a body that is not base64
+| `holds a malformed PEM BEGIN line`, `holds a <label> block that is not closed by its own END line`,
+  or `holds a <label> block that is not valid base64`
+| Regenerate or re-copy the file. A truncated copy produces these.
+
+| The two halves do not match
+| `holds a PRIVATE KEY block and a PUBLIC KEY block that do not belong to the same key`
+| Write the public block from this private key.
+
+| The two halves are of different key types
+| `holds a PRIVATE KEY block with an RSA key and a PUBLIC KEY block that is not an RSA public key`,
+  or the same for EC
+| Write the public block from this private key.
+
+| An RSA key below the minimum
+| `holds an RSA key with a modulus below 2048 bits`
+| Generate a key of at least 2048 bits.
+
+| An EC key on another curve
+| `holds an EC key on a curve other than P-256`
+| Generate the key on P-256.
+
+| An Ed25519 key
+| `holds an EdDSA key; EdDSA is not offered`
+| Provide an RSA key of at least 2048 bits or an EC key on P-256.
+
+| Any other key type
+| `holds a PRIVATE KEY block that is neither an RSA nor an EC key in unencrypted PKCS#8 form`
+| Provide an RSA or an EC P-256 key.
+|===
+
+[[_oidc_signing_key_separation]]
+==== One key per purpose
+
+In key mode the key that signs the client assertion must not also sign the DPoP proofs: FAPI 2.0
+section 6.8 requires every key to serve one purpose. The two fields therefore name different files
+that hold different keys, and two checks refuse anything else:
+
+* *One file named by both fields.* When both files exist, the configuration validator asks the file
+  system whether the two paths locate one file, so a symbolic link to the other key file is a match
+  and a `..` segment behind a symbolic link is judged by the file it reaches, not by its spelling; an
+  I/O error while asking refuses nothing. When either file does not exist -- as on a machine running
+  the offline check without the deployment's keys -- only a match its spelling proves is refused: the
+  two paths must be equal after normalisation, and neither may contain a `..` segment. So
+  `keys/./a.pem` and `keys/a.pem` are one file, while `keys/x/../a.pem` and `keys/a.pem` are not
+  judged here, because `x` may be a symbolic link to another directory. It reports a match through
+  `ApiSheriff-200` at `/oidc/sender_constraint/key_file`: `oidc.client_authentication.key_file and
+  oidc.sender_constraint.key_file name the same file`. The offline check reports it as well.
+* *The same key in two files* -- a copy, or two paths the validator could not prove to be one file.
+  The validator cannot see that, because it reads no key material. The BFF runtime compares the two
+  key ids once both keys are read, and refuses a match with `CONFIG_INVALID`:
+  `oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key`.
+
+Both messages continue with the reason and the remedy -- point `oidc.sender_constraint.key_file` at a
+file holding a different key, or remove it to use a DPoP key generated at startup -- and name neither
+a path nor a key id. Neither check applies in client-secret mode, where no client-authentication key
+exists, or when either key is generated: a generated key is fresh per boot.
+
+==== The same files on every instance
+
+Every gateway instance behind one identity-provider client must be given the same key files. The
+reason differs per key:
+
+* *The client-authentication key.* The identity provider verifies an assertion against the key set
+  it fetched from one instance. An instance that signs with another key fails client authentication,
+  on some requests and not on others.
+* *The proof key.* An access token is bound to the key of the instance that obtained it. In cookie
+  mode a refresh on another instance presents a proof of another key.
+
+A deployment with more than one replica therefore provides both key files. The generated mode is for
+a single node.
+
+==== Replacing a key
+
+A generated key is replaced by every restart. A provided key is replaced by replacing the file and
+restarting; the file is not re-read while the gateway runs. Nothing is changed at the identity
+provider: it fetches the new client key from the JWKS endpoint when it meets the unknown key id.
+Keycloak does so at most once per ten seconds, so a request inside that interval can fail. What a
+replacement does to live sessions, and the limits of what was observed, is in
+link:../user/bff-session.adoc#replacing-a-key[Server-Session BFF -- Replacing a key] and
+link:../user/bff-cookie.adoc#replacing-a-key[Cookie-Based BFF -- Replacing a signing key].
+
+[[_oidc_client_jwks]]
+=== The client JWKS endpoint (`client_authentication.jwks_path`)
+
+In key mode the gateway publishes the public half of the client-authentication key at a reserved
+path. It is the supported way the identity provider learns the key: register the `https` URL of this path
+as the client's key-set URL. Registering the public key itself at the identity provider is not the
+supported route -- it would have to be repeated at every key replacement, and it cannot serve a
+generated key at all.
+
+[cols="1,3"]
+|===
+| Aspect | Contract
+
+| Path
+| `client_authentication.jwks_path`; *default `/bff/jwks`*. An absolute path starting with a single
+  `/`, without a query and without a fragment.
+
+| Host
+| Matched on *every* host the gateway answers on, not only the host of `redirect_uri`, because the
+  identity provider dials it server-to-server at an address that is routinely an internal name. A
+  proxy route covering the path never receives a request for it.
+
+| Method
+| `GET` only. Any other method is `405` with `Allow: GET`.
+
+| Credential
+| None. A public key is public. The endpoint reads no header, cookie, query or body.
+
+| Response
+| `200`, `Content-Type: application/json`, `Cache-Control: no-store`. A JWKS document with exactly
+  one key: `kty`, `use: sig`, `alg`, `kid` and the public members of the key type (`n` and `e` for
+  RSA; `crv`, `x` and `y` for EC).
+
+| Never published
+| A private member; `key_ops`; a separate DPoP proof key.
+
+| Client-secret mode
+| The path stays reserved and answers *`404`* to every method. The answer is the one a path no route
+  matches receives -- the same `application/problem+json` body and the same headers, and the same
+  HTML error page where `portal.error_pages` negotiates one -- so the answer does not tell a
+  client-secret gateway from one without the endpoint. It is not released to the route table, so no proxied upstream can
+  answer under a key-set URL an identity provider may still hold for this client.
+
+| TLS
+| The endpoint is served over TLS only when the gateway's listener, or the TLS terminator in front
+  of it, is TLS. The gateway does not refuse the path on a plain listener. Register an `https` URL,
+  and make the identity provider trust the gateway's certificate by name.
+
+| Boot rule
+| A `jwks_path` -- declared, or the default when omitted -- that another reserved OIDC path already
+  names is refused through `ApiSheriff-200` at `/oidc/client_authentication/jwks_path`, naming both
+  keys. A `portal.path` equal to it is refused by the portal rule. A `jwks_path` that is not a
+  canonical gateway path -- a `//`, a dot segment, a matrix parameter (`;`), a percent-encoded
+  character, or anything else the canonical-path review of `portal.path` refuses -- is refused at
+  the same pointer, in both client-authentication modes. The path is matched by exact equality with
+  the canonical request path, so a request that spells such a value as configured would never be
+  answered with the key set, and the canonical path that request resolves to would be left
+  unreserved. That is a statement about the configured spelling: a value carrying a percent-encoded
+  character is reached by no request at all, while a value carrying a matrix parameter would be
+  reached by a request that percent-encodes the `;` -- a URL no operator registers.
+|===
+
+[[_oidc_sender_constraint]]
+=== The sender constraint and the token-binding check (`sender_constraint`)
+
+Every token request the gateway sends -- the authorization-code exchange and every refresh grant --
+carries a DPoP proof signed with the sender-constraint key. The identity provider binds the access
+token to that key by a `cnf.jkt` claim. This holds in both client-authentication modes.
+
+*A token response that is not bound to the proof key is refused.* After the code exchange and after
+every refresh the gateway accepts a token response only when both of these hold:
+
+* its `token_type` is `DPoP`, compared without regard to case;
+* the access token carries a `cnf` object whose `jkt` equals the RFC 7638 thumbprint of the gateway's
+  proof key.
+
+[cols="1,3", options="header"]
+|===
+| Where | What a refused response does
+
+| Login
+| The callback answers `400`. No session is created and no session cookie is set.
+
+| Session widening
+| The callback answers `400`. Nothing is merged into the live session, which is left as it was.
+
+| Refresh
+| The session is ended and its cookie is cleared. The request is answered as
+  `session.refresh.on_failure` says. `ApiSheriff-111` follows with `redeemed-response-refused`. This
+  holds for the near-expiry refresh and for the scope-driven refresh of a session route alike.
+
+| Log
+| `WARN` `ApiSheriff-134`, on every occurrence: `Token response on the %s leg refused — the token is
+  not bound to the gateway's DPoP proof key (%s)`. The first value is the leg (`code-exchange`,
+  `refresh` or `other`). The second is the reason: `token-type`, `unreadable-access-token`,
+  `cnf-absent` or `cnf-mismatch`. The record carries no token material.
+
+| Refresh token
+| A refresh token issued alongside a refused response is discarded. It is not revoked at the
+  identity provider.
+|===
+
+Three consequences for the identity provider:
+
+* *It must issue DPoP-bound access tokens to the gateway's client.* A provider that ignores the proof
+  and answers with a `Bearer` token cannot serve a BFF deployment: every login is refused.
+* *It must issue the access token as a JWT.* An opaque access token has no readable `cnf` and is
+  refused under `unreadable-access-token`, as is every other failure to read the token. A response
+  that carries no access token at all is refused one step earlier, by the token engine, with the same
+  effect on the login or the session and without the `ApiSheriff-134` record.
+* *The check judges token responses only.* A session whose token is bound to an earlier key is not
+  re-checked, so replacing the proof key does not by itself end a session.
+
+*The binding ends at the gateway.* The access token a session route relays upstream carries
+`cnf.jkt` and is sent as `Authorization: Bearer`, with no proof. The contract for upstreams is stated
+at link:#_auth_token_relay[`auth.token_relay`].
+
+[[_refresh_failure_dispositions]]
+=== Refresh failures: what happens to the session
+
+A refused refresh is disposed by *what the identity provider did to the presented refresh token*,
+as the token engine classifies the exchange. The disposition is fixed per kind -- there is no key
+that changes it -- and `on_failure` only decides how a request that is left without a token is
+answered.
+
+[cols="2,3,2,1", options="header"]
+|===
+| Failure kind | Session | Refresh token revoked | Recorded as
+
+| *Pre-redemption* -- the provider never processed the grant: a connection or DNS failure, a `5xx`,
+  or a `4xx` it did not attribute to the credential
+| *Kept.* While the access token has not expired the request is mediated with it; once it has, the
+  request is answered through `on_failure` and the session cookie is *not* cleared. The session's
+  next attempt waits out a fixed five-second back-off (per instance).
+| None -- the presented token is still valid.
+| `ApiSheriff-127`
+
+| *Credential rejected* -- the provider answered `invalid_grant`, which is also how strict
+  rotation refuses a replayed refresh token
+| *Ended.* The session cookie is cleared and the request is answered through `on_failure`.
+| None -- nothing was redeemed.
+| `ApiSheriff-111` (`credential-rejected`)
+
+| *Redeemed* -- the provider redeemed the grant, but the gateway refused its response. A token
+  response that is not bound to the gateway's DPoP proof key is refused this way, and
+  `ApiSheriff-134` is logged first (see link:#_oidc_sender_constraint[The sender constraint and the
+  token-binding check])
+| *Ended*, as above.
+| Best-effort, the one live token the gateway can name: the successor when the provider rotated,
+  the presented token when it did not, none when rotation is unknown.
+| `ApiSheriff-111` (`redeemed-response-refused`)
+
+| *Persist failure* -- the exchange succeeded, but the session binding could not hold the rotated
+  session (for example a sealed cookie past its size budget)
+| *Ended*, as above.
+| Best-effort, the refresh token the exchange returned.
+| `ApiSheriff-111` (`persist-failure`)
+
+| *Session terminated meanwhile* (`session.mode: server` only) -- the exchange succeeded, but a
+  logout or a back-channel logout destroyed the session while the refresh was in flight
+| *Stays ended.* The rotated session is not written back; the session cookie is cleared and the
+  request is answered through `on_failure`.
+| Best-effort, the refresh token the exchange returned.
+| `ApiSheriff-111` (`session-terminated`)
+|===
+
+Revocation is best-effort: a failed revocation never changes the disposition, because the local
+session destruction is what ends the session.
+
+*A logout wins over a refresh in server mode.* A refresh resolves the session, calls the identity
+provider and then writes the rotated session. In `session.mode: server` that write replaces the
+session only while the store still holds it, so a session that `oidc.logout.path` or a back-channel
+logout destroyed in between is not brought back: the last row applies. It is recorded with its own
+reason and without an exception, so a logout that overtook a refresh reads differently in the log
+from a binding that could not hold the session (`persist-failure`). In `session.mode: cookie` the
+row never applies. The gateway holds no session state there and cannot observe a logout, so the
+rotated session is re-sealed into a new cookie as on any refresh -- see
+link:../variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout] for that limit and its mitigations.
+
+*The scope-driven refresh takes the same dispositions.* The refresh a session route makes to
+obtain a missing scope the session was granted before (see link:#_endpoint_scopes[`endpoint.scopes`])
+runs through the same exchange, shares the per-session single-flight and the back-off with the
+near-expiry refresh, and is disposed by the table above. It adds one outcome that is not a failure:
+the session is kept but still lacks the requested scope -- the IdP granted a narrower `scope`, the
+session holds no refresh token, or the request joined a concurrent refresh that did not ask for it.
+That outcome records no back-off and no warning, and the request goes on to a widening or a `403`.
+When the IdP granted a narrower `scope`, every requested scope it did not return also leaves the
+session's granted set.
+An IdP that answers the refresh with `invalid_scope` is *not* recognised as that outcome: the token
+engine reports it without the OAuth error code, so it is disposed as *pre-redemption* -- the session
+is kept, `ApiSheriff-127` is logged, and the session's next refresh waits out the back-off
+(link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
+
+*Refresh-token reuse detection is the identity provider's job, not the gateway's.* A confidential
+client only sees the refresh tokens it presents itself, and a stateless cookie-mode instance keeps no
+token family to compare against, so the gateway cannot recognise a replayed refresh token. The
+operator control is *strict refresh-token rotation at the identity provider* -- on Keycloak,
+`revokeRefreshToken: true` with `refreshTokenMaxReuse: 0` (*Revoke Refresh Token* on, *Refresh Token
+Max Reuse* `0`). The provider then refuses a replay with `invalid_grant`, which arrives as *credential
+rejected* and ends the session. The integration and compose-sample realms ship with it on. Against
+Keycloak a detected replay also revokes the successor refresh token, so the legitimate holder's
+session ends as well; the Keycloak user session itself survives
+(see link:../security-threat-model.adoc[the threat model] and
+link:../adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+
+*Residual:* without strict rotation at the provider there is *no* reuse detection on either side --
+the provider accepts a replayed refresh token and simply refreshes it. The cost of turning it on is
+the duplicate-refresh race: two gateway instances refreshing one session, or two parallel cookie-mode
+requests on different instances, present the same token, and the second ends the session
+(link:../variants/03-bff-cookie.adoc#_transparent_refresh_and_step_up[Variant 3]).

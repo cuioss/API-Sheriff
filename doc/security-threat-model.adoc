@@ -419,7 +419,7 @@ let it answer addresses inside the namespace. With exact routes that gap is reac
 whose only member is `path: /admin` claims exactly one address, and `/admin/` and `/admin/x` land on
 whatever encloses it -- served with *its* auth posture and *its* `security_headers` block, which is
 the router-vs-enforcement desync of this entry expressed in configuration rather than in parsing. The
-boot now closes it with link:configuration.adoc#anchor-coverage-rule[the anchor-coverage rule], the
+boot now closes it with link:configuration/validation-rules.adoc#anchor-coverage-rule[the anchor-coverage rule], the
 mirror of the declaration-scoped rules, so no address in an anchor namespace is served by a route
 outside the anchor.
 
@@ -732,7 +732,7 @@ protocol. `cui-http` admits decoded CR, LF and TAB in parameter values under eve
 before it reaches the upstream -- answered as the unrouted `404` to an untrusted caller while
 `security_defaults.uniform_not_found` is on (<<gw-16>>). `lenient` keeps the library default, and `minimal` runs no
 parameter validation at all; both are documented as such (see
-link:configuration.adoc#_query_validation_raw_form[the configuration reference]). Because the
+link:configuration/security-and-edge-hardening.adoc#_query_validation_raw_form[the configuration reference]). Because the
 filter now judges the raw form it forwards (<<gw-01>>), the refusal covers exactly the bytes the
 upstream would have received.
 
@@ -743,7 +743,7 @@ Two properties carry this control:
 
 * *The request-direction never-forward set applies under every forward mode* -- including the
   permissive forward-all baseline. Its members are listed once, in
-  link:configuration.adoc#_never_forward_set[the never-forward section of the configuration
+  link:configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward section of the configuration
   reference]. `Authorization` is its single re-admittable member (only on a route declaring a
   positive-list naming it). No route configuration re-admits the hop-by-hop, framing or
   gateway-owned names from the request. The one path around the set is an operator's *static*
@@ -1250,7 +1250,7 @@ computed it from. Neither record carries a password, an alias or any anchor mate
 recipe -- including that the native, distroless image has no `update-ca-trust`, that the JDK triple
 must arrive as command-line `-D` arguments, that `JAVA_TOOL_OPTIONS` is not honoured by a native
 runner, and how to build a store that keeps the public roots *and* adds a private CA -- is in
-link:configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+link:configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
 platform bundle].
 
 *Assertion.* A boot with no operator-supplied store reports the platform bundle on both tiers and
@@ -1816,7 +1816,7 @@ bypass it. No `/api/info` or `/api/health` placeholder resource is exposed on th
 *Control -- the software fingerprint.* The upstream's `Server` and `X-Powered-By` headers are
 stripped by default on the HTTP relay, the gRPC relay and an asset route with `source: upstream`;
 a route opts out per route with `keep_identity_headers: true`
-(link:configuration.adoc#_identity_set[the identity set],
+(link:configuration/routing-and-forwarding.adoc#_identity_set[the identity set],
 link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
 A gateway-originated answer carries no `Server`, no `X-Powered-By` and no version string, and every
 `application/problem+json` error shares one shape (`type`, `title`, `status`). The body's `type`
@@ -2225,7 +2225,7 @@ lists them). The true
 event is still reported -- the event counter, the WARN and INFO lines and
 `sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is not shown. One
 switch, `security_defaults.uniform_not_found`, governs the branch and the floor and is on by default
-(link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
+(link:configuration/security-and-edge-hardening.adoc#_uniform_not_found[Configuration -- the uniform 404]).
 
 *Status:* COVERED. `UniformNotFoundTest` walks every `EventType` constant and fails for one with
 neither a closed-set nor an exclusion entry. `GatewayEdgeUniformNotFoundTest` asserts over a live
@@ -2563,7 +2563,7 @@ refresh-token rotation at the identity provider* -- on Keycloak `revokeRefreshTo
 realm. The provider refuses a replayed token with `invalid_grant`; the engine classifies that as
 `CREDENTIAL_REJECTED`, and the gateway ends the session, clears the session cookie and records
 `ApiSheriff-111` (`credential-rejected`). The other refresh failures are disposed per kind (see
-link:configuration.adoc#_refresh_failure_dispositions[the configuration reference]): a failure
+link:configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the configuration reference]): a failure
 before the provider processed the grant keeps the session with a fixed back-off; a redeemed
 response the gateway refused, or a rotated session it could not persist, ends the session and
 revokes best-effort the one live refresh token it can name -- which is none when the response was

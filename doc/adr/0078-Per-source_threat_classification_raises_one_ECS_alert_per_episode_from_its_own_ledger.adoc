@@ -264,7 +264,7 @@ ALERTs.
   Threat Classification]
 * link:../architecture/observability-and-errors.adoc#_threat_alert_document[Observability -- the
   threat ALERT document] -- the field table and the OCSF mapping
-* link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`]
+* link:../configuration/security-and-edge-hardening.adoc#_threat_classification[Configuration -- `threat_classification`]
 * link:../user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes -- Threat
   classification] -- the operator guide
 * link:../development/source-detection-substrate.adoc#_second_consumer[Per-Source Detection Substrate

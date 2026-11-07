@@ -824,6 +824,6 @@ binary probes the constant it was built with.
 | link:tls-edge.adoc[TLS Edge]
 | The management interface's scheme, its single-port constraint, and the plain-HTTP opt-out.
 
-| link:../configuration.adoc#_management[Configuration Reference -- `management`]
+| link:../configuration/tls-and-egress.adoc#_management[Configuration Reference -- `management`]
 | The neutral `management` block, and why it declares no port and no root path.
 |===

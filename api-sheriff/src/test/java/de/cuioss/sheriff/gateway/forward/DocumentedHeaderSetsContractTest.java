@@ -36,10 +36,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Binds the header inventories {@code doc/configuration.adoc} enumerates by hand to the Java sets that
- * enforce them: the request-direction never-forward set to {@link ConnectionHeaders#REQUEST_STRIP}, the
- * response-direction connection set to {@link ConnectionHeaders#RESPONSE_STRIP}, the response-direction
- * identity set to {@link UpstreamIdentityHeaders#NAMES}, and the two tiers of the gateway-understood
+ * Binds the header inventories {@code doc/configuration/routing-and-forwarding.adoc} enumerates by hand
+ * to the Java sets that enforce them: the request-direction never-forward set to
+ * {@link ConnectionHeaders#REQUEST_STRIP}, the response-direction connection set to
+ * {@link ConnectionHeaders#RESPONSE_STRIP}, the response-direction identity set to {@link UpstreamIdentityHeaders#NAMES}, and the two tiers of the gateway-understood
  * protocol set to {@link ForwardPolicyStage#UNCONDITIONAL_PROTOCOL_HEADERS} and
  * {@link ForwardPolicyStage#CONDITIONAL_HEADERS}. A header added to or removed from one of those
  * constants turns this test red until the reference documents the change, and so does a name added to
@@ -62,7 +62,7 @@ class DocumentedHeaderSetsContractTest {
 
     private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
-    private static final String CONFIGURATION_ADOC = "doc/configuration.adoc";
+    private static final String CONFIGURATION_ADOC = "doc/configuration/routing-and-forwarding.adoc";
 
     /** Opens the identity-set paragraph, immediately before its header list. */
     private static final String IDENTITY_START = "are removed before the response reaches the client:";
@@ -108,7 +108,7 @@ class DocumentedHeaderSetsContractTest {
             .compile("`([A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*)`");
 
     @Test
-    @DisplayName("the identity set in configuration.adoc names exactly UpstreamIdentityHeaders.NAMES")
+    @DisplayName("the identity set in routing-and-forwarding.adoc names exactly UpstreamIdentityHeaders.NAMES")
     void identitySetMatchesTheStrippedNames() throws Exception {
         // Arrange
         String document = configurationAdoc();
@@ -122,7 +122,7 @@ class DocumentedHeaderSetsContractTest {
     }
 
     @Test
-    @DisplayName("the never-forward set in configuration.adoc names exactly ConnectionHeaders.REQUEST_STRIP")
+    @DisplayName("the never-forward set in routing-and-forwarding.adoc names exactly ConnectionHeaders.REQUEST_STRIP")
     void neverForwardSetMatchesTheRequestStrip() throws Exception {
         // Arrange
         String document = configurationAdoc();
@@ -137,7 +137,7 @@ class DocumentedHeaderSetsContractTest {
     }
 
     @Test
-    @DisplayName("the response-direction set in configuration.adoc names exactly ConnectionHeaders.RESPONSE_STRIP")
+    @DisplayName("the response-direction set in routing-and-forwarding.adoc names exactly ConnectionHeaders.RESPONSE_STRIP")
     void responseDirectionSetMatchesTheResponseStrip() throws Exception {
         // Arrange
         String document = configurationAdoc();
@@ -184,7 +184,7 @@ class DocumentedHeaderSetsContractTest {
     }
 
     @Test
-    @DisplayName("the unconditional protocol tier in configuration.adoc names exactly UNCONDITIONAL_PROTOCOL_HEADERS")
+    @DisplayName("the unconditional protocol tier in routing-and-forwarding.adoc names exactly UNCONDITIONAL_PROTOCOL_HEADERS")
     void unconditionalTierMatchesTheConstant() throws Exception {
         // Arrange
         String document = configurationAdoc();
@@ -199,7 +199,7 @@ class DocumentedHeaderSetsContractTest {
     }
 
     @Test
-    @DisplayName("the conditional protocol tier in configuration.adoc names exactly CONDITIONAL_HEADERS")
+    @DisplayName("the conditional protocol tier in routing-and-forwarding.adoc names exactly CONDITIONAL_HEADERS")
     void conditionalTierMatchesTheConstant() throws Exception {
         // Arrange
         String document = configurationAdoc();

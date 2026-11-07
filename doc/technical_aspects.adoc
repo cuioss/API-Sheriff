@@ -91,7 +91,7 @@ Configuration via `SecurityConfiguration` with sensible defaults (path length 40
 The `de.cuioss.http.forwarded` package (specified in
 `cui-http/doc/forwarded-header-resolution.adoc`) resolves the reverse-proxy header family into
 one normalized, sanitized, immutable structure -- API Sheriff's
-link:configuration.adoc#_forwarded_headers[`forwarded` policy] is a thin configuration layer
+link:configuration/routing-and-forwarding.adoc#_forwarded_headers[`forwarded` policy] is a thin configuration layer
 over it:
 
 * `ForwardedHeaderResolver` -- entry point; immutable, thread-safe, transport-agnostic

@@ -427,7 +427,7 @@ secure URIs. On the gateway side the endpoint publishes a public key and reads n
 
 * link:adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
   -- the decisions behind the controls
-* link:configuration.adoc#_oidc[Configuration -- `oidc`] -- the key contracts
+* link:configuration/authentication-and-oidc.adoc#_oidc[Configuration -- `oidc`] -- the key contracts
 * link:user/bff-session.adoc[Server-Session BFF] and link:user/bff-cookie.adoc[Cookie-Based BFF] --
   operator setup, including key material
 * link:security-threat-model.adoc[Threat Model] -- BFF-02 and the callback controls

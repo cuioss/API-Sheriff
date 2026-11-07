@@ -38,7 +38,7 @@ Semantics -- deliberately few rules:
 * *Namespace coverage: nothing outside the anchor may serve the namespace.* A broader route
   whose `path_prefix` swallows an anchor's namespace fails the boot unless the anchor covers that
   namespace itself -- the rule, including what counts as coverage, is stated once in
-  link:../configuration.adoc#anchor-coverage-rule[the anchor-coverage rule]. In practice: when an
+  link:../configuration/validation-rules.adoc#anchor-coverage-rule[the anchor-coverage rule]. In practice: when an
   anchor sits under a broader prefix route, give the anchor a member route whose `path_prefix` is
   the anchor prefix itself and that declares no `methods`, `host` or `headers`. By longest prefix
   that member then wins every address in the namespace, so the broader route alongside it is the
@@ -136,7 +136,7 @@ to it, and the replacement is announced by `ApiSheriff-101`. `legacy-app` declar
 endpoint declares none either, so the anchor's `[SESSIONID, theme]` applies. A route outside every
 anchor whose endpoint declares no block resolves the gateway's `allow: none`, which is also what a
 route resolves when no scope declares the block at all. What each mode forwards and relays is in
-link:../configuration.adoc#_cookies[the `cookies` reference].
+link:../configuration/routing-and-forwarding.adoc#_cookies[the `cookies` reference].
 
 [[_policy_block_scopes]]
 .Where each policy block is declarable
@@ -186,7 +186,7 @@ link:../configuration.adoc#_cookies[the `cookies` reference].
 | `forward`
 | endpoint, route
 | Forward-all on both dimensions, bounded by the gateway-owned sets no configuration re-admits (see
-  link:../configuration.adoc#_never_forward_set[the never-forward set]).
+  link:../configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward set]).
 | No
 | No anchor or gateway scope: forward filtering is upstream-specific
   (link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).

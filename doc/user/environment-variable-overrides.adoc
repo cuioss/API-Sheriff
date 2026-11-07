@@ -337,7 +337,7 @@ oidc:
 `SHERIFF_DPOP_KEY_FILE` and `SHERIFF_SESSION_KEY_FILE` are again only names the example uses. The
 secret is the *content* of each file, and that is deployment-bound in the ordinary way: the
 deployment mounts the file, and `gateway.yaml` says where it is. See
-link:../configuration.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys] and
+link:../configuration/authentication-and-oidc.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys] and
 link:bff-cookie.adoc#_key_material[Cookie-Based BFF -- Key material: the sealing key].
 
 === The configuration directory
@@ -528,7 +528,7 @@ probe reads a non-fetching per-issuer state kept by the gateway's own JWKS loade
 `DOWN` (`jwks: loading` / `unavailable`) while any issuer's key set has not loaded yet -- a gateway
 that booted before its IdP answered is not ready -- and `ready` once every issuer has one; a failed
 fetch is retried within seconds on a bounded backoff (see
-link:../configuration.adoc#_jwks_readiness[Key-set loading and readiness]). It is an *availability*
+link:../configuration/authentication-and-oidc.adoc#_jwks_readiness[Key-set loading and readiness]). It is an *availability*
 signal, not a *freshness* one: once a key set has loaded, an IdP whose JWKS endpoint later goes
 unreachable, a stalled key rotation, or an expired signing key do *not* take readiness DOWN. Monitor
 those from the IdP side; do not infer them from a green readiness probe. The comment block above

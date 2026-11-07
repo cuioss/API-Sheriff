@@ -188,7 +188,7 @@ The `profile` knob selects the gateway's inbound-validation mode. It is declarab
 `security_defaults` and per anchor, endpoint or route on `security_filter`, where the nearest
 declared `security_filter` block wins (see
 link:anchors.adoc#_policy_block_resolution[Policy-block resolution]). The field-level contract lives
-in link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
+in link:../configuration/security-and-edge-hardening.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
 section is the operator's decision guide.
 
 === The modes
@@ -203,7 +203,7 @@ section is the operator's decision guide.
   and paths, and suspicious-pattern rejection on. The 1024-character figure is the *preset* cap;
   `Cookie` / `Set-Cookie` values are the one exception -- a cookie-mode BFF gateway validates them
   pre-route against a raised, gateway-wide cap derived from `oidc.session.max_cookie_size`. See
-  link:../configuration.adoc#_oidc[Configuration Reference -- `oidc.session.max_cookie_size`].
+  link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration Reference -- `oidc.session.max_cookie_size`].
 
 | `paranoid`
 | The surface really does reach a filesystem -- a document store, a static-asset origin, an
@@ -251,7 +251,7 @@ pre-route floor `400`s are the same for every address and keep their status.
 If you set `minimal` expecting the body cap or the path allowlist to stop applying, that is the
 misreading to correct: the mode is the *least* validation the gateway performs, not none of it. The
 normative closed list of what `minimal` disables is in
-link:../configuration.adoc#_the_minimal_mode[Configuration Reference -- The `minimal` mode].
+link:../configuration/security-and-edge-hardening.adoc#_the_minimal_mode[Configuration Reference -- The `minimal` mode].
 
 === `minimal` is refused at boot on authenticated and BFF routes
 
@@ -316,7 +316,7 @@ Some upstream APIs genuinely take a request body on `GET` -- Elasticsearch's `_s
 common one. By default API Sheriff rejects that request `400` at the anti-smuggling framing gate,
 because a body on an otherwise-bodyless method is a request-smuggling shape. This knob admits the
 legitimate case without disabling the defence. Field-level contract lives in
-link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
+link:../configuration/security-and-edge-hardening.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
 section is the operator's decision guide.
 
 === Symptom and fix
@@ -371,7 +371,7 @@ correct: it admits one specific, well-framed shape and nothing else.
 The `strict` profile -- the default -- accepts ASCII only: a header value such as
 `X-Display-Name: José`, or a Latin-1 character in a path or query parameter, is rejected `400`.
 This knob admits them without giving up the rest of the strict posture. Field-level contract lives
-in link:../configuration.adoc#_the_extended_ascii_override[Configuration Reference -- The
+in link:../configuration/security-and-edge-hardening.adoc#_the_extended_ascii_override[Configuration Reference -- The
 extended-ASCII override]; this section is the operator's decision guide.
 
 === Symptom and fix
@@ -419,7 +419,7 @@ The gateway -- never the backing directory or upstream -- decides the `Content-T
 it serves, from its own built-in extension map. An extension the map does not carry is served as
 `application/octet-stream`, which browsers download instead of rendering. `asset_defaults` is how
 you teach the gateway that extension. Field-level contract lives in
-link:../configuration.adoc#_asset_defaults[Configuration Reference -- `asset_defaults`]; this
+link:../configuration/routing-and-forwarding.adoc#_asset_defaults[Configuration Reference -- `asset_defaults`]; this
 section is the operator's decision guide.
 
 === Symptom and fix

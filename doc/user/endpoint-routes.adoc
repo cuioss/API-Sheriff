@@ -334,7 +334,7 @@ banner -- for example a monitoring probe or a legacy client that branches on the
   `protocol: websocket` route relay no upstream response header, so declaring the key there -- with
   either value -- fails the boot.
 
-The field reference is link:../configuration.adoc#_keep_identity_headers[`keep_identity_headers`].
+The field reference is link:../configuration/routing-and-forwarding.adoc#_keep_identity_headers[`keep_identity_headers`].
 Removing the banner does not hide the TLS and HTTP/2 fingerprint of the gateway itself; see
 link:tls-edge.adoc#_tls_and_http2_fingerprints[TLS and HTTP/2 fingerprints].
 
@@ -439,7 +439,7 @@ gate, and an unauthenticated caller sees that refusal as the unrouted `404` (see
 <<_uniform_not_found_operator_note>>).
 
 An operator may *teach* the gateway an extension it does not already map -- but never *restate* one
-it does. See link:../configuration.adoc#_asset_defaults[`asset_defaults`] for the add-only block
+it does. See link:../configuration/routing-and-forwarding.adoc#_asset_defaults[`asset_defaults`] for the add-only block
 and the security rationale behind that asymmetry.
 
 [[_asset_index_and_fallback]]
@@ -710,7 +710,7 @@ A request that matches no route is rejected with `404`.
 
 *Reserved gateway paths.* The gateway's own OIDC endpoints are matched *exactly, before the
 route table*. The keys that register them, and the field-level contract for each, are owned by
-link:../configuration.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
+link:../configuration/authentication-and-oidc.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
 path, not what the keys mean. Up to *eight* paths are carved out. The first six are matched only on
 the *OIDC host* (the host of `oidc.redirect_uri`); the last two are matched on *every* host, because
 the identity provider calls them server-to-server at whatever address was registered with it:
@@ -792,7 +792,7 @@ names which refusal.
 *Turning it off.* `security_defaults.uniform_not_found: false` in `gateway.yaml` restores the honest
 `401`, `405`, `400`, `413` and `403` for every caller, and the gRPC trailers-only status on a gRPC
 route. The default is `true`. See
-link:../configuration.adoc#_uniform_not_found[Configuration -- The uniform 404].
+link:../configuration/security-and-edge-hardening.adoc#_uniform_not_found[Configuration -- The uniform 404].
 
 [[_enumeration_detection_operator_note]]
 === Scanning sources and enumeration detection
@@ -802,7 +802,7 @@ the scanner itself. It counts, per source, the rejections a request receives bef
 completes -- an address without a route, a wrong method, a path or input the gateway refuses, a
 declared body over the cap, a CSRF refusal, a missing or invalid token -- and a source whose count
 reaches a threshold *trips*. All keys are in
-link:../configuration.adoc#_enumeration_detection[Configuration -- `enumeration_detection`].
+link:../configuration/security-and-edge-hardening.adoc#_enumeration_detection[Configuration -- `enumeration_detection`].
 
 *By default a trip changes nothing a client sees.* Detection runs on every gateway, also without an
 `enumeration_detection` block, with the action `observe`: a trip is logged and counted, and every
@@ -851,7 +851,7 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 *Before you switch to `block` or `delay`.* Make sure one source address is one client:
 
 . If the gateway sits behind a load balancer or reverse proxy, list it in `forwarded.trusted_proxies`
-  (see link:../configuration.adoc#_forwarded_headers[Configuration -- `forwarded`]). Otherwise every client
+  (see link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]). Otherwise every client
   arrives from the balancer's address, one scanning client trips that address, and `block` answers
   `429` to all of them.
 . If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
@@ -880,7 +880,7 @@ Enumeration detection counts the probes of one kind. Threat classification adds 
 weighted score per source over the rejections the source receives that carry a weight, before and after
 authentication, and raises one *ALERT* when the score reaches a threshold. All keys, and which
 rejections carry no weight or never reach the score, are in
-link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`].
+link:../configuration/security-and-edge-hardening.adoc#_threat_classification[Configuration -- `threat_classification`].
 
 *An ALERT changes nothing a client sees.* Classification runs on every gateway, also without a
 `threat_classification` block, and it only observes. No answer, status, header or timing changes
@@ -1020,9 +1020,9 @@ naming exactly what one upstream needs.
 every upstream `Set-Cookie` line; under the default `allow: none` none is relayed, so an upstream
 that sets cookies stops having them reach the browser until its route, endpoint or anchor names them.
 The full contract -- the three modes, the four scopes, the same-origin check, the WebSocket rule and
-every boot refusal -- is the link:../configuration.adoc#_cookies[`cookies` reference]; which headers
+every boot refusal -- is the link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies` reference]; which headers
 the gateway withholds in either direction is the
-link:../configuration.adoc#_never_forward_set[never-forward set].
+link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set].
 
 [[_defaults_for_omitted_blocks]]
 === Defaults for omitted blocks
@@ -1059,7 +1059,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | `false`: a `require: bearer` route has one authentication branch and is a plain bearer route. The
   key travels with its `auth` block exactly as `token_relay` does, so a route-level block that omits it
   resolves to `false` whatever the endpoint or anchor declares. See
-  link:../configuration.adoc#_auth_session_fallback[`auth.session_fallback`].
+  link:../configuration/authentication-and-oidc.adoc#_auth_session_fallback[`auth.session_fallback`].
 
 | `scopes` (endpoint level)
 | Empty: the endpoint's routes need `oidc.scopes` alone (nothing at all when the gateway has no
@@ -1074,7 +1074,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | A declared endpoint list is the nearest scope and wins. With none, the *anchor's* list applies if
   the route's anchor declares one, else the *global* `gateway.allowed_methods`, else the standard
   verb set. There is no route-level list -- a route narrows its verbs with `match.methods` -- see
-  link:../configuration.adoc#_allowed_methods[`allowed_methods`].
+  link:../configuration/routing-and-forwarding.adoc#_allowed_methods[`allowed_methods`].
 
 | `security_filter`
 | The route takes the nearest declared block -- its endpoint's, else its anchor's -- whole; with
@@ -1088,7 +1088,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | `forward`
 | The endpoint's `forward` block when the endpoint declares one, taken whole. With none at either
   scope: *forward-all* on both dimensions: every client request header and query parameter crosses,
-  minus the gateway-owned link:../configuration.adoc#_never_forward_set[never-forward set], which
+  minus the gateway-owned link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set], which
   no configuration can re-admit apart from the single `Authorization` carve-out. The `Cookie`
   header is not decided here at all: it crosses only as the route's `cookies` block admits it (see
   the `cookies` row below). The *automatic* injections apply as always. The regenerated forwarding-header set is always
@@ -1096,7 +1096,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
   session branch of a `session_fallback` route only when the effective `token_relay` is `true`,
   and on the bearer branch of a `session_fallback` route always (the validated client token,
   independent of `token_relay`); a plain `require: bearer` route never receives one. A route that wants a stricter posture
-  declares it -- see link:../configuration.adoc#_forward[`forward`]. Note this is the one
+  declares it -- see link:../configuration/routing-and-forwarding.adoc#_forward[`forward`]. Note this is the one
   omitted-block default that
   is *permissive*: it filters within a route the request is already authorised for, so the
   deny-by-default guarantee is unaffected (it lives at route matching).
@@ -1111,7 +1111,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | No rate limiting, whether the block is declared or not: per-route rate limiting is planned, not
   implemented, and the block never causes a `429`. A declared block is parsed and enforced by
   nothing, and every route that declares one is named at boot by the WARN `ApiSheriff-140` -- see
-  link:../configuration.adoc#_rate_limit[`rate_limit`]. Every `429` the gateway sends belongs to
+  link:../configuration/security-and-edge-hardening.adoc#_rate_limit[`rate_limit`]. Every `429` the gateway sends belongs to
   per-source detection (<<_enumeration_detection_operator_note>>).
 |===
 
@@ -1131,7 +1131,7 @@ table.
 
 The *admission budgets* — how many requests, and how many WebSocket relays, may be in flight at once
 — are operator-facing and configurable through the optional
-link:../configuration.adoc#_edge_hardening[`edge_hardening`] block in `gateway.yaml`. Their sizing
+link:../configuration/security-and-edge-hardening.adoc#_edge_hardening[`edge_hardening`] block in `gateway.yaml`. Their sizing
 depends on the
 deployment's traffic shape rather than on protocol safety, which is why they are the two bounds the
 operator owns. Omitting the block, or either key, resolves to the defaults in the table below, so a

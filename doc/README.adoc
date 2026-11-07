@@ -108,7 +108,7 @@ Limitations].
 
 | TLS Edge (three-layer topic)
 | The accept-time SNI split and mTLS edge, documented across all three layers: the
-  link:configuration.adoc#_tls[`tls` configuration reference], the link:user/tls-edge.adoc[operator
+  link:configuration/tls-and-egress.adoc#_tls[`tls` configuration reference], the link:user/tls-edge.adoc[operator
   guide] (configuring passthrough SNI / mTLS and the trust-root-replacement blast radius), and the
   link:development/tls-edge.adoc[developer topic] (front-listener architecture, the L4/L7 split, and
   the fail-closed GW-06 rationale).

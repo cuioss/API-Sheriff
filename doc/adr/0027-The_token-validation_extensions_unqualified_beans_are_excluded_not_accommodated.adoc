@@ -317,7 +317,7 @@ and so does the eager-boot, fail-closed assembly: a misconfigured JWKS source st
 so the construction-failure leg of the readiness check remains unreachable in the shipped topology
 and is kept for the reason section 5 gives. The readiness datum changes meaning from *the validator
 could be built* to *every issuer has a key set*; the operator-facing contract is in
-link:../configuration.adoc#_jwks_readiness[the configuration reference].
+link:../configuration/authentication-and-oidc.adoc#_jwks_readiness[the configuration reference].
 
 *What is still not covered.* Once an issuer's key set has loaded, the library's background refresh
 keeps it current, and a later refresh failure leaves the loaded keys in service -- so readiness stays

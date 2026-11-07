@@ -15,7 +15,7 @@ guide never restates that rationale -- it points to it.
 Every route declares the protocol it serves via the `protocol` key -- `http` (the default),
 `graphql`, `grpc`, or `websocket`. The value selects handshake and streaming behaviour only; the
 security filter, authentication, and forward policy apply uniformly across protocols. See
-link:../configuration.adoc#_protocols[Configuration -- Protocols] for the key itself and
+link:../configuration/routing-and-forwarding.adoc#_protocols[Configuration -- Protocols] for the key itself and
 link:../architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support] for what each
 protocol does and does not inspect.
 
@@ -23,10 +23,10 @@ protocol does and does not inspect.
 gateway-owned never-forward set does not withhold* -- so a protocol route needs no enumeration of
 its own mechanics to work, and the routes shown below deliberately declare none. Neither of the
 example routes on this page is thereby unguarded: the hop-by-hop, framing and provenance names of
-the link:../configuration.adoc#_never_forward_set[never-forward set] are withheld under every mode.
+the link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set] are withheld under every mode.
 An inbound `Authorization` is the one re-admittable member, and only where a route declares a
 `headers_allow` naming it; the routes below declare no list at all, so it is withheld here. The
-browser `Cookie` is decided by the route's link:../configuration.adoc#_cookies[`cookies`] block,
+browser `Cookie` is decided by the route's link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`] block,
 not by `forward`; the routes below declare none, so they resolve `allow: none` and forward no
 cookie (see <<_cookies_on_protocol_routes>>).
 Declare a `forward` block only to *narrow* that. One protocol-specific caution: a gRPC route that *does*
@@ -74,7 +74,7 @@ Author each permitted origin *in full* -- `scheme://host[:port]`:
 * A `websocket` block on a non-WebSocket route is a boot-time configuration error.
 
 For the full field contract see
-link:../configuration.adoc#_allowed_origins[Configuration -- `allowed_origins`].
+link:../configuration/routing-and-forwarding.adoc#_allowed_origins[Configuration -- `allowed_origins`].
 
 === Tuning `websocket.idle_timeout_seconds`
 
@@ -85,7 +85,7 @@ defaults to `300` seconds; when declared it must be a *positive integer* and is 
 
 Raise it for long-lived push channels that legitimately idle between messages; lower it to
 reclaim connection slots more aggressively. For the full field contract see
-link:../configuration.adoc#_websocket[Configuration -- `websocket`].
+link:../configuration/routing-and-forwarding.adoc#_websocket[Configuration -- `websocket`].
 
 === Sizing the WebSocket relay budget
 
@@ -153,7 +153,7 @@ endpoint:
 `/{package}.{Service}/{Method}`. Match the route on the bare `/{package}.{Service}` prefix and set
 an *identical* `upstream.path`. The gateway builds the upstream path as
 `alias base path + upstream.path + remainder-after-prefix` (see
-link:../configuration.adoc#_upstream[Configuration -- `upstream`]), so point the endpoint's
+link:../configuration/routing-and-forwarding.adoc#_upstream[Configuration -- `upstream`]), so point the endpoint's
 `base_url` at a topology alias carrying the gRPC service's `host:port` and *no base path* -- for
 example `ORDERS_GRPC=http://orders-svc:50051`. With an empty alias base path, the identity of the
 route prefix and `upstream.path` makes the full method path reach the upstream *unchanged*, and a
@@ -213,7 +213,7 @@ for these rejections, `UNAUTHENTICATED` (16) for a call without a token included
 == Cookies on WebSocket and gRPC routes
 
 A protocol route takes a `cookies` block like any other route; the full contract is the
-link:../configuration.adoc#_cookies[`cookies` reference]. Two things differ per protocol.
+link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies` reference]. Two things differ per protocol.
 
 *A WebSocket route.* The upgrade request carries the rebuilt `Cookie` header: the gateway's own
 cookies are dropped and the remaining pairs are filtered by the route's policy, exactly as on an

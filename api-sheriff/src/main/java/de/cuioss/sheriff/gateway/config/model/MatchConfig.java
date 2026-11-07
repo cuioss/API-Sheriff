@@ -109,8 +109,8 @@ List<HeaderMatcher> headers) {
      * Security-relevant: a route that narrows covers only what it matches, so it cannot
      * stand for its whole path namespace. Rule (4b), the anchor-coverage rule enforced by
      * {@code AnchorRules.checkRouteContainsUncoveredAnchor} and stated in
-     * {@code doc/configuration.adoc}, consults this before accepting a route as covering an
-     * anchor namespace.
+     * {@code doc/configuration/validation-rules.adoc}, consults this before accepting a route as
+     * covering an anchor namespace.
      *
      * @return {@code true} when any non-path dimension constrains the match,
      * {@code false} when the path is the only thing this matcher tests

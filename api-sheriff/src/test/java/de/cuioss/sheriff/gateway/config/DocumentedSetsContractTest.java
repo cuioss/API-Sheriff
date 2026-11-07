@@ -173,6 +173,16 @@ class DocumentedSetsContractTest {
 
     private static final Path REPOSITORY_ROOT = RepositoryRoot.holding("doc");
     private static final Path CONFIGURATION_ADOC = REPOSITORY_ROOT.resolve("doc/configuration.adoc");
+
+    /**
+     * The subsystem reference documents {@code doc/configuration.adoc} links to, in reading order. The
+     * configuration reference is the index followed by these; {@link #readConfiguration()} reads them as one
+     * document so an anchored exhibit is found wherever the split placed it.
+     */
+    private static final List<Path> CONFIGURATION_PARTS = Stream.of("tls-and-egress", "authentication-and-oidc",
+            "routing-and-forwarding", "security-and-edge-hardening", "validation-rules")
+            .map(part -> REPOSITORY_ROOT.resolve("doc/configuration/" + part + ".adoc")).toList();
+
     private static final Path USER_README_ADOC = REPOSITORY_ROOT.resolve("doc/user/README.adoc");
     private static final Path BFF_COOKIE_ADOC = REPOSITORY_ROOT.resolve("doc/user/bff-cookie.adoc");
     private static final Path ARCHITECTURE_ADOC = REPOSITORY_ROOT.resolve("doc/architecture/observability-and-errors.adoc");
@@ -584,7 +594,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc enumerates exactly the built-in asset extensions, and states their count")
     void configurationAdocEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         int anchor = anchorIndex(document, CONFIG_EXTENSION_ANCHOR, CONFIGURATION_ADOC.toString());
 
         // Act
@@ -727,7 +737,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's mode enumeration equals the SecurityProfile value set")
     void configurationAdocEnumeratesTheSecurityProfileModes() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         String modeComment = profileModeComment(document);
 
         // Act — the raw token count comes back alongside the set: the set collapses duplicates, so
@@ -752,7 +762,7 @@ class DocumentedSetsContractTest {
     void configurationAdocDocumentsEverySecurityProfileMode() throws Exception {
         // Arrange — the per-mode text is free-form prose, so the row that introduces it is the
         // structural thing worth asserting
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
 
         // Act + Assert
         for (SecurityProfile profile : SecurityProfile.values()) {
@@ -823,7 +833,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's oidc_discovery table has exactly one row per DiscoveryStatus.State token")
     void configurationAdocTabulatesTheDiscoveryTokens() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
 
         // Act
         TokenList documented = discoveryTableRows(document, CONFIGURATION_ADOC.toString());
@@ -866,7 +876,7 @@ class DocumentedSetsContractTest {
     @DisplayName("the oidc_discovery table extraction detects a token row removed from the document")
     void removedDiscoveryRowIsDetectedAgainstTheStateTokens() throws Exception {
         // Arrange — the negative control: the shipped document with the row of one state deleted
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         String removedToken = DiscoveryStatus.State.FAILED.token();
         String removedRow = "\n" + modeDefinitionRow(removedToken) + "\n";
         assertTrue(document.contains(removedRow), CONFIGURATION_ADOC + " carries no definition row for '"
@@ -911,7 +921,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's annotated gateway.yaml skeleton validates against the bundled schema")
     void configurationSkeletonValidatesAgainstTheBundledSchema() throws Exception {
         // Arrange — this exhibit already begins at 'version: 1', so it needs no wrapping
-        String skeleton = yamlBlockAfter(read(CONFIGURATION_ADOC), SKELETON_ANCHOR,
+        String skeleton = yamlBlockAfter(readConfiguration(), SKELETON_ANCHOR,
                 CONFIGURATION_ADOC.toString());
         assertCarriesBudgetKey(skeleton, CONFIGURATION_ADOC.toString());
 
@@ -960,7 +970,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc names exactly the gateway schema's string-item array keys, and states both counts")
     void configurationAdocEnumeratesTheGatewayArrayKeys() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         Map<String, ItemKind> derived = deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE), GATEWAY_ARRAY_ROOT,
                 GATEWAY_SCHEMA_RESOURCE);
 
@@ -999,7 +1009,7 @@ class DocumentedSetsContractTest {
     void configurationAdocEnumeratesTheEndpointOwnArrayKeys() throws Exception {
         // Arrange — "own" is what an endpoint document declares beyond the keys it shares by name with
         // gateway.yaml, so both inventories are derived
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         Set<String> ownKeys = keysOfKind(deriveArrayKeys(schemaTree(ENDPOINT_SCHEMA_RESOURCE), ENDPOINT_ARRAY_ROOT,
                 ENDPOINT_SCHEMA_RESOURCE), ItemKind.STRING);
         ownKeys.removeAll(keysOfKind(deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE), GATEWAY_ARRAY_ROOT,
@@ -1032,7 +1042,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc names exactly the arrays of objects across both schemas, and states their count")
     void configurationAdocEnumeratesTheObjectItemArrays() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         Set<String> objectArrays = keysOfKind(deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE),
                 GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE), ItemKind.OBJECT);
         objectArrays.addAll(keysOfKind(deriveArrayKeys(schemaTree(ENDPOINT_SCHEMA_RESOURCE), ENDPOINT_ARRAY_ROOT,
@@ -1066,7 +1076,7 @@ class DocumentedSetsContractTest {
     void addedSchemaArrayKeyIsDetectedAgainstTheDocumentedSet() throws Exception {
         // Arrange — the negative control: a copy of the shipped schema with one string-item array key
         // injected into a definition the gateway reaches only through a $ref
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         TokenList documented = documentedGatewayStringKeys(document);
         int statedTotal = statedCountBefore(document,
                 anchorSpan(document, ARRAY_TOTAL_ANCHOR, CONFIGURATION_ADOC.toString()).start(),
@@ -1308,7 +1318,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's boot-validation list names exactly the JWKS refresh keys and their ranges")
     void configurationAdocStatesTheJwksRefreshKeyRanges() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
 
         // Act — the raw bullet count comes back alongside the map: the map collapses a key listed
         // twice, so only that count can observe the duplicate
@@ -1334,7 +1344,7 @@ class DocumentedSetsContractTest {
     void divergedJwksRefreshRangeIsDetected() throws Exception {
         // Arrange — the negative control: a copy of the shipped document whose first refresh-key bullet
         // states a lower bound one above the one ConfigValidator enforces
-        String shipped = read(CONFIGURATION_ADOC);
+        String shipped = readConfiguration();
         Matcher bullet = JWKS_REFRESH_BULLET.matcher(shipped);
         assertTrue(bullet.find(), CONFIGURATION_ADOC + ": no bullet matches the JWKS refresh-key shape, so the"
                 + " negative control has no range to alter");
@@ -1361,7 +1371,7 @@ class DocumentedSetsContractTest {
     void jwksRefreshBulletOutOfShapeIsRefused() throws Exception {
         // Arrange — a bullet that still opens with the anchor but no longer states its range in the
         // extracted shape must fail the guard, not shrink the documented set into a quiet pass
-        String shipped = read(CONFIGURATION_ADOC);
+        String shipped = readConfiguration();
         Matcher bullet = JWKS_REFRESH_BULLET.matcher(shipped);
         assertTrue(bullet.find(), CONFIGURATION_ADOC + ": no bullet matches the JWKS refresh-key shape, so the"
                 + " control has no bullet to reword");
@@ -2591,6 +2601,21 @@ class DocumentedSetsContractTest {
 
     private static String read(Path document) throws IOException {
         return Files.readString(document);
+    }
+
+    /**
+     * The configuration reference as one document: {@code doc/configuration.adoc} followed by every
+     * {@link #CONFIGURATION_PARTS part}, each separated by a line break.
+     *
+     * @return the concatenated configuration reference
+     * @throws IOException when a part cannot be read
+     */
+    private static String readConfiguration() throws IOException {
+        StringBuilder reference = new StringBuilder(read(CONFIGURATION_ADOC));
+        for (Path part : CONFIGURATION_PARTS) {
+            reference.append('\n').append(read(part));
+        }
+        return reference.toString();
     }
 
     /**
