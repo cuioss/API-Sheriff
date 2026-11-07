@@ -12,8 +12,9 @@ change that behaviour. The guide follows a request in:
   body framing -- under the selected filter mode.
 . A request a route refuses before authentication is answered as the *unrouted `404`*, so a
   scanner cannot tell which addresses are routes.
-. Every such refusal is counted *per source*: a scanning source trips enumeration detection, and a
-  weighted score raises a *threat ALERT*.
+. Such refusals are counted *per source*, minus the exclusions in
+  <<_enumeration_detection_operator_note,the counted-rejection table>>: a scanning source trips
+  enumeration detection, and a separately weighted score raises a *threat ALERT*.
 . Fixed *transport bounds* and two configurable *admission budgets* protect the listener itself.
 . On the way out, an asset response carries a `Content-Type` the gateway decides, never the source.
 
@@ -497,8 +498,8 @@ The public data-plane HTTP listener is bounded on two axes, and they are governe
 The *transport bounds* -- the framing limits, the HTTP/2 stream, header-list, reset and
 connection-window bounds, the request-body idle timeout and deadline, the gRPC stream-idle timeout,
 the unrouted-`404` response floor and the drain window -- are fixed secure defaults and are not
-operator-configurable. The framing limits fail fast on abusive framing before a request is admitted
-to the pipeline. This table is the documented contract for those constants.
+operator-configurable. The header-block and request-line limits fail fast on abusive framing before
+a request is admitted to the pipeline. This table is the documented contract for those constants.
 
 The *admission budgets* -- how many requests, and how many WebSocket relays, may be in flight at
 once -- are configurable through the optional
@@ -522,7 +523,9 @@ deployment that never writes it keeps the behaviour shown here.
 
 | Maximum chunked-transfer chunk size
 | 16 KiB
-| An over-large single chunk is rejected at the transport.
+| The largest body buffer the transport hands the pipeline. A larger wire chunk is not rejected: the
+  decoder splits it into pieces of at most this size, and the whole chunked body stays bounded by the
+  route's body cap.
 
 | Reserved-path request body
 | 16 KiB

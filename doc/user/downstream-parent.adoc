@@ -338,14 +338,20 @@ otherwise the example builds against the previously installed snapshot.
 mvn -f build-parent/example/pom.xml package
 ----
 
-*Checkpoint:* in `target/quarkus-app/quarkus/generated-bytecode.jar`, the class
+*Checkpoint:* in `build-parent/example/target/quarkus-app/quarkus/generated-bytecode.jar`, the class
 `io/quarkus/runtime/generated/BuildTimeRunTimeFixedConfigSourceBuilder` records
 `quarkus.http.root-path` as `/gw` and `quarkus.management.root-path` as the untouched `/q` -- the
 example sets only the application knob.
 
-Run it (`java -jar target/quarkus-app/quarkus-run.jar`) against a minimal configuration directory --
-the one in link:context-path.adoc#_carry_the_prefix_into_gateway_yaml[The Context Path -- Carry the
-prefix into `gateway.yaml`] -- and probe it:
+Run it (`java -jar build-parent/example/target/quarkus-app/quarkus-run.jar`) against a minimal
+configuration directory -- the one in
+link:context-path.adoc#_carry_the_prefix_into_gateway_yaml[The Context Path -- Carry the prefix into
+`gateway.yaml`] -- and probe it. That run needs what the linked page's container run supplies:
+`SHERIFF_CONFIG_DIR` naming the directory, the JWKS file at the path its `token_validation` names
+(`/app/certificates/test-jwks.json`, or that path edited to a local file), and the plain-HTTP opt-in
+`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` with
+`QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management`
+(link:context-path.adoc#_run_and_verify[Run and verify]):
 
 [cols="2,3", options="header"]
 |===
@@ -389,7 +395,7 @@ verification runbook].
 mvn -f build-parent/example/pom.xml package -Pnative
 ----
 
-*Checkpoint:* `target/my-gateway-1.0.0-SNAPSHOT-runner` exists -- `-Pnative` reaches the consumer
+*Checkpoint:* `build-parent/example/target/my-gateway-1.0.0-SNAPSHOT-runner` exists -- `-Pnative` reaches the consumer
 purely by profile inheritance, with no `<profiles>` block in the example.
 
 Because the profile sets `quarkus.native.container-build=true`, the executable is a *Linux* binary

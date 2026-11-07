@@ -51,7 +51,9 @@ shared store, so the two signing keys join the sealing key as shared material. A
 in one process and fits a single replica only: with per-replica client-authentication keys the IdP
 fails authentication on all but one replica, and with per-replica proof keys a refresh on another
 replica presents a proof the tokens are not bound to. The two signing keys must be two different
-files; one key for both purposes is refused at boot.
+files; one key for both purposes is refused at boot. With `oidc.client_secret` there is no
+client-authentication key: replicas share the secret, the sealing key and the proof key, and a
+`client_authentication.key_file` declared beside the secret is refused at boot.
 
 [WARNING]
 ====
@@ -183,7 +185,8 @@ no reuse itself (ADR-0046).
 gateway marks the presented refresh token (a salted digest, never the token) until the session's
 absolute lifetime, so a client replaying the cookie gets the session-ended answer with no IdP call
 and no further link:../LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] record. The marker store is
-per instance, in memory and bounded; RP-initiated logout does not set it.
+per instance, in memory and bounded: when it is full of unexpired markers a token is not recorded,
+and its replays cost one IdP call each, as without the guard. RP-initiated logout does not set it.
 
 The refresh token's share of the cookie budget is measured: the three-token session seals to at most
 2580 of 4019 bytes in the integration suite (see
@@ -278,9 +281,9 @@ link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration refer
 |===
 | Property | Variant 3
 
-| State | Stateless after login -- the sealed cookie carries the session; the login leg needs affinity.
+| State | Stateless after login -- the sealed cookie carries the session; the login and widening legs need affinity.
 | Token custody | Tokens leave the server only sealed in an `HttpOnly` cookie; script cannot read them, but XSS on the page can still drive requests -- hence the fixed CSRF defence and short token lifetimes.
-| Shared material | The sealing-key file and the two signing-key files.
+| Shared material | The sealing-key file and the two signing-key files (with a client secret: the secret and the proof-key file).
 | Revocation | Not immediate: no back-channel logout; an ended IdP session takes effect at the next refresh.
 | OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
 |===
@@ -290,14 +293,16 @@ link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration refer
 
 The pending authorization -- the state held between the login redirect and the callback -- lives in
 memory on one instance and is never shared. A login *begun* on one instance must *complete* there; a
-callback landing on another replica finds no pending authorization and the login fails.
+callback landing on another replica finds no pending authorization and the login fails. A session
+*widening* keeps its pending authorization the same way, so its redirect and callback -- an
+interactive retry included -- must stay on one replica too.
 
 An *established* session is portable: any replica with the same key material unseals the cookie.
 The cookie-statelessness integration test logs in against the first instance only, then drives the
 second instance with the resulting cookie.
 
-*Deployment consequence*: session affinity is required for the *login leg only*, from the redirect
-to the callback. After the session cookie is issued, requests may be balanced freely.
+*Deployment consequence*: session affinity is required for the *login leg* and for each
+*widening*, from the redirect to the callback. Every other request may be balanced freely.
 
 == Performance baseline
 
@@ -318,7 +323,7 @@ The defining cost of this variant:
 * *The cost scales with cookie size, not with session count.* Variant 2's lookup cost is a function
   of how many sessions exist; Variant 3's unseal cost is a function of how large the sealed payload
   is. A benchmark that grows the session population stresses Variant 2 and leaves Variant 3 flat.
-* *Login is not portable; steady state is.* Only the login leg needs session affinity. Because a
+* *Login is not portable; steady state is.* Only the login and widening legs need session affinity. Because a
   benchmark's virtual users typically log in against one instance and then drive requests, a
   multi-replica run that balances the *login* leg will produce failures that look like performance
   faults and are actually affinity faults.

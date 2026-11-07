@@ -1440,7 +1440,7 @@ while about 2.5 MB of body is still unacknowledged.
 
 Only a lost reset leaves the upstream holding its socket. A FIN-first close would not change that
 case: the upstream has stopped reading, so the `FIN` queues behind the body and the drain ends in the
-same reset.
+same reset. That is an inference: no FIN-first variant was built and no comparative benchmark was run.
 
 *Residual (accepted).* Each such upload still costs one new upstream connection, and the upstream sees
 a TCP reset instead of a `FIN` for every connection the gateway closes, idle-pool evictions included,

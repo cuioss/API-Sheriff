@@ -46,8 +46,9 @@ lives. Knowing the class answers "can I set this from the environment?" before y
 |===
 
 The runtime inputs meet once, at boot: `gateway.yaml`, the endpoint files and `topology.properties`
--- the last carrying the environment-variable placeholders -- are loaded, resolved and validated
-together, and any violation aborts the start. The result is immutable for the life of the process.
+are loaded, resolved and validated together, and any violation aborts the start. Explicit `${VAR}`
+environment-variable placeholders are resolved in all three, before schema validation (see
+link:../configuration.adoc#_loading_resolution_and_validation[the placeholder rules]). The result is immutable for the life of the process.
 
 image::../resources/diagrams/configuration-layers.svg[Boot-time configuration assembly: gateway.yaml (global defaults, anchors, OIDC, TLS), endpoints/*.yaml (portable route descriptors with abstract base_url aliases) and topology.properties (concrete URL bindings with environment-variable expansion) are loaded and resolved together, validated -- aborting startup with CONFIG_INVALID or AUTH_WEAKENED on any violation -- and frozen into immutable runtime state,opts=inline]
 
@@ -424,9 +425,11 @@ Read it as a map of what you can and cannot change, and of where the answer is "
 * *Posture:* off is the correct default -- mTLS is an opt-in trust model, not a hardening step, and
   turning it on without staged client certificates locks out the entire fleet.
 * *Override route:* *neutral*, `gateway.yaml` only. `tls.mtls.enabled` switches the terminated
-  listener to require-and-verify against `client_ca`. A deployment-supplied
-  `QUARKUS_HTTP_SSL_CLIENT_AUTH` has no effect: the gateway applies its own mTLS setting after the
-  runtime builds the listener options and overwrites it.
+  listener to require-and-verify against `client_ca`; the gateway applies it after the runtime builds
+  the listener options. A deployment-supplied `QUARKUS_HTTP_SSL_CLIENT_AUTH` has no effect, because
+  `quarkus.http.ssl.client-auth` is fixed at build time. The shipped build declares no such key, so
+  client-auth stays off unless `tls.mtls.enabled` is set; with `tls.mtls` absent or disabled the
+  gateway leaves the build-time value untouched, so an image rebuilt with that key keeps it.
 * *Deployment-bound by necessity?* The *trust anchor path* is, being material. The *decision* is not,
   and is correctly neutral.
 * *Operator caveat:* mTLS here is require-and-verify or off -- no optional/want mode -- and

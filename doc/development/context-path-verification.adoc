@@ -591,5 +591,7 @@ default (the acting value, since that lane passes no `-Dsheriff.management-conte
 the release before the image is built.
 
 *Asserted is not derived.* All four still have to be edited by hand when the management path moves;
-the assertions make editing them wrong a build failure rather than a silent drift. Prefer deriving
-where a resolved model exists.
+the assertions make editing them wrong a red integration suite or a failed release rather than a
+silent drift. Only a run that executes `ManagementRootPathLabelIT` catches the first three: the
+benchmark lane builds its image with `-DskipTests` and then scrapes through the same `prometheus.yml`
+unchecked. Prefer deriving where a resolved model exists.

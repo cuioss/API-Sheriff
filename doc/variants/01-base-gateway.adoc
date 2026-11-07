@@ -130,12 +130,12 @@ endpoint:
       # Optional. Omitted, every client header and query parameter crosses, bounded by the
       # gateway-owned never-forward set. Declare a list only to NARROW that: a positive-list, as
       # here, or headers_deny / query_deny to withhold a few names. accept and content-type
-      # cross without being enumerated; a headers_deny naming one withholds it.
+      # cross without being enumerated; a headers_deny naming one withholds it. Cookie is not
+      # decided here: the route's cookies block governs it and admits none by default.
       forward:
         query_allow: [page, size]
       upstream:
         path: /orders          # replaces the matched prefix; request-path remainder appended
-        read_timeout_ms: 5000
 ----
 
 [source,properties]

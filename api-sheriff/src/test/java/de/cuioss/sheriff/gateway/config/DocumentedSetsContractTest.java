@@ -175,13 +175,11 @@ class DocumentedSetsContractTest {
     private static final Path CONFIGURATION_ADOC = REPOSITORY_ROOT.resolve("doc/configuration.adoc");
 
     /**
-     * The subsystem reference documents {@code doc/configuration.adoc} links to, in reading order. The
-     * configuration reference is the index followed by these; {@link #readConfiguration()} reads them as one
-     * document so an anchored exhibit is found wherever the split placed it.
+     * A link from {@code doc/configuration.adoc} to one of its subsystem reference documents. The parts
+     * {@link #readConfiguration()} reads are derived from these links, so a part the index stops linking
+     * drops out of the reference the guards read, and a newly linked part joins it.
      */
-    private static final List<Path> CONFIGURATION_PARTS = Stream.of("tls-and-egress", "authentication-and-oidc",
-            "routing-and-forwarding", "security-and-edge-hardening", "validation-rules")
-            .map(part -> REPOSITORY_ROOT.resolve("doc/configuration/" + part + ".adoc")).toList();
+    private static final Pattern CONFIGURATION_PART_LINK = Pattern.compile("link:(configuration/[a-z0-9-]+\\.adoc)");
 
     private static final Path EDGE_SECURITY_ADOC = REPOSITORY_ROOT.resolve("doc/user/edge-security.adoc");
     private static final Path BFF_COOKIE_ADOC = REPOSITORY_ROOT.resolve("doc/user/bff-cookie.adoc");
@@ -2606,15 +2604,23 @@ class DocumentedSetsContractTest {
 
     /**
      * The configuration reference as one document: {@code doc/configuration.adoc} followed by every
-     * {@link #CONFIGURATION_PARTS part}, each separated by a line break.
+     * part it links ({@link #CONFIGURATION_PART_LINK}), in link order, each separated by a line break.
      *
      * @return the concatenated configuration reference
      * @throws IOException when a part cannot be read
      */
     private static String readConfiguration() throws IOException {
-        StringBuilder reference = new StringBuilder(read(CONFIGURATION_ADOC));
-        for (Path part : CONFIGURATION_PARTS) {
-            reference.append('\n').append(read(part));
+        String index = read(CONFIGURATION_ADOC);
+        Set<String> parts = new LinkedHashSet<>();
+        Matcher link = CONFIGURATION_PART_LINK.matcher(index);
+        while (link.find()) {
+            parts.add(link.group(1));
+        }
+        assertFalse(parts.isEmpty(), CONFIGURATION_ADOC + " links no doc/configuration/*.adoc part, so the"
+                + " configuration reference the guards read would be the index alone");
+        StringBuilder reference = new StringBuilder(index);
+        for (String part : parts) {
+            reference.append('\n').append(read(REPOSITORY_ROOT.resolve("doc").resolve(part)));
         }
         return reference.toString();
     }

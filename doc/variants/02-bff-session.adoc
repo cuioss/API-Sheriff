@@ -193,8 +193,8 @@ at the IdP*, and only once it is reused (ADR-0046).
 On every request a session route compares the session's active scopes with the route's `needed`
 set, whatever `auth.token_relay` says
 (link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
-A missing scope the IdP already granted is obtained by a refresh. One outside the grant *widens* the
-live session: a navigation is redirected to the IdP and the grant is merged into the same session;
+A missing scope the IdP already granted is requested by a refresh. One outside the grant, or one the
+refresh did not obtain, *widens* the live session: a navigation is redirected to the IdP and the grant is merged into the same session;
 any other request is refused `403` naming the `missing_scopes`. An IdP refusal on the callback ends
 in a terminal `403` with the session unchanged and still usable where it suffices. Behaviour, problem body and the `oidc.step_up.path` contract are in
 link:../user/bff-session.adoc#scope-enforcement[the operator guide].
@@ -205,10 +205,12 @@ token. An API client cannot recover from the `403` by retrying: widening needs a
 
 == Step-Up Authentication (RFC 9470)
 
-The gateway honours an upstream `401` carrying `insufficient_user_authentication`: it attempts a
-silent refresh and, if that cannot satisfy the challenge, re-drives the login with the required
-`acr_values` / `max_age` / `scope`, then replays the request. This answers a demand for stronger
-*authentication*; scope enforcement above obtains *scopes* the route declares.
+Handling an upstream `401` carrying `insufficient_user_authentication` -- a silent refresh first,
+otherwise a login re-driven with the required `acr_values` / `max_age` / `scope`, then a replay of the
+request -- is assembled but *not wired*: no request path calls it, so the gateway relays that `401` to
+the client like any other upstream response and starts no elevated login (see
+link:../fapi_status.adoc[FAPI 2.0 status]). It would answer a demand for stronger *authentication*;
+scope enforcement above obtains *scopes* the route declares.
 
 == User-Info Endpoint
 

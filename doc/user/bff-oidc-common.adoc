@@ -480,7 +480,9 @@ gateway has ended a session this way, it remembers the refresh token that sessio
 salted digest, in memory, until the session's absolute lifetime), so further requests with that same
 cookie are refused locally -- cookie cleared, no call to your IdP, no further `ApiSheriff-111`. That
 memory is per instance and does not survive a restart, so another instance, or the same one after a
-restart, asks the IdP once more before it remembers the token too.
+restart, asks the IdP once more before it remembers the token too. It is also bounded: while it is
+full of unexpired entries a newly ended token is not remembered, and each replay of that cookie
+reaches the IdP again and records another `ApiSheriff-111`.
 
 *The trade you accept.* Strict rotation cannot tell a replay from a benign duplicate: with no reuse
 permitted, a duplicate refresh of one token ends the session. Each instance single-flights refreshes

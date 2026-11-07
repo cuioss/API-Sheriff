@@ -141,7 +141,7 @@ empty list, the gateway trusts no peer, ignores every inbound `X-Forwarded-For`,
 regenerates the forwarding headers rather than passing them on, and never synthesises one from the
 TCP peer -- sends the upstream *no* `X-Forwarded-For` at all. An upstream that rate-limits,
 allow-lists or audits by IP then sees only the gateway's address, and every client looks alike to it.
-Set the list to the hop's *exact* address as a `/32`. Never a bridge range or any range that contains
+Set the list to the hop's *exact* address -- a `/32` for IPv4, a `/128` for IPv6. Never a bridge range or any range that contains
 clients: a client inside the trusted set has its own `X-Forwarded-For` believed, which is the spoof
 the list exists to stop.
 
@@ -436,6 +436,8 @@ The management port is deployment-bound: `quarkus.management.port` (default `900
 `ApiSheriff-200` at `/management/port`, naming `QUARKUS_MANAGEMENT_PORT`, then `ApiSheriff-201`.
 
 The baked `HEALTHCHECK` probes `9000` as a compiled-in constant and does not follow
-`QUARKUS_MANAGEMENT_PORT`. Moving the port makes the container never report healthy, and overriding
-the `HEALTHCHECK` does not help -- only an image rebuilt against the new port does. See
+`QUARKUS_MANAGEMENT_PORT`. Moving the port makes the container never report healthy. Overriding the
+`HEALTHCHECK` with the image's own `--health-probe` does not help, because that binary probes the
+constant it was built with. Rebuild the image against the new port, or override the health check
+with an exec-form command that runs a probe you mount yourself against the new port. See
 link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].

@@ -149,9 +149,9 @@ volumes:
 | TLS boot refusal naming the bucket.
 | Correct the bucket name, or populate the bucket.
 
-| A declared certificate path that resolves to no usable key
-| The gateway starts on plain HTTP and logs `WARN ApiSheriff-121` -- the authoritative record when
-  declared and resolved disagree.
+| A declared certificate or key file that is not mounted
+| Startup aborts while the runtime reads the file (a classpath resource of that name would be read
+  instead). The listener never falls back to plain HTTP for it.
 | Fix the path or the mount.
 
 | Unsupported `min_version`, unknown cipher suite, or an allowlist that strands an enabled protocol
@@ -400,9 +400,11 @@ The management listener takes its key material from the first of these that appl
 | `QUARKUS_MANAGEMENT_PORT` moved away from `9000`
 | The baked `HEALTHCHECK` probes `9000`, so the container never reports healthy (see
   link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal]).
-| Keep `9000`, or rebuild the image against the new port.
+| Keep `9000`, rebuild the image against the new port, or override the health check with a probe you
+  mount yourself (link:tls-edge.adoc#_the_port_is_not_in_gateway_yaml[TLS Edge -- The port is not in `gateway.yaml`]).
 
-| A key-bearing default `+quarkus.tls.key-store.*+` bucket declared anywhere
+| A key-bearing default `+quarkus.tls.key-store.*+` bucket declared anywhere, with no named
+  management bucket selected
 | The management interface switches to HTTPS through a path no management setting mentions.
   `ApiSheriff-115` stays truthful, but your management settings no longer describe the posture.
 | Avoid a default key-store bucket when the management posture must follow the management settings.
