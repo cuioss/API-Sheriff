@@ -2,9 +2,9 @@
   "id": "PLAN-SEC-01",
   "slug": "edge-transport-hardening",
   "workstream": "WS-01",
-  "status": "launched",
+  "status": "running",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
+  "plan_marshall_plan_id": "plan-sec-01-edge-transport-hardening",
   "pr": "",
   "landing": "",
   "seq": 1
