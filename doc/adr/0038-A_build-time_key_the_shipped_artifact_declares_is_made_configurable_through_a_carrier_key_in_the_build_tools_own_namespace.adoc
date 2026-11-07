@@ -1,7 +1,9 @@
 = ADR-0038: A build-time key the shipped artifact declares is made configurable through a carrier key in the build tool's own namespace
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // summary: A build-time configuration key that the shipped artifact declares is made build-configurable by declaring it as an EXPRESSION over a carrier key in the build tool's own namespace, never by having the build seam set the framework key directly -- because the artifact's own declaration outranks the forwarded build property and would silently override it, and because the forwarding path keeps only prefixed names.

@@ -99,7 +99,7 @@ image::../resources/diagrams/asset-and-redirect-actions.svg[Asset terminal actio
 The third terminal action
 (link:../adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]) answers the
 request at the gateway with the configured `redirect.status` (`3xx` from the schema's closed
-redirect-status set; see link:../configuration.adoc#_redirect[Configuration -- `redirect`]) and a
+redirect-status set; see link:../configuration/routing-and-forwarding.adoc#_redirect[Configuration -- `redirect`]) and a
 `Location` header, never contacting an upstream.
 
 A redirect route runs the pipeline through stage 4 (authentication) and is answered immediately

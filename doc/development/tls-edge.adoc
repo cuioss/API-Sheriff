@@ -1,12 +1,14 @@
 = API Sheriff -- TLS Edge: Front Listener and the Accept-Time SNI Split
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The *contributor* view of the TLS edge: how the accept-time SNI split is built, which component
 owns which port, and why selection is *fail-closed*. Operators configuring these keys want the
 link:../user/tls-edge.adoc[operator TLS-edge topic]; the field contract is the
-link:../configuration.adoc#_tls[Configuration Reference `tls` section]; the threat this design
+link:../configuration/tls-and-egress.adoc#_tls[Configuration Reference `tls` section]; the threat this design
 closes is link:../security-threat-model.adoc#gw-06[GW-06] in the threat model.
 
 The whole edge lives under `de.cuioss.sheriff.gateway.tls` plus one pipeline stage

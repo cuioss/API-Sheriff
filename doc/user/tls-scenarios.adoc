@@ -1,21 +1,21 @@
 = API Sheriff -- TLS Scenarios: Choosing and Configuring a TLS Posture
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 An operator guide organised by *what you are trying to achieve*. Each scenario states its goal, what
-must exist before you start, the configuration that achieves it, and what you see when it goes
-wrong.
+must exist before you start, the configuration that achieves it, and what you see when it goes wrong.
 
-*This page composes and links; it is not a source of truth.* What a key means lives in
-link:environment-variable-overrides.adoc[Environment-variable overrides], why the mechanism is built
-the way it is lives in link:tls-edge.adoc[TLS Edge], and the field contract lives in the
-link:../configuration.adoc[Configuration Reference]. Where this page and one of those disagree, that
-page is right and this one is wrong.
+This page composes and links. What a key means lives in
+link:../configuration/tls-and-egress.adoc[Configuration Reference -- TLS and Egress], how its
+environment spelling is derived in link:environment-variable-overrides.adoc[Environment-variable
+overrides], and how the mechanism behaves in link:tls-edge.adoc[TLS Edge]. Where this page and one of
+those disagree, that page is right.
 
 Every configuration block below is copied from a file this repository ships, named in the block's
-title, and never derived. A block whose scenario has no shipped instance says so and names the
-documentation section it was copied from instead.
+title. A scenario with no shipped instance copies from the reference section named in its title.
 
 == Choosing a scenario
 
@@ -57,9 +57,9 @@ documentation section it was copied from instead.
 
 The scenarios compose: a typical production gateway is <<_scenario_terminate_at_gateway>> plus
 <<_scenario_management_https>>, with <<_scenario_private_ca_idp>> or
-<<_scenario_corporate_ca_upstreams>> added when a private CA is involved. Three combinations are
-refused at boot rather than composed, all of them with <<_scenario_terminated_upstream>>: it cannot be
-combined with <<_scenario_mtls>>, with <<_scenario_passthrough>>, or with declared server key material.
+<<_scenario_corporate_ca_upstreams>> added when a private CA is involved. Three combinations fail the
+boot instead, all with <<_scenario_terminated_upstream>>: it cannot be combined with
+<<_scenario_mtls>>, with <<_scenario_passthrough>>, or with declared server key material.
 
 == The material each scenario touches
 
@@ -68,24 +68,21 @@ image::../resources/diagrams/tls-key-material.svg[TLS key and trust material: wh
 The left column is inbound: the certificate the gateway presents, the key-less management bucket, and
 the CA it checks client certificates against. The right column is outbound, and two of its entries
 *replace* the anchors they govern rather than adding to them. `jwks.tls_profile` and
-`egress_tls.jwks_verify_hostname: false` cannot be combined. `CookieKeyMaterial` seals cookie-mode
-sessions and is not TLS material at all; it appears so it is not mistaken for one.
+`egress_tls.jwks_verify_hostname: false` cannot be combined. The cookie sealing key protects
+cookie-mode sessions and is not TLS material; it appears so it is not mistaken for one.
 
 == Reading a failure mode
 
-Three kinds of signal appear under *Failure mode* below, and they mean different things:
+Three kinds of signal appear in the *Failure mode* tables below:
 
-* *A document validation refusal.* `ConfigProducer` logs `ApiSheriff-200` once per violation (file,
-  JSON pointer, detail) and then `ApiSheriff-201`, and the process exits non-zero. This is how a
-  schema violation or a `ConfigValidator` rule surfaces. See link:../LogMessages.adoc[Log messages].
-* *A listener or producer refusal.* `ServerTlsDeclarationGate`, `TlsServerCustomizer`,
-  `MtlsServerCustomizer`, `TokenValidatorProducer`, `JwksTrustProfileResolver` and
-  `EgressTrustProfileResolver` abort startup by throwing. The message names the offending key and
-  the way out, and carries no `ApiSheriff` identifier of its own.
-* *A boot WARN reporting a deliberate posture.* The gateway starts and says, once, what it is doing.
-  `ManagementPlainHttpAudit` (`ApiSheriff-115`) and `TerminatedListenerTlsAudit` (`ApiSheriff-121`)
-  report the state the listener actually resolved rather than a declared key, which is the model the
-  other TLS records on this page follow.
+* *A configuration-document refusal.* `ERROR ApiSheriff-200` once per violation (file, JSON pointer,
+  detail), then `ERROR ApiSheriff-201`, and the process exits non-zero. Schema violations and
+  cross-field rules surface this way. See link:../LogMessages.adoc[Log messages].
+* *A TLS boot refusal.* Startup aborts with an error that names the offending key and the way out.
+  It carries no `ApiSheriff` identifier.
+* *A boot `WARN` reporting a deliberate posture.* The gateway starts and says, once, what it is
+  doing. `ApiSheriff-115` (management) and `ApiSheriff-121` (main listener) report the state the
+  listener actually resolved, not a declared key.
 
 [[_scenario_terminate_at_gateway]]
 == Terminate TLS at the gateway
@@ -93,23 +90,22 @@ Three kinds of signal appear under *Failure mode* below, and they mean different
 === Goal
 
 The gateway presents its own server certificate and runs the full L7 pipeline on every connection.
-This is the default topology: a single terminated listener, with no front listener in front of it.
-Pick it whenever clients reach the gateway directly. Do not pick it when something in front of the
-gateway already terminates TLS -- that is <<_scenario_terminated_upstream>>.
+This is the default topology: one terminated listener, no front listener. Pick it whenever clients
+reach the gateway directly. If something in front of the gateway already terminates TLS, use
+<<_scenario_terminated_upstream>>.
 
 === Preconditions
 
-* A server certificate and its private key, in PEM form, naming every hostname clients use to reach
-  the gateway.
+* A server certificate and its private key, in PEM form, naming every hostname clients use.
 * Both files mounted read-only into the container at a stable path.
-* Nothing else: no `tls` key is required, because `TlsServerCustomizer` skips every absent key and
-  leaves the runtime's own protocol and cipher selection in force.
+* No `tls` key is required: every key you omit leaves the runtime's own protocol and cipher selection
+  in force.
 
 === Configuration
 
 *Policy* -- optional. Declare a protocol floor, a cipher allowlist or ALPN only when you mean to own
-them; what each key does is in link:tls-edge.adoc#_tls_policy_on_the_terminated_listener[TLS policy on
-the terminated listener].
+them; see link:tls-edge.adoc#_tls_policy_on_the_terminated_listener[TLS policy on the terminated
+listener].
 
 [source,yaml]
 .deployment/compose-sample/docker/sheriff-config/gateway.yaml
@@ -124,7 +120,7 @@ tls:
   alpn: ["h2", "http/1.1"]
 ----
 
-*Deployment* -- the certificate, the key and the public port. `QUARKUS_HTTP_SSL_PORT` stays unset:
+*Deployment* -- the certificate, the key and the public port. Leave `QUARKUS_HTTP_SSL_PORT` unset:
 the terminated listener keeps its shipped `8443`.
 
 [source,yaml]
@@ -141,17 +137,27 @@ volumes:
 
 === Failure mode
 
-* *No key material declared, and no plain-HTTP opt-in.* `ServerTlsDeclarationGate` refuses the boot
-  and names both ways out: declare a certificate, or set `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`. It
-  never falls back to cleartext.
-* *`QUARKUS_HTTP_TLS_CONFIGURATION_NAME` selects a bucket that carries no key material.*
-  `ServerTlsDeclarationGate` refuses the boot, naming the bucket.
-* *A declared certificate path that resolves to no usable key.* The gate reads declared keys only, so
-  it accepts this; `TerminatedListenerTlsAudit` then reports the listener as plain HTTP with
-  `WARN ApiSheriff-121`, which is the authoritative record wherever declared and resolved disagree.
-* *An unsupported `min_version`, an unknown cipher suite name, or an allowlist that strands one of the
-  enabled protocols.* `TlsServerCustomizer` refuses the boot, naming the value or the stranded
-  protocol.
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| No key material and no plain-HTTP opt-in
+| TLS boot refusal naming both ways out. Never falls back to cleartext.
+| Declare a certificate, or set `QUARKUS_HTTP_INSECURE_REQUESTS=enabled` (<<_scenario_terminated_upstream>>).
+
+| `QUARKUS_HTTP_TLS_CONFIGURATION_NAME` selects a bucket with no key material
+| TLS boot refusal naming the bucket.
+| Correct the bucket name, or populate the bucket.
+
+| A declared certificate or key file that is not mounted
+| Startup aborts while the runtime reads the file (a classpath resource of that name would be read
+  instead). The listener never falls back to plain HTTP for it.
+| Fix the path or the mount.
+
+| Unsupported `min_version`, unknown cipher suite, or an allowlist that strands an enabled protocol
+| TLS boot refusal naming the value or the stranded protocol.
+| Correct the value; keep the allowlist consistent with `min_version`.
+|===
 
 [[_scenario_mtls]]
 == Terminate and require client certificates
@@ -159,7 +165,7 @@ volumes:
 === Goal
 
 Every terminated connection must present a client certificate that chains to one CA you name, or the
-handshake is rejected before any HTTP is exchanged. Pick it for machine-to-machine clients you issue
+handshake fails before any HTTP is exchanged. Pick it for machine-to-machine clients you issue
 certificates to. Do not pick it for browsers you do not provision, for passthrough hostnames (the
 gateway never takes part in that handshake), or behind a hop that terminates TLS for the gateway.
 Revocation is a trust-root rotation with a global blast radius -- read
@@ -170,9 +176,9 @@ replacement] before relying on it.
 
 * Everything <<_scenario_terminate_at_gateway>> needs: the listener still presents a server
   certificate.
-* The CA bundle as a PEM file, mounted read-only at a path that stays the same in every environment
+* The CA bundle as a PEM file, mounted read-only at a path that is the same in every environment
   -- `client_ca` is a path reference, not the material (see
-  link:../configuration.adoc#_client_ca_carve_out[the `client_ca` carve-out]).
+  link:../configuration/tls-and-egress.adoc#_client_ca_carve_out[the `client_ca` carve-out]).
 * Client certificates issued under that CA and staged to every client *before* you switch the
   requirement on.
 * `QUARKUS_HTTP_INSECURE_REQUESTS` is not `enabled`.
@@ -203,20 +209,31 @@ volumes:
   - ./src/main/docker/certificates:/app/certificates:ro
 ----
 
-That service also sets `QUARKUS_HTTP_SSL_PROTOCOLS=TLSv1.2`. It is a test pin so the integration
-client observes the rejection at the handshake, not part of the posture; leave it out.
+That service also sets `QUARKUS_HTTP_SSL_PROTOCOLS=TLSv1.2` as a test pin, so the integration client
+observes the rejection at the handshake. It is not part of the posture; leave it out.
 
 === Failure mode
 
-* *A client presents no certificate, or one from another CA.* `MtlsServerCustomizer` sets the
-  listener to require-and-verify, so the TLS handshake fails. There is no HTTP status and no
-  catalogued log record for the rejection.
-* *`enabled: true` without `client_ca`.* `MtlsServerCustomizer` refuses the boot:
-  `Refusing to start — tls.mtls.enabled requires a client_ca trust anchor`.
-* *An `mtls` block without `enabled`.* The schema requires the key, so `ConfigProducer` logs
-  `ApiSheriff-200` at the block's pointer and `ApiSheriff-201`.
-* *Combined with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`.* `ServerTlsDeclarationGate` refuses the
-  boot: a listener that terminates no TLS could verify no client certificate.
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| A client presents no certificate, or one from another CA
+| The TLS handshake fails. No HTTP status and no catalogued log record.
+| Issue the client a certificate under `client_ca`.
+
+| `enabled: true` without `client_ca`
+| TLS boot refusal: `Refusing to start — tls.mtls.enabled requires a client_ca trust anchor`.
+| Add `client_ca`.
+
+| An `mtls` block without `enabled`
+| `ApiSheriff-200` at the block's pointer, then `ApiSheriff-201`.
+| Add `enabled`.
+
+| Combined with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`
+| TLS boot refusal: a listener that terminates no TLS could verify no client certificate.
+| Remove the opt-in, or move client-certificate verification to the terminating hop.
+|===
 
 [[_scenario_passthrough]]
 == Pass selected hostnames through untouched
@@ -227,7 +244,7 @@ Connections whose TLS ClientHello names a listed hostname are relayed undecrypte
 backend that completes the handshake with its own certificate. Every other hostname is terminated on
 the same public port. Pick it when a backend must keep end-to-end TLS with the client. Do not pick it
 when you need any L7 feature on that hostname -- filtering, authentication, forwarding headers, mTLS
--- because none of them can apply to a connection the gateway never decrypts.
+-- because none of them applies to a connection the gateway never decrypts.
 
 === Preconditions
 
@@ -236,8 +253,8 @@ when you need any L7 feature on that hostname -- filtering, authentication, forw
 * The backend serves TLS itself, with a certificate naming the passthrough hostname.
 * A topology alias for each backend, whose URL carries no base path.
 * Clients send SNI, and the passthrough hostname resolves to the gateway.
-* The terminated listener moves off the public port: `QUARKUS_HTTP_SSL_PORT` is set to the internal
-  port `TlsEdgeProducer` hands unmatched connections to, `SHERIFF_TLS_INTERNAL_HTTPS_PORT` (default
+* The terminated listener moves off the public port: set `QUARKUS_HTTP_SSL_PORT` to the internal
+  port the front listener hands unmatched connections to, `SHERIFF_TLS_INTERNAL_HTTPS_PORT` (default
   `8444`).
 
 === Configuration
@@ -271,42 +288,49 @@ environment:
   - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
 ----
 
-*What the environment can and cannot supply here.* `ConfigLoader` resolves an in-file `${VAR}`
-placeholder and then re-types it in `ConfigLoader.coerce` by the type the schema declares at that
-pointer. `coerce` has arms for `string`, `boolean`, `integer`/`number` and `array`, and none for an
-object. So the boundary is:
+*What the environment can supply here.* An in-file `${VAR}` placeholder is retyped to the type the
+schema declares at that position, and a map cannot be built from a string:
 
-* *The whole map cannot come from one variable.* `passthrough_sni` is `type: object` in
-  `gateway.schema.json`. A `passthrough_sni: "${VAR}"` falls to shape inference, stays a text node, and
-  the schema refuses it -- `ApiSheriff-200` at `/tls/passthrough_sni`, then `ApiSheriff-201`.
-* *Each alias value can.* The map's values are `type: string`, so `backend.example.com: ${VAR}` is a
-  valid placeholder. The hostname keys are not: `ConfigLoader.substitute` walks values, never field
-  names.
+* *The whole map cannot come from one variable.* `passthrough_sni: "${VAR}"` is refused --
+  `ApiSheriff-200` at `/tls/passthrough_sni`, then `ApiSheriff-201`.
+* *Each alias value can.* `backend.example.com: ${VAR}` is a valid placeholder. The hostname keys
+  cannot be placeholders; substitution applies to values only.
 * *Each backend's location can move without touching `gateway.yaml`.* Write an in-file placeholder
   into `topology.properties`, as described in
   link:environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology and endpoint
-  enablement] -- the shipped `PASSTHROUGH_BACKEND` above is a literal, so no
+  enablement]. The shipped `PASSTHROUGH_BACKEND` above is a literal, so no
   `TOPOLOGY_PASSTHROUGH_BACKEND` variable reaches it.
 
 === Failure mode
 
-* *`QUARKUS_HTTP_SSL_PORT` left at `8443`.* The front listener `TlsEdgeProducer` starts and the
-  terminated listener both claim the public port, and the boot fails with
-  `Port 8443 seems to be in use by another process`. `TlsEdgeProducer` blocks startup on the front
-  listener's bind, so the gateway never serves on a half-open edge.
-* *A ClientHello with no usable SNI, a malformed one, or one beyond the reassembly bound.*
-  `SniFrontListener` fails it closed onto the terminated path and logs `WARN ApiSheriff-107` with the
-  disposition only.
-* *A terminated request whose `Host` names a passthrough hostname.* `PassthroughHostGuardStage` rejects
-  it `404` before route selection, and `RejectionReporter` logs `WARN ApiSheriff-108` with the
-  disposition only.
-* *An alias that does not resolve, or resolves to a URL with a base path.*
-  `EdgeRules.validatePassthroughAliasResolvable` refuses it: `ApiSheriff-200`, then
-  `ApiSheriff-201`.
-* *Combined with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`.* `ServerTlsDeclarationGate` refuses the
-  boot.
-* *What a healthy boot shows.* `SniFrontListener` logs `INFO ApiSheriff-7` with the public port and the
-  number of mappings; its absence means the front listener was never started.
+A healthy boot logs `INFO ApiSheriff-7` with the public port and the number of mappings. Its absence
+means the front listener never started.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| `QUARKUS_HTTP_SSL_PORT` left at `8443`
+| The front listener and the terminated listener both claim the public port; the boot fails with
+  `Port 8443 seems to be in use by another process`. The gateway never serves on a half-open edge.
+| Set `QUARKUS_HTTP_SSL_PORT` to `SHERIFF_TLS_INTERNAL_HTTPS_PORT` (`8444`).
+
+| A ClientHello with no usable SNI, a malformed one, or one beyond the reassembly bound
+| The connection is terminated instead of relayed; `WARN ApiSheriff-107` records the disposition only.
+| Make the client send SNI for the passthrough hostname.
+
+| A terminated request whose `Host` names a passthrough hostname
+| `404` before route selection; `WARN ApiSheriff-108` records the disposition only.
+| Expected: this is the Host-smuggle guard. Reach the hostname with matching SNI.
+
+| An alias that does not resolve, or resolves to a URL with a base path
+| `ApiSheriff-200`, then `ApiSheriff-201`.
+| Bind the alias in `topology.properties` to a bare `scheme://host:port`.
+
+| Combined with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`
+| TLS boot refusal.
+| Pick passthrough or a TLS-terminating hop, not both.
+|===
 
 [[_scenario_management_https]]
 == Management interface over HTTPS
@@ -314,26 +338,25 @@ object. So the boundary is:
 === Goal
 
 Health and metrics are served on their own port, `9000` by default, over HTTPS. This is the shipped
-default and it stays the default. Pick it unless you have a specific reason for
-<<_scenario_management_plain>>. The management interface has exactly one port, so every consumer of
-it -- readiness gates, scrapers, load-balancer checks -- has to speak TLS (see
-link:tls-edge.adoc#_the_single_port_constraint[The single-port constraint]).
+default; pick it unless you have a specific reason for <<_scenario_management_plain>>. The management
+interface has exactly one port, so every consumer -- readiness gates, scrapers, load-balancer checks
+-- must speak TLS (see link:tls-edge.adoc#_the_single_port_constraint[The single-port constraint]).
 
 === Preconditions
 
-* A certificate and key for the management interface, mounted read-only. It may be the same pair the
+* A certificate and key for the management interface, mounted read-only. It may be the pair the
   terminated listener uses.
 * Consumers of the management port that speak TLS, and trust that certificate or skip verification
   deliberately.
-* The port itself stays out of `gateway.yaml`; it is `QUARKUS_MANAGEMENT_PORT` if you move it.
+* The port stays out of `gateway.yaml`; move it with `QUARKUS_MANAGEMENT_PORT`.
 
 === Configuration
 
-*Policy* -- none. Omitting the `management` block, or writing `management.tls.enabled: true`, projects
-nothing: `NeutralTlsConfigSource` emits a key only for `false`.
+*Policy* -- none. Omitting the `management` block, or writing `management.tls.enabled: true`, changes
+nothing.
 
 *Deployment* -- the management certificate, and a publication that does not expose the
-unauthenticated endpoints to every interface.
+unauthenticated endpoints on every interface.
 
 [source,yaml]
 .deployment/compose-sample/docker-compose.yml (api-sheriff service)
@@ -353,24 +376,39 @@ only if your own tooling reads them.
 
 === Failure mode
 
-* *No key material reaches the management listener.* `ResolvedServerTlsMaterial` settles this in one
-  order, and the first leg that applies decides. A selected named bucket
-  (`quarkus.management.tls-configuration-name`) decides alone: a key-bearing bucket serves HTTPS, a
-  key-less one serves plain HTTP even with the certificate pair above set. With no bucket selected, a
-  default `+quarkus.tls.key-store.*+` bucket that carries key material serves HTTPS. Otherwise the
-  `+quarkus.management.ssl.certificate.*+` keys decide, in any spelling -- `files`, `key-files`,
-  `key-store-file` or `credentials-provider`. When none of the three supplies key material, the
-  listener starts plain, `ManagementPlainHttpAudit` reports it with `WARN ApiSheriff-115`, and HTTPS
-  probes against the port fail.
-* *`management.port` written in `gateway.yaml`.* The schema declares the key only to refuse it:
-  `ApiSheriff-200` at `/management/port`, naming `QUARKUS_MANAGEMENT_PORT`, then `ApiSheriff-201`.
-* *`QUARKUS_MANAGEMENT_PORT` moved away from `9000`.* The baked `HEALTHCHECK` probes `9000` as a
-  compiled-in constant, so the container never reports healthy; see
-  link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
-* *A key-bearing default `+quarkus.tls.key-store.*+` bucket declared anywhere.* It is the second leg
-  above, so it switches the management interface to HTTPS through a path no management setting
-  mentions. `ApiSheriff-115` stays truthful, but the posture is no longer the one your management
-  settings describe.
+The management listener takes its key material from the first of these that applies:
+
+. A selected named bucket (`quarkus.management.tls-configuration-name`) decides alone: a key-bearing
+  bucket serves HTTPS, a key-less one serves plain HTTP even with the certificate pair above set.
+. With no bucket selected, a default `+quarkus.tls.key-store.*+` bucket that carries key material
+  serves HTTPS.
+. Otherwise the `+quarkus.management.ssl.certificate.*+` keys decide, in any spelling -- `files`,
+  `key-files`, `key-store-file` or `credentials-provider`.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| None of the three supplies key material
+| The listener starts plain, `WARN ApiSheriff-115` names the port, and HTTPS probes fail.
+| Mount the certificate pair and check its variables.
+
+| `management.port` written in `gateway.yaml`
+| `ApiSheriff-200` at `/management/port`, naming `QUARKUS_MANAGEMENT_PORT`, then `ApiSheriff-201`.
+| Remove the key; set `QUARKUS_MANAGEMENT_PORT`.
+
+| `QUARKUS_MANAGEMENT_PORT` moved away from `9000`
+| The baked `HEALTHCHECK` probes `9000`, so the container never reports healthy (see
+  link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal]).
+| Keep `9000`, rebuild the image against the new port, or override the health check with a probe you
+  mount yourself (link:tls-edge.adoc#_the_port_is_not_in_gateway_yaml[TLS Edge -- The port is not in `gateway.yaml`]).
+
+| A key-bearing default `+quarkus.tls.key-store.*+` bucket declared anywhere, with no named
+  management bucket selected
+| The management interface switches to HTTPS through a path no management setting mentions.
+  `ApiSheriff-115` stays truthful, but your management settings no longer describe the posture.
+| Avoid a default key-store bucket when the management posture must follow the management settings.
+|===
 
 [[_scenario_management_plain]]
 == Management interface over plain HTTP
@@ -411,20 +449,32 @@ environment:
   - QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management
 ----
 
-Both doors land on `quarkus.management.tls-configuration-name`. The policy door reaches it through
-`NeutralTlsConfigSource`, whose ordinal (`350`) sits above the environment's, so when both are set the
-`gateway.yaml` value wins.
+Both doors land on `quarkus.management.tls-configuration-name`. The policy door is projected at
+ordinal `350`, above the environment's, so when both are set the `gateway.yaml` value wins.
 
 === Failure mode
 
-* *Every boot in this posture.* `ManagementPlainHttpAudit` logs `WARN ApiSheriff-115`, naming the port.
-  That is the expected record, not a fault, and the gateway never refuses to start over it.
-* *A bucket name that does not resolve.* The Quarkus TLS registry fails the boot naming the
-  `quarkus.tls.<name>` property; it does not fall back.
-* *`QUARKUS_MANAGEMENT_ENABLED=false` used instead.* It is build-time fixed and moves health and
-  metrics onto the main, TLS-terminated router, so it cannot produce a plain probe endpoint.
-* *The management certificate pair left set.* It is not what disables TLS -- the selected key-less
-  bucket is -- so it changes nothing, but it misleads the next reader.
+Every boot in this posture logs `WARN ApiSheriff-115`, naming the port. That is the expected record,
+not a fault; the gateway never refuses to start over it.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| A bucket name that does not resolve
+| The boot fails naming the `quarkus.tls.<name>` property. No fallback.
+| Use `plain-management`, or declare the bucket you named.
+
+| `QUARKUS_MANAGEMENT_ENABLED=false` used instead
+| No effect at runtime: it is build-time fixed, and it would move health and metrics onto the main,
+  TLS-terminated router anyway.
+| Use one of the two doors above.
+
+| The management certificate pair left set
+| Nothing changes -- the selected key-less bucket is what disables TLS -- but it misleads the next
+  reader.
+| Remove the pair.
+|===
 
 [[_scenario_private_ca_idp]]
 == Validate tokens against an identity provider behind a private CA
@@ -434,8 +484,9 @@ Both doors land on `quarkus.management.tls-configuration-name`. The policy door 
 The gateway fetches the identity provider's signing keys (JWKS) over a TLS connection it verifies
 against *your* CA, and, when the BFF is enabled, reaches the same provider for discovery, the pushed
 authorization request, the code exchange, refresh and refresh-token revocation. Those are two
-independent legs with two different trust levers, and a private-CA provider needs both. Do not pick the JWKS lever when you also need `egress_tls.jwks_verify_hostname:
-false` -- the two are mutually exclusive
+independent legs with two different trust levers, and a private-CA provider needs both. Do not pick
+the JWKS lever when you also need `egress_tls.jwks_verify_hostname: false` -- the two are mutually
+exclusive
 (link:../adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]);
 see <<_scenario_relax_hostname_verification>>.
 
@@ -448,13 +499,13 @@ see <<_scenario_relax_hostname_verification>>.
 * Nothing extra when the provider sits on a private address: with `allowed_egress_hosts` omitted, the
   host of `jwks.url` is the derived egress allowance. Declare the list only to pin that allowance --
   a declared list is authoritative and never merged with the `jwks.url` host (see
-  link:../configuration.adoc#_token_validation[`allowed_egress_hosts`]). The shipped block below
-  declares it on purpose, as the explicit form.
+  link:../configuration/authentication-and-oidc.adoc#_token_validation[`allowed_egress_hosts`]). The
+  shipped block below declares it, as the explicit form.
 * For the BFF back-channel, either a trust profile of its own -- `egress_tls.oidc_tls_profile`, see
   <<_scenario_bff_oidc_back_channel>> -- or a store the JVM default trust manager can use. The default
   store *replaces* the platform bundle, so build it to keep the public roots you still need -- see
-  link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES
-  the platform bundle].
+  link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust
+  store REPLACES the platform bundle].
 
 === Configuration
 
@@ -474,7 +525,7 @@ token_validation:
         tls_profile: benchmark-idp
 ----
 
-The issuer is Keycloak's one, browser-facing identity; `keycloak:8443` is only the address the gateway
+The issuer is Keycloak's browser-facing identity; `keycloak:8443` is only the address the gateway
 dials for the key set, on the internal network. The trust profile verifies the host actually dialled.
 
 *Deployment, JWKS leg* -- bind the profile name to the store. The integration stack loads the binding
@@ -494,10 +545,9 @@ environment:
   - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
 ----
 
-*Policy, BFF back-channel leg* -- two levers reach this leg. The integration stack uses the named one:
-`egress_tls.oidc_tls_profile` names the profile the JWKS issuer above already names, so the one
-binding above serves both legs and the provider's CA stays off every other leg. The key is described
-in <<_scenario_bff_oidc_back_channel>>.
+*Policy, BFF back-channel leg* -- the integration stack names the same profile, so the one binding
+above serves both legs and the provider's CA stays off every other leg. The key is described in
+<<_scenario_bff_oidc_back_channel>>.
 
 [source,yaml]
 .integration-tests/src/main/docker/sheriff-config/gateway.yaml
@@ -506,40 +556,54 @@ egress_tls:
   oidc_tls_profile: benchmark-idp
 ----
 
-The other lever is the JVM default trust store, which reaches every leg that names no profile of its
-own; on the native image it has to arrive as command-line `-D` arguments. No shipped descriptor
-supplies a store for this purpose. The key set, and the recipe for a store that keeps the public
-roots, are in link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store
-REPLACES the platform bundle].
+The alternative is the JVM default trust store, which reaches every leg that names no profile of its
+own; on the native image it must arrive as command-line `-D` arguments. No shipped descriptor supplies
+one. The key set, and the recipe for a store that keeps the public roots, are in
+link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust
+store REPLACES the platform bundle].
 
 === Failure mode
 
-* *The profile is named but not bound.* `JwksTrustProfileResolver` refuses the boot, naming the issuer,
-  the profile and the `+quarkus.tls.<name>.trust-store.*+` key to set. It never falls back to default
-  trust.
-* *The bound profile carries no anchors, or sets `trust-all`.* `JwksTrustProfileResolver` refuses it
-  for the same reason (see link:../configuration.adoc#_jwks_trust_profiles[Trust profiles]).
-* *`tls_profile` on an `http` issuer while `egress_tls.jwks_verify_hostname` is `false`.*
-  `TokenValidatorProducer` refuses the boot, naming both keys and the issuer.
-* *A declared `allowed_egress_hosts` that does not name the `jwks.url` host of a private-address
-  provider.* The list is authoritative, so the egress guard keeps refusing that host: readiness stays
-  `DOWN`, `WARN ApiSheriff-129` reports each scheduled retry, and every bearer request is rejected
-  as `TOKEN_INVALID` -- answered as the unrouted `404` on the shipped default, `401` with
-  `security_defaults.uniform_not_found: false`. Name the host in the list, or omit the list to take
-  the derived allowance.
-* *No profile, and a JVM default trust store that does not hold the provider's CA.* The JWKS loader
-  `TokenValidatorProducer` configured verifies against the default store, the fetch fails PKIX path
-  building, the key set never loads, and every bearer request is rejected as `TOKEN_INVALID` -- a
-  trust problem that looks like a token problem. The caller sees the unrouted `404` on the shipped
-  default, so read the true event in `sheriff_errors_total{event}` (see
-  link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]).
-* *The BFF back-channel store is missing, or supplied through `JAVA_TOOL_OPTIONS`.* A native executable
-  ignores that variable, so the leg has no anchor for the provider. Discovery is the first call a
-  login makes: it fails PKIX and the login answers `500`. The pushed authorization request and the
-  code exchange are never reached.
-* *Which store is actually in force.* `DefaultTrustSourceAudit` logs `INFO ApiSheriff-17` on every boot,
-  naming the raw-`TrustManager` tier and the Quarkus TLS registry tier separately, and
-  `WARN ApiSheriff-122` whenever an operator-supplied store replaces the platform bundle on either tier.
+`INFO ApiSheriff-17` names on every boot which trust store is in force on each tier;
+`WARN ApiSheriff-122` appears whenever an operator-supplied store replaces the platform bundle.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| The profile is named but not bound
+| TLS boot refusal naming the issuer, the profile and the `+quarkus.tls.<name>.trust-store.*+` key to
+  set. No fallback to default trust.
+| Bind the profile.
+
+| The bound profile carries no anchors, or sets `trust-all`
+| The same refusal (see
+  link:../configuration/authentication-and-oidc.adoc#_jwks_trust_profiles[Trust profiles]).
+| Bind a store holding the CA.
+
+| `tls_profile` on an `http` issuer while `egress_tls.jwks_verify_hostname` is `false`
+| TLS boot refusal naming both keys and the issuer.
+| Drop one of the two; see <<_scenario_relax_hostname_verification>>.
+
+| A declared `allowed_egress_hosts` that does not name the `jwks.url` host of a private-address
+  provider
+| Readiness stays `DOWN`, `WARN ApiSheriff-129` reports each retry, and every bearer request is
+  rejected as `TOKEN_INVALID` -- the unrouted `404` on the shipped default, `401` with
+  `security_defaults.uniform_not_found: false`.
+| Name the host in the list, or omit the list.
+
+| No profile, and a JVM default trust store without the provider's CA
+| The JWKS fetch fails PKIX path building, the key set never loads, and every bearer request is
+  rejected as `TOKEN_INVALID` -- a trust problem that looks like a token problem. Read the true event
+  in `sheriff_errors_total{event}` (see
+  link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]).
+| Name a profile, or add the CA to the default store.
+
+| The BFF back-channel store missing, or supplied through `JAVA_TOOL_OPTIONS`
+| A native executable ignores that variable. Discovery, the first call of a login, fails PKIX and the
+  login answers `500`.
+| Name `oidc_tls_profile`, or pass the store as command-line `-D` arguments.
+|===
 
 [[_scenario_terminated_upstream]]
 == TLS terminated in front of the gateway
@@ -558,9 +622,8 @@ edge]).
 * A terminating hop at a stable, exact address, so the gateway can trust it as a `/32`.
 * No declared server key material on the gateway, no `tls.mtls`, and no non-empty
   `tls.passthrough_sni`.
-* The terminating hop carries the TLS posture, because the `tls` policy keys no longer govern
-  anything: `TlsServerCustomizer` customizes the HTTPS listener only. The compose sample mirrors the
-  gateway's floor in the hop's own configuration.
+* The terminating hop carries the TLS posture: the `tls` policy keys govern only an HTTPS listener,
+  so they no longer act. The compose sample mirrors the gateway's floor in the hop's configuration.
 * For the compose sample's override file, Docker Compose `2.24.4` or newer.
 
 === Configuration
@@ -589,8 +652,8 @@ environment:
   - SHERIFF_TRUSTED_PROXIES=10.89.0.10/32
 ----
 
-The variables are cleared because Compose merges an override into the base file: omitting them would
-inherit the base file's certificate paths. `ServerTlsDeclarationGate` reads a blank value as absent.
+The certificate variables are cleared because Compose merges an override into the base file, so
+omitting them would inherit the base file's paths. A blank value counts as absent.
 
 [source,nginx]
 .deployment/compose-sample/docker/nginx/tls-terminator.conf
@@ -612,21 +675,34 @@ The excerpt omits the certificate directives and the cipher list; the file carri
 
 === Failure mode
 
-* *Every boot in this posture.* `TerminatedListenerTlsAudit` logs `WARN ApiSheriff-121`, naming the
-  plain port and the live edge topology. That is the expected record, not a fault.
-* *The opt-in combined with declared server key material, `tls.mtls.enabled`, or a non-empty
-  `tls.passthrough_sni`.* `ServerTlsDeclarationGate` refuses the boot, naming the contradicting key and
-  both ways out.
-* *No certificate and no opt-in.* `ServerTlsDeclarationGate` refuses the boot; plain HTTP is never
-  inferred from a missing certificate.
-* *`SHERIFF_TRUSTED_PROXIES` unset or empty.* The bare placeholder has no default, and
-  `ConfigLoader.substituteChild` refuses both an unset variable and an empty resolution at a list-typed
-  field, so the boot fails (`ApiSheriff-200`, then `ApiSheriff-201`).
-* *`trusted_proxies` naming something other than the hop.* `TcpPeerGate` does not trust the hop, so
-  the `X-Forwarded-For` it sends is ignored and `ForwardPolicyStage` has no client address to
-  regenerate. What the upstream then sees, and why that matters, is verdict 3 in
+Every boot in this posture logs `WARN ApiSheriff-121`, naming the plain port and the live edge
+topology. That is the expected record, not a fault.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| The opt-in combined with declared server key material, `tls.mtls.enabled`, or a non-empty
+  `tls.passthrough_sni`
+| TLS boot refusal naming the contradicting key and both ways out.
+| Remove the contradicting declaration.
+
+| No certificate and no opt-in
+| TLS boot refusal. Plain HTTP is never inferred from a missing certificate.
+| Set `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`.
+
+| `SHERIFF_TRUSTED_PROXIES` unset or empty
+| The placeholder has no default and a list field refuses an empty resolution: `ApiSheriff-200`,
+  then `ApiSheriff-201`.
+| Set the variable to the hop's `/32`.
+
+| `trusted_proxies` naming something other than the hop
+| The hop is not trusted, its `X-Forwarded-For` is ignored, and the upstream receives no client
+  address -- verdict 3 in
   link:tls-edge.adoc#_interactions_with_the_rest_of_the_edge[What this mode does to the rest of the
   edge].
+| Set the list to the hop's exact address.
+|===
 
 [[_scenario_corporate_ca_upstreams]]
 == Dial upstreams through a corporate CA
@@ -643,10 +719,10 @@ Two levers exist, and both *replace* the anchors they govern rather than adding 
 
 Pick the profile when only proxied upstreams use the corporate CA. Pick the default trust store when an
 asset origin does too. The BFF back-channel to the identity provider has a profile key of its own
-(<<_scenario_bff_oidc_back_channel>>), and the default store reaches it only when that key is omitted. Do not name a profile holding only the corporate CA
-while a proxied upstream still needs a public CA (see
-link:../configuration.adoc#_upstream_trust_profile_replaces[A named profile replaces the client's
-anchors]).
+(<<_scenario_bff_oidc_back_channel>>); the default store reaches it only when that key is omitted. Do
+not name a profile holding only the corporate CA while a proxied upstream still needs a public CA (see
+link:../configuration/tls-and-egress.adoc#_upstream_trust_profile_replaces[A named profile replaces the
+client's anchors]).
 
 === Preconditions
 
@@ -683,14 +759,12 @@ environment:
 ----
 
 *Deployment, default trust store* -- no shipped descriptor supplies a store for this purpose. The
-minimal key set below is copied from
-link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
-platform bundle], which also has the recipe for a store that keeps the public roots. The Quarkus TLS
-registry's `<default>` bucket is a second, independent lever with its own spelling,
+minimal key set below is copied from the reference section that also has the recipe for a store that
+keeps the public roots. The Quarkus TLS registry's `<default>` bucket is a second, independent lever,
 `QUARKUS_TLS_TRUST_STORE_P12_PATH`; that section explains when you need it.
 
 [source,yaml]
-.doc/configuration.adoc (Supplying a default trust store REPLACES the platform bundle)
+.doc/configuration/tls-and-egress.adoc (Supplying a default trust store REPLACES the platform bundle)
 ----
 command:
   - -Djavax.net.ssl.trustStore=/app/certificates/gateway-truststore.p12
@@ -698,22 +772,32 @@ command:
   - -Djavax.net.ssl.trustStoreType=PKCS12
 ----
 
+See link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust
+store REPLACES the platform bundle].
+
 === Failure mode
 
-* *Every boot with a named profile.* `EgressClients` logs `WARN ApiSheriff-119` with the logical
-  profile name, restating that its anchors replace the default trust store on three clients and not
-  the asset-origin fetch. That is the expected record.
-* *The profile is not bound, carries no anchors, or sets `trust-all`.* `EgressTrustProfileResolver`
-  refuses the boot, naming the `+quarkus.tls.<name>.trust-store.*+` key to set.
-* *A proxied upstream with a public certificate stops working after you name a profile.* The profile
-  replaced the public roots on that leg, so the handshake fails and `UpstreamFailureMapper` answers
-  `502`; add the roots to the profile's store, or omit the profile.
-* *An asset origin behind the corporate CA.* The asset fetch runs on a JDK `java.net.http.HttpClient`
-  the profile does not reach, so it fails closed with a `502`; put the anchor into the default trust
-  store instead.
-* *Which store is actually in force.* `DefaultTrustSourceAudit` logs `INFO ApiSheriff-17` on every boot
-  and `WARN ApiSheriff-122` whenever an operator-supplied store is in effect, naming which tier was
-  left behind when the two disagree.
+Every boot with a named profile logs `WARN ApiSheriff-119` with the logical profile name, restating
+that its anchors replace the default trust store on the three upstream clients and not on the
+asset-origin fetch. `INFO ApiSheriff-17` and `WARN ApiSheriff-122` report which default store is in
+force, naming the tier left behind when the two disagree.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| The profile is not bound, carries no anchors, or sets `trust-all`
+| TLS boot refusal naming the `+quarkus.tls.<name>.trust-store.*+` key to set.
+| Bind a store holding the CA.
+
+| A proxied upstream with a public certificate after you name a profile
+| The handshake fails and the request is answered `502`: the profile replaced the public roots.
+| Add the public roots to the profile's store, or omit the profile.
+
+| An asset origin behind the corporate CA
+| The asset fetch fails closed with a `502`; the profile does not reach it.
+| Put the anchor into the default trust store.
+|===
 
 [[_scenario_relax_hostname_verification]]
 == Relax outbound hostname verification
@@ -725,26 +809,24 @@ requiring the chain to be trusted. Pick it for an upstream or an identity provid
 cluster-internal service name, a container alias or a load-balancer address its certificate does not
 name. Never pick it to reach a self-signed or private-CA peer -- the chain is still verified, so that
 is <<_scenario_corporate_ca_upstreams>> or <<_scenario_private_ca_idp>>. Fixing the certificate's
-names is always the better answer. Both keys are gateway-wide: there is no per-route or per-issuer
-override (see link:../configuration.adoc#_egress_tls_hostname_scope[What disabling hostname
-verification does and does not do]). Which key reaches which egress leg is tabled in
+names is always the better answer. Both keys are gateway-wide, with no per-route or per-issuer
+override (see link:../configuration/tls-and-egress.adoc#_egress_tls_hostname_scope[What disabling
+hostname verification does and does not do]). Which key reaches which egress leg is tabled in
 link:tls-edge.adoc#_egress_tls[TLS Edge -- Egress TLS].
 
 The two keys below cover proxied upstreams and the JWKS fetch. The BFF's own back-channel to the
-identity provider -- discovery, the pushed authorization request, the code exchange, refresh and
-refresh-token revocation -- is a separate leg with a separate key,
-`egress_tls.oidc_verify_hostname`, and relaxing the JWKS leg does not relax it. It is covered next,
-in <<_scenario_bff_oidc_back_channel>>.
+identity provider is a separate leg with a separate key, `egress_tls.oidc_verify_hostname`, which
+relaxing the JWKS leg does not reach -- see <<_scenario_bff_oidc_back_channel>>.
 
 === Preconditions
 
 * A peer whose certificate chains to an anchor the gateway already trusts on that leg.
 * For the JWKS key: no `http`-sourced issuer names `jwks.tls_profile`. An issuer that needs both a
-  private CA and the relaxation has no supported combination on the JWKS leg: the library relaxes
-  hostname matching only on the default-trust-store context it derives itself. Fix the certificate's
+  private CA and the relaxation has no supported combination on the JWKS leg. Fix the certificate's
   names, or put the CA into the JVM default trust store and name no profile on that issuer (see
-  link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
-  platform bundle]). The flag is global, so every other `http` issuer must then name no profile either.
+  link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust
+  store REPLACES the platform bundle]). The flag is global, so every other `http` issuer must then
+  name no profile either.
 
 === Configuration
 
@@ -759,11 +841,11 @@ egress_tls:
   upstream_tls_profile: it-upstream
 ----
 
-*Policy* -- the JWKS leg. No shipped descriptor sets this key; the key is copied from
-link:../configuration.adoc#_egress_tls[`egress_tls`], whose field table documents `false`.
+*Policy* -- the JWKS leg. No shipped descriptor sets this key; it is copied from the
+link:../configuration/tls-and-egress.adoc#_egress_tls[`egress_tls`] field table.
 
 [source,yaml]
-.doc/configuration.adoc (egress_tls)
+.doc/configuration/tls-and-egress.adoc (egress_tls)
 ----
 egress_tls:
   jwks_verify_hostname: false
@@ -773,16 +855,23 @@ egress_tls:
 
 === Failure mode
 
-* *Every boot with `upstream_verify_hostname: false`.* `EgressClients` logs `WARN ApiSheriff-118`,
-  stating the scope: proxy, gRPC and WebSocket clients, chain trust untouched, asset-origin fetch not
-  governed. That is the expected record.
-* *Every boot with `jwks_verify_hostname: false`.* `TokenValidatorProducer` logs `WARN ApiSheriff-120`
-  once, not once per issuer. That is the expected record.
-* *`jwks_verify_hostname: false` and an `http` issuer naming `jwks.tls_profile`.*
-  `TokenValidatorProducer` refuses the boot, naming both keys and the issuer. The flag is global and the
-  profile is per issuer, so this refuses every such issuer, not only the one you meant to relax.
-* *An upstream whose chain is not trusted.* The egress client still refuses the handshake, and
-  `UpstreamFailureMapper` answers the request `502`.
+Expected records: `WARN ApiSheriff-118` on every boot with `upstream_verify_hostname: false`, stating
+the scope (proxy, gRPC and WebSocket clients, chain trust untouched, asset-origin fetch not governed);
+`WARN ApiSheriff-120` once -- not per issuer -- on every boot with `jwks_verify_hostname: false`.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| `jwks_verify_hostname: false` and an `http` issuer naming `jwks.tls_profile`
+| TLS boot refusal naming both keys and the issuer. The flag is global, so every such issuer is
+  refused, not only the one you meant to relax.
+| Remove the profile from every `http` issuer, or keep hostname verification on.
+
+| An upstream whose chain is not trusted
+| The handshake is still refused; the request is answered `502`.
+| Fix trust (<<_scenario_corporate_ca_upstreams>>), not the hostname check.
+|===
 
 [[_scenario_bff_oidc_back_channel]]
 == Reach the BFF identity provider: relax its hostname check or name its trust
@@ -791,8 +880,8 @@ egress_tls:
 
 A gateway running a BFF variant dials its identity provider for discovery, the pushed authorization
 request, the authorization-code exchange, refresh and refresh-token revocation. That leg carries the
-client credential -- the signed client assertion by default, the client secret when one is
-configured -- and the authorization codes, and it has two keys of its own in `egress_tls`
+client credential -- the signed client assertion by default, the client secret when one is configured
+-- and the authorization codes, and it has two keys of its own in `egress_tls`
 (link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]),
 each answering a different problem:
 
@@ -800,17 +889,14 @@ each answering a different problem:
   does not carry. It turns off hostname matching on this leg only; the chain is still verified, so it
   does not admit a self-signed or untrusted provider. The default is `true`.
 * `egress_tls.oidc_tls_profile` -- the provider presents a certificate from a private CA. The named
-  profile *replaces* the JVM default trust store on discovery, the pushed authorization request, the
-  code exchange, refresh and refresh-token revocation: public certificate authorities stop being
-  trusted for the provider unless the profile carries them too. It
-  is the same replacement semantic `ApiSheriff-119` states for `upstream_tls_profile`, applied to this
-  leg.
+  profile *replaces* the JVM default trust store on this leg: public certificate authorities stop
+  being trusted for the provider unless the profile carries them too.
 
-Pick exactly one. The pair -- `oidc_verify_hostname: false` together with a named `oidc_tls_profile`
--- is refused at boot. A provider that needs both a private CA and a relaxed name check has no
-supported combination: fix the certificate's names, or put the CA into the JVM default trust store and
-omit the profile (see
-link:../configuration.adoc#_oidc_profile_collision[The relaxation and a profile are refused together]).
+Pick exactly one. The pair is refused at boot. A provider that needs both a private CA and a relaxed
+name check has no supported combination: fix the certificate's names, or put the CA into the JVM
+default trust store and omit the profile (see
+link:../configuration/tls-and-egress.adoc#_oidc_profile_collision[The relaxation and a profile are
+refused together]).
 
 Neither key reaches the JWKS fetch. The same provider's signing keys keep their own per-issuer
 `jwks.tls_profile` (<<_scenario_private_ca_idp>>) and `jwks_verify_hostname`
@@ -827,15 +913,15 @@ both. A bearer-only gateway builds no identity-provider client, and on it both k
 
 === Configuration
 
-A deployment uses one of the two blocks below, not both. No shipped descriptor sets
-`oidc_verify_hostname`, so the relaxation is copied from
-link:../configuration.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel]. The integration
-descriptors name the trust profile, so that block and its binding are copied from them.
+Use one of the two blocks below, not both. No shipped descriptor sets `oidc_verify_hostname`, so the
+relaxation is copied from
+link:../configuration/tls-and-egress.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel]; the
+trust-profile block and its binding are copied from the integration descriptors.
 
 *Policy* -- the hostname relaxation.
 
 [source,yaml]
-.doc/configuration.adoc (The BFF OIDC back-channel)
+.doc/configuration/tls-and-egress.adoc (The BFF OIDC back-channel)
 ----
 egress_tls:
   oidc_verify_hostname: false
@@ -871,20 +957,31 @@ environment:
 
 === Failure mode
 
-* *Every boot with `oidc_verify_hostname: false` and no `oidc_tls_profile`.* The BFF runtime logs
-  `WARN ApiSheriff-125` once, stating the scope: this leg only, chain trust untouched. That is the
-  expected record.
-* *Every boot with a named `oidc_tls_profile` while `oidc_verify_hostname` stays `true`.* The BFF
-  runtime logs `WARN ApiSheriff-126` once with the logical profile name, restating that its anchors
-  replace the JVM default trust store on this leg. That is the expected record.
-* *Both keys set.* The boot fails with a configuration error naming `egress_tls.oidc_verify_hostname`
-  and `egress_tls.oidc_tls_profile`, before the identity-provider client is built.
-* *The profile is not bound, carries no anchors, sets `trust-all`, or its material cannot be loaded.*
-  The boot fails, naming `egress_tls.oidc_tls_profile`. It never falls back to default trust.
-* *Login stops working against a publicly trusted provider after you name a profile.* The profile
-  replaced the public roots on this leg. Discovery is the first call a login makes: it fails PKIX and
-  the login answers `500`, before the pushed authorization request or the code exchange is attempted.
-  Add the roots to the profile's store, or omit the profile.
-* *Tokens validate but login fails.* The JWKS leg and this leg are configured separately: a
-  `jwks.tls_profile` or `jwks_verify_hostname` does not reach discovery, the pushed authorization
-  request, the code exchange, refresh or refresh-token revocation.
+Expected records: `WARN ApiSheriff-125` once on every boot with `oidc_verify_hostname: false`, stating
+the scope (this leg only, chain trust untouched); `WARN ApiSheriff-126` once on every boot with a named
+`oidc_tls_profile`, with the logical profile name, restating that its anchors replace the JVM default
+trust store on this leg.
+
+[cols="2,2,2", options="header"]
+|===
+| Misconfiguration | Symptom | Fix
+
+| Both keys set
+| The boot fails with a configuration error naming `egress_tls.oidc_verify_hostname` and
+  `egress_tls.oidc_tls_profile`.
+| Keep one.
+
+| The profile is not bound, carries no anchors, sets `trust-all`, or its material cannot be loaded
+| The boot fails naming `egress_tls.oidc_tls_profile`. No fallback to default trust.
+| Bind a loadable store holding the CA.
+
+| Login stops working against a publicly trusted provider after you name a profile
+| Discovery fails PKIX and the login answers `500`, before the pushed authorization request or the
+  code exchange: the profile replaced the public roots.
+| Add the roots to the profile's store, or omit the profile.
+
+| Tokens validate but login fails
+| The JWKS leg works; this leg does not. `jwks.tls_profile` and `jwks_verify_hostname` do not reach
+  discovery, the pushed authorization request, the code exchange, refresh or revocation.
+| Configure this leg's own key.
+|===

@@ -1,7 +1,9 @@
 = Server-Session BFF -- Contributor Guide
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 A contributor-facing guide to the *server-session BFF* implementation (Variant 2): where its code
 lives, how to build and test it, and the one architectural rule that keeps it correct. It describes
@@ -86,10 +88,12 @@ before the proxy route table and dispatches a matched reserved path through
 
 `SessionBinding` is the contract; `ServerSessionBinding` implements it over a `SessionStore`. The
 decisions are in
-link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
-The store is hand-written because no platform session mechanism has what the
-contract needs (ADR-0062), and the producer builds it, not the container, because a bearer-only
-gateway must not have one.
+link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018],
+and the operations and deadlines as a whole are described in
+link:../architecture/authentication-and-bff.adoc#_bff_session_store[Architecture -- Session Store, Writes and Lifetime].
+This section adds what code that touches the store must respect. The store is hand-written because
+no platform session mechanism has what the contract needs (ADR-0062), and the producer builds it,
+not the container, because a bearer-only gateway must not have one.
 
 === One creating write, two updating writes
 
@@ -153,9 +157,7 @@ check-then-act across two store calls reopens that window. Three consequences:
 
 === The two deadlines and where the sweep is scheduled
 
-A session is expired at the earlier of its absolute lifetime and its last access plus the idle
-timeout. `resolve` evicts an expired session as it is looked up and extends nothing. The only
-caller of `SessionBinding.recordAccess` is `SessionAuthenticationStage.relay`, for a request it
+`resolve` evicts an expired session as it is looked up and extends nothing. The only caller of `SessionBinding.recordAccess` is `SessionAuthenticationStage.relay`, for a request it
 lets through; a reserved endpoint must not call it.
 
 The store starts no thread and no timer. `BffRuntimeProducer.registerSessionSweep` registers a
@@ -231,10 +233,9 @@ in `match(...)`.
 `BACKCHANNEL_LOGOUT` is the other kind, and `BffBackchannelLogoutIT` depends on it. The test's
 Keycloak realm names the gateway by its compose service name, while the OIDC host is the public name,
 and the test asserts that an IdP-initiated logout ends the session. With an OIDC-host gate on the
-receiver, the logout token reaches the route table, is answered `404`, and the session survives, and
-neither side logs an error: the IdP records a failed delivery, the gateway an unrouted path. That is
-how the suite's first CI run failed. The IT does not reproduce it, and `ReservedPathRegistryTest`
-pins the exemption with both arms
+receiver, the logout token would reach the route table and be answered `404`, the session would
+survive, and neither side would log an error: the IdP records a failed delivery, the gateway an
+unrouted path. The IT does not reproduce that failure, so `ReservedPathRegistryTest` pins the exemption with both arms
 (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#backchannel-host[ADR-0018]).
 
 === The PAR adapter
@@ -283,7 +284,7 @@ failure of the read is the `unreadable-access-token` refusal.
 `StepUpCoordinator` is assembled with the same request builder and the same PAR adapter as the login
 leg, so its re-drive is a pushed request. *No edge code calls it.* The path is proven at unit level
 and is not reachable in a running gateway
-(link:../quality-report/code-correctness.adoc[code-correctness report, BFF-1]).
+(link:../fapi_status.adoc#_open_gaps_and_next_steps[FAPI status, open gaps]).
 
 [[adr-0058-residuals]]
 == The premises behind the FAPI controls
@@ -437,14 +438,9 @@ shown stays marked as unobserved and carries no verdict.
 
 == Build and test
 
-The canonical build commands are the ones in the repository `CLAUDE.md` (invoked through the build
-executor, never a raw `mvn`). For BFF work:
-
-* *Unit and module tests* -- run the `api-sheriff` module tests; the `bff.*` suites cover each
-  handler and codec directly, without a container, following the project AAA + CUI-generator
-  conventions.
-* *Quality gate + full verify* -- both must pass with zero findings before a commit (the
-  link:../development/README.adoc[contributor guide] and `CLAUDE.md` state the pre-commit process).
+The build commands and the pre-commit process are the ones in the repository `CLAUDE.md`. The
+`bff.*` suites in the `api-sheriff` module tests cover each handler and codec directly, without a
+container.
 
 Because the runtime is assembled by `BffRuntimeProducer` only when a global `oidc` block with
 `session.mode=server` and a `redirect_uri` is configured, a bearer-only test fixture gets the
@@ -488,7 +484,7 @@ Two test-support types matter for this code:
   path in `ReservedPathRegistry.from(...)`, write a handler in `bff.reserved` that takes raw request
   pieces and returns a rendered response,
   wire it in `BffRuntimeProducer`, and route its kind in `BffRuntime.dispatch(...)`. Document the new
-  key in link:../configuration.adoc#_oidc[Configuration -- `oidc`] and grow the reserved-path list.
+  key in link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration -- `oidc`] and grow the reserved-path list.
   A handler that sets a cookie needs nothing further for caching: `BffRuntime.dispatch` sends every
   reserved answer that carries a `Set-Cookie` with `Cache-Control: no-store`.
 * *A new session-runtime capability* -- write it against `SessionBinding`, so both session modes get

@@ -278,12 +278,13 @@ admission.
 
 == Links
 
+* link:0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078 -- Per-source threat classification] -- the second consumer of this substrate: one ECS alert per episode from its own ledger.
 * link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract] --
   keying, bounds, state machine, query API and emit shape
 * link:../architecture/tls-and-inbound-security.adoc#_per_source_detection[Architecture -- Per-Source Detection] and
   link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[the HTTP/2 transport bounds]
-* link:../configuration.adoc#_enumeration_detection[Configuration -- `enumeration_detection`]
-* link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
+* link:../configuration/security-and-edge-hardening.adoc#_enumeration_detection[Configuration -- `enumeration_detection`]
+* link:../user/edge-security.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
   sources and enumeration detection] -- the operator guide
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
   -- the uniform `404`, the trust boundary and the held-answer sub-budget

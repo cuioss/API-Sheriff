@@ -1,4 +1,4 @@
-= ADR-0005 -- Module Structure: One Quarkus Module Now, Framework-Agnostic Core Seam Kept Clean
+= ADR-0005: Module Structure: One Quarkus Module Now, Framework-Agnostic Core Seam Kept Clean
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents

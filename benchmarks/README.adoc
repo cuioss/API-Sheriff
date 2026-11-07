@@ -93,8 +93,8 @@ comparison; see the passthrough methodology note under _Methodology_.
 |`grpc`
 |`grpc_unary.js`
 |A unary gRPC call over the forced-HTTP/2 relay on the bare service path, against the in-repo
- `grpc-echo` service. Reports calls/second and call latency. (Per Clarification 1 this k6 gRPC
- benchmark supersedes the plan doc's `ghz` proposal, keeping the whole matrix on one load generator.)
+ `grpc-echo` service. Reports calls/second and call latency. It is a k6 benchmark rather than a separate `ghz` run, so
+ the whole matrix stays on one load generator.
 
 |`passthrough`
 |`passthrough_relay.js`
@@ -682,72 +682,11 @@ environment. All three build versions (k6, `xk6`, `xk6-dashboard`) are explicit 
 
 == The wrk-to-k6 swap
 
-The benchmark toolchain was migrated from wrk to k6. What changed, and what a maintainer needs to
-know:
-
-. *Scripts*: the `wrk-scripts/` Lua and shell runners were removed in favour of `k6-scripts/`
-  JavaScript. Aspect scripts import `lib/target.js` (target -> base URL) and `lib/summary.js`
-  (the shared `handleSummary()` helper), so one script body measures whichever gateway a run
-  targets.
-. *Gates*: the `WRK_MAX_ERROR_RATE` Lua gate is replaced by native k6 thresholds
-  (`http_req_failed`, `checks`). A breach exits non-zero, so a gateway that starts rejecting every
-  request can never benchmark as an improvement.
-. *Post-processing*: `WrkBenchmarkConverter` / `WrkResultPostProcessor` are replaced by
-  `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
-  10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
-. *Coverage*: the lane grew from three wired executions to twelve *declared* goals, all of which
-  execute and are expected to produce a CI result. Two of the twelve reached that state late: `websocketEcho`
-  once its blocking edge admission-permit leak was fixed, and `uploadLarge` once the framework
-  body-size floor was declared under the `upload` anchor's `max_body_bytes`. `bearer`
-  is genuinely new CI coverage — the wrk-era bearer runner existed on disk but was registered in no
-  Maven execution. Being *wired* is not the same as *executing*, and *executing* is not the same as
-  *producing a result*: the job once died at the fourth goal, leaving goals 5-12 unrun. See
-  _Which goals actually run_ above.
-
-=== One-time gh-pages baseline restart
-
-The published history and trend series are keyed by benchmark name and carry wrk-era numbers
-measured by a different engine. Because engine change is exactly the thing that makes two numbers
-incomparable, the k6 series starts fresh rather than continuing the wrk series:
-
-* `healthLiveCheck` and `gatewayHealth` keep their names — and therefore their series — by
-  deliberate choice, so the badges and trend pages are not orphaned. Expect a *visible one-time
-  discontinuity* at the swap commit that is a toolchain artifact, not a regression.
-* The `error` / variability / confidence-band columns go permanently zero-width from that point
-  (see the `latency_ms.stdev` limit above).
-* Every benchmark that writes a summary document for the first time begins with *no history* and
-  needs ten runs before its trend series is meaningful. That was most of the lane: eight of the
-  twelve goals the swap left declared had never executed in CI, and all eight started their series
-  empty — six when the fail-fast truncation was repaired, `websocketEcho` once its blocking permit
-  leak was fixed, and `uploadLarge` once the framework body-size floor was declared. The workflow's
-  end-of-job coverage step (`.github/workflows/benchmark.yml`) is the record of which goals produced
-  a result in a given run. A flat or short trend line on a name that *did* run is an absence of
-  history, not a regression.
-
-*Two further discontinuities exist in the series, and they are distinct causes — do not conflate
-them:*
-
-. *First execution*: goals that had never run and then produced a result begin their series at that
-  commit. The cause is coverage — data that never existed now exists.
-. *`%it` elimination*: removing the test-shaped configuration branches changed the measured
-  configuration itself, so the numbers before and after are measurements of different things on the
-  *same* names. The cause is configuration, not coverage.
-
-A reader comparing across either boundary is comparing incomparable eras. Compare only within one.
-
-==== A second, target-change discontinuity
-
-Both health benchmarks carry a *second* discontinuity, distinct from and later than the wrk->k6
-engine swap above, at the commit that repointed them:
-
-* `gatewayHealth` previously drove `https://api-sheriff:8443/api/health`. That data-plane endpoint
-  was deleted by the pre-1.0 clean break in PR #76, so the benchmark had been measuring a
-  deny-by-default `404` rather than a health surface. It now drives the management port's aggregate
-  health check.
-* `healthLiveCheck` previously drove the same endpoint over plain HTTP. Its numbers now include TLS
-  handshake and record-layer cost.
-
-Both names are again retained deliberately to preserve the series. Neither benchmark's post-change
-numbers are comparable to its pre-change history, so compare only within the current target era.
-
-Do not investigate either discontinuity as a performance regression.
+k6 replaced wrk as the only load generator: native k6 thresholds (`http_req_failed`, `checks`) fail
+a run whose failure rate exceeds the configured limit -- a passing run can still contain rejected
+requests below that limit -- and `K6BenchmarkConverter` / `K6ResultPostProcessor` feed the unchanged report pipeline.
+The published gh-pages series carry deliberate breaks -- the engine swap, each
+goal's first CI execution, the removal of the test-shaped `%it` configuration, and the repointing of
+`gatewayHealth` and `healthLiveCheck` from a deleted data-plane endpoint to the management
+interface over TLS -- with the benchmark names retained so badges and trend pages are not orphaned.
+Compare numbers only within one of those eras; a step at such a boundary is not a regression.

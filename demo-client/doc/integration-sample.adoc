@@ -1,7 +1,9 @@
 = API Sheriff -- Demo Client: the BFF Integration Sample
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The *integrator* view of the demo client -- the copy-this sample for putting a browser application
 behind an API Sheriff BFF gateway. It documents the browser-facing contract the gateway offers, the
@@ -193,9 +195,9 @@ The identity-provider client must also meet three requirements, or the login is 
 That is the default key mode, and it is what the demo stack runs. A gateway can instead authenticate
 with a client secret; pushed requests and DPoP stay required in that mode and no key-set URL is
 registered. See
-link:../../doc/user/bff-session.adoc#client-secret[Server-Session BFF -- Client-secret
+link:../../doc/user/bff-oidc-common.adoc#client-secret[Server-Session BFF -- Client-secret
 authentication] before choosing it, and
-link:../../doc/user/bff-session.adoc#key-material[Key material] for the key setup.
+link:../../doc/user/bff-oidc-common.adoc#key-material[Key material] for the key setup.
 ====
 
 [WARNING]
@@ -402,9 +404,14 @@ step; the identity-provider round-trip is layered on top. Two consequences worth
 The return leg is `state`-verified against a single-use cookie; a missing or mismatched `state` is
 rejected `400`, so a forged logout-return cannot land the browser anywhere.
 
+image::../../doc/resources/diagrams/demo-client-logout-flow.svg[Demo-client logout round-trip and the 401 re-probe that proves it, align=center]
+
 *Treat the `401` re-probe as the proof of logout, not the landing page.* After the round-trip,
-`fetch('/bff/session')` returning `401` is what demonstrates the session is genuinely destroyed. A
-landing page rendering successfully proves only that a static file was served.
+`fetch('/bff/session')` returning `401` is what demonstrates that the browser's session has ended. A
+landing page rendering successfully proves only that a static file was served. In cookie mode the
+probe proves the browser's logout, not the invalidation of a copied cookie: nothing is stored
+server-side, so a copy taken before the logout stays valid until it expires (see
+link:../../doc/variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout]).
 
 == Session Mode Is Invisible to the Application
 

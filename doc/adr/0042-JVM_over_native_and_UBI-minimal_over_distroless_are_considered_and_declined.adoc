@@ -29,7 +29,7 @@ The published image is a GraalVM native executable on a distroless base. Two pro
 
 The consequence is a single supported runtime route: the JDK's `-Djavax.net.ssl.trustStore` triple, passed as command-line arguments to the native runner. A native executable does not honour `JAVA_TOOL_OPTIONS`, so it silently ignores the one variable an operator would reach for first.
 
-*That route replaces the whole trust bundle and does not add to it.* An operator who needs one private certificate authority must assemble a store that also contains every public root they still want, because naming a store discards the platform bundle wholesale. A store built from the private CA alone works against that CA and stops trusting everything else. This happens silently and surfaces later as an opaque handshake failure. The link:../configuration.adoc#_default_trust_store_replaces[configuration reference] holds the full operator route and the recipe that keeps the public roots.
+*That route replaces the whole trust bundle and does not add to it.* An operator who needs one private certificate authority must assemble a store that also contains every public root they still want, because naming a store discards the platform bundle wholesale. A store built from the private CA alone works against that CA and stops trusting everything else. This happens silently and surfaces later as an opaque handshake failure. The link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[configuration reference] holds the full operator route and the recipe that keeps the public roots.
 
 An obvious remedy has to be weighed: ship a JVM artifact on a UBI-minimal base. That base has a package manager and `update-ca-trust`, so trust becomes an extendable OS store. An operator drops a PEM into the anchors directory and runs one command, and the private CA joins the public roots. It is the shape every operator already knows, and it removes the replacement hazard at its root.
 
@@ -135,6 +135,6 @@ The second half is the reversal conditions. A decision declined for now without 
 * link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]: the ruling that trust material is deployment-supplied, which this record implements the mechanism for and does not revisit
 * link:0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]: the delivered decision that rests on the single-executable property this record preserves
 * link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]: the adopt-and-document posture this record's answer follows
-* link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the platform bundle]: the operator route, the hazard and the recipe
+* link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the platform bundle]: the operator route, the hazard and the recipe
 * link:../security-threat-model.adoc[Security threat model]: GW-06's trust-root replacement entry and its accepted residual risk
 * link:../LogMessages.adoc[Log messages]: `ApiSheriff-17` and `ApiSheriff-122`

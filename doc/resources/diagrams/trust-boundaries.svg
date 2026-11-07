@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Trust boundaries B1-B7 — doc/security-threat-model.adoc, "Trust boundaries".
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">API Sheriff trust boundaries B1 to B7</title>
+  <desc id="desc">A request travels left to right from the client across boundary B1 into the TLS edge, which terminates TLS or splits on SNI; across B2 into the L7 pipeline, which normalizes, filters, authenticates and applies the forward policy; and across B3 to the upstream, which receives regenerated forwarding headers and the mediated bearer token. Below the pipeline, boundary B4 separates the gateway from the identity provider on the OIDC control plane: discovery, JWKS, pushed authorization requests, token and logout traffic, and in key mode the identity provider fetching the gateway's client key set. Boundary B5 is the browser session: the session cookie and the BFF API requests it authenticates reach the pipeline from the browser. Boundary B6 separates the operator from the immutable configuration, which boots fail-closed. Boundary B7 keeps the management port, serving health and metrics with no mutation API, apart from the data-plane port.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .box        { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .own        { stroke: #6e7681; stroke-width: 2.4; fill: none; }
+      .name       { font-size: 14px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .sub        { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .trust      { stroke: #6e7681; stroke-width: 2; stroke-dasharray: 8 4; fill: none; }
+      .trust-lbl  { font-size: 13px; font-weight: 700; fill: #6e7681; text-anchor: middle; }
+      .trust-sub  { font-size: 10px; fill: #6e7681; text-anchor: middle; }
+      .arrow      { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill { fill: #6e7681; }
+      .edge-lbl   { font-size: 11px; fill: #6e7681; text-anchor: middle; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+    </style>
+  </defs>
+
+  <!-- ======================= data path ======================= -->
+  <rect class="box" x="30"  y="110" width="150" height="80" rx="6"/>
+  <text x="105" y="145" class="name">client</text>
+  <text x="105" y="164" class="sub">untrusted bytes</text>
+
+  <rect class="own" x="260" y="110" width="170" height="80" rx="6"/>
+  <text x="345" y="145" class="name">TLS edge</text>
+  <text x="345" y="164" class="sub">terminate · SNI split</text>
+
+  <rect class="own" x="500" y="110" width="220" height="80" rx="6"/>
+  <text x="610" y="140" class="name">L7 pipeline</text>
+  <text x="610" y="158" class="sub">normalize · filter · auth</text>
+  <text x="610" y="174" class="sub">forward policy</text>
+
+  <rect class="box" x="810" y="110" width="160" height="80" rx="6"/>
+  <text x="890" y="140" class="name">upstream</text>
+  <text x="890" y="158" class="sub">regenerated headers</text>
+  <text x="890" y="174" class="sub">mediated bearer</text>
+
+  <line class="arrow" x1="180" y1="150" x2="258" y2="150" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="430" y1="150" x2="498" y2="150" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="720" y1="150" x2="808" y2="150" marker-end="url(#arrow)"/>
+
+  <!-- B1 / B2 / B3 -->
+  <line class="trust" x1="220" y1="70" x2="220" y2="220"/>
+  <text x="220" y="60" class="trust-lbl">B1</text>
+  <line class="trust" x1="465" y1="70" x2="465" y2="220"/>
+  <text x="465" y="60" class="trust-lbl">B2</text>
+  <line class="trust" x1="765" y1="70" x2="765" y2="220"/>
+  <text x="765" y="60" class="trust-lbl">B3</text>
+  <text x="890" y="210" class="trust-sub">response untrusted coming back</text>
+
+  <!-- ======================= IdP / B4 ======================= -->
+  <rect class="box" x="830" y="290" width="150" height="80" rx="6"/>
+  <text x="905" y="325" class="name">identity provider</text>
+  <text x="905" y="344" class="sub">OIDC control plane</text>
+  <path class="arrow" d="M660,190 V330 H828" marker-end="url(#arrow)"/>
+  <text x="734" y="320" class="edge-lbl">discovery · JWKS · PAR</text>
+  <text x="730" y="350" class="edge-lbl">token · logout · key set</text>
+  <line class="trust" x1="810" y1="280" x2="810" y2="380"/>
+  <text x="810" y="396" class="trust-lbl">B4</text>
+
+  <!-- ======================= browser session / B5 ======================= -->
+  <path class="arrow" d="M105,190 V330 H560 V192" marker-end="url(#arrow)"/>
+  <text x="300" y="320" class="edge-lbl">session cookie · BFF API requests</text>
+  <line class="trust" x1="480" y1="300" x2="480" y2="360"/>
+  <text x="480" y="376" class="trust-lbl">B5</text>
+
+  <!-- ======================= operator config / B6 ======================= -->
+  <rect class="box" x="30"  y="430" width="150" height="60" rx="6"/>
+  <text x="105" y="465" class="name">operator</text>
+  <rect class="own" x="260" y="430" width="250" height="60" rx="6"/>
+  <text x="385" y="456" class="name">immutable configuration</text>
+  <text x="385" y="475" class="sub">fail-closed boot</text>
+  <line class="arrow" x1="180" y1="460" x2="258" y2="460" marker-end="url(#arrow)"/>
+  <line class="trust" x1="220" y1="420" x2="220" y2="500"/>
+  <text x="220" y="414" class="trust-lbl">B6</text>
+
+  <!-- ======================= management / B7 ======================= -->
+  <rect class="own" x="600" y="430" width="250" height="60" rx="6"/>
+  <text x="725" y="456" class="name">management port</text>
+  <text x="725" y="475" class="sub">health · metrics · no mutation API</text>
+  <line class="trust" x1="570" y1="420" x2="570" y2="500"/>
+  <text x="570" y="414" class="trust-lbl">B7</text>
+  <text x="570" y="514" class="trust-sub">never on the data-plane port</text>
+
+  <text x="500" y="545" class="caption">Bold outline: owned by the gateway. Dashed line: a boundary where a control must hold.</text>
+</svg>

@@ -31,7 +31,7 @@ Three forces shape how the check is configured:
 * *CORS `allowed_origins` is a different trust decision.* It governs what the browser may do with an XHR or `fetch` response, and it is about response-header emission. The WebSocket `Origin` check is a per-route handshake admission made before the upstream is dialled.
 * *Fail-open is the dangerous default.* An authenticated socket whose allowlist is absent or empty, if treated as "any origin", is the CSWSH hole, and nothing would reject it.
 
-*The decision:* the per-route `websocket` block carries an `allowed_origins` field with fail-closed, exact-match semantics. link:../configuration.adoc#_allowed_origins[`configuration.adoc`] defines the field.
+*The decision:* the per-route `websocket` block carries an `allowed_origins` field with fail-closed, exact-match semantics. link:../configuration/routing-and-forwarding.adoc#_allowed_origins[`configuration.adoc`] defines the field.
 
 === Exact match, no wildcards
 
@@ -90,7 +90,7 @@ A `require: session` WebSocket route could reuse that set, since the origin chec
 
 == Links
 
-* link:../configuration.adoc#_allowed_origins[Configuration, `websocket.allowed_origins`]: the field definition
+* link:../configuration/routing-and-forwarding.adoc#_allowed_origins[Configuration, `websocket.allowed_origins`]: the field definition
 * link:../security-threat-model.adoc#gw-09[Threat Model, GW-09]: the CSWSH class this decision closes
 * link:0007-anchor-scoped-policy.adoc[ADR-0007]: the policy resolution the auth floor rides on
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the session cookie attribute

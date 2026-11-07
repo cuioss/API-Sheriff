@@ -99,6 +99,6 @@ link:../technical_aspects.adoc#_library_summary[Technical Aspects -- Library Sum
   30 s head timeout and, when `retry.enabled` is true, the fixed `maxRetries(2)` / 100 ms
   stream-aware gate (link:terminal-actions-and-protocols.adoc#_downstream_client[Downstream
   Client]). The per-route `rate_limit` block is parsed and warned at boot (`WARN ApiSheriff-140`)
-  but not enforced at runtime (see link:../configuration.adoc#_rate_limit[Configuration --
+  but not enforced at runtime (see link:../configuration/security-and-edge-hardening.adoc#_rate_limit[Configuration --
   `rate_limit`] and
   link:../adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]).

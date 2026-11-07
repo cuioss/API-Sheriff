@@ -83,7 +83,7 @@ link:../adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc#se
 Path allowlisting is enforced at the gateway from the route's `allowed_paths`. Which client headers
 and query parameters reach the upstream is answered later by the route's `forward` block (see
 link:routing-and-forwarding.adoc#_forward_policy[Forward Policy] and
-link:../configuration.adoc#_security_filtering[Configuration -- Security Filtering]).
+link:../configuration/security-and-edge-hardening.adoc#_security_filtering[Configuration -- Security Filtering]).
 
 === Framing Gate
 
@@ -250,8 +250,8 @@ image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key 
   selection.
 |===
 
-See link:../configuration.adoc#_enumeration_detection[Configuration -- `enumeration_detection`] and
-link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes].
+See link:../configuration/security-and-edge-hardening.adoc#_enumeration_detection[Configuration -- `enumeration_detection`] and
+link:../user/edge-security.adoc#_enumeration_detection_operator_note[Endpoint Routes].
 
 [[_threat_classification]]
 == Per-Source Threat Classification
@@ -276,5 +276,5 @@ link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episo
 Threat classification never alters responses on the wire. Each trip increments
 `sheriff_threat_alerts_total` and logs one ECS-formatted ALERT document
 (link:observability-and-errors.adoc#_threat_alert_document[The Threat ALERT Document]). See
-link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`] and
-link:../user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes].
+link:../configuration/security-and-edge-hardening.adoc#_threat_classification[Configuration -- `threat_classification`] and
+link:../user/edge-security.adoc#_threat_classification_operator_note[Endpoint Routes].

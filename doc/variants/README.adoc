@@ -1,7 +1,9 @@
 = API Sheriff -- Deployment Variants
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 API Sheriff ships as *one binary*; each route runs in one of three authentication postures,
 selected by configuration (see "Variants Are Route Postures" below). The inbound pipeline -- TLS edge, `cui-http` security filter, static routing,
@@ -40,7 +42,7 @@ last column names which one each realizes.
 
 "Variant" names the authentication posture of a *route*, selected by its effective
 `auth.require` (`none` | `bearer` | `session`) -- declared once per endpoint file and
-overridable per route (see link:../configuration.adoc#_auth[Configuration -- `auth`]); one
+overridable per route (see link:../configuration/authentication-and-oidc.adoc#_auth[Configuration -- `auth`]); one
 deployment may serve bearer routes and session routes side by side. What *is* global is `oidc.session.mode` (`server` | `cookie`) -- it decides which BFF
 shape handles all `session` routes, so a single deployment runs at most one of Variant 2 and
 Variant 3 at a time. A deployment with no `session` routes is a pure Variant 1 gateway and
@@ -50,10 +52,9 @@ needs no `oidc` block.
 
 . *Base gateway* is the foundation -- the filter/route/forward/observe pipeline every mode reuses.
 . *Session-based BFF* adds the OIDC confidential-client login and server-side token custody.
-  This is where BFF work starts.
-. *Cookie-based BFF* is the stateless evolution: the same login flow, but the token is sealed
-  into an encrypted cookie instead of a store. This is the preferred long-term target because
-  it keeps the gateway self-contained.
+. *Cookie-based BFF* is the stateless shape: the same login flow, but the token is sealed into an
+  encrypted cookie instead of a store, so the gateway stays self-contained. Neither BFF shape is a
+  default: `oidc.session.mode` must name `server` or `cookie`.
 
 The two BFF variants share the same login handshake (see the sequence diagram in either
 section) and the same upstream `Authorization: Bearer` injection; they differ only in *where
@@ -63,9 +64,9 @@ link:02-bff-session.adoc#_steady_state_api_call[the mediation diagram].
 [#benchmark-baselines]
 == Benchmark baselines and regression thresholds
 
-Each variant section carries a *Performance baseline* subsection. This section states the
-measurement contract they share -- what is measured, under what load, and which thresholds decide
-that a change is a regression. Read it once here rather than three times there.
+Each variant carries a *Performance baseline* section. This section states the measurement contract
+they share: what is measured, under what load, and which thresholds decide that a change is a
+regression.
 
 === What "baseline" means here
 
@@ -124,37 +125,23 @@ rescaling them into agreement. Normalising would restore the gate to green in ex
 where a stalled VU inflated the window -- masking the defect the gate exists to catch.
 ====
 
-=== Status at 0.2.4 -- no per-variant figures are published
+=== Published figures
 
-*This release publishes no per-variant baseline numbers.* That is a reported gap, not an omission,
-and the reason is stated plainly so nobody mistakes silence for a clean result:
-
-* *At the 0.1.0 cut* the acceptance run (`30383723057`) existed and reported no failed jobs, but
-  its per-scenario k6 summaries were not retrievable: they were written only into the job's log,
-  so there was no durable artifact to read a figure out of.
-* *At the 0.2.4 cut* the `Performance Benchmark` workflow (`.github/workflows/benchmark.yml`)
-  uploads a `benchmark-results` run artifact with 90-day retention and deploys the same set to the
-  project pages. That set is the assembled pages output -- the converted results, badges and
-  retained history -- not the raw k6 summary documents, which the run reads for its coverage
-  summary and **does not upload**. No figure from it has been re-derived and recorded per variant.
-
-Publishing figures that cannot be traced back to a retrievable run would be fiction, and a
-baseline nobody can re-derive is worse than none -- it acquires authority it has not earned. The
-thresholds above are *config-derived* and therefore stated with confidence; the figures are not,
-and are therefore omitted.
-
-*To establish the baselines*, upload the k6 summary JSONs as run artifacts so the numbers survive
-the job log, then record them per variant.
+No per-variant figures are published. A figure is meaningful only when it can be traced back to a
+retrievable run, and the k6 summary documents are not uploaded as run artifacts: the `Performance
+Benchmark` workflow (`.github/workflows/benchmark.yml`) uploads the assembled pages output
+(converted results, badges, retained history) as `benchmark-results`. The thresholds above are
+config-derived; the variant sections therefore state what to measure and what to watch, not
+numbers. To establish baselines, upload the k6 summary JSONs as run artifacts and record them per
+variant.
 
 === The comparative baseline (API Sheriff vs APISIX)
 
 A cross-gateway comparison against APISIX runs as a *deliberately on-demand lane* -- it is not
 part of the post-merge benchmark run and does not gate anything. It answers "how does this
 gateway's overhead compare to an established one?", which is a positioning question, not a
-regression question, and it is reported per variant in the variant sections rather than as a
-single headline number.
-
-The same no-published-figures status above applies to it at 0.2.4.
+regression question, and it is read per variant rather than as a single headline number. It
+publishes no figures either.
 
 [NOTE]
 ====

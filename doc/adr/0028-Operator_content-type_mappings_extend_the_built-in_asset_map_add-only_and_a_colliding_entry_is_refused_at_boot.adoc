@@ -1,7 +1,9 @@
 = ADR-0028: Operator content-type mappings extend the built-in asset map add-only and a colliding entry is refused at boot
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template

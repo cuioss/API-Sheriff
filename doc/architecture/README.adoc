@@ -63,7 +63,7 @@ boundary in stage 4 render to an untrusted caller as the unrouted `404`
 | Global security headers & CORS
 | Seeds the *global* `security_headers` block and applies global CORS; marks an allow-listed CORS
   preflight for a `204` short-circuit immediately after stage 1
-  (link:../configuration.adoc#_security_headers[Configuration -- `security_headers`]).
+  (link:../configuration/security-and-edge-hardening.adoc#_security_headers[Configuration -- `security_headers`]).
 
 | 1
 | Pre-route floor & framing gate

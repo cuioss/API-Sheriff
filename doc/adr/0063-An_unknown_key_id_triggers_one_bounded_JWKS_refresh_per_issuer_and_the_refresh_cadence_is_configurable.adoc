@@ -28,13 +28,13 @@ Accepted
 
 === The question
 
-A gateway that validates tokens offline holds a copy of each issuer's signing keys and refreshes that copy on a timer. Between two refreshes the copy can be wrong in one direction that matters: the identity provider starts signing with a key the gateway has not fetched yet. Every token signed with that key names a key id the gateway does not know, and the gateway rejects every such token. This holds on every bearer route and at the callback of every BFF login, because both validate through the same key sets. The token library's background refresh interval is 600 seconds. An identity provider that replaces its signing key abruptly, without publishing the new key ahead of use, therefore takes the gateway's authenticated surface down for up to ten minutes. Nothing is broken on either side. The gateway is simply early.
+A gateway that validates tokens offline holds a copy of each issuer's signing keys and refreshes that copy on a timer. Between two refreshes the copy can be wrong in one direction that matters: the identity provider starts signing with a key the gateway has not fetched yet. Every token signed with that key names a key id the gateway does not know, and the gateway rejects every such token. This holds on every bearer route and at the callback of every BFF login, because both validate through the same key sets. The token library's background refresh interval is 600 seconds. An identity provider that replaces its signing key abruptly, without publishing the new key ahead of use, therefore takes the gateway's authenticated surface down for up to ten minutes. Nothing is broken on either side. The gateway is early.
 
 The obvious repair is to fetch the key set when an unknown key id arrives. The cost of that repair decides its shape. The key id sits in the token header, and the gateway reads it before it checks any signature. Any caller, holding no credential, can therefore present tokens that name arbitrary key ids. A gateway that fetches for each of them hands that caller three levers:
 
 * outbound requests to the identity provider at the caller's own rate,
 * request threads parked on the identity provider's latency,
-* a way to disturb which keys the gateway accepts, if the fetched key set simply replaces the held one.
+* a way to disturb which keys the gateway accepts, if the fetched key set replaces the held one.
 
 Three structural facts constrain the answer:
 
@@ -46,7 +46,7 @@ Three structural facts constrain the answer:
 
 === Three keys on the issuer's `jwks` block
 
-An issuer's `jwks` block carries three keys. The link:../configuration.adoc#_jwks_key_rotation[configuration reference] holds their defaults and ranges.
+An issuer's `jwks` block carries three keys. The link:../configuration/authentication-and-oidc.adoc#_jwks_key_rotation[configuration reference] holds their defaults and ranges.
 
 * `refresh_interval_seconds` is the interval of the library's background re-fetch of the key set.
 * `key_rotation_grace_period_seconds` is how long a replaced key set keeps verifying the tokens its keys signed. `0` drops it at once.
@@ -169,7 +169,7 @@ The unifying principle: work an uncredentialed caller can trigger is bounded by 
 * link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027, live key-set readiness]: the gateway-owned loader, its non-fetching reads and the readiness contract this decision keeps
 * link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]: an omitted key is a nullable component of the configuration model
 * link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]: the rule a record reachable by an uncredentialed caller follows
-* link:../configuration.adoc#_jwks_key_rotation[Configuration reference]: the three keys, their defaults, ranges and boot refusals, and the operator view of a key change
+* link:../configuration/authentication-and-oidc.adoc#_jwks_key_rotation[Configuration reference]: the three keys, their defaults, ranges and boot refusals, and the operator view of a key change
 * link:../security-threat-model.adoc#gw-07-jwks-refresh[Security threat model]: the bound, what a flood cannot do, and the accepted residual
 * link:../LogMessages.adoc#apisheriff-136[Log messages]: `ApiSheriff-136`
 * link:../development/integration-test-topology.adoc#stub-idp-rig[Integration test topology]: the key-rotation variant of the stub identity-provider rig

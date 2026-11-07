@@ -1342,7 +1342,7 @@ git grep -n -i -e 'is an ALPHA release' -e 'as of the .* alpha' -e 'at the .* cu
 ```
 
 ⚠ **This pass is not hypothetical — it is the one that found a live miss.** At the `0.2.0` cut,
-`doc/fapi_status.adoc:8`, `doc/fapi_next_steps.adoc:7` and `doc/features-analysis.adoc:220` were all
+`doc/fapi_status.adoc:8`, the former FAPI next-steps document (since merged into `doc/fapi_status.adoc`) and `doc/features-analysis.adoc:220` were all
 still stamped *"the 0.1.0 alpha"* **through the entire 0.1.1 release**, and the repo's own audit had
 already recorded it as finding `DOC-8`. A `$PREV_VERSION` grep at the 0.2.0 cut would have looked
 for `0.1.1` and walked straight past all three. **Run pass 3 every time.**
@@ -1362,9 +1362,6 @@ anything:**
 - `.github/workflows/release.yml` — the `0.1.0` / `0.1.1` comments are *signing evidence* proving
   which trigger produced which certificate. Bumping them destroys the evidence.
 - `doc/development/release-process.adoc` — cites the `0.1.1` cut as a worked historical example.
-- `doc/quality-report/**` — dated audit reports. They *describe* stale stamps (`DOC-8` is literally
-  titled *"FAPI status not re-stamped for 0.1.1"*); rewriting the finding would erase the record of
-  the defect instead of fixing it. **Fix what the finding points at, never the finding.**
 - `doc/user/container-image.adoc` — carries `0.1.1` as *signing evidence* (*"the 0.1.1 case is the
   one that settles it"*), in addition to its `<version>` placeholders. Both reasons to leave it alone.
 - The *"tags up to and including 0.2.4 are `linux/amd64` only"* statements in `README.adoc`,
@@ -1389,7 +1386,6 @@ and a hit here that 10a does not also produce means the enumeration has regresse
 | `README.adoc` | the **Known Limitations preamble** (*"Verified as still open at the X cut"*) — see 10c | pass 2 / 3 |
 | `doc/README.adoc` | the same ALPHA callout, stated for the doc layer | pass 2 / 3 |
 | `doc/user/README.adoc` | the same ALPHA callout again — ⛔ **there are THREE, not two** | pass 2 / 3 |
-| `doc/fapi_status.adoc`, `doc/fapi_next_steps.adoc`, `doc/features-analysis.adoc` | *"as of the X alpha"* — ⛔ **stale since 0.1.0, see pass 3** | pass 3 ONLY |
 | `deployment/compose-sample/docker-compose.yml` | the **`VERSION SKEW, until X ships` comment block** — see 10d | pass 2 |
 | `doc/user/context-path.adoc` | the published-consumer `<parent><version>` (*"The API Sheriff release you are adopting"*) | pass 2 — ⛔ **missing from this table until the 0.2.1 cut** |
 

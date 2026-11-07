@@ -1,7 +1,9 @@
 = API Sheriff -- Contributor Guide
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The *contributor layer* of the API Sheriff documentation. These documents are written for the
 people who *build* the gateway -- compiling and testing the modules, understanding the module
@@ -45,13 +47,9 @@ to *run* the finished gateway).
   the non-gating `rewrite-report` job that reports all of it, the incremental-build rule, the
   Quarkus platform BOM import-order rule with the alternatives it rejects, and the recorded discard
   of the fully-qualified-refspec fix.
-
-| link:local-test-environment-caveats.adoc[Local Test-Environment Caveats -- Loopback Port Collisions
-  on the Workstation]
-| Why a local test can fail on a loopback port that something else on the workstation holds -- the
-  symptom, the four recorded sightings, the *presumptively environmental* reading convention that
-  attributes such a failure by re-run and baseline evidence before any code fix, and why this is a
-  different mechanism from the wildcard-bind class PLAN-13 fixed.
+  It also records the `-T1` loopback-stall finding and its rules, and
+  link:build-gate-discipline.adoc#foreign-loopback-port-holders[foreign loopback port holders on the
+  workstation] -- a local failure attributed by re-run and baseline evidence before any code fix.
 
 | link:release-process.adoc[Release Process]
 | How a release is cut -- merge a version change in `.github/project.yml`, which is the publishing
@@ -137,20 +135,10 @@ to *run* the finished gateway).
   and that the inventory guard partitions files rather than keys.
 
 | link:test-corpus-integrity.adoc[Test-Corpus Integrity -- Assertions That Assert Nothing]
-| Which test methods carry assertions that cannot support the behaviour their names claim -- the
-  155-file / 1632-method declared surface (`@Test` union `@ParameterizedTest`, both counted), the
-  `assertDoesNotThrow` / `assertNotNull` shape censuses with their complete-coverage evidence, the
-  five vacuity shapes and the three verdicts, the two selection gates that bound the strengthening
-  pool and every higher-density file they excluded, one verdict row per flagged method with a
-  `file:line` citation, and the standing backlog counted as 29 files carrying 87 marker occurrences,
-  now entirely inside `api-sheriff`. Carries a second, exhaustive pass over all 56 integration-lane
-  files -- 203 declared methods, 20 flagged, every file accounted for -- which is what added shape
-  (e), the permissive substitute client: assertions that are entirely substantive while the client
-  that produced the observation enforces none of the policy the claim rests on, the one shape no
-  marker census can rank. Also records that marker density is a screen and not a verdict (three
-  high-density files yielded zero strengthenings), that a marker census under-counts by construction
-  when the same assertion is spelled differently, and that a per-request assertion cannot observe
-  cumulative resource exhaustion however strong it is.
+| How to tell an assertion that supports its test's name from one that cannot -- the census method
+  (both annotations counted, occurrences versus call sites), the five vacuity shapes including the
+  permissive substitute client, the three verdicts, the standard a strengthened assertion meets,
+  the comment-only invariants turned into fitness functions, and the open work list.
 
 | link:cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness -- What the Integration
   Lane Cannot Observe]
@@ -186,13 +174,8 @@ to *run* the finished gateway).
   build mechanism that keeps the whole thing out of the default lane.
 |===
 
-The authoring standard for this repository's deployment/topology diagrams is deliberately absent
-from the table above: it is not a document in this repository. It lives in the marketplace skill
-`pm-documents:ref-svg-diagrams` -- the standard at
-`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md` and its skeleton at
-`pm-documents:ref-svg-diagrams/templates/deployment-diagram-skeleton.svg`. That is the same place the
-standard for every other diagram under `doc/resources/diagrams/` already lives; all ten of them name
-theirs in the same notation, in a comment at the top of the file.
+The diagrams under `doc/resources/diagrams/` share one authoring standard for SVG technical
+diagrams; each file names the standard it follows in a comment at the top.
 
 == Scope of This Layer
 
@@ -277,8 +260,8 @@ Two precedents show the conversion:
   `WebSocketProxyIT#sequentialRelaysReturnTheirAdmissionPermitsAtTeardown`, its two negative controls
   and `WsAdmissionActivationWiringTest`.
 * *The pending-login flood.* The bound of the pending-login store was carried by a `-Pbenchmark` goal
-  that failed on every run without blocking anything. Pull request 427 moved it into the gating suite
-  as `BffPendingLoginBoundIT`, because a capacity bound is a security property and a security
+  that failed on every run without blocking anything. It now lives in the gating suite as
+  `BffPendingLoginBoundIT`, because a capacity bound is a security property and a security
   property gates the merge.
 
 [[_adding_a_resource_bound]]
@@ -311,47 +294,25 @@ link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage].
 
 === Instances and open defects behind the decision
 
-ADR-0075 describes the shipped instances by content only. Their identifiers are recorded here.
+ADR-0075 describes its instances by content only; the tests that settle each one are these:
 
-[cols="3,3,4", options="header"]
-|===
-| Instance | Identifier | Disposition
+* *WebSocket admission-permit leak.* The shrunken-budget probe on `api-sheriff-ws-admission` detects
+  it, and the negative controls on both budgets show that the probe can fail.
+* *Body-cap derivation defect.* `LargeBodyIT` detects it per request, and
+  `BodyLimitActivationWiringTest` pins the framework floor. It is a layer-boundary defect, not a
+  cumulative one.
+* *mTLS rejection legs failing in the `jfr` lane.* This is a lane misconfiguration, not a gateway
+  defect: `MtlsHandshakeIT` passes all three methods wherever the `test.mtls.*` properties are
+  supplied, and without them fails both rejection legs while `trustedClientCertAccepted` still
+  passes. The `jfr` profile keeps its exclusion, and `MtlsLaneSelectionContractTest` guards it.
 
-| WebSocket admission-permit leak
-| Finding `218b5c`, fixed in pull request 126
-| Detected by the shrunken-budget probe on `api-sheriff-ws-admission`; the negative controls on both
-  budgets demonstrate that the probe can fail.
-
-| Body-cap derivation defect
-| Fixed in pull request 131; pull request 134 repaired the benchmark coverage step
-| Detected per request by `LargeBodyIT`, with `BodyLimitActivationWiringTest` pinning the framework
-  floor -- a layer-boundary defect, not a cumulative one.
-
-| mTLS rejection legs failing in the `jfr` lane
-| GitHub issue 201, closed
-| Settled as a lane misconfiguration, not a gateway defect, by nine counted `MtlsHandshakeIT` runs: three
-  under `-Pintegration-tests` and three under `-Pjfr` with the `test.mtls.*` properties supplied passed
-  all three methods; three under `-Pjfr` without them passed `trustedClientCertAccepted` and failed both
-  rejection legs. The `jfr` profile keeps its exclusion, and `MtlsLaneSelectionContractTest` guards it.
-|===
-
-The epic ledger routed three open defects to the decision; ADR-0075 gives the reasons:
-
-* *(6) The detection gap for cumulative exhaustion -- adopted, narrowed.* The gating detector already
-  existed. What was missing was a demonstrated failure of it, which the negative controls supply.
-* *(7) The k6 scripts as an unguarded consumer of the shared gateway configuration -- declined, since
-  guarded.* ADR-0075 declined it as a consumer-drift concern of the benchmark lane, not a
-  resource-lifecycle one. The consumer-drift class is now guarded in the gating surefire lane by
-  `BenchmarkScriptConfigContractTest`, which binds every k6 benchmark script to the shared gateway
-  configuration keys it depends on, so a key changed without its script fails the build and names
-  that script.
-* *(9) `K6BenchmarkLogMessages` outside the reach of `LogMessagesCatalogueTest` -- declined, since
-  guarded.* ADR-0075 declined it as a catalogue-completeness defect class in a different module, not
-  a resource-lifecycle one. `LogMessagesCatalogueTest` now reaches every reactor module carrying a
-  `LogMessages` catalogue, `K6BenchmarkLogMessages` included: it reads the catalogue sources of every
-  module the root `pom.xml` declares, so a duplicate identifier, an identifier outside its level
-  band, or a record in a nested holder that owns no band fails the build in any module and names the
-  module, catalogue, holder and field.
+Two neighbouring defect classes ADR-0075 declined as outside resource lifecycle are guarded in the
+gating surefire lane instead. `BenchmarkScriptConfigContractTest` binds every k6 benchmark script to
+the shared gateway configuration keys it depends on, so a key changed without its script fails the
+build and names that script. `LogMessagesCatalogueTest` reads the `LogMessages` catalogue sources of
+every module the root `pom.xml` declares, `K6BenchmarkLogMessages` included, so a duplicate
+identifier, an identifier outside its level band, or a record in a nested holder that owns no band
+fails the build and names the module, catalogue, holder and field.
 
 == Inbound Validation: Where the Code Lives and Why
 
@@ -360,7 +321,7 @@ anything in this area needs the four structural reasons below, because each one 
 looks arbitrary until you know it. The decision record is
 link:../adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024];
 the operator-facing behaviour is in
-link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`].
+link:../configuration/security-and-edge-hardening.adoc#_security_defaults[Configuration Reference -- `security_defaults`].
 
 === The two stages
 
@@ -528,7 +489,7 @@ does this for you.
 A rejection a route raises before the caller is authenticated is answered to that caller as the
 unrouted `404`, so an unauthenticated scanner cannot tell which addresses name routes
 (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
-The operator view is in link:../user/endpoint-routes.adoc#_uniform_not_found_operator_note[Why an
+The operator view is in link:../user/edge-security.adoc#_uniform_not_found_operator_note[Why an
 existing route answers 404]; the rendering contract is in
 link:../architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture -- rejections before the trust
 boundary]. This section is what a contributor touching that path needs.

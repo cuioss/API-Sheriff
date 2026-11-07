@@ -1,7 +1,9 @@
 = Variant 1 -- Base Security Gateway
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 == Summary
 
@@ -16,13 +18,11 @@ Use this variant when the caller is a service or a client that already holds its
 token (machine-to-machine, or an SPA that manages tokens elsewhere) and simply needs a
 hardened, validating entry point in front of the upstream.
 
-NOTE: *Protocol scope complete.* With the protocol-processor work delivered,
-the base gateway serves all four initial-scope protocols -- HTTP/1.1 and HTTP/2,
-GraphQL (over HTTP), *WebSocket* (full pipeline on the handshake, `Origin` allowlist validation,
-then opaque bidirectional relay bounded by a per-route idle timeout), and *gRPC* (forced-h2
-upstream, trailer relay, trailers-only rejection mapping). This closes the
-link:../features-analysis.adoc#_initial_scope[initial-scope] protocol promise for Variant 1; HTTP/3 remains
-deferred.
+NOTE: The base gateway serves the four link:../features-analysis.adoc#_initial_scope[initial-scope]
+protocols: HTTP/1.1 and HTTP/2, GraphQL over HTTP, *WebSocket* (full pipeline on the handshake,
+`Origin` allowlist validation, then opaque bidirectional relay bounded by a per-route idle timeout)
+and *gRPC* (forced-h2 upstream, trailer relay, trailers-only rejection mapping). HTTP/3 is not
+supported.
 
 == Request Flow
 
@@ -70,7 +70,7 @@ link:../architecture/observability-and-errors.adoc#_html_error_pages[Architectur
 | `cui-http` pipelines (path, parameter, header) + parameter/header count limits,
   driven by the route's resolved `security_filter` block -- its own, else its endpoint's, else its
   anchor's (see link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). See
-  link:../configuration.adoc#_security_filtering[Security Filtering].
+  link:../configuration/security-and-edge-hardening.adoc#_security_filtering[Security Filtering].
 
 | Path whitelisting
 | The route's `allowed_paths` list -- the manifest's "WAF via path white-listing". A validated,
@@ -88,21 +88,19 @@ link:../architecture/observability-and-errors.adoc#_html_error_pages[Architectur
   maps to `403` and a `SCOPE_MISSING` event, with the RFC 6750 challenge
   `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` naming only the missing
   scopes; the upstream is not contacted. An empty set skips the check. See
-  link:../configuration.adoc#_endpoint_scopes[`endpoint.scopes`].
+  link:../configuration/authentication-and-oidc.adoc#_endpoint_scopes[`endpoint.scopes`].
 
 | Forwarding
 | A filter *inside* an already-authorised route, not an admission gate, declared on the route or
-  as a default on its endpoint: each of headers and query parameters independently resolves a
-  positive-list, a negative-list, or -- when the resolved block declares neither -- forward-all. Whatever the mode, the gateway-owned
-  link:../configuration.adoc#_never_forward_set[never-forward set] still withholds the hop-by-hop,
-  framing and provenance names. An inbound `Authorization` is the set's *single* re-admittable
-  member, and only where the route declares a positive-list naming it; under a negative-list or
-  forward-all it is withheld. The browser `Cookie` is no forward mode's to copy: it reaches the
-  upstream only as the route's link:../configuration.adoc#_cookies[`cookies`] block admits it --
-  under the default `allow: none` not at all. The HTTP mechanics the gateway understands cross
-  without an entry, unless the route denies one by name. Inbound `Forwarded` /
-  `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s forwarded resolver,
-  and the gateway emits regenerated canonical output (`X-Forwarded-*` by default). See
+  as a default on its endpoint. Headers and query parameters each resolve a positive-list, a
+  negative-list, or -- when the block declares neither -- forward-all. Whatever the mode, the
+  gateway-owned link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set]
+  withholds the hop-by-hop, framing and provenance names. An inbound `Authorization` is its *single*
+  re-admittable member, and only under a positive-list naming it. The browser `Cookie` reaches the
+  upstream only as the route's link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`]
+  block admits it -- under the default `allow: none` not at all. Inbound `Forwarded` /
+  `X-Forwarded-*` are resolved behind a trusted-proxy allowlist, and the gateway emits regenerated
+  canonical output (`X-Forwarded-*` by default). See
   link:../adr/0003-forwarded-headers.adoc[ADR-0003] and
   link:../architecture/routing-and-forwarding.adoc#_forward_policy[Architecture -- Forward Policy].
 
@@ -129,17 +127,15 @@ endpoint:
         allowed_paths: ["/api/orders", "/api/orders/{id}"]
         max_query_params: 20
         max_body_bytes: 1048576
-      # Optional. Omit the whole block and every client header and query parameter crosses,
-      # bounded by the gateway-owned never-forward set; `accept` and `content-type` cross without
-      # being enumerated, because the gateway understands them -- under this positive-list too.
-      # A `headers_deny` naming one is the way to withhold it. Declare a list only to
-      # NARROW that -- a positive-list, as here, when the backend's input is a closed set worth
-      # stating; `headers_deny` / `query_deny` when the point is to withhold a few names.
+      # Optional. Omitted, every client header and query parameter crosses, bounded by the
+      # gateway-owned never-forward set. Declare a list only to NARROW that: a positive-list, as
+      # here, or headers_deny / query_deny to withhold a few names. accept and content-type
+      # cross without being enumerated; a headers_deny naming one withholds it. Cookie is not
+      # decided here: the route's cookies block governs it and admits none by default.
       forward:
         query_allow: [page, size]
       upstream:
         path: /orders          # replaces the matched prefix; request-path remainder appended
-        read_timeout_ms: 5000
 ----
 
 [source,properties]
@@ -161,8 +157,7 @@ token_validation:
       jwks: { source: http, url: https://idp.example.com/realms/main/protocol/openid-connect/certs }
 ----
 
-No `oidc` block is required for this variant -- that block belongs to the BFF variants. See the
-full schema (gateway / endpoint / topology layout) in
+No `oidc` block is required for this variant. The full schema is in
 link:../configuration.adoc[Configuration Model].
 
 == Offline Validation Wiring
@@ -223,7 +218,7 @@ What the suite exercises on this variant:
 | Aspect | What it isolates
 
 | `unauth` | The pipeline with *no* token validation -- filter, route, forward. The floor cost of proxying.
-| `bearer` | The same path *plus* offline validation and scope enforcement. Against `unauth`, the delta is the true cost of token validation.
+| `bearer` | The same path *plus* offline validation and scope enforcement. Against `unauth`, the delta is the cost of token validation.
 | `passthrough` | The opaque relay lane (`passthroughRelay`, `passthroughRelayEmpty`), in its `mapped` and `empty` selector modes. It is the aspect the measurement-window band is tuned against -- see the threshold table in link:README.adoc#benchmark-baselines[the shared section].
 | `http2` | HTTP/2 upstream forwarding.
 | `graphql` | GraphQL over HTTP.
@@ -243,9 +238,6 @@ JWKS cache behaviour, not at the proxy path.
 that creates no SNI front listener. Both arms otherwise face the same upstream. Comparing a
 passthrough figure against a non-passthrough instance's is not a like-for-like comparison.
 ====
-
-*No figures are published at 0.2.4* -- see the status note in
-link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.
 
 == Relationship to the BFF Variants
 

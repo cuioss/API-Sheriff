@@ -36,7 +36,7 @@ The proxy path forwards request and response bodies as streams with backpressure
 
 === The body cap is a streaming counter
 
-The gateway enforces `security_filter.max_body_bytes` (link:../configuration.adoc#_security_filtering[Configuration, security filtering]) by counting bytes as they flow through the pipe and aborting once the cap is exceeded. It never holds the whole body to measure it. There are two cases:
+The gateway enforces `security_filter.max_body_bytes` (link:../configuration/security-and-edge-hardening.adoc#_security_filtering[Configuration, security filtering]) by counting bytes as they flow through the pipe and aborting once the cap is exceeded. It never holds the whole body to measure it. There are two cases:
 
 * A request whose `Content-Length` already exceeds the cap is rejected before the upstream connection opens.
 * A chunked or streaming request body with no usable `Content-Length` can breach the cap only mid-stream. The upstream connection may already be open and some bytes forwarded, so the breach aborts the in-flight upstream call and tears down the connection.

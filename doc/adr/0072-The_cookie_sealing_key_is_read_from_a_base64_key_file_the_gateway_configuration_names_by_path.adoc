@@ -216,7 +216,7 @@ keys, or lets one parser judge two formats that must never be confused.
   -- the deployment supplies the material the configuration names
 * link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
   -- the two signing-key files, their PEM format, and the separation of the two signing keys
-* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the `oidc.session.key_file`
+* link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration Reference -- `oidc`] -- the `oidc.session.key_file`
   contract
 * link:../user/bff-cookie.adoc#_key_material[Operator setup -- cookie-based BFF] -- creating,
   mounting and replacing the key file
