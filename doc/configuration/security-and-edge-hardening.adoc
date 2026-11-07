@@ -15,8 +15,7 @@ Part of the link:../configuration.adoc[Configuration Model]; the annotated link:
 The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature matching. The block is
 declarable on an anchor, on an endpoint and on a route; a route runs the nearest declared block,
 taken whole, and with none declared the `security_defaults` preset (see
-link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). *The endpoint scope is a
-breaking change* to the endpoint-document surface: an endpoint block governs every route of the
+link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). An endpoint block governs every route of the
 endpoint that declares no block of its own, replaces the anchor's block wholesale (announced by the
 `ApiSheriff-101` boot WARN), and is read by the `minimal` refusal and the body-size-floor check
 below exactly as an anchor or route block is. The block maps onto `cui-http`'s
@@ -250,8 +249,8 @@ validated* -- the same bytes, never decoded and never re-encoded, with the singl
   a `query_deny: [token]` (HTTP parameter smuggling, CWE-235). The decoded meaning is unchanged, and
   every other byte still crosses verbatim.
 
-Because the pipeline sees the form it was built for, legitimate values are no longer refused for
-their encoding: a space (`%20` or `+`), a non-ASCII letter (`M%C3%BCller`), an encoded colon in a
+Because the pipeline sees the form it was built for, legitimate values are not refused for their
+encoding: a space (`%20` or `+`), a non-ASCII letter (`M%C3%BCller`), an encoded colon in a
 timestamp and a literal `%` sent as `%25` all pass. A value that *decodes* to a character such as
 `<`, `>` or `"` is judged by the decoded-form rules and the injection patterns rather than by its
 spelling; output encoding for its context remains the upstream's job.
@@ -702,10 +701,23 @@ set has exactly four members:
   turn off.
 |===
 
+[IMPORTANT]
+====
+The mode set is *closed*: `strict`, `paranoid`, `lenient`, `minimal`, and nothing else. Any other value -- at
+any of the four declaration sites (`security_defaults`, an anchor's `security_filter`, an endpoint's
+`security_filter`, a route's `security_filter`) -- makes the gateway *fail to boot*. There is no fallback and no
+warning-and-continue.
+
+The value range is enforced by the bundled JSON Schema, not by the configuration validator, so an
+out-of-range value is rejected when the document is bound.
+
+`auth.require: none` is a *different* key in a different value space and is unrelated to this set.
+====
+
 *An omitted `security_defaults` block -- or a block omitting `profile` -- resolves to `strict`*, the
-fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly, and one
-wanting the content block-lists must declare `paranoid` explicitly -- adding `paranoid` did not move
-the default, because the tightest available mode and the default mode are separate decisions. The
+fail-closed choice. A deployment wanting a looser baseline declares `lenient` explicitly, and one
+wanting the content block-lists declares `paranoid` explicitly: the tightest available mode and the
+default mode are separate decisions. The
 concrete numbers each mode carries are tabulated under link:#_preset_limits[Preset limits].
 
 The block carries four further keys:
@@ -839,21 +851,7 @@ defined semantics, and the practical consequences on those other routes are cach
 URL while ignoring the body, and any component that authorizes on the URL while the application
 reads the body. Keep the key `false` unless every route on the gateway can tolerate a `GET` body.
 
-An omitted key resolves to `false`, which is bit-for-bit the behaviour of a gateway that never had
-this key: every framing rejection is preserved.
-
-[IMPORTANT]
-====
-The mode set is *closed*: `strict`, `paranoid`, `lenient`, `minimal`, and nothing else. Any other value -- at
-any of the four declaration sites (`security_defaults`, an anchor's `security_filter`, an endpoint's
-`security_filter`, a route's `security_filter`) -- makes the gateway *fail to boot*. There is no fallback and no
-warning-and-continue.
-
-The value range is enforced by the bundled JSON Schema, not by the configuration validator, so an
-out-of-range value is rejected when the document is bound.
-
-`auth.require: none` is a *different* key in a different value space and is unrelated to this set.
-====
+An omitted key resolves to `false`: every framing rejection is preserved.
 
 *The mode is resolved per route.* The route's `security_filter` block is the nearest declared one --
 the route's, else its endpoint's, else its anchor's -- taken whole (see

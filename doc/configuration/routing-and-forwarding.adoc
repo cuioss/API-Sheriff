@@ -183,8 +183,7 @@ block when it declares one, else its endpoint's, taken whole: a route block repl
 block wholesale, so a route block naming only `headers_allow` drops an endpoint `query_deny`. With
 neither declared, both dimensions are forward-all. There is no anchor or gateway scope -- forward
 filtering is upstream-specific. The rule is the one every policy block follows (see
-link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). *The endpoint scope is a
-breaking change* to the endpoint-document surface; both boot refusals below -- the two lists of one
+link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). Both boot refusals below -- the two lists of one
 dimension together, and an `Authorization` re-admitted on a `token_relay: false` route (see
 link:authentication-and-oidc.adoc#_auth_token_relay[`auth.token_relay`]) -- apply to an endpoint block exactly as to a route
 block. The modes below are stated for "the route", meaning the block the route resolves.
@@ -470,11 +469,10 @@ header, `Set-Cookie` included.
 
 [IMPORTANT]
 ====
-*The default `allow: none` relays no upstream `Set-Cookie` at all.* This is a breaking change: an
-upstream that sets cookies today -- its own session, a CSRF token, a preference -- stops having them
-reach the browser, and stops receiving them back, until its route, endpoint or anchor declares a
-`cookies` block naming them. Before upgrading, list the cookies each upstream sets and relies on
-and declare them.
+*The default `allow: none` relays no upstream `Set-Cookie` at all.* An upstream that sets cookies --
+its own session, a CSRF token, a preference -- has them reach the browser, and receives them back,
+only when its route, endpoint or anchor declares a `cookies` block naming them. List the cookies each
+upstream sets and relies on, and declare them.
 ====
 
 [[_cookies_same_origin_check]]

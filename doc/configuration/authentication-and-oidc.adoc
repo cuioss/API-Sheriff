@@ -164,7 +164,7 @@ link:../variants/01-base-gateway.adoc[Variant 1]. Required when any route's *eff
   *The trade-off of the derived form.* It exempts the `jwks.url` host from the private-address
   check in *every* deployment, including one whose IdP is public: a public IdP hostname that
   resolves to an internal address -- through a DNS change, a split-horizon resolver or a poisoned
-  cache -- was refused before this default existed and is now dialled. The allowance widens
+  cache -- is dialled. The allowance widens
   nothing else. Certificate trust is unchanged: chain validation and hostname verification still
   apply to the dialled host, so an endpoint presenting an untrusted or name-mismatched certificate
   is still refused. No dedicated key restores the no-exemption posture for an `http` issuer; an
@@ -938,16 +938,13 @@ See link:#_oidc_client_authentication[Client authentication].
   emits the same header whether the number was written down or left to the default, and the check
   reflects that. It does not fire on the default configuration -- 4019 plus the default 77-byte
   overhead lands exactly on the guarantee -- but it does fire on a gateway that left this key omitted
-  and runs a longer `cookie_name` or a wider `ttl_seconds`, which is the case that used to pass in
-  silence. Before, the default was 4096 and the check skipped omitted keys, so every default
-  cookie-mode gateway emitted a header 77 bytes past the guarantee with nothing anywhere saying so.
+  and runs a longer `cookie_name` or a wider `ttl_seconds`.
 
   This is *one declared number driving two limits*. It is both the seal-time budget -- a sealed
   value over it fails the seal with a logged warning, never a silent truncation -- *and* the source
   of the gateway's pre-route `Cookie` header-value cap (the budget plus a fixed 512-byte headroom
-  for the cookie name and any co-resident cookies). Encoding the two limits independently is what
-  previously made cookie mode unusable: the pre-route filter rejected every request carrying a live
-  sealed cookie with `400` before any BFF logic ran.
+  for the cookie name and any co-resident cookies). Deriving both from one number keeps the pre-route
+  filter from rejecting a live sealed cookie with `400` before any BFF logic runs.
 
   The activity cookie shares that headroom; the cap itself is unchanged. Its value is always 56
   characters, so under the default cookie name the pair `name=value` takes 88 of the 512 bytes.

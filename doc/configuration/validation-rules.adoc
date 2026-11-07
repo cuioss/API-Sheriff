@@ -210,8 +210,7 @@ single-entry objects.
 * *A `${VAR}` written at a map-valued key supplies the whole map.* Where the destination declares
   `object`, the placeholder is typed from that declaration and split on `,` exactly as a list is,
   and each element is then split on its *first* `=` into a key and a string value. The worked
-  example is `tls.passthrough_sni` -- an object map of SNI hostname to topology alias, which no
-  environment variable could supply before this rule existed:
+  example is `tls.passthrough_sni` -- an object map of SNI hostname to topology alias:
 +
 --
 [source,yaml]

@@ -104,8 +104,8 @@ Read that as a statement about *precedence*, not as a retraction of the single-s
 deliberately no raw `quarkus.tls.*` policy key left in `application.properties` -- that remains true,
 and it is what removed the inert shipped surface. The route that can still compete is a
 deployment-supplied `quarkus.http.ssl.*` variable, which is a different mechanism from a shipped key.
-See link:#_server_tls_key_verdicts[Server-TLS key verdicts] for the disposition of every key that
-used to live there, and
+See link:#_server_tls_key_verdicts[Server-TLS key verdicts] for the disposition of every raw
+`quarkus.*` server-TLS key, and
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
 for the classification rule that decides where a new knob belongs.
 
@@ -244,8 +244,7 @@ link:../user/compose-sample.adoc#_reading_the_container_health_signal[Reading th
 `gateway.yaml` is the effective source of server-TLS *policy* for every policy key it declares; a key
 it omits falls back to the runtime's own resolution, which a deployment-supplied environment variable
 can still reach (see link:#_tls_precedence[the precedence rule above]). The table below records the
-disposition of every raw `quarkus.*` server-TLS key that used to live in `application.properties`,
-classified by
+disposition of every raw `quarkus.*` server-TLS key, classified by
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]'s
 three-way rule -- *policy* (neutral in `gateway.yaml`), *deployment-bound* (ports and material,
 supplied by the deployment), *build-time* (fixed when the image is built, never in the runtime
@@ -544,10 +543,9 @@ defaults below apply.
 === The six TLS legs, and which key reaches each
 
 The block is not one switch over every `https` connection the gateway opens. The gateway dials six
-TLS-terminating outbound legs, and each key reaches a named subset of them. *This enumeration is
-re-derived from source* -- from the client-construction sites themselves, not copied from an earlier
-list -- and it is hand-written, so it is not the guard against a seventh leg: that guard is the
-explicit-posture fitness function described after the table.
+TLS-terminating outbound legs, and each key reaches a named subset of them. The table is
+hand-written; the guard against a seventh leg is the explicit-posture fitness function described
+after it.
 
 [cols="1,2,2", options="header"]
 |===
