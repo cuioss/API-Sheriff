@@ -17,6 +17,11 @@
       "id": "WS-03",
       "slug": "deployment-distribution",
       "title": "Deployment and Distribution"
+    },
+    {
+      "id": "WS-04",
+      "slug": "carried-engineering-hygiene",
+      "title": "Carried Engineering Hygiene"
     }
   ],
   "metadata": {},

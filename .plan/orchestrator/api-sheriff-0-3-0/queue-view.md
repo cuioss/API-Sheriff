@@ -18,12 +18,14 @@ STANDING ITEMS: PLAN-V03-04 DO-NOT-LAUNCH (plan-marshall classifier still has no
 1. PLAN-V03-01 (WS-01)
 2. PLAN-V03-02 (WS-02)
 3. PLAN-V03-04 (WS-03)
+4. PLAN-V03-05 (WS-04)
 - PLAN-V03-03 (WS-02) — status: superseded
 
 ## Ordered Queue
 
-| # | Plan | Workstream | Status | Surface (expected) |
-|---|------|------------|--------|--------------------|
-| 1 | PLAN-V03-01 | WS-01 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/**; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ |
-| 2 | PLAN-V03-02 | WS-02 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ManagementConfig.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ResolvedRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RouteTable.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java; api-sheriff/src/main/resources/application.properties; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/adr/00NN-*.adoc; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ |
-| 3 | PLAN-V03-04 | WS-03 | staged | deployment/helm/; deployment/pom.xml; deployment/templates/**; doc/configuration.adoc; doc/development/; doc/user/; integration-tests/docker-compose.yml |
+| # | Plan | Workstream | Status | Surface (expected) | Lane |
+|---|------|------------|--------|--------------------|------|
+| 1 | PLAN-V03-01 | WS-01 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/**; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ | plan-marshall |
+| 2 | PLAN-V03-02 | WS-02 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ManagementConfig.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ResolvedRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RouteTable.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java; api-sheriff/src/main/resources/application.properties; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/adr/00NN-*.adoc; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ | plan-marshall |
+| 3 | PLAN-V03-04 | WS-03 | staged | deployment/helm/; deployment/pom.xml; deployment/templates/**; doc/configuration.adoc; doc/development/; doc/user/; integration-tests/docker-compose.yml | plan-marshall |
+| 4 | PLAN-V03-05 | WS-04 | staged | doc/**; doc/architecture/runtime-and-dependencies.adoc; doc/development/boot-validation-rules.adoc; doc/development/build-gate-discipline.adoc; doc/development/release-process.adoc; doc/development/sonar-quality-gate.adoc; doc/development/test-corpus-integrity.adoc; doc/security-threat-model.adoc | plan-marshall |
