@@ -4,15 +4,8 @@
 
 ## START HERE
 
-**Resume anchor**: === 2026-11-07 STATE at main 7f5c61af (docs review #575 651f01ba + #576 7f5c61af merged today) (PARALLELISM n=3; auto_emit true). The queue is EMPTY: 45 shipped, 11 superseded (V02-29 .. V02-39). CLEANUP DONE and CLOSE-OUT DISPOSITIONED 2026-11-07 (epic-closeout skill, operator-approved: full close-out, no close/archive). The epic is NOT closed. This anchor states current state only; history is in landings/, settled.md, epic-closeout.md and the ledger's git history. ===
-RUNNING: none. STAGED: none. INBOX: empty.
-CLOSE-OUT RECORD: epic-closeout.md § "Close-out disposition — 2026-11-07" (every Open Defect and Watch with its disposition). Lessons corpus drained 26 -> 0 into archive/lessons-consumed/ (15 discards with rationale, 1 standing rule to api-sheriff-0-3-0, 10 doc rules staged as api-sheriff-0-3-0 PLAN-V03-05). Bundle index: no UNSENT row left; Round 1 delivered as plan-marshall lessons-routing api-sheriff-api-sheriff-0-2-0-083/-084/-085 (queued in that repo's ledger worktree, landed by plan-marshall's own orchestrator); Round 9 verified delivered by plan-marshall's 2026-11-02 gather sweep. Re-homed into api-sheriff-0-3-0: Open Defect 1 (was OD 4), 13 Watches, Standing Rules, WS-04 + PLAN-V03-05. Project memory consolidated 31 -> 24 files.
-STILL LIVE HERE UNTIL THE RELEASE CUT: the /marshall-steward run (marshal.json 0.1.1986 vs plugin 0.1.2036; architecture descriptors still name doc/plan/ and the retired quality report; re-check build.map's four hand-added entries after it); FIRST REAL RELEASE AFTER #509; APISIX bearer lane; the release skill's "an ADR is immutable" line; Release Pre-Flight Knowledge (harvest into api-sheriff-0-3-0 after the cut); Deferred Item (dry run). THE NEXT RELEASE IS 0.2.5 (tags 0.2.0-0.2.4 exist; project.yml next-version 0.2.5-SNAPSHOT) — "the 0.2.0 cut" in this ledger means that release.
-SECURITY: the leads this epic carried by reference now live in the git-ignored .plan/local/security_notes_verified.adoc (written 2026-11-07 outside this ledger; security_notes.adoc is empty). Keep them out of tracked text. A separate epic security-hardening-tier-1 was created 2026-11-07 by another session; untouched here.
-OPERATOR HAND-OFF OWED: kidicap-gateway-requirements epic.md (framing-corpus flake entry) still points at this epic's Watch; text to repoint it at api-sheriff-0-3-0 is in epic-closeout.md. kidicap is read-only to this epic.
-
-NEXT ACTION (RESTART HERE): 1) Operator runs /marshall-steward, then re-checks build.map's four hand-added entries. 2) Release dry run, then the 0.2.5 release along the FIRST REAL RELEASE checklist (multi-arch publish, compose-sample .env pin bump, check-bff-login.sh incl. the /auth-fronted variant). 3) After the cut: close or re-home the kept-until-cut items, harvest Release Pre-Flight Knowledge into api-sheriff-0-3-0. 4) land (ledger worktree holds this session's commits), then close, then archive. 5) Owed by the operator: the #325 title edit (cosmetic; #325 is closed). 6) If Http2StreamAbuseIT or GatewayEdgeEarlyResponseResetTest goes red again, it is tracked in api-sheriff-0-3-0's flake-family Watch: reproduce, do not re-run to green.
-**Phase**: orchestrating
+**Resume anchor**: epic closed — see history.md
+**Phase**: closed
 **Queue** (staged, in order):
 - (empty)
 - PLAN-V02-01 (WS-01) — plan=plan-v02-01-adr-0005-reversal-quarkus-adoption — PR 409 — landing=landings/PLAN-V02-01.md — status: shipped
