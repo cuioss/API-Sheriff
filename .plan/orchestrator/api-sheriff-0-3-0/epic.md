@@ -90,7 +90,7 @@ what a plan delivered.
 - **2026-11-07 — `api-sheriff-0-2-0` close-out re-homes its open work here.** One Open Defect, the
   Watches and the standing rules arrive in the sections below (each entry names its 0.2.0 source), and
   WS-04 is opened to carry PLAN-V03-05, the docs plan for ten consumed lessons. 0.2.0's release
-  pre-flight knowledge stays in that epic until its last release cut has run.
+  pre-flight knowledge was carried too when the operator closed 0.2.0 before its next release (same day).
 - **2026-11-07 — every plan spec carries a `## Security Findings` section** (operator rule of 2026-10-22,
   carried from `api-sheriff-0-2-0`): findings a plan uncovers but does not fix are recorded there by
   reference to the git-ignored security notes, never described in tracked text. PLAN-V03-01, -02 and -04
@@ -188,6 +188,106 @@ Each entry names its original date and source; the full history stays in the 0.2
   `security_notes.adoc` (now empty), including the two leads 0.2.0 carried by reference (the 2026-10-31
   `plan-v02-49` entry and the 2026-11-07 #573 entry). Carried by reference only: no finding from that file
   enters tracked text, a spec or a PR until the operator has decided how each one is handled.
+- **RELEASE-CUT CARRY FROM `api-sheriff-0-2-0`** (2026-11-07). The operator closed 0.2.0 before its next
+  release ran, so the items it had kept for that release move here verbatim. **The next release is `0.2.5`**
+  (tags 0.2.0–0.2.4 exist; `.github/project.yml` `next-version: 0.2.5-SNAPSHOT`); "the 0.2.0 notes/cut" below
+  means that release. Close each once that release passes it; see § Release Pre-Flight Knowledge for the Next Cut.
+  - **FIRST REAL RELEASE AFTER #509, NOT YET HAPPENED** (added 2026-10-22, inbox
+    `release-lane-hardening-001`). #509 (`00293178`) reordered the image join in
+    `.github/workflows/release.yml`: the index is pushed under a candidate tag `leg-<sha>-index`, asserted,
+    signed and verified there, and only then promoted to `<version>` and `sha-<sha>` and read back. Dry runs
+    39732222258, 39751125940 and 39759377284 passed, but they promote to `dryrun-*-promoted`; no release
+    run has used the real tags yet (latest tag still `0.2.4`, linux/amd64 only). The next release is also
+    the first two-platform index (`PLAN-V02-47`). Check on that run: (1) candidate, sign and verify steps
+    all succeed before `Promote the verified index to its final tags` and its assert step; (2) `<version>`
+    and `sha-<sha>` resolve to the same digest, an index of exactly linux/amd64 and linux/arm64, the
+    digest that was signed (`docker buildx imagetools inspect ghcr.io/cuioss/api-sheriff:<version>`);
+    (3) the verification command in `doc/user/container-image.adoc` verifies the index and both platform
+    digests; (4) `leg-<commit>-index` sits next to the two `leg-<commit>-<arch>` tags and is not counted
+    by the release skill's "exactly one of each" check; (5) `cleanup-dry-run` is skipped. A failure
+    before promotion leaves no release tag (re-run the join alone); a promote or read-back failure can
+    leave one; a promoted digest that differs from the signed one is a real defect, so the release is
+    treated as partial. Close this watch once one real release passes the checklist. **Also owed by that release
+    (from `PLAN-V02-15`, #516, 2026-10-24):** bump the pin in `deployment/compose-sample/.env` (still
+    `ghcr.io/cuioss/api-sheriff:0.2.4`, which predates the BFF keys the sample now sets) and run
+    `deployment/compose-sample/scripts/check-bff-login.sh` against the published image; until then the default
+    sample runs only against a local build through `API_SHERIFF_IMAGE`. CI proves the HTTPS variant's login
+    only; the plain-HTTP variant (`start-sample.sh --plain-http`) was proven locally.
+  - **`marshal.json` IS STALE AGAINST THE PLUGIN** (added 2026-11-06, `PLAN-V02-56` landing advisory). Recorded 0.1.1986, plugin
+    0.1.2036. Operator action: run `/marshall-steward` before the next plan. Re-check `build.map`'s four hand-added entries
+    afterwards (CLAUDE.md, `BuildGateCoverageContractTest`).
+  - **ARCHITECTURE DESCRIPTORS STILL NAME `doc/plan/`** (added 2026-10-01, `PLAN-V02-18` landing,
+    the plan's claim — unverified lead). `.plan/project-architecture/_project.json` and
+    `documentation/enriched.json` still describe "remaining implementation plans under doc/plan/";
+    the finalize architecture refresh reported no structural change and did not rewrite them. Outside
+    the epic tree, so not edited here. Needs a `/marshall-steward` pass; no plan staged.
+  - **THE APISIX `bearer` BENCHMARK LANE HAS NO VALID SIDE, SO `run-comparison.sh --target both` STOPS THERE** (added 2026-10-30, `PLAN-V02-48` landing).
+    `benchmarks/README.adoc` line 46 says so ("`bearer` has no valid APISIX side for now"), and the comparison is deliberately wired into no workflow. No owner; low. It
+    matters only if a gateway-versus-APISIX comparison is wanted for the 0.2.0 notes.
+  - **THE RELEASE SKILL'S "AN ADR IS IMMUTABLE" LINE VS THE IN-PLACE ADR REWRITES** (added 2026-10-25, from
+    `PLAN-V02-04`'s message). `.claude/skills/release/SKILL.md` lists `doc/adr/**` in the set a release-version sweep
+    must not touch, and says an ADR is immutable. `PLAN-V02-04` and `PLAN-V02-48` rewrite records in place. The line
+    sits in a list about version stamps, so the orchestrator reads it as scoped to that sweep. Unconfirmed; the plan
+    raised it with the operator. `PLAN-V02-48` reports its reading and does not edit the skill.
+
+## Release Pre-Flight Knowledge for the Next Cut
+
+Harvested into `api-sheriff-0-2-0` from `api-sheriff-roadmap` (which cut **both** 0.1.0 and 0.1.1), and carried here verbatim at the 0.2.0 close (2026-11-07). **This is the only place
+this knowledge exists.** These are instance-specific cautions; the process itself lives in
+`.claude/skills/release/`.
+
+- **Re-run the Trivy gate immediately before the cut.** A green is worth **days, not weeks** — it was
+  RED on 2026-08-04 and green on the 5th only because a Dependabot base bump landed between. The DB
+  snapshot carries a `NextUpdate` ~24h out: cut that day, or re-run.
+- **Rebuild the scan target from the tree under test.** A stale image's green looks **identical** to
+  a real one — the 0.1.0 rehearsal's first target predated its code by hours, and at 0.1.1 a
+  tag-keyed reuse would have scanned an image built *before* the commit under test. Scan by
+  content-derived image ID, as the workflow does.
+- **The Trivy gate runs AFTER Maven Central publication.** `publish-image` is `needs: [release]`, so
+  jars are irrevocably on Central before the scan or the signature happens. **That ordering is why
+  the pre-cut dry run exists, and it is not optional.**
+- **Assert GHCR `visibility == 'public'` via `gh api`, never by pulling as an org member.** The 0.1.0
+  cut landed on INTERNAL first, which keeps anonymous pulls broken while every member check passes.
+  At 0.1.1 the release skill checked **anonymously** throughout (no `ghcr.io` credential) — that is
+  the standing method, and authenticating the verification would reintroduce the blind spot.
+- **Never pass `--delete-branch` on a queue-gated merge.** It closed PR #167 **unmerged** while
+  returning `merged: true`. Verify via the GitHub API and `mergeQueue.entries`, never the tool's
+  return.
+- **The merge of the version bump IS the release.** `.github/project.yml` `current-version` is the
+  trigger; editing that file is by construction a release trigger.
+- **The guard is proven in both directions.** It fired correctly at 0.1.1 (run 31157727796) and
+  refused correctly at PLAN-51 (run 31256991225). In that refusal both predicates were true
+  (`current-version` stayed `0.1.1`, tag `0.1.1` existed), so the job rendering alone cannot tell
+  them apart — **but the guard log can**: it reads `unchanged at 0.1.1`, and the guard checks
+  "unchanged" before "already tagged", so a guard stuck on `changed` would have logged the tag reason.
+  A guard stuck on `unchanged` would log the same line; that direction fails safe. The mechanism is
+  settled: the pinned guard job checks out with `fetch-depth: 0` and `fetch-tags: true`.
+  `doc/development/release-process.adoc` now rests these claims on the guard's reason line, at the
+  v0.42.0 pin (#512). `release-guard-docs.yml` fails a pull request that moves the pin until the section
+  is re-checked.
+
+### Deferred Item — the release dry run is NOT a queue item (carried verbatim from `api-sheriff-0-2-0`)
+
+**Operator ruling 2026-08-05**: the release dry-run standardisation runs as a **direct Claude Code
+session**, not a plan-marshall plan. The brief is `release-dry-run-standardisation-claude-brief.md`
+in the archived 0.2.0 tree (`.plan/archived-orchestrators/api-sheriff-0-2-0/`). A WS-06 workstream and a `PLAN-V02-13` spec were staged and then **removed** when the
+ruling landed — do not be surprised by the gap, and **do not re-add them** (the `PLAN-V02-13` number
+was subsequently reused for terminal-rejection-contract).
+
+**Its hard gate has opened**, and the thing it gated on moved further than the gate anticipated.
+Roadmap PLAN-48 shipped (#171 / `b5ce4b6`) and the release trigger is re-armed — but its D4 did not
+ship with it: the release-skill work went to PLAN-50, and PR #179 (`9a8dc3c`) then **rewrote**
+`.claude/skills/release/SKILL.md` substantially (a two-path release, Step 1 restructured so the
+safety work precedes the merge, Step 3(i) replaced, the frontmatter description rewritten), after
+PR #169 had already renumbered its steps. **So the brief's own instruction — re-read `release.yml`
+and the skill on `main` and RE-DERIVE rather than patch — is now load-bearing rather than cautious.**
+PLAN-50 has since landed, so the Cosign-identity collision that deferred this behind the 0.1.1 cut is
+cleared.
+
+**The form decision is taken and argued in the brief**: a dry-run **mode** on the existing `/release`
+skill, not a sibling skill, because a dry run is worth exactly its fidelity to the real steps and a
+second document drifts — three first-party drift defects in this same lane on one day are the
+evidence. Overturnable only on evidence; record the rationale either way.
 
 ## Standing Rules
 

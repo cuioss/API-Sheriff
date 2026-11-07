@@ -144,12 +144,12 @@ source-side record.
 | **Deferred Item — the release dry run is NOT a queue item** (L989-1010) | **keep until cut, then frozen** | The mechanism largely exists now: `release.yml` has a `dry_run` dispatch input (#504 `8e218103`, #509 `00293178`), documented in `.claude/skills/release/SKILL.md:38-47` and `doc/development/release-process.adoc:314` § "Proving the image lane with a dry run". Whether the brief's "`/release dry` mode on the skill" is fully satisfied was not judged. NEXT ACTION 3 still runs a dry run before the cut. After the cut: frozen with the brief archived. |
 | **Sequencing Constraints** (L481-517) | **frozen** | All plans shipped; every chain is discharged or moot. One generalisable line could go into W-D: concurrent Docker IT suites contend for local CPU, so prefer a doc-only or build-light plan for extra slots (kidicap carries a sibling rule at its Watch on native-IT wall clock). |
 
-**Kept until the cut** (still live here): the `/marshall-steward` run (marshal.json at 0.1.1986;
-architecture descriptors still name `doc/plan/` and the retired quality report), FIRST REAL RELEASE AFTER
-#509, the APISIX bearer lane, the release skill's "an ADR is immutable" line, the Release Pre-Flight
-Knowledge (harvest into SUCC after the cut) and the Deferred Item (dry run). **The next release is
-`0.2.5`** (`.github/project.yml` `next-version: 0.2.5-SNAPSHOT`; tags 0.2.0–0.2.4 exist). "The 0.2.0 cut"
-in this ledger means that release.
+**Kept until the cut → moved to `api-sheriff-0-3-0` at close (2026-11-07).** The operator closed this epic
+before its next release ran, so the six kept items (the `/marshall-steward` run and the stale architecture
+descriptors, FIRST REAL RELEASE AFTER #509, the APISIX bearer lane, the release skill's "an ADR is immutable"
+line), the Release Pre-Flight Knowledge and the dry-run Deferred Item were carried verbatim into
+`api-sheriff-0-3-0/epic.md` (Watch "RELEASE-CUT CARRY FROM `api-sheriff-0-2-0`", § Release Pre-Flight Knowledge
+for the Next Cut). That epic owns the next release, `0.2.5`.
 
 **Operator hand-off — kidicap is read-only to this epic.** For `kidicap-gateway-requirements` `epic.md`
 (the framing-corpus flake entry, ~:243-246): the flake is said to be tracked in ONE place, the

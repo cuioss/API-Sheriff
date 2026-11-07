@@ -42,8 +42,9 @@ naming its 0.2.0 source:
 - `epic.md` § Standing Rules — the 0.2.0 standing rules and the five `api-sheriff-roadmap` rules,
   verbatim; this is now their only copy.
 - WS-04 and PLAN-V03-05 — ten consumed lessons whose rules belong in repository docs.
-- **Still owed by 0.2.0 after its release cut:** its "Release Pre-Flight Knowledge" section is harvested
-  here once the `0.2.5` release has run. Until then it lives only in the 0.2.0 tree.
+- The release-cut carry (FIRST REAL RELEASE checklist, steward run, APISIX lane, release-skill ADR line),
+  the Release Pre-Flight Knowledge and the dry-run Deferred Item — moved here when the operator closed
+  0.2.0 before its next release (2026-11-07). This epic now owns the `0.2.5` release.
 
 The source-side record (every 0.2.0 entry with its disposition) is
 `api-sheriff-0-2-0/epic-closeout.md` § "Close-out disposition — 2026-11-07".
