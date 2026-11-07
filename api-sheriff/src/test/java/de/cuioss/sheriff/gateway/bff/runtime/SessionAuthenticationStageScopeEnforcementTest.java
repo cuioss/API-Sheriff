@@ -591,7 +591,7 @@ class SessionAuthenticationStageScopeEnforcementTest {
                                 scopeRefresh, login, null, quotaKeys, OnFailure.REAUTHENTICATE, STEP_UP_PATH, CLOCK),
                         "the widening seam is mandatory"),
                 () -> assertDoesNotThrow(() -> new SessionAuthenticationStage(binding, refresh, scopeRefresh, login,
-                        widening, quotaKeys, OnFailure.REAUTHENTICATE, null, CLOCK),
+                                widening, quotaKeys, OnFailure.REAUTHENTICATE, null, CLOCK),
                         "an unset step-up path is a valid shape"));
     }
 

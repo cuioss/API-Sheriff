@@ -1395,7 +1395,7 @@ class CallbackEndpointTest {
 
                 CallbackOutcome outcome = endpoint(grant(SUBJECT, ClaimValue.forPlainString("openid profile")),
                         sessionBinding).handle("code=widen-code&state=" + wideningState, requestCookies(), QUOTA_KEY,
-                                CALLBACK_AT);
+                        CALLBACK_AT);
 
                 assertRefused(outcome);
                 assertTrue(wideningCalls.isEmpty(), "the browser is not sent round the widening again");

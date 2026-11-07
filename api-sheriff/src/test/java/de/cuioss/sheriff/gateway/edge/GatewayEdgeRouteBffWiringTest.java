@@ -1896,7 +1896,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** The edge's answer as the client saw it. */
         private record Answer(int status, @Nullable String retryAfter, @Nullable String location,
-                List<String> setCookies, JsonObject body) {
+        List<String> setCookies, JsonObject body) {
         }
 
         @BeforeEach
@@ -1952,10 +1952,10 @@ public class GatewayEdgeRouteBffWiringTest {
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
             return Awaits.connect(client.request(options)
-                    .compose(request -> request.putHeader("Accept", accept).send())
-                    .compose(response -> response.body().map(body -> new Answer(response.statusCode(),
-                            response.getHeader("Retry-After"), response.getHeader("Location"),
-                            List.copyOf(response.headers().getAll("Set-Cookie")), body.toJsonObject()))),
+                            .compose(request -> request.putHeader("Accept", accept).send())
+                            .compose(response -> response.body().map(body -> new Answer(response.statusCode(),
+                                    response.getHeader("Retry-After"), response.getHeader("Location"),
+                                    List.copyOf(response.headers().getAll("Set-Cookie")), body.toJsonObject()))),
                     "the edge response to GET " + uri);
         }
     }
@@ -2056,10 +2056,10 @@ public class GatewayEdgeRouteBffWiringTest {
 
         SessionAuthenticationStage sessionStage = stageLoginThroughFlow
                 ? engineFreeSessionStage(binding, (returnUrl, scopes, quotaKey, instant) -> {
-                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, quotaKey, instant);
-                    return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
-                            redirect.setCookieHeaders());
-                })
+            LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, quotaKey, instant);
+            return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
+                    redirect.setCookieHeaders());
+        })
                 : engineFreeSessionStage(binding);
 
         CsrfDefence csrf = new CsrfDefence(Set.of(ORIGIN));
