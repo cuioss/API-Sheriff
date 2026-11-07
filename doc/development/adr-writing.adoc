@@ -1,7 +1,9 @@
 = API Sheriff -- Writing an Architecture Decision Record
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 How to decide whether something belongs in `doc/adr/`, and how to write a record that does. The
 records themselves live in `doc/adr/`. The record template and numbering come from

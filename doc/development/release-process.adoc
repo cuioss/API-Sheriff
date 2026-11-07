@@ -1,7 +1,9 @@
 = Release Process
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 How a release of API Sheriff is cut. A release has two entry points: merging a pull request that
 changes the declared version in `.github/project.yml`, which *is* the publishing act once the
@@ -489,10 +491,6 @@ which supersedes ADR-0034.
 [#guard-negative-control]
 === The observed refusal: a negative control over the guard
 
-*This subsection was written before the merge it describes.* What follows is a prediction, not a
-report. That ordering is what makes it falsifiable: an artifact written afterwards can only agree
-with whatever happened, while this one can be shown wrong.
-
 *The design.* A change to one non-`release:` key of
 link:../../.github/project.yml[`.github/project.yml`] is merged. The `paths:` prefilter matches
 *every* edit to that file, so the workflow fires; both `if:` operands are true on a merged pull
@@ -502,11 +500,11 @@ not `current-version`, not `next-version`, not `create-github-release` -- and th
 point of the control. The guard's two refusal predicates and its central ownership are described in
 <<guard-refusal-predicates>> and decided by ADR-0035; they are consumed here, not restated.
 
-*The run is identified by a rule, not by a value:* *the Release workflow run attached to this pull
-request's merge commit*. The prediction committed no run id. An id would have needed a future edit to
-stay correct, and a placeholder for one would have been an untrue statement sitting in the tree.
+The expected signature was fixed before the merge, so the run could contradict it: the evidence is
+*the Release workflow run attached to the pull request's merge commit*, identified by that rule
+rather than by a run id committed in advance.
 
-*The predicted signature is a conjunction of four rows:*
+*The signature is a conjunction of four rows:*
 
 . `release / guard` -- *success*
 . `release.outputs.released-version` -- *empty*
@@ -529,26 +527,21 @@ cite.
 
 *The absence evidence is end-state corroboration only.* No new tag, no Maven Central artifact, no
 GHCR push. On its own it passes vacuously: it is equally true of every non-release merge in this
-repository's history. It is retained because it corroborates the four rows, never because it
-substitutes for them.
+repository's history. It corroborates the four rows and never substitutes for them.
 
 *Provenance of the discriminator.* link:../../.github/workflows/release.yml[`release.yml`] declares
 `released-version` the run/skip discriminator for the downstream jobs, in the comment block and the
-`if:` of its `publish-image` job: an empty value skips them. What an empty value proves is exactly that *no release was produced* -- not that
-the declared version was unchanged. Emptiness is the union of both refusal predicates named in
-<<guard-refusal-predicates>>, so it cannot discriminate a version that did not move from a tag that
-already exists. Row 2 is therefore evidence drawn from the mechanism's declared contract rather
-than an inference over its behaviour -- but read as the narrower claim it would be the very
-one-predicate reading <<guard-refusal-predicates>> warns against.
+`if:` of its `publish-image` job: an empty value skips them. What an empty value proves is exactly
+that *no release was produced* -- not that the declared version was unchanged. Emptiness is the
+union of both refusal predicates named in <<guard-refusal-predicates>>, so it cannot discriminate a
+version that did not move from a tag that already exists. Row 2 is therefore evidence drawn from the
+mechanism's declared contract rather than an inference over its behaviour -- but read as the
+narrower claim it would be the very one-predicate reading <<guard-refusal-predicates>> warns
+against.
 
-*Escalation condition.* If the observed rendering does not match the predicted signature, that is a
-finding about the guard, not a run id to file. It goes in-tree, in a follow-up PR, and the
-artifact's claim is withdrawn until it does.
-
-The observed run id and the rendered conclusions were posted as a comment on the merged pull request.
-That comment is associated with the pull request, not with any commit, and like any pull-request
-comment it can be edited or deleted -- so it is not the record. Now that the run has happened,
-<<guard-negative-control-limits>> cites it by id as the evidence.
+A rendering that does not match this signature is a finding about the guard, and it is recorded in
+the tree rather than in a pull-request comment, which can be edited or deleted.
+<<guard-negative-control-limits>> cites the observed run by id.
 
 [#guard-negative-control-limits]
 === What that control proves, and what it does not

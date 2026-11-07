@@ -1,7 +1,9 @@
 = Automatic Re-Review on Loop-Back -- Why It Is Off
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 Why this repository leaves plan-marshall's `re_review_on_loopback` set to `false`, what turning it
 on would actually buy, and how to ask for a fresh review by hand on the occasions a loop-back

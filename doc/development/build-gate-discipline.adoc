@@ -1,14 +1,18 @@
 = Build-Gate Discipline -- A Green Gate That Changed Your Files
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 link:../../CLAUDE.md[`CLAUDE.md`] states the class, in its *Pre-Commit Process* section: a gate that
 exits 0 can still have changed your files. This page is the detail behind that line -- which
 mechanisms in this repository do it, what a contributor does about them, the BOM import order a
 clean build cannot show to be wrong (<<quarkus-bom-first>>), and the two neighbouring rules about
-reading build output honestly. The class statement is not restated here; the
-enforcement is named at the end.
+reading build output honestly. It also records why a local red is not automatically a branch
+defect: the `-T1` pin and the loopback stall it was introduced against, and the foreign loopback
+port holders a contributor workstation can carry (<<foreign-loopback-port-holders>>). The class
+statement is not restated here; the enforcement is named at the end.
 
 == The three mechanisms that exit 0 while mutating the tree
 
@@ -55,38 +59,29 @@ pre-build sha, and the freshness check then reports `stale` for a commit whose g
 passed. A "the worktree was never verified" refusal immediately after a green gate is this
 interaction, not a lost build.
 
-*Update 2026-09-01:* this change lands the fixed point itself, so a gate run against an unmodified
-`main` now rewrites nothing and neither the churn nor the freshness interaction above fires. Both
-return the moment the tree drifts away from the fixed point again -- so the mechanism is documented
-here as live, not retired. What changed is that the default state is now *at* the fixed point rather
-than 180 files away from it, and -- per the corrected section below -- the churn a run does produce
-converges in one pass, so it can be committed rather than reverted.
+A gate run against an unmodified `main` rewrites nothing today, so neither the churn nor the
+freshness interaction fires by default. Both return the moment the tree drifts away from the fixed
+point -- the mechanism is live, not retired -- and the churn a run does produce converges in one pass
+(next section), so it can be committed rather than reverted.
 
-=== The pre-commit formatter converges in one pass (corrected 2026-09-01)
+=== The pre-commit formatter converges in one pass
 
-This section previously recorded the opposite -- that `org.openrewrite.java.format.AutoFormat` and
-its companions "do not converge in one pass: a run takes A to B, and the next run takes B to C",
-and that "run the formatter again and see if it settles" was not a diagnostic because "it will not
-settle". That was measured against the *old* recipe list. It no longer holds.
+`org.openrewrite.java.format.AutoFormat` and its companions reach their fixed point in a single pass,
+so running the formatter again *is* a valid diagnostic, and a converged tree is safe to commit.
 
-*MEASURED (2026-09-01, two consecutive `verify -Ppre-commit -DskipTests` runs):* run 1 took a clean
-tree to 180 changed files (113 insertions, 137 deletions). Run 2 was executed over that churned
-tree *without reverting* and produced **no further change** -- the working diff against `HEAD` was
-byte-identical, SHA-256 `e18290636a54e18a676d48407975840b9476e5deafb15f013603cbfb5bd5211f` on both
-runs. The recipes reach their fixed point in a single pass, so running the formatter again *is* now
-a valid diagnostic, and a converged tree is safe to commit.
+*MEASURED (two consecutive `verify -Ppre-commit -DskipTests` runs):* run 1 took a clean tree to 180
+changed files (113 insertions, 137 deletions). Run 2 was executed over that churned tree *without
+reverting* and produced **no further change** -- the working diff against `HEAD` was byte-identical,
+SHA-256 `e18290636a54e18a676d48407975840b9476e5deafb15f013603cbfb5bd5211f` on both runs.
 
-*INFERRED, not established:* the earlier non-convergence was most likely caused by
-`AutoFormat` running interleaved with the `UpgradeToJava8 -> ... -> UpgradeToJava25` migration
-composite, which was removed from the recipe list in the same change that produced the measurement
-above. The convergence was measured only *after* that removal, so the causal link between the two is
-a hypothesis that fits the evidence, not a finding. Nobody re-ran the old list to confirm it.
+An older recipe list did *not* converge: a run took A to B and the next took B to C. *INFERRED, not
+established:* that was most likely caused by `AutoFormat` running interleaved with the
+`UpgradeToJava8 -> ... -> UpgradeToJava25` migration composite, which was removed from the recipe
+list in the same change that produced the measurement above. Convergence was measured only *after*
+that removal, and nobody re-ran the old list, so the causal link is a hypothesis that fits the
+evidence, not a finding.
 
-The prior claim that "`main` is at the fixed point today" was also false at the time of writing:
-`main` was 180 files away from it. That is what this change lands -- the fixed point itself, so the
-claim becomes true rather than aspirational.
-
-*MEASURED (2026-09-21) -- convergence re-confirmed, on a much smaller sample.* A branch adding four
+*MEASURED -- convergence re-confirmed, on a much smaller sample.* A branch adding four
 test sources ran the gate four times in sequence. Run 1 rewrote all four and printed their
 attribution blocks. The rewrite was kept, three further corrections were authored on top, and run 2
 produced *zero* attribution blocks -- so one pass reached the fixed point here too. The normalized
@@ -97,7 +92,7 @@ converged tree from the `Using active recipe(s) []` false negative the
 <<the-recipe-scoping-trap,recipe-scoping trap>> describes.
 
 Read the sample for what it is -- four files rather than 180, and a different recipe set doing the
-rewriting -- so it corroborates the 2026-09-01 measurement rather than re-establishing it.
+rewriting -- so it corroborates the 180-file measurement rather than re-establishing it.
 
 [[junit5-best-practices]]
 === `JUnit5BestPractices` rewrites test sources, and one of its sub-recipes inverts an assertion
@@ -237,626 +232,321 @@ under `clean test-compile`, and a signature change that yielded *26*.
 
 == `-T1` reduces the flake rate; it does not cure the condition
 
-`.mvn/maven.config` carries `-T1`. It is not a leftover, and the parallel form it replaced bought
-nothing measurable. But the pin is a *measured rate reduction, not a cure*. The condition it was
-introduced against is still live, and has since been measured to survive the pin four times: twice
-before this investigation (both second-hand, recorded below), once by this investigation's own
-31-run budget, with `-T1` re-read from `.mvn/maven.config` and confirmed in effect before the first
-run -- the only instance first-hand to this document, and the strongest -- and a fourth time on
-2026-09-02, by an unrelated plan's finalize gate on the same machine (recorded below; second-hand to
-this document, but first-hand to the reporter rather than inherited from the destroyed artifacts).
-This section was first written when the pin looked like the fix; that reading is corrected below
-rather than quietly restated.
+`.mvn/maven.config` carries `-T1`. It is not a leftover. The parallel `-T1C` form it replaced bought
+nothing measurable and cost determinism, but the pin is a *measured rate reduction, not a cure*: the
+local edge-suite stall it was introduced against survived it repeatedly, and its transport-level
+cause turned out to be a single bind call in the test fixtures.
 
-=== Provenance of the figures in this section
+Some of the figures below are *second-hand*: they were measured by an earlier investigation whose
+evidence artifacts no longer exist, so they are reported as recorded rather than as re-checkable.
+The mechanism and its controls are first-hand to the investigation that measured them. Each claim
+below carries its weight -- MEASURED, INFERRED or reported -- because the record contains readings
+that were later refuted, and a reader needs to tell which kind a sentence is.
 
-The `-T1C` measurements, the 2026-08-31 recurrence and the 2026-09-01 acceptance soak are all
-*MEASURED-but-second-hand*. They were measured by earlier investigations whose evidence artifacts no
-longer exist -- the `stabilize-edge-suite-awaits` plan directory was deleted -- so nothing here can
-re-verify them, and they are reported as recorded rather than as re-checkable. The figures under
-*The condition is macOS-local* are *first-hand* -- the population figures to the 2026-09-01
-investigation, the mechanism and its controls to the 2026-09-03 one -- and each is labelled
-MEASURED, INFERRED or SUPERSEDED individually, carrying the date it belongs to.
+=== What the parallel form cost
 
-Read that rule with its one inheritance case. Inside this section the two investigations are
-interleaved, so every label states its own date, and a label spanning both names both rather than
-picking one. Elsewhere a whole section belongs to a single investigation and says so in its heading
--- *Corroboration from an unrelated plan (2026-09-02, ...)* is the example -- and a label under such
-a heading inherits that date rather than repeating it. What is never acceptable is a bare label in
-this section, because here position on the page tells a reader nothing about which investigation is
-answerable for the sentence.
+The reactor has six modules and one dependency edge (`api-sheriff -> integration-tests`), so `-T1C`
+ran nearly all of them concurrently. `api-sheriff` is the critical path; the measured wall-clock
+was the same to within noise (333-369 s parallel against 359-373 s serial). The parallelism did not
+shorten the build. It only loaded the machine while `api-sheriff`'s live-Vert.x-server tests were
+asserting over real sockets.
 
-The 2026-09-02 corroboration recorded further below is a third provenance class, and it is worth
-keeping distinct from the first two: it is *second-hand to this document* but *first-hand to its
-reporter* -- an unrelated plan that ran the gate on this same machine and reported what it saw.
-Unlike the `stabilize-edge-suite-awaits` figures, its artifacts still exist, so it is re-checkable
-by someone who goes and looks. It is not, however, an independent rate estimate; the reporter was
-explicit that the run was a finalize gate rather than a designed soak.
+Under `-T1C` the gate failed *five runs out of five*, never twice on the same test, and always in
+`de.cuioss.sheriff.gateway.edge` or one of its sub-packages -- the only package tree that drives live
+servers. Every failing test passed in isolation, and an untouched `main` failed the same way. The
+symptom shape ruled out plain slowness: besides timeouts it included a malformed line separator, a
+spurious `400` and a response missing a header it was handed -- wire-level corruption, which CPU
+starvation does not produce. Fixture server leaks and `Map.of()` iteration order were checked
+against the source and excluded.
 
-*Amendment 2026-09-23 -- a fourth class.* <<linux-relay-race-occurrence>> adds a fourth provenance
-class, *reported by the plan spec*. It covers CI run 35802987168 and every claim that depends on
-it: a report that the CI abstraction could not re-check. The rest of that section is labelled
-individually:
+*MEASURED-but-second-hand -- the pin is insufficient.* With `-T1` re-read from `.mvn/maven.config`
+and confirmed in effect, the condition reproduced at three runs out of three on pristine `main`, and
+an `N=10` soak returned five red and five green. A small green streak under `-T1` is therefore never
+an all-clear; a `4/4` green run was once read that way, and the recurrence is what that reading cost.
 
-* Its unit-lane reproductions are *MEASURED*.
-* The integration lane's early-frame result is *MEASURED*, carrying its `N`.
-* The production reading is *INFERRED*.
+A serial green was itself checked for vacuity before being believed: the reactor log shows the
+`api-sheriff` test count with zero failures, not merely a zero exit. The executor's `tests_run`
+field reports only the *last* module's Surefire summary, so it cannot answer that question -- read
+the reactor log.
 
-Its heading carries its date, so its labels inherit it. The figures under *The condition is
-macOS-local* are unchanged by it, and so is that heading's scope: the wildcard-bind occurrences.
+=== The mechanism: a wildcard ephemeral bind coexists with a foreign loopback listener
 
-=== What the parallel form cost (MEASURED-but-second-hand)
-
-The reactor has six modules and *one* dependency edge (`api-sheriff -> integration-tests`), so five
-of the six sit in layer 0 and `-T1C` ran essentially all of them concurrently. `api-sheriff` is the
-critical path at ~1886 tests; the other four finish well inside its shadow either way. The measured
-wall-clock is the same to within noise -- 333-369s parallel against 359-373s serial -- so the
-parallelism was not shortening the build, only loading the machine while `api-sheriff`'s
-live-Vert.x-server tests were asserting over real sockets.
-
-What it cost was determinism. Under `-T1C` the gate failed *five runs out of five*, and never twice
-on the same test -- six distinct tests across those runs, all of them in
-`de.cuioss.sheriff.gateway.edge` or one of its sub-packages (`WebSocketRelayStageTest` and
-`GrpcStatusMapperTest` now live in `edge.relay`), the only package tree that drives live servers:
-
-* `WebSocketRelayStageTest.mapsUnreachableUpstreamTo502` -- `TimeoutException` (since removed as a
-  duplicate: `preservesSecurityHeadersOnHandshakeFailure` drives the same unreachable-upstream handshake
-  and asserts the same `502`)
-* `WebSocketRelayStageTest.releasesOnceOnEstablishedRelayTeardown`
-* `GatewayEdgePipelineTest.rejectsUnmodelledVerb` -- `TimeoutException` on a 15s *localhost* call
-* `GatewayEdgePipelineTest.minimalRouteIsStillGovernedByThePreRouteFloor` -- `InvalidLineSeparatorException`
-* `GatewayEdgePipelineTest.forwardsPostBody` -- `expected: <200> but was: <400>`
-* `GrpcStatusMapperTest.appliesStageHeadersGatewayWins` -- `expected: <DENY> but was: <null>` in 34ms
-
-Every one of them passes in isolation. The same gate on an untouched `main` fails the same way, so
-this is a property of the build, not of any branch.
-
-The symptom *shape* is what rules out the obvious readings. Timeouts alone would suggest CPU
-starvation, but a malformed line separator, a spurious 400 and a response missing a header it was
-handed are wire-level corruption -- bytes arriving that the client never expected -- which slowness
-does not produce. Two tempting explanations were checked against the source and discarded rather
-than left standing: the fixtures do *not* leak servers (`@AfterEach` closes server, client and the
-`Vertx` instance, each awaited), and `Map.of()`'s randomised iteration order does not reach the one
-functional failure, because `renderRejection` applies every stage header and only then overrides
-`content-type`, which is order-independent.
-
-Per the rule in "A build whose output says it did nothing has verified nothing", the serial greens
-above were checked for vacuity before being believed: both runs show `Tests run: 1886, Failures: 0`
-for `api-sheriff` in the reactor log, not merely a zero exit. The executor's `tests_run` field
-reports only the *last* module's surefire summary (202, from `benchmarks`), so it cannot answer this
-question -- read the reactor log.
-
-=== The pin was measured insufficient, twice (MEASURED-but-second-hand)
-
-*2026-08-31 recurrence.* The condition reproduced with `-T1` *verified in effect* -- the pin was
-re-read from `.mvn/maven.config` before the runs, not assumed -- at *three runs out of three red*,
-on pristine `main`. That is the measurement that retired the "the pin fixed it" reading: a fix that
-is in effect and still red three times running is not a fix.
-
-*2026-09-01 acceptance soak.* An `N=10` soak with the pin still in place returned *five RED and five
-GREEN* -- a 50% per-run failure rate. Note the sample size travels with the rate: at `N=10` the 50%
-figure is a coarse estimate, and it is quoted here with its `N` for exactly that reason.
-
-The two together are why a small green streak must never be read as an all-clear on this condition.
-A `4/4` green run under `-T1` was once read that way, and the 2026-08-31 recurrence is what that
-reading cost.
-
-=== The condition is macOS-local: a wildcard ephemeral bind collides with a foreign loopback listener
-
-*Amendment 2026-09-23 -- what "macOS-local" covers.* The heading describes the wildcard-bind
-mechanism and its own occurrences, and for those it stands. It does not describe the 30-second
-stall *symptom*. That symptom has since been reported on the Linux lane, from a different
-mechanism: the WebSocket relay's pre-wiring frame window. That occurrence is recorded in
-<<linux-relay-race-occurrence>>. Nothing in this section is withdrawn by it. Every claim below is
-about the wildcard bind, and every claim below still holds.
-
-Two investigations feed this section and they are not interchangeable. The *2026-09-01* budget
-measured the population -- how often the stall strikes, which methods, how long. The *2026-09-03*
-work measured the *mechanism*, and refuted the reading 2026-09-01 had inferred. Every claim below
-carries which of the two it came from, because the second one overturned a conclusion of the first
-and a reader needs to be able to tell them apart.
-
-*The mechanism, MEASURED 2026-09-03.* First-hand to the investigation that measured it, on macOS
-26.6.2 (darwin 25.6.0) under JDK 25.0.1.
-
-`.listen(0)` with no host argument binds the *dual-stack wildcard* `*:P`. Netty sets
-`SO_REUSEADDR=true` on that socket, and macOS then permits the wildcard bind to take an ephemeral
-port another process already holds as a `127.0.0.1`-specific listener. Both bindings coexist and
-neither call fails. A client dialling `127.0.0.1:P` is then routed by BSD most-specific-match to the
-*other* process, which accepts the connection and never answers it. Vert.x's acceptor sits in
-`KQueue.poll` because nothing was ever queued on its listener -- it is idle *correctly*, not stuck.
+*MEASURED, on macOS under JDK 25.* `.listen(0)` with no host argument binds the *dual-stack
+wildcard* `*:P`. Netty sets `SO_REUSEADDR=true` on that socket, and macOS then permits the wildcard
+bind to take an ephemeral port another process already holds as a `127.0.0.1`-specific listener.
+Both bindings coexist and neither call fails. A client dialling `127.0.0.1:P` is routed by BSD
+most-specific-match to the *other* process, which accepts the connection and never answers it.
+Vert.x's acceptor sits in `KQueue.poll` because nothing was ever queued on its listener -- it is
+idle *correctly*, not stuck.
 
 Four controls establish that, and each states its own scope:
 
 * *The live capture.* At the ceiling the JVM held only its own listener and its client socket, with
-  *no server-side accepted socket*. A system-wide `lsof -iTCP:65034` named the owner: a VS Code
-  helper process holding `127.0.0.1:65034 (LISTEN)` and the accepted connection, at
-  `rxbytes=146 / txbytes=0` -- the request arrived and nothing was ever sent back. The system-wide
-  query is the load-bearing part. A *per-process* `lsof` shows the same missing accepted socket, but
-  it cannot name the foreign owner, so on its own it is suggestive rather than conclusive.
+  *no server-side accepted socket*. A system-wide `lsof -iTCP:<port>` named the owner -- a VS Code
+  helper process holding `127.0.0.1:<port> (LISTEN)` and the accepted connection at
+  `rxbytes=146 / txbytes=0`: the request arrived and nothing was sent back. The system-wide query is
+  the load-bearing part; a per-process `lsof` shows the missing accepted socket but cannot name the
+  foreign owner.
 * *Deterministic reproduction (E1).* Squat `127.0.0.1:P` with a loopback-specific listener, then
-  wildcard-bind Vert.x on the same `P`: the bind succeeds and the request stalls, *1 of 1*. That arm
-  shows the mechanism reproduces on demand; at `N=1` it is not a rate estimate and is not quoted as
-  one.
+  wildcard-bind Vert.x on the same `P`: the bind succeeds and the request stalls, *1 of 1*. That
+  shows the mechanism reproduces on demand; at `N=1` it is not a rate estimate.
 * *Matched negative control (E2).* `listen(P, "127.0.0.1")` against the same squatted port is refused
   with `BindException`. The loopback-specific bind *collides* exactly where the wildcard bind
   silently coexists, which is why the fix is a fix rather than a reshuffle.
 * *The rate, with its denominator.* 179 foreign `127.0.0.1` listeners sat inside the 16384-port
   ephemeral range (49152-65535) on the machine under test, predicting *1.0925%* per `listen(0)`. A
   positive control over *20 000* ephemeral allocations measured *1.0931%*: the wildcard arm was
-  handed all 179 occupied ports, and the loopback-bound arm was handed *0*. The three ports the bare
-  reproducer stalled on -- 61547, 62911 and 65034 -- are all inside that occupied set.
+  handed all 179 occupied ports, the loopback-bound arm *0*. The ports the bare reproducer stalled on
+  are all inside that occupied set.
 
-*INFERRED (2026-09-03).* A ~1.09% per-`listen(0)` collision rate and the ~26% per-run stall rate recorded below
-are consistent rather than in tension, because a run performs many ephemeral binds and one collision
-is enough to stall it. Nobody counted binds per run, so this is a consistency check between two
-independently measured figures -- not a derivation of either, and not a claim that the arithmetic
-closes.
+*The population, MEASURED before the fix.* A pre-registered budget of 31 runs with `-T1` confirmed
+in effect reproduced a 30-second stall in *8 of 31* (about 26%), across ten test methods in five
+classes, always at the fixtures' 30000 ms `Awaits` ceiling to within 10 ms -- no progress at all,
+rather than slow progress. Later gate runs extended it: seven of the eleven test classes that
+construct a live `Vertx.vertx()` have carried the signature (one of them inferred from class timing
+alone). *INFERRED:* a ~1.09% per-bind collision rate and a ~26% per-run stall rate are consistent,
+because a run performs many ephemeral binds and one collision is enough -- a consistency check
+between two measured figures, not a derivation of either.
 
-*Provenance, stated because this page insists on it.* The 2026-09-03 probe sources, run logs and
-population counts were working material under `.plan/temp/`, not a committed artifact. While they
-exist the block above is re-checkable; once they are cleared it becomes recorded-but-not-re-checkable,
-the same class as the `stabilize-edge-suite-awaits` figures further up this page. What survives the
-probes is the fix, the guard and this write-up.
+*What the data excludes.* Reactor parallelism (`-T1` was in effect throughout); a second test class
+as the disturber (stalls occurred with a single class in a single Surefire fork); connection
+establishment alone (an already-established half-close and plain request/response exchanges stalled
+too); concurrent build load as the discriminator (load sat on both sides of the green/red split,
+which does not show load has no effect); the macOS application firewall (global state, block-all and
+stealth mode each queried separately, all off); and an undelivered kqueue readiness event (the E1/E2
+pair discriminates on which bind the kernel accepts, not on which notification the selector
+delivers). Thread dumps at two stall instants showed the acceptor and every event loop parked in
+`KQueue.poll`; that is consistent with the mechanism, and the live capture and E1/E2 carry the
+conclusion.
 
-The 2026-09-01 investigation ran a pre-registered, non-extensible budget of *31 runs* (26 with only
-`WebSocketRelayStageTest` selected, 5 whole-module), with `-T1` re-read and confirmed before the
-first run. Everything attributed to that budget below is *first-hand* to it unless marked otherwise.
+*How the earlier readings were retired.* The record holds a chain of readings, each retired by
+evidence rather than preference: TIME_WAIT ephemeral-port reuse, contradicted in its listener form
+because the fixtures *hold* their listening sockets (its accepted-socket and client-socket forms were
+never instrumented -- not refuted, only shown to be unnecessary); then an undelivered kqueue
+readiness notification, refuted by E1/E2; then the wildcard bind, where the evidence sits. Two lessons
+travel with that chain. A component that shows up in every stack trace of a stall is not thereby the
+component at fault -- it may be where correct idling looks the same as being stuck. And a refuted
+sub-case is neither a refuted case nor a cleared *location*: refuting one listener-side story made the
+listener socket look answered-for, and the passes that followed instrumented everything except the one
+bind call that decided the outcome.
 
-*MEASURED (2026-09-01).* A 30-second stall reproduced in *8 of the 31 runs* (25.8%) -- 5 of 26 on the
-single-class arm, 3 of 5 on the whole-module arm. It struck *ten distinct test methods across five
-classes* (`WebSocketRelayStageTest`, `GatewayEdgePipelineTest`, `GatewayEdgeRouteBffWiringTest`,
-`GatewayEdgeRouteTest`, `PassthroughRelayTest`), always by hitting the fixtures' 30000 ms `Awaits`
-ceiling essentially exactly -- 30004 to 30010 ms elapsed, i.e. no progress at all rather than slow
-progress.
+*The Linux lane does not reproduce the wildcard-bind collision.* Same-for-same, the stalling classes
+run in about a second in CI against 30 seconds or more locally, and `main`-branch runs stay green.
+*INFERRED:* Linux runners hold no such `127.0.0.1`-specific listeners in the ephemeral range. That is
+directly testable by running the population probe on a runner, and nobody has.
 
-*MEASURED (2026-09-01, except as noted) -- what this rules out.* Four readings are excluded by the
-data, not merely unsupported. The first three are excluded by the 31-run budget; the fourth is
-excluded by the 2026-09-03 measurement above and carries its own provenance, because the budget
-could not have shown it:
-
-* *Not reactor parallelism.* `-T1` was in effect for every one of the 31 runs.
-* *Not cross-class co-tenancy inside the build.* Five of the stalls occurred on the arm that selected
-  a *single* test class in a *single* Surefire fork, with no other test class in the reactor. Read
-  the scope of that evidence exactly: it excludes a second test class in the same reactor as the
-  disturber, and it says nothing about host CPU, I/O, file-descriptor or memory pressure originating
-  outside the build. Machine load was excluded separately and later -- see the 2026-09-02
-  corroboration below, which supplies the concurrent-load control this arm never carried.
-* *Not connection establishment alone.* `PassthroughRelayTest.propagatesHalfCloseToBackend` stalled
-  awaiting a half-close on an *already-established* connection, and the stall also strikes plain HTTP
-  request/response exchanges (`timed out awaiting the edge response to GET /nowhere`), not just
-  WebSocket upgrades.
-* *Not an undelivered kqueue readiness event* -- MEASURED 2026-09-03, *not* by this budget. The E1/E2
-  pair excludes the selector reading directly: a loopback-bound listener on a squatted port is
-  *refused*, while a wildcard listener on that same port *succeeds and then stalls*. The
-  discriminator is which bind the kernel accepts, not which notification the selector delivers. The
-  entry sits in this list rather than in *What this run additionally eliminates* below because that
-  list is scoped to what the 2026-09-02 run eliminated, and that run measured nothing about ports
-  either; this elimination belongs to neither run and is attributed to the date that produced it.
-+
-It also resolves the bullet above it in the mechanism's favour rather than against it. A connection
-that establishes and then never completes is exactly what acceptance by a *foreign* listener looks
-like -- MEASURED at `rxbytes=146 / txbytes=0` in the live capture, INFERRED for the individual
-`propagatesHalfCloseToBackend` occurrence, whose socket state was never captured.
-
-*MEASURED (2026-09-01) -- the thread dumps.* On two independent occurrences, in two different fixtures, the
-captured dump shows the awaiting thread parked in `Awaits` while the Vert.x acceptor thread *and all
-three event-loop threads* sit simultaneously at `sun.nio.ch.KQueue.poll` via
-`KQueueSelectorImpl.doSelect`. Every Vert.x thread is idle with nothing to do.
-
-*What the dumps establish, and what they do not.* At each of the two captures, no sampled Vert.x
-thread was executing. Two dumps are two instants, not a continuous observation of the stall, and the
-distinction is the whole point: at *those two instants* no sampled thread was saturated, deadlocked
-or blocked in a handler. That is not the same as excluding those states for the stall's duration --
-work that ran or blocked between the captures leaves no trace in either dump.
-
-What carries the conclusion is not the dumps but the live socket capture and the E1/E2 controls,
-which observe the listener-routing mechanism directly rather than sampling for its absence. The
-dumps are consistent with that mechanism -- nothing was ever queued on the fixture's listener, so
-there was nothing for any of those threads to do -- and consistency is the right weight to give
-them.
-
-*SUPERSEDED (INFERRED 2026-09-01, refuted 2026-09-03) -- the kqueue-readiness reading.* The previous
-revision of this section took the same two dumps one step further, to *a loopback readiness event
-that the macOS kqueue selector never delivered*, and marked it an inference with good fit rather
-than an established property. That step is now refuted. It is kept here rather than deleted because
-how it failed is the useful part.
-
-The observation was read correctly and the conclusion drawn from it was wrong. Turning "no thread
-had work" into "a notification was lost" assumes the work had been queued somewhere a selector could
-lose it, and it had not been queued at all. `KQueue` being the macOS-only selector implementation
-then made the platform-local fit look like corroboration -- but the platform-local property is
-really BSD most-specific-match routing plus what macOS permits `SO_REUSEADDR` to do, and `KQueue`
-appears in the dumps only because it is where an idle acceptor waits on this platform. A component
-that shows up in every stack trace of a stall is not thereby the component at fault; it may simply
-be where correct idling looks the same as being stuck.
-
-*MEASURED -- what the 2026-09-01 budget did not find.* Zero reproductions, in 31 runs, of the
-separate *unexpected-upgrade-status* symptom the budget was actually sized against. That arm is
-therefore *inconclusive with stated power*, never an all-clear -- see the power caveat below.
-
-*Partly supersedes the earlier inferred mechanism -- and only partly.* The previous revision of this
-section recorded a TIME_WAIT / ephemeral-port-reuse reading and this document then called it
-*contradicted* by the 2026-09-01 data. That was itself an over-claim, and it is corrected here
-rather than quietly softened, because the correction is to a sentence this investigation wrote.
-
-The hypothesis has more than one form, and the evidence covers exactly one of them:
-
-* *The listener form is contradicted.* The stall reproduced in fixtures that bind with `listen(0)`
-  and *hold* the listening socket for the whole fixture lifetime. For those ports there is no
-  release and no re-bind window to race, so port reuse of the *listener* cannot be the mechanism.
-* *The accepted-socket and client-socket forms remain uninstrumented.* Nothing in the 31-run budget
-  observed the ephemeral ports of the accepted connections or of the clients the fixtures drive --
-  and those are the sockets the traffic actually crosses, and the ones that do churn ephemeral ports
-  from run to run. TIME_WAIT on that side is neither confirmed nor excluded; it was never looked at.
-
-Retiring a hypothesis on evidence that covers one of its forms is precisely the failure mode this
-page exists to prevent -- "a plausible root cause is not the root cause" has a mirror image, which
-is that a refuted sub-case is not a refuted case. The listener form is closed. The rest is open --
-which is where this page stood until 2026-09-03, and is superseded by the paragraph that follows.
-
-*Where that correction landed, in hindsight (2026-09-03).* The listener form was contradicted
-correctly and for the right reason -- those fixtures hold the socket, so there is no release and no
-re-bind window to race. The measured mechanism is nevertheless *on the listener socket*, by an
-entirely different route: not reuse of a port this process released, but coexistence with a port
-another process still holds. Listener-side TIME_WAIT is therefore not involved in the measured
-mechanism -- which is the whole of what the evidence settles. The accepted-socket and client-socket
-forms left open above stayed uninstrumented to the end, so they are not refuted either; they turned
-out not to be *needed* to explain the stall, which is a different thing from being excluded.
-
-So the mirror image has a second edge. Refuting one listener-side story is what made the listener
-socket look answered-for, and the passes that followed instrumented the client, the accepted socket
-and the selector -- everything except the one bind call that decided the outcome. A refuted sub-case
-is not a refuted case; it is also not a cleared *location*.
-
-=== Corroboration from an unrelated plan (2026-09-02, MEASURED-but-second-hand)
-
-A second, unrelated plan hit the same condition on the same machine while this one was in review,
-and reported what it saw. It is recorded here because it adds *population and eliminations* --
-nothing else. It instruments no mechanism, and it must not be read as narrowing any of the readings
-left open above.
-
-*Setup.* Branch `feature/configurable-context-path` at `4b487ec`, rebased onto `origin/main`
-`82e44cc8`, so both #241 (the tiered `Awaits` ceilings) and #242 are present. Command
-`verify -Ppre-commit` over the whole reactor, ~1907 tests. Six invocations, of which one is excluded
-as *NO-VERDICT* -- the wrapper timed out at 522 s without producing a pass or a fail -- under the
-same exclusion rule this investigation's own budget applied.
-
-*Result.* *1 GREEN / 4 RED* across the `N=5` verdict-producing runs. The 95% interval on that is
-roughly *28-99%*: consistent with the ~50% recorded above, and far too wide to refine it. This is
-explicitly *not* an independent rate estimate. It was a finalize gate rather than a designed soak,
-and the reporter said so.
-
-*Post-rebase specifically.* Of the three runs after the rebase: *3 RED / 0 GREEN*, every one
-carrying #241's own instrumented-ceiling wording, and every elapsed time in the *30004-30007 ms*
-range against a 30000 ms ceiling. Two standing claims on this page reproduce independently there: the
-stall *has never been observed to end*, and *widening a ceiling absorbs nothing* -- these runs were
-red against the newer, wider instrumented ceiling exactly as earlier runs were against the older
-one.
-
-*A new site.* `GrpcStatusMapperTest.rendersUnknownMessageForNullCategory`. That class appears
-earlier on this page only among the `-T1C` wire-corruption failures; neither it nor this method had
-been recorded carrying the *stall* signature before.
-
-That changes how the population reads. Eleven test classes in this repository construct a live
-`Vertx.vertx()` -- verified first-hand against the tree at the time of writing:
-`GatewayEdgePipelineTest`, `GatewayEdgeRouteBffWiringTest`, `GatewayEdgeRouteTest`,
-`GrpcDispatchStageTest`, `GrpcStatusMapperTest`, `PassthroughRelayTest`, `ReservedBodyCeilingTest`,
-`RouteAssemblerTest`, `SniFrontListenerTest`, `TlsEdgeProducerTest` and
-`WebSocketRelayStageTest`. *Seven of those eleven* have now carried the stall signature: the five
-named above, plus `GrpcStatusMapperTest` by the method just named, plus `SniFrontListenerTest` --
-which is counted on class timing alone (31.16 s locally against 0.944 s in CI, consistent with one
-method reaching the ceiling) and is therefore *INFERRED*. Six of the seven are named down to the
-method; the seventh is a class-timing inference and is not to be quoted as a measured site.
-
-*INFERRED.* The set keeps recruiting new sites whose only shared property is `Vertx.vertx()` plus
-`listen(0)` plus a fresh client. That fits a uniform per-attempt hazard -- every live-socket attempt
-carrying the same probability -- better than any reading in which particular fixtures are special.
-It is a reading of the accumulating population, not a measurement of the hazard.
-
-*What this run additionally eliminates.* Two candidates that earlier passes had left standing:
-
-* *Machine load, and with it gate cadence.* The control this page had been missing now exists. A
-  parallel plan was running Maven builds in windows overlapping runs 4 and 5 *and* the single GREEN
-  run (2026-09-01 23:24-23:31 local, against their 23:19-23:25 and 23:26-23:33). Concurrent load
-  sits on both sides of the green/red split, so it does not separate them. Read the scope exactly:
-  with one green and two reds inside the overlap this excludes concurrent-build load as *the
-  discriminator* -- which is what "machine load explains the flake" requires -- and it is not a
-  demonstration that host load has no effect at all.
-* *The macOS application firewall.* Three settings, three separate queries -- `--getglobalstate`
-  establishes only the global state, so the other two claims need their own evidence rather than
-  being read off it:
-+
-[source,text]
-----
-socketfilterfw --getglobalstate   -> Firewall is disabled. (State = 0)
-socketfilterfw --getblockall      -> Firewall has block all state set to disabled.
-socketfilterfw --getstealthmode   -> Firewall stealth mode is off
-----
-+
-None of the three is intercepting loopback connections.
-
-Machine load therefore moves out of the "never formally excluded" column, and no candidate reading
-on this page rests on load or on how often the gate is run.
-
-*The CI contrast, re-confirmed at a newer commit.* Run 33596810317 on `main` at `82e44cc8`,
-2026-09-02, compared same-for-same against the local run:
-
-* `WebSocketRelayStageTest` -- 13 tests in 0.648 s in CI; 34.75 s locally, failed
-* `GrpcStatusMapperTest` -- 3 tests in 0.978 s in CI; 30.59 s locally
-* `ReservedBodyCeilingTest` -- 7 tests in 3.646 s in CI; 9.557 s locally
-* `PassthroughRelayTest` -- 4 tests in 1.060 s in CI; 30.69 s locally
-* `SniFrontListenerTest` -- 5 tests in 0.944 s in CI; 31.16 s locally
-
-`ReservedBodyCeilingTest` is the one row that is merely slower rather than stalled -- 9.557 s is
-nowhere near the ceiling -- and it is listed so the four that *are* at the ceiling are not read as
-five. Alongside this, `gh run list --workflow=maven.yml --branch=main --limit=20` returned *20
-successes out of 20*. The Linux lane still does not reproduce the condition.
-
-*Amendment 2026-09-23.* That sentence holds for the condition this section measures, the
-wildcard-bind collision. It no longer holds for the 30-second stall *symptom*. Run 35802987168,
-on the Linux lane at `c1b09c7`, is *reported by the plan spec* to have failed on a
-`WebSocketRelayStageTest` relay await timeout. It carried the same stall shape from a different
-mechanism. The contrast above therefore separates the platforms for the wildcard bind only, not
-for the symptom. See <<linux-relay-race-occurrence>>.
-
-*A trap worth its own warning: `Tests run: 0` in the CI log does not mean "skipped in CI".* The CI
-log reports `Tests run: 0` for `WebSocketRelayStageTest` and `GrpcStatusMapperTest`. Taken at face
-value that *inverts* the contrast above -- it reads as "these classes are not covered in CI at all",
-which would make the comparison meaningless rather than damning. It is an artifact of nesting: those
-lines are the outer `@Nested` containers, which carry no direct `@Test` methods, and the real tests
-report under their nested display names, all green. Anyone re-deriving this contrast by grepping the
-class name alone will get a false "not covered in CI" result. Match on the nested display names, or
-read the surefire XML.
-
-*One method count, stated without the conclusion it invites.*
-`PassthroughRelayTest.relaysPrefixThenLiveBytes` now has a *third* recorded occurrence. That is the
-count, and it is all that is being claimed: whether the method is genuinely over-represented or
-merely the most-sampled one is *not* established -- no per-method sampling denominator was ever
-recorded, so the two cannot be told apart from these counts.
+One trap in re-deriving that contrast: the CI log reports `Tests run: 0` for some of these classes.
+That does not mean "skipped in CI". Those lines are the outer `@Nested` containers, which carry no
+direct `@Test` method; the real tests report under their nested display names. Match on the nested
+display names, or read the Surefire XML.
 
 [[linux-relay-race-occurrence]]
-=== The same symptom on Linux, from a different mechanism (2026-09-23)
+=== The same symptom on Linux, from a different mechanism
 
-This section adds a second mechanism to the page. Nothing above is withdrawn by it. What it does
-is limit "macOS-local" to the wildcard-bind occurrences, as the dated amendments above state at each
-site that made the broader claim.
+"macOS-local" above describes the wildcard-bind mechanism, not the 30-second stall *symptom*. A Linux
+CI run (35802987168, *reported by the plan spec* that opened the investigation; the CI abstraction
+returned an empty failed-job log, so it was not re-checked) failed on a `WebSocketRelayStageTest`
+relay await timeout with the same stall shape.
 
-*The occurrence -- reported by the plan spec, not re-checked here.* Run 35802987168, on the Linux
-lane at `c1b09c7`, is reported to have failed on a `WebSocketRelayStageTest` relay await timeout.
-That is the 30-second stall shape this page records on macOS. The report comes from the plan spec
-that opened the investigation, and that is its provenance class. The CI abstraction could not
-re-check it: the failed-job log came back empty. The run is also not among the runs attached to PR
-#345, whose merge commit is `c1b09c7`. That fits a main-branch push run, but proves nothing further.
-Everything below that depends on this run inherits its provenance.
-
-*It is not the wildcard-bind condition -- INFERRED.* By `c1b09c7`, `LoopbackEphemeralBindArchTest`
-already failed the build on a bare wildcard bind anywhere outside its four named
-`TlsEdgeProducerTest` sites. The relay test's fixtures therefore bound through
-`LoopbackHost.ADDRESS`, and the E2 control above shows that a loopback-specific bind
-*collides* with a foreign listener rather than silently coexisting with it. The measured mechanism
-therefore has no way in. The inference is sound for the bind. It is not a capture of that run's
-socket state, and none exists.
+*It is not the wildcard-bind condition -- INFERRED.* By then `LoopbackEphemeralBindArchTest` already
+failed the build on a bare wildcard bind outside its four named exemptions, so the relay test's
+fixtures bound through `LoopbackHost.ADDRESS`, and E2 shows that a loopback-specific bind *collides*
+with a foreign listener. The inference is sound for the bind; no capture of that run's socket state
+exists.
 
 *The mechanism -- MEASURED in the unit lane.* Vert.x delivers a WebSocket's inbound frames from the
 moment the socket exists. `WebSocketRelayStage` installed its frame handlers only when the relay's
 wiring ran, so a frame that reached either leg in between went to no handler and was lost. A lost
-frame is never echoed, so the test's await runs to its 30-second ceiling and makes no progress at
-all. That is the stall shape again, from an unrelated cause. Two deterministic reproductions in
-`WebSocketRelayStageTest` pin the window, each with the relay's wiring deferred by a fixed 500 ms:
+frame is never echoed, and the test's await runs to its ceiling. Two deterministic reproductions pin
+the window with the wiring deferred by a fixed 500 ms -- the client writing its first frame inside its
+own upgrade callback, and an upstream writing a greeting the instant it accepts. Both were red in 5 of
+5 runs before the fix and green in 5 of 5 after it, with the delay still in place.
 
-* On the client leg, the client writes its first frame inside its own upgrade callback.
-* On the upstream leg, an upstream writes a greeting the instant it accepts.
+*The fix.* The relay hops onto the client connection's own context, which `GatewayEdgeRoute.handle()`
+captures on the connection's event loop. It pauses each leg the instant that leg is acquired and
+resumes both only after every handler is installed, so an early frame waits in Vert.x's own inbound
+buffer.
 
-Both were RED in 5 of 5 runs before the fix and GREEN in 5 of 5 after it, with the delay still in
-place.
+*Production impact -- INFERRED.* Attributing the CI run to the window is itself inferred. Read as the
+window, it was a unit-fixture executor divergence: the fixture dispatches the relay from a plain
+virtual-thread executor that binds no Vert.x context, while Quarkus's context-preserving executor
+binds the client connection's context before the relay runs (read from the executor bytecode, not
+observed). Against the *unfixed* native gateway the early-frame integration test lost no first frame in
+*N = 50* upgrades, which bounds the per-upgrade client-leg loss rate below about 6% at 95% confidence --
+inconclusive with stated power, not an all-clear. The upstream leg hits the window whatever executor
+calls the relay. It is reproduced only in the unit lane, because the integration lane's echo upstream
+never speaks first, so no production measurement exists for it in either direction. The same pause
+closes it.
 
-*The fix.* The relay now hops onto the client connection's own context, which
-`GatewayEdgeRoute.handle()` captures on the connection's event loop. It also pauses each leg the
-instant that leg is acquired, and resumes both only after every handler is installed. An early
-frame waits in Vert.x's own inbound buffer, and nothing is dropped.
+=== The fix, and what it does not settle
 
-*Production impact -- MEASURED for the unit lane, INFERRED for production
-(`d3-production-verdict: GREEN`).* Attributing run 35802987168 to the window is itself *INFERRED*,
-because that run recorded nothing about when the relay was wired relative to its first frame. Read
-as the window, the run was a *unit-fixture executor divergence*. The fixture dispatches the relay
-from a plain virtual-thread executor that binds no Vert.x context, and that is where the client-leg
-loss reproduced. In production, Quarkus's context-preserving virtual-thread executor binds the
-client connection's context before the relay runs. That is read from the executor bytecode, not
-observed. Against the *unfixed* native gateway, the early-frame integration test lost no first frame
-in *N = 50* upgrades. The client-leg production consequence is therefore refuted *as far as
-measured*: zero losses in 50 upgrades bounds the per-upgrade loss rate below about 6% at 95%
-confidence, and a lower rate could go unseen. That is inconclusive with stated power, not an
-all-clear.
+The defect was in the fixtures, and it was one call: they bound their ephemeral server with the
+single-argument `listen(0)` overload while the client in the same fixture dialled `127.0.0.1`. Within
+the guarded set, 22 sites across 9 files now bind through `LoopbackHost.ADDRESS` in
+`de.cuioss.sheriff.gateway.testsupport`. That is the guarded scope, not a tree-wide total: four named
+sites in `TlsEdgeProducerTest` deliberately still bind the wildcard, because the TLS edge that class
+exercises is the production listener, which binds the wildcard.
 
-*The upstream leg is a separate question.* An upstream that writes before the client's upgrade
-completes hits the window whatever executor calls the relay. That leg is reproduced only in the
-unit lane. The integration lane cannot observe it, because its echo upstream never speaks first, so
-no production measurement exists for it in either direction. The same pause closes it.
-
-=== State the limit of the finding precisely
-
-What was measured in the original investigation is the causal link -- parallel fails, serial passes,
-`n=7`. The mechanism is no longer inferred: it was *MEASURED* on 2026-09-03 and is recorded above
-with its four controls. The chain of readings that preceded it is worth keeping in order, because
-each was retired by evidence rather than by preference -- TIME_WAIT ephemeral port reuse,
-contradicted in its listener form; an undelivered macOS kqueue readiness notification, refuted by
-the E1/E2 pair; and finally a dual-stack wildcard ephemeral bind coexisting with a foreign
-`127.0.0.1` listener, which is where the evidence now sits.
-
-CPU and file-descriptor pressure were never formally excluded by the original work. The
-all-threads-idle dumps argue against both, and the 2026-09-02 concurrent-load control recorded above
-excludes machine load as the discriminator outright. File-descriptor pressure specifically still
-rests on the dumps alone -- no control has ever been run against it, and the 2026-09-03 work did not
-run one either. A measured mechanism for the occurrences that were captured is not an exclusion of
-every other candidate; it says nothing about that one.
-
-*Three things this does not settle.* None is closed by the fix, and none is to be quoted as closed:
-
-* *The 5 s TEARDOWN-tier occurrence.*
-  `ReservedBodyCeilingTest.retiresConnectionAfterDeclaredLengthRejection`, elapsed *5.036 s* against
-  the 5000 ms teardown ceiling. A half-close against a connection a foreign process holds would
-  plausibly produce it -- a conjecture with no measurement behind it. That class is also one of the
-  fix sites, so its listener is now loopback-bound, which changes nothing here: binding the listener
-  does not measure the teardown tier.
-* *Why CI is clean.* The reading is that Linux runners hold no such `127.0.0.1`-specific listeners in
-  the ephemeral range. That is *INFERRED*, and it is directly testable -- run the population probe on
-  a runner and count what it finds. Nobody has.
-+
-*Amendment 2026-09-23.* "Clean" means clean of the wildcard-bind collision, and the bullet explains
-only that. CI has not been clean of the 30-second stall symptom: run 35802987168 (*reported by the
-plan spec*) carried it on the Linux lane at `c1b09c7`, caused by the relay's pre-wiring frame
-window rather than by any listener. The reading above is unaffected, and so is its status: it is
-still *INFERRED* and still untested. See <<linux-relay-race-occurrence>>.
-* *Whether the mechanism accounts for every historical occurrence*, including the
-  possibly-contaminated second-hand `p = 0.50` full-suite tally. The originating artifacts are
-  destroyed, so that question is not merely unanswered; it is unanswerable from the record that
-  survives.
-
-*The re-opening that the previous revision said the fix did not depend on has happened.* That
-sentence read "the fix does not depend on which of those it is; a re-opening of the question does",
-and it was written on the premise that the pin was a fix. The 2026-08-31 recurrence retired that
-premise, the question re-opened, and the mechanism turned out to matter a great deal -- the fix that
-eventually landed acts on the bind call, which no reading before 2026-09-03 had pointed at.
-
-Two power caveats travel with any green result here, and both are load-bearing:
-
-* The `p = 0.50` rate behind the 2026-09-01 soak is *second-hand and possibly contaminated*. An
-  unknown share of that historical `5 RED / 10` tally may have been this 30-second stall rather than
-  the unexpected-status symptom, and the destroyed artifacts can no longer separate the two. Every
-  power figure derived from it inherits that contamination.
-* A zero-reproduction result is reported as *inconclusive with stated power*, carrying its `N`.
-  It is never reported as an all-clear.
-
-=== What a contributor does about it
-
-The 2026-09-01 investigation changed no production or test code: the evidence pointed at a
-host-level loopback condition and named no defect in any fixture or in the gateway, and fixing a
-mechanism the evidence excludes would have been a third unmeasured fix. That restraint was correct
-on the evidence then available, and the wording it produced was deliberate. The 31-run budget was
-pre-registered against a *different* symptom -- an unexpected upgrade status -- and found the stall
-instead; it audited no fixture and no gateway path. "Named no defect" is what was observed. "There
-is no defect" is a universal negative the budget was never shaped to establish.
-
-*That changed on 2026-09-03, and a fix has landed.* The defect was in the fixtures after all, and it
-was one call. The affected fixtures bound their ephemeral server with the single-argument
-`listen(0)` overload -- the dual-stack wildcard -- while the client in that same fixture dialled
-`127.0.0.1`. Within the *guarded* set, *22* such sites across *9* files now bind through
-`LoopbackHost.ADDRESS` in `de.cuioss.sheriff.gateway.testsupport`. That count is the guarded scope,
-not a tree-wide total: four named sites in `TlsEdgeProducerTest` are exempt from the guard and still
-bind the wildcard on purpose, because the TLS edge that class exercises is the production listener,
-which binds the wildcard, and pinning those sites to loopback would stop testing what ships. Every
-`Awaits` ceiling now folds a `SocketSnapshot` capture of the kernel's own view -- `lsof` for this
-pid, plus `netstat` in whichever spelling the platform takes (`-anv -p tcp` on macOS, `-ant` on
-Linux) -- into its timeout message. A future occurrence therefore arrives with its evidence attached,
-instead of requiring another investigation to go and obtain it.
+Every `Awaits` ceiling also folds a `SocketSnapshot` capture of the kernel's own view into its timeout
+message -- `lsof` for this pid, plus `netstat` in whichever spelling the platform takes (`-anv -p tcp`
+on macOS, `-ant` on Linux) -- so a future occurrence arrives with its evidence attached.
 
 [NOTE]
 ====
-*The netstat half was macOS-only when it first landed, and CI is what caught it.* The original
-invocation and the port pattern were both macOS spellings: Linux reads `-p` as _show-program_ rather
-than as a protocol selector, and prints `127.0.0.1:59120` where macOS prints `127.0.0.1.59120`. The
-half therefore produced nothing usable on Linux.
-
-Two beliefs were wrong at once, which is why it survived local verification. The first was that
-`netstat` is absent from `ubuntu-latest` -- it is present, so the capture's availability probe
-returned true and the half ran rather than abstaining. The second was structural: the probe asserting
-the capture had worked scanned the *combined* section, so `lsof` output satisfied it on a run where
-`netstat` contributed nothing. Splitting that assertion per tool is what turned an invisible
-degradation into a red build.
-
-The general shape is the one this page keeps re-learning: a check whose green is satisfiable by a
-neighbour is not a check on the thing it names.
+*The netstat half was macOS-only when it first landed, and CI is what caught it.* Linux reads `-p` as
+_show-program_ rather than as a protocol selector, and prints `127.0.0.1:59120` where macOS prints
+`127.0.0.1.59120`. It survived local verification because the probe asserting the capture had worked
+scanned the *combined* section, so `lsof` output satisfied it on a run where `netstat` contributed
+nothing. Splitting that assertion per tool turned an invisible degradation into a red build. A check
+whose green is satisfiable by a neighbour is not a check on the thing it names.
 ====
 
-*The condition is not thereby closed.* What landed removes the measured transport-level cause. No
-post-fix rate has been measured, the quarter-of-runs figure below is a *pre-fix* rate, and the three
-items under *State the limit of the finding precisely* are all still open. Read a post-fix green
-streak the way this page has already had to learn to read one: as absence of evidence at some
-unstated `N`, never as an all-clear.
+*The condition is not thereby closed.* The fix removes the measured transport-level cause. No post-fix
+rate has been measured -- the quarter-of-runs figure is a pre-fix rate -- and four questions remain
+open:
+
+* *File-descriptor pressure* was never controlled for. It rests on the all-threads-idle dumps alone,
+  and a measured mechanism for the captured occurrences is not an exclusion of every other candidate.
+* *The 5 s TEARDOWN-tier occurrence.* `ReservedBodyCeilingTest.retiresConnectionAfterDeclaredLengthRejection`
+  ran to 5.036 s against the 5000 ms teardown ceiling. A half-close against a connection a foreign
+  process holds would plausibly produce it -- a conjecture with no measurement behind it.
+* *Why CI is clean of the collision* is inferred and untested, as stated above.
+* *Whether the mechanism accounts for every historical occurrence*, including the second-hand 50%
+  soak tally, which may be contaminated by the stall itself. The originating artifacts are destroyed,
+  so that question is unanswerable from the surviving record. Every power figure derived from that
+  tally inherits the contamination.
+
+A zero-reproduction result is reported as *inconclusive with stated power*, carrying its `N`, and never
+as an all-clear.
+
+=== What a contributor does about it
 
 * *A single red edge-suite run on macOS is not evidence of a branch defect.* Establish provenance
-  before acting on it -- roughly a quarter of local runs of this suite carried the stall before the
-  fix. If one appears after it, read the `SocketSnapshot` block in the timeout message first. Read
-  it for what it can actually show: `lsof` runs with `-p <this pid>` and `netstat` is filtered to
-  the ports that per-process view returned, so the block is *this JVM's socket state* and cannot
-  name the foreign process that owns a colliding listener. A `SYN_SENT` with no established peer, or
-  no socket for the port at all, is the shape that points back at this condition. To identify an
-  owner you need a system-wide lookup the snapshot does not perform -- `lsof -nP -iTCP:<port>`
-  without `-p`, run by hand while the stall is live.
-* *Establish that provenance against CI, not against a local re-run.* For the 30-second stall
-  signature specifically, the Linux lane is the authority: it has never reproduced that signature,
-  so a red there is a real defect rather than this condition. It is *not* the authority for macOS
-  behaviour in general -- this very section argues the condition under study is macOS-local, and a
-  genuine macOS-only regression is exactly the case a green Linux lane cannot clear.
-+
-*Amendment 2026-09-23.* "It has never reproduced that signature" no longer holds. Run 35802987168
-(*reported by the plan spec*) carried the 30-second stall on the Linux lane at `c1b09c7`. The rule
-itself survives, because that red was a real defect and not this condition. It was the relay's
-pre-wiring frame window, now closed (see <<linux-relay-race-occurrence>>). Read the rule
-accordingly: a Linux-lane stall is not the wildcard-bind condition, and it is a defect to find. The
-"macOS-local" in the clause above is scoped the same way as the section heading: to the wildcard-bind
-mechanism, not to the stall symptom.
-* *Do not widen the `Awaits` ceilings and do not retry-wrap or quarantine the affected fixtures.*
-  The 30-second ceiling is what makes the condition visible and measurable; raising it would hide
-  the phenomenon rather than address it. It is now also the *capture* point -- widening it delays
-  the socket-state snapshot, on top of hiding the stall, so the one moment the kernel's own view of
-  the stalled socket is recorded moves further from the event that prompted it.
-* *Do not change `-T1`.* It is a measured rate reduction and is still worth having; it is simply not
-  a cure.
+  before acting on it. Read the `SocketSnapshot` block in the timeout message first, for what it can
+  actually show: `lsof` runs with `-p <this pid>` and `netstat` is filtered to the ports that view
+  returned, so the block is *this JVM's socket state* and cannot name a foreign owner. A `SYN_SENT`
+  with no established peer, or no socket for the port at all, points back at this condition.
+  Identifying the owner needs a system-wide `lsof -nP -iTCP:<port>` without `-p`, run by hand while
+  the stall is live.
+* *Establish that provenance against CI, not against a local re-run.* A Linux-lane stall is not the
+  wildcard-bind condition; it is a defect to find, as the relay race was. A green Linux lane is *not*
+  the authority for macOS behaviour in general -- a genuine macOS-only regression is exactly the case
+  it cannot clear.
+* *Do not widen the `Awaits` ceilings and do not retry-wrap or quarantine the affected fixtures.* The
+  ceiling is what makes the condition visible and measurable, and it is the *capture* point: widening
+  it hides the stall and moves the socket-state snapshot further from the event.
+* *Do not change `-T1`.* It is a measured rate reduction and still worth having; it is not a cure.
 * *Bind every new live-socket fixture through `LoopbackHost.ADDRESS`* -- never a bare `listen(0)` or
-  `new ServerSocket(0)`. `LoopbackEphemeralBindArchTest` is the fitness function that enforces this
-  and fails the build on either spelling. It rejects the bare overload outright and does *not* check
-  whether the socket is later dialled, so "it is never dialled" is not a defence at review time; it
-  is the reason a carve-out was granted, not a test the guard performs.
-+
-The carve-out is *four named sites* in `TlsEdgeProducerTest`, not the class. The guard enforces the
-rest of that class and its nested classes like any other fixture, so a new bare bind added anywhere
-else in it fails the build. The four sites serve two different purposes: three collision holders
-occupy a port so a *wildcard* production bind is refused, and the re-probe behind `freePort()` tests
-a candidate against the bind scope production will use. Both are recorded in place. The allocation
-socket in `freePort()` is not among them -- it binds `LoopbackHost.ADDRESS` like every other
-ephemeral listener. An exact-set control pins the list: run without the exemption, the rule must
-report exactly those four code units, so a stale entry and an unjustified new wildcard bind both
-fail.
-+
+  `new ServerSocket(0)`.
+
+`LoopbackEphemeralBindArchTest` is the fitness function that enforces the last rule. It rejects the
+bare overload outright and does *not* check whether the socket is later dialled, so "it is never
+dialled" is not a defence at review time -- it is the reason a carve-out was granted, not a test the
+guard performs.
+
+The carve-out is *four named sites* in `TlsEdgeProducerTest`, not the class; the rest of that class and
+its nested classes is guarded like any other fixture. Three of the sites are collision holders that
+occupy a port so a *wildcard* production bind is refused, and the fourth is the re-probe behind
+`freePort()`, which tests a candidate against the bind scope production will use. The allocation socket
+in `freePort()` binds `LoopbackHost.ADDRESS` like every other ephemeral listener. An exact-set control
+pins the list: run without the exemption, the rule must report exactly those four code units, so a
+stale entry and an unjustified new wildcard bind both fail.
+
 A companion source sweep in the same class catches the wildcard *host literal* -- `listen(0,
 "0.0.0.0")` -- which the bytecode rule structurally cannot see, since that call and
-`listen(0, LoopbackHost.ADDRESS)` are the same call target. It scans `TlsEdgeProducerTest.java` like
-every other guarded fixture: all four exempt sites are `ServerSocket(int)` constructions, which the
-sweep never targets.
+`listen(0, LoopbackHost.ADDRESS)` are the same call target. All four exempt sites are
+`ServerSocket(int)` constructions, which the sweep never targets.
 
-It is an *allow-list*: the host argument must be exactly `LoopbackHost.ADDRESS`, and anything else
-fails. That is the second design. The first refused a list of known-bad spellings -- IPv4 `0.0.0.0`,
-IPv6 `::`, the empty host -- and each round of review found another way to write a wildcard that was
-on no list: a wrapped line, a variable port, a nested port call, a spaced selector, a comment, a
-constant holding the literal, and finally `"0.0." + "0.0"`, which evaluates to the wildcard while
-matching no wildcard literal at all. Inverting it ends that sequence, because an allow-list does not
-have to recognise what an expression evaluates to in order to refuse it. All 22 guarded sites already
-passed the approved constant, so the inversion grandfathered no exception.
+The sweep is an *allow-list*: the host argument must be exactly `LoopbackHost.ADDRESS`, and anything
+else fails. A deny-list of known wildcard spellings was tried first, and each review round found
+another spelling on no list -- a wrapped line, a variable port, a nested port call, a spaced selector,
+a comment, a constant holding the literal, and finally `"0.0." + "0.0"`. An allow-list does not have to
+recognise what an expression evaluates to in order to refuse it.
 
-Two mechanics support it. Between the selector dot and `listen` the sweep accepts whitespace, block
-comments and line comments, so `server./* c */listen(...)` is not a way through. And the argument
-scanner is depth-aware rather than a regex -- it walks parenthesis depth to the top-level comma --
-so a port expression at any nesting depth still yields its host argument, where the earlier pattern
-reached one level and a doubly-nested call escaped.
+Two mechanics support it. Between the selector dot and `listen` the sweep accepts whitespace and
+comments, so `server./* c */listen(...)` is not a way through. And the argument scanner walks
+parenthesis depth to the top-level comma, so a port expression at any nesting depth still yields its
+host argument. Depth-awareness is only sound if every parenthesis it counts is really a delimiter, so
+the scanner lexes every construct in which a parenthesis is not one -- string literals, text blocks,
+character literals, block comments and line comments -- each with a control. A scanner that lexed only
+string literals let `server.listen(/* ) */ 0, "")` end the walk early; the call was *skipped rather
+than judged*, and a skipped call passes. A guard that cannot parse an input can refuse it or ignore
+it, and ignoring converts every gap in the lexer into a silent bypass. The scanner therefore fails
+closed on the host text -- a comment inside the argument itself is refused even though the code is
+correct.
 
-Depth-awareness is only sound if every parenthesis it counts is really a delimiter, and that is the
-part the first depth-aware version got wrong. It lexed string literals and nothing else, so
-`server.listen(/* ) */ 0, "")` ended the walk on a paren inside a comment, before reaching any
-top-level comma. With no host argument recorded, the call was **skipped rather than judged** -- and a
-skipped call passes. Nothing else covered it: the bytecode rule sees a two-argument `listen` and is
-satisfied, and the tree-wide literal sweep deliberately does not carry the empty host, because `""`
-is far too common in unrelated code to refuse tree-wide. The scanner now lexes every construct in
-which a parenthesis is not a delimiter -- string literals, text blocks, character literals, block
-comments and line comments -- and each has a control.
+[[foreign-loopback-port-holders]]
+== Foreign loopback port holders on the workstation
 
-The failure is worth naming for its shape rather than its detail. A guard that cannot parse an input
-has two options, and they are not symmetric: refuse it, or ignore it. Ignoring is the tempting one,
-because an unparseable call is usually a false alarm and refusing it costs somebody a reformat. It is
-also the one that converts every gap in the lexer into a silent bypass, which is how three of these
-were reachable at once. The scanner now fails closed on the host text for the same reason -- a
-comment written inside the argument itself is refused even though the code is correct.
+Some local test failures are caused by the machine the suite runs on, not by the change under test.
+One such class has been seen often enough to name: something on the contributor workstation
+intermittently holds loopback ports that the test fixtures assume are free.
+
+=== The symptom
+
+A test that opens, probes or connects to a loopback port fails with a bind or connect error, or with a
+control precondition that expected a port to be free and found it taken. The failure has three
+recognisable properties:
+
+* It is *unrelated to the change under test* -- the failing test sits in code the branch did not
+  touch.
+* It is *intermittent* -- a re-run of the same suite on the same tree passes, and CI passes on the
+  same commit.
+* It is *machine-local* -- the port is held by a process that is not part of the test run: another
+  build, another plan's worktree, a local service, or a long-lived listener that happens to own a port
+  in the ephemeral range.
+
+The fixtures pick ports they expect to be free and assume nothing else claims them for the duration
+of the test. On a busy workstation that assumption does not always hold.
+
+=== Recorded sightings
+
+Four sightings are recorded, each attributed to the environment by re-run or baseline evidence rather
+than by assertion. The first two are the loopback stall and its wildcard-bind fix described above,
+which share the symptom. The other two belong to this class alone: `TlsEdgeProducerTest` and
+`SniFrontListenerTest` each failed once locally on a port-collision control precondition under a load
+average of 119, and passed on re-run and in CI -- the contended machine and the port assumption met in
+the same run, and neither alone explains it. Separately, machine-local port-collision failures cost
+two full-suite re-runs in a single session, in tests the branch did not touch, with the re-runs
+passing. Moving the `TlsEdgeProducerTest` allocation socket from the wildcard to loopback removed that
+fixture's exposure to the wildcard mechanism and does nothing about a foreign holder.
+
+[[not-the-wildcard-bind-class]]
+=== This is not the wildcard-bind class
+
+The two classes share a symptom and have different mechanisms. In the wildcard-bind class (fixed), the
+fixture's own wildcard listener is handed a port a foreign process holds on `127.0.0.1`, and the
+client is routed to that process. Binding through `LoopbackHost.ADDRESS` fixed it, and
+`LoopbackEphemeralBindArchTest` keeps it fixed. In this class (open), a foreign process holds a port
+the fixture assumes is free *before* the fixture asks for it, so the address the fixture binds makes
+no difference. No test-side change removes the foreign holder -- the workstation owns it.
+
+A failure of this shape is therefore not evidence that the wildcard-bind fix regressed, and not a
+reason to reopen it.
+
+=== Reading a failure of this shape
+
+A local failure that matches the symptom is *presumptively environmental*. Attribute it with evidence
+before attempting any code fix:
+
+. *Check what the branch touched.* If the failing test and the code it exercises are outside the
+  branch's changes, the branch is an unlikely cause.
+. *Re-run the failing tests.* A pass on re-run, with no change in between, is the first piece of
+  evidence.
+. *Compare against a trusted baseline.* The same test green in CI on the same commit, or green on
+  `main`, supports the environmental hypothesis but does not by itself establish that the tree is not
+  the cause. Where possible, identify the foreign process holding the port first.
+. *Look at the machine.* A high load average or a concurrent build in another worktree makes a
+  contended-environment failure more likely.
+
+Only a failure that survives this -- it reproduces on re-run, it touches code the branch changed, or
+it fails on the baseline too -- is treated as a defect to fix in code. The convention has a precedent:
+a branch ran eight gate rounds with two green and six red, eight different sets of failing tests,
+every failing file untouched by the branch, and CI green at every pushed commit. Each round of code
+changes aimed at those failures would have chased the workstation rather than the change.
+
+The convention is not a licence to ignore a red test. It orders the investigation: establish where the
+signal comes from first, then decide whether code is at fault.
 
 [[quarkus-bom-first]]
 == The Quarkus platform BOM is imported first

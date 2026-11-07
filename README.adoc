@@ -258,8 +258,8 @@ Integration-test coverage has recorded gaps::
 Three contributor documents enumerate them rather than leaving them implicit:
 link:doc/development/declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
 records which declared gateway limits have a boundary assertion and which do not,
-link:doc/development/test-corpus-integrity.adoc[Test-Corpus Integrity] records test methods whose
-assertions cannot support the behaviour their names claim, and
+link:doc/development/test-corpus-integrity.adoc[Test-Corpus Integrity] records the assertion shapes
+that cannot support the behaviour a test's name claims and the methods still to strengthen, and
 link:doc/development/cookie-deliverability-blindness.adoc[Cookie-Deliverability Blindness] records
 the properties the integration lane is structurally incapable of observing at all, however strong
 its assertions. Read all three before treating a green suite as proof of a specific bound.

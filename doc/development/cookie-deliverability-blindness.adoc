@@ -1,7 +1,9 @@
 = Cookie-Deliverability Blindness -- What the Integration Lane Cannot Observe
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 Why nine cookie integration tests reported success against a session no real browser client could
 hold, which of the nine would have reported success anyway, what else the same gap hides, and where
@@ -463,7 +465,7 @@ exactly as the nine did. The assertion has to name the browser's number, not the
 == Related
 
 * link:test-corpus-integrity.adoc[Test-Corpus Integrity -- Assertions That Assert Nothing] --
-  assertion *strength* across the whole test corpus, and the standing backlog of vacuous shapes.
+  assertion *strength* across the whole test corpus, and the vacuity shapes it recognises.
 * link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage] -- which declared
   gateway limit has a boundary assertion, per descriptor.
 * link:../../demo-client/doc/playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite]

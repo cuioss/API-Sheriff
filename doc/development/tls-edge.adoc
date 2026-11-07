@@ -1,7 +1,9 @@
 = API Sheriff -- TLS Edge: Front Listener and the Accept-Time SNI Split
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The *contributor* view of the TLS edge: how the accept-time SNI split is built, which component
 owns which port, and why selection is *fail-closed*. Operators configuring these keys want the
