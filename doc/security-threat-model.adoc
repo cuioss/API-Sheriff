@@ -320,7 +320,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
   <<gw-07-upstream-ports,GW-07>>; a request body that stops or keeps arriving too slowly to end, a
   gRPC call that goes quiet, and an HTTP/2 upload the gateway does not read ->
   <<gw-07-request-body,GW-07>>; an
-  unauthenticated login request driving an outbound request to the identity provider -> <<bff-20>>;
+  unauthenticated login request driving an outbound request to the identity provider, and a flood of
+  them filling the pending-login store -> <<bff-20>>;
   a token naming an arbitrary key id driving a JWKS request to the identity provider ->
   <<gw-07-jwks-refresh,GW-07>>.
   *Info disclosure* via error paths -> <<gw-12>>; which addresses name routes, through the status,
@@ -3673,6 +3674,39 @@ the URL:
   failing anonymous logins does not flood the log. Neither the record nor the refusal carries the
   authorization URL, a parameter value or the `request_uri`.
 
+*Control -- one caller's login flood cannot displace another user's login.* A successful push is
+followed by a pending-authorization record (<<bff-02>>), so an anonymous caller creates one record
+per login it starts. The records live in one in-memory store per gateway process
+(`InMemoryPendingAuthorizationStore`), in both session modes. The store holds at most 10,000
+records, and each record expires five minutes after its login started. The store admits a new record
+by these rules, in this order:
+
+* *Expired records go first.* Records past their five minutes are removed, oldest first, before any
+  live record is considered.
+* *Each source holds at most 256 live records.* Every record is counted under its requester's
+  source (`PendingQuotaKeys`): for a peer listed in `forwarded.trusted_proxies`, the client address
+  its forwarding headers resolve to, and `unknown` when they resolve none; for any other peer, the
+  TCP peer address, whose forwarding headers are never read. An IPv4 address counts whole and an IPv6
+  address by its `/64`; an absent or unparseable address is `unknown`. The source is derived for
+  every login, step-up and widening start, whether or not `enumeration_detection` or
+  `threat_classification` is enabled. A source that already holds 256 live records gets its new
+  record stored in exchange for its own oldest one, which is removed. No other source's record is
+  touched.
+* *A store full of live records refuses.* Otherwise, when the store holds 10,000 live records, the
+  new record is refused and nothing stored is removed. The refusal is the event
+  `PENDING_AUTHORIZATION_SATURATED` (category `RATE_LIMITING`), answered `503` with
+  `Retry-After: 30` on a login, a session-route navigation that starts a login or a widening, the
+  step-up path and the interactive re-drive of a widening callback. It is raised after the push and
+  before the binding cookie is set, so the refused browser holds no login state. The first refusal
+  of a saturation episode is logged as `WARN ApiSheriff-145`, which carries no request data; every
+  further refusal of the episode stays at `DEBUG`, and the episode ends when the store next accepts
+  a new record. Every refusal is counted on
+  `sheriff_errors_total{event="PENDING_AUTHORIZATION_SATURATED"}`.
+
+The threat these rules answer: a bounded store that makes room by removing its oldest record,
+whoever it belongs to, lets one source that starts logins faster than they expire remove every other
+user's record, and each of those users' callbacks is then refused `403`.
+
 *Status:* PARTIAL (accepted residual). The control is delivered; the outbound request it adds is
 bounded by the admission cap of the edge and by nothing narrower.
 
@@ -3680,9 +3714,29 @@ bounded by the admission cap of the edge and by nothing narrower.
 login request costs the identity provider one authenticated request and one stored `request_uri`,
 and costs the gateway one signature in key mode. In client-secret mode it also sends the secret
 once more. The admission cap limits how many are in flight; nothing limits their rate per caller.
-An operator who needs a tighter bound places it in front of the gateway. A successful push is
-followed by a pending-authorization record, whose store is bounded and whose records expire after
-five minutes, as before (<<bff-02>>).
+No general rate limit on login initiation exists: the `rate_limit` key is parsed and warned about at
+boot, and not enforced (link:adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]).
+An operator who needs a tighter bound places it in front of the gateway.
+
+*Residual risk (accepted) -- a shared source shares one quota.* Every user behind one source key
+shares its 256 records: users behind one NAT or shared egress address, users behind one IPv6 `/64`,
+and every request whose source resolves to `unknown` -- a trusted proxy whose forwarding headers
+name no client, or a peer with no parseable address. When more than 256 logins from one such source
+are pending at once, each new one removes that source's own oldest, and that user's callback is
+refused `403`. Other sources are not affected.
+
+*Residual risk (accepted) -- enough sources fill the store.* 40 IPv4 addresses, or as many IPv6
+`/64` prefixes, each at its 256-record cap, fill the store; an IPv6 holder controls many `/64`s
+cheaply. While it is full, a login from any source that holds fewer than 256 records is refused
+`503` until records are consumed or expire, which takes at most five minutes after the flood stops.
+No live record of another user is removed: logins already started complete. This is the denial of
+service the fairness rules leave: refused new logins instead of broken ones in flight.
+
+*Residual risk (accepted) -- a refused login has already pushed its request.* The store is checked
+only after the push, because a check before it would read the count outside the store's lock and
+could be stale by the time the record is stored. A refused login has therefore already cost the
+identity provider one authenticated request and one stored `request_uri`, which expires there
+unused.
 
 *Residual risk (accepted) -- the RFC 9470 step-up seam has no live caller.* The RFC 9470 re-drive
 (`StepUpCoordinator`) is assembled and its request is pushed, but no edge code calls it. On that
@@ -3710,6 +3764,19 @@ is refused while the gateway's own redirect completes a login (`BffFapiControlsI
 holds for a client authenticated with a secret (`BffClientSecretModeIT`). `BffSessionScopeParityIT`
 asserts the same redirect shape on a widening started by a session route and by the step-up path,
 completes both, and asserts the `502` and the `ApiSheriff-132` record of a push Keycloak refuses.
+
+For the pending-login store: a flood from one source beyond the store's capacity does not remove
+another source's live record; expired records are removed before any live one; a full store of live
+records refuses a new record with `PENDING_AUTHORIZATION_SATURATED` and keeps every record; a source
+over 256 records loses only its own oldest; `ApiSheriff-145` is logged once per saturation episode
+and carries no source, `state`, nonce or record id (`PendingAuthorizationStoreTest`). The source is
+the trusted proxy's resolved client, the untrusted peer's own address with its `X-Forwarded-For`
+ignored, or `unknown`, with IPv6 reduced to its `/64` (`PendingQuotaKeysTest`). Through the edge, a
+refused login on the login path and on a session-route navigation is answered `503` with
+`Retry-After: 30` and the `rate-limiting` problem type (`GatewayEdgeRouteBffWiringTest`). On the
+integration stack, the first of 256 logins from one source completes into a session, and with 256
+further logins from that source started after it, its callback is refused while the newest completes
+(`BffPendingLoginBoundIT`). The saturation `503` itself is not driven on the stack.
 
 [#bff-21]
 === BFF-21 -- Session identifier, session lifetime and the gateway's own cookies
@@ -4189,7 +4256,7 @@ outstanding hardening work (next section).
 | <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay; granted set kept truthful so a scope the provider stopped granting reaches the refusal; merged session indexed under the grant's `sid`; in server mode a session terminated before the merge is written is not brought back | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `TokenRefreshCoordinator`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
 | <<bff-18>> | `private_key_jwt` by default, algorithm derived from the key; key files read by the gateway and refused at boot on any defect, generated keys in process memory only; `oidc.client_secret` an operator choice announced at every boot and refused together with a client-authentication key file | Engine `PrivateKeyJwtAuth` + gateway `ClientSigningKey` / `BffRuntimeProducer` + configuration validator -- ADR-0058 | COVERED (key mode) / accepted residual (client-secret mode: the profile's client-authentication requirement is not met)
 | <<bff-19>> | Client key set published without a credential on every host: one public key, no input read, `GET` only; `404` and still reserved in client-secret mode; a colliding `jwks_path` refused at boot | Gateway (`ClientJwksEndpoint`, `ReservedPathRegistry`) + configuration validator -- ADR-0058 | COVERED (TLS on the path, the registered URL and a generated key behind several replicas are deployment residuals, accepted)
-| <<bff-20>> | Every authorization request pushed -- login, session widening and RFC 9470 step-up re-drive; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login or the widening `502` before any state is stored, recorded once per reason | Engine `ParClient` + gateway `PushedAuthorizationRequests` -- ADR-0058 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap, accepted)
+| <<bff-20>> | Every authorization request pushed -- login, session widening and RFC 9470 step-up re-drive; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login or the widening `502` before any state is stored, recorded once per reason; the pending-login store removes expired records first, caps each source at 256 live records with its own oldest removed, and refuses a new login `503` with `Retry-After: 30` when full of live records, never removing another source's | Engine `ParClient` + gateway `PushedAuthorizationRequests`, `InMemoryPendingAuthorizationStore`, `PendingQuotaKeys` -- ADR-0058 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap; a shared source shares one quota; enough sources fill the store and new logins are refused `503`; accepted)
 | <<bff-21>> | Cookie value is a random handle, never the session id; a login adopts no presented value; server-mode handle re-issued on a widening; absolute and idle deadline enforced at resolution in both modes, extended only by a request let through to a session route; cookie-mode last access in a separately keyed authenticated cookie bound to its session; expired sessions swept; cookies cleared with the attributes they were set with; no gateway cookie reaches an upstream; bounded work per presented cookie; a login ends the presented session; a bound of sessions per subject; `no-store` on every response the gateway sets a cookie on; no upstream `Set-Cookie` for a gateway cookie; a WebSocket relay closed with its session | Gateway (`ServerSessionBinding`, `InMemorySessionStore`, `SessionCookieCodec`, `CookieSessionBinding`, `SessionActivityCookieCodec`, `CookieKeyMaterial`, `SessionAuthenticationStage`, `CallbackEndpoint`, `LogoutEndpoint`, `BffRuntimeProducer`, `ConnectionHeaders`, `PipelineRequest`, `UpstreamSetCookieFilter`, `ResponseStage`, `SessionRelayRegistry`, `WebSocketRelayStage`) + configuration validator -- ADR-0018 | COVERED (not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie, which no page does today; cookie mode: a cookie sealed before a step-up or a widening stays usable at its earlier level, accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
