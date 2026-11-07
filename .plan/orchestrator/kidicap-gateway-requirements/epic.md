@@ -240,10 +240,13 @@ decision.
 
 > ↪ Relocated to `settled.md` § "PLAN-15 follow-ups filed as issues" — all seven are filed as #323-#329
 
-- **`GatewayEdgeFramingCorpusTest` flake — tracked in ONE place: `api-sheriff-0-2-0` epic.md, Watch
-  "HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS"**, which holds both sightings (#431's main push run and
-  PLAN-28's CI-only 502), the owner (`PLAN-V02-06`, or a dedicated fix when it recurs) and the
-  reproduction recipe. Report new sightings there, not here. — consolidated 2026-10-13
+- **`GatewayEdgeFramingCorpusTest` flake — tracked in ONE place: `api-sheriff-0-3-0` epic.md, Watch
+  "EDGE / HTTP/2 / IT FLAKE FAMILY — A RECURRENCE IS A SUSPECTED PRODUCTION DEFECT"**, which holds both
+  sightings (#431's main push run and PLAN-28's CI-only 502), the owner (the next plan touching `edge/`; a
+  recurrence gets a dedicated fix plan) and the reproduction recipe (`-XX:ActiveProcessorCount=1`, repeated
+  runs). Report new sightings there, not here. — consolidated 2026-10-13; repointed 2026-11-07 when
+  `api-sheriff-0-2-0` closed (its Watch "HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS" is archived under
+  `.plan/archived-orchestrators/api-sheriff-0-2-0/`)
 - **Documentation left open by PLAN-28** (the sender's statement, not re-read): two stale
   `token_validation` mentions in `doc/configuration.adoc` (around line 2213 and the YAML example comment
   near line 380); the `IssuerConfig.Jwks` Javadoc repeats the three refresh ranges unguarded; the
