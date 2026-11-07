@@ -1,0 +1,342 @@
+= Group 2 Review — Operator Guides (`doc/user/`) & Deployment Variants (`doc/variants/`)
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+== Scope & Quantitative Summary
+
+This report audits the 11 operator guides in `doc/user/*.adoc` (`10,354` lines) and the 5 deployment variant guides in `doc/variants/*.adoc` (`1,448` lines).
+
+[cols="2,1,1,1,2", options="header"]
+|===
+| Document | Current Lines | Target Lines | Action | Primary Rationale
+
+| `doc/user/README.adoc`
+| 564
+| ~400
+| Slim & add SVG
+| Preserve `DocumentedSetsContractTest` anchors; replace long prose walkthroughs with links and `operator-config-journey.svg`.
+
+| `doc/user/bff-oidc-common.adoc` *(new)*
+| 0
+| ~350
+| Extract shared guide
+| Consolidate ~480 lines of duplicated OIDC discovery, PEM, PAR, DPoP, client-auth, and refresh-rotation setup from `bff-session.adoc` and `bff-cookie.adoc`; add 2 SVGs.
+
+| `doc/user/bff-session.adoc`
+| 1,302
+| ~520
+| Deduplicate & slim
+| Delegate shared OIDC/IdP setup to `bff-oidc-common.adoc`; focus on server-side session store, eviction, and sticky-session trade-offs; embed 3 existing SVGs.
+
+| `doc/user/bff-cookie.adoc`
+| 1,080
+| ~380
+| Deduplicate & strip history
+| Delegate shared OIDC/IdP setup to `bff-oidc-common.adoc`; delete 6 pre-1.0 migration/changelog blocks (~180L); preserve `COOKIE_EXHIBIT_ANCHOR`; embed 2 SVGs.
+
+| `doc/user/endpoint-routes.adoc`
+| 1,262
+| ~680
+| Split & fix
+| Remove `# INERT today` keys from copy-paste YAML (`L153–166`); delete pre-1.0 migration blocks; flatten 3 `====` headings; extract edge-security topics to `edge-security.adoc`; embed 4 SVGs.
+
+| `doc/user/edge-security.adoc` *(new)*
+| 0
+| ~240
+| Extract from `endpoint-routes.adoc`
+| Dedicated operator guide for `uniform_not_found`, enumeration detection, threat `ALERT` logs, and edge hardening; add `uniform-not-found-and-enumeration-flow.svg`.
+
+| `doc/user/compose-sample.adoc`
+| 948
+| ~580
+| Deduplicate & slim
+| Deduplicate 3x `0.2.4` image caveats, 2x Compose `2.24.4` teardown notes, and refresh-rotation prose; delete pre-1.0 upgrade box (`L739–761`); add `compose-sample-variants-topology.svg`.
+
+| `doc/user/tls-scenarios.adoc`
+| 891
+| ~550
+| Strip internals & slim
+| Strip 18 internal Java class names (`GatewayTrustManager`, `PemBundleWatcher`, etc.); convert repetitive failure-mode lists into compact tables; add 2 SVGs.
+
+| `doc/user/tls-edge.adoc`
+| 569
+| ~400
+| Slim & add SVG
+| Trim internal Netty/Vert.x wiring prose; add `tls-edge-legs-and-listeners.svg`.
+
+| `doc/user/context-path.adoc`
+| 830
+| ~380
+| Relocate internals
+| Remove 325 lines of internal Quarkus build-step/ordinal/bytecode verification prose (`L414–739`, already covered by `doc/development/context-path-verification.adoc`); add `context-path-prefix-composition.svg`.
+
+| `doc/user/environment-variable-overrides.adoc`
+| 659
+| ~420
+| Strip audit artifact
+| Delete `=== What the sweep did not find` (`L609–623`) and internal CDI/test notes; add `config-three-classes-precedence.svg`.
+
+| `doc/user/downstream-parent.adoc`
+| 448
+| ~260
+| Strip commit diary
+| Delete `commit 9ccda16` runbook diary (`L115–155`, `L330–410`) while preserving `BuildParentContractTest` anchors.
+
+| `doc/user/anchors.adoc`
+| 363
+| ~290
+| Slim & add SVG
+| Preserve `[[_policy_block_scopes]]` table (`PolicyBlockSchemaContractTest`); add `yaml-anchor-merge-precedence.svg`.
+
+| `doc/variants/*.adoc` (5 files)
+| 1,448
+| ~960
+| Fix bug & slim
+| Fix stale "planned" claim in `03-bff-cookie.adoc:17`; delete Java constructor code in `01-base-gateway.adoc:168-195`; delete `0.1.0`/`0.2.4` CI artifact history in `variants/README.adoc:127-147`.
+
+| *Total*
+| *11,802*
+| *~4,600*
+| *-61% lines*
+| *6 -> 27 SVG placements (+12 existing embedded, +9 new SVGs)*
+|===
+
+== Cross-Cutting Findings in `doc/user/` and `doc/variants/`
+
+=== 1. Unembedded Existing SVG Diagrams in `doc/resources/diagrams/`
+
+Eleven relevant SVG diagrams already exist in `doc/resources/diagrams/` (created for `doc/architecture/` and `doc/development/`), yet `doc/user/` currently has *zero* `image::` directives (`doc/variants/` has 6). Embedding existing diagrams immediately improves human comprehension in `doc/user/` without duplicating artwork:
+
+* `bff-login-callback-flow.svg` -> embed in `doc/user/bff-session.adoc` and `doc/user/bff-cookie.adoc`
+* `bff-cookie-vs-server-session.svg` -> embed in `doc/user/bff-session.adoc` and `doc/user/bff-cookie.adoc`
+* `bff-token-refresh-singleflight.svg` -> embed in `doc/user/bff-oidc-common.adoc`
+* `route-matching-specificity.svg` -> embed in `doc/user/endpoint-routes.adoc`
+* `path-normalization-and-stripping.svg` -> embed in `doc/user/endpoint-routes.adoc`
+* `forwarding-header-sanitization.svg` -> embed in `doc/user/endpoint-routes.adoc`
+* `websocket-upgrade-and-tunnel.svg` -> embed in `doc/user/endpoint-routes.adoc`
+* `inbound-filter-chain.svg` -> embed in `doc/user/edge-security.adoc`
+
+=== 2. Verbatim Duplication Between `bff-session.adoc` and `bff-cookie.adoc` (~480 lines)
+
+`doc/user/bff-session.adoc` (`1,302` lines) and `doc/user/bff-cookie.adoc` (`1,080` lines) were authored as standalone clones. Approximately 480 lines are nearly word-for-word identical across both files:
+
+* OIDC discovery (`oidc_discovery` vs explicit endpoint URLs) and `idp_tls` PEM trust setup (`bff-session.adoc:185–315` vs `bff-cookie.adoc:175–304`)
+* Client authentication modes (`client_secret_basic`, `client_secret_post`, `private_key_jwt`) (`bff-session.adoc:395–520` vs `bff-cookie.adoc:367–490`)
+* Pushed Authorization Requests (`par.enabled`, `par.require`) and DPoP sender-constrained proofs (`dpop.enabled`) (`bff-session.adoc:521–645` vs `bff-cookie.adoc:491–610`)
+* Refresh-token rotation, `refresh_skew`, and `reuse_interval` (`bff-session.adoc:710–830` vs `bff-cookie.adoc:611–698`)
+* Return-to origin validation (`allowed_return_to_origins`) and logout (`bff-session.adoc:831–940` vs `bff-cookie.adoc:758–846`)
+
+Extracting `doc/user/bff-oidc-common.adoc` (~350 lines) eliminates this duplication and lets `bff-session.adoc` and `bff-cookie.adoc` focus strictly on their storage model (`mode: server` vs `mode: cookie`).
+
+=== 3. Pre-1.0 Migration Notes and Stale Claims
+
+* *`doc/variants/03-bff-cookie.adoc:17` (Correctness Bug)*: States `"Stateless encrypted-cookie BFF session storage is *planned*..."` even though the rest of `03-bff-cookie.adoc`, `doc/user/bff-cookie.adoc`, and `ADR-0058` document the shipped `mode: cookie` implementation.
+* *`doc/user/endpoint-routes.adoc:153–166` (Dangerous Copy-Paste YAML)*: The canonical copy-paste YAML example includes four keys annotated `# INERT today -- accepted by schema, ignored at runtime`. Presenting inert keys in a starter operator template invites misconfiguration.
+* *`doc/user/bff-cookie.adoc` (6 Pre-1.0 Migration Blocks)*: Lines `129–158`, `305–366`, `699–720`, `742–757`, `801–826`, and `847–879` narrate how YAML keys changed from earlier `0.2.x` drafts.
+* *`doc/user/endpoint-routes.adoc` (Pre-1.0 Migration Blocks)*: Lines `533–554` and `784–792` narrate removed legacy route fields.
+* *`doc/user/compose-sample.adoc:739–761`*: Contains a pre-1.0 upgrade warning block for old compose files, plus 3 repeated explanations of the `0.2.4` image tag (`L48–62`, `L212–228`, `L715–738`) and 2 repeated notes on Docker Compose `2.24.4` teardown (`L265–280`, `L810–825`).
+
+== Detailed Findings and Actionable Tasks by File
+
+=== `doc/user/README.adoc` (564 lines -> ~400 lines)
+
+==== Contract-Test Constraints
+
+* `DocumentedSetsContractTest` asserts:
+  - `README_EXTENSION_ANCHOR = "built-in extensions --"` (`L445–447`) preceded by `21` and followed by the backticked extension list.
+  - `README_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly"` (`L275`) and the profile mode table rows (`L200–223`).
+
+==== Actionable Tasks
+
+* [ ] *TASK-G2-01*: Preserve `README_EXTENSION_ANCHOR` (`L445–447`) and `README_PROFILE_MODE_SET_ANCHOR` + table (`L200–275`) verbatim.
+* [ ] *TASK-G2-02*: Add links to the two new operator guides (`link:bff-oidc-common.adoc[]` and `link:edge-security.adoc[]`) in the guide directory table.
+* [ ] *TASK-G2-03*: Create and embed `image::../resources/diagrams/operator-config-journey.svg[]` (decision flowchart guiding operators from deployment topology + auth model + TLS leg requirements to the exact guide and variant).
+* [ ] *TASK-G2-04*: Relocate the non-contract operator chapters buried in the index file `doc/user/README.adoc` (`== Inbound Filter Modes` `L185–312`, `== Admitting a Body on GET` `L313–368`, `== Admitting Non-ASCII Characters` `L369–415`, and `== Asset Content Types` `L416–465` — which duplicate `doc/configuration.adoc:4504–5238` and `doc/user/endpoint-routes.adoc`) into `doc/user/edge-security.adoc` (keeping the two `DocumentedSetsContractTest` anchors in `doc/user/README.adoc` or updating the test path constant).
+
+=== `doc/user/bff-oidc-common.adoc` (New Shared Guide, ~350 lines), `bff-session.adoc` (1,302 -> ~520L), and `bff-cookie.adoc` (1,080 -> ~380L)
+
+==== Contract-Test Constraints
+
+* `DocumentedSetsContractTest` asserts `COOKIE_EXHIBIT_ANCHOR = "A minimal cookie-based configuration:"` followed by a `[source,yaml]` block containing schema-valid YAML with `"max_cookie_size:"` in `doc/user/bff-cookie.adoc` (`L45–67`).
+
+==== Actionable Tasks
+
+* [ ] *TASK-G2-05*: Create `doc/user/bff-oidc-common.adoc` (~350 lines) with standard AsciiDoc headers, consolidating shared IdP/OIDC configuration:
+  - OIDC Discovery (`oidc_discovery`) vs static endpoint URLs and `idp_tls`
+  - Client authentication (`client_secret_basic`, `client_secret_post`, `private_key_jwt`)
+  - Pushed Authorization Requests (`par`) and DPoP sender-constrained tokens (`dpop`)
+  - Refresh-token rotation, `refresh_skew`, and `reuse_interval`
+  - `allowed_return_to_origins` and RP-initiated / local logout
+
+  - Embed `image::../resources/diagrams/bff-token-refresh-singleflight.svg[]` (existing) and new `image::../resources/diagrams/bff-client-auth-and-par-dpop.svg[]` (sequence diagram).
+* [ ] *TASK-G2-06*: Slim `doc/user/bff-session.adoc` (`1,302 -> ~520` lines) by replacing the duplicated OIDC/IdP sections with cross-links to `link:bff-oidc-common.adoc[]`, embedding `image::../resources/diagrams/bff-login-callback-flow.svg[]` and `image::../resources/diagrams/bff-cookie-vs-server-session.svg[]`, and focusing on `mode: server` (`max_sessions`, eviction, horizontal scaling trade-offs).
+* [ ] *TASK-G2-07*: Slim `doc/user/bff-cookie.adoc` (`1,080 -> ~380` lines) by:
+  - Preserving `COOKIE_EXHIBIT_ANCHOR = "A minimal cookie-based configuration:"` and its YAML block (`L45–67`) verbatim.
+  - Deleting all 6 pre-1.0 migration/changelog blocks (`L129–158`, `L305–366`, `L699–720`, `L742–757`, `L801–826`, `L847–879`).
+  - Replacing the duplicated OIDC/IdP sections with links to `link:bff-oidc-common.adoc[]`.
+
+  - Embedding `image::../resources/diagrams/bff-cookie-vs-server-session.svg[]` (existing) and new `image::../resources/diagrams/bff-cookie-key-rotation-timeline.svg[]` (state/timeline diagram showing active `encryption_key_id`, retired verification keys in `encryption_keys`, and cookie re-encryption on refresh).
+
+=== `doc/user/endpoint-routes.adoc` (1,262 -> ~680L) and `doc/user/edge-security.adoc` (New, ~240L)
+
+==== Actionable Tasks
+
+* [ ] *TASK-G2-08*: Extract `uniform_not_found`, enumeration detection (`security.enumeration`), threat `ALERT` log correlation, and inbound URL/header/body edge limits from `doc/user/endpoint-routes.adoc` (`L880–1190`) into a focused guide `doc/user/edge-security.adoc` (~240 lines).
+* [ ] *TASK-G2-09*: In `doc/user/edge-security.adoc`, embed `image::../resources/diagrams/inbound-filter-chain.svg[]` (existing) and create `image::../resources/diagrams/uniform-not-found-and-enumeration-flow.svg[]` (decision flowchart showing how 404/405 responses are normalized under `uniform_not_found` and counted by the enumeration window).
+* [ ] *TASK-G2-10*: In `doc/user/endpoint-routes.adoc`:
+  - Remove the `# INERT today` keys from the starter YAML block (`L153–166`).
+  - Delete the pre-1.0 field-removal blocks (`L533–554`, `L784–792`).
+  - Flatten the 3 level-4 (`====`) headings (`L612`, `L645`, `L678`) to level-3 (`===`) or bulleted lists.
+  - Embed the 4 existing SVGs (`route-matching-specificity.svg`, `path-normalization-and-stripping.svg`, `forwarding-header-sanitization.svg`, `websocket-upgrade-and-tunnel.svg`).
+
+=== `doc/user/compose-sample.adoc` (948 lines -> ~580 lines)
+
+==== Actionable Tasks
+
+* [ ] *TASK-G2-11*: Consolidate the 3 repeated `0.2.4` release-image caveats (`L48–62`, `L212–228`, `L715–738`) and 2 repeated Docker Compose `2.24.4` teardown notes (`L265–280`, `L810–825`) into a single prerequisites callout at the top of `doc/user/compose-sample.adoc`.
+* [ ] *TASK-G2-12*: Delete the pre-1.0 upgrade warning block (`L739–761`) and replace the duplicated refresh-token rotation explanation (`L540–620`) with a link to `link:bff-oidc-common.adoc[]`.
+* [ ] *TASK-G2-13*: Create and embed `image::../resources/diagrams/compose-sample-variants-topology.svg[]` showing the container network, ports, and overlay composition across the base stack, Keycloak IdP, and Echo backend.
+
+=== `doc/user/tls-scenarios.adoc` (891 -> ~550L) and `doc/user/tls-edge.adoc` (569 -> ~400L)
+
+==== Actionable Tasks
+
+* [ ] *TASK-G2-14*: Strip all 18 internal Java class names (`GatewayTrustManager`, `PemBundleWatcher`, `TlsContextFactory`, `VertxHttpRecorder`, etc.) from `doc/user/tls-scenarios.adoc`, keeping the focus strictly on YAML configuration, PEM file layout, and observable log codes (`API-SHERIFF-XXX`).
+* [ ] *TASK-G2-15*: Convert the repetitive per-scenario failure-mode bullet lists in `doc/user/tls-scenarios.adoc` into a single consolidated troubleshooting table (`Scenario`, `Misconfiguration`, `Startup / Runtime Symptom`, `Fix`), and deduplicate `doc/user/tls-edge.adoc` (`=== Which key reaches which leg` `L308–386` and `== Operator Consideration: Outbound trust material replaces the platform bundle` `L427–471`) against `doc/configuration/tls-and-egress.adoc` and `doc/user/tls-scenarios.adoc`.
+* [ ] *TASK-G2-16*: Create and embed 3 SVG diagrams:
+  - `tls-edge-legs-and-listeners.svg` in `doc/user/tls-edge.adoc` (flow diagram showing main HTTPS listener vs management listener and hot-reload file watching)
+  - `tls-trust-profile-decision.svg` in `doc/user/tls-scenarios.adoc` (decision tree choosing `strict`, `relaxed`, or `insecure` across production, staging, and local dev)
+  - `mtls-inbound-and-outbound-sequence.svg` in `doc/user/tls-scenarios.adoc` (sequence diagram contrasting inbound client-cert mTLS and outbound upstream mTLS).
+
+=== `doc/user/context-path.adoc` (830 -> ~380L), `environment-variable-overrides.adoc` (659 -> ~420L), `downstream-parent.adoc` (448 -> ~260L), and `anchors.adoc` (363 -> ~290L)
+
+==== Contract-Test Constraints
+
+* `BuildParentContractTest` asserts `ANCHOR_SENTENCE = "switches every one of them off as an inherited default:"` (`L191–194`) and `LEFT_ALONE_HEADING = "Five switches are deliberately *left alone*"` + `|===` table (`L236–260`) in `doc/user/downstream-parent.adoc`.
+* `PolicyBlockSchemaContractTest` asserts `[[_policy_block_scopes]]` and its 3-column table (`L141–216`) in `doc/user/anchors.adoc`.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G2-17*: In `doc/user/context-path.adoc`:
+  - Replace `=== Route A -- your own project` (`L138–371`, which duplicates the `build-parent` POM and native-image workflow in `doc/user/downstream-parent.adoc:34–161` and `316–428`) with a concise context-path delta and cross-link to `link:downstream-parent.adoc[downstream-parent.adoc]`.
+  - Delete `== How it works` (`L476–829`, `353` lines of internal Quarkus build-step/carrier-key mechanics and verification cases that duplicate `doc/development/context-path-verification.adoc`).
+
+  - Embed `image::../resources/diagrams/context-path-prefix-composition.svg[]` (flow diagram showing `quarkus.http.root-path`, `endpoints[].path_prefix`, `routes[].path`, and `strip_prefix` composition).
+* [ ] *TASK-G2-18*: In `doc/user/environment-variable-overrides.adoc`, delete `=== What the sweep did not find` (`L609–623`) and internal CDI/test references, and embed `image::../resources/diagrams/config-three-classes-precedence.svg[]` (flow diagram contrasting Class 1 `${ENV_VAR}` YAML interpolation, Class 2 SmallRye `SHERIFF_GATEWAY_*` env vars, and Class 3 build-time-locked Quarkus properties).
+* [ ] *TASK-G2-19*: In `doc/user/downstream-parent.adoc`, delete the `commit 9ccda16` runbook diary and historical audit log (`L115–155`, `L330–410`) while keeping both `BuildParentContractTest` sections (`L191–260`) intact.
+* [ ] *TASK-G2-20*: In `doc/user/anchors.adoc`, preserve `[[_policy_block_scopes]]` (`L141–216`) verbatim for `PolicyBlockSchemaContractTest`, trim repetitive YAML examples, and embed `image::../resources/diagrams/yaml-anchor-merge-precedence.svg[]`.
+
+=== `doc/variants/*.adoc` (5 files, 1,448 lines -> ~960 lines)
+
+==== Actionable Tasks
+
+* [ ] *TASK-G2-21*: Fix the false claim in `doc/variants/03-bff-cookie.adoc:17` (`"Stateless encrypted-cookie BFF session storage is *planned*..."`) to state that `mode: cookie` is the default stateless BFF session storage mode.
+* [ ] *TASK-G2-22*: Delete the 28-line Java constructor code snippet (`TlsCertificateBundle`) from `doc/variants/01-base-gateway.adoc:168–195`.
+* [ ] *TASK-G2-23*: Delete the `0.1.0` / `0.2.4` historical CI artifact narrative in `doc/variants/README.adoc:127–147`.
+* [ ] *TASK-G2-24*: Replace duplicated BFF OIDC/PAR/DPoP prose in `02-bff-Minimal.adoc`, `03-bff-cookie.adoc`, and `04-fapi-2.adoc` with links to `doc/user/bff-oidc-common.adoc`, formatting each variant file strictly as a `reference-spec.md` posture datasheet (~150–180 lines each, ~750 lines total across `doc/variants/`).
+* [ ] *TASK-G2-25*: Apply the **Sentence-Level Anti-Chattiness & Genre-Voice Compression** pass across all `doc/user/*.adoc` guides (`portal.adoc`, `protocol-routes.adoc`, `offline-config-validation.adoc`, `container-image.adoc`, `tls-edge.adoc`, `tls-scenarios.adoc`, `endpoint-routes.adoc`, `bff-*.adoc`), converting `engineering-narrative` lecturing (`"not a licence to..."`, `"asks instead of guessing"`) and semicolon-chained boot-refusal lists (`portal.adoc:88–99`, `tls-edge.adoc:83–125`) into direct `tutorial-walkthrough.md` steps and compact 3-column refusal tables (`Condition` | `Behavior / Refusal` | `Log ID`), reducing `doc/user/` + `doc/variants/` to `~4,600` lines total (`-61%`).
+
+== Summary of SVG Diagrams for Group 2
+
+[cols="2,1,2,2", options="header"]
+|===
+| Diagram File (`doc/resources/diagrams/`) | Status | Target Document(s) | Visualized Process / Flow
+
+| `operator-config-journey.svg`
+| *New*
+| `doc/user/README.adoc`
+| Decision tree mapping operator deployment & auth needs to guides and variants.
+
+| `bff-login-callback-flow.svg`
+| Existing (embed)
+| `doc/user/bff-session.adoc`, `doc/user/bff-cookie.adoc`
+| OIDC authorization code + PKCE login and callback sequence.
+
+| `bff-cookie-vs-server-session.svg`
+| Existing (embed)
+| `doc/user/bff-session.adoc`, `doc/user/bff-cookie.adoc`
+| Process comparison of `mode: cookie` vs `mode: server` storage and request validation.
+
+| `bff-token-refresh-singleflight.svg`
+| Existing (embed)
+| `doc/user/bff-oidc-common.adoc`
+| Concurrent request single-flight token refresh and `reuse_interval` grace window.
+
+| `bff-client-auth-and-par-dpop.svg`
+| *New*
+| `doc/user/bff-oidc-common.adoc`
+| Sequence diagram of PAR + `private_key_jwt` + DPoP proof generation against the IdP.
+
+| `bff-cookie-key-rotation-timeline.svg`
+| *New*
+| `doc/user/bff-cookie.adoc`
+| State/timeline diagram of `encryption_key_id` rotation and transparent cookie re-encryption.
+
+| `route-matching-specificity.svg`
+| Existing (embed)
+| `doc/user/endpoint-routes.adoc`
+| Route specificity scoring and tie-breaking decision flow.
+
+| `path-normalization-and-stripping.svg`
+| Existing (embed)
+| `doc/user/endpoint-routes.adoc`
+| Step-by-step URL normalization, `strip_prefix`, and `rewrite` transformation.
+
+| `forwarding-header-sanitization.svg`
+| Existing (embed)
+| `doc/user/endpoint-routes.adoc`
+| Hop-by-hop stripping, `Forwarded` / `X-Forwarded-*` synthesis, and identity propagation.
+
+| `websocket-upgrade-and-tunnel.svg`
+| Existing (embed)
+| `doc/user/endpoint-routes.adoc`
+| WebSocket `101 Switching Protocols` handshake, origin/subprotocol check, and frame tunnel.
+
+| `inbound-filter-chain.svg`
+| Existing (embed)
+| `doc/user/edge-security.adoc`
+| Sequential execution of Vert.x inbound filters (`Priority` order).
+
+| `uniform-not-found-and-enumeration-flow.svg`
+| *New*
+| `doc/user/edge-security.adoc`
+| Decision flow for `uniform_not_found` masking and enumeration-threshold `ALERT` emission.
+
+| `compose-sample-variants-topology.svg`
+| *New*
+| `doc/user/compose-sample.adoc`
+| Container topology and port mapping across Compose overlays.
+
+| `tls-edge-legs-and-listeners.svg`
+| *New*
+| `doc/user/tls-edge.adoc`
+| Main HTTPS listener (`8443`), management listener (`9000`), and PEM hot-reload watcher.
+
+| `tls-trust-profile-decision.svg`
+| *New*
+| `doc/user/tls-scenarios.adoc`
+| Decision tree for `strict`, `relaxed`, and `insecure` trust profiles.
+
+| `mtls-inbound-and-outbound-sequence.svg`
+| *New*
+| `doc/user/tls-scenarios.adoc`
+| Inbound client-certificate mTLS vs outbound upstream mTLS handshake sequence.
+
+| `context-path-prefix-composition.svg`
+| *New*
+| `doc/user/context-path.adoc`
+| Prefix composition across `quarkus.http.root-path`, `path_prefix`, `path`, and `strip_prefix`.
+
+| `config-three-classes-precedence.svg`
+| *New*
+| `doc/user/environment-variable-overrides.adoc`
+| Resolution flow for Class 1 (`${VAR}`), Class 2 (`SHERIFF_GATEWAY_*`), and Class 3 (build-time locked).
+
+| `yaml-anchor-merge-precedence.svg`
+| *New*
+| `doc/user/anchors.adoc`
+| YAML anchor (`&` / `*` / `<<:`) expansion and route-level override precedence.
+|===

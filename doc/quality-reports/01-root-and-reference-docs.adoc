@@ -1,0 +1,347 @@
+= Group 1 Review — Root & Top-Level Reference Documentation
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+== Scope & Quantitative Summary
+
+This report covers the root `README.adoc`, the documentation index `doc/README.adoc`, the top-level reference manuals (`doc/configuration.adoc`, `doc/security-threat-model.adoc`, `doc/technical_aspects.adoc`, `doc/features-analysis.adoc`, `doc/fapi_status.adoc`, `doc/fapi_next_steps.adoc`, `doc/LogMessages.adoc`), and the legacy `doc/quality-report/` directory.
+
+[cols="2,1,1,1,2", options="header"]
+|===
+| Document | Current Lines | Target Lines | Action | Primary Rationale
+
+| `README.adoc`
+| 329
+| ~180
+| Slim & update
+| Fix stale 3-module list (missing 3 modules); remove 130 lines of pre-1.0 migration notes; add `gateway-overview.svg`.
+
+| `doc/README.adoc`
+| 349
+| ~180
+| Slim & update
+| Add missing Operator (`doc/user/`) and Contributor (`doc/development/`) top-level sections; fix 6 stale `*(Status: proposed.)*` ADR labels; add `documentation-map.svg`.
+
+| `doc/configuration.adoc`
+| 5,809
+| ~1,650 (across 6 files)
+| Split, deduplicate & compress (`reference-spec.md`)
+| Split into `doc/configuration/` (6 focused files); rewrite chatty `engineering-narrative` essays into flat `reference-spec.md` tables; remove 4x trust-profile repetition, provenance/ArchTest chatter (`EgressTlsPostureArchTest`), deleted Quarkus property tables, and 56 `====`/`=====` headings; add 3 SVGs.
+
+| `doc/security-threat-model.adoc`
+| 4,195
+| ~950 (in-place or 3 files)
+| Fix bugs, strip archaeology & slim
+| Fix level-0 title syntax error at `L2909`; fix stale `PARTIAL` statuses (`GW-01..03`, `GW-07`, `GW-12`, `BFF-13`) and deleted `ProxyRoute` reference; strip patch-by-patch archaeology (`"was first written..."`, `"Before ADR-0047..."`), 208L of JUnit method lists, and 55L `orbstack` lab log; add 2 SVGs.
+
+| `doc/technical_aspects.adoc`
+| 437
+| ~150
+| Slim & fix
+| Fix stale `SecurityConfiguration` claim (`L87`); remove coding/testing tutorial (`L273–381`); replace ASCII box (`L387–419`) with `cui-foundation-layers.svg`.
+
+| `doc/features-analysis.adoc`
+| 350
+| 0 (retire)
+| Fold & delete
+| Pre-implementation scoping artifact; fold 25-line Non-Goals / Positioning table into `doc/README.adoc` and delete file.
+
+| `doc/fapi_status.adoc` + `doc/fapi_next_steps.adoc`
+| 478 (314 + 164)
+| ~250 (1 file)
+| Merge & deduplicate
+| Merge into `doc/fapi_status.adoc` and delete `doc/fapi_next_steps.adoc`; remove ~120L of verbatim duplication and internal test-class lists; add `fapi2-bff-flow.svg`.
+
+| `doc/LogMessages.adoc`
+| 161 (`90.4 KB`)
+| 161 (`~22 KB`)
+| Slim table cells
+| Trim 1,000–3,900-char single-cell code essays to 1–3 sentence operator explanations while preserving all message IDs (`001–299`).
+
+| `doc/quality-report/*.adoc` (6 files)
+| 2,560
+| 0 (retire)
+| Delete directory
+| Frozen `2026-08-15` snapshot (`commit b54eb12`) superseded by live CI gates and `doc/quality-reports/`.
+
+| *Total*
+| *14,668*
+| *~3,300*
+| *-77% lines*
+| *0 -> 8 SVG diagrams*
+|===
+
+== Detailed Findings and Actionable Tasks by Document
+
+=== `README.adoc` (329 lines -> ~180 lines)
+
+==== Findings
+
+* *Incomplete module inventory (`L293–305`)*: `== Modules` lists only `api-sheriff`, `integration-tests`, and `benchmarks`, omitting `demo-client/`, `deployment/`, and `build-parent/` (which are declared in the root `pom.xml` and enforced by `ReactorModuleListContractTest` in `AGENTS.md`).
+* *Pre-1.0 historical migration bloat (`L174–264`)*: `== Known Limitations` devotes 90 lines (`L202–264`) to explaining pre-1.0 breaking changes, YAML key removals (`strip_prefix` removal, `trust_profile` rename, `allow_http_upstream` removal), and upgrade notes between `0.1.x` and `0.2.x`. Under the Pre-1.0 rules, historical upgrade paths do not belong in the root README.
+* *Marketing prose and missing visual overview*: `== Key Features` (`L29–96`) uses repetitive bullet prose without a visual pipeline diagram showing how an inbound request traverses the edge listener, route matcher, auth/BFF session layer, and upstream forwarder.
+* *Missing AsciiDoc header attributes*: Missing `:toc: left`, `:toclevels: 3`, `:toc-title: Table of Contents`, `:sectnums:`, and `:source-highlighter: highlight.js`.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-01*: Add standard AsciiDoc header attributes to `README.adoc`.
+* [ ] *TASK-G1-02*: Embed `image::doc/resources/diagrams/gateway-overview.svg[]` under `== Overview` showing the end-to-end request flow across the trust boundary (Client -> Edge Listener & Hardening -> Route Matcher & Auth/BFF -> Upstream Forwarder -> Backend / IdP).
+* [ ] *TASK-G1-03*: Condense `== Key Features` (`L29–96`) into a concise capability table linking directly to `doc/architecture/README.adoc` and `doc/user/README.adoc`.
+* [ ] *TASK-G1-04*: Delete the pre-1.0 migration/breaking-change essays in `== Known Limitations` (`L202–264`), retaining only active operational boundaries (`HTTP/3`, external distributed rate-limit state, non-goals).
+* [ ] *TASK-G1-05*: Update `== Modules` (`L293–305`) to list all 6 reactor modules (`api-sheriff`, `integration-tests`, `benchmarks`, `demo-client`, `deployment`, `build-parent`).
+
+=== `doc/README.adoc` (349 lines -> ~180 lines)
+
+==== Findings
+
+* *Missing top-level navigation for Operator and Contributor guides*: `doc/README.adoc` jumps straight into `== Reference Documentation`, `== Architecture`, `== Deployment Variants`, and `== Architecture Decision Records` without dedicated top-level sections for `doc/user/README.adoc` (Operator Guide) or `doc/development/README.adoc` (Contributor Guide).
+* *Stale ADR status markers (`L137–281`)*: Six accepted ADRs are still labeled `*(Status: proposed.)*` in `doc/README.adoc`:
+  - `ADR-0010` (`L137`) — file `0010-native-image-testing.adoc` has `Status: accepted`
+  - `ADR-0017` (`L154`) — file `0017-outbound-http-client.adoc` has `Status: accepted`
+  - `ADR-0018` (`L158`) — file `0018-bff-token-handler-mode.adoc` has `Status: accepted`
+  - `ADR-0019` (`L162`) — file `0019-api-key-and-basic-authentication.adoc` has `Status: accepted`
+  - `ADR-0036` (`L226`) — file `0036-header-sanitization-and-identity-propagation.adoc` has `Status: accepted`
+  - `ADR-0037` (`L230`) — file `0037-fapi-2-security-profile-alignment.adoc` has `Status: accepted`
+
+* *Duplicate disclaimers and orphan paragraphs*: Repeats the pre-1.0 alpha disclaimer (`L11–18`) already in `README.adoc` and includes an unanchored rate-limiting paragraph (`L35–42`) in the middle of the index.
+* *Verbose 205-line ADR index (`L103–308`)*: Every ADR has a 3–4 line prose paragraph in `doc/README.adoc`, duplicating the ADR titles and summaries.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-06*: Restructure `doc/README.adoc` around four audience entry points with a visual navigation diagram (`image::resources/diagrams/documentation-map.svg[]`):
+  1. *Operator Guide* (`link:user/README.adoc[]`)
+  2. *Configuration & Security Reference* (`link:configuration.adoc[]`, `link:security-threat-model.adoc[]`, `link:LogMessages.adoc[]`, `link:fapi_status.adoc[]`)
+  3. *Architecture & ADRs* (`link:architecture/README.adoc[]`, compact ADR table)
+  4. *Contributor & Development Guide* (`link:development/README.adoc[]`)
+
+* [ ] *TASK-G1-07*: Fold the 25-line Non-Goals and Gateway Positioning table from `doc/features-analysis.adoc` into `doc/README.adoc` (and delete `doc/features-analysis.adoc`).
+* [ ] *TASK-G1-08*: Convert `== Architecture Decision Records` (`L103–308`) into a compact 3-column table (`ADR`, `Title`, `Status`) grouped by domain, fixing the 6 stale `proposed` labels (`0010, 0017, 0018, 0019, 0036, 0037`) and removing the link to `doc/quality-report/README.adoc` (`L318`).
+
+=== `doc/configuration.adoc` (5,809 lines -> ~2,600 lines across 6 files)
+
+==== Findings
+
+* *Extreme monolithic size (`5,809` lines)*: A single 5,800-line file is unnavigable for operators looking up a specific subsystem (e.g., BFF cookie encryption vs. egress TLS vs. route matching).
+* *56 heading-depth violations (`====` and `=====`)*: Contains 52 level-4 (`====`) and 4 level-5 (`=====`) headings (`L1002–5402`), violating the `engineering-narrative.md` `<= 3` heading-depth limit.
+* *Quadruple repetition of TLS `profile` and `hostname_verification` rules (~350 lines)*: The `strict` / `relaxed` / `insecure` profile rules and `hostname_verification` constraints are explained four times (`L276–329`, `L597–685`, `L1012–1033`, and `L5737–5744`).
+* *Massive cross-document duplication with `doc/user/` and `doc/architecture/` (~2,400 lines)*: Instead of acting as a concise schema/field reference dictionary, `doc/configuration.adoc` embeds full operator tutorials and architectural rationale that are repeated in `doc/user/*` and `doc/architecture/*`:
+  - `=== oidc` (`L2657–3775`, `1,118` lines): Repeats `client_authentication`, `key_file`, `jwks_path`, `sender_constraint`, and token refresh tutorials from `doc/user/bff-session.adoc` and `doc/user/bff-cookie.adoc`.
+  - `=== tls`, `=== management`, `=== Server-TLS key verdicts`, and `=== egress_tls` (`L787–1741`, `954` lines): Repeats the 6 TLS legs, trust-store replacement warning, and hostname-verification relaxations word-for-word with `doc/user/tls-edge.adoc` (`L24–568`) and `doc/user/tls-scenarios.adoc`.
+  - `=== match`, `=== forward`, `=== cookies`, `=== keep_identity_headers`, `=== upstream`, `=== asset`, `=== redirect` (`L3776–4503`, `728` lines): Repeats the operator walkthroughs in `doc/user/endpoint-routes.adoc` (`L198–746`, `L973–1027`) and runtime mechanics in `doc/architecture/routing-and-forwarding.adoc`.
+  - `=== enumeration_detection` and `=== threat_classification` (`L4599–4826`, `228` lines): Repeats `doc/user/endpoint-routes.adoc` (`L798–932`), `doc/development/source-detection-substrate.adoc`, and `doc/architecture/tls-and-inbound-security.adoc` (`L210–280`).
+  - `=== security_defaults` (`L4944–5238`, `295` lines): Repeats `uniform_not_found`, `allow_get_with_content_length_body`, `allow_extended_ascii`, and `minimal` mode chapters from `doc/user/README.adoc` (`L185–465`).
+
+* *Pre-1.0 historical property tombstones (`L1034–1057`)*: `==== Deleted Quarkus properties` lists legacy `cui.gateway.*` properties that no longer exist in the codebase.
+* *Implementation and unit-test leakage*: Cites internal Java classes and test methods throughout operator prose (`GatewayConfigValidatorTest` at `L190`, `ConfigLoader.interpolateEnvVars` at `L5545`, `VertxHttpRecorder` internals at `L4640–4675`, `HttpForwardingClient` internal wiring at `L3900–3923`).
+* *Zero diagrams*: Contains no visual diagrams for policy-block scope inheritance (`gateway.*` vs `endpoints[].routes[].*`), the three independent TLS legs (inbound edge, upstream backend, outbound IdP), or BFF token-handler cookie/session flows.
+
+==== Contract-Test Anchors to Preserve
+
+`DocumentedSetsContractTest`, `DocumentedHeaderSetsContractTest`, and `RouteFieldInventoryContractTest` read `doc/configuration.adoc` directly:
+
+* `RouteFieldInventoryContractTest`: `"and its \`routes[]\`, each route's"` .. `". The WebSocket-route \`websocket\` block holds"` (`L160–167`)
+* `DocumentedSetsContractTest`:
+  - `SKELETON_ANCHOR = "== Gateway Configuration"` + schema-valid YAML containing `"max_cookie_size:"` (`L200–585`)
+  - `CONFIG_PROFILE_ANCHOR = "profile: strict"` + `#` comment + mode table (`L282`, `L603–606`)
+  - `CONFIG_DISCOVERY_ANCHOR = "\`oidc_discovery\` -- what the most recent"` + table rows `| \`not-attempted\``, `| \`resolved\``, `| \`failed\`` (`L2351–2367`)
+  - `CONFIG_EXTENSION_ANCHOR = "-entry extension map"` preceded by `21` + parenthesised backticked extension list (`L4534`)
+  - `ARRAY_TOTAL_ANCHOR = "such keys, of which"` (`19`), `GATEWAY_STRING_KEYS_ANCHOR = "declare string items and are the usable set:"` (`18`), `ENDPOINT_OWN_KEYS_ANCHOR = "further string-item keys of its own:"` (`7`), `OBJECT_ARRAYS_ANCHOR = "are arrays of *objects* rather than strings ("` (`3`) (`L5588–5613`)
+  - `JWKS_REFRESH_BULLET_ANCHOR = "A declared \`token_validation.issuers[].jwks."` .. `"keys declared on a \`source: file\` issuer fails the boot"` (`L5745–5755`)
+
+* `DocumentedHeaderSetsContractTest`: 5 exact slice boundaries (`NEVER_FORWARD_START..END`, `RESPONSE_STRIP_START..END`, `IDENTITY_START..END`, `UNCONDITIONAL_START..END`, `CONDITIONAL_START..END`) (`L3924–4012`).
+
+==== Target Split Architecture (`doc/configuration.adoc` + `doc/configuration/*.adoc`)
+
+[cols="2,1,3,2", options="header"]
+|===
+| Target File | Target Lines | Contents | Contract-Test Strategy
+
+| `doc/configuration.adoc`
+| ~450
+| Entry point, complete annotated `== Gateway Configuration` skeleton YAML, top-level `gateway.*` and `routes[]` field inventory, YAML anchors (`anchors:` / `x-*`), and links to the 5 subsystem reference files.
+| Retains `RouteFieldInventoryContractTest` (`L160–167`), `SKELETON_ANCHOR` (`== Gateway Configuration` + `max_cookie_size:`), and `CONFIG_PROFILE_ANCHOR` (`profile: strict` comment + mode table) in place.
+
+| `doc/configuration/tls-and-egress.adoc`
+| ~380
+| Inbound TLS (`gateway.tls`), outbound TLS (`upstream_tls`, `idp_tls`), trust profiles (`strict`, `relaxed`, `insecure`), mTLS, cipher/protocol floors, and PEM reload.
+| Canonical single home for TLS profile & hostname-verification tables; linked from `doc/configuration.adoc`.
+
+| `doc/configuration/authentication-and-oidc.adoc`
+| ~550
+| `token_validation.issuers[]`, JWKS sources (`url`, `oidc_discovery`, `file`, `memory`), BFF `session_auth` (`cookie` and `server` modes), OIDC client auth, PAR, DPoP, API-key & Basic auth.
+| Update `CONFIG_DISCOVERY_ANCHOR` path in `DocumentedSetsContractTest` (or keep the 15-line `oidc_discovery` health-status table in `doc/configuration.adoc`).
+
+| `doc/configuration/routing-and-forwarding.adoc`
+| ~480
+| `endpoints[]`, `routes[]`, path/method/header/query matching, `strip_prefix`, `rewrite`, HTTP forwarding, header sanitization sets, `body_Processing`, `websocket`, and `resilience`.
+| Update `DocumentedHeaderSetsContractTest` path to `doc/configuration/routing-and-forwarding.adoc`.
+
+| `doc/configuration/security-and-edge-hardening.adoc`
+| ~420
+| `security` (`url`, `header`, `body`, `cookie_names`, `enumeration`, `uniform_not_found`), `cors`, `csrf`, `rate_limiting`, `security_headers`, `trusted_proxies`, `access_log`, and SmallRye `.env` / Quarkus build-time extensions.
+| Update `CONFIG_EXTENSION_ANCHOR` and array-override anchors in `DocumentedSetsContractTest` (or keep the compact override reference section in `doc/configuration.adoc`).
+
+| `doc/configuration/validation-rules.adoc`
+| ~320
+| Fail-fast startup validation rules (`GatewayConfigValidator`) grouped by subsystem, including `JWKS_REFRESH_BULLET_ANCHOR`.
+| Update `JWKS_REFRESH_BULLET_ANCHOR` path in `DocumentedSetsContractTest` (or keep in `doc/configuration.adoc`).
+|===
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-09*: Split `doc/configuration.adoc` into the 6-file layout above, updating all inbound `link:configuration.adoc#...` anchors across `doc/` (or keeping redirect anchors in `doc/configuration.adoc`) and updating `DocumentedSetsContractTest` / `DocumentedHeaderSetsContractTest` file constants if any anchored exhibit moves to a child file.
+* [ ] *TASK-G1-10*: Eliminate both internal and cross-document duplication in `doc/configuration.adoc` (~2,750 lines removed):
+  - Consolidate the 4 internal repetitions of TLS `profile` / `hostname_verification` (`L276–329`, `L597–685`, `L1012–1033`, `L5737–5744`) into a single definition in `doc/configuration/tls-and-egress.adoc`.
+  - Strip the embedded operator tutorials and architectural rationale from `=== oidc` (`L2657–3775`), `=== tls` / `=== management` / `=== egress_tls` (`L787–1741`), `=== match` / `=== forward` / `=== cookies` / `=== upstream` / `=== asset` / `=== redirect` (`L3776–4503`), `=== enumeration_detection` / `=== threat_classification` (`L4599–4826`), and `=== security_defaults` (`L4944–5238`), replacing them with concise field-dictionary tables (key, type, default, constraint, 1-sentence behavior) that cross-link to `doc/user/*` and `doc/architecture/*`.
+
+* [ ] *TASK-G1-11*: Delete `==== Deleted Quarkus properties` (`L1034–1057`), strip all internal Java test-class/method and ArchUnit provenance chatter (`"This enumeration is re-derived from source..."`, `EgressTlsPostureArchTest` at `L1322–1377`), and rewrite surviving prose in `doc/configuration/*.adoc` from argumentative `engineering-narrative` paragraphs into flat `reference-spec.md` field tables and refusal tables (~1,650 lines total across all 6 files).
+* [ ] *TASK-G1-12*: Flatten all 56 `====` and `=====` headings across the split files so every file strictly obeys `:toclevels: 3` (`<= 3` heading depth).
+* [ ] *TASK-G1-13*: Create and embed 3 SVG diagrams in `doc/resources/diagrams/`:
+  - `policy-scope-resolution.svg` (flow/decision diagram showing how `gateway.*` defaults and `endpoints[].routes[].*` overrides resolve at config load time)
+  - `egress-tls-legs.svg` (process diagram contrasting Inbound Edge TLS, Upstream Backend TLS, and Outbound IdP TLS with their respective `tls`, `upstream_tls`, and `idp_tls` config blocks)
+  - `bff-scope-and-refresh-flow.svg` (sequence/decision diagram showing how `session_auth` cookie vs. server storage selects encryption, sliding idle/absolute TTL, and single-flight refresh).
+
+=== `doc/security-threat-model.adoc` (4,195 lines -> ~1,450 lines)
+
+==== Findings
+
+* *Critical AsciiDoc level-0 title syntax bug (`L2909`)*: Inside `BFF-09`, `L2908–2910` formats an AEAD AAD layout across three lines where `L2909` begins at column 0 with `= \`version‖kid‖iat_ms‖random_16B‖tag_16B\``. AsciiDoc parses any line starting with `= ` at column 0 as a level-0 document title, corrupting document structure and failing validation.
+* *Contradictory / stale threat statuses (`PARTIAL` vs `MITIGATED`)*:
+  - `GW-01` (Request Smuggling), `GW-02` (Header Injection), and `GW-03` (Path Traversal) are marked `PARTIAL` in the summary table (`L226–234`) solely because of an archived pre-fix note, even though the detail sections (`L304–510`) document full mitigation at the Vert.x/Netty and `UrlSecurityValidator` layers.
+  - `GW-07` (`L232`, `L696–785`) includes a 55-line `orbstack` kernel reproduction notebook (`[#gw-07-fin-first-reproduction]`, `L730–785`) that belongs in commit history, not the threat model.
+  - `GW-12` (`L1296`) references the deleted class `ProxyRoute` (replaced by `EndpointDispatcher` / `RouteConfig`).
+  - `BFF-13` (`L2195`, `L3290–3380`) is marked `PARTIAL` in the summary table while the detail body states all controls landed in ADR-0058 / ADR-0076.
+
+* *Massive JUnit test-method inventories in threat prose (~208 lines)*: Threat entries list dozens of individual JUnit test class and method names (`L345–362`, `L438–455`, `L1018–1045`, `L2390–2440`, `L2810–2860`, `L3490–3550`) that drift whenever tests are renamed.
+* *ASCII trust-boundary diagram (`L172–194`)*: Uses a 23-line ASCII box diagram instead of an SVG diagram.
+
+==== Contract-Test Anchors to Preserve
+
+* `DocumentedSetsContractTest`: `THREAT_MODEL_DISCOVERY_ANCHOR = "and \`oidc_discovery\` ("` (`L2574`, inside `BFF-07`) followed by backticked `not-attempted`, `resolved`, `failed`.
+* Inbound cross-links from `doc/architecture/`, `doc/user/`, `doc/development/`, and `doc/adr/` target anchors `[#gw-01]`..`[#gw-27]`, `[#bff-01]`..`[#bff-19]`, `[#ws-01]`..`[#ws-05]`, and `[#_residual_risks_and_known_limitations]`.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-14*: Fix the level-0 title syntax error at `doc/security-threat-model.adoc:2909` by joining the AAD equation onto a single line or indenting the continuation line.
+* [ ] *TASK-G1-15*: Reconcile stale threat statuses (`GW-01`, `GW-02`, `GW-03`, `GW-07`, `GW-12`, `BFF-13`) between the summary tables and detail sections, and replace the stale `ProxyRoute` reference at `L1296` with `EndpointDispatcher` / `RouteConfig`.
+* [ ] *TASK-G1-16*: Delete the 55-line `[#gw-07-fin-first-reproduction]` `orbstack` kernel lab log (`L730–785`) (keeping a 1-sentence residual-risk summary if needed; verify no inbound link targets `#gw-07-fin-first-reproduction` after updating `doc/development/build-gate-discipline.adoc`).
+* [ ] *TASK-G1-17*: Condense each threat entry (`GW-01..27`, `BFF-01..19`, `WS-01..05`) to the 3-part `engineering-narrative.md` arc (*Attack Vector* -> *Gateway Control* -> *Residual Boundary* — target ~15–25 lines per threat, ~950 lines total), stripping patch-by-patch archaeology (`"The coverage exception was first written..."`, `"Before ADR-0047 they were not..."`), the ~208 lines of JUnit test-method inventories, and internal line-number narrations while preserving all `[#gw-XX]`, `[#bff-XX]`, `[#ws-XX]` anchors and `THREAT_MODEL_DISCOVERY_ANCHOR` (`L2574`).
+* [ ] *TASK-G1-18*: Replace the ASCII trust-boundary diagram (`L172–194`) with `image::resources/diagrams/trust-boundaries.svg[]` and add `image::resources/diagrams/threat-mitigation-pipeline.svg[]` mapping `GW-*`, `BFF-*`, and `WS-*` controls to the request pipeline stages.
+
+=== `doc/technical_aspects.adoc` (437 lines -> ~150 lines)
+
+==== Findings
+
+* *Stale class reference (`L87`)*: Claims `SecurityConfiguration` provides defaults, whereas security defaults now live on `SecurityConfig` / `GatewayConfig` records.
+* *Generic CUI coding/testing tutorial (`L273–381`)*: Lines `273–381` contain generic Java/JUnit/Lombok/CuiLogger boilerplate examples that duplicate `AGENTS.md` and CUI library documentation.
+* *ASCII architecture diagram (`L387–419`)*: Uses a 33-line ASCII box diagram to show CUI library layers (`cui-java-tools`, `cui-http`, `OAuthSheriff`, `API-Sheriff`).
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-19*: Fix `SecurityConfiguration` -> `SecurityConfig` at `L87` and add missing `:toc-title: Table of Contents` and `:source-highlighter: highlight.js` header attributes.
+* [ ] *TASK-G1-20*: Delete the generic coding/testing tutorial sections (`L273–381`).
+* [ ] *TASK-G1-21*: Replace the ASCII layer diagram (`L387–419`) with `image::resources/diagrams/cui-foundation-layers.svg[]` showing how inbound requests flow through `cui-http` security validators and `OAuthSheriff` token validation into `api-sheriff` forwarding.
+
+=== `doc/features-analysis.adoc` (350 lines -> Retire)
+
+==== Findings
+
+* Written as a pre-implementation market survey comparing Envoy, Kong, KrakenD, and Spring Cloud Gateway with "Phase 1 / Phase 2 / Phase 3" roadmap prose and marketing language.
+* Only one inbound link exists (`doc/README.adoc:30`). The only enduring content is the 25-line Non-Goals and Lightweight Gateway Positioning comparison.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-22*: Fold the concise Non-Goals & Positioning table into `doc/README.adoc` and delete `doc/features-analysis.adoc`.
+
+=== `doc/fapi_status.adoc` (314L) & `doc/fapi_next_steps.adoc` (164L) -> Merge (~250 lines)
+
+==== Findings
+
+* `doc/fapi_status.adoc` and `doc/fapi_next_steps.adoc` overlap by ~120 lines: both list the same FAPI 2.0 Security Profile / Message Signing requirements, the same implemented controls (PAR, DPoP, `private_key_jwt`, PKCE `S256`, TLS 1.3 / cipher suites), and the same open gaps (JARM, RAR, MTLS sender-constrained tokens).
+* Both documents list internal Java test classes and implementation methods that belong in code/ADRs.
+* Neither document includes a visual sequence diagram of the FAPI 2.0 BFF authorization flow.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-23*: Merge `doc/fapi_next_steps.adoc` into `doc/fapi_status.adoc` (under a compact `== Open FAPI 2.0 Gaps & Roadmap` section) and delete `doc/fapi_next_steps.adoc`.
+* [ ] *TASK-G1-24*: Update inbound links to `fapi_next_steps.adoc` in `doc/README.adoc` (`L29`, `L232`) and `doc/adr/0037-fapi-2-security-profile-alignment.adoc` (`L354`, `L383`).
+* [ ] *TASK-G1-25*: Strip internal JUnit test-class inventories from `doc/fapi_status.adoc` and embed `image::resources/diagrams/fapi2-bff-flow.svg[]` (sequence diagram showing Browser -> Gateway BFF -> IdP PAR endpoint -> Authorization Redirect -> Token Endpoint with `private_key_jwt` + `DPoP` proof -> Upstream API).
+
+=== `doc/LogMessages.adoc` (161 lines, `90.4 KB` -> `~22 KB`)
+
+==== Findings
+
+* Although only 161 lines long, `doc/LogMessages.adoc` weighs `90.4 KB` because individual table cells (especially `API-SHERIFF-017`, `021`, `022`, `109`, `122`, `126`, `127`, `205`, `209`) contain 1,000 to 3,900 characters of inline architecture essays, Java method call chains, and test-case commentary.
+* Missing `:toc-title: Table of Contents` and `:source-highlighter: highlight.js` header attributes.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-26*: Add missing AsciiDoc header attributes to `doc/LogMessages.adoc`.
+* [ ] *TASK-G1-27*: Trim every `Description / Operator Action` cell in `doc/LogMessages.adoc` to 1–3 concise sentences stating (1) what triggered the log record and (2) what operator action (if any) is required, preserving every `API-SHERIFF-XXX` identifier (`001–099` INFO, `100–199` WARN, `200–299` ERROR).
+
+=== `doc/quality-report/*.adoc` (6 files, 2,560 lines -> Retire)
+
+==== Findings
+
+* `doc/quality-report/` (`README.adoc`, `architecture.adoc`, `code-quality.adoc`, `documentation.adoc`, `findings.adoc`, `testing.adoc`) is a static point-in-time audit generated on `2026-08-15` against `commit b54eb12`.
+* Nearly every finding in those 2,560 lines references line numbers, classes, and package structures that no longer exist.
+* Only 2 inbound links exist across the entire repo: `doc/README.adoc:318` and `doc/adr/0024-security-threat-model.adoc:141`.
+
+==== Actionable Tasks
+
+* [ ] *TASK-G1-28*: Delete all 6 files in `doc/quality-report/` and remove the 2 inbound links in `doc/README.adoc:318` and `doc/adr/0024-security-threat-model.adoc:141`.
+
+== Summary of New SVG Diagrams for Group 1
+
+[cols="2,1,2,3", options="header"]
+|===
+| Diagram File (`doc/resources/diagrams/`) | Type | Target Document | Visualized Process / Flow
+
+| `gateway-overview.svg`
+| Process / Swim-lane
+| `README.adoc`
+| End-to-end request pipeline across Client, Gateway Edge, Auth/BFF Layer, and Upstream Backend / IdP.
+
+| `documentation-map.svg`
+| Flow / Decision
+| `doc/README.adoc`
+| Reader routing map: Operator vs. Security Auditor vs. Architect vs. Contributor.
+
+| `policy-scope-resolution.svg`
+| Flow / Decision
+| `doc/configuration.adoc`
+| Precedence resolution from `gateway.*` defaults to `endpoints[].routes[].*` overrides and YAML anchors.
+
+| `egress-tls-legs.svg`
+| Process / Topology
+| `doc/configuration/tls-and-egress.adoc`
+| Three independent TLS legs (`gateway.tls` inbound, `upstream_tls` backend egress, `idp_tls` OIDC egress) and trust-profile enforcement.
+
+| `bff-scope-and-refresh-flow.svg`
+| Sequence / Decision
+| `doc/configuration/authentication-and-oidc.adoc`
+| BFF `cookie` vs `server` token storage, AES-256-GCM key rotation, and single-flight refresh.
+
+| `trust-boundaries.svg`
+| Process / Swim-lane
+| `doc/security-threat-model.adoc`
+| Replaces ASCII box (`L172–194`): untrusted client ingress, DMZ proxy hop, gateway trust boundary, IdP leg, and upstream leg.
+
+| `threat-mitigation-pipeline.svg`
+| Process / Flow
+| `doc/security-threat-model.adoc`
+| Maps `GW-*`, `BFF-*`, and `WS-*` threat controls onto sequential pipeline stages.
+
+| `cui-foundation-layers.svg`
+| Process / Flow
+| `doc/technical_aspects.adoc`
+| Replaces ASCII box (`L387–419`): request/token flow across `cui-http`, `OAuthSheriff`, and `api-sheriff`.
+
+| `fapi2-bff-flow.svg`
+| Sequence
+| `doc/fapi_status.adoc`
+| FAPI 2.0 BFF authorization sequence: PAR request, PKCE `S256`, `private_key_jwt`, DPoP proof binding, and upstream call.
+|===
