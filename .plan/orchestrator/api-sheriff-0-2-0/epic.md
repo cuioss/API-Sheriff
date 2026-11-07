@@ -526,7 +526,7 @@ doc-only or build-light plan for the second and third slots.
 
 14. > ↪ Relocated to `settled.md` § "Open Defect 14 — `MtlsHandshakeIT` fails under `-Pjfr` only, issue #201 (settled 2026-10-30 by #538, a lane misconfiguration)" — nine counted runs; the `jfr` lane never supplied the mTLS properties; no production change; guarded by `MtlsLaneSelectionContractTest`
 
-10. **CARRIED PAST THIS EPIC — `doc/plan/09-release-readiness.adoc` becomes actionable AT THE 1.0
+10. **CLOSED 2026-11-07 at close-out — `doc/plan/` was retired by #368; the 1.0-cut fact lives in `CLAUDE.md`/`AGENTS.md`; a pointer Watch is carried in `api-sheriff-0-3-0`.** Was: **CARRIED PAST THIS EPIC — `doc/plan/09-release-readiness.adoc` becomes actionable AT THE 1.0
     CUT.** Opened 2026-08-09 by `PLAN-V02-03` D3. The file is **not superseded**: its defining
     deliverable is the 1.0.0 cut and the flip of the pre-1.0 rules, which has not happened — the
     project is 0.1.1 alpha and `CLAUDE.md` still carries the Pre-1.0 Rules. The outline had listed it
@@ -542,7 +542,7 @@ doc-only or build-light plan for the second and third slots.
 1. > ↪ Relocated to `settled.md` § "Open Defect 1 — upstream stack-identity leak (closed 2026-10-27 by #526)" — `Server` and `X-Powered-By` stripped on all three upstream-header paths
 2. > ↪ Relocated to `settled.md` § "Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512"
 3. > ↪ Relocated to `settled.md` § "Open Defect 3 — demo start script readiness contract (closed 2026-10-09)" — already fixed since #341
-4. **LOW, not release-gating** — the test-corpus integrity backlog PLAN-43 left as a countable
+4. **RE-HOMED 2026-11-07 to `api-sheriff-0-3-0` Open Defect 1, with the corrected count (8 rows / 9 methods in `open-work-list`).** Was: **LOW, not release-gating** — the test-corpus integrity backlog PLAN-43 left as a countable
    residual: 43 files / 140 marker occurrences, enumerated in
    `doc/development/test-corpus-integrity.adoc`. Reported as a count rather than as prose.
 5. > ↪ Relocated to `settled.md` § "Open Defect 5 — BFF secrets missing from the env-var page (closed 2026-08-09)" — closed by `PLAN-V02-03` D2 (PR #197, `89a3cfe`)
@@ -555,6 +555,8 @@ doc-only or build-light plan for the second and third slots.
 
 
 ## Watches
+
+> **Close-out 2026-11-07:** every entry below carries a disposition in `epic-closeout.md` § "Close-out disposition — 2026-11-07". Re-homed entries and the standing rules now live in `api-sheriff-0-3-0/epic.md`; what is kept until the release cut stays live here.
 
 - **TWO ADVISORY NITS LEFT ON `main` BY #566** (added 2026-11-06, `PLAN-V02-56` landing). The `IdpFrontingCanonicalPathTest`
   Javadoc says "two" cuts where there are three; a probe comment in the `/auth`-fronted login check says "first and last" where the
