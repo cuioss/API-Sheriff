@@ -683,7 +683,8 @@ environment. All three build versions (k6, `xk6`, `xk6-dashboard`) are explicit 
 == The wrk-to-k6 swap
 
 k6 replaced wrk as the only load generator: native k6 thresholds (`http_req_failed`, `checks`) fail
-a run that starts rejecting requests, and `K6BenchmarkConverter` / `K6ResultPostProcessor` feed the unchanged report pipeline.
+a run whose failure rate exceeds the configured limit -- a passing run can still contain rejected
+requests below that limit -- and `K6BenchmarkConverter` / `K6ResultPostProcessor` feed the unchanged report pipeline.
 The published gh-pages series carry deliberate breaks -- the engine swap, each
 goal's first CI execution, the removal of the test-shaped `%it` configuration, and the repointing of
 `gatewayHealth` and `healthLiveCheck` from a deleted data-plane endpoint to the management
