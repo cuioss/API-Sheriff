@@ -2,10 +2,10 @@
   "id": "PLAN-V02-55",
   "slug": "it-concurrency-and-local-image-hazard",
   "workstream": "WS-05",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-v02-55-it-concurrency-and-local-image-hazard",
+  "pr": "558",
+  "landing": "landings/PLAN-V02-55.md",
   "seq": 55
 }
