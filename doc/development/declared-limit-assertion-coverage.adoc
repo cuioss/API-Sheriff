@@ -1,7 +1,9 @@
 = Declared-Limit Assertion Coverage
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 Every limit-shaped value the integration-test descriptor surface declares, and the test that
 asserts it -- or the record that none does.
@@ -334,7 +336,7 @@ pattern. It is limit-bearing purely on the base keys it inherits, so it needs no
 of its own.
 
 What makes this overlay worth naming is that it is the fixture the `refresh.leeway_seconds`
-row's boundary assertion needs -- the item it served stood in the standing remainder until this
+row's boundary assertion needs -- the item it served stood among the open gaps until this
 overlay made it reachable, and the row is `COVERED` because of it. The shared realm mints a 900-second access token, which puts the
 near-expiry window 870 seconds into a session and out of a test's reach; this overlay authenticates
 as `refresh-client`, whose client-level `access.token.lifespan` is 45, moving that window to
@@ -1021,63 +1023,11 @@ declaration's *existence* is proven while its *boundary* is not.
   protocol is refused
 |===
 
-== The Gap Count and This Plan's Selection
+[[open-gaps]]
+== Open Gaps
 
-*Real gap count when this sweep began: 12* -- eight outright `GAP` (G2--G9), three `PARTIAL`
-(G1, G10, G11), plus one row this note had itself mis-recorded:
-`oidc.session.refresh.leeway_seconds` was carried as `WIRED` while no descriptor-parsing guard
-asserted it, so neither half of the `WIRED` definition held. The PR #148 review corrected that row
-to `GAP`; it was a real gap at the sweep's start and is counted as one here.
-
-The sweep's hard ceiling is five assertions, so *the cap bound at its ceiling*: **G1--G5 each
-received one** (their rows above name the asserting test), ranked below by blast radius -- a limit
-whose breach degrades the whole gateway outranks one that degrades a single request.
-
-*They did not all reach the same status.* **G1, G3, G4 and G5 reached `COVERED`** -- each is
-asserted at its boundary with a matched positive control. **G2 reached `WIRED` only**:
-`EgressAllowlistActivationWiringTest` proved the allowlist declaration present and exactly
-scoped to the host its own `jwks.url` names, but no runtime egress refusal was exercised. By this
-note's own vocabulary that was not `COVERED`, so G2's runtime leg was carried in the standing
-remainder rather than dropped -- until `JwksEgressMismatchIT` closed it (see the standing remainder
-below and the G2 matrix row).
-
-*Five items remain* -- G6, G7, G8, G10 and G11 -- and they are listed as the standing remainder so
-the class stays countable. G9 was the sixth until `BffSessionAbsoluteTtlIT` was credited to its row.
-
-[cols="1,1,1,4"]
-|===
-| Rank | Gap | Blast radius | Why it ranks here
-
-| 1 | G1 | gateway-wide
-| An ADR-0019 relaxation at the non-skippable pre-route floor. If the carve-out silently reverts,
-  *every bearer request is rejected 400 before bearer validation ever runs* -- the whole
-  authenticated surface degrades.
-
-| 2 | G2 | gateway-wide
-| The SSRF egress guard on JWKS fetch (GW-05 / BFF-07). Its loss unguards outbound fetches from a
-  security gateway. *Landed `WIRED`, not `COVERED`* -- the descriptor guard failed on drift while the
-  runtime refusal stayed unasserted; it has since reached `COVERED` through `JwksEgressMismatchIT`.
-
-| 3 | G3 | gateway-wide
-| The resolved header-value floor every route inherits -- and the exact cap G1 carves out of.
-  Asserting both makes the relaxation's *scope* provable rather than assumed.
-
-| 4 | G4 | gateway-wide
-| The default body guard (GW-07) on every inheriting route. Today only the deliberately raised and
-  deliberately lowered route caps are proven; the inherited default never is.
-
-| 5 | G5 | per-request
-| The forward stage's per-dimension mode projection. An information-flow defect (a header crossing
-  to the upstream that should not) rather than a gateway-wide degradation -- hence rank 5. The
-  ranking was assigned while the stage was allow-list-only; the three-mode model
-  (link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036])
-  does not change the blast radius, because the gateway-owned never-forward set bounds every mode.
-|===
-
-=== The standing remainder
-
-*G6, G7, G8, G10 and G11 are deliberately not authored*, and are recorded so the class stays
-countable rather than forgotten:
+Five ranked rows are deliberately not yet asserted, and are listed so the class stays countable
+rather than forgotten:
 
 * *G6* -- strict parameter-value length cap (1024)
 * *G7* -- strict path length cap (1024)
@@ -1085,34 +1035,28 @@ countable rather than forgotten:
 * *G10* -- `oidc.user_info.allowed_claims` negative leg
 * *G11* -- `tls.min_version` / `cipher_suites` runtime handshake leg
 
-*Session-refresh leeway has since left this list.* It was recorded here -- without a G-number,
-because G1--G11 are the outline-time ranked inventory the matrix orders -- as the one remainder
-whose *both* legs were missing. It is now `COVERED` by `BffTokenRefreshIT`; see its matrix row
-above. What closed it is the part worth carrying forward: not a new assertion on the existing
-session ITs, but a dedicated gateway instance whose client mints a 45-second access token, because
-a leeway boundary is only reachable when the token expires faster than the leeway is wide.
+The G-numbers are the ranked inventory the matrix orders, by blast radius: a limit whose breach
+degrades the whole gateway outranks one that degrades a single request. G1 to G5 are the gateway-wide
+and information-flow rows, and each now has its boundary assertion named in its matrix row.
 
-*The G2 runtime egress-refusal leg has left this list too.* It stood here as the proof that a JWKS
-host *outside* an explicit `allowed_egress_hosts` list is actually refused, with only the
-descriptor half `WIRED`, because it needed a rogue-host fixture the sweep's assertion budget could
-not fund. It is now `COVERED` by `JwksEgressMismatchIT`; see the G2 matrix row above. What closed
-it mirrors the leeway closure: not a new assertion on the compose instances, whose lists all name
-their own `jwks.url` host or are derived from it, but a dedicated one-off gateway
-(`sheriff-config-jwks-egress-mismatch/gateway.yaml`) whose explicit list deliberately names another
-host, paired with a control that differs from it by that single key.
-
-*G9 has left this list as well.* `oidc.session.ttl_seconds` is `COVERED` by
-`BffSessionAbsoluteTtlIT`; see the G9 matrix row above. This section used to call it impractical to
-boundary-test, on the reasoning that the declared lifetime is 3600 seconds. That reasoning measured
-the wrong thing: the test does not wait out the declared value, it runs a second instance whose
-descriptor differs in the lifetime alone and declares 40 seconds, with the 3600-second instance as
-its control. It is the same move that closed the leeway and the G2 items -- a dedicated instance
-that makes the boundary reachable, not a new assertion on the existing ones.
+*How the closed gaps were closed is the part worth carrying forward.* Three rows that once stood here
+-- the session-refresh leeway, the runtime egress refusal behind G2, and the absolute session lifetime
+G9 -- were each closed not by a new assertion on the existing instances but by a *dedicated instance
+that makes the boundary reachable*: a client that mints a 45-second access token so the leeway window
+falls inside a test, a one-off gateway whose explicit `allowed_egress_hosts` list deliberately names
+another host beside a control that differs by that single key, and a second instance whose descriptor
+declares a 40-second lifetime with the 3600-second instance as its control. A boundary that looks
+impractical to test usually is impractical only against the instance that declares the production
+value.
 
 One of the remaining five is additionally *impractical to boundary-test at proportionate cost*:
-G11's runtime leg needs a handshake fixture matrix. A future plan should pick the *wiring* shape for
-it rather than the boundary shape -- a descriptor guard that fails on drift is worth more than a
-boundary test nobody can afford to run.
+G11's runtime leg needs a handshake fixture matrix. The *wiring* shape fits it better than the boundary
+shape -- a descriptor guard that fails on drift is worth more than a boundary test nobody can afford
+to run.
+
+A row's status is only as good as the evidence for it: the session-refresh leeway was once carried as
+`WIRED` while no descriptor-parsing guard asserted it, so neither half of the `WIRED` definition held,
+and the row was corrected to `GAP` before it was closed.
 
 == Report-Only Finding: the body-cap guard does not reach the endpoints tree
 
@@ -1134,13 +1078,13 @@ into a fail-closed boot abort with the guard still green, because the guard neve
 that declares it.
 
 This is *reported, not fixed*: widening the glob is a change to a guard whose blast radius reaches
-every committed descriptor, and it belongs in its own plan with its own verification rather than
-riding a coverage sweep. It is recorded here so the hole is a known, countable item rather than a
-latent surprise.
+every committed descriptor, and it belongs in a change of its own with its own verification rather
+than riding a coverage update. It is recorded here so the hole is a known, countable item rather than
+a latent surprise.
 
-The same reasoning is why the bearer-protected `security_filter` route added by this plan declares
-`allowed_paths` rather than `max_body_bytes` -- adding a body cap in the endpoints tree would
-enlarge exactly the hole this note has chosen to report.
+The same reasoning is why the bearer-protected `security_filter` route declares `allowed_paths`
+rather than `max_body_bytes` -- adding a body cap in the endpoints tree would enlarge exactly the hole
+this note reports.
 
 == Report-Only Finding: the inventory guard partitions files, not keys
 

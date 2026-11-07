@@ -161,104 +161,81 @@ configuration. Each has its own design section:
 
 == Architecture Decisions
 
-[cols="1,5,2", options="header"]
+[cols="1,5", options="header"]
 |===
-| ADR | Decision | Status
+| ADR | Decision
 
 | link:adr/0001-java25-runtime-baseline.adoc[ADR-0001]
 | Compile and run on Java 25 (LTS) for the full virtual-thread benefit; CI covers Java 25 and 26.
-| Accepted
 
 | link:adr/0003-forwarded-headers.adoc[ADR-0003]
 | Accept both `Forwarded` and `X-Forwarded-*`, normalise them behind a trusted-proxy allowlist, emit `X-Forwarded-*` by default.
-| Accepted
 
 | link:adr/0004-topology-indirection.adoc[ADR-0004]
 | Portable endpoint files reference `base_url` aliases resolved by `topology.properties`; an override is a visible `${TOPOLOGY_<ALIAS>:-default}` placeholder.
-| Accepted
 
 | link:adr/0005-module-structure.adoc[ADR-0005]
-| One Quarkus module with a framework-agnostic seam kept by package layout and an arch gate.
-| Superseded by link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+| One Quarkus module with a framework-agnostic seam kept by package layout and an arch gate. Superseded by link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062].
 
 | link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]
 | Stream data-plane bodies with backpressure; `HttpResult<T>` materialisation on the control plane only; `max_body_bytes` is a streaming counter.
-| Accepted
 
 | link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]
 | Anchors: disjoint path namespaces in `gateway.yaml` carrying an inherited, non-weakenable policy floor, erased into the route table at boot.
-| Accepted
 
 | link:adr/0008-data-plane-transport.adoc[ADR-0008]
 | Data plane on the Vert.x `HttpClient` shared per upstream tuple; per-route SmallRye Fault Tolerance; no gateway-side response cache; `cui-http` client is control-plane only.
-| Accepted
 
 | link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]
 | An unresolvable enabled-endpoint alias aborts boot; an unresolvable `passthrough_sni` alias is skipped; the validator is the single reporter.
-| Accepted
 
 | link:adr/0010-YAML_expansion_limits_enforced_in_a_compose-only_pre-pass_before_bind.adoc[ADR-0010]
 | YAML alias-expansion and nesting caps run in a compose-only SnakeYAML pre-pass before Jackson binds.
-| Accepted
 
 | link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
 | The JWKS issuer surface exposes egress and trust as neutral names; one mapping component binds trust profiles to runtime anchors.
-| Accepted
 
 | link:adr/0013-anchor-type-access-axes.adoc[ADR-0013]
 | Every anchor carries two orthogonal axes, `type` (`proxy`/`bff`/`asset`) and `access` (`public`/`authenticated`), validated fail-closed.
-| Accepted
 
 | link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]
 | Asset serving is a second terminal action (`directory` or `upstream` source) with a gateway-owned envelope and canonicalise-and-confine path safety.
-| Accepted
 
 | link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]
 | WebSocket `Origin` is checked against a fail-closed exact-match allowlist before any upstream dial.
-| Accepted
 
 | link:adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016]
 | gRPC rejections are trailers-only responses with a canonical status mapping; pre-trust rejections are the `404` of ADR-0073.
-| Accepted
 
 | link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
 | A raw-TCP front listener splits on SNI at accept time: passthrough relays opaquely at L4, everything else terminates internally.
-| Accepted
 
 | link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
 | Session mode selects only the `SessionBinding`; reserved paths, CSRF and session identity are fixed, mode-neutral models.
-| Accepted
 
 | link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]
 | Reserved BFF paths bypass the url-parameter value pipeline; the cookie-header length relaxation is gateway-wide.
-| Accepted
 
 | link:adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]
 | Forward filtering is a per-dimension three-mode policy (positive-list, negative-list, forward-all) inside an authorised route.
-| Accepted
 
 | link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]
 | The gateway owns four per-direction header sets (never-forward, response strip, identity, protocol), each enumerated in full.
-| Accepted
 
 | link:adr/0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]
 | The distroless image's `HEALTHCHECK` is answered by the application binary before boot with a protocol-blind TCP probe.
-| Accepted
 
 | link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
 | Platform mechanisms are preferred over hand-rolled equivalents; the framework-agnostic core rule is retired.
-| Accepted
 
 | link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
 | Every rejection raised before the trust boundary answers as the unrouted `404`, behind a timing floor.
-| Accepted
 
 | link:adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]
-| The token-validation metrics collector is kept; its two health probes stay excluded.
-| Accepted; supersedes link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
+| The token-validation metrics collector is kept; its two health probes stay excluded. Supersedes link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027].
 |===
 
-NOTE: This index is *not exhaustive* -- most records in link:adr/[`doc/adr/`] have no row here.
+NOTE: Each record's own `== Status` section is authoritative for its status. This index is *not exhaustive* -- most records in link:adr/[`doc/adr/`] have no row here.
 Treat the directory as the authoritative list and this table as a curated entry point; a record without a
 row is not a withdrawn decision. Ordinals are never reused, so a gap in the numbering is a
 record that was moved into developer documentation or merged into another record.

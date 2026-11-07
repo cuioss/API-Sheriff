@@ -1,7 +1,9 @@
 = API Sheriff -- Integration-Test Topology
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The *contributor* view of the stack `integration-tests` brings up: which containers run, which
 ports each one publishes, what talks to what, and where trust changes. It exists so a contributor
@@ -27,6 +29,21 @@ port, protocol and service name in it traces to a line in `integration-tests/doc
 the mounted `integration-tests/src/main/docker/sheriff-config/gateway.yaml` -- nothing is inferred
 and nothing is invented. Those two files are the authoritative sources; when they change, the
 diagram is stale and gets redrawn rather than annotated.
+
+The diagram is hand-authored SVG, so it does not regenerate itself and CI does not check it. Two
+rules follow:
+
+* *When `docker-compose.yml`, the mounted `gateway.yaml`, an endpoint definition or
+  `topology.properties` changes a fact the diagram depicts -- a service, a published port, a standing
+  leg, a route's target, a mounted volume -- redraw the diagram in the same
+  change.* A stale topology diagram is worse than none, because it is believed. A change that alters
+  no depicted fact (a one-off test container, a file inside a mounted directory, a leg that exists only
+  while one test runs) leaves the diagram alone.
+* *Re-render and read back before committing*, against both the light and the dark theme, per the
+  deployment diagram-type standard. The `<desc>` accessibility narrative is part of the diagram and is
+  read against the change as well; it names members explicitly rather than by position, so appending a
+  member cannot silently repoint a sentence. Rendered PNGs are verification artifacts and are never
+  committed.
 
 == Reading the Diagram
 
@@ -198,16 +215,15 @@ collapsed into one annotated group that names each of them with its port pair:
 
 [NOTE]
 ====
-*This table is not the port allocator; `docker-compose.yml` is.* The `api-sheriff-no-certificate` row
-is a late addition, and the way it was found is the reason for this note. That service had run in the
-stack enumerated by neither this table nor the diagram -- an omission of the same class as the
-`api-sheriff-plain-mgmt` one the readiness-change diagram check below records -- and what surfaced it
-was a collision, not a review: `api-sheriff-cookie-refresh` was planned for `10453 / 19010`, which the
-runtime would have refused to bind, and was moved to `10455 / 19011`.
+*This table is not the port allocator; `docker-compose.yml` is.* Two services have run in the stack
+while missing from this table or the diagram -- `api-sheriff-plain-mgmt` from the diagram's variant
+group, and `api-sheriff-no-certificate` from both. What surfaced the second was a collision, not a
+review: `api-sheriff-cookie-refresh` was planned for `10453 / 19010`, which the runtime would have
+refused to bind, and was moved to `10455 / 19011`.
 
-The table and the diagram are both complete against `docker-compose.yml` as of that addition, and
-neither is *derived* from it, so both can silently fall behind it again. Allocate host ports by
-reading `docker-compose.yml`, never by reading this page.
+The table and the diagram were both brought complete against `docker-compose.yml` when that row was
+added, and neither is *derived* from it, so both can silently fall behind it again. Allocate host ports by reading
+`docker-compose.yml`, never by reading this page.
 ====
 
 The two `api-sheriff-egress-verify-*` instances are one matched pair in this table that must be read
@@ -457,18 +473,13 @@ it adds no row to the instance table and nothing to the diagram.
 | Derived at test time from the committed `sheriff-config-cookie-refresh/gateway.yaml`: both
   signing-key `key_file` entries removed, the client id replaced, a
   `client_authentication.jwks_path` of `/bff/client-keys` declared, the gateway origin retargeted at
-  the port below, and `session.key_file` retargeted at this gateway's own sealing key file. It is
+  its port in the <<test-started-host-ports,host-port table>>, and `session.key_file` retargeted at this gateway's own sealing key file. It is
   written below `target/` and never committed.
 
 | Server certificate
 | `certificates/generated-keys-gateway.crt` and its key, presented by the application listener. Its
   subject alternative names are `sheriff-generated-keys`, `localhost` and `127.0.0.1`. The management
   listener keeps the stack certificate.
-
-| Host ports
-| The application listener on the fixed host port `10462`, published on every interface as the
-  Compose stack publishes its own gateway ports; the management interface on the fixed loopback port
-  `19462`.
 
 | Mounts
 | The certificates, the shared configuration with the derived descriptor laid over it, the assets,
@@ -543,6 +554,8 @@ it.
 The table below is enclosed in a `test-started-host-ports` tagged block, which
 `OneOffGatewayContainersTest` reads at runtime and compares with the ports the integration-test
 sources assign -- so the table is a test input, and a change to it is not a documentation-only commit.
+It is also the one place the port pairs are listed: the sections on the individual rigs below do not
+repeat them.
 
 // tag::test-started-host-ports[]
 [cols="1,1,2,3"]
@@ -664,7 +677,7 @@ run publishes them.
 *The host constraint behind that form.* On Rancher Desktop under WSL 2 a host port number can be left
 dead. A container that publishes a dead number afterwards starts normally and answers on its other
 ports; a connection to the dead number is accepted and reset about five seconds later. The trigger was
-established on 2026-10-07 with plain nginx containers and no gateway. A number goes dead when a
+established with plain nginx containers and no gateway. A number goes dead when a
 container is removed that had one of two shapes:
 
 . two publications on a loopback address;
@@ -754,24 +767,20 @@ removed on every exit path -- the pattern `BffSessionIdleTimeoutIT`, `BffSession
 `BffGeneratedKeysIT` already follow. None of the three is a service of `docker-compose.yml`, and they
 add no row to the instance table and nothing to the diagram.
 
-[cols="2,1,1,3"]
+Their host ports are in the <<test-started-host-ports,test-started host-port table>>.
+
+[cols="2,3"]
 |===
-| Container name and network alias | App port | Mgmt port | Descriptor
+| Container name and network alias | Descriptor
 
 | `sheriff-token-refresh`
-| `10474`
-| `19474`
 | Derived at test time from the committed `sheriff-config-refresh/gateway.yaml`, with the gateway
   origin retargeted at its own port. Server session mode, authenticating as `refresh-client`.
 
 | `sheriff-client-secret-mode`
-| `10475`
-| `19475`
 | Derived the same way from the same `sheriff-config-refresh/gateway.yaml`, on a port of its own.
 
 | `sheriff-fapi-controls`
-| `10476`
-| `19476`
 | Derived at test time from the committed `sheriff-config-cookie-refresh/gateway.yaml`, with the
   gateway origin retargeted at its own port and the sealing key file retargeted at a key of the
   suite's own. Stateless sealed-cookie session mode, authenticating as `cookie-refresh-client`.
@@ -853,15 +862,12 @@ a class that uses the rig out of the concurrent Failsafe execution: they run in 
 
 | Descriptor
 | Derived at test time from the committed `sheriff-config-refresh/gateway.yaml`, with the gateway
-  origin retargeted at the port below. It is written below `target/` and never committed.
+  origin retargeted at its port in the <<test-started-host-ports,host-port table>>. It is written below `target/` and never committed.
 
 | Mounts
 | What every one-off BFF gateway mounts, and the signing-key directory, because the descriptor names a
   DPoP proof key.
 
-| Host ports
-| The application listener on the fixed host port `10465`, on every interface; the management
-  interface on the fixed loopback port `19465`.
 |===
 
 *What the stub serves.* The provider metadata document below the issuer, the key set on every
@@ -877,6 +883,10 @@ arrived on, as Keycloak does. Its token endpoint
 refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
 passing unnoticed.
 
+*Why the open admin API is acceptable.* The admin API is plain HTTP on a loopback port and on no other
+interface, it lives only as long as the test that started its rig, and nothing secret sits behind it:
+the stub checks no credential, and its signing key is generated when the rig starts.
+
 *The key-rotation variant.* A further suite, `JwksKeyRotationIT`, has to replace the identity
 provider's signing key while the gateway runs and count the key-set requests that follow. It starts
 the same rig through `StubIdentityProviderRig.startForKeyRotation()`. The stub, the network, the echo
@@ -889,14 +899,11 @@ values:
 
 | Descriptor
 | Derived from the same committed `sheriff-config-refresh/gateway.yaml`, with the gateway origin
-  retargeted at the port below and two keys added to the `jwks` block of the `integration-keycloak`
+  retargeted at its port in the <<test-started-host-ports,host-port table>> and two keys added to the `jwks` block of the `integration-keycloak`
   issuer: `unknown_kid_refresh_window_seconds: 5` and `key_rotation_grace_period_seconds: 300`. The
   two keys are asserted, on the parsed documents, to be the only differences besides the origin. It is
   written below `target/` as a file of its own and never committed.
 
-| Host ports
-| The application listener on the fixed host port `10471`, on every interface; the management
-  interface on the fixed loopback port `19471`.
 |===
 
 The committed descriptor declares neither key, so the gateway of the four suites above runs the
@@ -965,9 +972,6 @@ gateway that reaches Keycloak through that proxy only.
   gateway process on the committed `upstream-truststore.p12`, which holds one certificate. The path
   and the secret are read from `certificates/it-upstream-trust.properties`.
 
-| Host ports
-| The application listener on the fixed host port `10463`, on every interface; the management
-  interface on the fixed loopback port `19463`.
 |===
 
 *Why the rig runs concurrently.* The rig attaches no Compose container to any network. Its echo
@@ -1019,6 +1023,18 @@ shape `name:tag@sha256:<64 hex>`, beside the stub image of <<stub-idp-rig>> and 
 control. The shape is all it holds: that the pinned reference pulls is shown by this suite starting
 the proxy.
 
+*Every nginx of the integration surface carries the same digest*, and the pins move together: the
+`mismatched-tls-backend`, `asset-origin` and `early-answer-backend` services of `docker-compose.yml`,
+the `FROM` line of `integration-tests/src/main/docker/passthrough-backend/Dockerfile` (the fixture
+image `passthrough-backend` is built from, with `openssl` installed at build time), the `nginx-static`
+fairness backend of `docker-compose.benchmark.yml`, the late provider `JwksLateIdpReadinessIT` starts,
+and this proxy. The digest is what binds; the tag is kept for readability. The operator sample is the
+one deliberate exception: `deployment/compose-sample/docker-compose.yml` runs its `demo-api`, and
+`docker-compose.plain-http.yml` its `tls-terminator`, on the minor-line tag `nginx:1.27-alpine` so that
+an operator picks up patch releases. go-httpbin (`ghcr.io/mccutchen/go-httpbin:2.23.1`) and Toxiproxy
+(`ghcr.io/shopify/toxiproxy:2.12.0`) stay on exact release tags, and Keycloak carries a digest beside
+its tag.
+
 *The JSSE arguments, and the exemption that covers them.* This is the one launch of the gateway
 image in the module that passes JSSE trust-store system properties. The gateway refuses a hostname
 relaxation together with a named trust profile at boot, so a descriptor that relaxes hostname matching
@@ -1043,7 +1059,7 @@ declares one short enough to wait out in a test, so the short lifetime needs an 
 
 | Descriptor
 | Derived at test time from the committed `sheriff-config-refresh/gateway.yaml`: `ttl_seconds` set to
-  `40`, and the gateway origin retargeted at the port below. The two are asserted, on the parsed
+  `40`, and the gateway origin retargeted at its port in the <<test-started-host-ports,host-port table>>. The two are asserted, on the parsed
   documents, to be the only differences. It is written below `target/` and never committed.
 
 | Control
@@ -1053,9 +1069,6 @@ declares one short enough to wait out in a test, so the short lifetime needs an 
 | Mounts
 | What every one-off BFF gateway mounts, and the signing-key directory.
 
-| Host ports
-| The application listener on the fixed host port `10459`, on every interface; the management
-  interface on the fixed loopback port `19459`.
 |===
 
 [#reserved-path-gateway]
@@ -1088,9 +1101,6 @@ route. So the suite starts a gateway over a configuration of its own, once for t
 | The certificates, the assembled configuration, the assets, the demo directory and the signing-key
   directory.
 
-| Host ports
-| The application listener on the fixed host port `10464`, on every interface; the management
-  interface on the fixed loopback port `19464`.
 |===
 
 *Why the fixture is not mounted into the shared directory.* Every gateway mounts the shared
@@ -1128,15 +1138,14 @@ components: `certificates/`, `sheriff-config/`, `assets/` and `signing-keys/`. T
 additionally overlay a single file -- `sheriff-config-<variant>/gateway.yaml` on top of the shared
 `sheriff-config/` mount -- which is the whole mechanism by which they differ.
 
-The set stayed at three for a long time, and deliberately: the egress hostname-verification control
-added new key material and a new trust-binding properties file, and every one of them went into the
-already-mounted `certificates/` directory rather than bringing a volume with it. The signing keys are
-the one addition that could not go there. `certificates/` is also mounted into Keycloak and into the
+New key material goes into the already-mounted `certificates/` directory rather than bringing a
+volume with it -- the egress hostname-verification control's key material and trust-binding
+properties file did. The signing keys are the one addition that could not go there. `certificates/` is also mounted into Keycloak and into the
 `mismatched-tls-backend` fixture, and the private keys the gateway signs with must reach the gateway
 instances and nothing else -- Keycloak is given the public client key over the JWKS URL, never the
 file. A directory of its own is what makes "mounted into the gateway instances only" checkable in
-`docker-compose.yml`, and `BffClientKeyWiringTest` checks it there. The diagram draws the fourth pill;
-see <<diagram-check-signing-keys>>.
+`docker-compose.yml`, and `BffClientKeyWiringTest` checks it there. The diagram draws `signing-keys/`
+as the fourth mounted-material pill under the primary instance.
 
 [#readiness-contract]
 == The Readiness Contract
@@ -1493,285 +1502,6 @@ models independently, so the derivation logic and the `--wait-timeout` constant 
 Duplicated derivation stays correct when a model changes. The two timeout values are a genuine
 duplicate that can be re-tuned apart, and only a shared library would make them one.
 `start-dev-environment.sh` keeps its host-side retry budget, for the reason <<demo-bring-up>> gives.
-
-== Keeping the Diagram Honest
-
-The diagram is hand-authored SVG, so it does not regenerate itself and CI does not check it. Two
-consequences:
-
-* *When `docker-compose.yml` or the mounted `gateway.yaml` changes, redraw the diagram in the same
-  change.* A stale topology diagram is worse than none, because it is believed.
-* *Re-render and read back before committing.* The verification recipe -- including the two ways it
-  is commonly got wrong -- is in the deployment diagram-type standard
-  (`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`). Rendered PNGs are verification
-  artifacts and are never committed.
-
-=== Diagram check for the readiness change
-
-The readiness change recorded above was checked against the diagram, and the check is stated here
-rather than left implicit. That change altered no service and no port -- it changed which health
-path the wait loop probes, hoisted the retry budget into a named constant, and derived the Keycloak
-probe URL from the Compose model. None of those is a fact the diagram depicts, so the diagram is not
-made stale by it and is deliberately not redrawn.
-
-The check did, however, surface a *pre-existing* gap that predated this change: the collapsed variant
-group in the SVG was labelled `variant instances (4)` and named only `api-sheriff-mtls`,
-`api-sheriff-cookie`, `api-sheriff-cookie-2` and `api-sheriff-ws-admission`, omitting
-`api-sheriff-plain-mgmt`; the diagram's `<desc>` accessibility text repeated the omission.
-
-*That gap is now closed, not deferred.* The group is labelled `variant instances (6)` and enumerates
-all six members with their port pairs -- `api-sheriff-plain-mgmt` at `10448 · 19005` and
-`api-sheriff-passthrough-empty` at `10449 · 19006` joining the original four -- and the `<desc>`
-accessibility narrative carries both the count and the full member enumeration rather than a subset.
-The enclosing group rectangle and the own-bar line extent were grown by two row heights to fit the
-added rows. The follow-up this section previously deferred therefore no longer exists.
-
-The read-back obligation is unchanged and is *not* discharged by this note: re-render and read the
-diagram back against both themes before committing any further edit to it, per the deployment
-diagram-type standard (`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`). Rendered PNGs remain verification
-artifacts and are never committed.
-
-=== Diagram check for the egress hostname-verification control
-
-Unlike the readiness change above, this one *does* alter facts the diagram depicts: it adds two
-gateway instances, two published port pairs, one backend and one egress leg. The diagram was
-therefore redrawn rather than left alone.
-
-Three edits were made. The collapsed variant group is relabelled `variant instances (8)` and grows by
-two rows -- `api-sheriff-egress-verify-on` at `10450 · 19007` and `api-sheriff-egress-verify-off` at
-`10451 · 19008` -- with the enclosing rectangle and the own-bar line extent grown by two row heights
-to fit them. `mismatched-tls-backend` is drawn as a new box, annotated with the fact that carries the
-whole fixture: its certificate names `upstream-mismatch`, not the name it is dialled by. Its egress
-leg is drawn from the *variant group* rather than from the primary instance, because the primary
-never dials it -- only the matched pair does -- and it crosses the gateway-egress trust boundary like
-every other egress leg. The `<desc>` accessibility narrative carries all of it, including the reason
-the pair is one control rather than two variants.
-
-[NOTE]
-====
-*The read-back for this edit was owed for a time, and is now discharged.* When the egress control
-landed, the geometry above was placed by coordinate arithmetic against the existing elements rather
-than by rendering the result and looking at it, because the environment that edit was made in had no
-SVG renderer -- so this section carried a standing warning that the check was still owed.
-
-It was performed during the refresh-instance edit recorded below, which re-rendered the whole
-diagram against both themes. The two specific risks this warning had named were checked and are
-clear: the `mismatched-tls-backend` box sits in its vertical gap between `k6` and `toxiproxy`
-without collision, and the egress arrow crosses the L4-relay polyline as a clean line crossing with
-no label collision. Rendered PNGs remain verification artifacts and are never committed.
-====
-
-=== Diagram check for the refresh instance
-
-This change *does* alter facts the diagram depicts: it adds one gateway instance and one published
-port pair. The diagram was therefore redrawn rather than left alone.
-
-The collapsed variant group is relabelled `variant instances (9)` and grows by one row --
-`api-sheriff-refresh` at `10452 · 19009` -- placed on the group's existing 18-pixel row pitch. The
-enclosing rectangle grows by that one row height and the own-bar line extent with it; the `viewBox`
-is unchanged. The group's new bottom edge is the number worth stating, because it is the one that
-could have gone wrong quietly: at `826` it sits inside the compose-network rectangle's bottom edge
-at `836`, which is the enclosure that actually bounds it -- not the footer caption at `880`, which
-is outside the network rectangle altogether and would have been the wrong thing to measure against.
-The `<desc>` accessibility narrative carries the new counts and names `api-sheriff-refresh` last in
-the member enumeration.
-
-One edit in the `<desc>` is not a count at all and is the reason appending a member is not purely
-additive: the sentence introducing the matched egress pair referred to its members positionally, as
-`the last two`. Appending `api-sheriff-refresh` to the enumeration silently repoints that phrase at
-the wrong instances -- the enumeration changed under a sentence that never mentioned it. It now
-names `the two api-sheriff-egress-verify-* instances` explicitly, so the reference no longer depends
-on position.
-
-*The read-back was performed for this edit.* The diagram was rendered at 1200px against both the
-GitHub light (`#ffffff`) and dark (`#0d1117`) backgrounds per the deployment diagram-type standard
-(`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`) and both renders were read
-back. All nine variant rows are legible on both themes at a consistent pitch, nothing is clipped at
-the `viewBox` edge, the appended row's two columns align on the same left edges as the eight above
-it, and the group's bottom edge is visibly inside the compose-network rectangle. The same pass
-discharged the older egress-control obligation recorded in the section above. Rendered PNGs are
-verification artifacts and are not committed.
-
-=== Diagram check for the cookie-refresh instance
-
-This change *does* alter facts the diagram depicts, so the diagram was redrawn rather than left
-alone. The redraw also added the row of `api-sheriff-no-certificate`, which the diagram had lacked.
-
-The collapsed variant group is relabelled `variant instances (11)` and grows by two rows --
-`api-sheriff-no-certificate` at `10453 · 10454 · 19010` and `api-sheriff-cookie-refresh` at
-`10455 · 19011` -- and its row pitch tightens from 18 to 16 pixels. The
-growth is taken *upwards* rather than downwards, and that direction is the one number worth stating
-because it is what could have gone wrong quietly: the group's bottom edge at `826` already sits only
-`10` pixels inside the compose-network rectangle's bottom edge at `836`, so growing downwards by a
-row pitch would have pushed the group through its own enclosure. The rectangle's top edge therefore
-moves from `600` to `582` and its height from `226` to `244`, leaving the bottom edge unmoved at
-`826`; the group's label and its first row move up by the same `18`, the last row sits at `810`,
-and the own-bar's top edge moves with them while its
-bottom edge stays at `818` with the rectangle's. Above the
-group, the mounted-material pills end at `566`, so the gap there narrows from `34` to `16` pixels
-and no element overlaps. The `viewBox` is unchanged. The `<desc>` accessibility narrative carries
-the new counts and names `api-sheriff-cookie-refresh` last in the member enumeration, with the
-sentence explaining what the instance is for.
-
-[NOTE]
-====
-*The read-back for this edit was owed for a time, and is now discharged.* The edit was made without
-an SVG renderer, so its geometry was placed by coordinate arithmetic and this section carried a
-standing warning that the visual check was still owed. It was performed during the signing-keys edit
-recorded below, which rendered the whole diagram against both themes. The three points the warning
-had named are clear: every row of the variant group ends well inside the group rectangle's right
-edge, all eleven rows are legible at the published size on a consistent pitch, and neither the
-L4-relay polyline nor the `mismatched-tls-backend` egress arrow collides with the group after its
-upward shift.
-====
-
-[#diagram-check-signing-keys]
-=== Diagram check for the signing-keys mount
-
-This change *does* alter a fact the diagram depicts: every gateway instance mounts a fourth
-read-only volume. The diagram was therefore redrawn.
-
-A fourth mounted-material pill, `signing-keys/`, is drawn under the primary instance, on the same
-row as the three before it and at the same 16-pixel spacing: its rectangle runs from `392` to `488`,
-inside the instance's right edge at `544`, and its dashed stem leaves the instance's bottom edge at
-`440`. The `<desc>` accessibility narrative names the four volumes, states that the signing keys
-reach the gateway instances and nothing else, and records two facts the migration changed about the
-refresh pair: `api-sheriff-refresh` is the one instance that keeps a client secret, and
-`api-sheriff-cookie-refresh` mints with `cookie-refresh-client`. It also states that Keycloak dials
-the primary gateway inside the network for the client key set and for back-channel logout, and that
-neither leg is drawn as an arrow.
-
-*The read-back was performed for this edit, and it found one defect that predates it.* The diagram
-was rendered against the GitHub light (`#ffffff`) and dark (`#0d1117`) backgrounds per the
-deployment diagram-type standard
-(`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`) and both renders were read
-back. The four pills are legible on both themes, share one baseline and do not touch the variant
-group below them. The label and the sub-label of `mismatched-tls-backend`, however, ran past the
-right edge of their box, and the sub-label past the edge of the network rectangle as well. The box
-is now `192` wide where its two neighbours in that column are `152`: its left edge moved from `992`
-to `952`, its three text rows with it, and the egress arrow ends at `940`. Both texts now end inside
-the box on both themes. Rendered PNGs are verification artifacts and are not committed.
-
-=== Diagram check for the generated-keys gateway
-
-This change alters no fact the diagram depicts, so the diagram is deliberately not redrawn. The
-gateway of <<generated-keys-gateway>> is a one-off container and not a service of
-`docker-compose.yml`, and its host port is published by the test, not by the Compose stack. The two
-things the change did add to the stack are a second entry in the Keycloak service's
-`KC_TRUSTSTORE_PATHS` and a realm client, and the diagram draws neither trust-store entries nor realm
-clients.
-
-The `<desc>` accessibility narrative was read against the change. It states that Keycloak dials the
-primary gateway inside the network for the client key set and for back-channel logout. That stays
-true of the Compose stack. While `BffGeneratedKeysIT` runs, Keycloak dials the one-off gateway as
-well, for that gateway's key set; this leg belongs to the test and is not part of the narrative.
-
-=== Diagram check for the test-started rigs
-
-This change alters no fact the diagram depicts, so the diagram is deliberately not redrawn. It adds
-no Compose service, no published Compose port and no change to the `gateway.yaml` of a Compose
-instance. The four rigs of <<stub-idp-rig>>, <<tls-relaxation-rig>>, <<short-ttl-gateway>> and
-<<reserved-path-gateway>> are containers the suites start and remove, and the host ports of
-<<test-started-host-ports>> are published by those suites, not by the Compose stack.
-
-Two things did change in the material every gateway instance mounts: the shared configuration gained
-the endpoint file `endpoints/upstream-fault.yaml` and the alias `FAULT_UPSTREAM`. The diagram draws
-the mounted directories as pills and names no file inside them, and it draws the standing legs of the
-stack. The leg from `toxiproxy` to `go-httpbin` exists only between the moment `HtmlErrorPageIT`
-creates its proxy and the moment it deletes it, so it is not a standing leg and is not drawn. Neither
-the diagram nor its `<desc>` narrative was edited.
-
-=== Diagram check for the early-answer backend
-
-This change *does* alter facts the diagram depicts: it adds one Compose service and one standing
-egress leg. The diagram was therefore redrawn. It adds no host port, so the instance table, the
-port-allocator note and the <<test-started-host-ports>> block are unchanged.
-
-Three edits were made. `early-answer-backend` is drawn as a new box on the egress side of the
-gateway-egress boundary, in the second column of upstream boxes, which was empty above `k6`: its
-rectangle runs from `x 952` to `1144` and from `y 354` to `434`, the same `192` width as
-`mismatched-tls-backend` below it, and its three rows name the service, `:8080 · no host port` and
-the early answer, `return 200 before the body`. Its egress leg is drawn from the *primary* instance,
-the one instance that dials it, as an `HTTP :8080` arrow at `y 394` that crosses the gateway-egress
-boundary at `x 584` like every other egress leg and ends at `x 940`, the end point the
-`mismatched-tls-backend` arrow uses. It runs through the `12`-pixel gap between `go-httpbin`
-(bottom `388`) and `asset-origin` (top `400`), and its label sits in the lane between the boundary
-and the first column, where every other egress label sits. The `<desc>` accessibility narrative
-names `early-answer-backend` on `8080` among the gateway's egress targets, states that it publishes
-no host port and answers before reading the request body, and that it is dialled by the
-`/upload/early-answer` route every instance loads and only `Http2EarlyResponseResetIT` drives,
-against the primary instance. The footer caption lists it with the other test-only fixtures. The
-`viewBox` is unchanged.
-
-*The read-back was performed for this edit.* The diagram was rendered at 1200px against both the
-GitHub light (`#ffffff`) and dark (`#0d1117`) backgrounds per the deployment diagram-type standard
-(`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`) and both renders were read
-back. The new box's three rows end inside its right edge on both themes; the arrow touches neither
-`go-httpbin` nor `asset-origin`, crosses neither the L4-relay polyline, which turns down at `x 600`
-below the instance, nor the `mismatched-tls-backend` arrow at `y 690`; every element stays inside
-the compose-network rectangle; and the lengthened footer caption still ends inside the `viewBox`.
-The one tight spot is the `6`-pixel clearance the arrow keeps from each neighbouring box -- legible
-on both themes, and the only gap in the first column the leg can take without bending. Rendered PNGs
-are verification artifacts and are not committed.
-
-[#security-audit-dispositions]
-== Security-audit dispositions (PR #408)
-
-The security audit of the test rigs raised five findings against this topology. Each is either fixed
-or accepted, and an accepted one names the reason it is safe to keep.
-
-[cols="2,1,4"]
-|===
-| Finding | Disposition | Reason
-
-| Test-started gateways publish their application port on every interface
-| Accepted
-| Publishing it on loopback leaves the host port number dead after the container is removed
-  (<<test-started-host-ports>>). The accepted cost -- a test gateway is reachable from the host's
-  network at a fixed port while its test runs, carrying only committed test material -- and the
-  shapes rejected for it are stated there, under <<test-started-rejected-shapes>>.
-
-| `ItProfileConfigBindingWiringTest` exempts the TLS-relaxation rig from its trust guards
-| Accepted
-| The exemption is named and narrow: one fixture descriptor from the trust-profile guard and one
-  launch site, `BffTlsRelaxationIT.java`, from the launch-site guard, each by its literal path. Neither
-  is unconditional -- the guard first asserts the property each exemption rests on
-  (<<tls-relaxation-rig>>, link:declared-limit-assertion-coverage.adoc[the coverage note]).
-
-| The nginx proxy image is pinned by tag only
-| Fixed
-| `BffTlsRelaxationIT` pins the proxy as
-  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- the
-  1.27 release-line tag together with the digest of its multi-platform index -- and every other nginx
-  reference in the integration surface carries the same digest: the `mismatched-tls-backend`,
-  `asset-origin` and `early-answer-backend` services of `docker-compose.yml`, the `FROM` line of
-  `integration-tests/src/main/docker/passthrough-backend/Dockerfile` -- the fixture image the
-  `passthrough-backend` service is built from, with `openssl` installed at build time -- the `nginx-static`
-  fairness backend of `docker-compose.benchmark.yml`, and the late provider `JwksLateIdpReadinessIT`
-  starts. The digest is what binds; the tag is kept for readability, and all of these pins move
-  together.
-
-  *Documented exclusions.* The operator sample is the one nginx exception, and it is deliberate:
-  `deployment/compose-sample/docker-compose.yml` runs its `demo-api` service, and
-  `docker-compose.plain-http.yml` its `tls-terminator`, on the minor-line tag `nginx:1.27-alpine` so
-  that an operator picks up patch releases. The finding names the nginx proxy image, so the stack's
-  other images are outside it and are not pinned by this disposition: go-httpbin
-  (`ghcr.io/mccutchen/go-httpbin:2.23.1`) and Toxiproxy (`ghcr.io/shopify/toxiproxy:2.12.0`) stay on
-  exact release tags, and Keycloak already carries a digest beside its tag.
-
-| The open circuit's `Retry-After` carries no jitter
-| Accepted
-| The header states the breaker's real open delay on this node by construction; a randomised value
-  would misstate it, and RFC 9110 lets a client wait longer than the minimum it is given
-  (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
-
-| The stub identity provider exposes its admin API
-| Accepted
-| The admin API is plain HTTP on a loopback port docker assigns and on no other interface, it lives
-  only as long as the test that started its rig, and no credential or secret sits behind it: the stub
-  checks no client credential, authorization code or PKCE verifier -- only the `htu` and `htm` of each
-  DPoP proof -- and signs with a key generated when the rig starts (<<stub-idp-rig>>).
-|===
 
 [[upstream-path-integration-endpoints]]
 == `route.upstream.path` in the Integration Endpoints

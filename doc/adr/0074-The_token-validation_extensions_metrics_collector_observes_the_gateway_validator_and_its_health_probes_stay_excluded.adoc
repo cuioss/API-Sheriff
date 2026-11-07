@@ -12,7 +12,7 @@
 // summary: At token-sheriff 0.9.8 every observability bean of the token-validation extension resolves its validator through ObservedValidatorResolver, which observes the @GatewayValidator validator while the extension's own sheriff.token.issuers.* namespace is empty. The gateway therefore keeps the extension's metrics collector, which publishes sheriff.token.validation.errors and sheriff.token.validation.success for the gateway validator, and keeps excluding only the two health probes, which would report UP while observing nothing this gateway does. No sheriff.token.issuers.* projection is introduced and the extension dependency stays. ADR-0027's live key-set readiness, the eager-boot fail-closed assembly and the fail-closed jwks.tls_profile resolution carry forward unchanged.
 // tags: health-checks, readiness, metrics, scheduler, cdi, bean-exclusion, observability, extension-boundary, native-image, token-validation
 // affects: api-sheriff
-// supersedes: 27
+// supersedes: 0027
 // end-adr-metadata
 
 // Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):

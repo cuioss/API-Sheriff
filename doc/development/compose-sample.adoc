@@ -1,7 +1,9 @@
 = Compose Sample -- Contributor Guide
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The `deployment` module owns one subtree, `compose-sample/`, holding a deployment-shaped Docker
 Compose stack. This document covers why it exists as a separate stack, the decisions inside it that

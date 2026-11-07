@@ -9,7 +9,7 @@
 // summary: Where the Quarkus platform already supplies a mechanism the gateway uses it, and a hand-rolled component stays only with a recorded reason -- EnvSecretResolver, the BFF session store, ClientHelloSniParser and the pre-boot configuration path each carry one. The framework-agnostic core rule of ADR-0005 and its six-package gate are retired; what remains is a narrowed gate, PreBootFrameworkFreeArchTest, that keeps the pre-boot packages config.boot, config.load, config.model, config.validation, config.topology and routing free of framework dependencies because the offline configuration check runs them before the framework starts. @SessionScoped and the Vert.x Web SessionStore are rejected for the BFF session, the session store and binding stay producer-built, and Quarkus command mode is not adopted for the offline check.
 // tags: module-structure, platform-adoption, quarkus, hand-rolled, arch-gate, pre-boot, session-store, cdi, configuration
 // affects: api-sheriff, documentation
-// supersedes: 5
+// supersedes: 0005
 // end-adr-metadata
 
 == Status

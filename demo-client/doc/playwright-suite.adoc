@@ -1,7 +1,9 @@
 = API Sheriff -- Demo Client and the Playwright End-to-End Suite
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The *contributor* view of `demo-client/` -- the dependency-free demo single-page application and the
 Playwright suite that drives it against the real `integration-tests` stack. It exists so a

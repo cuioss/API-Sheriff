@@ -1386,7 +1386,6 @@ and a hit here that 10a does not also produce means the enumeration has regresse
 | `README.adoc` | the **Known Limitations preamble** (*"Verified as still open at the X cut"*) — see 10c | pass 2 / 3 |
 | `doc/README.adoc` | the same ALPHA callout, stated for the doc layer | pass 2 / 3 |
 | `doc/user/README.adoc` | the same ALPHA callout again — ⛔ **there are THREE, not two** | pass 2 / 3 |
-| `doc/fapi_status.adoc`, `doc/features-analysis.adoc` | *"as of the X alpha"* — ⛔ **stale since 0.1.0, see pass 3** | pass 3 ONLY |
 | `deployment/compose-sample/docker-compose.yml` | the **`VERSION SKEW, until X ships` comment block** — see 10d | pass 2 |
 | `doc/user/context-path.adoc` | the published-consumer `<parent><version>` (*"The API Sheriff release you are adopting"*) | pass 2 — ⛔ **missing from this table until the 0.2.1 cut** |
 

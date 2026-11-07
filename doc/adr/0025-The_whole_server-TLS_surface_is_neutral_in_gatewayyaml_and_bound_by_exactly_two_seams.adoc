@@ -1,7 +1,9 @@
 = ADR-0025: The whole server-TLS surface is neutral in gateway.yaml and bound by exactly two seams
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
