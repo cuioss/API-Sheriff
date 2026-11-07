@@ -1,94 +1,87 @@
 = Compose Sample -- a Deployment-Shaped Stack You Can Run
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 A runnable Docker Compose stack that shows the *shape* of an API Sheriff deployment: the published
 image pulled by tag, all configuration supplied through read-only mounts, and the runtime-hardening
-directives a real deployment should set, set explicitly rather than left to a default. It is a
-teaching artifact, not a deployment you should run as-is -- see
-<<_what_must_change_before_this_is_real>>.
+directives set explicitly rather than left to a default. It is a teaching artifact, not a deployment
+to run as-is -- see <<_what_must_change_before_this_is_real>>.
 
-*The scope of that hardening claim, stated so it is not read wider than it holds.* The *security*
-directives -- non-root, `cap_drop: ALL`, `no-new-privileges`, `read_only` with explicitly sized
-`tmpfs`, and read-only configuration mounts -- are set on *all three* services. *Resource limits are
-set on the gateway only*, and that asymmetry is deliberate rather than an omission: an unvalidated
-memory cap on a third-party image is a crash loop in an operator's face rather than a hardening win,
-and the right ceiling for the identity provider follows from the database and realm size a real
-deployment runs, which this sample cannot know. Size those for your own stack -- do not copy a
-number from here.
+The *security* directives -- non-root, `cap_drop: ALL`, `no-new-privileges`, `read_only` with
+explicitly sized `tmpfs`, read-only configuration mounts -- are set on every service. *Resource
+limits are set on the gateway only*: the right ceiling for a third-party image depends on the
+database and realm size of your deployment, so size those yourself rather than copying a number.
 
-It lives at `deployment/compose-sample/` and is a *sample*, not a test harness. It carries three
-services and nothing else -- the gateway, an identity provider whose realm mints the tokens the
-gateway validates and signs browser users in, and a stand-in upstream that the gateway proxies to.
-The gateway serves that upstream twice: as a public API at `/api`, and behind a *server-session
-BFF* at `/app`, where a browser logs in through the identity provider and the gateway holds the
-tokens. See <<_logging_in_through_the_bff>>. The
+The stack lives at `deployment/compose-sample/` and runs three services: the gateway, an identity
+provider (Keycloak) whose realm mints the tokens the gateway validates and signs browser users in,
+and a stand-in upstream (`demo-api`). The gateway serves that upstream twice: as a public API at
+`/api`, and behind a *server-session BFF* at `/app` (see <<_logging_in_through_the_bff>>). The
 link:../development/compose-sample.adoc[contributor guide] explains why it is a separate stack from
-the one `integration-tests` brings up, and draws the topology.
+the one `integration-tests` brings up.
 
-IMPORTANT: The sample's BFF needs the gateway release *after* `0.2.4`. The image the sample pins,
-`0.2.4`, predates `oidc.back_channel_origin` and the `/bff/*` reserved paths, so it refuses the
-sample's `gateway.yaml` at boot. Until that release is cut and the pin moves to it, run the sample
-with a locally built image -- <<_route_b_a_locally_built_image>>.
+image::../resources/diagrams/compose-sample-topology.svg[Compose sample topology: one bridge network holding api-sheriff (TLS on 8443, management on 9000), keycloak (admin console on host port 1443) and demo-api (no host port); only the gateway is reachable for traffic, and it crosses the trust boundary for the JWKS fetch to Keycloak over HTTPS 8443 and the proxied request to demo-api over HTTP 8080,opts=inline]
 
-An optional override file adds a fourth service, a TLS-terminating hop in front of the gateway, to
-demonstrate the ingress / sidecar deployment shape in which the gateway itself serves plain HTTP.
-It carries the same *security* directives as the three above -- non-root, `cap_drop: ALL`,
-`no-new-privileges`, `read_only` with explicitly sized `tmpfs` -- and, like the identity provider and
-the upstream and unlike the gateway, declares *no resource limits*, for the reason given just above.
-See <<_the_plain_http_variant>>.
+Two optional override files change that shape:
 
-A second override file adds no service at all. It puts the identity provider *behind* the gateway:
-Keycloak publishes no host port, and the browser reaches its login pages through the gateway under
-`/auth`. See <<_the_auth_fronted_variant>>.
+* <<_the_plain_http_variant>> adds a TLS-terminating hop in front of the gateway, which then serves
+  plain HTTP -- the ingress / sidecar shape. The hop carries the same security directives and, like
+  Keycloak and `demo-api`, no resource limits.
+* <<_the_auth_fronted_variant>> puts Keycloak *behind* the gateway: it publishes no host port, and
+  the browser reaches its login pages through the gateway under `/auth`.
 
 WARNING: Every credential and every piece of key material in this sample is a placeholder. Read
 <<_what_must_change_before_this_is_real>> before this stack is reachable by anything you care about.
 
 == Before you start
 
-You need Docker with Compose v2 (`docker compose version` must succeed), and a gateway image. There
-are two routes to the image; pick one.
+[IMPORTANT]
+.Prerequisites
+====
+* *Docker with Compose v2* -- `docker compose version` must succeed.
+* *Docker Compose 2.24.4 or newer for the two variants.* Both override files use the Compose-Spec
+  `!override` merge tag (the plain-HTTP override to drop the gateway's published `8443`, the
+  `/auth`-fronted override to empty Keycloak's port list). Older releases do not reject the file:
+  they ignore the tag and keep the base value, which surfaces as a host-port collision or as a
+  still-published admin console. 2.24.0 is not enough -- it brought the sibling `!reset` tag, not
+  `!override`. `start-sample.sh --plain-http` and `--auth-fronted` check the version and refuse an
+  older Compose. The base sample has no such floor.
+* *A gateway image newer than `0.2.4`.* The pin in `deployment/compose-sample/.env` is still
+  `0.2.4`, which predates `oidc.back_channel_origin` and the `/bff/*` reserved paths and refuses the
+  sample's `gateway.yaml` at boot. Until the pin moves to a later release, use
+  <<_route_b_a_locally_built_image>>. Tags up to `0.2.4` are also `linux/amd64` only; later releases
+  publish `linux/amd64` and `linux/arm64`.
+====
 
-The image must be the gateway release after `0.2.4` or a local build of the current source. The
-sample's `gateway.yaml` carries the BFF's `oidc` block, and `0.2.4` -- the image the sample still
-pins -- predates `oidc.back_channel_origin` and the `/bff/*` reserved paths and refuses that document
-at boot. Until the next release moves the pin, Route B is the route that works.
+There are two routes to the gateway image; pick one.
 
 === Route A -- the published image (the default)
 
-The sample defaults to the pinned published image and needs nothing from you but the ability to
-reach `ghcr.io` -- once the pin names a release after `0.2.4`; see above:
+Once the pin names a release after `0.2.4`, the sample needs nothing but access to `ghcr.io`. The
+bring-up script pulls the pinned image if it is missing; to pull it yourself:
 
 [source,bash]
 ----
 docker pull ghcr.io/cuioss/api-sheriff:0.2.4
 ----
 
-The bring-up script pulls it for you if it is missing, so this step is optional. From the first
-release the two-platform lane cuts, Route A works on `linux/amd64` and `linux/arm64` hosts alike,
-Apple Silicon and AWS Graviton included: the published tag names an index over one image per
-platform, and the pull selects the image for your host. Tags up to and including `0.2.4` predate that
-lane and are `linux/amd64` only, so on an arm64 host use Route B while the pin names such a tag. For
-what the published image contains, how it is tagged, and how to verify its signatures and SBOMs, see
-link:container-image.adoc[Container Image -- Pulling, Running and Verifying]; this guide does not
-restate any of it.
+The published tag names an index over one image per platform, so the pull selects the image for
+your host, Apple Silicon and AWS Graviton included. For what the image contains, how it is tagged,
+and how to verify its signatures and SBOMs, see
+link:container-image.adoc[Container Image -- Pulling, Running and Verifying].
 
 [[_route_b_a_locally_built_image]]
 === Route B -- a locally built image
 
-You need Route B in exactly three cases: the pin is still `0.2.4` or earlier, which predates the
-sample's BFF configuration and refuses it at boot; your host is an arm64 machine and the pin is still
-a tag that predates the two-platform lane (`0.2.4` or earlier, which is `linux/amd64` only); or you
-want to run the sample against local changes.
+Use Route B while the pin is `0.2.4` or earlier (see the prerequisites), or to run the sample
+against local changes. It does not serve a CPU below the published image's baseline -- an x86-64 CPU
+without AVX2, or an older AArch64 core such as Graviton 1 or the Raspberry Pi 4, listed in
+link:../../README.adoc#_known_limitations[the README's Known Limitations]: the commands set no
+`-march`, so a local build compiles for that same baseline.
 
-Route B does not serve a CPU below the baseline the published image is compiled for -- an x86-64 CPU
-without AVX2, or an older AArch64 core such as Graviton 1 or the Raspberry Pi 4, as listed in
-link:../../README.adoc#_known_limitations[the README's Known Limitations]. The commands below set no
-`-march`, so a default local build compiles for that same baseline, not for the host it runs on.
-
-To run the sample against your own build, produce the image and point the sample at it:
+From the repository root, build the image and point the sample at it:
 
 [source,bash]
 ----
@@ -98,14 +91,13 @@ docker compose -f integration-tests/docker-compose.yml build api-sheriff
 export API_SHERIFF_IMAGE=api-sheriff:distroless
 ----
 
-Both commands run from the repository root. `API_SHERIFF_IMAGE` is the single knob: the compose file
-references it with no inline fallback, its default lives once in `deployment/compose-sample/.env`
-(which Compose auto-loads), and the bring-up script's image preflight reads the value back out of the
-resolved Compose model instead of restating it. Exporting the variable therefore steers the preflight
-and the stack that actually starts as one -- they cannot disagree.
+`API_SHERIFF_IMAGE` is the single knob: its default lives once in `deployment/compose-sample/.env`,
+the compose file references it with no inline fallback, and the bring-up script's image preflight
+reads the value from the resolved Compose model. The exported value therefore steers the preflight
+and the started stack alike.
 
-If neither route has produced the image, the bring-up fails immediately -- naming the reference it
-looked for and both routes -- rather than starting a partial stack.
+If neither route has produced the image, the bring-up fails immediately, naming the reference it
+looked for and both routes, rather than starting a partial stack.
 
 == Bringing the stack up
 
@@ -358,21 +350,7 @@ port the gateway used to publish, so `curl -k https://localhost:8443/api` still 
 is which component answers the handshake. The BFF login is unchanged too: `/app` logs a browser in
 the same way, and `check-bff-login.sh` runs against this variant without an argument.
 
-=== Requires Docker Compose 2.24.4 or newer
-
-The override drops the gateway's published `8443` using the Compose-Spec `!override` merge tag.
-Releases older than 2.24.4 do not implement *that* tag, and they *do not reject the file* -- the tag
-is ignored and the base's value survives the merge. The gateway would then keep publishing `8443`
-alongside the terminator's binding on the same host port, which surfaces as an opaque port conflict
-or as a published container port that answers nothing.
-
-NOTE: 2.24.0 is not enough, and the difference is easy to miss. The sibling `!reset` tag arrived in
-2.24.0; `!override` -- the one this override actually uses, because `!reset` would also drop the
-loopback management publication the readiness gate is derived from -- arrived in 2.24.4. On 2.24.0
-through 2.24.3 the file parses, the tag is silently ignored, and the collision above is what you get.
-
-`start-sample.sh --plain-http` checks the version first and refuses with that explanation rather than
-letting you debug the collision. Check yours with `docker compose version`.
+The variant needs Docker Compose 2.24.4 or newer -- see the prerequisites in <<_before_you_start>>.
 
 === Switching between the variants needs a teardown first
 
@@ -603,13 +581,9 @@ the static address the override gives the gateway. Like the plain-HTTP variant, 
 explicit subnet, `10.89.0.0/24`, because Docker honours a static address only on a network with one.
 The subnet, the gateway's address and the trusted address are one decision -- change them together.
 
-Two consequences follow from that network, and both are the plain-HTTP variant's too:
-
-* *Docker Compose 2.24.4 or newer.* Keycloak's empty port list uses the `!override` merge tag, and an
-  older Compose ignores it and keeps publishing the admin console. `start-sample.sh --auth-fronted`
-  refuses an older Compose.
-* *A teardown between variants.* The base sample creates the network without a subnet, and Compose
-  does not reconfigure an existing network. Run `stop-sample.sh` before switching.
+As with the plain-HTTP variant, run `stop-sample.sh` before switching variants: the base sample
+creates the network without a subnet, and Compose does not reconfigure an existing network. The
+variant also needs Docker Compose 2.24.4 or newer (see <<_before_you_start>>).
 
 [[_reading_the_container_health_signal]]
 == Reading the container health signal
@@ -685,13 +659,9 @@ MGMT_ROOT="${MGMT_ROOT%"${MGMT_ROOT##*[!/]}"}"
 curl -k "https://localhost:9000${MGMT_ROOT}/health/ready"
 ----
 
-That normalisation is the same rule the rest of the project applies to this label, and the project
-keeps exactly one implementation of it per language boundary: `RootPaths.normalize` on the Java side,
-`normalize_root_path` in `integration-tests/scripts/lib-docker-compose.sh` on the shell side -- which
-both `start-integration-container.sh` and `demo-client/scripts/start-dev-environment.sh` source
-rather than re-implement -- and the k6 resolver. All of them collapse the whole trailing run before
-composing. The line above is the sample's own inline copy, kept deliberately: this stack is shipped
-to be read and adapted standalone, so it sources nothing from `integration-tests/`.
+The normalisation line is the sample's own inline copy of the rule the project applies to this
+label everywhere: the stack is meant to be read and adapted standalone, so it sources nothing from
+`integration-tests/`.
 
 The endpoint names beneath that path (`/health`, `/health/ready`, `/health/live`, `/metrics`) are
 Quarkus' own fixed suffixes, so those alone stay spelled out. What the path itself can be, and why
@@ -824,7 +794,7 @@ The sample gateway's BFF mediates server-mode sessions with refresh enabled
 for an `/app` session rotates the refresh token, and a replayed one ends the session. The sample's
 client is the kind such a session needs -- it accepts pushed authorization requests, binds its
 access tokens with DPoP and fetches the gateway's key set (see
-link:bff-session.adoc#key-material[Server-Session BFF -- Key material]) -- and the rotation setting
+link:bff-oidc-common.adoc#key-material[BFF Shared Setup -- Key material]) -- and the rotation setting
 is shipped on so the realm you copy already carries the defence.
 
 *The cost you take on.* With no reuse permitted, a *duplicate* refresh of the same refresh token is
@@ -903,31 +873,16 @@ directory gives you a working starting point. From there the usual first four ch
   link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies` block] admits it, and the gateway's own cookies
   never do.
 +
-[IMPORTANT]
-====
-*This is a behaviour change if you are upgrading.* `forward` used to be allow-list-only, so a
-route that declared no block forwarded nothing. Declaring neither list now means *everything
-crosses*, and an existing route that omitted the block -- or omitted one of its two dimensions --
-starts forwarding client input it previously withheld.
-
-The bound is worth stating precisely: this changes what crosses *within* routes you had already
-exposed, never *which* routes are reachable (route matching is unchanged and still
-deny-by-default), and it leaks no credentials -- no forward mode copies `Cookie` (it crosses only
-as a route's `cookies` block admits it, and the gateway's own cookies never), and an inbound
-`Authorization` crosses only where a route declares a positive-list naming it. *Mitigation is one
-line:* declare a positive-list on any route whose previous no-block posture you relied on.
-
-This sample is unaffected: `demo-api.yaml` declares `headers_allow: []` / `query_allow: []`, and a
-*declared-empty* list is a positive-list naming nothing -- not the absent state. Its behaviour is
-exactly what it always was.
-====
+This sample's `demo-api.yaml` declares `headers_allow: []` / `query_allow: []`: a *declared-empty*
+positive-list naming nothing -- not the absent state -- so only what crosses without being listed
+reaches the upstream. Delete those two lines to take the default described above.
 . Replace the identity provider with your own, updating the issuer URL, the JWKS URL and the
   `allowed_egress_hosts` entry in `docker/sheriff-config/gateway.yaml` together -- the issuer value
   must match the `iss` your tokens actually carry, or every request fails as a rejected token that
   looks like a signature problem and is not. On a bearer route the client sees that rejection as a
   `404`, the answer an untrusted caller gets for every rejection raised before authentication; the
   true cause, `TOKEN_INVALID`, is counted in `sheriff_errors_total{event}` (see
-  link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). The `allowed_egress_hosts` list is authoritative: the exemption
+  link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). The `allowed_egress_hosts` list is authoritative: the exemption
   does not follow the JWKS URL to a new host, so a provider on a private address whose host the list
   still does not name is refused and its key set never loads. Update the entry, or delete the list to
   take the allowance derived from the JWKS URL's host. Rebind the `jwks.tls_profile` it names to your provider's CA at the

@@ -251,7 +251,7 @@ image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key 
 |===
 
 See link:../configuration/security-and-edge-hardening.adoc#_enumeration_detection[Configuration -- `enumeration_detection`] and
-link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes].
+link:../user/edge-security.adoc#_enumeration_detection_operator_note[Endpoint Routes].
 
 [[_threat_classification]]
 == Per-Source Threat Classification
@@ -277,4 +277,4 @@ Threat classification never alters responses on the wire. Each trip increments
 `sheriff_threat_alerts_total` and logs one ECS-formatted ALERT document
 (link:observability-and-errors.adoc#_threat_alert_document[The Threat ALERT Document]). See
 link:../configuration/security-and-edge-hardening.adoc#_threat_classification[Configuration -- `threat_classification`] and
-link:../user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes].
+link:../user/edge-security.adoc#_threat_classification_operator_note[Endpoint Routes].

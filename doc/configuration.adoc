@@ -11,38 +11,26 @@ Configuration is *static, file-based, and immutable*. It is read once at startup
 in full, frozen into immutable value objects, and never mutated at runtime. The gateway
 refuses to boot on invalid configuration.
 
-Two structural principles shape the layout:
-
 * *Endpoint config is portable; topology is environment-specific.* Route definitions never name
-  a concrete *upstream* host. They reference an abstract alias (`APP1`, `KEYCLOAK`, ...); a
-  separate topology file binds each alias to a real location. Moving a deployment changes only
-  the topology, never the endpoint files. (The claim is about the backend leg. A `match.host`
-  matcher is a different thing -- it matches the *inbound* request's `Host` header, the
-  gateway's own public vhost, and is environment-specific.)
-* *Deny-by-default at the URL layer.* Nothing is routed or trusted unless it is explicitly
-  configured: a request matching no route reaches no upstream at all, and an authentication
-  posture is written out rather than inferred. Within a route the request is already authorised
-  for, the `forward` block then chooses a *filtering posture* -- permissive by default, strict
-  by opt-in -- bounded by gateway-owned sets no configuration can override (see
-  link:configuration/routing-and-forwarding.adoc#_forward[`forward`]).
-
-The model rests on a small set of adopted patterns:
-
+  a concrete *upstream* host; they reference an abstract alias (`APP1`, `KEYCLOAK`, ...) that
+  `topology.properties` binds to a real location. A `match.host` matcher is the exception: it
+  matches the *inbound* `Host` header (the gateway's own public vhost) and is environment-specific.
+* *Deny-by-default at the URL layer.* A request matching no route reaches no upstream, and an
+  authentication posture is always written out. Within a matched route the `forward` block chooses a
+  filtering posture -- permissive by default, strict by opt-in -- bounded by gateway-owned sets no
+  configuration can override (see link:configuration/routing-and-forwarding.adoc#_forward[`forward`]).
 * *Endpoint-centric routes*, each dispatched behind the gateway's fixed upstream guard (timeout
-  and circuit breaker, link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
-* *Composable, bounded matchers* (path, method, host, header).
-* *Validated-then-immutable, atomic config.*
+  and circuit breaker, link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]),
+  with composable, bounded matchers (path, method, host, header).
 * *Three-mode forward filtering* (positive-list, negative-list, or forward-all per dimension),
   bounded by gateway-owned never-forward sets.
-* *Alias -> URL indirection with an explicit in-file env placeholder* -- a single-URL alias,
-  decomposed on read, whose value an environment variable may supply or override only through an
-  explicit `${VAR}` placeholder written in the file -- never an automatic lookup (see
-  link:adr/0004-topology-indirection.adoc[ADR-0004]).
+* *Alias -> URL indirection*: an environment variable supplies or overrides a value only through an
+  explicit in-file `${VAR}` placeholder, never by automatic lookup
+  (link:adr/0004-topology-indirection.adoc[ADR-0004]).
+* *Declarative only*: no rule language and no runtime mutation API.
 
-The provenance of these patterns -- what was adopted from which evaluated product and why -- is
-recorded in the link:features-analysis.adoc[Feature Analysis] and the ADRs, not here.
-
-The schema is intentionally declarative; there is no rule language and no runtime mutation API.
+The provenance of these patterns is recorded in the link:features-analysis.adoc[Feature Analysis]
+and the ADRs.
 
 == Configuration Layout
 
@@ -58,18 +46,14 @@ Configuration is three kinds of artifact:
   `oidc` block (BFF variants). No routes.
 
 | `endpoints/*.yaml`
-| *One file per endpoint* -- a service / host / app, or a logical group. Each file declares the
-  routes for that endpoint and, when at least one route proxies, binds to one `base_url` *alias*
-  (an endpoint of asset and redirect routes only needs none, and a *disabled* endpoint needs none
-  either -- the requirement is checked for enabled endpoints only, see
-  link:#_endpoint_identity[`enabled`]). These files are
-  *environment-independent* in their backend leg -- they never contain a real *upstream* host.
-  (An inbound `match.host` matcher names the gateway's own public vhost and is
-  environment-specific; write it as a `${VAR}` placeholder.)
+| *One file per endpoint* (a service, host, app or logical group): its routes and, when an enabled
+  endpoint has at least one proxy route, one `base_url` *alias* (see
+  link:#_endpoint_identity[`endpoint`]). Never contains a real *upstream* host; write an inbound
+  `match.host` as a `${VAR}` placeholder.
 
 | `topology.properties`
-| Maps each `base_url` alias to a concrete location (one URL per alias). Overridable per alias by
-  an environment variable. This is the *only* file that changes between environments.
+| Maps each `base_url` alias to one concrete URL, overridable per alias through an explicit
+  `${VAR}` placeholder. The *only* file that changes between environments.
 |===
 
 [source,text]
@@ -89,45 +73,47 @@ endpoint file in filename-sorted order. A `.yml` file there *fails the boot* wit
 rename it to `.yaml`; files with any other extension, and nested subdirectories, are ignored.
 
 *An endpoint file is named after the `id` it declares*: `endpoints/<id>.yaml` holds the endpoint
-whose `endpoint.id` is `<id>`, and no other. A file whose declared `id` differs from its file name
-*fails the boot* -- and the offline check (link:user/offline-config-validation.adoc[`--validate-config`]) --
-with one error reported against the file actually loaded, at `/endpoint/id`, naming both values
-and the rename that fixes it. The rule is what lets every later configuration error name the file
-it concerns: those errors are reported against `endpoints/<id>.yaml`, which therefore is always
-the file that was read.
+whose `endpoint.id` is `<id>`. A mismatch *fails the boot* (and the offline
+link:user/offline-config-validation.adoc[`--validate-config`] check) with one error at
+`/endpoint/id` of the loaded file, naming both values and the rename that fixes it. Every later
+configuration error therefore names the file that was read.
 
 == Loading, Resolution and Validation
 
 * `gateway.yaml`, every file under `endpoints/`, and `topology.properties` are read once at
   startup.
-* Each `base_url` alias declared by an *enabled* endpoint is *resolved* against the topology (a
-  disabled endpoint takes no part in resolution, so its alias may stay unresolved -- see
-  link:#_endpoint_identity[`enabled`]; an explicit in-file
-  `${VAR}` placeholder lets an environment value win over the placeholder's default, see
-  link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology]); the resolved URL is *decomposed once* into
-  `{scheme, host, port, base-path}` (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
+* Each `base_url` alias of an *enabled* endpoint is *resolved* against the topology and *decomposed
+  once* into `{scheme, host, port, base-path}` (link:adr/0004-topology-indirection.adoc[ADR-0004],
+  link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology]). A
+  disabled endpoint's alias is not resolved (see link:#_endpoint_identity[`enabled`]).
 * The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias
-  *of an enabled endpoint* (a disabled endpoint's alias is exempt -- see the bullet above),
-  a malformed topology URL, or a route referencing a missing endpoint all *fail the boot*.
+  of an enabled endpoint, a malformed topology URL, or a route referencing a missing endpoint all
+  *fail the boot*.
 * Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
-  commit. Topology values may be literal (they are locations, not secrets) but are still
-  overridable through an explicit in-file `${VAR}` placeholder.
-* *Environment override mechanism* (link:adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004]):
-  every override point is a *visible in-file placeholder*, resolved once, before
-  schema validation, uniformly across `gateway.yaml`, `endpoints/*.yaml`, and
-  `topology.properties`. The grammar is fixed: `${NAME}` (required -- the variable must be set or
-  the boot fails, the secrets semantics) or `${NAME:-default}` (optional -- the literal
-  `default`, everything between the first `:-` and the closing brace, applies when the variable
-  is unset; an environment value wins over it). `NAME` matches `[A-Za-z_][A-Za-z0-9_]*`; several
-  placeholders may appear in one scalar; there is *no nesting and no escape syntax* -- a scalar
-  carrying a `${` that is not a well-formed placeholder *fails the boot* (a loud failure is
-  always preferred over a silently un-substituted literal). The `TOPOLOGY_<ALIAS>` /
-  `ENDPOINT_<ID>_ENABLED` names used throughout this document are the *conventional variable
-  names* written inside those placeholders, not invisible code-level lookups: an environment
-  value reaches a topology or enablement field only through an explicit in-file `${VAR}`
-  reference.
-* On any validation error the process exits non-zero and logs the offending file/alias -- it does
-  not start a degraded gateway.
+  commit. Topology values may be literal (they are locations, not secrets).
+* *Environment override placeholders*
+  (link:adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004]) are resolved
+  once, before schema validation, uniformly across `gateway.yaml`, `endpoints/*.yaml` and
+  `topology.properties`:
++
+[cols="1,3"]
+|===
+| Form | Behaviour
+
+| `${NAME}`
+| Required: an unset variable fails the boot.
+
+| `${NAME:-default}`
+| Optional: the literal `default` (everything between the first `:-` and the closing brace) applies
+  when the variable is unset; an environment value wins over it.
+|===
++
+`NAME` matches `[A-Za-z_][A-Za-z0-9_]*`; several placeholders may appear in one scalar; there is *no
+nesting and no escape syntax*, and a scalar carrying a `${` that is not a well-formed placeholder
+*fails the boot*. The `TOPOLOGY_<ALIAS>` / `ENDPOINT_<ID>_ENABLED` names used in this reference are
+conventional variable names written inside such placeholders; there is no implicit lookup.
+* On any validation error the process exits non-zero and logs the offending file/alias; it never
+  starts a degraded gateway.
 
 [[_distributed_configuration]]
 === Configuration Mode -- Static Only (initial scope)
@@ -164,37 +150,41 @@ file-and-JSON-pointer error before any immutable value object is built:
   never causes a `429` -- see link:configuration/security-and-edge-hardening.adoc#_rate_limit[`rate_limit`].
 |===
 
-Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
-typo or a stale field -- fails the boot rather than being silently ignored. The schemas mirror
-this document field-for-field and are the *structural* gate only. The *cross-cutting* rules a
-schema cannot express are enforced in code and listed under
-link:configuration/validation-rules.adoc#_configuration_validation_rules_summary[Configuration Validation Rules]: endpoint- and
-route-`id` uniqueness across files, the resolution of every policy block by the one
-nearest-declared-scope rule (see
-link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]),
-`allowed_methods` verb membership, topology-alias resolvability, the `base_url`-only-with-a-proxy-route
-rule, the one-terminal-action rule and the open-redirect review of a `redirect` location, and
-same-prefix / same-exact-path disjointness. Every
-violation the configuration-validator rules detect is collected in a single pass and reported
-together, rather than one at a time, and any violation refuses the boot; the schema gate collects its
-violations the same way within the load stage, which runs first and stops the pass when it fails.
-Topology resolution runs as its own stage *before* the validator
-(link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]), and it aggregates the same way:
-every failure of the resolution pass is reported together, as `ApiSheriff-200` entries followed by
-the `ApiSheriff-201` summary. Each alias is attempted at most once per pass -- an alias shared by
-several endpoints, or by an endpoint and a `passthrough_sni` target, included -- and contributes at
-most one entry (file `topology.properties`, the alias as pointer), for the first of these failures it
-hits: a `base_url` alias of an *enabled* endpoint that `topology.properties` does not define, a
-placeholder substitution that fails, or a URL that is malformed, not absolute or not `http`/`https`.
-A failed substitution is therefore one entry per alias; when it fails on unset variables, its message
-names every unset variable of that value. An unreadable `topology.properties` is a single entry with an empty pointer. A pass with
-a topology failure stops at that stage, so the validator's violations of the same configuration are
-reported once the topology resolves. A `tls.passthrough_sni` target that `topology.properties` does
-not define is skipped by the topology stage and left to the validator, which reports it with the
-rest -- unless an enabled endpoint uses the same alias as its `base_url`, in which case it is refused
-at the topology stage as that endpoint's undefined alias. A `passthrough_sni` target that *is*
-defined but whose placeholder fails or whose URL is malformed fails the topology stage like any other
-alias. The offline check `--validate-config` reports the same entries without booting -- see
+Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* fails
+the boot. The schemas are the *structural* gate only; the cross-cutting rules (`id` uniqueness,
+policy-block resolution per link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution],
+`allowed_methods` membership, alias resolvability, `base_url`-only-with-a-proxy-route, one terminal
+action, the `redirect` open-redirect review, same-prefix / same-exact-path disjointness) are listed
+under link:configuration/validation-rules.adoc#_configuration_validation_rules_summary[Configuration Validation Rules].
+
+Boot validation runs in three stages; each collects all of its violations in one pass, reports them
+together, and stops the boot when it fails:
+
+[cols="1,3"]
+|===
+| Stage | Behaviour
+
+| 1. Load (schema)
+| Runs first. A failure stops the pass.
+
+| 2. Topology resolution
+| Runs before the validator (link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]).
+  Reports `ApiSheriff-200` entries followed by the `ApiSheriff-201` summary. Each alias is attempted
+  at most once per pass (even when shared by several endpoints or by an endpoint and a
+  `passthrough_sni` target) and yields at most one entry (file `topology.properties`, the alias as
+  pointer) for its first failure: undefined alias of an enabled endpoint, failed placeholder
+  substitution (the message names every unset variable of that value), or a URL that is malformed,
+  not absolute or not `http`/`https`. An unreadable `topology.properties` is a single entry with an
+  empty pointer. A failure here defers the validator's findings until the topology resolves.
+
+| 3. Validator
+| Reports every rule violation together. An *undefined* `tls.passthrough_sni` target is reported
+  here -- unless an enabled endpoint uses the same alias as its `base_url`, in which case stage 2
+  refuses it. A *defined* `passthrough_sni` target whose placeholder fails or whose URL is malformed
+  fails stage 2.
+|===
+
+The offline check `--validate-config` reports the same entries without booting -- see
 link:user/offline-config-validation.adoc[Offline Configuration Validation].
 
 == Gateway Configuration (`gateway.yaml`)
@@ -608,8 +598,7 @@ portal:                            # OPTIONAL application portal; omitted => off
 
 == Operator-Layer Sections
 
-This document carries the design-layer preamble above and the field reference below. Four
-operator-layer topics live in their own pages -- linked here, never copied:
+Four operator-layer topics live in their own pages:
 
 * link:user/anchors.adoc#_anchors[Anchors -- namespace-scoped policy] (the `gateway.yaml`
   `anchors` block), including the
@@ -618,7 +607,7 @@ operator-layer topics live in their own pages -- linked here, never copied:
   link:user/endpoint-routes.adoc#_asset_terminal_action[asset terminal action],
   link:user/endpoint-routes.adoc#_route_ordering[route ordering], the
   link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[defaults for omitted blocks],
-  and the link:user/endpoint-routes.adoc#_edge_hardening_defaults[edge-hardening defaults].
+  and the link:user/edge-security.adoc#_edge_hardening_defaults[edge-hardening defaults].
 * link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology
   (`topology.properties`)] -- alias resolution and the environment-variable override.
 * link:user/portal.adoc[Application portal and HTML error pages] (the `gateway.yaml` `portal`
@@ -662,47 +651,43 @@ enablement fields:
 | Field | Meaning
 
 | `id`
-| The endpoint's *unique name* (mandatory). It labels the endpoint in logs and metrics and is
-  the key for the `enabled` env override (below). *`id` must be unique across all endpoint
-  files* -- two endpoints sharing an `id` (in one file or across files) *fail the boot*. This
-  is distinct from, and additional to, route-`id` uniqueness. Pattern: `[a-z][a-z0-9-]*`.
+| *Mandatory.* Pattern `[a-z][a-z0-9-]*`. Labels the endpoint in logs and metrics and names its
+  file (`endpoints/<id>.yaml`). Must be unique across all endpoint files (in one file or across
+  files); a duplicate *fails the boot*. Independent of route-`id` uniqueness.
 
 | `enabled`
-| Whether this endpoint is active. *Defaults to `true`*. When `false`, the endpoint is *inert*:
-  its routes are *not* merged into the route table (requests to those paths get the ordinary
-  `404`), it does not participate in route disjointness / passthrough-collision checks, and its
-  `base_url` alias *need not resolve* -- so an endpoint whose backend is absent in a given
-  environment can be shipped in the config set and simply switched off there. A disabled
-  endpoint is still *schema-validated* (typos are caught), it is just not activated. Overridable
-  per environment via the in-file placeholder form -- `enabled: ${ENDPOINT_ORDER_API_ENABLED:-true}`
-  -- where the environment variable *wins over the placeholder default*
+| *Optional*, *default `true`*. When `false` the endpoint is *inert*: its routes are not merged into
+  the route table (their paths answer the ordinary `404`), it takes no part in the disjointness and
+  passthrough-collision checks, and its `base_url` alias need not resolve. It is still
+  schema-validated. Per-environment override through an in-file placeholder, e.g.
+  `enabled: ${ENDPOINT_ORDER_API_ENABLED:-true}`
   (link:adr/0004-topology-indirection.adoc#_topology_override_placeholder[ADR-0004],
-  the same mechanism link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology] uses). By convention `<ID>` in the variable name
-  is the upper-cased `id` with hyphens mapped to underscores (endpoint `order-api` ->
-  `ENDPOINT_ORDER_API_ENABLED`).
+  link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology]); by
+  convention `<ID>` is the upper-cased `id` with hyphens mapped to underscores.
+
+| `base_url`
+| A topology alias (link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology],
+  link:adr/0004-topology-indirection.adoc[ADR-0004]). *Mandatory exactly when an enabled endpoint
+  carries a proxy route* (a route declaring neither `asset` nor `redirect`); omitted by an endpoint
+  of asset and redirect routes only. A disabled endpoint is exempt: it may omit `base_url` while
+  carrying proxy routes and may name an unresolvable alias. See
+  link:user/endpoint-routes.adoc#_base_url_only_with_proxy_routes[`base_url` is mandatory only with a
+  proxy route].
 |===
 
-The endpoint's other fields are documented under their own headings: `base_url`
-(link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004];
-*mandatory exactly when an enabled endpoint carries a proxy route* -- a route declaring neither
-`asset` nor `redirect` -- and omitted by an endpoint of asset and redirect routes only. A *disabled*
-endpoint is exempt on both counts: the validator is handed only the enabled endpoints, so such an
-endpoint may omit `base_url` while carrying proxy routes, and may name an alias the topology does not
-resolve. See
-link:user/endpoint-routes.adoc#_base_url_only_with_proxy_routes[`base_url` is mandatory only with a
-proxy route]), `anchor`
-(link:user/anchors.adoc#_anchors[Anchors] -- the normative reference for both the gateway `anchors` block and
-the endpoint/route `anchor` membership field), `auth` (link:configuration/authentication-and-oidc.adoc#_auth[`auth`]),
+The endpoint's other fields: `anchor` (link:user/anchors.adoc#_anchors[Anchors], the normative
+reference for the `anchors` block and the `anchor` membership field),
+`auth` (link:configuration/authentication-and-oidc.adoc#_auth[`auth`]),
 `scopes` (link:configuration/authentication-and-oidc.adoc#_endpoint_scopes[`endpoint.scopes`]),
 `catalog` (link:#_endpoint_catalog[`endpoint.catalog`]),
 `allowed_methods` (link:configuration/routing-and-forwarding.adoc#_allowed_methods[`allowed_methods`]),
 `upstream_defaults` (link:configuration/routing-and-forwarding.adoc#_upstream_defaults[`upstream_defaults`]),
 `security_filter` (link:configuration/security-and-edge-hardening.adoc#_security_filtering[`security_filter`]),
 `forward` (link:configuration/routing-and-forwarding.adoc#_forward[`forward`]),
-`cookies` (link:configuration/routing-and-forwarding.adoc#_cookies[`cookies`]), and
-`routes` (link:user/endpoint-routes.adoc#_route_ordering[Route ordering] + the per-route field headings).
+`cookies` (link:configuration/routing-and-forwarding.adoc#_cookies[`cookies`]) and
+`routes` (link:user/endpoint-routes.adoc#_route_ordering[Route ordering] and the per-route fields).
 The policy blocks among them -- `auth`, `allowed_methods`, `upstream_defaults`, `security_filter`,
-`forward` and `cookies` -- are the endpoint's defaults for its routes, resolved by the one rule in
+`forward` and `cookies` -- are the endpoint's defaults for its routes, resolved by
 link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution].
 
 [[_portal]]
@@ -710,27 +695,28 @@ link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution].
 
 The application portal (link:user/portal.adoc[operator guide],
 link:adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053]).
-An optional `gateway.yaml` block. When it is omitted the portal is off, no path is reserved, and the
-gateway behaves exactly as without it. When it is declared the gateway reserves one exact,
-host-independent path and answers it with an HTML overview of every enabled endpoint that declares an
-link:#_endpoint_catalog[`endpoint.catalog`] block. Unknown keys are refused by the schema.
+An optional `gateway.yaml` block. Omitted: the portal is off and no path is reserved. Declared: the
+gateway reserves one exact, host-independent path and answers it with an HTML overview of every
+enabled endpoint that declares an link:#_endpoint_catalog[`endpoint.catalog`] block. Unknown keys are
+refused by the schema.
 
 [cols="1,3"]
 |===
 | Field | Meaning
 
 | `path`
-| *Mandatory* string. The exact request path the portal answers, on *any* `Host`, compared by exact
-  string equality with the canonical request path (a trailing-slash or prefix variant never
-  matches). It is answered after the pre-route checks and the reserved OIDC paths and *before* the
-  route table, so it may claim the context root (`/`) next to prefix routes. The schema requires a
-  leading `/`. The validator refuses at boot, with `ApiSheriff-200` at `/portal/path`: a path that is
-  not canonical (a `//`, a dot segment, a `?` or `#`, a percent-encoded separator, or anything the URL
-  path review refuses); a path equal to a reserved OIDC path (callback, logout, logout return,
-  back-channel logout, user-info, login, step-up, client JWKS), compared host-independently; and a
-  path equal to the exact `match.path` of an *enabled* endpoint's route. `GET` renders the page, `HEAD`
-  answers the same
-  headers with an empty body, and any other method is `405` with `Allow: GET, HEAD`.
+| *Mandatory* string with a leading `/` (schema). The exact request path the portal answers, on
+  *any* `Host`, compared by exact string equality with the canonical request path (a trailing-slash
+  or prefix variant never matches). Answered after the pre-route checks and the reserved OIDC paths
+  and *before* the route table, so it may claim the context root (`/`) next to prefix routes. `GET`
+  renders the page, `HEAD` answers the same headers with an empty body, any other method is `405`
+  with `Allow: GET, HEAD`. Boot refusals, each `ApiSheriff-200` at `/portal/path`:
++
+* not canonical (a `//`, a dot segment, a `?` or `#`, a percent-encoded separator, or anything the
+  URL path review refuses);
+* equal to a reserved OIDC path (callback, logout, logout return, back-channel logout, user-info,
+  login, step-up, client JWKS), compared host-independently;
+* equal to the exact `match.path` of an *enabled* endpoint's route.
 
 | `title`
 | *Mandatory* string, at least one character. Rendered into the template as `title` and always
@@ -795,13 +781,12 @@ the schema.
   in the data model.
 
 | `entry`
-| *Mandatory* string. The link target: an origin-relative absolute path on the gateway's own origin.
+| *Mandatory* string. The link target: an origin-relative absolute path on the gateway's own origin
+  (no scheme, authority or scheme-relative `//host`, which would make the portal an open redirect).
   The schema requires a single leading `/`, no `//` anywhere, no backslash and no control character.
-  The validator additionally refuses at boot, with `ApiSheriff-200` at `/endpoint/catalog/entry` of
-  the endpoint's file and without echoing the value, a percent-encoded `/` or `\`, and a path part
-  (the text before the first `?` or `#`) that the URL path review refuses. A scheme, an authority or a
-  scheme-relative `//host` would turn the portal into an open redirect. A query or fragment is
-  allowed. The link is not routed by the portal: following it is an ordinary request.
+  The validator also refuses, with `ApiSheriff-200` at `/endpoint/catalog/entry` and without echoing
+  the value, a percent-encoded `/` or `\`, and a path part (before the first `?` or `#`) that the URL
+  path review refuses. A query or fragment is allowed. Following the link is an ordinary request.
 
 | `order`
 | *Optional* integer. The sort key. Entries are listed by `order` ascending, an entry without `order`

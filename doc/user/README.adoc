@@ -1,7 +1,9 @@
 = API Sheriff -- Operator Guide
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The *operator layer* of the API Sheriff documentation. These documents are written for the
 people who *run* the gateway -- deploying the binary or container, authoring and operating
@@ -51,11 +53,15 @@ link:../../README.adoc#_known_limitations[Known Limitations].
 
 | link:endpoint-routes.adoc[Endpoint Route Configuration (`endpoints/*.yaml`)]
 | Authoring endpoint files: the route schema, the asset terminal action and its
-  canonicalize-and-confine path safety, route ordering and the reserved gateway paths, what each
-  omitted block resolves to, and the edge-hardening transport bounds and admission budgets. It also
-  carries the operator view of scanning sources: enumeration detection and its actions, and
-  link:endpoint-routes.adoc#_threat_classification_operator_note[threat classification] -- reading
-  the ALERT, tuning its weights and threshold, its false positives, and forwarding it to a SIEM.
+  canonicalize-and-confine path safety, route ordering and the reserved gateway paths, and what each
+  omitted block resolves to.
+
+| link:edge-security.adoc[Edge Security]
+| What the gateway does at the edge, and the knobs that change it: the inbound filter modes
+  (`security_defaults.profile`), admitting a body on `GET` and non-ASCII characters, asset content
+  types, why an existing route answers `404`, scanning-source detection and its actions,
+  link:edge-security.adoc#_threat_classification_operator_note[threat classification] -- reading the
+  ALERT, tuning it and forwarding it to a SIEM -- and the transport bounds and admission budgets.
 
 | link:protocol-routes.adoc[Protocol Routes -- WebSocket and gRPC]
 | A task-oriented guide for configuring `protocol: websocket` and `protocol: grpc` routes --
@@ -80,6 +86,12 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   copied from a shipped descriptor, and the boot record or refusal that names a failure. Composes and
   links TLS Edge, Environment-Variable Overrides and the Configuration Reference rather than restating
   them.
+
+| link:bff-oidc-common.adoc[BFF Confidential Client -- Shared Setup]
+| The setup both BFF variants share: registering the OIDC confidential client, the signing-key
+  material and replacing a key, client-secret authentication, strict refresh-token rotation at the
+  IdP, and an identity provider behind a private or self-signed CA. Both variant guides that follow
+  link to it.
 
 | link:bff-session.adoc[Server-Session BFF -- Operator Setup]
 | A task-oriented guide for standing up the server-session BFF (Variant 2): registering the OIDC
@@ -182,284 +194,8 @@ Design rationale for these features lives in the link:../README.adoc[design docu
 the link:../adr/0007-anchor-scoped-policy.adoc[Architecture Decision Records]; this layer
 describes how to *use* them, never why they were chosen.
 
-== Inbound Filter Modes (`security_defaults.profile`)
+== Edge Security
 
-The `profile` knob selects the gateway's inbound-validation mode. It is declarable gateway-wide on
-`security_defaults` and per anchor, endpoint or route on `security_filter`, where the nearest
-declared `security_filter` block wins (see
-link:anchors.adoc#_policy_block_resolution[Policy-block resolution]). The field-level contract lives
-in link:../configuration/security-and-edge-hardening.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
-section is the operator's decision guide.
-
-=== The modes
-
-[cols="1,2,3"]
-|===
-| Mode | Choose it when | What you get
-
-| `strict`
-| Default choice. Any route serving untrusted clients, and every authenticated or BFF surface.
-| The tightest caps: 1 MiB body, 20 query parameters, 1024-character header values, parameter values
-  and paths, and suspicious-pattern rejection on. The 1024-character figure is the *preset* cap;
-  `Cookie` / `Set-Cookie` values are the one exception -- a cookie-mode BFF gateway validates them
-  pre-route against a raised, gateway-wide cap derived from `oidc.session.max_cookie_size`. See
-  link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration Reference -- `oidc.session.max_cookie_size`].
-
-| `paranoid`
-| The surface really does reach a filesystem -- a document store, a static-asset origin, an
-  export/download API -- and you want path- and parameter-name content rejected on top of the
-  `strict` caps. *Do not reach for it as "strict, only more so" on an ordinary API*: it rejects a
-  parameter literally named `file`, `path` or `url`, which is everyday REST vocabulary.
-| Everything `strict` enforces, on identical caps, plus two block-lists: sensitive path segments
-  (filesystem paths and configuration filenames, matched per `/`-delimited segment) and suspicious
-  parameter names. Nothing is relaxed relative to `strict` -- this mode only adds.
-
-| `lenient`
-| A trusted internal caller legitimately needs headroom -- long tokens in headers, many query
-  parameters, larger bodies -- and you have decided that traffic is trustworthy.
-| Relaxed caps (10 MiB body, 8192-character header values, no suspicious-pattern rejection). Null
-  bytes are *still* refused and path traversal is *still* blocked -- no mode permits either.
-
-| `minimal`
-| A specific route receives url-parameter values the validator rejects but your application requires
-  -- a path-shaped callback target, an opaque token containing separators. Prefer it *per route*: a
-  gateway-wide `security_defaults.profile: minimal` is accepted only while no authenticated or BFF
-  route inherits it, because the boot validator refuses the mode on those routes.
-| Everything `strict` enforces *except* two things: the url-parameter name/value validation and the
-  per-route pipeline re-run. See "What `minimal` does not turn off" below -- it is a partial disable,
-  not an off switch.
-|===
-
-=== `minimal` is a partial disable, not an off switch
-
-Setting `profile: minimal` does *not* stop the gateway defending the route. It turns off exactly two
-things -- the url-parameter name and value validation, and the per-route pipeline re-run -- and
-nothing else. In particular, a `minimal` route **still**:
-
-* enforces `max_body_bytes`, so an over-cap body is still rejected `413`;
-* enforces `allowed_paths`, so a path outside the allowlist is still rejected `400`;
-* runs the full pre-route floor, so an encoded path separator (`%2F`), an over-cap query-parameter
-  count, and an oversized header value are all still rejected `400`;
-* enforces authentication, the verb gate, CSRF, and the forward-policy allowlists.
-
-An untrusted caller -- one that has not authenticated -- sees the two route-scoped rejections, the
-body-cap `413` and the `allowed_paths` `400`, as the unrouted `404`, so it cannot tell that the route
-exists; the true cause is counted in `sheriff_errors_total{event}` (see
-link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). The
-pre-route floor `400`s are the same for every address and keep their status.
-
-If you set `minimal` expecting the body cap or the path allowlist to stop applying, that is the
-misreading to correct: the mode is the *least* validation the gateway performs, not none of it. The
-normative closed list of what `minimal` disables is in
-link:../configuration/security-and-edge-hardening.adoc#_the_minimal_mode[Configuration Reference -- The `minimal` mode].
-
-=== `minimal` is refused at boot on authenticated and BFF routes
-
-The gateway *fails to start* if a route whose effective profile resolves to `minimal` is either
-
-* effectively authenticated -- its resolved auth posture requires a bearer token or a session, or
-* under a `type: bff` anchor.
-
-This includes the indirect cases: a `minimal` declared on the route's endpoint or anchor, and a
-gateway-wide `security_defaults.profile: minimal` that reaches such a route through the fallback, are
-refused exactly as a per-route declaration would be. It also
-includes the subtle case: a route that adds its own `auth.require: bearer` under an `access: public`
-anchor *is* authenticated in effect, so it is refused even though its anchor still reads `public`.
-
-The boot error names the route, which dimension refused it, and the remedy. Fix it by giving that
-route an explicit `profile: strict` (or `lenient`), or by moving the `minimal` declaration to the
-specific public route that needs it.
-
-=== An unrecognized `profile` value is a hard boot failure
-
-The mode set is exactly `strict`, `paranoid`, `lenient`, `minimal`. Any other value makes the gateway
-*refuse to start*, with a value-range violation naming the offending site. There is no fallback and
-no warning-and-continue.
-
-The refusal applies at every site the key appears -- `security_defaults`, an anchor's
-`security_filter`, an endpoint's `security_filter`, and a route's `security_filter`. `auth.require: none` is a *different* key in a
-different value space and is unrelated to this set.
-
-=== An omitted `security_defaults` block means `strict`
-
-A `gateway.yaml` that declares no `security_defaults` block -- or declares one without `profile` --
-resolves to `strict`. That is the fail-closed choice, and it is deliberately *not* the tightest mode
-in the set: `paranoid` is tighter still. `strict` is the tightest posture that judges request *form*
-alone, which is what makes it safe to inherit sight-unseen. `paranoid` goes further by rejecting
-request *content* -- and the block-lists it adds reject everyday REST vocabulary (see the mode table
-above), so it has to be an operator's explicit decision rather than something an omitted block opts
-into. Select it with `security_defaults: { profile: paranoid }` where the surface warrants it, and
-validate it against real traffic before it reaches production.
-
-`strict` is genuinely strict, so a route that legitimately needs headroom must say so. If a request
-is rejected `400` -- or `413` when it is the body cap -- check it against the `strict` caps in the
-mode table above. A route-scoped rejection raised before the credential check is answered as the
-unrouted `404` instead, to every client. That includes a client presenting a valid token, because
-those checks run before the gateway looks at any credential. A body that overruns the cap while it
-streams, and a filter refusal raised at dispatch, come after the credential check and keep their
-honest codes. So a `404` from a route that exists can be the same cap: read
-`sheriff_errors_total{event}` for the true cause (`SECURITY_FILTER_VIOLATION`, `PATH_NOT_ALLOWED`, `CONTENT_TOO_LARGE`), as
-described in link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route
-answers 404]. Two remedies, in order of preference:
-
-. *Raise only the cap you need*, on the specific route that needs it -- e.g.
-  `security_filter: { max_body_bytes: 5242880 }`. This keeps the strict posture everywhere else.
-. *Select the looser baseline explicitly* with `security_defaults: { profile: lenient }`. This is a
-  gateway-wide loosening; prefer option 1 unless you genuinely want it everywhere.
-
-Declaring the value you want -- rather than relying on the omitted-block default -- is the durable
-choice either way.
-
-== Admitting a Body on `GET` (`security_defaults.allow_get_with_content_length_body`)
-
-Some upstream APIs genuinely take a request body on `GET` -- Elasticsearch's `_search` is the
-common one. By default API Sheriff rejects that request `400` at the anti-smuggling framing gate,
-because a body on an otherwise-bodyless method is a request-smuggling shape. This knob admits the
-legitimate case without disabling the defence. Field-level contract lives in
-link:../configuration/security-and-edge-hardening.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
-section is the operator's decision guide.
-
-=== Symptom and fix
-
-*Symptom:* a `GET` that carries a JSON body is rejected `400` with a framing violation, and the
-upstream never sees it.
-
-*Fix:* enable the opt-in gateway-wide:
-
-[source,yaml]
-----
-security_defaults:
-  profile: strict
-  allow_get_with_content_length_body: true
-----
-
-The key is gateway-wide, not per-route, because the framing gate runs before route selection --
-there is no route resolved yet to scope it to. Omit the key, or set it `false`, and a
-`Content-Length`-framed `GET` body is rejected like every other smuggling shape.
-
-*Decide it as a gateway-wide posture change, not an upstream-local one.* Since it cannot be scoped,
-enabling it for the one upstream that needs a `GET` body also admits a `Content-Length`-framed `GET`
-body on every other route -- your `require: bearer` routes and every route under a `type: bff`
-anchor included. Content on `GET` has no defined semantics (RFC 9110 section 9.3.1), so the risk on
-those routes is a cache that keys on the URL and ignores the body, or a component that authorizes on
-the URL while the application reads the body. Leave the key `false` unless every route on the
-gateway can tolerate a `GET` body.
-
-=== What it does *not* turn off
-
-Enabling it relaxes one rejection leg, and only for `GET`: the declared-`Content-Length` leg.
-Everything else the framing gate enforces still applies. In particular, a `GET` is **still**
-rejected `400` when it carries:
-
-* a body with no declared `Content-Length` -- such a body is not `Content-Length`-framed, so it
-  falls outside the single leg this key relaxes.
-* `Transfer-Encoding` -- *unconditionally, and no configuration relaxes it.* Chunked framing on an
-  otherwise-bodyless method is the exact shape the smuggling defences exist to constrain. This costs
-  the use case nothing: an Elasticsearch client sends a `Content-Length`-framed body, never a chunked
-  one, so the relaxation is drawn where the security value is rather than where the convenience is.
-* both `Content-Length` and `Transfer-Encoding` -- the CL+TE desync primer, checked before this leg.
-* more than one `Content-Length` header, or a comma-separated `Content-Length` value.
-* a `Connection` header naming a framing or trust header (the hop-by-hop strip vector).
-
-And `HEAD` is unaffected on every leg -- a body on `HEAD` stays rejected whatever this key says.
-
-If you set this expecting `GET` framing checks to stop applying generally, that is the misreading to
-correct: it admits one specific, well-framed shape and nothing else.
-
-== Admitting Non-ASCII Characters (`security_defaults.allow_extended_ascii`)
-
-The `strict` profile -- the default -- accepts ASCII only: a header value such as
-`X-Display-Name: José`, or a Latin-1 character in a path or query parameter, is rejected `400`.
-This knob admits them without giving up the rest of the strict posture. Field-level contract lives
-in link:../configuration/security-and-edge-hardening.adoc#_the_extended_ascii_override[Configuration Reference -- The
-extended-ASCII override]; this section is the operator's decision guide.
-
-=== Symptom and fix
-
-*Symptom:* a request carrying a non-ASCII header value (a display name, a localized label) is
-rejected `400` by the security filter, and the upstream never sees it.
-
-*Fix:* enable the override gateway-wide, keeping the profile:
-
-[source,yaml]
-----
-security_defaults:
-  profile: strict
-  allow_extended_ascii: true
-----
-
-Switching to `profile: lenient` would admit the same characters, but it also relaxes every other
-validator and raises every limit -- prefer this key when non-ASCII input is the only reason.
-
-Declaring `profile: lenient` on the one route that needs it does *not* work for header values: the
-pre-route floor checks every header value against the gateway baseline before a route is selected,
-which is also why this key is gateway-wide rather than per route. The opposite direction works:
-`allow_extended_ascii: false` on a `lenient` gateway rejects non-ASCII input everywhere while
-keeping the lenient limits.
-
-Omit the key and the profile decides, exactly as before the key existed.
-
-=== What it does *not* turn off
-
-Header values may then carry any Unicode; paths and query-parameter values gain only the Latin-1
-range (U+00A0-U+00FF), since URLs stay ASCII-plus-Latin-1 per RFC 3986. Whatever the key says, the
-gateway still rejects:
-
-* the C1 control characters U+0080-U+009F;
-* non-ASCII in a header *name*, a cookie name or a cookie value;
-* Unicode combining marks;
-* CR, LF and the other control characters in headers and cookies (TAB stays legal in a header value).
-
-*Decide it as a gateway-wide posture change.* It reaches every route, so first confirm your
-upstreams, and anything that logs or re-emits header values, handle non-ASCII input safely.
-
-== Asset Content Types (`asset_defaults.content_types`)
-
-The gateway -- never the backing directory or upstream -- decides the `Content-Type` of every asset
-it serves, from its own built-in extension map. An extension the map does not carry is served as
-`application/octet-stream`, which browsers download instead of rendering. `asset_defaults` is how
-you teach the gateway that extension. Field-level contract lives in
-link:../configuration/routing-and-forwarding.adoc#_asset_defaults[Configuration Reference -- `asset_defaults`]; this
-section is the operator's decision guide.
-
-=== Symptom and fix
-
-*Symptom:* a file served through an `type: asset` anchor downloads instead of rendering, and the
-response carries `Content-Type: application/octet-stream`.
-
-*Fix:* declare its extension, gateway-wide:
-
-[source,yaml]
-----
-asset_defaults:
-  content_types:
-    webmanifest: application/manifest+json
-    avif: image/avif
-----
-
-Keys are the lowercase extension without the dot. An omitted block is the same as an empty one: the
-built-in map governs alone.
-
-=== The block is add-only -- and a built-in extension is refused at boot
-
-You can *teach* the gateway an extension it does not know. You cannot *change* one it does. The 21
-built-in extensions -- `html`, `htm`, `css`, `js`, `mjs`, `json`, `map`, `xml`, `txt`, `svg`, `png`,
-`jpg`, `jpeg`, `gif`, `webp`, `ico`, `woff`, `woff2`, `ttf`, `pdf`, `wasm` -- always win, and an
-entry naming any of them makes the gateway *refuse to start*, with the error naming the offending
-extension.
-
-That refusal is a security bound, not a limitation to work around. The built-in map is exactly what
-makes an asset's `Content-Type` gateway-governed rather than source-dictated. If an entry here could
-override one, then anyone who can edit the mounted `gateway.yaml` could remap `svg` away from
-`image/svg+xml`, or point any built-in extension at `text/html` -- turning a file served from a
-directory mount or a secondary origin into a script-executing document on the *gateway's own
-origin*. That is a stored-XSS lever on a security gateway, so the map is closed to overrides while
-staying open to additions.
-
-The gateway refuses at boot rather than ignoring the entry at request time deliberately: a silently
-ignored mapping looks like a working one in the descriptor, and you would only discover otherwise
-from a served response. The boot failure tells you immediately.
-
-*If you believe you need to override a built-in*, the mapping is not the right tool -- serve the
-file under an extension the gateway does not map, or correct the file's extension to match its
-actual type.
+The inbound filter modes (`security_defaults.profile`), admitting a body on `GET`, admitting
+non-ASCII characters, asset content types, the uniform `404`, scanning-source detection, threat
+classification and the transport bounds are covered in link:edge-security.adoc[Edge Security].

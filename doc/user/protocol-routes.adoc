@@ -1,7 +1,9 @@
 = Protocol Routes -- WebSocket and gRPC
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 A task-oriented guide for operators configuring `protocol: websocket` and `protocol: grpc`
 routes in `endpoints/*.yaml`. It shows *how* to author these routes and tune their per-route knobs;
@@ -33,6 +35,10 @@ Declare a `forward` block only to *narrow* that. One protocol-specific caution: 
 declare `headers_allow` must list `te`, because a positive-list never copies a name it does not
 name and gRPC over HTTP/2 requires `TE: trailers`. See
 link:../architecture/routing-and-forwarding.adoc#_forward_policy[Architecture -- Forward Policy].
+
+How each protocol is handled, from the TLS accept to the upstream:
+
+image::../resources/diagrams/protocol-handling.svg[Protocol handling: SNI passthrough relays raw TCP; HTTP/1.1, HTTP/2 and GraphQL run the full pipeline and stream the body; WebSocket runs the pipeline and the origin check, answers 101 and relays opaque frames; gRPC inspects HTTP/2 metadata only and renders post-trust rejections as trailers-only,align="center"]
 
 == Configuring a WebSocket route
 
@@ -183,7 +189,7 @@ five minutes is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
 count, and the call's `grpc-timeout` is not honoured. A service whose calls stay silent for longer
 than five minutes has to send messages to keep them open; the bound is fixed and has no
 configuration key. See
-link:endpoint-routes.adoc#_edge_hardening_defaults[Endpoint Routes -- edge hardening defaults] and
+link:edge-security.adoc#_edge_hardening_defaults[Edge Security -- edge hardening defaults] and
 link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 === gRPC rejections are trailers-only
@@ -205,7 +211,7 @@ caller that the address is a gRPC route. A gRPC client therefore sees such a cal
 transport error its runtime derives from an HTTP `404` -- `UNIMPLEMENTED` (12) in the common
 runtimes -- rather than `UNAUTHENTICATED` (16). The true cause is counted in
 `sheriff_errors_total{event}` (see
-link:endpoint-routes.adoc#_uniform_not_found_operator_note[Endpoint Routes -- Why an existing route
+link:edge-security.adoc#_uniform_not_found_operator_note[Edge Security -- Why an existing route
 answers 404]). Setting `security_defaults.uniform_not_found: false` restores the trailers-only answer
 for these rejections, `UNAUTHENTICATED` (16) for a call without a token included.
 

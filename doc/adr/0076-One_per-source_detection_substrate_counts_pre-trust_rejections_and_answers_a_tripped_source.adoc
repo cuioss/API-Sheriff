@@ -283,7 +283,7 @@ admission.
 * link:../architecture/tls-and-inbound-security.adoc#_per_source_detection[Architecture -- Per-Source Detection] and
   link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[the HTTP/2 transport bounds]
 * link:../configuration/security-and-edge-hardening.adoc#_enumeration_detection[Configuration -- `enumeration_detection`]
-* link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
+* link:../user/edge-security.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
   sources and enumeration detection] -- the operator guide
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
   -- the uniform `404`, the trust boundary and the held-answer sub-budget

@@ -1,329 +1,213 @@
 = Variant 3 -- BFF, Cookie-based (non-session)
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 == Summary
 
-The cookie-based Backend-For-Frontend variant is the *stateless* evolution of the
-link:02-bff-session.adoc[session-based variant]. API Sheriff is still a full OIDC confidential
-client running the authorization-code + PKCE login flow, but instead of holding tokens in a
-server-side store it *encrypts the tokens (AES-256-GCM) into an `HttpOnly` cookie* and
-decrypts them per request. There is *no server-side store* -- the encrypted cookie carries the
-session state, so all gateway instances need only share key material: the sealing-key file and the
-two signing-key files (see <<client-controls,the client controls below>>).
+The cookie-based Backend-For-Frontend variant is the *stateless* counterpart of the
+link:02-bff-session.adoc[session-based variant]. API Sheriff is the same OIDC confidential client,
+but instead of a server-side store it *seals the tokens (AES-256-GCM) into an `HttpOnly` cookie* and
+unseals them per request. All gateway instances share only key material: the sealing-key file and
+the two signing-key files (see <<client-controls,the client controls below>>).
 
-This is the *token-mediating backend* shape, and it is the *preferred* target
-because it preserves the gateway's stateless, self-contained posture. It is planned to follow
-the session-based variant.
+Cookie mode is implemented. Select it with `oidc.session.mode: cookie`; the key has no default, so a
+deployment declares `cookie` or `server`. This is the *token-mediating backend* shape, chosen where
+the gateway's stateless, self-contained posture matters more than immediate revocation.
 
-NOTE: This variant is the *stateless BFF* shape of `CLIENT-19` (tokens returned to the browser
-only inside an `HttpOnly` cookie encrypted with a server-side symmetric key). The authoritative
-specification, its standing as the sole authority for the BFF surface, and the current
-`token-sheriff-client` engine dependency (the engine performs the OAuth legs; API Sheriff
-owns the browser-facing BFF side) are stated canonically in
+NOTE: This is the *stateless BFF* shape of `CLIENT-19` (tokens returned to the browser only inside
+an `HttpOnly` cookie encrypted with a server-side key). The authoritative specification and the
+`token-sheriff-client` engine seam are stated in
 link:../architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer].
+
+*Operator guides.* Setting this variant up step by step is in
+link:../user/bff-cookie.adoc[BFF -- cookie mode]. What both BFF modes share -- the login handshake,
+pushed authorization requests, DPoP binding, client authentication and key material -- is in
+link:../user/bff-oidc-common.adoc[BFF -- OIDC client common to both modes]. This page is the
+posture datasheet.
 
 == Login Flow
 
-The login handshake is identical to the link:02-bff-session.adoc[session-based variant] up to
-the final binding step. The gateway pushes the authorization request -- PKCE, `state`, `nonce`,
-scope and redirect URI -- to the IdP over the back channel, redirects the browser to the IdP with
-`client_id` and `request_uri` only, exchanges the code server-to-server with its client credential
-and a DPoP proof, accepts the token response only when the access token is bound to its proof key,
-and validates the tokens offline (all through the `token-sheriff-client` engine) -- then, in this
-variant, *encrypts them into an `HttpOnly` cookie* rather than storing them server-side.
-
-How the IdP answers that redirect is specific to the IdP. The pinned Keycloak image
-(`integration-tests/docker-compose.yml`) may answer an authorization request that names a pushed
-`request_uri` with a further `302` to its own `login-actions/authenticate` page, and that page is the
-login form; the browser follows it, and the integration suite's login flow accepts that one redirect.
-
-The identity provider is addressed as in the session-based variant: `oidc.issuer` is its one
-identity, compared unrelaxed against the discovery `issuer` and every `iss`; the browser follows the
-advertised endpoints; and, when `oidc.back_channel_origin` is configured, the gateway's own
-back-channel calls go there -- but only to endpoints the IdP advertises on the issuer's own origin;
-an endpoint advertised on another origin is dialled as advertised. The split is transport, not
-identity -- see
-link:02-bff-session.adoc[Variant 2] and
-link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069].
+The login is identical to the link:02-bff-session.adoc[session-based variant] up to the final
+binding step: pushed authorization request, code exchange with the client credential and a DPoP
+proof, offline token validation -- then, in this variant, the tokens are *sealed into the session
+cookie* instead of stored.
 
 image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client login: redirect to IdP, code exchange, token validation, cookie binding, align=center]
 
 [[client-controls]]
 == Client Authentication, Pushed Requests and Token Binding
 
-Three properties of the confidential client are fixed by
-link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
-and shared with the session-based variant:
+Identical to the session-based variant and fixed by
+link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]:
+every authorization request is pushed, every access token is bound to the gateway's DPoP key, and
+the gateway authenticates with `private_key_jwt` unless `oidc.client_secret` is configured. The
+token injected upstream travels as `Authorization: Bearer` without a proof.
 
-* *Pushed authorization requests.* Every authorization request is pushed. The browser carries only
-  `client_id` and `request_uri` to the IdP, so the request cannot be read or altered on the front
-  channel.
-* *The sender constraint.* Every token request carries a DPoP proof signed with one key, and every
-  access token is bound to that key by its `cnf.jkt` claim. The gateway refuses a token response that
-  is not bound: a login ends with `400` and no session, a widening with `400` and the session
-  unchanged, and a refresh ends the session.
-* *Key-based client authentication, by default.* The gateway authenticates to the IdP with
-  `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
-  gateway path, `/bff/jwks` by default, answered on every host -- and the IdP fetches it from there.
-
-Each of the two keys is either read from a PEM file the configuration names by path, or generated at
-startup when no file is named. In key mode the two are two keys: one file named for both, or the same
-key under two paths, is refused at boot, because FAPI 2.0 section 6.8 asks for one key per purpose.
-
-*Horizontal scaling needs the same key files on every replica.* This variant exists to run several
-replicas without a shared store, and the two signing keys join the sealing key as the material those
-replicas share. A generated key lives in one process, so the generated mode fits a single replica
-only. With a different client-authentication key per replica the IdP verifies against the key set of
-whichever replica it fetched from, and authentication fails on the others. With a different proof key
-per replica a refresh on another replica presents a proof signed with a key the session's tokens are
-not bound to, which an identity provider may refuse.
-
-The binding ends at the gateway. The token injected upstream carries `cnf.jkt` and travels as
-`Authorization: Bearer`, without a proof: an upstream must not check `cnf`.
-
-*The client secret is an operator choice.* Configuring `oidc.client_secret` selects
-`client_secret_basic` in place of `private_key_jwt`. Pushed requests and the DPoP binding stay in
-effect, the JWKS path answers `404`, and the gateway logs `WARN` `ApiSheriff-133` at every boot.
+*Every replica needs the same key files.* This variant exists to run several replicas without a
+shared store, so the two signing keys join the sealing key as shared material. A generated key lives
+in one process and fits a single replica only: with per-replica client-authentication keys the IdP
+fails authentication on all but one replica, and with per-replica proof keys a refresh on another
+replica presents a proof the tokens are not bound to. The two signing keys must be two different
+files; one key for both purposes is refused at boot.
 
 [WARNING]
 ====
-Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
+Client-secret authentication is not FAPI 2.0 conformant and may weaken security. The gateway logs
+`WARN` `ApiSheriff-133` at every boot while it is configured.
 ====
 
-Operator setup for both modes is in
-link:../user/bff-cookie.adoc#signing-keys[the operator guide], and the requirement-by-requirement
-position in link:../fapi_status.adoc[FAPI 2.0 Status].
+Key files, generated keys and client registration are in
+link:../user/bff-oidc-common.adoc[the common BFF guide] and
+link:../user/bff-cookie.adoc#_key_material[the cookie-mode guide]; the requirement-by-requirement
+position is in link:../fapi_status.adoc[FAPI 2.0 Status].
 
 == Steady-State API Call
 
-An API call carries the encrypted token cookie. The gateway:
+An API call carries the sealed token cookie. The gateway:
 
-. Reads and *decrypts* the cookie (AES-256-GCM) to recover the tokens -- no store lookup. A session
-  past its absolute lifetime or its idle timeout is no session (see <<_session_lifetime>>).
-. If the token is near expiry, transparently refreshes it and re-seals the cookie.
-. Injects `Authorization: Bearer <token>` and forwards, applying the same
-  link:01-base-gateway.adoc[base-gateway] filtering and per-route
-  link:../configuration/routing-and-forwarding.adoc#_forward[forward policy]. The sealed token cookie the gateway just
-  decrypted, and the activity cookie beside it, are the gateway's own cookies and reach no upstream
-  under *any* policy or mode -- that is what keeps the sealed cookie away from the backend. The
-  browser's other cookies cross only as the route's link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`]
-  block admits them, and under the default `allow: none` not at all (see
-  link:../configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward set]). The mediated bearer is
-  merged last, so it wins over any inbound `Authorization` a route's mode admitted.
+. unseals the cookie to recover the tokens -- no store lookup; a session past its absolute lifetime
+  or idle timeout is no session (see <<_session_lifetime>>);
+. refreshes a near-expiry token and re-seals the cookie;
+. injects `Authorization: Bearer <token>` last, so it wins over any inbound `Authorization`, and
+  forwards under the same link:01-base-gateway.adoc[base-gateway] filtering and per-route
+  link:../configuration/routing-and-forwarding.adoc#_forward[forward policy].
+
+The sealed cookie and the activity cookie are gateway-owned and reach no upstream under any policy.
+The browser's other cookies cross only as the route's
+link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`] block admits them -- under the
+default `allow: none` not at all.
 
 image::../resources/diagrams/bff-token-mediation.svg[Session-based versus cookie-based token mediation compared side by side, align=center]
 
-The right-hand column above is this variant; the token lives only inside the encrypted cookie,
-and the gateway holds no per-user state.
+The right-hand column is this variant: the token lives only inside the sealed cookie, and the
+gateway holds no per-user state.
 
 == Cookie Design
 
 [cols="1,3"]
 |===
-| Aspect | Design
+| Aspect | Posture
 
 | Encryption
-| AES-256-GCM (authenticated encryption) over a *packed and deflated* plaintext. The payload is the
-  token set -- access token, refresh token, the raw ID token (needed as `id_token_hint` at logout --
-  without it in the cookie, the stateless gateway could not drive RP-initiated logout), and minimal
-  metadata, including the session's active scope set (the scopes of the current token, which every
-  near-expiry refresh requests) and its granted scope set (the scopes the IdP is known to grant the
-  session, which decides whether a missing scope costs a refresh or a new authorization) -- framed
-  as length-prefixed raw UTF-8 and deflated before it is sealed; the ciphertext
-  plus nonce and auth tag form the cookie value. Framing by declared length rather than by a
-  separator is what removes the per-field base64 armouring the earlier format needed, and deflation
-  is what turns that saving into fitting the budget. Compress-then-encrypt is safe in this
-  construction for reasons that do not generalise -- see
-  link:../adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043].
-  A tampered cookie fails authentication and is rejected.
+| AES-256-GCM over the packed, deflated token set (access, refresh and ID token plus minimal
+  metadata, including the session's active and granted scope sets). A tampered cookie fails
+  authentication and is rejected. Compress-then-encrypt is safe in this construction for reasons
+  that do not generalise
+  (link:../adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc[ADR-0043]).
 
 | Cookie attributes
-| `HttpOnly` (JavaScript can never *read* the token -- direct exfiltration is prevented, but
-  an XSS payload running on the page can still *issue* authenticated requests, and encryption
-  does not prevent *replay* of a stolen cookie before it expires), `Secure`, `SameSite=Lax`,
-  `__Host-` prefix.
+| `HttpOnly`, `Secure`, `SameSite=Lax`, `__Host-` prefix. Script cannot *read* the token, but an XSS
+  payload on the page can still *issue* authenticated requests, and a stolen cookie can be replayed
+  until it expires.
 
-| Key management
-| A single server-side symmetric key, read from a key file
+| Sealing key
+| One symmetric key from the optional `session.key_file`
   (link:../adr/0072-The_cookie_sealing_key_is_read_from_a_base64_key_file_the_gateway_configuration_names_by_path.adoc[ADR-0072]).
-  `session.key_file` is *optional*: declared, it names a mounted file holding one line of base64
-  that decodes to the 32-byte key, the same file is mounted on every gateway instance, and sessions
-  survive a restart; omitted, the gateway mints a key at boot, so sessions are dropped on every
-  restart and the key cannot be shared with another replica. The configuration carries the path,
-  never the key. There is no decrypt-only companion key and no rotation window: replacing the key
-  is a clean break, and every cookie sealed under the withdrawn key is refused as "no session" so
-  its owner logs in again.
+  Declared, the same file on every instance lets sessions survive restarts and move between
+  replicas; omitted, a key is minted at boot and sessions end at every restart. There is no
+  rotation window: replacing the key ends every session sealed under the old one. See
+  link:../user/bff-cookie.adoc#_key_material[the operator guide].
 
 | Size
-| The cookie must stay within browser limits (~4 KB), enforced as a seal-time budget: an
-  over-budget seal *fails* rather than being silently truncated. The budget governs the sealed
-  *value* and defaults to 4019 bytes -- the 4096-byte per-cookie header guarantee less the 77 bytes
-  the default name and attributes wrap around it. A session that also refreshes carries three tokens
-  and is the largest shape this variant produces; in the integration suite, with DPoP-bound tokens
-  from the pinned Keycloak's `integration` realm, it seals to at most 2580 bytes, leaving 35.8 % of
-  the budget unused (see link:../development/bff-cookie.adoc[the contributor guide]). Splitting the token set across
-  several cookies stays a deliberate non-goal -- a browser concatenates the cookies it holds for an
-  origin into one request header, so chunking relocates the problem to a single header cap rather
-  than dividing it. When the margin is spent, the remedies are to reduce the token set (fewer
-  scopes, a leaner IdP token shape) or to run the link:02-bff-session.adoc[session-based variant];
-  raising the budget past the browser-safe value only moves the failure into the browser, where
-  nothing observes it. Oversized IdP tokens are a deployment consideration.
+| A seal-time budget, 4019 bytes by default: an over-budget seal *fails* rather than being
+  truncated. Splitting the token set across cookies is a deliberate non-goal. See
+  link:../user/bff-cookie.adoc#_cookie_size_budget[Cookie size budget].
+
+| Format version
+| Bound into the cookie's authenticated data; a cookie of any other version is refused as no
+  session. A version change forces one re-login per user at deploy, with no backward-compatible
+  reader
+  (link:../user/bff-cookie.adoc#_upgrading_forced_re_login_on_a_format_change[the operator guide]).
 
 | Activity cookie
-| A second, small cookie, `<session cookie name>-activity`, with the session cookie's attributes.
-  It carries the time of the last request, authenticated under a key of its own and bound to the
-  one session it belongs to, and no token. It is what the idle timeout rests on (below).
+| `<session cookie name>-activity`, with the same attributes: the time of the last request,
+  authenticated under its own key and bound to its session, no token. The idle timeout rests on it.
 |===
 
 [[_session_lifetime]]
 == Session Lifetime
 
-A session has two deadlines and ends at the earlier one, as in the
-link:02-bff-session.adoc#_session_lifetime[session-based variant].
+A session ends at the earlier of two deadlines, as in the
+link:02-bff-session.adoc#_session_lifetime[session-based variant]:
 
-* *Absolute.* `oidc.session.ttl_seconds`, counted from the login instant sealed into the cookie and
-  checked on every request. Nothing extends it; every re-seal carries the same deadline.
-* *Idle.* `oidc.session.idle_timeout_seconds` without a request the gateway let through on a session
-  route.
+* *Absolute* -- `oidc.session.ttl_seconds` from the login instant sealed into the cookie; every
+  re-seal carries the same deadline.
+* *Idle* -- `oidc.session.idle_timeout_seconds` without a request the gateway let through on a
+  session route, measured from the activity cookie. The cookie is rewritten once the recorded access
+  is 60 seconds old (or half the idle timeout, if shorter), so the deadline is exact to within that
+  interval.
 
-A stateless gateway can keep the time of the last request only in the browser. It keeps it in the
-activity cookie and not in the sealed session, for three reasons: an access then never re-seals the
-tokens, it never races a token refresh for the session cookie, and the sealed session's field set
-and format version stay as they are, so no session ends at an upgrade on its account. The gateway
-writes the activity cookie once the recorded access is one interval old -- 60 seconds, or half the
-idle timeout where that is shorter -- so the idle deadline is exact to within that interval.
-Requests that arrive in parallel with the same activity cookie each receive a new one.
-
-The activity cookie can only shorten a session. One that is missing, unreadable or bound to
-another session is ignored, and the idle timeout is then measured from the login
+The activity cookie can only shorten a session: one that is missing, unreadable or bound to another
+session is ignored, and the idle timeout is measured from the login
 (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#idle-deadline[ADR-0018]).
 
-A WebSocket relayed on a session route is closed at the session's absolute expiry. Nothing in this
-variant observes an earlier end of a session, so a logout and the idle timeout close no open
-WebSocket; the session-based variant closes it at both.
+A WebSocket relayed on a session route is closed at the session's absolute expiry only; a logout or
+the idle timeout closes no open WebSocket in this variant.
 
 == Statelessness
 
-Because the encrypted cookie carries all session state:
+* No session store, no Redis, no database.
+* Any instance with the same sealing-key file and the same two signing-key files serves any request
+  *of an established session* -- no sticky sessions, no coordination. The login leg is the exception
+  (see <<_stateless_after_login_not_during_it,Stateless after login, not during it>>).
+* A node can be added or removed with no session migration.
 
-* No session store, no Redis, no database -- the gateway's no-mandatory-external-dependency
-  posture holds fully.
-* Any gateway instance can serve any request *of an established session* as long as it has the
-  same sealing-key file and the same two signing-key files -- no sticky sessions, no coordination. The login leg is the one exception: it
-  holds per-instance pending state and requires affinity until the callback lands (see
-  <<_stateless_after_login_not_during_it,Stateless after login, not during it>>).
-* Horizontal scaling is linear; a node can be added or removed with no session migration.
-
-This is the property that distinguishes this variant from the
-link:02-bff-session.adoc[session-based variant] and the reason it is the preferred target.
-
+[[_transparent_refresh_and_step_up]]
 == Transparent Refresh and Step-Up
 
-Both work exactly as in the link:02-bff-session.adoc#_transparent_token_refresh[session-based
-variant] -- refresh with rotation on near-expiry, refresh failures disposed per kind, reuse
-detection left to the identity provider's strict rotation, and RFC 9470 step-up on upstream
-challenge -- with one difference: the refreshed token is re-sealed
-into a *new cookie* (`Set-Cookie` on the response) rather than written to a store. The refresh
-requests the session's active scope set, and the re-sealed cookie carries the set the response
-granted, so a session that logged in on a scoped route keeps its endpoint scopes across refreshes.
+Refresh, refresh-failure dispositions and RFC 9470 step-up work as in the
+link:02-bff-session.adoc#_transparent_token_refresh[session-based variant], except that the
+refreshed tokens are re-sealed into a *new cookie* (`Set-Cookie`) rather than written to a store.
+Scope enforcement works as there too
+(link:02-bff-session.adoc#_scope_enforcement[Scope Enforcement]), with two differences that follow
+from the session being the cookie:
 
-*Scope enforcement works as in the session-based variant too.* A session route compares the
-session's active scope set against the route's needed set on every request and refreshes, widens or
-refuses (link:02-bff-session.adoc#_scope_enforcement[Scope Enforcement]). Two things differ here,
-both consequences of the session being the cookie. A granted widening is persisted by re-sealing:
-the callback sets a new session cookie for the same derived session identity. The cookie sealed
-before the widening still unseals: it stays usable at its earlier level, without the added scopes,
-until the session's absolute lifetime, because nothing held by the gateway could withdraw it. In
-the session-based variant the previous cookie value stops resolving at the merge. And a request whose
-near-expiry refresh has just re-sealed the session does not also start a scope-driven refresh,
-because its own `Cookie` header still names the refresh token that refresh rotated away; it is
-widened or refused instead, and the next request, carrying the new cookie, is refreshed normally.
+* *A pre-widening cookie stays usable.* A widening re-seals a new cookie, but the cookie sealed
+  before it still unseals at its earlier scope level until the absolute lifetime -- nothing the
+  gateway holds could withdraw it.
+* A request whose near-expiry refresh just re-sealed the session is widened or refused rather than
+  refreshed again; the next request, carrying the new cookie, refreshes normally.
 
-*The refresh token's cost in the seal is measured, not open.* Holding it makes the session a
-three-token payload -- the largest shape this variant carries -- and under the shipped packaging
-that seals to at most 2580 bytes against the 4019-byte budget in the integration suite, DPoP `cnf`
-claim included. Refresh is therefore a supported cookie-mode
-posture rather than a size gamble, with a finite margin that a larger claim set or a longer
-`session.cookie_name` spends. The figures and the conditions are in
-link:../development/bff-cookie.adoc[the contributor guide]; the operator-facing consequences are in
-link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide].
+*Concurrent refresh is an accepted trade-off.* Two parallel requests with the same cookie can
+present the same refresh token. Under strict rotation (enabled in the shipped realms) the IdP reads
+the second as reuse and refuses it -- Keycloak also revokes the successor -- so the session ends
+(`ApiSheriff-111`, `credential-rejected`). Each instance single-flights refreshes per session; across
+instances the race cannot be prevented without shared state. IdP-side reuse tolerance avoids the
+forced re-login but blunts rotation's theft-detection signal (RFC 9700 §4.14). The gateway detects
+no reuse itself (ADR-0046).
 
-*The concurrent-refresh race (accepted trade-off of statelessness).* Two parallel requests
-carrying the same cookie can both cross the refresh leeway and present the *same* refresh token;
-with strict rotation the IdP reads the second attempt as reuse and refuses it -- and Keycloak also
-revokes the successor token, so the user is logged out. This race is real in the shipped realms:
-the integration and compose-sample realms both enable strict rotation. Mitigations, in order:
-each instance *single-flights* refreshes per session (the second in-instance request waits and
-reuses the result); where the IdP offers reuse tolerance -- a permitted-reuse *count*
-(Keycloak's "Refresh Token Max Reuse") or a short time-window grace (Auth0/Okta style) --
-enabling it avoids the false positive, but at a real cost: reuse tolerance blunts exactly the
-theft-detection signal rotation exists to provide (RFC 9700 §4.14), so this is a deliberate
-availability-versus-detection trade, not a free fix. A refresh the IdP rejects as reuse arrives
-at the gateway as an ordinary `invalid_grant` -- disposed as a *credential rejection*: the
-session ends, the session cookie is cleared, `ApiSheriff-111` records `credential-rejected`, and
-`on_failure` only decides how that request is answered (a login redirect or a `401`). The
-gateway itself detects no reuse -- it keeps no token family -- so the same IdP rejection is what
-stops a *real* replay of a copied pre-refresh cookie (ADR-0046). Cross-instance duplicate refresh
-cannot be fully prevented without shared state; with reuse tolerance left off, the residual
-effect is a rare forced re-login.
+*A retained ended cookie is refused locally.* When a refresh ends a cookie-mode session, the
+gateway marks the presented refresh token (a salted digest, never the token) until the session's
+absolute lifetime, so a client replaying the cookie gets the session-ended answer with no IdP call
+and no further link:../LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] record. The marker store is
+per instance, in memory and bounded; RP-initiated logout does not set it.
 
-*A retained ended cookie is refused locally (amplification guard).* Ending a cookie-mode session
-destroys nothing server-side -- only the clearing `Set-Cookie` ends it -- so a client that keeps or
-replays the sealed cookie would otherwise drive a fresh refresh grant to the IdP, and a
-`WARN ApiSheriff-111`, on every near-expiry request until the absolute TTL. When the refresh
-coordinator ends a cookie-mode session, for whichever reason
-link:../LogMessages.adoc#apisheriff-111[`ApiSheriff-111`] records, it therefore marks the presented
-refresh token -- as a salted, non-reversible digest, never the token or the cookie -- until the
-session's absolute lifetime. A later request presenting that token takes
-the session-ended disposition (cleared cookie, `on_failure`) with no IdP call, no revocation and no
-warning record. The marker is keyed on the refresh token, not the session, so a *successor* cookie of
-the same session still reaches the IdP once, is refused there, and is then marked itself. It is a
-bounded negative cache of ended tokens, not a token family: reuse detection stays the IdP's. Its
-residuals are stated plainly:
-
-* *Per instance.* Each other instance still makes one IdP call for the replayed token before it marks
-  the token itself.
-* *In memory.* A restart forgets every marker, so the next replay costs one IdP call again.
-* *Bounded.* The store holds a fixed number of markers; when it is full of unexpired ones, a token is
-  not recorded and its replays degrade to one IdP call per request, as without the guard.
-* *Refresh-ended sessions only.* RP-initiated logout does not set it, and server mode does not use it,
-  because destroying the stored session already ends every copy of the cookie there.
+The refresh token's share of the cookie budget is measured: the three-token session seals to at most
+2580 of 4019 bytes in the integration suite (see
+link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide]).
 
 == Logout
 
-Gateway-triggered logout works as in the
-link:02-bff-session.adoc[session-based variant]: `oidc.logout.path` expires the session cookie and
-the activity cookie first -- whatever the IdP offers, as there -- and
-redirects to the `end_session_endpoint` with
-`id_token_hint`, the pre-registered gateway-owned `post_logout_redirect_uri`, and a
-session-bound `state` verified on return (carried across the round-trip in the short-lived
-logout cookie described in link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`] -- stateless, so
-identical in this variant). As there, the flow calls a token-revocation seam that the shipped
-runtime binds to a no-op, so the gateway itself revokes nothing at the IdP on logout today.
+* *RP-initiated* (`oidc.logout.path`). Works as in the
+  link:02-bff-session.adoc[session-based variant]: the session cookie and the activity cookie are
+  expired first, then the browser is redirected to the IdP's end-session endpoint with a
+  session-bound `state` (carried in the short-lived logout cookie, see
+  link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`]). The gateway revokes no
+  token at the IdP on logout.
+* *Back-channel is disabled.* With no server-side session there is nothing a logout token could
+  destroy, so in `mode: cookie` `backchannel_path` answers `404`. An IdP-side session termination
+  takes effect at the next transparent refresh, when the revoked refresh token fails. Until then,
+  issued cookies stay valid -- immediate termination cannot be guaranteed.
+* *A logout cannot stop a response already in flight.* A refresh or widening callback running when
+  the browser logs out still answers with a re-sealed cookie; if it arrives after the logout
+  response, the browser again holds a valid session, until `ttl_seconds` at the latest
+  (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
-The *back-channel* differs fundamentally: with no server-side session there is nothing a logout
-token can destroy, so in `mode: cookie` the `backchannel_path` endpoint is *disabled* (`404`) --
-accepting IdP posts it cannot act on would be dead attack surface. IdP-side session termination
-still takes effect on its own: the revoked refresh token fails at the next transparent refresh
-and the session ends. Until then, already-issued cookies stay decryptable -- immediate
-termination cannot be guaranteed. Mitigate with a short `ttl_seconds` and short access-token
-lifetimes; where instant revocation is a hard requirement, choose the
-link:02-bff-session.adoc[session-based variant].
-
-*A logout cannot stop a response that is already in flight.* Expiring the cookie is all a logout
-does to a cookie-mode session on the gateway side: there is no stored session to destroy, so the
-session binding's updating write has nothing to consult and always re-seals. A token refresh or a
-widening callback that was already running for the same browser when it logged out therefore still
-answers with a re-sealed session cookie. If that response reaches the browser after the logout
-response, the browser again holds a cookie the gateway resolves as a session -- until `ttl_seconds`
-at the latest, and earlier where the IdP ended its own session on the logout, because the session's
-next transparent refresh is then refused. The same mitigations apply: a short `ttl_seconds`, short
-access-token lifetimes, and the session-based variant where a logout has to be final at once. In
-that variant the store refuses the write of a session it no longer holds, so a logout wins over a
-refresh or a widening that was in flight
-(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
+Mitigate with a short `ttl_seconds` and short access-token lifetimes; where a logout has to be final
+at once, choose the link:02-bff-session.adoc[session-based variant].
 
 == CSRF Defence
 
@@ -383,77 +267,37 @@ endpoint:
 The only material difference from the link:02-bff-session.adoc[session-based] configuration is
 `session.mode: cookie` and its sealing-key file. The two signing-key `key_file` entries are optional
 in both variants; they are written out here because a deployment with more than one replica must
-provide them, and they name two different files.
+provide them, and they name two different files. `openssl rand -base64 32 > session.key` creates a
+sealing-key file; the file is read at startup only, so a replaced key takes effect per replica on
+restart. Validation rules are in
+link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration reference].
 
-`session.key_file` is *optional*. Declare it when sessions must be shared across replicas and
-survive a restart -- that is the only thing it buys -- and mount the same file on every replica.
-`openssl rand -base64 32 > session.key` creates one. Omitting it selects the generate-on-startup key
-mode: the gateway mints a key at boot, so sessions are dropped on every restart and the key cannot be
-shared with another replica. There is no second, decrypt-only key -- replacing the key file
-invalidates every outstanding cookie, but only once every replica has restarted: the file is read at
-startup alone, so a running replica keeps the key it read. See
-link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration reference] for the authoritative validation rules
-and link:../user/bff-cookie.adoc#_key_material[the operator guide] for creating and mounting the file.
+== Security Posture
 
-== Properties
+[cols="1,3"]
+|===
+| Property | Variant 3
 
-* *Stateless* -- no server-side store; encrypted cookie carries the state.
-* *No token exfiltration via script* -- `HttpOnly` cookie; the token is never readable by
-  JavaScript (XSS on the page can still drive authenticated requests -- hence the fixed CSRF
-  defence and short token lifetimes).
-* *Self-contained* -- instances share only key material: the sealing-key file and the two
-  signing-key files.
-* *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
-* *Pushed requests and bound tokens* -- every authorization request is pushed, every access token is
-  bound to one DPoP key, and the client authenticates with a key unless a client secret is configured.
+| State | Stateless after login -- the sealed cookie carries the session; the login leg needs affinity.
+| Token custody | Tokens leave the server only sealed in an `HttpOnly` cookie; script cannot read them, but XSS on the page can still drive requests -- hence the fixed CSRF defence and short token lifetimes.
+| Shared material | The sealing-key file and the two signing-key files.
+| Revocation | Not immediate: no back-channel logout; an ended IdP session takes effect at the next refresh.
+| OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
+|===
 
 [#_stateless_after_login_not_during_it]
 === Stateless after login, not during it
 
-The variant is stateless once a session is *established*, not for the whole login exchange. The
-pending authorization -- the state the gateway holds between issuing the login redirect and
-receiving the OIDC callback -- lives in an in-memory `PendingAuthorizationStore`, which is
-per-instance and never shared. A login *begun* on one instance must therefore *complete* on that
-same instance; a callback landing on a different replica finds no pending authorization and the
-login fails.
+The pending authorization -- the state held between the login redirect and the callback -- lives in
+memory on one instance and is never shared. A login *begun* on one instance must *complete* there; a
+callback landing on another replica finds no pending authorization and the login fails.
 
-An *established* session is fully portable: any replica holding the same key material can unseal the
-cookie and serve the request. That is exactly the boundary the cookie-statelessness integration
-test documents -- it logs in only against the first instance, then exercises the second instance
-with the resulting cookie.
+An *established* session is portable: any replica with the same key material unseals the cookie.
+The cookie-statelessness integration test logs in against the first instance only, then drives the
+second instance with the resulting cookie.
 
-*Deployment consequence*: session affinity is required for the *login leg only* (the redirect
-through to the callback). Once the session cookie is issued, requests may be balanced freely
-across replicas with no affinity at all.
-
-=== Sealed-cookie format version
-
-The sealed-cookie format version is bound into the cookie's authenticated data, so a cookie carrying
-any other version fails to unseal rather than being mis-parsed -- the version byte is read at an
-explicit gate before a cipher is ever constructed. The current version is *2*: the eleven-field
-payload -- tokens, identity and session claims, the session's active scope set and its granted scope
-set `S` -- framed as length-prefixed raw UTF-8 and deflated before the seal. *The rule is to
-increment the version by one on every change to the sealed payload's field set*; a change that
-leaves the field set and its framing untouched keeps the version. The idle timeout is such a
-change: the last access lives in the activity cookie, which has a format version of its own, and
-the sealed session is as it was. A change to the activity cookie's version ends only the sessions
-whose login is older than the idle timeout.
-
-*Upgrade consequence*: existing cookie-mode sessions are invalidated on deploy and users must log
-in again, once. The numbering restarted at 1 with the change that added the active scope set, so
-cookies sealed before that change carry an earlier version byte and are refused at the version gate
-as no session; the browser re-authenticates. Version 2 added the granted scope set, so that bump
-again invalidates existing cookie-mode sessions once: a version-1 cookie is refused at the same gate
-and its browser logs in again. There is deliberately no backward-compatible acceptance
-path for a retired format: accepting one would mean synthesizing the fields it lacks -- for the
-active scope set, silently narrowing a session to `oidc.scopes`; for the granted scope set, guessing
-what the user has authorized; for the per-session identity nonce,
-silently changing the derived session identity -- or carrying a second reader for a format that
-exists only in cookies already issued. See
-link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
-for the architectural decision behind the identity model, and
-link:../user/bff-cookie.adoc#_upgrading_forced_re_login_on_a_format_change[the operator guide] for
-planning the deploy.
+*Deployment consequence*: session affinity is required for the *login leg only*, from the redirect
+to the callback. After the session cookie is issued, requests may be balanced freely.
 
 == Performance baseline
 
@@ -473,8 +317,7 @@ The defining cost of this variant:
   place of state -- and the steady-state delta between the two variants is exactly its price.
 * *The cost scales with cookie size, not with session count.* Variant 2's lookup cost is a function
   of how many sessions exist; Variant 3's unseal cost is a function of how large the sealed payload
-  is. A benchmark that grows the session population stresses Variant 2 and leaves Variant 3 flat --
-  which is the whole reason this variant is the preferred long-term target.
+  is. A benchmark that grows the session population stresses Variant 2 and leaves Variant 3 flat.
 * *Login is not portable; steady state is.* Only the login leg needs session affinity. Because a
   benchmark's virtual users typically log in against one instance and then drive requests, a
   multi-replica run that balances the *login* leg will produce failures that look like performance
@@ -486,6 +329,3 @@ The defining cost of this variant:
 invalidates existing sessions, so the first run after such a deploy re-executes the login handshake
 for every user. That is a one-off re-authentication cost, not a change in steady-state throughput.
 ====
-
-*No figures are published at 0.2.4* -- see the status note in
-link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.

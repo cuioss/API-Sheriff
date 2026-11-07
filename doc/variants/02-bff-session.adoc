@@ -1,430 +1,221 @@
 = Variant 2 -- BFF, Session-based
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 == Summary
 
-In the session-based Backend-For-Frontend variant, API Sheriff is a full *OIDC confidential
-client (Relying Party)*. It runs the authorization-code + PKCE login flow on behalf of a
-browser-based SPA, holds the resulting tokens *server-side*, and gives the browser only an
-opaque *session cookie*. On each API call the gateway resolves the cookie's value to the stored
-session and injects its token as `Authorization: Bearer` into the upstream request.
+API Sheriff acts as an *OIDC confidential client* for a browser SPA. It runs the login, holds the
+tokens in a *server-side store*, and gives the browser only an opaque *session cookie*. On each API
+call it resolves the cookie to the stored session and injects the access token upstream as
+`Authorization: Bearer`.
 
-This variant is *stateful* -- it requires a server-side session/token
-store -- but provides strong isolation: the token never leaves the server, not even in
-encrypted form. This is the variant to start with; the link:03-bff-cookie.adoc[cookie-based
-variant] is the stateless evolution.
+The variant is *stateful* -- it needs a session store -- and gives the strongest token isolation: the
+token never leaves the server, not even encrypted. Select it with `oidc.session.mode: server`; the
+key has no default. The link:03-bff-cookie.adoc[cookie-based variant] is the stateless alternative.
 
-NOTE: This variant is the *stateful BFF* shape of `CLIENT-19` (opaque session-id cookie +
-server-side token store, backend proxies resource calls). The authoritative specification, its
-standing as the sole authority for the BFF surface, and the `token-sheriff-client` engine
-dependency (the engine performs the OAuth legs; API Sheriff owns the browser-facing BFF side)
-are stated canonically in
+NOTE: This is the *stateful BFF* shape of `CLIENT-19`. The authoritative specification and the
+`token-sheriff-client` engine seam are stated in
 link:../architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer].
+
+*Operator guides.* Setting this variant up step by step is in
+link:../user/bff-session.adoc[BFF -- session mode]. What both BFF modes share -- the login handshake,
+pushed authorization requests, DPoP binding, client authentication and key material -- is in
+link:../user/bff-oidc-common.adoc[BFF -- OIDC client common to both modes]. This page is the
+posture datasheet.
 
 == Login Flow
 
-The login handshake is shared with the link:03-bff-cookie.adoc[cookie-based variant]; only
-the final binding step differs. The gateway *pushes* the authorization request -- PKCE, `state`,
-`nonce`, scope and redirect URI -- to the IdP over the back channel (PAR, RFC 9126) and redirects
-the unauthenticated browser to the IdP with `client_id` and `request_uri` only. After the user
-authenticates, the IdP redirects the browser back to the gateway callback with the authorization
-code as a query parameter (a `302`, not a POST). The gateway -- driving the `token-sheriff-client`
-engine -- verifies `state` and issuer and exchanges the code server-to-server, presenting its client
-credential and a DPoP proof. It accepts the token response only when the access token is bound to
-its proof key, validates the tokens offline, and -- in this variant -- *stores them server-side* and
-sets an opaque session cookie. A login that completes in a browser which still presents a session
-ends that session before the new one is stored, so an earlier session does not live on beside it.
-
-An identity provider that offers no pushed-authorization-request endpoint cannot serve this variant:
-the login is refused with `502`. There is no front-channel fallback.
-
-How the IdP answers that redirect is specific to the IdP. The pinned Keycloak image
-(`integration-tests/docker-compose.yml`) may answer an authorization request that names a pushed
-`request_uri` with a further `302` to its own `login-actions/authenticate` page, and that page is the
-login form; the browser follows it, and the integration suite's login flow accepts that one redirect.
-
-*One identity provider identity, two transport paths.* `oidc.issuer` is the identity provider's one
-identity: the discovery `issuer`, the token `iss` and the authorization-response `iss` are all
-compared with it, unrelaxed. The browser goes to the authorization and end-session endpoints the IdP
-advertises. The gateway's own calls -- discovery, the pushed authorization request, the code exchange,
-refresh and revocation -- go to the same advertised endpoints. When `oidc.back_channel_origin` names
-an internal origin, a call is sent there with path and query unchanged, but only when the IdP
-advertises its endpoint on the issuer's own origin; an endpoint advertised on another origin is
-dialled as advertised. That split is transport, not identity; the gateway never calls the IdP's
-userinfo endpoint. See
-link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]
-and link:../user/bff-session.adoc#idp-different-address[the operator guide].
-
-*What the login asks for.* The authorization request's `scope` is the route's `needed(request) =
-oidc.scopes ∪ endpoint.scopes`, derived once at boot per route -- the same set a bearer route checks,
-so requesting and checking read one derivation. A login started through `oidc.login.path` requests
-the set of the authenticated route its `returnUrl` lands on, or `oidc.scopes` alone. The session then
-records the scope set actually granted, and every session route compares a live session against its
-own `needed` set on each request (see <<_scope_enforcement>>). The browser returns to the requested path
-*with its raw query*, or to `oidc.login.default_return_url` (default `/`) when the login carried no
-usable target. See link:../user/bff-session.adoc#scopes[the operator guide].
-
-=== Login-initiation entry point
-
-A browser can start a login explicitly by navigating to the gateway-owned `oidc.login.path`
-(a link:../configuration/authentication-and-oidc.adoc#_oidc[reserved gateway path], the mirror of the callback that
-*lands* the login). A caller that already holds a live session is redirected straight to a
-*same-origin-validated* return URL -- no fresh auth-code flow is run and no cookies are set --
-so re-entering the login URL while signed in is not an open redirect and not a redundant
-handshake. An unauthenticated caller is driven into the authorization-code flow above. When
-`oidc.login.path` is omitted the deployment simply has no gateway-owned login-start URL; the
-callback and mediation paths are unaffected.
-
-=== Pending-authorization binding cookie
-
-Between the initial redirect and the callback there is not yet a session, so the in-flight
-login is tied to *this* browser by a short-lived, single-use `+__Host-+`-prefixed *binding
-cookie* carrying an opaque pending-authorization record id -- the pre-session analogue of the
-session cookie. The gateway persists the transaction context (the engine-owned PKCE verifier,
-`state`, `nonce`, and the same-origin-validated post-login return URL) as a `PendingAuthorization`
-record keyed by that id; the callback resolves the record by the binding cookie before it will
-exchange the code, so a callback replayed in a different browser (which carries no matching
-binding cookie) is refused. The record is consumed on first use and expires on a short TTL.
+The login is shared with the cookie-based variant up to the final binding step. The gateway pushes
+the authorization request to the identity provider (PAR), sends the browser there with `client_id`
+and `request_uri` only, exchanges the code server-to-server with its client credential and a DPoP
+proof, validates the tokens offline and -- in this variant -- *stores them server-side* and sets the
+opaque session cookie. A login in a browser that still presents a session ends that session first.
+An identity provider without a pushed-authorization-request endpoint cannot serve this variant: the
+login is refused with `502`, and there is no front-channel fallback.
 
 image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client login: redirect to IdP, code exchange, token validation, session binding, align=center]
 
 == Client Authentication, Pushed Requests and Token Binding
 
-Three properties of the confidential client are fixed by
+Fixed by
 link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
-and shared with the cookie-based variant:
+and identical in both BFF variants:
 
-* *Pushed authorization requests.* Every authorization request is pushed. The browser carries only
-  `client_id` and `request_uri` to the IdP, so the request cannot be read or altered on the front
-  channel.
-* *The sender constraint.* Every token request carries a DPoP proof signed with one key, and every
-  access token is bound to that key by its `cnf.jkt` claim. The gateway refuses a token response that
-  is not bound: a login ends with `400` and no session, a widening with `400` and the session
-  unchanged, and a refresh ends the session.
-* *Key-based client authentication, by default.* The gateway authenticates to the IdP with
-  `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
-  gateway path, `/bff/jwks` by default, answered on every host -- and the IdP fetches it from there.
+* every authorization request is pushed;
+* every access token is bound to the gateway's DPoP key (`cnf.jkt`), and an unbound token response is
+  refused;
+* the gateway authenticates with `private_key_jwt` unless `oidc.client_secret` is configured.
 
-Each of the two keys is either read from a PEM file the configuration names by path, or generated at
-startup when no file is named. A generated key is replaced by every restart and cannot be shared, so
-it fits a single node.
-
-The binding ends at the gateway. The token injected upstream carries `cnf.jkt` and travels as
-`Authorization: Bearer`, without a proof: an upstream must not check `cnf`.
-
-*The client secret is an operator choice.* Configuring `oidc.client_secret` selects
-`client_secret_basic` in place of `private_key_jwt`. Pushed requests and the DPoP binding stay in
-effect, the JWKS path answers `404`, and the gateway logs `WARN` `ApiSheriff-133` at every boot.
+The binding ends at the gateway: the token injected upstream travels as `Authorization: Bearer`
+without a proof, so an upstream must not check `cnf`.
 
 [WARNING]
 ====
-Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
+Client-secret authentication is not FAPI 2.0 conformant and may weaken security. The gateway logs
+`WARN` `ApiSheriff-133` at every boot while it is configured.
 ====
 
-Operator setup for both modes is in
-link:../user/bff-session.adoc#key-material[the operator guide], and the requirement-by-requirement
-position in link:../fapi_status.adoc[FAPI 2.0 Status].
+Key files, generated keys and client registration are in
+link:../user/bff-oidc-common.adoc[the common BFF guide]; the requirement-by-requirement position is in
+link:../fapi_status.adoc[FAPI 2.0 Status].
 
 == Steady-State API Call
 
-Once the session exists, an API call carries only the session cookie. The gateway:
+An API call carries only the session cookie. The gateway:
 
-. Reads the opaque handle out of the session cookie and resolves it to the stored session. A
-  session past its absolute lifetime or its idle timeout resolves to nothing (see
-  <<_session_lifetime>>).
-. Takes the stored access token from that session.
-. If the token is near expiry, transparently refreshes it (see below).
-. Compares the session's scopes with the route's `needed` set, and obtains what is missing or
-  refuses (see <<_scope_enforcement>>).
-. Injects `Authorization: Bearer <token>` and forwards, applying the same
-  link:01-base-gateway.adoc[base-gateway] filtering and per-route
-  link:../configuration/routing-and-forwarding.adoc#_forward[forward policy]. The session cookie the gateway just
-  consumed is one of the gateway's own cookies and reaches no upstream under *any* policy or mode --
-  that is what makes the BFF premise hold. The browser's other cookies cross only as the route's
-  link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`] block admits them, and under the default
-  `allow: none` not at all (see link:../configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward
-  set]). The mediated bearer is merged last, so it wins over any inbound
-  `Authorization` a route's mode admitted. A route resolving `auth.token_relay: false` skips this
-  injection: the session is still required and still held to the route's scopes, but the upstream
-  receives no `Authorization` at all,
-  and such a route may not re-admit one through `forward.headers_allow` (refused at boot).
+. resolves the cookie's opaque handle to the stored session -- a session past its absolute lifetime
+  or idle timeout resolves to nothing (see <<_session_lifetime>>);
+. refreshes the access token when it is near expiry (see <<_transparent_token_refresh>>);
+. compares the session's scopes with the route's `needed` set and obtains what is missing or refuses
+  (see <<_scope_enforcement>>);
+. injects `Authorization: Bearer <token>` last, so it wins over any inbound `Authorization`, and
+  forwards under the same link:01-base-gateway.adoc[base-gateway] filtering and per-route
+  link:../configuration/routing-and-forwarding.adoc#_forward[forward policy].
+
+The session cookie is a gateway-owned cookie and reaches no upstream under any policy. The
+browser's other cookies cross only as the route's
+link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`] block admits them -- under the
+default `allow: none` not at all. A route resolving `auth.token_relay: false` still requires the
+session and its scopes but sends no `Authorization` upstream.
 
 image::../resources/diagrams/bff-token-mediation.svg[Session-based versus cookie-based token mediation compared side by side, align=center]
 
-The left-hand column above is this variant; the token lives in a server-side store, and the
-cookie carries a handle the store resolves.
+The left-hand column is this variant: the cookie carries a handle the store resolves.
 
 == Token Storage
 
 [cols="1,3"]
 |===
-| Aspect | Design
+| Aspect | Posture
 
 | Store
-| A server-side store keyed by an internal session identity, holding the access token, refresh
-  token, the raw ID token (needed as `id_token_hint` at logout), and token metadata (expiry, `acr`,
-  `auth_time`, `sid`). The store maintains a secondary index by `sid`/`sub` so a back-channel
-  logout token destroys the matching session in O(1) -- never a full scan. Configured as
-  `oidc.session.store`; *`memory` is the only initial option*, sufficient for a single node or for
-  replicas behind sticky sessions
-  (link:../user/bff-session.adoc#multi-replica[Running more than one replica]). A multi-node
-  non-sticky deployment would need a shared store, which is deliberately unsupported for now
-  (below).
+| Server-side, keyed by an internal session identity; holds the access, refresh and ID tokens and
+  their metadata, indexed by `sid`/`sub` so a back-channel logout finds its session without a scan.
+  `oidc.session.store: memory` is the only option: one node, or replicas behind sticky sessions
+  (link:../user/bff-session.adoc#multi-replica[Running more than one replica]). A shared store is
+  deliberately unsupported -- it would add the external dependency the
+  link:../features-analysis.adoc#_features_to_avoid[feature analysis] rules out.
 
 | Bounds
-| `oidc.session.max_sessions` bounds the store. `oidc.session.max_sessions_per_subject` bounds the
-  live sessions of one subject: a login beyond it ends that subject's oldest session first. Both
-  are in link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration reference].
-
-| Trade-off
-| A shared store (e.g. Redis) reintroduces an external dependency -- exactly what the
-  link:../features-analysis.adoc#_features_to_avoid[feature analysis] warns against. The
-  link:03-bff-cookie.adoc[cookie-based variant] exists to avoid this: it is stateless and needs
-  no store. Choose session-based only where server-side-only token custody is a hard requirement.
+| `oidc.session.max_sessions` bounds the store; `oidc.session.max_sessions_per_subject` bounds one
+  subject, ending its oldest session first. See
+  link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration reference].
 
 | Session cookie
-| `HttpOnly`, `Secure`, `SameSite=Lax`, `__Host-` prefix; carries only an opaque handle, never
-  token material. The handle is not the session identity: the store maps it to the session, and a
-  widening replaces it with a new one while the session stays the same
+| `HttpOnly`, `Secure`, `SameSite=Lax`, `__Host-` prefix; carries only an opaque handle, never token
+  material. A scope widening replaces the handle while the session stays the same
   (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#cookie-reissue[ADR-0018]).
-  CSRF defence on state-changing calls is the BFF's responsibility (below).
 |===
 
 [[_session_lifetime]]
 == Session Lifetime
 
-A session has two deadlines and ends at the earlier one.
+A session ends at the earlier of two deadlines:
 
-* *Absolute.* `oidc.session.ttl_seconds`, counted from the login. Nothing extends it.
-* *Idle.* `oidc.session.idle_timeout_seconds` without a request the gateway let through on a session
-  route. A refused, challenged or redirected request is not such a request, and neither is a call
-  to a reserved path. A WebSocket upgrade or a streamed response counts once, at its start.
+* *Absolute* -- `oidc.session.ttl_seconds` from the login; nothing extends it.
+* *Idle* -- `oidc.session.idle_timeout_seconds` without a request the gateway let through on a
+  session route.
 
-The store keeps the last access beside the session. A session past either deadline is removed when
-its cookie is next presented, and otherwise by a sweep that runs once a minute, so an expired
-session leaves the store within a minute.
-
-A WebSocket relayed on a session route is closed when its session ends -- at expiry, at a logout,
-when a new login replaces the session, when the per-subject bound ends it, and when the sweep
-removes it. A cookie value re-issued by a widening closes nothing. Streamed HTTP and gRPC responses
-are not ended. The close code and the operator view are in
-link:../user/bff-session.adoc#websocket-sessions[the operator guide].
+An expired session is removed when its cookie is next presented, or by a once-a-minute sweep. A
+WebSocket relayed on a session route is closed whenever its session ends -- expiry, logout,
+replacement by a new login, the per-subject bound, the sweep. Streamed HTTP and gRPC responses are
+not ended. See link:../user/bff-session.adoc#session-lifetime[How long a session lives].
 
 [[_csrf_defence]]
 == CSRF Defence
 
-Per `CLIENT-19`, backend-API CSRF is the BFF's concern (the callback endpoint itself is already
-CSRF-protected by the session-bound `state`, `CLIENT-5`). Because the browser authenticates with
-a cookie, every `auth.require: session` route applies *origin verification* on unsafe methods
-(everything except GET/HEAD/OPTIONS):
+Per `CLIENT-19`, backend-API CSRF is the BFF's concern (the callback itself is protected by the
+session-bound `state`, `CLIENT-5`). Every `auth.require: session` route verifies the origin of unsafe
+methods (everything except GET/HEAD/OPTIONS):
 
-* The request must carry an `Origin` header whose value is in
-  `oidc.session.csrf.trusted_origins` -- the list of origins the application is served from,
-  defaulting to the origin of `oidc.redirect_uri`. The `Origin` header names the *calling
-  page's* origin, so an SPA served from `https://app.example.com` calling a gateway at
-  `https://gw.example.com` must have `https://app.example.com` listed (see
-  link:../configuration/authentication-and-oidc.adoc#_oidc[`session.csrf.trusted_origins`]). Comparison is exact,
-  full-origin (scheme + host + port).
-* If `Origin` is absent, `Sec-Fetch-Site: same-origin` is accepted (that header is an enum --
-  `same-origin` / `same-site` / `cross-site` / `none` -- not an origin, so no origin comparison
-  applies). Anything else -- a non-trusted `Origin`, `Sec-Fetch-Site: cross-site`, or neither
-  header present -- is rejected with a `CSRF_REJECTED` event. The defence runs before the session
-  is resolved, so the caller is answered as the unrouted `404`, with the `CSRF_REJECTED` event still
-  metered (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
-  With `security_defaults.uniform_not_found: false` the answer is `403`.
-* The session cookie is set `SameSite=Lax` as defence-in-depth -- it blocks cross-site POSTs in
-  modern browsers on its own, but origin verification remains the enforced check (older
-  browsers, subdomain edge cases).
+* The `Origin` header must be in `oidc.session.csrf.trusted_origins` -- the origins the application
+  is served from, defaulting to the origin of `oidc.redirect_uri`. `Origin` names the *calling
+  page*, so an SPA on `https://app.example.com` calling a gateway on `https://gw.example.com` needs
+  `https://app.example.com` listed (see
+  link:../configuration/authentication-and-oidc.adoc#_oidc[`session.csrf.trusted_origins`]). The
+  comparison is exact: scheme, host and port.
+* Without `Origin`, `Sec-Fetch-Site: same-origin` is accepted. Anything else -- an untrusted
+  `Origin`, `Sec-Fetch-Site: cross-site`, or neither header -- is rejected with a `CSRF_REJECTED`
+  event. The check runs before the session is resolved, so the caller gets the unrouted `404`
+  (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]);
+  with `security_defaults.uniform_not_found: false` it gets `403`.
+* The session cookie's `SameSite=Lax` is defence in depth; origin verification is the enforced
+  check.
 
-This is fixed behaviour, not configuration: a cookie-authenticated gateway without CSRF defence
-is simply broken, so there is no knob to disable it.
+This is fixed behaviour with no switch to disable it.
 
-A route that forwards the browser's *own* application cookies to its upstream through a `cookies`
-block carries a second, per-route same-origin check with the same proof, trusting the origin the
-request was received on plus the block's `additional_origins` rather than `trusted_origins`. It runs
-only on an unsafe request that carries a cookie the route forwards, and `same_origin_check: false`
-removes it (see link:../configuration/routing-and-forwarding.adoc#_cookies_same_origin_check[The same-origin check]). The
-session-route defence above is unaffected by it.
+A route that forwards the browser's own application cookies through a `cookies` block adds a
+per-route same-origin check, trusting the receiving origin plus the block's `additional_origins`
+(see link:../configuration/routing-and-forwarding.adoc#_cookies_same_origin_check[The same-origin check]).
 
-NOTE: CSRF and CORS are the two halves of the cross-origin story. `trusted_origins` governs
-what the *gateway accepts*; for an SPA served from a different origin than the gateway, the
-browser additionally requires `security_headers.cors` enabled with `allow_credentials: true`.
-This holds only for *same-site* origins (same registrable domain, e.g. `app.example.com` ->
-`gw.example.com`): the cookie is fixed at `SameSite=Lax`, so a truly cross-*site* SPA never
-gets it attached at all -- host the app under the gateway's site. Same-origin deployments need
-neither entry.
+NOTE: `trusted_origins` governs what the gateway accepts. An SPA on a different origin also needs
+`security_headers.cors` enabled with `allow_credentials: true`, and works only from a *same-site*
+origin (same registrable domain): the cookie is `SameSite=Lax`, so a cross-site SPA never gets it
+attached. Same-origin deployments need neither.
 
 [[_logout]]
 == Logout
 
-Logout follows `CLIENT-13` (RP-initiated logout) with the browser-facing parts owned by the
-gateway as BFF:
+* *RP-initiated* (`oidc.logout.path`, `CLIENT-13`). The gateway destroys the stored session and
+  expires the cookie *first*, then redirects to the IdP's end-session endpoint with `id_token_hint`
+  and a session-bound `state` verified on the return leg. The local logout does not depend on the
+  IdP: without a usable end-session endpoint the browser lands on `oidc.logout.final_redirect`
+  (`ApiSheriff-135`). The gateway revokes no token at the IdP on logout.
+* *Back-channel* (`oidc.logout.backchannel_path`). A signed logout token from the IdP destroys the
+  matching session; a token acts once. Because the session is held server-side, revocation is
+  *immediately effective* -- an advantage over the link:03-bff-cookie.adoc[cookie-based variant].
+  What the IdP must send is in link:../user/bff-session.adoc#backchannel-logout[the operator guide].
+* *Logout wins over in-flight work.* A refresh or scope widening running when the session is
+  destroyed does not write it back: the refresh is answered as session-ended and revokes the refresh
+  token it just obtained (`ApiSheriff-111`, `session-terminated`); the widening callback answers
+  `403` (`ApiSheriff-131`)
+  (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
-. The browser calls `oidc.logout.path` (default `/logout`). The gateway *destroys* the server-side
-  session and expires the session cookie first, and then redirects the browser to the IdP
-  `end_session_endpoint` with `id_token_hint`, the pre-registered `post_logout_redirect_uri` (exact
-  string match -- open-redirect defence), and a *session-bound `state`* (`CLIENT-13`). The local
-  logout does not depend on the IdP: when the IdP publishes no usable end-session endpoint, or
-  discovery fails, the browser lands on `oidc.logout.final_redirect` with the session ended
-  (`ApiSheriff-135` is logged once for the missing endpoint). The redirect that carries the ID token
-  is sent with `Referrer-Policy: no-referrer`. The flow also calls a
-  token-revocation seam, which the shipped runtime binds to a no-op: the gateway itself revokes
-  nothing at the IdP on logout today, and what happens to the tokens there is decided by the IdP's
-  handling of the end-session request.
-. The IdP returns the browser to `post_logout_redirect_uri` -- a *gateway-owned* path, so the
-  gateway can *verify the returned `state`*. Because the session is already destroyed by
-  step 1, the expected value lives in a short-lived (60 s), single-use
-  `+__Host-sheriff-logout+` cookie set alongside the end-session redirect; the return leg
-  compares against it, clears it, and redirects the browser on to
-  `oidc.logout.final_redirect`.
-. *Back-channel logout* (IdP-initiated, e.g. admin session revocation): the IdP posts a signed
-  logout token to `oidc.logout.backchannel_path`. The gateway verifies the signature against
-  the issuer's JWKS (reusing `token-sheriff-validation`'s issuer/JWKS infrastructure) and then
-  applies the logout-token checks of OIDC Back-Channel Logout 1.0 itself -- `events` must
-  contain the back-channel-logout event, `nonce` must be *absent*, `sub` and/or `sid` present,
-  `exp` and `jti` present, a `typ` header, when there is one, `logout+jwt` --
-  since the validation library has no logout-token pipeline; these checks are gateway code. A
-  token acts once: a second delivery of the same `jti` is refused. The full list is in
-  link:../user/bff-session.adoc#backchannel-logout[the operator guide].
-  On success it destroys the matching session. Because this variant holds sessions server-side,
-  revocation is *immediately effective* -- an advantage over the
-  link:03-bff-cookie.adoc[cookie-based variant].
-
-*A logout is not undone by a request already in flight.* A token refresh and a session widening
-both resolve the session, call the IdP and then write the result back. Either can be running when
-one of the logouts above destroys the session. The write they make updates a session the store still
-holds and never creates one: the store checks for the session and replaces its record as one atomic
-step, so a session destroyed in between is not written back. The refresh then answers its request as
-session-ended and revokes, best-effort, the refresh token the IdP had just issued
-(`ApiSheriff-111`, reason `session-terminated`); the widening callback answers `403` and stores
-nothing (`ApiSheriff-131`, same reason). The cookie-based variant cannot give this guarantee, because
-it holds no session a logout could remove
-(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
-
+[[_transparent_token_refresh]]
 == Transparent Token Refresh
 
-When the stored access token is within the configured leeway of expiry, the gateway refreshes
-it through the engine using the stored refresh token (with rotation), transparently during a
-normal API request. The refresh grant requests the session's *active* scope set -- what the IdP
-granted at login, or at the previous refresh -- never the static `oidc.scopes`, so a refresh keeps
-the endpoint scopes a scoped login obtained. The response's `scope` becomes the new active set; an
-omitted `scope` leaves it unchanged.
+Near expiry, the gateway refreshes the access token with rotation during a normal request, asking
+for the session's active scope set. A refused refresh keeps the session when the IdP never processed
+the grant, and ends it when the IdP rejected the refresh token or the gateway refused the response.
+How a request left without a token is answered is set by `oidc.session.refresh.on_failure` (see
+link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the per-kind table]).
 
-A refused refresh is disposed by *what the identity provider did to the presented refresh token*:
-
-* *Before the provider processed the grant* (connection failure, `5xx`, a `4xx` not attributed to
-  the credential) the session is *kept*. While the access token is still valid the request is
-  mediated with it; once it has expired the request is answered as below without ending the
-  session, and the next attempt waits out a fixed five-second back-off.
-* *The provider rejected the refresh token* (`invalid_grant`) -- the session ends.
-* *The provider redeemed the grant but the gateway refused its response*, or *the rotated session
-  could not be stored* -- the session ends and the one refresh token still live at the provider is
-  revoked best-effort.
-
-One further outcome ends the request the same way without being a refused refresh: the exchange
-succeeded, but a logout destroyed the session while it was in flight. The rotated session is not
-written back and the refresh token the exchange returned is revoked best-effort (see <<_logout>>).
-
-A request left without a token is answered by `oidc.session.refresh.on_failure`: with
-`reauthenticate` (the default) a *navigation* request is re-driven through the login flow while an
-API/XHR request receives `401` `application/problem+json` (the same content negotiation as
-`require: session`); with `reject` every request receives the `401`. See
-link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the per-kind table].
-
-*Refresh-token reuse detection is the identity provider's job.* The gateway keeps no token family
-and cannot recognise a replayed refresh token; in this variant the refresh token never leaves the
-server-side store, so a replay through the gateway is not reachable in the first place. A refresh
-token stolen elsewhere is caught by *strict refresh-token rotation at the provider* (on Keycloak
-`revokeRefreshToken: true`, `refreshTokenMaxReuse: 0`) once it is *reused*, not on its first
-redemption: if the attacker redeems it first, the reuse is detected only when the gateway presents
-its now-spent copy on the session's next refresh, so the attacker holds a working grant until then.
-The provider's refusal and revocation reach the gateway session on that next refresh, which then ends
-as a credential rejection. Without that setting neither side detects reuse (ADR-0046).
+*Refresh-token reuse detection is the IdP's job.* The gateway keeps no token family; in this variant
+the refresh token never leaves the store. A token stolen elsewhere is caught only by *strict rotation
+at the IdP*, and only once it is reused (ADR-0046).
 
 [[_scope_enforcement]]
 == Scope Enforcement
 
-A session outlives the route that started it. The login requested one route's scopes, and the same
-session is later presented to routes that need others. A session route does not relay such a session
-and leave the answer to the upstream: on every request it compares the session's *active* scope set
--- the scopes of its current access token -- against the route's `needed` set, whatever
-`auth.token_relay` says, and before any bearer is recorded
+On every request a session route compares the session's active scopes with the route's `needed`
+set, whatever `auth.token_relay` says
 (link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
-
-Two facts about a session's tokens decide what happens when a scope is missing. The active set is
-what the current token carries, and a refresh response can narrow it. The *granted* set is the
-scopes the IdP is known to grant this session: equal to the active set at login, replaced by the
-grant of a widening, never added to by a refresh, and reduced only when a scope-driven refresh asks
-for a scope and the IdP does not return it. It is kept truthful on purpose: a set that still named a
-scope the IdP had stopped granting would send every request for that scope into a recovery that
-cannot succeed.
-
-* *Nothing missing.* The request continues. No call to the IdP is made.
-* *Missing, but inside the granted set.* A refresh requests the active set plus the missing scopes,
-  through the same single-flight coordinator the near-expiry refresh uses. The returned session is
-  compared again, so no outcome of that refresh relays a session short of a scope.
-* *Missing, and outside the granted set* -- or the refresh did not obtain it. A refresh cannot widen
-  a grant (RFC 6749 §6), so the live session is *widened* instead. A navigation is redirected into an
-  authorization request for the granted set plus the `needed` set, with `prompt=none` first and
-  exactly one interactive attempt if the IdP asks for one. Each attempt is pushed like a login's, so
-  the redirect carries `client_id` and `request_uri` only. The grant is merged into the same
-  session, which keeps its identity, its authentication time and its absolute expiry, takes the
-  `sid` of the new ID token when it carries one, and sets both scope sets to the granted scope. The
-  browser receives a new cookie value with the merge, and the previous value stops resolving. Any
-  other request is refused `403` `application/problem+json` naming the `missing_scopes` and, when
-  `oidc.step_up.path` is configured, a `step_up_url` the browser can follow to start the same
-  widening.
-* *The IdP refuses.* A refusal on the callback is answered with a terminal `403`. An IdP that
-  refuses the pushed request is answered `502` before the browser is redirected at all. Either way
-  the session is unchanged and stays usable on every route it satisfies, and nothing redirects
-  again.
-* *The IdP stops granting a scope the session held.* The scope leaves the granted set the first time
-  the gateway asks for it and does not get it: on the scope-driven refresh, or, when no refresh ran,
-  on the widening merge. The next widening for it ends in the terminal `403`, after at most two
-  rounds.
-
-Taking the `sid` of the grant keeps back-channel logout working across a widening. The merged tokens
-belong to the IdP session that answered, which is a different one when the user had to sign in
-again, and a logout token names that session's `sid`.
-
-The reserved `oidc.step_up.path` serves a live session only: without one it answers `401` and never
-starts a login. Its `returnUrl` is same-origin-validated like a login's.
+A missing scope the IdP already granted is obtained by a refresh. One outside the grant *widens* the
+live session: a navigation is redirected to the IdP and the grant is merged into the same session;
+any other request is refused `403` naming the `missing_scopes`. An IdP refusal on the callback ends
+in a terminal `403` with the session unchanged and still usable where it suffices. Behaviour, problem body and the `oidc.step_up.path` contract are in
+link:../user/bff-session.adoc#scope-enforcement[the operator guide].
 
 CAUTION: Enforcement closes the under-check, not the over-reach. A widening adds scopes to a live
 session, and every scope a session holds is relayed to every session-route upstream that receives a
-token. An API client cannot recover from the `403` by retrying: a widening needs a browser
-navigation to the IdP. The operator-facing behaviour, the problem body and the step-up path contract
-are in link:../user/bff-session.adoc#scope-enforcement[the operator guide].
-
-This is a different mechanism from the RFC 9470 step-up below: that one answers an upstream's
-demand for a stronger *authentication* (`acr`), this one obtains *scopes* the route itself declares.
+token. An API client cannot recover from the `403` by retrying: widening needs a browser navigation.
 
 == Step-Up Authentication (RFC 9470)
 
-Because the gateway holds the session, it can honour an upstream `401` carrying
-`insufficient_user_authentication`: it parses the required `acr_values` / `max_age` / `scope`,
-attempts a silent refresh, and -- if that cannot satisfy the challenge -- re-drives the
-authorization-code flow with the elevated parameters, then replays the request. This is a
-link:../features-analysis.adoc#_differentiators[differentiator] no competitor covers.
+The gateway honours an upstream `401` carrying `insufficient_user_authentication`: it attempts a
+silent refresh and, if that cannot satisfy the challenge, re-drives the login with the required
+`acr_values` / `max_age` / `scope`, then replays the request. This answers a demand for stronger
+*authentication*; scope enforcement above obtains *scopes* the route declares.
 
 == User-Info Endpoint
 
-The gateway serves the browser a *curated identity view* at the gateway-owned `oidc.user_info.path`
-(a link:../configuration/authentication-and-oidc.adoc#_oidc[reserved gateway path]), assembled from the session's tokens --
-never a passthrough of the raw ID/userinfo claims, and never a way for the browser to reach token
-material. What it may disclose is bounded by an *operator-owned* claim allowlist whose secure
-default is *closed*:
-
-* `oidc.user_info.allowed_claims` is the disclosure ceiling. Empty (the default) discloses
-  *nothing*, so the operator -- never the browser client -- widens what the endpoint returns; a
-  claim absent from the allowlist is never emitted regardless of what the caller asks for.
-* `oidc.user_info.default_view` is the claim selector returned when the caller requests no explicit
-  claims. Every entry must lie within `allowed_claims` (a default-view claim outside the allowlist
-  fails the boot), so the curated default can never exceed the ceiling.
-
-When `oidc.user_info.path` is omitted no user-info endpoint is exposed.
+`oidc.user_info.path` serves the browser a curated identity view assembled from the session -- never
+the raw claims, never token material. `oidc.user_info.allowed_claims` is the disclosure ceiling and
+is empty by default, so nothing is disclosed until the operator lists claims;
+`oidc.user_info.default_view` must lie within it or the boot fails.
 
 == Configuration
 
@@ -480,13 +271,18 @@ endpoint:
       upstream: { path: /orders }
 ----
 
-== Properties
+== Security Posture
 
-* *Stateful* -- requires a server-side token store.
-* *Strong isolation* -- the token never leaves the server in any form.
-* *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
-* *Pushed requests and bound tokens* -- every authorization request is pushed, every access token is
-  bound to one DPoP key, and the client authenticates with a key unless a client secret is configured.
+[cols="1,3"]
+|===
+| Property | Variant 2
+
+| State | Stateful -- a server-side token store (`memory`; one node or sticky sessions).
+| Token custody | The token never leaves the server in any form; the browser holds an opaque handle.
+| Revocation | Immediate: logout and back-channel logout destroy the stored session.
+| OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
+| CSRF | Fixed origin verification on unsafe methods (<<_csrf_defence>>).
+|===
 
 == Performance baseline
 
@@ -511,24 +307,15 @@ The two costs to keep separate:
 
 What to watch on this variant specifically:
 
-* *The store lookup is the variant's dominant overhead* on the steady-state path -- dominant, not
-  sole: the cookie read, validation and resolution sit in front of it and are paid on every request
-  too, so a delta from Variant 1 attributed entirely to the store would over-attribute. With
-  `session.store: memory` -- the only initial option -- the lookup is in-process, so the delta from
-  Variant 1 should be small. It is the term that would change first if a networked store were
-  introduced, which is why it is called out separately from the cookie work that precedes it.
-* *`max_sessions` is a DoS guard, and it interacts with load testing.* A run whose virtual users
-  each establish a session can approach the configured ceiling; a benchmark that starts refusing
-  sessions is measuring the guard, not the gateway. Expired sessions are removed by a sweep once a
-  minute, so successive runs do not accumulate indefinitely. A ceiling genuinely full
-  of *live* sessions still refuses fail-closed, so a run that establishes sessions faster than
-  `ttl_seconds` or the idle timeout retires them will still hit the guard, and virtual users that
-  share one subject meet `max_sessions_per_subject` first. Restarting the gateway between runs
-  remains the cleanest way to start from a known-empty store.
+* *The store lookup is the variant's dominant overhead* on the steady-state path, but not the only
+  one: the cookie read and resolution in front of it are paid on every request too. With
+  `session.store: memory` the lookup is in-process, so the delta from Variant 1 should be small.
+* *`max_sessions` is a DoS guard, and it interacts with load testing.* A benchmark that starts
+  refusing sessions is measuring the guard, not the gateway. Expired sessions leave the store within
+  a minute, but a ceiling full of *live* sessions refuses fail-closed, and virtual users that share
+  one subject meet `max_sessions_per_subject` first. Restart the gateway between runs to start from
+  an empty store.
 * *Refresh is a background cost.* With `refresh.enabled: true`, a long run crosses token expiry and
   pays a refresh round trip mid-measurement. On a 60s load phase against a typical token lifetime
   this does not trigger -- but it is the first thing to suspect in a longer run that shows an
   unexplained latency tail.
-
-*No figures are published at 0.2.4* -- see the status note in
-link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.

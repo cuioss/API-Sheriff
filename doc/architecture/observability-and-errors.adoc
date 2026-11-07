@@ -343,7 +343,7 @@ link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episo
   OCSF (`class_uid` 2004 Detection Finding) mapping are in
   link:../development/source-detection-substrate.adoc#_threat_alert_schema[Per-Source Detection
   Substrate -- ECS 8.17.0 ALERT Document and OCSF Mapping] and the operator view in
-  link:../user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes].
+  link:../user/edge-security.adoc#_threat_classification_operator_note[Endpoint Routes].
 
 * *Zero request bytes, fallback marker, and bounded volume.* Every value in the document is
   gateway-derived (canonical source/host keys, enum names, ledger numbers, and fixed constants --

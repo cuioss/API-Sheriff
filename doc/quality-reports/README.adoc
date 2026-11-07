@@ -97,11 +97,11 @@ A doc-only change does not trigger the CI build, so the anchors below must be ch
 | Test | Document | Reads
 
 | `DocumentedSetsContractTest` (`api-sheriff/.../config/`)
-| `doc/configuration.adoc`, `doc/user/README.adoc`, `doc/user/bff-cookie.adoc`, `doc/architecture/observability-and-errors.adoc`, `doc/security-threat-model.adoc`
-| `SKELETON_ANCHOR`, `CONFIG_PROFILE_ANCHOR`, `CONFIG_DISCOVERY_ANCHOR`, `CONFIG_EXTENSION_ANCHOR`, the four array-override anchors, `JWKS_REFRESH_*` anchors, `ARCHITECTURE_DISCOVERY_ANCHOR`, `THREAT_MODEL_DISCOVERY_ANCHOR`, `README_EXTENSION_ANCHOR`, `README_PROFILE_MODE_SET_ANCHOR`, `COOKIE_EXHIBIT_ANCHOR`
+| `doc/configuration.adoc` with its `doc/configuration/*.adoc` parts (read as one reference), `doc/user/edge-security.adoc`, `doc/user/bff-cookie.adoc`, `doc/architecture/observability-and-errors.adoc`, `doc/security-threat-model.adoc`
+| `SKELETON_ANCHOR`, `CONFIG_PROFILE_ANCHOR`, `CONFIG_DISCOVERY_ANCHOR`, `CONFIG_EXTENSION_ANCHOR`, the four array-override anchors, `JWKS_REFRESH_*` anchors, `ARCHITECTURE_DISCOVERY_ANCHOR`, `THREAT_MODEL_DISCOVERY_ANCHOR`, `EDGE_SECURITY_EXTENSION_ANCHOR`, `EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR`, `COOKIE_EXHIBIT_ANCHOR`
 
 | `DocumentedHeaderSetsContractTest` (`api-sheriff/.../forward/`)
-| `doc/configuration.adoc`
+| `doc/configuration/routing-and-forwarding.adoc`
 | Five START/END header-set slices (≈3924-4012)
 
 | `RouteFieldInventoryContractTest`

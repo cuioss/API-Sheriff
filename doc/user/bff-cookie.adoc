@@ -1,7 +1,9 @@
 = Cookie-Based BFF -- Operator Setup
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 A task-oriented guide for operators standing up the *cookie-based BFF* (Variant 3): API Sheriff as
 an OIDC confidential client that keeps no server-side session store and hands the browser a sealed
@@ -21,23 +23,14 @@ Choose the link:../variants/02-bff-session.adoc[server-session variant] instead 
 token custody is a hard requirement (the token must never leave the gateway, not even encrypted), or
 when you need IdP-driven back-channel logout.
 
-== Prerequisites
+== Before you start
 
-* An OIDC provider (IdP) where you can register a *confidential client*. The gateway asks three
-  things of that client, in every configuration:
-** it accepts *pushed authorization requests* (RFC 9126) -- the gateway sends no other kind;
-** it binds access tokens with *DPoP* (RFC 9449) -- the gateway refuses a token that is not bound;
-** it issues access tokens as JWTs.
-* In the default setup the client authenticates with a *signed JWT* (`private_key_jwt`), and the IdP
-  fetches the gateway's public key from the gateway's JWKS endpoint. The IdP must be able to reach
-  that endpoint server-to-server, over `https`. See <<signing-keys>>.
-* A registered *redirect URI* pointing at the gateway's own callback path (`oidc.redirect_uri`),
-  matched exactly at the IdP.
-* A session sealing key file, if you provide one, mounted read-only on every replica (see
-  <<_key_material>>).
-
-No client secret is needed. A client secret remains possible as an operator choice; it is described,
-with its warning, in <<client-secret>>.
+The client setup this variant shares with the server-session one -- the prerequisites, the two
+signing keys, registering the client at the identity provider, the login exchange, client-secret
+authentication, strict refresh-token rotation and a private-CA identity provider -- is walked through
+in link:bff-oidc-common.adoc[BFF Confidential Client: Shared Setup]. Work through it first; this
+guide covers what the sealed cookie adds: the sealing key, the cookie size budget and the limits of
+a gateway that keeps no session state.
 
 == Configure the confidential client
 
@@ -78,24 +71,26 @@ Log in through the BFF]). Everything in it but the `oidc.session` block carries 
 unchanged -- the client, its signing keys, `back_channel_origin`, the redirect and logout URLs. To run
 it in cookie mode, replace that block: `mode: cookie` instead of `mode: server`, drop `store`, and
 settle the two decisions only this variant has -- whether to provide a sealing key file (<<_key_material>>)
-and the cookie size budget (<<_cookie_size_budget>>). The sample needs the gateway release after `0.2.4`: the `0.2.4` image it
-pins predates `back_channel_origin` and the `/bff/*` reserved paths and refuses its `gateway.yaml` at
-boot, so until that release run it on a locally built image
-(link:compose-sample.adoc#_route_b_a_locally_built_image[Route B]).
+and the cookie size budget (<<_cookie_size_budget>>).
 
 *An identity provider the gateway reaches at a different address.* Keep `oidc.issuer` the
 browser-facing identity, set `oidc.back_channel_origin` to the internal origin the gateway dials, and
-point `token_validation.issuers[].jwks.url` at the internal host. No DNS trick is needed. The setup is
-the same in both BFF variants; see
-link:bff-session.adoc#idp-different-address[Server-Session BFF -- An identity provider the gateway
-reaches at a different address].
+point `token_validation.issuers[].jwks.url` at the internal host. The setup is the same in both BFF
+variants; see link:bff-oidc-common.adoc#idp-different-address[Shared Setup -- An identity provider
+the gateway reaches at a different address].
+
+*Next: the signing keys and registration.* Give the gateway its two signing keys and register it at
+the identity provider as link:bff-oidc-common.adoc#key-material[Shared Setup -- Key material]
+describes, or choose link:bff-oidc-common.adoc#client-secret[client-secret authentication] instead.
+The exhibit above names no signing-key file and therefore runs on generated keys, which fits one
+replica: every replica that shares a sealing key must be given the same two signing-key files.
 
 [[_key_material]]
 == Key material: the sealing key
 
 This variant holds three keys. This section covers the *sealing key*, which encrypts the session
 cookie. The two *signing keys* -- one for client authentication, one for DPoP -- are covered in
-<<signing-keys>>. All three follow the same idea: provide the key, or leave it out and let the
+link:bff-oidc-common.adoc#key-material[Shared Setup -- Key material]. All three follow the same idea: provide the key, or leave it out and let the
 gateway generate one for a single replica.
 
 The sealing key has *two modes*, selected by whether you declare `session.key_file`.
@@ -210,29 +205,6 @@ In server mode the configuration check refuses a declared key file at `/oidc/ses
 before anything is read: `oidc session key_file is declared in server session mode, which never
 reads the cookie sealing key`. Remove the line, or use cookie mode.
 
-[[_migrating_to_a_key_file]]
-=== Moving a configuration off `encryption_key`
-
-[WARNING]
-====
-`oidc.session.encryption_key` *has been removed*, and the configuration schema rejects unknown keys.
-A `gateway.yaml` that still declares `encryption_key` therefore *fails at boot*, and the failure names
-the offending key.
-
-*Remedy: write the existing key into a key file unchanged, and name that file.* The value the
-`encryption_key` variable held is already the base64 form of the 32-byte key, so it is a valid key
-file as it is. With the variable name of the earlier exhibit, `SHERIFF_SESSION_KEY`:
-
-[source,bash]
-----
-printf '%s\n' "$SHERIFF_SESSION_KEY" > session.key
-----
-
-Mount the file, replace the `encryption_key` line with `key_file: <path>`, and retire the variable
-from the deployment. The key bytes stay the same, so the key id stays the same and sessions sealed
-before the move still unseal after it.
-====
-
 === Changing the key
 
 There is exactly *one* sealing key. The gateway holds no decrypt-only companion key, so there is no
@@ -253,7 +225,7 @@ restarts. To change the key:
   cookies, so keep that window short.
 
 Treat a key change as a scheduled forced re-login -- operationally the same event as the
-format-version change described under "Upgrading" below.
+format-version change described in <<_upgrading_forced_re_login_on_a_format_change>>.
 
 [[key-rotation]]
 === When to replace a provided key
@@ -302,380 +274,6 @@ Replacing the key resets the count, and it ends every session, as described abov
 key needs no schedule beyond this: it is replaced at every restart, so restart the gateway within
 the same interval.
 
-=== Migrating from a configuration that declared `previous_key`
-
-[WARNING]
-====
-`oidc.session.previous_key` *has been removed*, and the configuration schema rejects unknown keys.
-A `gateway.yaml` that still declares `previous_key` therefore *fails at boot* -- the gateway does
-not start, and the failure names the offending key.
-
-*Remedy: delete the `previous_key` line* from `oidc.session`. Nothing replaces it. The environment
-variable it referenced (commonly `SHERIFF_SESSION_KEY_PREVIOUS`) becomes unused and can be retired
-from the deployment.
-
-If you were mid-rotation when you upgrade, the cookies still sealed under the retired key are
-refused as "no session" and those users log in again -- so prefer to finish the rotation (or accept
-the re-login) before rolling this version out.
-====
-
-[[signing-keys]]
-== Key material: the two signing keys
-
-This is the default setup. Besides the sealing key the gateway signs with two keys, one per purpose:
-
-[cols="2,3,2", options="header"]
-|===
-| Configuration key | What the key signs | Who needs the public half
-
-| `oidc.client_authentication.key_file`
-| The client assertion the gateway authenticates with on every authenticated call to the identity
-  provider (`private_key_jwt`).
-| The identity provider. It fetches it from the gateway's JWKS endpoint.
-
-| `oidc.sender_constraint.key_file`
-| The DPoP proof on every token request. Every access token is bound to this key.
-| Nobody in advance. The public half travels inside each proof, so this key is not registered
-  anywhere.
-|===
-
-Each key is optional. Each names a PEM file on a mount. The two must name different files that hold
-different keys: FAPI 2.0 section 6.8 asks for one key per purpose, and the gateway refuses one key
-for both (see <<_signing_key_refusals>>).
-
-=== The two modes, and when to use which
-
-Each key is in one of two modes. Both are supported in production.
-
-* *Generated* -- leave `key_file` out. The gateway generates an EC P-256 key when it starts and logs
-  `ApiSheriff-21` once for that purpose. Nothing has to be provisioned. The key lives in one process:
-  it is replaced on every restart, and no other replica has it. *The generated mode is for a single
-  replica.*
-* *Provided* -- name a key file. The key survives a restart and can be given to every replica.
-
-*Every replica that shares a sealing key must be given the same two key files.* The cookie variant
-exists to run several replicas without sticky routing, and the signing keys are part of what those
-replicas must share:
-
-* A replica with a different *client-authentication key* signs assertions the identity provider
-  cannot verify against the key set it fetched from another replica. Authentication then fails on
-  some requests and not on others.
-* A replica with a different *proof key* presents a DPoP proof of a key the session's tokens are not
-  bound to when it refreshes a session another replica logged in.
-
-So a deployment that provides a sealing key file for more than one replica provides both signing-key
-files as well.
-The exhibit above names no key file and therefore runs on generated keys, which fits one replica.
-
-=== Produce a key file
-
-A key file holds *exactly one* unencrypted PKCS#8 `PRIVATE KEY` block *and exactly one* `PUBLIC KEY`
-block, and nothing else but whitespace:
-
-[source,text]
-----
-<one PEM block labelled PRIVATE KEY: the unencrypted PKCS#8 private key>
-<one PEM block labelled PUBLIC KEY: the public half of the same key>
-----
-
-The exhibit describes the two blocks instead of printing their `BEGIN` and `END` armour lines, so
-that a secret scanner does not take this page for a key file.
-
-*The `PUBLIC KEY` block is mandatory for every key type, RSA included.* The gateway publishes the
-public half of the client-authentication key and embeds that of the proof key in its proofs, and it
-derives neither from the private key. At startup
-it checks that the two blocks belong together.
-
-Produce the file with OpenSSL. For an RSA key:
-
-[source,bash]
-----
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out client-auth.pem
-openssl pkey -in client-auth.pem -pubout -out client-auth.pub
-cat client-auth.pub >> client-auth.pem
-rm client-auth.pub
-----
-
-For an EC key:
-
-[source,bash]
-----
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve \
-  -out dpop.pem
-openssl pkey -in dpop.pem -pubout -out dpop.pub
-cat dpop.pub >> dpop.pem
-rm dpop.pub
-----
-
-Check the result: the file must begin with `-----BEGIN PRIVATE KEY-----` and contain
-`-----BEGIN PUBLIC KEY-----`.
-
-=== Key types, sizes and algorithms
-
-[cols="1,2,1", options="header"]
-|===
-| Key type | Minimum | The gateway signs with
-
-| RSA | a modulus of 2048 bits | `PS256`
-| EC | curve P-256, no other curve | `ES256`
-|===
-
-The key type selects the signing algorithm. There is no algorithm setting, and no other algorithm
-can be chosen. Ed25519 keys are not accepted.
-
-*The key id cannot be set.* The gateway derives it from the key (the RFC 7638 thumbprint of the
-public half), so it changes exactly when the key changes.
-
-=== Mount the file and name it
-
-Mount the key files read-only, on every replica, and name each by its path. Write the path
-literally, or supply it through a variable -- a path is a location, not a secret, so both forms are
-accepted:
-
-[source,yaml]
-----
-# gateway.yaml
-oidc:
-  client_authentication:
-    key_file: /etc/sheriff/keys/client-auth.pem     # a literal path
-  sender_constraint:
-    key_file: ${SHERIFF_DPOP_KEY_FILE}              # or a path supplied by the deployment
-----
-
-The file content is the secret. Restrict the mount to the gateway: the gateway reads the file as it
-finds it and does not check its permissions.
-
-[[_signing_key_refusals]]
-=== What stops the gateway from starting
-
-A key file the gateway cannot use stops the boot. It never falls back to a generated key. The boot
-log names the configuration key -- `oidc.client_authentication.key_file` or
-`oidc.sender_constraint.key_file` -- and the defect. It never prints the path or a line of the file.
-
-[cols="2,3,3", options="header"]
-|===
-| What is wrong | What the log says after the key name | What to do
-
-| The file is not there
-| `names a file that does not exist`
-| Mount it, or correct the path.
-
-| The file cannot be read
-| `names a file that cannot be read`
-| Make it readable by the gateway's user.
-
-| The `PUBLIC KEY` block is missing
-| `holds no PUBLIC KEY block`
-| Append the public half, as in the commands above.
-
-| The two blocks belong to different keys
-| `holds a PRIVATE KEY block and a PUBLIC KEY block that do not belong to the same key`
-| Write the public block from this private key.
-
-| The private key is encrypted
-| `holds an ENCRYPTED PRIVATE KEY block; an encrypted key is not supported`
-| Convert it with `openssl pkcs8 -topk8 -nocrypt`.
-
-| A traditional `RSA PRIVATE KEY` or `EC PRIVATE KEY` block
-| `holds a block labelled RSA PRIVATE KEY; that key format is not supported` (or `EC PRIVATE KEY`)
-| Convert it with `openssl pkcs8 -topk8 -nocrypt`.
-
-| An EC key on another curve
-| `holds an EC key on a curve other than P-256`
-| Generate the key on P-256.
-
-| An Ed25519 key
-| `holds an EdDSA key; EdDSA is not offered`
-| Use an RSA key of at least 2048 bits or an EC P-256 key.
-
-| An RSA key that is too small
-| `holds an RSA key with a modulus below 2048 bits`
-| Generate a key of at least 2048 bits.
-|===
-
-*One key for both purposes stops the boot as well.* In the default setup -- no client secret -- the
-key that signs the client assertion must not also sign the DPoP proofs. Two checks enforce it, and
-both messages name the two configuration keys and neither a path nor a key id:
-
-* Both fields name the same file: the configuration check refuses it at
-  `/oidc/sender_constraint/key_file` with `oidc.client_authentication.key_file and
-  oidc.sender_constraint.key_file name the same file`. When both files exist, the file system
-  decides, so a link to the client-authentication key file counts as the same file, while
-  `client/../dpop.pem` with `client` a link to another directory is judged by the file it actually
-  reaches. When either file does not exist -- an offline check on a machine without the keys -- only
-  two paths that are equal after normalisation and contain no `..` segment are refused, so
-  `keys/./a.pem` and `keys/a.pem` are one file, while `keys/x/../a.pem` and `keys/a.pem` are left to
-  the boot, because `x` may be a link. The offline check reports a refused pair too.
-* Two files hold the same key -- a copy, or two paths the configuration check could not prove to be
-  one file: the boot refuses it once both keys are read, with
-  `oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key`.
-
-Either way, point `oidc.sender_constraint.key_file` at a file holding a different key, or remove it
-to use a DPoP key generated at startup.
-
-The remaining refusals -- among them a directory instead of a file, a file above 16 KiB, a second block of the
-same kind, any other PEM block, text outside a block -- are listed in
-link:../configuration/authentication-and-oidc.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys].
-
-=== Register the client at the identity provider
-
-The identity provider learns the client-authentication key from the gateway. Register the
-gateway's JWKS URL at the client; do not paste the public key into the identity provider.
-
-* *The JWKS URL* is `https://<gateway address the identity provider can reach>/bff/jwks`. The path
-  is `oidc.client_authentication.jwks_path`; `/bff/jwks` is its default. The endpoint answers a
-  `GET` without a credential, on every host name the gateway answers on, so an internal service name
-  works. It publishes the public half of the client-authentication key and nothing else.
-* *The identity provider dials the gateway.* It must reach that URL server-to-server and must trust
-  the gateway's certificate for the name it dials. Behind a load balancer every replica must answer
-  with the same key, which is one more reason to provide the key file.
-* *The DPoP key needs no registration.* A separate DPoP key is never published.
-
-On the pinned Keycloak image (`integration-tests/docker-compose.yml`) the key-authenticated clients
-of this project's integration stack carry these settings (shown as they appear in a realm export):
-
-[cols="2,3", options="header"]
-|===
-| Setting | Value
-
-| `clientAuthenticatorType` | `client-jwt` (signed JWT)
-| `use.jwks.url` | `true` (_Use JWKS URL_)
-| `jwks.url` | the gateway's JWKS URL
-| `token.endpoint.auth.signing.alg` | `PS256` for an RSA key, `ES256` for an EC or a generated key
-| `require.pushed.authorization.requests` | `true`
-| `dpop.bound.access.tokens` | `true`
-|===
-
-The identity provider needs the public key only. Keycloak nevertheless generates and stores a secret
-for a client that is imported without one. With the authenticator above it refuses that secret
-at the token endpoint. This was seen on Keycloak 26.5.7; no test asserts it.
-
-=== What the browser sees at login
-
-The gateway pushes the authorization request to the identity provider and redirects the browser to
-the authorization endpoint. It adds two parameters to that URL and no other: `client_id` and
-`request_uri`. No scope, no `state` and no redirect URI travel in that redirect. A query that the
-identity provider's authorization endpoint URL itself carries is kept as it is. The pinned Keycloak
-image (`integration-tests/docker-compose.yml`) may answer that redirect with a further `302` to its
-own `login-actions/authenticate` page before it shows the login form; the integration suite's login
-flow accepts exactly that one redirect.
-
-A widening of a live session is pushed in the same way, so the gateway adds `client_id` and
-`request_uri` only to its redirect as well.
-
-If the identity provider offers no pushed-authorization-request endpoint, or the push fails, the
-login -- or the widening, which then leaves the session as it was -- is refused with `502`. The gateway logs `WARN` `ApiSheriff-132` with the reason, once per
-reason; repeats stay at `DEBUG`.
-
-=== When the identity provider does not bind the token
-
-The gateway accepts a token response only when it is bound to the proof key: its type must be `DPoP`,
-and the access token must carry a `cnf.jkt` claim that names the gateway's proof key. Otherwise:
-
-* *At login* the callback answers `400`. No session is created and no session cookie is set.
-* *At a widening of a live session* the callback answers `400`. Nothing is merged, no cookie is set,
-  and the session stays as it was.
-* *At a refresh* -- near expiry, or for a scope a route needs -- the session ends, its cookie is
-  cleared, and the request is answered as `oidc.session.refresh.on_failure` says.
-* *In the log* the gateway writes `WARN` `ApiSheriff-134`, naming the leg and the reason and no token
-  material.
-
-An identity provider that issues *opaque* access tokens is refused the same way: there is no `cnf`
-to read. The fix is at the identity provider: require DPoP-bound access tokens for the client. This holds
-in both client-authentication modes.
-
-[[replacing-a-key]]
-== Replacing a signing key
-
-* *A generated key* is replaced by every restart.
-* *A provided key* is replaced by replacing the file on every replica and restarting them. The file
-  is read once, at startup.
-
-Nothing is changed at the identity provider. The key id changes with the key, and the identity
-provider fetches the new client key from the JWKS endpoint when it meets the unknown key id. It does
-so at most once per fetch interval -- ten seconds by default in Keycloak -- so a request that falls
-inside that interval can fail. There is no overlap: the old key is not published or accepted next to
-the new one. While replicas are restarted one after another, those still on the old key and those
-already on the new one disagree for as long as the roll takes.
-
-*What a replacement does to live sessions.* On the pinned Keycloak image
-(`integration-tests/docker-compose.yml`) a session survives it in the one case observed. The integration
-suite restarts a gateway whose two keys are generated, under a live session. The next refresh of
-that session succeeds, the session continues, and the new access token is bound to the new proof
-key.
-
-That observation has limits, and they are stated here so that it is not read as more than it is:
-
-* It was made in this variant, with a sealing key read from a *provided* key file, so the session
-  cookie stayed readable across the restart. With a generated sealing key a restart drops every session whatever the
-  signing keys do.
-* Only generated keys were replaced. Replacing a provided key file was not run.
-* It holds for the identity provider and the image named. Another identity provider may refuse a
-  refresh that presents a proof of a new key.
-
-Plan for the worst case: sessions whose tokens were bound to the old key fail their next refresh,
-end, and follow `oidc.session.refresh.on_failure` -- with the default, the user is sent through the
-login again.
-
-[[client-secret]]
-== Client-secret authentication: an operator choice
-
-[WARNING]
-====
-Client-secret authentication is not FAPI 2.0 conformant and may weaken security.
-====
-
-The gateway can authenticate to the identity provider with a client secret instead of a key. It is a
-supported configuration, and it is your decision to make.
-
-*How it is selected.* By configuring `oidc.client_secret`. There is no switch: the key being present
-is the selection, and removing it selects key-based authentication again.
-
-[source,yaml]
-----
-# gateway.yaml
-oidc:
-  issuer: https://idp.example.com/realms/main
-  client_id: api-sheriff
-  client_secret: ${SHERIFF_CLIENT_SECRET}     # must be a bare ${ENV_VAR} reference
-  sender_constraint:
-    key_file: /etc/sheriff/keys/dpop.pem      # optional, exactly as in key mode
-----
-
-*What changes, and what does not.*
-
-* Only the client credential changes. The gateway sends the secret as `client_secret_basic` on every
-  authenticated call to the identity provider.
-* Pushed authorization requests stay on.
-* DPoP stays on. `oidc.sender_constraint.key_file` is handled exactly as in key mode -- every replica
-  needs the same file -- and a token response that is not bound to the proof key is still refused.
-
-*What is refused.* `oidc.client_secret` together with `oidc.client_authentication.key_file` does not
-boot. The message names both keys and carries neither the secret nor the path:
-`oidc.client_secret and oidc.client_authentication.key_file are both declared`. Remove one of them.
-
-*What the gateway logs.* At every boot it writes `WARN` `ApiSheriff-133`:
-
-[source,text]
-----
-ApiSheriff-133: The BFF authenticates to the identity provider with oidc.client_secret. Client-secret authentication is not FAPI 2.0 conformant and may weaken security. Pushed authorization requests and the DPoP sender constraint stay in effect. Removing oidc.client_secret selects private_key_jwt
-----
-
-The one way to silence it is to remove `oidc.client_secret`.
-
-*What the JWKS path answers.* `404`. There is no client-authentication key in this mode, so there is
-no key set for the identity provider to fetch. The path stays reserved and is not handed to the
-route table.
-
-*What to register at the identity provider.* A client that authenticates with a secret, requires
-pushed authorization requests and binds its access tokens with DPoP. Register no key-set URL. On Keycloak:
-`clientAuthenticatorType: client-secret`, `require.pushed.authorization.requests: true`,
-`dpop.bound.access.tokens: true`.
-
-*A copied configuration selects this mode.* A `gateway.yaml` taken from another deployment that
-carries `client_secret` authenticates with the secret without anyone having decided it. Check the
-boot log for `ApiSheriff-133`.
-
 == Session cookie name
 
 `session.cookie_name` is optional. Omit it and the session cookie is `+__Host-sheriff-session+`. If you
@@ -698,11 +296,6 @@ A refused name fails the boot with one error at `/oidc/session/cookie_name` list
 name broke, with the value escaped before it is printed. Nothing later in the gateway re-checks the
 name -- the BFF runtime uses it exactly as written -- which is why the check happens at boot rather
 than on the first login.
-
-If an older `gateway.yaml` of yours declares a name without the prefix, rename it to a `+__Host-+`
-name (or delete the line to take the default). Existing sessions under the old name are not carried
-over: browsers keep sending the old cookie, the gateway no longer reads it, and those users log in
-again.
 
 [[_cookie_size_budget]]
 == Cookie size budget
@@ -733,8 +326,6 @@ the overhead from the values you configured, so a longer name means a lower brow
 number was written down or left to the default, so the check reads the *effective* budget. It stays
 quiet on a default configuration -- 4019 plus the default 77 bytes lands exactly on the guarantee --
 and it fires on a gateway that omitted the key while running a longer cookie name or a wider TTL.
-That case used to pass in silence, because the default was 4096 and an omitted key was skipped
-outright.
 ====
 
 The gateway therefore refuses to seal an over-budget session rather than truncating it, and logs a
@@ -749,21 +340,14 @@ get: it fires precisely because raising the budget switches off the seal refusal
 and what the refusal was protecting you from then happens in the browser instead, which reports
 nothing to anyone.
 
-*The session-cookie-name check changed nothing here.* The budget key was re-examined when the name
-check above was added, and it needed no further change: its range is still validated at boot in
-every session mode, `ApiSheriff-124` still derives its threshold from the name and TTL you actually
-configured, and the seal is still refused rather than truncated. The name check only narrows *which*
-names reach that derivation. A longer `+__Host-+` name still costs budget exactly as described above.
+*The name check and the budget work together.* The budget's range is validated at boot in every
+session mode, `ApiSheriff-124` derives its threshold from the name and TTL you actually configured,
+and the seal is refused rather than truncated. The name check only narrows *which* names reach that
+derivation. A longer `+__Host-+` name still costs budget exactly as described above.
 
 [IMPORTANT]
 .Refresh is supported in cookie mode, with a measured and finite margin
 ====
-*This supersedes earlier guidance.* Previous releases of this guide said that access + ID + refresh
-together commonly exceeded the budget, and pointed you at the server-session variant as the answer
-whenever both refresh and browser-safe cookies were required. That is no longer the position: the
-sealed payload is now framed as length-prefixed raw UTF-8 and deflated before it is encrypted,
-which is what made the three-token session fit.
-
 *Enabling `session.refresh` still costs a third token in the seal.* The refresh token has to be
 stored in the session -- it is the only thing that re-contacts the IdP -- and in cookie mode the
 session *is* the cookie. An access + ID + refresh session is therefore the largest this variant ever
@@ -887,49 +471,6 @@ the session alive. On a session route the gateway closes a WebSocket at the sess
 expiry, with close code `1008` and the reason `session ended`; in this variant nothing closes it
 earlier (see <<_what_is_unavailable_in_this_variant>>).
 
-[[_configure_strict_refresh_token_rotation_at_the_idp]]
-== Configure strict refresh-token rotation at the IdP
-
-In this variant the refresh token travels inside the sealed cookie, so a copied cookie is a copied
-refresh token. Once the gateway has refreshed a session, the *older* cookie still unseals -- the
-gateway keeps no state to tell it apart from the current one -- and replaying it makes the gateway
-present the already-spent refresh token again. *The gateway cannot detect that*: it keeps no token
-family, and a stateless instance could not share one if it did. Detection is your identity
-provider's job, so turn it on for the client's realm or tenant:
-
-* *Keycloak:* *Revoke Refresh Token* on and *Refresh Token Max Reuse* `0` (`revokeRefreshToken: true`,
-  `refreshTokenMaxReuse: 0` in a realm export). The project's integration and compose-sample realms
-  ship with exactly this.
-* *Other providers:* refresh-token rotation with reuse detection and no reuse grace window.
-
-With it on, the replay is refused with `invalid_grant`, the gateway ends that session, clears the
-cookie and records `ApiSheriff-111` with reason `credential-rejected`. Keycloak additionally revokes
-the successor token, so the session the legitimate browser holds ends on its next refresh as well,
-while the Keycloak user session survives -- a replay costs the attacker and the user the whole grant.
-*Without strict rotation, neither side detects reuse*: the provider refreshes the replayed token and
-the copied cookie becomes a working session.
-
-Once the gateway has ended a session this way, it remembers the refresh token that session presented
-(as a salted digest, in memory, until the session's absolute lifetime), so further requests with that
-same cookie are refused locally -- cookie cleared, no call to your IdP, no further `ApiSheriff-111`.
-That memory is per instance and does not survive a restart, so another instance, or the same one after
-a restart, asks the IdP once more before it remembers the token too.
-
-*The trade you accept.* Strict rotation cannot tell a replay from a benign duplicate. Each instance
-single-flights refreshes per session, but two parallel requests carrying the same cookie that land on
-*different* instances inside the refresh window both present the same refresh token, and the second
-ends the session -- a forced re-login. Allowing a reuse count or grace window at the IdP avoids that
-at the price of the detection itself; see
-link:../variants/03-bff-cookie.adoc#_transparent_refresh_and_step_up[the concurrent-refresh race].
-
-*How a failing refresh is answered.* Only the failure kinds above end the session. If the IdP is
-unreachable or answers `5xx`, the session is kept: requests keep using the current access token until
-it expires, then are answered as unauthenticated *without* the cookie being cleared, and the next
-attempt waits five seconds (`ApiSheriff-127`, per instance). `on_failure` picks how a failing request
-is answered -- `reauthenticate` redirects navigations to login and answers API calls `401`, `reject`
-answers `401` to everything. See link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the
-per-kind table].
-
 [[_what_is_unavailable_in_this_variant]]
 == What is unavailable in this variant
 
@@ -992,37 +533,21 @@ the session cookie is issued, requests may be balanced freely across replicas wi
 
 == Upgrading: forced re-login on a format change
 
-The sealed-cookie format carries a version that is bound into the cookie's authenticated data. The
-version is incremented by one on every change to the set of fields the cookie seals, and a cookie
-carrying any other version fails to unseal rather than being mis-parsed -- there is deliberately no
-backward-compatible acceptance path.
+A release that changes the sealed-cookie format forces every cookie-mode user to log in again, once.
+The format carries a version that is bound into the cookie's authenticated data and read before any
+cipher is constructed. A cookie carrying any other version is refused rather than mis-parsed --
+logged once as `ApiSheriff-113` with disposition `unknown-version` -- and treated as no session:
+navigations are redirected to login and API calls answer `401`. There is no rolling migration, so
+schedule such a deploy as a forced re-login.
 
-*Plan for it*: on an upgrade that changes the format version, all existing cookie-mode sessions are
-invalidated at deploy time and users must log in again, once. There is no rolling migration --
-schedule the deploy accordingly.
+The current format is version *2*: the sealed payload is length-prefixed raw UTF-8, deflated before
+encryption, and carries eleven fields -- the tokens, the identity and session claims, and the
+session's active and granted scope sets.
 
-The current format is `FORMAT_VERSION` *2*: the sealed payload is length-prefixed raw UTF-8, deflated
-before encryption, and carries eleven fields -- the tokens, the identity and session claims, and the
-session's active and granted scope sets. Version 2 added the granted scope set, which session routes
-need to enforce their scopes (see link:bff-session.adoc#scope-enforcement[When a session lacks a
-scope the route needs]). The numbering had restarted at 1 with the earlier change that added the
-active scope set. *Cookies sealed before this change are refused*: a version-1 cookie carries a
-different version byte, fails the explicit version gate *before* decryption (logged once as
-`ApiSheriff-113` with disposition `unknown-version`), and is treated as no session -- navigations
-are redirected to login and API calls answer `401`. Existing cookie sessions therefore log in again
-once after the upgrade.
-
-*The idle timeout did not change the format.* The time of the last request lives in the activity
-cookie, not in the sealed session, so the session cookie's field set and `FORMAT_VERSION` are as
-they were. The activity cookie has a format version of its own. A change to it makes the gateway
-ignore every activity cookie written before, and the idle timeout of those sessions is then
-measured from their login. A session whose login is older than `idle_timeout_seconds` at the
-upgrade therefore ends at its next request and the user logs in again; a younger session
-continues. The current activity cookie format is version *2*.
-
-The gate reads and compares the version byte before any cipher is constructed. The version an
-accepted cookie carries is authenticated in turn -- AES-GCM binds it into the associated data -- but
-that happens after the gate, not at it. So a retired format is never mis-parsed.
+The activity cookie has a format version of its own, currently *2*. A change to it does not end
+sessions: the gateway ignores every activity cookie written before, and measures the idle timeout of
+those sessions from their login. A session whose login is older than `idle_timeout_seconds` at that
+moment ends at its next request.
 
 == Operate
 
@@ -1053,25 +578,15 @@ that happens after the gate, not at it. So a retired format is never mis-parsed.
   request does not also refresh for a missing scope -- its own `Cookie` header names a refresh token
   the IdP has already retired -- and is widened or refused instead. The next request carries the new
   cookie and is refreshed normally.
-* *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
-  without the IdP -- but logins fail until the issuer is reachable. The reverse direction matters as
-  well in the default setup: the IdP must reach the gateway's JWKS endpoint, or it cannot verify the
-  gateway's client assertion and every login fails (see <<signing-keys>>).
-
-== Private-CA / self-signed IdP
-
-If your IdP presents a certificate from a *private CA*, name a trust profile for the gateway's
-back-channel to it -- discovery, the pushed authorization request, the authorization-code exchange,
-refresh and refresh-token revocation -- with
-`egress_tls.oidc_tls_profile`, and bind the profile's anchors in the deployment. The profile
-*replaces* the JVM default trust store on that one leg, so include a public root in it if the IdP
-still needs one. The per-issuer `jwks.tls_profile` is a separate key for the JWKS fetch; an IdP
-behind the same private CA needs both. Alternatively, add the CA to the JVM default truststore and
-name no profile. See link:bff-session.adoc#_private_ca_self_signed_idp[the server-session guide]
-for both routes; they are identical in both variants.
+* *Refresh failures, IdP reachability and a private-CA IdP* are the same in both variants; see
+  link:bff-oidc-common.adoc#_operate[Shared Setup -- Operate],
+  link:bff-oidc-common.adoc#_configure_strict_refresh_token_rotation_at_the_idp[strict refresh-token
+  rotation at the IdP] -- a must in this variant, where a copied cookie is a copied refresh token --
+  and link:bff-oidc-common.adoc#_private_ca_self_signed_idp[Private-CA / self-signed IdP].
 
 == See also
 
+* link:bff-oidc-common.adoc[BFF Confidential Client: Shared Setup] -- keys, client registration and the login exchange, shared with the server-session variant.
 * link:../configuration/authentication-and-oidc.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract.
 * link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- design and flow rationale.
 * link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF architecture] -- why the variant is shaped this way.

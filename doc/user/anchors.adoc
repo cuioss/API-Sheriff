@@ -1,7 +1,9 @@
 = API Sheriff -- Anchors (Namespace-Scoped Policy)
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 How to declare and operate *anchors* -- the namespace-scoped policy scopes configured in
 `gateway.yaml`. The decisions behind them are recorded in
@@ -13,12 +15,11 @@ link:../configuration.adoc[Configuration Reference].
 [[_anchors]]
 == Anchors -- Namespace-Scoped Policy
 
-Anchors (decision: link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007]) are *named policy scopes
-that own a URL path namespace*. They are declared in `gateway.yaml` and answer one question the
-per-endpoint model cannot: "how is an invariant like _every call under `/api` presents a valid
-bearer token_ declared once and *enforced*, instead of restated in every endpoint file?"
+Anchors are *named policy scopes that own a URL path namespace*. Declared in `gateway.yaml`, they
+let an invariant like _every call under `/api` presents a valid bearer token_ be declared once and
+*enforced*, instead of restated in every endpoint file.
 
-Semantics -- deliberately few rules:
+The rules:
 
 * *Ownership.* Each anchor declares a `path_prefix`; anchor prefixes are pairwise disjoint
   (no anchor prefix is a prefix of another). The anchor owns everything under its prefix.
@@ -261,9 +262,6 @@ declare, and what it takes over is stated here:
   (allow and deny for one dimension together), and a `token_relay: false` route whose effective
   `forward.headers_allow` -- endpoint-level included -- names `Authorization` is refused.
 
-A configuration without either key at the endpoint resolves exactly as it did before the scope
-existed: the schema refused both keys there, so no existing endpoint document declares them.
-
 [[_anchor_security_headers]]
 === Anchor `security_headers`
 
@@ -312,7 +310,7 @@ body over the cap, a CSRF refusal, an unexpected internal failure of the gateway
 unrouted `404` to every caller that has not passed the trust boundary, one with a valid credential
 included, and the gateway restores the headers the request carried before its route was selected, so that the
 answer matches the unrouted one header for header (see
-link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). With
+link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). With
 `security_defaults.uniform_not_found: false` those rejections carry the route's block.
 
 [IMPORTANT]
@@ -382,16 +380,9 @@ recommended starting value and why:
 | An exact origin list never reflects an arbitrary caller, and credentials stay off by default.
 |===
 
-*Why nothing is applied automatically.* The operator owns the response policy, and the gateway
-neither guesses it nor fills it in:
-
-* *The policy belongs to the deployment.* What is right depends on the application behind the
-  gateway -- whether it is framed, whether every subdomain speaks HTTPS, which origins call it.
-* *A silent default would differ per deployment.* A header the gateway added on its own would be part
-  of the effective posture without appearing in any configuration file, so two deployments with the
-  same documents could not be told apart by reading them.
-* *A guessed `Content-Security-Policy` is wrong either way.* One strict enough to matter breaks an
-  application it was not written for, and one loose enough never to break protects nothing.
+Nothing is applied automatically: the right values depend on the application behind the gateway
+(whether it is framed, whether every subdomain speaks HTTPS, which origins call it), and every header
+in force should be visible in the configuration you review.
 
 Two gateway-*authored* answers are outside this block and keep their own fixed headers: an asset
 served through the response envelope always carries `X-Content-Type-Options: nosniff`, and a portal
@@ -447,8 +438,7 @@ policy blocks above:
 * *`type`* -- what terminal behaviour the anchor's routes expose: `proxy` (a reverse-proxy
   surface), `bff` (a Backend-For-Frontend surface), or `asset` (a static-asset surface, see
   link:endpoint-routes.adoc#_asset_terminal_action[Asset terminal action]). The anchor-`type`
-  value space is entirely unrelated to the TLS-L4 `tls.passthrough_sni` surface, despite the
-  adjacent vocabulary.
+  value space is unrelated to `tls.passthrough_sni`.
 * *`access`* -- the audience the anchor admits: `public` (an anonymous surface, no
   authentication) or `authenticated` (requires a fully-backed auth posture).
 

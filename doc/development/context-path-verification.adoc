@@ -1,7 +1,9 @@
 = Context Path -- Verification Runbook
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 The context path is a *build-time* knob with no runtime lever, so nothing about it can be checked by
 restarting a container with a different environment variable. Proving it works means rebuilding the
@@ -9,9 +11,10 @@ artifact through the Maven seam and driving the result. This document is the pro
 that, and it carries the *observed* responses from the run that established it rather than the ones
 a reader would expect.
 
-The mechanism itself -- the three keys, the carrier-key indirection, and why the environment-variable
-form is inert -- is in link:../user/context-path.adoc[The Context Path]. This is the developer-side
-companion, in the same split `compose-sample.adoc` already uses: the
+The operator view -- the three keys, the two build routes, and what a non-root path changes at the
+edge -- is in link:../user/context-path.adoc[The Context Path]. The mechanism behind the seam -- the
+carrier-key indirection and its accepted costs -- is in <<_how_the_seam_works>> at the end of this
+document. This is the developer-side companion, in the same split `compose-sample.adoc` already uses: the
 link:../user/compose-sample.adoc[operator guide] describes running the thing, the
 link:compose-sample.adoc[contributor guide] describes why it is built the way it is.
 
@@ -419,3 +422,174 @@ after any change to `application.properties`' context-path declarations, to the 
 that the seam still acts is case 3's artifact inspection: the seam build must put the configured
 values into `BuildTimeRunTimeFixedConfigSourceBuilder`, and the default build must put `/` and `/q`
 there. A green build proves neither.
+
+[[_how_the_seam_works]]
+== How the seam works
+
+The mechanism behind the operator view in link:../user/context-path.adoc[The Context Path]: why the
+seam has the shape it has, what it costs, and which parts of it must not be "simplified" away. Every
+claim below was established by building and measuring, during the run this runbook records.
+
+=== Build-time keys, and why they are not in `gateway.yaml`
+
+`quarkus.http.root-path`, `quarkus.management.root-path` and `quarkus.http.non-application-root-path`
+sit on Quarkus `*BuildTimeConfig` interfaces, so each value is fixed at augmentation. The built value
+is recorded in the artifact and compared against a runtime one by
+`io.quarkus.deployment.configuration.ConfigGenerationBuildStep`'s build-time-mismatch check, governed
+by `quarkus.config.build-time-mismatch-at-runtime` and left at its `warn` default. The *routing*
+claim (an override moves nothing) is measured; the absence of a mismatch log line is not.
+
+Under
+link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]'s
+*policy / deployment-bound / build-time* triage the context path is a *build-time* knob, so it is not
+part of `gateway.yaml`'s neutral vocabulary. That absence is structural: `gateway.yaml` is a
+*runtime* source, read at startup by `ConfigProducer`, so a key already fixed at augmentation cannot
+be projected from it. A `context_path` written there could never take effect.
+
+=== Why the seam works through a carrier key
+
+The two configurable keys are declared as *expressions over a carrier key* rather than as plain
+literals:
+
+.`api-sheriff/src/main/resources/application.properties`
+[source,properties]
+----
+quarkus.http.root-path=${quarkus.sheriff-context-path:/}
+quarkus.management.root-path=${quarkus.sheriff-mgmt-path:/q}
+----
+
+.`api-sheriff/pom.xml` (inside the property-activated profiles)
+[source,xml]
+----
+<quarkus.sheriff-context-path>${sheriff.context-path}</quarkus.sheriff-context-path>
+<quarkus.sheriff-mgmt-path>${sheriff.management-context-path}</quarkus.sheriff-mgmt-path>
+----
+
+Two measured facts force that shape.
+
+*The build property must be `quarkus.`-prefixed to survive at all.* `quarkus-maven-plugin` forwards
+the effective POM's properties into augmentation through `getBuildSystemProperties(quarkusOnly)`,
+called with `quarkusOnly = true`, which keeps *only* `quarkus.`-prefixed names. A profile that set
+`sheriff.context-path` itself as the build property would be filtered out. That is why the profile
+maps the operator-facing `sheriff.*` property onto a `quarkus.*` one.
+
+*The carrier is needed because `application.properties` outranks the forwarded property.* Forwarded
+build-system properties land in a `PropertiesConfigSource` named `Build system` at the default
+ordinal `100`; `src/main/resources/application.properties` is ordinal `250` and *wins* for every key
+it declares. A seam that set `quarkus.http.root-path` directly would be overridden by the very
+declaration it was trying to change: with the direct mapping in place,
+`package -Dsheriff.context-path=/gw` produced *zero* occurrences of `/gw` in
+`generated-bytecode.jar`, while every build stayed green.
+
+Declaring the winning value as an *expression* inverts that. The ordinal-250 declaration still wins,
+but what it wins *with* is a reference: the carrier resolves from the ordinal-100 build-system source
+when the seam sets it, and from the expression's inline default when nothing does. So the seam acts,
+and an unconfigured build still ships `/` and `/q`.
+
+[WARNING]
+====
+*Do not flatten these declarations back to literals.* The literal form reads more obviously and
+`-Dsheriff.context-path` silently stops acting -- a default build produces the same bytes either way,
+so the regression is invisible at runtime.
+
+Two tests assert the declared form directly: `ContextPathDefaultsTest` reads the RAW declared value
+out of the packaged `target/classes/application.properties` and asserts it is the expression, and
+`BuildParentContractTest.carrierFor` fails when a declaration is not an expression over its carrier.
+Do not remove them as redundant with this prose.
+====
+
+`quarkus.http.non-application-root-path` is not part of the seam, so it stays a literal.
+
+==== The accepted cost: two keys on a namespace that does not own them
+
+`quarkus.sheriff-context-path` and `quarkus.sheriff-mgmt-path` are *our* key names on Quarkus'
+namespace. Quarkus owns no such keys, so they get no validation, no documentation, no tooling
+completion, and no guarantee that a typo is reported rather than silently ignored.
+
+That cost is deliberate. It is the price of the only shape in which the seam acts, and it is cheaper
+than a `@ConfigMapping` added solely to make the keys look official -- that would claim pure carriers
+as a configuration surface, a documented key nobody should ever set.
+
+The cost is structural rather than visible: no unrecognized-key warning was emitted by the
+seam-active JVM augmentation, the seam-active native augmentation, or the resulting container at boot
+(see <<_case_3_rebuild_through_the_seam>>). The likely reason is that at runtime the carrier is only
+*referenced* by an expression, never *provided* by a config source. So there is no warning to catch a
+rename or a typo -- `BuildParentContractTest`'s carrier-coupling assertion catches it instead.
+
+==== One measured side effect, confined to the test harness
+
+Quarkus normalises `quarkus.http.root-path` by prepending a `/` when the value does not already start
+with one -- and in the `@QuarkusTest` augmentation path it applies that to the *raw* string, *before*
+the expression is expanded. `${quarkus.sheriff-context-path:/}` does not start with `/`, so it
+becomes `/${quarkus.sheriff-context-path:/}` and expands to `//`. A `@QuarkusTest` therefore reads
+`//` back from `ConfigProvider.getConfig().getValue("quarkus.http.root-path", String.class)`, and
+`ContextPathDefaultsTest` asserts exactly that.
+
+The packaged artifact is not affected. The `quarkus-maven-plugin` augmentation expands first and
+normalises after, so `BuildTimeRunTimeFixedConfigSourceBuilder` in
+`target/quarkus-app/quarkus/generated-bytecode.jar` records `/` for a default build and `/gw` for
+`-Dsheriff.context-path=/gw`. The Vert.x router mounts at `/` and `/q/` by default, or `/gw/` and
+`/gw/q/` under the seam.
+
+Do not "fix" the `//`. Flattening to a literal disables the seam. Emptying the default (`${...:}`)
+clears the `//`, but `application.properties` then no longer declares the acting `/` -- the packaged
+artifact records the empty string and the effective `/` comes back from the framework default, the
+implicitness this declaration exists to remove. All three variants were built and measured; the `//`
+read-back is the cheapest.
+
+=== Why off-context requests get no error envelope
+
+The gateway's data plane is a single catch-all Vert.x route registered *last* on the Quarkus main
+router (`router.route().last().handler(...)`), and that router is mounted beneath
+`quarkus.http.root-path`. Deny-by-default route selection, the inbound-validation pipeline and the
+RFC 9457 envelope all live inside that catch-all, so a request outside the context path is answered
+by Vert.x' own not-found page (see <<_case_4_non_root_application_interface>>).
+
+Restoring the envelope would mean registering a second catch-all outside the configured root path --
+deliberately serving something at a prefix the deployment said the gateway does not occupy. That is
+the assumption a context path exists to avoid making, so no such route exists.
+
+The route-table half of the same picture -- `EdgeRequests.buildPipelineRequest` building the pipeline
+request from the raw `HttpServerRequest.uri()` -- is in
+<<_the_route_table_is_matched_against_the_raw_path_prefix_included>>.
+
+The router also registers the composed non-application prefix either way: a `/gw` build's native
+executable contains `/gw/q/` as well as `/gw/`, inert while the management interface is enabled.
+
+[[_the_repositorys_hand_maintained_literals]]
+=== The repository's hand-maintained literals
+
+The `de.cuioss.sheriff.management-root-path` Compose label extends the derivation rule of
+link:integration-test-topology.adoc#readiness-gate-rules[the host-side readiness gates]: that rule
+already requires the scheme to come from an explicit per-service label rather than an inference, and
+the root path is the same kind of fact carried the same way.
+
+The `keycloak` service carries the label for label-set uniformity, and it is *inert* there: Keycloak
+serves health at `/health/ready` directly on its management port, under no root-path prefix. Every
+consumer splits the identity-provider row out of the derived rows and keeps Keycloak's own literal. A
+future loop that derives Keycloak's probe path from this label must fix the label's *value* first --
+it is the gateway's root path, not Keycloak's.
+
+Four literals restate the management root path because nothing can derive it where they live:
+
+* `integration-tests/prometheus.yml`'s `metrics_path` -- bind-mounted into Prometheus verbatim, and
+  Prometheus interpolates no environment variables into a scrape config.
+* `integration-tests/scripts/verify-invalid-config-fails.sh` -- a bare `docker run`, so there is no
+  resolved Compose model to read the label from.
+* `integration-tests/src/test/java/.../BaseIntegrationTest.java` -- the suite's own default constant.
+* `.github/workflows/release.yml`'s `MANAGEMENT_CONTEXT_PATH` -- the path the published-image smoke
+  probe is composed beneath. That lane runs `docker run` against a *pulled* image, and
+  `Dockerfile.native` declares no root-path OCI label to inspect.
+
+None of the four is left to reviewer vigilance. The three under `integration-tests/` each have an
+assertion leg in `ManagementRootPathLabelIT` -- `prometheusScrapePathAgreesWithLabel`,
+`invalidConfigScriptRootPathAgreesWithLabel` and `baseIntegrationTestDefaultAgreesWithLabel` --
+comparing the literal against the Compose label after the same trailing-slash normalisation. The
+fourth is asserted where it lives: the release workflow's *Assert the smoke-probe path matches the
+shipped management root path* step compares the constant against `application.properties`' declared
+default (the acting value, since that lane passes no `-Dsheriff.management-context-path`) and fails
+the release before the image is built.
+
+*Asserted is not derived.* All four still have to be edited by hand when the management path moves;
+the assertions make editing them wrong a build failure rather than a silent drift. Prefer deriving
+where a resolved model exists.

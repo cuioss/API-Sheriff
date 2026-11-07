@@ -70,7 +70,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <strong>Why this test exists.</strong> Sixteen shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
  * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
- * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
+ * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/edge-security.adoc} plus the
  * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — those two
  * schemas each additionally list the
  * authentication posture set carried by {@link Require} and the two {@code cookies.allow} mode
@@ -183,7 +183,7 @@ class DocumentedSetsContractTest {
             "routing-and-forwarding", "security-and-edge-hardening", "validation-rules")
             .map(part -> REPOSITORY_ROOT.resolve("doc/configuration/" + part + ".adoc")).toList();
 
-    private static final Path USER_README_ADOC = REPOSITORY_ROOT.resolve("doc/user/README.adoc");
+    private static final Path EDGE_SECURITY_ADOC = REPOSITORY_ROOT.resolve("doc/user/edge-security.adoc");
     private static final Path BFF_COOKIE_ADOC = REPOSITORY_ROOT.resolve("doc/user/bff-cookie.adoc");
     private static final Path ARCHITECTURE_ADOC = REPOSITORY_ROOT.resolve("doc/architecture/observability-and-errors.adoc");
     private static final Path THREAT_MODEL_ADOC = REPOSITORY_ROOT.resolve("doc/security-threat-model.adoc");
@@ -274,11 +274,11 @@ class DocumentedSetsContractTest {
     private static final String CONFIG_EXTENSION_ANCHOR = "-entry extension map";
 
     /**
-     * Anchor for {@code doc/user/README.adoc}'s bare extension enumeration ("The 21 built-in
+     * Anchor for {@code doc/user/edge-security.adoc}'s bare extension enumeration ("The 21 built-in
      * extensions -- `html`, … -- always win"). The count precedes it, the backticked list runs from
      * the anchor to the closing {@code --}.
      */
-    private static final String README_EXTENSION_ANCHOR = "built-in extensions --";
+    private static final String EDGE_SECURITY_EXTENSION_ANCHOR = "built-in extensions --";
 
     /** Anchor for the schema's restatement, which lists the extensions bare inside parentheses. */
     private static final String SCHEMA_EXTENSION_ANCHOR = "an entry naming a built-in extension (";
@@ -291,17 +291,17 @@ class DocumentedSetsContractTest {
     private static final String CONFIG_PROFILE_ANCHOR = "profile: strict";
 
     /**
-     * Anchor for {@code doc/user/README.adoc}'s bare mode enumeration ("The mode set is exactly
+     * Anchor for {@code doc/user/edge-security.adoc}'s bare mode enumeration ("The mode set is exactly
      * `strict`, …"). The backticked list runs from the anchor to the sentence's own full stop, which
      * no mode name can contain.
      * <p>
-     * The operator guide restates the mode set twice — this sentence and the mode table its
+     * The edge-security guide restates the mode set twice — this sentence and the mode table its
      * {@code | `mode`} rows build — and neither restatement was bound to {@link SecurityProfile}
      * until this anchor and {@link #hasModeDefinitionRow(String, String)} were pointed at it. That
      * left the document an operator is most likely to read as the one that could silently describe a
      * mode set the gateway no longer has.
      */
-    private static final String README_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly";
+    private static final String EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly";
 
     /**
      * Anchor for the cookie-mode exhibit in {@code doc/user/bff-cookie.adoc} — the sentence that
@@ -607,25 +607,26 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/user/README.adoc enumerates exactly the built-in asset extensions, and states their count")
-    void userReadmeEnumeratesTheBuiltInExtensions() throws Exception {
+    @DisplayName("doc/user/edge-security.adoc enumerates exactly the built-in asset extensions, and states their count")
+    void edgeSecurityGuideEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
-        String document = read(USER_README_ADOC);
-        int anchor = anchorIndex(document, README_EXTENSION_ANCHOR, USER_README_ADOC.toString());
+        String document = read(EDGE_SECURITY_ADOC);
+        int anchor = anchorIndex(document, EDGE_SECURITY_EXTENSION_ANCHOR, EDGE_SECURITY_ADOC.toString());
 
         // Act
-        int listStart = anchor + README_EXTENSION_ANCHOR.length();
+        int listStart = anchor + EDGE_SECURITY_EXTENSION_ANCHOR.length();
         int listEnd = document.indexOf("--", listStart);
         if (listEnd < 0) {
-            fail(USER_README_ADOC + ": the extension list after the anchor \"" + README_EXTENSION_ANCHOR
+            fail(EDGE_SECURITY_ADOC + ": the extension list after the anchor \"" + EDGE_SECURITY_EXTENSION_ANCHOR
                     + "\" is not terminated by '--'; the anchor no longer describes the document and this"
                     + " guard would otherwise assert over the rest of the file");
         }
         TokenList documented = backtickedTokens(document.substring(listStart, listEnd));
-        int statedCount = statedCountBefore(document, anchor, USER_README_ADOC.toString(), README_EXTENSION_ANCHOR);
+        int statedCount = statedCountBefore(document, anchor, EDGE_SECURITY_ADOC.toString(),
+                EDGE_SECURITY_EXTENSION_ANCHOR);
 
         // Assert
-        assertExtensionsMatch(documented, statedCount, USER_README_ADOC.toString());
+        assertExtensionsMatch(documented, statedCount, EDGE_SECURITY_ADOC.toString());
     }
 
     @Test
@@ -776,53 +777,53 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/user/README.adoc's mode enumeration equals the SecurityProfile value set")
-    void userReadmeEnumeratesTheSecurityProfileModes() throws Exception {
+    @DisplayName("doc/user/edge-security.adoc's mode enumeration equals the SecurityProfile value set")
+    void edgeSecurityGuideEnumeratesTheSecurityProfileModes() throws Exception {
         // Arrange
-        String document = read(USER_README_ADOC);
-        int anchor = anchorIndex(document, README_PROFILE_MODE_SET_ANCHOR, USER_README_ADOC.toString());
+        String document = read(EDGE_SECURITY_ADOC);
+        int anchor = anchorIndex(document, EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR, EDGE_SECURITY_ADOC.toString());
 
         // Act — the sentence names the set inline and ends at its own full stop; the raw token count
         // comes back alongside the set because the set alone cannot observe a mode named twice
-        int listStart = anchor + README_PROFILE_MODE_SET_ANCHOR.length();
+        int listStart = anchor + EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR.length();
         int listEnd = document.indexOf('.', listStart);
         if (listEnd < 0) {
-            fail(USER_README_ADOC + ": the mode list after the anchor \"" + README_PROFILE_MODE_SET_ANCHOR
+            fail(EDGE_SECURITY_ADOC + ": the mode list after the anchor \"" + EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR
                     + "\" is not terminated by a full stop; the anchor no longer describes the document"
                     + " and this guard would otherwise assert over the rest of the file");
         }
         TokenList documented = backtickedTokens(document.substring(listStart, listEnd));
 
         // Assert
-        assertFalse(documented.tokens().isEmpty(), USER_README_ADOC + ": anchor \""
-                + README_PROFILE_MODE_SET_ANCHOR + "\" matched but yielded no modes — the guard would"
+        assertFalse(documented.tokens().isEmpty(), EDGE_SECURITY_ADOC + ": anchor \""
+                + EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR + "\" matched but yielded no modes — the guard would"
                 + " pass vacuously");
         assertEquals(modeNames(), sorted(documented.tokens()),
-                USER_README_ADOC + " enumerates the security_defaults.profile mode set, which is"
+                EDGE_SECURITY_ADOC + " enumerates the security_defaults.profile mode set, which is"
                         + " authoritatively defined by SecurityProfile, and has drifted from it. This is the"
                         + " document an operator reads to decide which mode to set, so a mode it omits is one"
                         + " nobody is told exists, and one it names that the enum does not is a value the"
                         + " gateway refuses to boot on");
         assertEquals(SecurityProfile.values().length, documented.rawCount(),
-                USER_README_ADOC + " lists a different number of modes than SecurityProfile declares."
+                EDGE_SECURITY_ADOC + " lists a different number of modes than SecurityProfile declares."
                         + " The count is taken over the raw backticked tokens rather than over the"
                         + " de-duplicated set, so a mode listed twice fails here even though the set"
                         + " equality above still holds");
     }
 
     @Test
-    @DisplayName("doc/user/README.adoc gives every SecurityProfile mode a definition row of its own")
-    void userReadmeDocumentsEverySecurityProfileMode() throws Exception {
+    @DisplayName("doc/user/edge-security.adoc gives every SecurityProfile mode a definition row of its own")
+    void edgeSecurityGuideDocumentsEverySecurityProfileMode() throws Exception {
         // Arrange — the per-mode guidance is free-form prose, so the table row that introduces it is
         // the structural thing worth asserting, exactly as it is for doc/configuration.adoc
-        String document = read(USER_README_ADOC);
+        String document = read(EDGE_SECURITY_ADOC);
 
         // Act + Assert
         for (SecurityProfile profile : SecurityProfile.values()) {
             String mode = profile.name().toLowerCase(Locale.ROOT);
             assertTrue(hasModeDefinitionRow(document, mode),
-                    USER_README_ADOC + " has no definition row of its own for the mode '" + mode
-                            + "' declared by SecurityProfile. The operator guide's mode table must carry"
+                    EDGE_SECURITY_ADOC + " has no definition row of its own for the mode '" + mode
+                            + "' declared by SecurityProfile. The edge-security guide's mode table must carry"
                             + " one cell holding exactly \"" + modeDefinitionRow(mode) + "\" per mode, so a"
                             + " newly added mode gets the guidance that tells an operator when to choose it"
                             + " and a removed one has its entry deleted");

@@ -1,7 +1,9 @@
 = API Sheriff -- Threat Model & CVE-Derived Validation Baseline
 :toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 :sectnumlevels: 2
 
 This document is the security contract API Sheriff validates *against*. It has three

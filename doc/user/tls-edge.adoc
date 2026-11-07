@@ -1,30 +1,33 @@
 = API Sheriff -- TLS Edge: Policy, Passthrough SNI, mTLS and the Management Interface
-:toc:
-:toclevels: 2
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
-An operator guide to the TLS edge: the *TLS policy keys* (protocol floor, cipher allowlist, ALPN),
-*SNI passthrough* (relay selected hostnames at L4 without terminating), *mTLS* (require and verify a
-client certificate on terminated connections), *egress TLS* (the posture of every TLS connection the
-gateway dials), and the *management interface* (health and metrics on their own port). This topic
-describes how to *configure and operate* these keys; the authoritative
-field contract lives in the link:../configuration/tls-and-egress.adoc#_tls[Configuration Reference `tls` section],
-and the design rationale in the link:../development/tls-edge.adoc[developer TLS-edge topic].
+How to configure and operate the TLS edge: the *TLS policy keys* (protocol floor, cipher allowlist,
+ALPN), *SNI passthrough*, *mTLS*, *egress TLS* (every TLS connection the gateway dials) and the
+*management interface*. The field contract lives in
+link:../configuration/tls-and-egress.adoc[Configuration Reference -- TLS and Egress]; the design
+rationale in the link:../development/tls-edge.adoc[developer TLS-edge topic]. To start from a
+deployment goal instead of a key, see link:tls-scenarios.adoc[TLS Scenarios].
 
-To start from a deployment goal instead of from a key -- "require client certificates", "run behind
-an ingress that already terminated TLS" -- see link:tls-scenarios.adoc[TLS Scenarios], which links
-back here for the mechanism.
+One rule governs the whole page
+(link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]):
+*`gateway.yaml` names TLS policy; the deployment supplies ports and material.* Which side a given knob
+falls on is listed in link:environment-variable-overrides.adoc[Environment-variable overrides].
 
-Everything on this page follows one rule, recorded in
-link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]:
-*`gateway.yaml` names TLS policy; the deployment supplies ports and material.* Which side of that
-line a given knob falls on -- and what to set when it is on the deployment side -- is enumerated in
-link:environment-variable-overrides.adoc[Environment-variable overrides].
+image::../resources/diagrams/tls-sni-split-and-seams.svg[TLS edge accept-time SNI split: a ClientHello whose SNI is listed in tls.passthrough_sni is relayed undecrypted at L4 to a backend that terminates with its own certificate; every other SNI, or none, fails closed onto the terminated HTTPS listener, which applies the gateway.yaml TLS and mTLS policy and rejects a Host naming a passthrough SNI with 404 before the request pipeline; management.tls.enabled is projected onto the management interface before startup,align="center"]
+
+The top two tracks are the public port: passthrough hostnames leave at L4, everything else is
+terminated and runs the full L7 pipeline. The bottom track is the management interface, whose TLS
+posture `gateway.yaml` sets before the runtime starts.
 
 == TLS policy on the terminated listener
 
-Three keys govern how the gateway terminates TLS. All three are optional; omitting a key leaves the
-runtime's own default in place.
+Three optional keys govern how the gateway terminates TLS. Omitting a key leaves the runtime's own
+default in place. What each value means and which values are accepted is in
+link:../configuration/tls-and-egress.adoc#_tls[the `tls` reference].
 
 [source,yaml]
 ----
@@ -38,167 +41,133 @@ tls:
 
 Operating rules:
 
-* *`min_version` is a floor, not a pin.* `"1.2"` enables TLSv1.2 *and* TLSv1.3; `"1.3"` enables
-  TLSv1.3 only. Any other value fails the boot rather than being silently dropped.
-* *A cipher allowlist is a maintenance commitment.* Omitting `cipher_suites` is the recommended
-  default -- the runtime's selection tracks upstream deprecations for you. Once you list suites, that
-  list is frozen until you edit it. Keep it consistent with `min_version`: a list that leaves one of
-  the enabled protocols with nothing to negotiate is refused at boot, naming the stranded protocol,
-  rather than binding a listener that fails every handshake from that protocol's clients. A `"1.2"`
-  floor enables TLSv1.3 too, so a TLS 1.2-only list strands TLSv1.3 just as a TLS 1.3-only list
-  strands TLSv1.2. An unsupported suite *name* is refused the same way.
-* *These keys govern the TERMINATED listener only.* They do not apply to a passthrough connection,
-  and no amount of configuration could make them: the front listener terminates nothing, so for a
-  passthrough hostname the *backend's* TLS policy is the effective one, end to end. If you need a
-  floor on a passthrough backend, set it on that backend.
-* *These keys are effective, and they win once you declare them.* Each one is bound onto the listener
-  after the runtime has built its options, so a declared key is the last writer. The binding is per
-  key: a key you *omit* leaves the runtime's own resolution in force, which a deployment-supplied
-  variable such as `QUARKUS_HTTP_SSL_PROTOCOLS` can still reach. There is deliberately no raw
-  `quarkus.tls.*` policy key left in the shipped configuration -- the competing route is a deployment
-  variable, not something API Sheriff ships. Declare the key here rather than setting both. The
-  disposition of every key that used to live there is recorded in
+* *`min_version` is a floor, not a pin.* `"1.2"` enables TLSv1.2 *and* TLSv1.3.
+* *Prefer no cipher allowlist.* The runtime's selection tracks deprecations for you; a list you
+  write is frozen until you edit it. A list that leaves an enabled protocol with nothing to
+  negotiate -- a TLS 1.2-only list under a `"1.2"` floor strands TLSv1.3 -- or names an unsupported
+  suite fails the boot, naming the stranded protocol or the suite.
+* *The keys govern the terminated listener only.* A passthrough connection is never terminated by
+  the gateway, so the backend's TLS policy is the effective one end to end. Set a floor for a
+  passthrough hostname on its backend.
+* *A declared key wins.* It is applied after the runtime builds its listener options. A key you omit
+  leaves the runtime's resolution in force, which a deployment variable such as
+  `QUARKUS_HTTP_SSL_PROTOCOLS` can still reach. Declare the key here rather than setting both. Where
+  every former `quarkus.tls.*` key went is in
   link:../configuration/tls-and-egress.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
 [[_tls_and_http2_fingerprints]]
 === TLS and HTTP/2 fingerprints
 
-A client that records the gateway's TLS handshake (a JA3S / JA4S-style fingerprint) or the
-`SETTINGS` frame it opens an HTTP/2 connection with can recognise the software stack behind the
-listener without reading a single response header. Both come from the runtime, not from API Sheriff:
-the TLS handshake is built by the JDK TLS stack, the HTTP/2 connection preface by Netty.
-
-The gateway exposes no configuration that disguises them. The policy keys above narrow *what* is
-negotiated -- a floor, a cipher list, the ALPN protocols -- and a changed list can change the
-negotiated values, but the shape of the handshake and of the `SETTINGS` frame stays the shape of
-that stack. Removing the `Server` header (see
+A client that records the gateway's TLS handshake (a JA3S / JA4S-style fingerprint) or the `SETTINGS`
+frame of an HTTP/2 connection can recognise the software stack without reading a response header.
+Both come from the runtime -- the JDK TLS stack and Netty -- not from API Sheriff, and no gateway
+setting disguises them. The policy keys above change *what* is negotiated, not the shape of the
+handshake, and removing the `Server` header (see
 link:endpoint-routes.adoc#_keep_identity_headers[`keep_identity_headers`]) does not hide it.
 
-*The mitigation is out of process.* Where the fingerprint matters, put a CDN or load balancer in
-front of the gateway that terminates TLS and HTTP/2 itself: a client then fingerprints that front
-component, and the gateway is reached only over the front component's own connection.
+Where the fingerprint matters, put a CDN or load balancer that terminates TLS and HTTP/2 itself in
+front of the gateway: clients then fingerprint that component.
 
 == Serving plain HTTP
 
-*Plain HTTP is something you declare, never something the gateway infers.* Set
-`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` and the terminated listener serves cleartext -- that is the
-supported deployment behind a TLS-terminating ingress. Expose that port only behind such a boundary.
+Plain HTTP is declared, never inferred. Set `QUARKUS_HTTP_INSECURE_REQUESTS=enabled` and the
+terminated listener serves cleartext -- the supported deployment behind a TLS-terminating ingress.
+Expose that port only behind such a boundary.
 
-*What the opt-in declares is the posture of a coherent deployment, not a licence to leave every other
-TLS declaration standing.* Three combinations are *refused at boot* rather than stood down, because
-each names something that can only mean anything on a listener which terminates TLS:
+The boot decides the listener's posture from what you declared:
 
-* *Declared server key material* -- any `QUARKUS_HTTP_SSL_CERTIFICATE_*` spelling, a default
-  `quarkus.tls.key-store.*` bucket, or a `QUARKUS_HTTP_TLS_CONFIGURATION_NAME` bucket that carries
-  material. One listener cannot both serve cleartext and terminate TLS.
-* *`tls.mtls.enabled`* -- <<_interactions_with_the_rest_of_the_edge,verdict 1 below>>.
-* *A non-empty `tls.passthrough_sni`* -- <<_interactions_with_the_rest_of_the_edge,verdict 2 below>>.
+[cols="2,2,1", options="header"]
+|===
+| Declared | Behaviour | Log ID
 
-Each of the three refusals names the offending key and *both* ways out: remove the contradicting
-declaration, or remove the opt-in and declare a certificate so the listener terminates TLS. A
-selected bucket that carries *no* material is deliberately not among them -- see the refusal below,
-which the opt-in still stands down.
+| Server key material, no opt-in
+| Starts on HTTPS.
+| --
 
-If you supply *no server key material* and do *not* set that variable, the gateway *refuses to
-start*. It does not fall back to cleartext. A missing certificate cannot tell "this gateway is
-deliberately behind a TLS terminator" apart from "the certificate did not get mounted", and guessing
-cleartext would turn the second into a silently unencrypted gateway. So the gateway asks instead of
-guessing, and the refusal names both ways out:
+| No server key material, no opt-in
+| Refuses to start, naming both ways out: declare a certificate, or set the opt-in. It never falls
+  back to cleartext -- a missing certificate cannot be told apart from a certificate that failed to
+  mount.
+| --
 
-* *Declare a certificate* -- through `QUARKUS_HTTP_TLS_CONFIGURATION_NAME`, a default
-  `quarkus.tls.key-store.*` bucket, or any of
-  `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` (with `..._KEY_FILES`), `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_STORE_FILE`,
-  or `QUARKUS_HTTP_SSL_CERTIFICATE_CREDENTIALS_PROVIDER`. All four count; a keystore-based deployment
-  carries no `..._FILES` key at all and is perfectly valid.
-* *Or declare plain HTTP* with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`.
+| `QUARKUS_HTTP_TLS_CONFIGURATION_NAME` names a bucket with no key material, no opt-in
+| Refuses to start, naming the bucket (usually a typo).
+| --
 
-A second refusal catches the same mistake one level in: if `QUARKUS_HTTP_TLS_CONFIGURATION_NAME`
-names a TLS bucket that carries no key material -- almost always a typo in the name, or a bucket
-nobody populated -- the boot is refused naming that bucket, rather than starting a listener with
-nothing to terminate with. Setting `QUARKUS_HTTP_INSECURE_REQUESTS=enabled` stands this refusal down
-too, because you have then said what posture you want.
+| The opt-in plus declared server key material
+| Refuses to start: one listener cannot both serve cleartext and terminate TLS.
+| --
 
-What you see at boot when the listener really is on plain HTTP is `ApiSheriff-121`, which reports the
-*resolved* state of the listener -- the key material that actually reached it, whatever route
-supplied it. It is a `WARN` and never a refusal: at that point the cleartext is the cleartext you
-asked for, and the record is there so it is never a surprise in a log nobody read.
+| The opt-in plus `tls.mtls.enabled`
+| Refuses to start -- <<_interactions_with_the_rest_of_the_edge,verdict 1 below>>.
+| --
 
-The mechanism -- which seam refuses, why it has to act before the listener is built, and why
-inference was rejected -- is in
-link:../configuration/tls-and-egress.adoc#_server_tls_key_verdicts[Server-TLS key verdicts] and in the seam
-amendment to
-link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
+| The opt-in plus a non-empty `tls.passthrough_sni`
+| Refuses to start -- <<_interactions_with_the_rest_of_the_edge,verdict 2 below>>.
+| --
+
+| The opt-in alone (an empty bucket selection included)
+| Starts on plain HTTP and reports it once.
+| `WARN ApiSheriff-121`
+|===
+
+"Server key material" is any of: a key-bearing `QUARKUS_HTTP_TLS_CONFIGURATION_NAME` bucket, a
+default `quarkus.tls.key-store.*` bucket, `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` (with `..._KEY_FILES`),
+`QUARKUS_HTTP_SSL_CERTIFICATE_KEY_STORE_FILE`, or `QUARKUS_HTTP_SSL_CERTIFICATE_CREDENTIALS_PROVIDER`.
+A keystore-based deployment carries no `..._FILES` key at all and is valid.
+
+Every refusal names the offending key and both ways out: remove the contradicting declaration, or
+remove the opt-in and declare a certificate. `ApiSheriff-121` reports the key material that actually
+*reached* the listener, whatever route supplied it, so it is the authoritative record wherever a
+declaration and the resolved listener disagree. Why the check runs before the listener is built is in
+link:../configuration/tls-and-egress.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
 [[_interactions_with_the_rest_of_the_edge]]
 === What this mode does to the rest of the edge
 
-Four other parts of the gateway behave differently -- or stop working -- when the terminated listener
-serves cleartext. Each verdict is stated once here so none of them has to be rediscovered in
-production.
+Four parts of the gateway behave differently when the terminated listener serves cleartext.
 
-*1. Inbound mTLS (`tls.mtls`) -- REFUSED at boot alongside the opt-in.* A gateway that terminates no
-TLS takes part in no handshake, so it can verify no client certificate: the requirement would not be
-weakened, it would simply never run. Before this refusal existed the combination booted and the
-declared requirement was silently inert, which is the state it now names instead. If you need
-client-certificate verification in this topology, it belongs on the terminating hop, which is the
-component that actually holds the handshake.
+*1. Inbound mTLS (`tls.mtls`) -- refused at boot.* A gateway that terminates no TLS takes part in no
+handshake, so it could verify no client certificate. Put client-certificate verification on the
+terminating hop, which holds the handshake.
 
-*2. The ADR-0017 SNI front listener (`tls.passthrough_sni`) -- REFUSED at boot alongside the opt-in.*
-Passthrough gives the public TLS port to the accept-time front listener, which relays matched
-hostnames undecrypted and hands everything else to the terminated listener behind it. A plain-HTTP
-application port contradicts that topology rather than complementing it. Passthrough and a
+*2. SNI passthrough (`tls.passthrough_sni`) -- refused at boot.* Passthrough gives the public TLS port
+to the accept-time front listener, which a plain-HTTP application port contradicts. Passthrough and a
 TLS-terminating hop are two answers to the same question; pick one.
 
-*3. `forwarded.trusted_proxies` -- load-bearing here, not optional.* The gateway's immediate TCP peer
-is now the terminating hop rather than the client, so that declaration decides every client-address
-question. With no `forwarded` block, or an empty list, the peer gate trusts nobody: every inbound
-`X-Forwarded-For` is ignored, and because the gateway *regenerates* the forwarding family rather than
-propagating it, there is then nothing left to regenerate from -- the upstream is handed *no*
-`X-Forwarded-For` at all. The gateway never falls back to synthesising one from the TCP peer:
-`ForwardPolicyStage.applyRegeneratedForwarding` hands the resolver an empty list for every forwarding
-name, and the resolver is never given the socket remote address in the first place. So an upstream
-that makes IP-based decisions -- a rate limit, an allow-list, an audit trail -- gets no client
-attribution and falls back to the address of its own connection, which is *the gateway's*: every
-client looks alike to it, including the ones an allow-list was meant to exclude. That silent
-uniformity is the failure mode this declaration prevents, and it is why the declaration is
-load-bearing rather than optional. Set the list to the hop's *exact* address as a `/32`. Never a
-bridge range, and never a range wide enough to contain the clients themselves: a client inside the trusted set has its own
-`X-Forwarded-For` believed and prepended, which is precisely the spoof the gate exists to stop.
+*3. `forwarded.trusted_proxies` -- required, not optional.* The gateway's TCP peer is now the
+terminating hop, so this list decides every client-address question. With no `forwarded` block or an
+empty list, the gateway trusts no peer, ignores every inbound `X-Forwarded-For`, and -- because it
+regenerates the forwarding headers rather than passing them on, and never synthesises one from the
+TCP peer -- sends the upstream *no* `X-Forwarded-For` at all. An upstream that rate-limits,
+allow-lists or audits by IP then sees only the gateway's address, and every client looks alike to it.
+Set the list to the hop's *exact* address as a `/32`. Never a bridge range or any range that contains
+clients: a client inside the trusted set has its own `X-Forwarded-For` believed, which is the spoof
+the list exists to stop.
 
-*4. The BFF `Secure` / `__Host-` cookie surface -- unconditional, across all three emitting codecs.*
-Nothing in the gateway weakens a cookie attribute for a cleartext listener, and that is deliberate.
-`SessionCookieCodec` (server-mode session), `SealedSessionCookieCodec` (cookie-mode session) and
-`BindingCookieCodec` (the login-time browser binding, `+__Host-sheriff-binding+`) each append
-`Secure`, `HttpOnly` and `SameSite=Lax` unconditionally, and `RpInitiatedLogout` emits its logout
-state and clearing headers with the same attributes. The `__Host-` prefix is fixed on the binding and
-logout cookies and is the default session-cookie name.
+*4. The BFF `Secure` / `+__Host-+` cookies -- unconditional.* Every cookie the BFF emits -- the
+server-mode and cookie-mode session cookies, the login-time binding cookie
+`+__Host-sheriff-binding+`, and the logout state and clearing cookies -- carries `Secure`, `HttpOnly`
+and `SameSite=Lax`, whatever the listener serves. A browser reaching the gateway over `http://` on a
+non-loopback origin drops all of them, so *the BFF cannot work on a plain-HTTP port a browser reaches
+directly*. It works only behind a hop the browser reaches over HTTPS. There is no setting that relaxes
+the attributes.
 
-A browser that reaches the gateway over `http://` on any *non-loopback* origin drops every one of
-them, so *the BFF cannot function on a plain-HTTP port exposed directly to a browser*. The mode
-supports the BFF only behind a hop the browser reaches over HTTPS -- that hop is what preserves the
-secure context the `__Host-` prefix requires. This is a property of the topology, not a knob: there
-is no setting that relaxes the attributes for cleartext, and asking for one is asking to have the
-session cookie stolen off the wire.
+Loopback is the one exception, and it is not a deployment option: browsers treat `http://localhost`,
+`http://127.0.0.1` and `http://[::1]` as secure contexts and accept these cookies there, so a BFF flow
+against a plain-HTTP gateway on your own machine works. No deployment is reached on loopback, so do
+not read a working developer setup as evidence that the port may be exposed.
 
-*Loopback is the one exception, and it is named here so it is not mistaken for a deployment option.*
-W3C Secure Contexts treats `http://localhost`, `http://127.0.0.1` and `http://[::1]` as
-potentially-trustworthy origins, and Chrome, Firefox and Safari all accept `Secure` and `__Host-`
-cookies on them -- so a BFF flow driven against a plain-HTTP gateway on your own machine really does
-work. That is a local-development convenience and nothing else. No origin a deployment is reached on
-is loopback, so carrying the observation across to one is exactly the inference the sentence above
-exists to prevent: it would read a working developer setup as evidence that the port may be exposed.
-
-That browser-side half is asserted here from the cookie rules and the topology, *not* from any test
-in this repository. The integration lane drives a Java HTTP client that accepts what a browser would
-refuse, which is exactly the limitation
-link:../development/cookie-deliverability-blindness.adoc[Cookie-deliverability blindness] records --
-the lane observes the header the gateway *emitted* and never what a client does with it.
+The browser-side half is stated from the cookie rules, not from a test in this repository: the
+integration lane drives a Java HTTP client that accepts what a browser would refuse (see
+link:../development/cookie-deliverability-blindness.adoc[Cookie-deliverability blindness]).
 
 == Passthrough SNI
 
-A passthrough entry maps an *SNI hostname* to a *topology alias*; every connection whose TLS
-ClientHello carries that SNI is relayed, undecrypted, to the alias's `host:port`. The gateway does
-not terminate it, sees no L7 detail, and the *backend* presents its own certificate to the client.
+A passthrough entry maps an *SNI hostname* to a *topology alias*. Every connection whose TLS
+ClientHello carries that SNI is relayed undecrypted to the alias's `host:port`, and the backend
+presents its own certificate. The field contract is in
+link:../configuration/tls-and-egress.adoc#_tls[the `tls` reference].
 
 [source,yaml]
 ----
@@ -207,32 +176,26 @@ tls:
     backend.example.com: PASSTHROUGH_BACKEND   # SNI -> topology alias
 ----
 
-The alias resolves via `topology.properties` / `TOPOLOGY_PASSTHROUGH_BACKEND`, exactly like a
-route's `base_url`, so a passthrough target is relocated per environment by changing only the
-topology.
+The alias resolves through `topology.properties` / `TOPOLOGY_PASSTHROUGH_BACKEND`, exactly like a
+route's `base_url`, so a passthrough target moves per environment by changing only the topology.
 
-Operating rules to keep in mind:
+Operating rules:
 
-* *Exact match, case-insensitive, no wildcards.* Each hostname is listed literally;
-  `*.example.com` is not supported. List every host you intend to pass through. Before matching, the
-  SNI is lower-cased and a single trailing FQDN dot is removed, so `backend.example.com.` matches the
-  `backend.example.com` you listed.
-* *No base path on the alias.* An L4 relay has no notion of a path -- the resolved URL must be a
-  bare `host:port`. A base-path'd alias fails the boot.
-* *Declared here, per SNI -- never on a route.* Passthrough is a listener-level concern, not a
-  route property.
-* *Terminated and passthrough coexist* on the same public port. Any SNI you do not list is
-  terminated and runs the full L7 pipeline.
-* *A terminated request whose `Host` names a passthrough SNI is rejected `404`* before routing --
-  this is the runtime Host-smuggle guard; it is automatic and needs no configuration. The guard
-  normalizes the `Host` the same way (lower-case, one trailing dot removed) and additionally strips a
-  single `:port` suffix, so `backend.example.com:8443` cannot slip past it.
+* *Exact match, case-insensitive, no wildcards.* List every hostname literally; `*.example.com` is not
+  supported. The SNI is lower-cased and one trailing FQDN dot is removed before matching.
+* *The alias URL carries no base path.* An L4 relay has no notion of a path; a base-path alias fails
+  the boot.
+* *Passthrough is declared here, never on a route*, and terminated and passthrough hostnames share
+  the public port. Any SNI you do not list is terminated.
+* *A terminated request whose `Host` names a passthrough SNI is rejected `404`* before routing. The
+  guard is automatic; it normalises the `Host` the same way and also strips one `:port` suffix, so
+  `backend.example.com:8443` cannot slip past it.
 
 == mTLS (client-certificate verification)
 
-Enabling `mtls` makes the *terminated* listener require and verify a client certificate against a
-configured CA trust anchor. Passthrough connections are unaffected -- the gateway never participates
-in that handshake.
+Enabling `mtls` makes the *terminated* listener require and verify a client certificate against one
+CA trust anchor. Passthrough connections are unaffected -- the gateway never takes part in that
+handshake.
 
 [source,yaml]
 ----
@@ -242,48 +205,31 @@ tls:
     client_ca: /etc/sheriff/client-ca.pem   # the trust anchor client certs must chain to
 ----
 
-A connection presenting no certificate, or one that does not chain to `client_ca`, is rejected at
-the *TLS handshake* -- before any HTTP is exchanged. There is no application-level fallback and no
-"optional/want" mode: mTLS is require-and-verify or off.
+A connection presenting no certificate, or one that does not chain to `client_ca`, fails the *TLS
+handshake* before any HTTP is exchanged. There is no optional or "want" mode.
 
-*Why a path appears here at all.* Elsewhere this guide says `gateway.yaml` carries no certificate or
-trust material, and that still holds: `client_ca` is a *reference*, not material. It names the
-filesystem location where the deployment mounted its CA bundle; the bundle itself is
-deployment-supplied and deployment-rotated, and never appears in the document. The document therefore
-still moves between environments unedited, provided the mount point is stable -- keep the path a
-stable convention (a fixed mount point) rather than an environment-specific one, or you have made
-`gateway.yaml` environment-specific through the back door. This is a named exception to the
-neutral-names rule, recorded in
+`client_ca` is a path *reference*, not material: keep it a fixed mount point that is the same in
+every environment, so `gateway.yaml` stays environment-neutral. See
 link:../configuration/tls-and-egress.adoc#_client_ca_carve_out[the `client_ca` carve-out].
 
 == Operator Consideration: Emergency Trust-Root Replacement
 
-`client_ca` is a *single global trust anchor* for the whole terminated listener. Replacing it has a
-*global blast radius* that every operator must understand before relying on mTLS:
+`client_ca` is a *single global trust anchor* for the terminated listener, so replacing it has a
+global blast radius:
 
-* *Swapping `client_ca` invalidates the entire old trust root at once.* Every client certificate
-  that chained to the old CA stops being accepted the moment the new `client_ca` takes effect --
-  there is no gradual cutover and no per-client exemption.
-* *There is no per-certificate revocation.* You cannot revoke one compromised client certificate
-  in isolation; the only lever is replacing the trust root, which rejects *all* certificates under
-  the old root.
-* *No CRL or OCSP initially.* Certificate-revocation-list and OCSP checking are *not* performed.
-  Revocation is therefore an all-or-nothing trust-root rotation, not a targeted per-certificate
-  action.
+* *Swapping `client_ca` rejects every certificate under the old root at once.* There is no gradual
+  cutover and no per-client exemption.
+* *There is no per-certificate revocation.* Neither CRL nor OCSP is checked, so the only revocation
+  lever is replacing the trust root.
 
-Plan trust-root rotation as a coordinated event: stage the new client certificates to every client
-*before* switching `client_ca`, because the switch is atomic and unforgiving. For a single
-compromised client where you cannot rotate the whole fleet immediately, the compensating control is
-network-level (drop the client at the perimeter), not certificate-level.
+Stage the new client certificates to every client *before* switching `client_ca`. To cut off a single
+compromised client without rotating the fleet, drop it at the network perimeter.
 
 [[_egress_tls]]
 == Egress TLS (`egress_tls`)
 
-Everything above governs connections *to* the gateway. The global `egress_tls` block governs the TLS
-connections the gateway *dials*. It holds a hostname-verification key for the proxied upstreams, the
-JWKS fetch and the BFF back channel, and a trust-profile key for the proxied upstreams and the BFF
-back channel. The JWKS leg takes its trust per issuer from `jwks.tls_profile`, and the asset-origin
-fetch reads no key of this block. Every key is optional:
+The global `egress_tls` block governs the TLS connections the gateway *dials*. Every key is optional
+and an omitted `*_verify_hostname` key is `true`:
 
 [source,yaml]
 ----
@@ -295,114 +241,95 @@ egress_tls:
   oidc_tls_profile: corporate-idp     # logical name only; the deployment binds the anchors
 ----
 
-The design is recorded in
+Field semantics are in link:../configuration/tls-and-egress.adoc#_egress_tls[the `egress_tls`
+reference]; the design in
 link:../adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040],
-with the JWKS leg in
 link:../adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]
-and the BFF back channel in
+and
 link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045].
-The field contract is in link:../configuration/tls-and-egress.adoc#_egress_tls[the `egress_tls` reference]. To start
-from a goal instead -- a corporate CA, a private-CA identity provider, a name the certificate does not
-carry -- see link:tls-scenarios.adoc[TLS Scenarios].
+To start from a goal -- a corporate CA, a private-CA identity provider, a name the certificate does
+not carry -- see link:tls-scenarios.adoc[TLS Scenarios].
 
 === Which key reaches which leg
 
-The gateway has six egress legs that can dial over TLS. The keys below act only on a leg's TLS dial,
-and every leg also has a form that dials no TLS at all, which no key of the block reaches: an `http`
-or `ws` upstream and a gRPC upstream over prior-knowledge h2c speak cleartext, a JWKS read from a file
-makes no connection, and the BFF back channel speaks cleartext under the explicit
-`oidc.back_channel_allow_insecure_http` opt-in. The table is maintained by hand from the
-client-construction sites; it is not what holds the set closed. `EgressTlsPostureArchTest` fails the build when any egress TLS client is
-built without its posture, whether or not a list names it.
-
-[cols="1,2,2", options="header"]
+[cols="1,2", options="header"]
 |===
-| Leg | Client | Keys that reach it
+| Leg | Keys that reach it
 
-| 1. Proxied upstreams
-| The default Vert.x HTTP client
+| Proxied HTTP, gRPC and WebSocket upstreams
 | `upstream_verify_hostname`, `upstream_tls_profile`
 
-| 2. gRPC upstreams
-| The forced-HTTP/2 Vert.x HTTP client
-| `upstream_verify_hostname`, `upstream_tls_profile`
-
-| 3. WebSocket upstreams
-| The one edge-wide Vert.x WebSocket client
-| `upstream_verify_hostname`, `upstream_tls_profile`
-
-| 4. JWKS fetch
-| The token-validation library, per issuer
+| JWKS fetch
 | `jwks_verify_hostname`; trust through the per-issuer `jwks.tls_profile`
 
-| 5. Asset-origin fetch
-| A JDK `HttpClient` on the JVM default context
+| Asset-origin fetch
 | None -- see below
 
-| 6. BFF back channel
-| The identity-provider client library, once per gateway
+| BFF back channel (discovery, pushed authorization request, code exchange, refresh, refresh-token
+  revocation)
 | `oidc_verify_hostname`, `oidc_tls_profile`
 |===
 
-The L4 passthrough relay and the loopback health probe negotiate no TLS and are not legs here.
+The keys act only on a TLS dial: an `http`/`ws` or h2c upstream, a file-sourced JWKS, a BFF back
+channel under `oidc.back_channel_allow_insecure_http`, the L4 passthrough relay and the loopback
+health probe negotiate no TLS. The per-client breakdown is in
+link:../configuration/tls-and-egress.adoc#_egress_tls_legs[The six TLS legs].
 
-*Every `egress_tls` key is gateway-wide.* No key of the block has a per-route, per-endpoint or
-per-issuer override: the runtime fixes the setting when each client is built, and the WebSocket client
-serves the whole edge. The one per-issuer key in the table, `jwks.tls_profile`, is not part of the
-block; it stays per issuer. A gateway
-with one name-mismatched upstream relaxes hostname verification for every proxied upstream or for none.
+*Every key is gateway-wide.* There is no per-route, per-endpoint or per-issuer override, so a gateway
+with one name-mismatched upstream relaxes hostname verification for every proxied upstream or for
+none. `jwks.tls_profile` is per issuer, but it is not part of this block.
 
-*The asset-origin fetch is outside the block, in a known direction.* Its JDK client verifies
-hostnames unless the JDK switch described in <<_jdk_hostname_verification_switch>> is set, so turning
-`upstream_verify_hostname` off cannot weaken it. `upstream_tls_profile` does not
-reach it either, so an asset origin behind a private CA fails closed with a `502`. Put that anchor into
-the JVM default trust store instead (see
-<<_operator_consideration_outbound_trust_material_replaces_the_platform_bundle>>).
+*The asset-origin fetch reads no key of this block.* It always verifies hostnames (unless the JDK
+switch in <<_jdk_hostname_verification_switch>> is set), and `upstream_tls_profile` does not reach it,
+so an asset origin behind a private CA fails closed with a `502`. Put that anchor into the JVM default
+trust store instead (see <<_operator_consideration_outbound_trust_material_replaces_the_platform_bundle>>).
 
 === What a relaxation does and does not do
 
-Setting a `*_verify_hostname` key to `false` stops the gateway comparing the dialled name with the
-names in the peer's certificate, on that leg only. It does *not* turn off certificate-chain validation,
-does not accept a self-signed certificate, and does not accept a certificate from an untrusted
-authority. A peer whose chain is not trusted is still refused. If the real problem is a private CA,
-the answer is the leg's trust key, not the relaxation.
+A `*_verify_hostname: false` stops the dialled-name check on that leg only. The certificate chain is
+still verified: a self-signed or untrusted peer is still refused. If the real problem is a private CA,
+use the leg's trust key, not the relaxation (see
+link:../configuration/tls-and-egress.adoc#_egress_tls_hostname_scope[What disabling hostname
+verification does and does not do]).
 
-An omitted flag is `true`. A block that names only a trust profile leaves hostname verification on.
+*A named trust profile replaces the leg's anchors* rather than adding to them: a profile holding only a
+private CA stops that leg trusting public authorities. A profile that is not bound, carries no
+anchors, or sets `trust-all` fails the boot; there is no fallback to default trust (see
+link:../configuration/tls-and-egress.adoc#_upstream_trust_profile_replaces[A named profile replaces
+the client's anchors]).
 
-*A named trust profile replaces the leg's anchors.* It does not add to them: a profile holding only a
-private CA stops that leg trusting public certificate authorities. A profile that the deployment does
-not bind, that carries no anchors, or that sets `trust-all` is refused at boot. The gateway never falls
-back to default trust.
+*Two combinations fail the boot:*
 
-*Two combinations are refused at boot,* because the client library refuses them one layer down:
-
-* `jwks_verify_hostname: false` while an `http` issuer names `jwks.tls_profile`. The flag is global and
-  the profile is per issuer, so this refuses every such issuer, not only the one you meant to relax.
-* `oidc_verify_hostname: false` together with a named `oidc_tls_profile`.
+* `jwks_verify_hostname: false` while any `http` issuer names `jwks.tls_profile` -- every such issuer,
+  not only the one you meant to relax (see
+  link:../configuration/tls-and-egress.adoc#_jwks_verify_hostname_profile_collision[the JWKS
+  collision]).
+* `oidc_verify_hostname: false` together with a named `oidc_tls_profile` (see
+  link:../configuration/tls-and-egress.adoc#_oidc_profile_collision[the OIDC collision]).
 
 A peer that needs both a private CA and a relaxed name check on one of those legs has no supported
-combination. Fix the certificate's names, or put the CA into the JVM default trust store and name no
+combination: fix the certificate's names, or put the CA into the JVM default trust store and name no
 profile on that leg.
 
 === What you see at boot
 
-Each relaxed or re-anchored posture outside the two refused combinations above is reported once, as a
-`WARN`, and the gateway still starts:
+Each relaxed or re-anchored posture is reported once, as a `WARN`, and the gateway still starts:
 
 [cols="1,3", options="header"]
 |===
-| Record | Reported when
+| Log ID | Reported when
 
 | `ApiSheriff-118`
 | `upstream_verify_hostname` is `false`. States the scope: proxy, gRPC and WebSocket clients, chain trust
   untouched, asset-origin fetch not governed.
 
 | `ApiSheriff-119`
-| `upstream_tls_profile` is named. States that its anchors replace the default trust store on three
-  clients, not on the asset-origin fetch.
+| `upstream_tls_profile` is named. States that its anchors replace the default trust store on those
+  three clients, not on the asset-origin fetch.
 
 | `ApiSheriff-120`
-| `jwks_verify_hostname` is `false`. Logged once, not once per issuer.
+| `jwks_verify_hostname` is `false`. Logged once, not per issuer -- and also on a boot the JWKS
+  collision then refuses.
 
 | `ApiSheriff-125`
 | `oidc_verify_hostname` is `false`, on an active BFF only.
@@ -412,157 +339,103 @@ Each relaxed or re-anchored posture outside the two refused combinations above i
   anchor.
 |===
 
-A refused combination does not start the gateway. The refused JWKS pair still logs `ApiSheriff-120`,
-because that record is written at bean construction, before the per-issuer refusal.
-
-The full wording of each record is in link:../LogMessages.adoc[Log messages].
+The full wording is in link:../LogMessages.adoc[Log messages].
 
 [[_jdk_hostname_verification_switch]]
 *One switch sits below every key.* The JDK system property
 `jdk.internal.httpclient.disableHostnameVerification` turns off hostname verification on every JDK-client
-leg -- the JWKS fetch, the BFF back channel and the asset-origin fetch -- whatever `egress_tls` says. It is
-a start-up flag, so no gateway key and no build check can see it. Do not set it.
+leg -- the JWKS fetch, the BFF back channel and the asset-origin fetch -- whatever `egress_tls` says. No
+gateway key and no build check can see it. Do not set it.
 
 [[_operator_consideration_outbound_trust_material_replaces_the_platform_bundle]]
 == Operator Consideration: Outbound trust material replaces the platform bundle
 
-The emergency trust-root replacement consideration earlier on this page is about the anchor the
-gateway *accepts clients against*. The mirror-image hazard
-sits on the outbound side, and it catches operators for the same reason: *supplying a default trust
-store substitutes for the platform trust bundle rather than adding to it.* A store holding only your
-private CA has not added an anchor -- it has removed every public root the platform shipped, and the
-loss surfaces later as an opaque handshake failure against something that used to work.
+The outbound mirror of the trust-root hazard above: *a default trust store you supply replaces the
+platform trust bundle rather than adding to it.* A store holding only your private CA removes every
+public root, and the loss surfaces later as a handshake failure against something that used to work.
 
-Do not improvise a store from that sentence. The full operator route -- why the native, distroless
-image has no `update-ca-trust`, why the JDK triple must arrive as command-line `-D` arguments on the
-runner (and why `JAVA_TOOL_OPTIONS` is silently ignored by a native executable), how to build a store
-that keeps the public roots *and* adds a private CA, and which boot records tell you which store is
-actually in force -- is in
-link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
-platform bundle]. Read `ApiSheriff-17` and `ApiSheriff-122` in the boot log after any trust change.
+Follow the full route in
+link:../configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store
+REPLACES the platform bundle]: why the distroless image has no `update-ca-trust`, why the JDK triple
+must arrive as command-line `-D` arguments (a native executable ignores `JAVA_TOOL_OPTIONS`), and how
+to build a store that keeps the public roots and adds your CA. After any trust change, read
+`ApiSheriff-17` and `ApiSheriff-122` in the boot log.
 
-Before you build a default store for the identity provider, know that you may not need one. The
-BFF's own back-channel to the identity provider -- discovery, the pushed authorization request, the
-authorization-code exchange, refresh and refresh-token revocation -- has a trust key of its own,
-`egress_tls.oidc_tls_profile`, and a per-issuer
-`jwks.tls_profile` does not cover it. Naming that profile keeps the private CA off every other leg;
-the default store is the alternative, and it reaches every leg that names no profile. Both *replace*
-anchors rather than adding to them. See
-link:../configuration/tls-and-egress.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel] for the key and
-link:bff-session.adoc#_private_ca_self_signed_idp[BFF session management] for the operator steps.
+For the identity provider you may not need a default store at all. The BFF back channel -- discovery,
+the pushed authorization request, the code exchange, refresh and refresh-token revocation -- has its
+own key, `egress_tls.oidc_tls_profile`, which a per-issuer `jwks.tls_profile` does not cover. Naming it
+keeps the private CA off every other leg. Both routes *replace* anchors. See
+link:../configuration/tls-and-egress.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel] for the
+key and link:bff-oidc-common.adoc#_private_ca_self_signed_idp[Private-CA / self-signed IdP] for the steps.
 
-*Logout is deliberately absent from that list: it is not a back-channel leg and does not depend on
-this store.* RP-initiated logout builds an `end_session_endpoint` redirect URL and hands it to the
-browser -- the gateway opens no connection to the identity provider for it, so the trust in play is
-the *browser's*, not the gateway's. The token-revocation seam that flow carries is bound to a no-op
-in the production wiring and issues no request today; it would acquire a trust dependency only if it
-were ever given a real implementation, and this paragraph is the place to revisit if it is.
-
-Do not read that as "the gateway never revokes a token". The revocation a *refresh failure* triggers
-is a different call and a real one: when the identity provider redeemed the grant but the gateway
-refused its response, or when the exchange succeeded but the rotated session could not be persisted,
-the gateway revokes the refresh token still live at the provider, best-effort, with an RFC 7009
-request (see
+RP-initiated logout is not on that list: the gateway only redirects the browser to the provider's
+`end_session_endpoint` and opens no connection, so the browser's trust applies. Refresh-token
+revocation *is* on it: when a refresh fails after the provider redeemed the grant, the gateway revokes
+the still-live refresh token with an RFC 7009 request over the back channel (see
 link:../adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
-That request *does* go to the identity provider over the BFF OIDC back-channel, so it rides the same
-posture as discovery, the pushed authorization request, the code exchange and refresh --
-`egress_tls.oidc_tls_profile` and
-`egress_tls.oidc_verify_hostname` -- and is why revocation appears in the list above.
 
 == The management interface (health and metrics)
 
-Health and metrics are served on a *separate port* from application traffic -- port `9000` by
-default -- so operations endpoints are not exposed on the public listener. *That port serves HTTPS
-by default, and HTTPS stays the default.*
+Health and metrics are served on a separate port -- `9000` by default -- so operations endpoints are
+not exposed on the public listener. That port serves HTTPS by default. The field contract is in
+link:../configuration/tls-and-egress.adoc#_management[the `management` reference].
 
 === The single-port constraint
 
-The management interface has exactly *one* port. Unlike the main HTTP listener there is no
-management SSL port and no management "insecure requests" mode, so there is no simultaneous HTTPS
-listener to fall back to. Any TLS decision here is a decision about the *whole* management surface:
-turning TLS off takes health *and* metrics to plain HTTP together, and every consumer probing that
-port over HTTPS -- readiness gates, scrapers, load-balancer health checks -- breaks at the same
-moment. Plan the change accordingly; there is no partial posture and no gradual cutover.
+The management interface has exactly *one* port: no management SSL port and no "insecure requests"
+mode. Turning TLS off takes health *and* metrics to plain HTTP together, and every consumer probing
+over HTTPS -- readiness gates, scrapers, load-balancer checks -- breaks at the same moment. There is no
+partial posture and no gradual cutover; switch every consumer at once.
 
-Exactly one consumer survives the downgrade untouched, and naming it does not soften the sentence
-above. The image's baked container `HEALTHCHECK` is a bare TCP accept on the management port: it
-writes nothing to the socket and reads nothing back, so it has no scheme to be wrong about and
-reports the same result under either posture. That is also precisely why it cannot stand in for the
-consumers that do break -- it never observed the scheme, and it never observed readiness either.
-Everything that speaks HTTP to that port still breaks at the same moment.
+The image's baked container `HEALTHCHECK` is the only consumer unaffected: it is a bare TCP accept,
+so it reports the same under either posture -- and for the same reason it observes neither the scheme
+nor readiness.
 
 === Turning it off, when you must
 
-Running operations endpoints in the clear behind a trusted network boundary is a legitimate
-deployment, so the downgrade is *possible*. It is not *silent*: a downgraded boot emits
-`ApiSheriff-115` at `WARN`, naming the port and what it breaks. The gateway does not refuse to start
--- refusing would push operators toward a worse workaround (see the trap below).
+Plain-HTTP management behind a trusted network boundary is a legitimate deployment, so the downgrade
+is possible but never silent: the boot logs `WARN ApiSheriff-115`, naming the port. The record
+reports the listener's resolved state, so it fires whichever door you used. The gateway still starts.
 
-There are *two doors, and they open the same lever.* Both land on the same runtime key, so you use
-whichever fits how the deployment is configured -- never both, and never in expectation of one
-overriding the other.
+There are *two doors onto one lever*. Use exactly one:
 
 [cols="1,2,2", options="header"]
 |===
 | Door | How | Use it when
 
-| Neutral (`gateway.yaml`)
+| Policy (`gateway.yaml`)
 | `management: { tls: { enabled: false } }`
-| The posture belongs to the configuration document you ship and review -- it is a property of this
-  gateway's role, not of one environment.
+| The posture is a property of this gateway's role and belongs in the document you ship.
 
 | Deployment (environment)
 | `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management`
-| The posture differs per environment and you would rather not fork `gateway.yaml` to express it.
+| The posture differs per environment.
 |===
 
-`plain-management` is a *named TLS bucket that carries no key material*, declared unconditionally in
-the shipped configuration. Selecting it *is* the disable: the name resolves, the runtime finds no
-key or certificate, and the management listener starts plain. Because it is runtime configuration,
-the same image serves both postures with no rebuild -- and a name that does not resolve fails the
-boot loudly rather than quietly falling back to something.
-
-Setting `management.tls.enabled: true`, or omitting the block entirely, *projects nothing at all*.
-That silence is deliberate and it is what keeps the environment door working: the two routes
-coexist rather than competing. To restore HTTPS, undo whichever door you opened.
-
-=== Why the escape hatch is a runtime key rather than a bespoke one
-
-It would have been possible to invent an API Sheriff-specific key that disables management TLS by
-blanking the certificate paths. That was rejected. A bespoke mechanism would make this project
-responsible for a certificate-blanking trick whose correctness depends on runtime internals, and --
-worse -- it would key the startup warning on *our own declaration* rather than on what the listener
-actually resolved. Such a warning reports the declaration, not the reality, and goes quiet the
-moment the downgrade arrives by any other route. `ApiSheriff-115` instead inspects the *observed
-effective state*, which is why it fires for either door and cannot drift.
+`plain-management` is a named TLS bucket with no key material, shipped in the configuration.
+Selecting it *is* the disable, at runtime, with no rebuild; a bucket name that does not resolve fails
+the boot. `management.tls.enabled: true`, or omitting the block, projects nothing, which is what keeps
+the environment door working. When both doors are set, the `gateway.yaml` value wins. To restore
+HTTPS, undo the door you opened.
 
 [WARNING]
 ====
-*`quarkus.management.enabled=false` is NOT the way to get a plain probe endpoint.* It is the
-opposite of a fix, for two independent reasons:
+*`quarkus.management.enabled=false` is NOT the way to get a plain probe endpoint.*
 
-* It is *build-time fixed*, baked into the native image. You cannot change it on a built artifact,
-  so it is unavailable exactly when you would reach for it.
-* It does not remove TLS -- it *moves* health and metrics onto the main, TLS-terminated router. You
-  end up with an *HTTPS* probe endpoint on the application port, sharing the public listener's
-  policy and mTLS posture, which is further from a plain probe endpoint than where you started.
+* It is *build-time fixed* in the native image, so you cannot change it on a built artifact.
+* It does not remove TLS -- it *moves* health and metrics onto the main, TLS-terminated router,
+  behind the public listener's policy and mTLS posture.
 
 Use the `plain-management` bucket, through either door above.
 ====
 
 === The port is not in gateway.yaml
 
-The management *port* is deployment-bound and stays at `quarkus.management.port` (default `9000`),
-overridable per deployment with `QUARKUS_MANAGEMENT_PORT`. Writing `management.port` in
-`gateway.yaml` is *refused at boot*, with an error at that exact key naming the property that does
-own it. The refusal is deliberate: a port declared in `gateway.yaml` would outrank the deployment's
-own environment variable, which is precisely the surprise the configuration model exists to prevent.
-See link:environment-variable-overrides.adoc[Environment-variable overrides] for the full split.
+The management port is deployment-bound: `quarkus.management.port` (default `9000`), overridden with
+`QUARKUS_MANAGEMENT_PORT`. Writing `management.port` in `gateway.yaml` fails the boot with
+`ApiSheriff-200` at `/management/port`, naming `QUARKUS_MANAGEMENT_PORT`, then `ApiSheriff-201`.
 
-One constraint travels with that override: the image's baked `HEALTHCHECK` targets `9000` as a
-compiled-in constant and does not follow `QUARKUS_MANAGEMENT_PORT`, so a deployment that moves the
-port makes the baked check fail closed -- the container will never report healthy -- and the only
-remedy is an image rebuilt against the new port. Overriding the `HEALTHCHECK` does not reach it,
-because the override still names the one executable the image carries and that binary probes the
-constant it was built with. See
+The baked `HEALTHCHECK` probes `9000` as a compiled-in constant and does not follow
+`QUARKUS_MANAGEMENT_PORT`. Moving the port makes the container never report healthy, and overriding
+the `HEALTHCHECK` does not help -- only an image rebuilt against the new port does. See
 link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
