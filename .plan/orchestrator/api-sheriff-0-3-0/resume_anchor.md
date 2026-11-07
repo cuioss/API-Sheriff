@@ -1,3 +1,5 @@
+=== 2026-11-07 — api-sheriff-0-2-0 CLOSED and archived; its close-out carried open work HERE. Read epic.md § Open Defects, § Watches (incl. RELEASE-CUT CARRY: this epic now owns the 0.2.5 release), § Release Pre-Flight Knowledge for the Next Cut, § Standing Rules, and epic-closeout.md § Defects and watches inherited. New: WS-04 + PLAN-V03-05 (docs-only, staged, independent). The gate text below is STALE: PLAN-V02-06 shipped (#528) and V02-07 shipped (#537) — re-ground PLAN-V03-01 against what landed at the next resume. ===
+
 === NOT EMITTABLE — gated on api-sheriff-0-2-0's PLAN-V02-06. Cleanup pass 2026-09-24 at 05f6ee3 complete. NEXT ACTION: commit this cleanup, then wait; re-run `next` only after PLAN-V02-06 ships. ===
 
 STATE: 0 shipped / 0 running / 3 staged (PLAN-V03-01, -02, -04) / 1 superseded (PLAN-V03-03, folded into V03-02). Ledger migrated to the per-concern layout 2026-09-24 (queue/, resume_anchor.md, queue-view.md).

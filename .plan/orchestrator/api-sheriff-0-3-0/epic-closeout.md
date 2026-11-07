@@ -32,8 +32,22 @@ rationale**.
 
 ## Defects and watches inherited
 
-**None directly.** This epic sits behind `api-sheriff-0-2-0`; anything it should own arrives through
-that epic's close-out, not from `api-sheriff-roadmap`.
+**Received 2026-11-07 from the `api-sheriff-0-2-0` close-out** — all written into `epic.md`, each entry
+naming its 0.2.0 source:
+
+- `epic.md` § Open Defects — (1) the integration-lane assertion-strength work list (was 0.2.0 OD 4).
+- `epic.md` § Watches — 13 entries, including the consolidated edge/HTTP2/IT flake family (the only
+  cross-epic tracker for the framing-corpus flake; kidicap was handed text to repoint at it) and the
+  security-notes pointer (by reference only).
+- `epic.md` § Standing Rules — the 0.2.0 standing rules and the five `api-sheriff-roadmap` rules,
+  verbatim; this is now their only copy.
+- WS-04 and PLAN-V03-05 — ten consumed lessons whose rules belong in repository docs.
+- The release-cut carry (FIRST REAL RELEASE checklist, steward run, APISIX lane, release-skill ADR line),
+  the Release Pre-Flight Knowledge and the dry-run Deferred Item — moved here when the operator closed
+  0.2.0 before its next release (2026-11-07). This epic now owns the `0.2.5` release.
+
+The source-side record (every 0.2.0 entry with its disposition) is
+`api-sheriff-0-2-0/epic-closeout.md` § "Close-out disposition — 2026-11-07".
 
 ## Memory
 

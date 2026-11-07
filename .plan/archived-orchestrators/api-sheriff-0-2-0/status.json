@@ -1,7 +1,7 @@
 {
   "kind": "orchestrator",
   "title": "API Sheriff 0.2.0 \u2014 Cleanup, Consolidation and Hardening",
-  "phase": "orchestrating",
+  "phase": "closed",
   "workstreams": [
     {
       "id": "WS-01",

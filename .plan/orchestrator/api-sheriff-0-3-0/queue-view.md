@@ -4,7 +4,9 @@
 
 ## START HERE
 
-**Resume anchor**: === NOT EMITTABLE — gated on api-sheriff-0-2-0's PLAN-V02-06. Cleanup pass 2026-09-24 at 05f6ee3 complete. NEXT ACTION: commit this cleanup, then wait; re-run `next` only after PLAN-V02-06 ships. ===
+**Resume anchor**: === 2026-11-07 — api-sheriff-0-2-0 CLOSED and archived; its close-out carried open work HERE. Read epic.md § Open Defects, § Watches (incl. RELEASE-CUT CARRY: this epic now owns the 0.2.5 release), § Release Pre-Flight Knowledge for the Next Cut, § Standing Rules, and epic-closeout.md § Defects and watches inherited. New: WS-04 + PLAN-V03-05 (docs-only, staged, independent). The gate text below is STALE: PLAN-V02-06 shipped (#528) and V02-07 shipped (#537) — re-ground PLAN-V03-01 against what landed at the next resume. ===
+
+=== NOT EMITTABLE — gated on api-sheriff-0-2-0's PLAN-V02-06. Cleanup pass 2026-09-24 at 05f6ee3 complete. NEXT ACTION: commit this cleanup, then wait; re-run `next` only after PLAN-V02-06 ships. ===
 
 STATE: 0 shipped / 0 running / 3 staged (PLAN-V03-01, -02, -04) / 1 superseded (PLAN-V03-03, folded into V03-02). Ledger migrated to the per-concern layout 2026-09-24 (queue/, resume_anchor.md, queue-view.md).
 
@@ -18,12 +20,14 @@ STANDING ITEMS: PLAN-V03-04 DO-NOT-LAUNCH (plan-marshall classifier still has no
 1. PLAN-V03-01 (WS-01)
 2. PLAN-V03-02 (WS-02)
 3. PLAN-V03-04 (WS-03)
+4. PLAN-V03-05 (WS-04)
 - PLAN-V03-03 (WS-02) — status: superseded
 
 ## Ordered Queue
 
-| # | Plan | Workstream | Status | Surface (expected) |
-|---|------|------------|--------|--------------------|
-| 1 | PLAN-V03-01 | WS-01 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/**; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ |
-| 2 | PLAN-V03-02 | WS-02 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ManagementConfig.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ResolvedRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RouteTable.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java; api-sheriff/src/main/resources/application.properties; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/adr/00NN-*.adoc; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ |
-| 3 | PLAN-V03-04 | WS-03 | staged | deployment/helm/; deployment/pom.xml; deployment/templates/**; doc/configuration.adoc; doc/development/; doc/user/; integration-tests/docker-compose.yml |
+| # | Plan | Workstream | Status | Surface (expected) | Lane |
+|---|------|------------|--------|--------------------|------|
+| 1 | PLAN-V03-01 | WS-01 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/**; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ | plan-marshall |
+| 2 | PLAN-V03-02 | WS-02 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ManagementConfig.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ResolvedRoute.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RouteTable.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java; api-sheriff/src/main/resources/application.properties; api-sheriff/src/main/resources/schema/gateway.schema.json; api-sheriff/src/test/**; doc/adr/00NN-*.adoc; doc/architecture.adoc; doc/configuration.adoc; doc/development/; doc/user/ | plan-marshall |
+| 3 | PLAN-V03-04 | WS-03 | staged | deployment/helm/; deployment/pom.xml; deployment/templates/**; doc/configuration.adoc; doc/development/; doc/user/; integration-tests/docker-compose.yml | plan-marshall |
+| 4 | PLAN-V03-05 | WS-04 | staged | doc/**; doc/architecture/runtime-and-dependencies.adoc; doc/development/boot-validation-rules.adoc; doc/development/build-gate-discipline.adoc; doc/development/release-process.adoc; doc/development/sonar-quality-gate.adoc; doc/development/test-corpus-integrity.adoc; doc/security-threat-model.adoc | plan-marshall |

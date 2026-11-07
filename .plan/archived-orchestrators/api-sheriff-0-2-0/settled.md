@@ -430,3 +430,35 @@ _Relocated 2026-10-13 by `analyze`: the fix is confirmed on five consecutive run
 9. **CLOSED 2026-10-30 by #538 (`7755b948`, `PLAN-V02-51` D3).** Was: MEDIUM, `LogMessagesCatalogueTest` anchored on `ApiSheriffLogMessages` and walked `api-sheriff/target/classes` only, so the
    benchmarks catalogue (incl. `K6Benchmark-211`) had no duplicate-id protection. Now the test derives the module set from the root `pom.xml` and checks duplicate identifiers and bands in
    every reactor module; no module is named in it. Shown red by a planted duplicate `K6Benchmark-210` (it named both fields).
+
+## Open Defect 6 — IT suite blind to resource-lifecycle and layer-boundary defect classes (resolved 2026-10-28 by #534)
+
+6. **STRUCTURAL** — the IT suite cannot detect resource-lifecycle or layer-boundary defect classes.
+   Its stated owner was roadmap PLAN-34, **which shipped**, so it arrived here orphaned rather than
+   fixed. Not strikeable on sight: it carries independently CI-observed defects and a deferral
+   transmitted to a public PR thread. **Re-verify against the landed PLAN-42 work before striking** —
+   PLAN-34's D4/D5 left in the 2026-08-02 three-way split and PLAN-42 shipped both, so the gap may be
+   narrower than this entry says. Read the landed code, not the split decision. **RESOLVED 2026-10-28 by `PLAN-V02-11` (#534,
+   `c1ded6c1`, ADR-0075):** the gating detector already existed (`WebSocketProxyIT#sequentialRelaysReturnTheirAdmissionPermitsAtTeardown`
+   on `api-sheriff-ws-admission`); what was missing was a demonstrated failure, which two committed negative controls now supply
+   (relay sub-budget and general admission budget). Residue: the general-admission control cannot wait for gateway-side
+   admission (Watch). Strike at the next compaction.
+
+## Open Defect 8 — Sonar issue backlog on main (closed 2026-11-06; done by #573)
+
+8. **CLOSED 2026-11-06 by operator ruling — superseded by a live reading.** PLAN-06's original claim stays unrecoverable; the
+   live state replaces it. SonarCloud on `main` at `2f91ff7d`: quality gate OK on every new-code condition (coverage 96.3 %), but
+   the project carries 19 open issues (1 `yaml:S2068` vulnerability in `release.yml`, very likely the localhost test-truststore
+   password, giving security rating C; 11 production and 7 test code smells; 2 counted as new code). The operator ruled the epic
+   goal is 0 issues; the fix runs as a direct Claude Code session, not a plan. Done: #573 (`774d3de1`) brought `main` to 0 open issues, security rating A.
+
+## Open Defect 18 — landing messages missing the `effort` key (answered 2026-10-30)
+
+18. **LOW, informational** — the `PLAN-V02-51` landing message (`plan-v02-51-lane-conditional-guards-005`) is `complete: false`: `landing-check`
+    names the missing key `effort`, carried as `unknown`. Every other required fact drained, and the landing was reconciled in full. `PLAN-V02-50`'s landing
+    carried `effort=medium`, so this is intermittent, not a missing feature. The cost: the run's effort level is unrecorded in `landings/PLAN-V02-51.md`'s
+    metrics. Recorded 2026-10-30; no owner. Strike if the next landing carries `effort`; if two in a row do not, route it to `lessons-routing`.
+    **Update 2026-10-30:** the `PLAN-V02-07` landing (`plan-v02-07-threat-classification-001`) is `complete: false` for the same key, so two in a row. Routed to
+    `lessons-routing` as `api-sheriff-api-sheriff-0-2-0-077`; the plan's own residue says the model was self-reported and no effort was stamped. Stays open here as
+    informational until a landing carries `effort` again or plan-marshall answers.
+    **ANSWERED 2026-10-30:** the `PLAN-V02-48` landing carries `effort=low` and is `complete: true`. The gap was intermittent. Strike at the next compaction.
