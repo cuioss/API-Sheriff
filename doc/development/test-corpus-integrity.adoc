@@ -1846,7 +1846,7 @@ more established than it was.
 `demo-client-maven` / `demo-client-npm` module attribution that doubles or triples every sweep in
 this document; each file's own `match_count` is `1`, so the real occurrence count is *3*, one per
 file. In none of the three does the match name this method or its class. `@Disabled` returns
-*exactly one occurrence*, in `doc/quality-report/test-quality.adoc`, and *none in code*. The method
+*exactly one occurrence*, in a since-retired audit snapshot, and *none in code*. The method
 is live, un-quarantined, and recorded as flaky nowhere in the repository.
 
 *It has no CI signal either, MEASURED 2026-09-21.* The *30* most recent `Maven Build` runs

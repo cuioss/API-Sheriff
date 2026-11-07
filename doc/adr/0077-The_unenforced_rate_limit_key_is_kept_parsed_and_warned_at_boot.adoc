@@ -121,7 +121,7 @@ rejections per source across the gateway; a rate limit counts the requests a rou
   -- the per-source substrate a future implementation builds on, and the source of every `429`
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
   -- the uniform `404` a future rate-limit answer must be reconciled with
-* link:../configuration.adoc#_rate_limit[Configuration -- `rate_limit`]
+* link:../configuration/security-and-edge-hardening.adoc#_rate_limit[Configuration -- `rate_limit`]
 * link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-140`
 * link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] --
   why a key that parses is not a key that acts

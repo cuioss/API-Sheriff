@@ -1,15 +1,16 @@
 = API Sheriff -- Rebuilding Under Your Own Context Path
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 A deployer who needs API Sheriff to serve somewhere other than `/` has to rebuild it. This page is
 the supported way to do that without cloning this repository: inherit the published build parent
 `de.cuioss.sheriff.gateway:api-sheriff-build-parent`, set one property, and run your own build.
 
-Why the rebuild is unavoidable, and what the property actually reaches, is in
-link:context-path.adoc[The Context Path]. Read that first if you are still hoping for an environment
-variable.
+Why the rebuild is unavoidable, and what the configuration must carry once the path moves, is in
+link:context-path.adoc[The Context Path].
 
 == Why a rebuild, and not configuration
 
@@ -28,8 +29,8 @@ The consequences are absolute rather than a matter of degree:
   at startup, so a key already fixed at augmentation could never take effect from it -- a structural
   impossibility, not an omission (ADR-0025).
 
-So the question is never "which setting moves the path" but "how cheap can the rebuild be made". This
-parent's answer: one property, and a `<parent><version>` bump to adopt a new release.
+This parent makes the rebuild cheap: one property, and a `<parent><version>` bump to adopt a new
+release.
 
 == What the parent declares, and what you supply
 
@@ -211,13 +212,10 @@ toolchain you never adopted. It is a *real* switch, and the one-line reversal ab
 `<enforcer.skip>false</enforcer.skip>` in your own `<properties>` turns the guards on, they need no
 credential, and they cost seconds.
 
-*What this parent does not do -- any more -- is touch `dependency-check.skip`.* It used to set it
-`true`, on the reasoning that nothing in the inherited chain binds `org.owasp:dependency-check-maven`,
-so the property was inert. That reasoning covered *this project's* chain, not yours. Maven properties
-are inherited and the plugin reads exactly that property name, so a consumer who bound the plugin
-themselves -- the route below -- inherited a `true` they never wrote and had their CVE scan silently
-suppressed by a parent adopted to get a context path. The property is gone. You inherit the plugin's
-own default, and there is nothing to un-set.
+*This parent does not touch `dependency-check.skip`.* Maven properties are inherited and
+`org.owasp:dependency-check-maven` reads exactly that name, so setting it here would silently suppress
+the CVE scan of a consumer who binds the plugin themselves. You inherit the plugin's own default, and
+there is nothing to un-set.
 
 *You still own the vulnerability scanning of the image you build, and no inherited property does it
 for you.* The parent leaves `maven.compiler.skip` and `skipTests` alone precisely because *you*
@@ -229,8 +227,8 @@ never seen. Two routes work:
   base image the parent deliberately does not choose for you (see
   <<_the_container_image_boundary>>).
 * *Or bind `org.owasp:dependency-check-maven` yourself*, in your own `<build>`, with your own NVD API
-  key. Nothing in the inherited chain binds it for you -- and, since the removal above, nothing in it
-  suppresses you either. Binding it is the whole step; there is no companion property to set.
+  key. Nothing in the inherited chain binds it for you, and nothing in it suppresses it. Binding it
+  is the whole step; there is no companion property to set.
 ====
 
 Five switches are deliberately *left alone*, and each for a reason you may care about:
@@ -274,8 +272,8 @@ is honest about which side of the line the decision sits on.
 What you get is the executable. What you do with it is yours. If you want a starting point, this
 repository's `api-sheriff/src/main/docker/Dockerfile.native` is a distroless build over
 `target/*-runner` with a baked `HEALTHCHECK`; copy it into your own project and own it from there.
-The verification run below did exactly that, and it worked unchanged against the consumer's
-executable -- but *copying* it is the supported route, not depending on it.
+It works unchanged against a consumer's executable (see <<_the_procedure>>) -- but *copying* it is
+the supported route, not depending on it.
 
 [[_the_host_side_limitation]]
 == The host-side limitation
@@ -296,67 +294,68 @@ your orchestrator manifests and your scrape configs must be updated by you; the 
 reach into them. There is no mechanism by which an image reports its own context path to a host-side
 consumer -- the label is a declaration by the deployment, not something derived from the artifact.
 
-== The re-augmentation question, and the branch that was taken
+== No properties file to copy
 
-There was one genuine unknown when this parent was designed: *does a consumer's augmentation read
-`api-sheriff`'s own `application.properties` out of the dependency JAR?* If it did not, every
-consumer would have needed a `META-INF/microprofile-config.properties` copy of the gateway's runtime
-declarations, and the one-property promise would have been false.
+Your build reads `api-sheriff`'s own `application.properties` out of the dependency JAR during
+augmentation. You do not copy the gateway's runtime declarations into a
+`META-INF/microprofile-config.properties` of your own: the worked example declares no properties file
+of any kind, yet its build records `quarkus.http.root-path=/gw` and `quarkus.management.enabled=true`
+in the generated build-time configuration -- the first resolved through the carrier the parent
+supplies, the second inherited from the JAR.
 
-*It does, and the branch requiring a copy was not taken.* The evidence is the worked example itself:
-it declares no properties file of any kind, yet its build records `quarkus.http.root-path=/gw` and
-`quarkus.management.enabled=true` in the generated build-time configuration. Both values come from
-the dependency JAR -- the first resolved through the carrier the parent supplies, the second
-inherited outright.
+That is also why the example is kept buildable rather than illustrative: `BuildParentContractTest`
+fails if it ever has to grow a `<build>` block to compensate.
 
-That is also why the example is kept buildable rather than illustrative: it is the standing proof of
-this branch, and `BuildParentContractTest` fails if the example ever has to grow a `<build>` block to
-compensate.
+[[_the_procedure]]
+== The procedure
 
-== The procedure, and what it produced
-
-Executed once, end to end, against commit `9ccda16`. The responses below were observed.
+Build the worked example from this repository, then probe it. The same checkpoints apply to your own
+POM.
 
 === 0. Bootstrap: install the reactor into the local repository
 
-*This step is not optional, and skipping it is the first way this procedure fails.* The example is
-deliberately not a reactor module, so nothing builds `api-sheriff` on its behalf: its inherited
-dependency resolves to `de.cuioss.sheriff.gateway:api-sheriff:0.2.5-SNAPSHOT` from the local Maven
-repository, and a clean checkout has no such artifact. Install it once:
+*Do not skip this step.* The example is deliberately not a reactor module, so nothing builds
+`api-sheriff` on its behalf: its inherited dependency resolves to
+`de.cuioss.sheriff.gateway:api-sheriff:0.2.5-SNAPSHOT` from the local Maven repository, and a clean
+checkout has no such artifact.
 
 [source,bash]
 ----
 mvn install -pl api-sheriff -am -DskipTests
 ----
 
-(The build *parent* needs no install: the example resolves it through
-`<relativePath>../pom.xml</relativePath>`, off disk. A published consumer, which carries an empty
-`<relativePath/>`, resolves both from a repository instead -- which is the release lane's job, not
-this runbook's.)
+The build *parent* needs no install: the example resolves it through
+`<relativePath>../pom.xml</relativePath>`. A published consumer, with an empty `<relativePath/>`,
+resolves both from a repository.
 
 Re-run this step after any change to `api-sheriff`'s sources or its `application.properties`;
-otherwise the example builds against the previously installed snapshot and the result says nothing
-about the tree you are sitting on.
+otherwise the example builds against the previously installed snapshot.
 
 === 1. JVM mode
 
 [source,bash]
 ----
-mvn install -pl api-sheriff -am -DskipTests   # step 0, if not already done
 mvn -f build-parent/example/pom.xml package
 ----
 
-`BUILD SUCCESS`. Inspecting `target/quarkus-app/quarkus/generated-bytecode.jar`, the class
+*Checkpoint:* in `build-parent/example/target/quarkus-app/quarkus/generated-bytecode.jar`, the class
 `io/quarkus/runtime/generated/BuildTimeRunTimeFixedConfigSourceBuilder` records
 `quarkus.http.root-path` as `/gw` and `quarkus.management.root-path` as the untouched `/q` -- the
 example sets only the application knob.
 
-Running the result (`java -jar target/quarkus-app/quarkus-run.jar`) with a minimal configuration
-directory:
+Run it (`java -jar build-parent/example/target/quarkus-app/quarkus-run.jar`) against a minimal
+configuration directory -- the one in
+link:context-path.adoc#_carry_the_prefix_into_gateway_yaml[The Context Path -- Carry the prefix into
+`gateway.yaml`] -- and probe it. That run needs what the linked page's container run supplies:
+`SHERIFF_CONFIG_DIR` naming the directory, the JWKS file at the path its `token_validation` names
+(`/app/certificates/test-jwks.json`, or that path edited to a local file), and the plain-HTTP opt-in
+`QUARKUS_HTTP_INSECURE_REQUESTS=enabled` with
+`QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management`
+(link:context-path.adoc#_run_and_verify[Run and verify]):
 
 [cols="2,3", options="header"]
 |===
-| Request | Observed
+| Request | Expected
 
 | `GET /gw/api`
 | `502`, `application/problem+json`,
@@ -367,29 +366,24 @@ directory:
 | `404`, `application/problem+json` -- in context, so the gateway answered in its own envelope.
 
 | `GET /no-such-route`
-| `404`, `text/html`, `<html><body><h1>Resource not found</h1></body></html>` -- off context, so
-  Quarkus' main router answered and the gateway never saw it.
+| `404`, `text/html` -- off context, so Quarkus answered and the gateway never saw it.
 
 | `GET :{management-port}/q/health`, `/q/health/live`, `/q/health/ready`, `/q/metrics`
-| `200` each -- *behaving identically to a reactor-built gateway*, and unmoved by the application
-  path change.
+| `200` each -- unmoved by the application path change.
 
 | `GET :{management-port}/gw/q/health`
-| `404` -- confirming the management path did not follow the application one.
+| `404` -- the management path did not follow the application one.
 |===
 
-The boot line reads `api-sheriff 1.0.0-SNAPSHOT on JVM ... started in 1.863s`: the *name* comes from
-the dependency's `quarkus.application.name`, the *version* from your own POM. That mixture is
-expected, and it is another instance of the dependency JAR's properties being honoured.
+The boot line names the application from the dependency's `quarkus.application.name` and the
+version from your own POM (`api-sheriff 1.0.0-SNAPSHOT on JVM ...`). That mixture is expected.
 
 [IMPORTANT]
 ====
 *Route `path_prefix` values are matched against the raw inbound path, prefix included.* With
-`path_prefix: /api` in `gateway.yaml`, `GET /gw/api` is a deny-by-default miss on a `/gw` build. The
-configuration above uses `path_prefix: /gw/api`, which is what makes the route match.
-
-Moving your context path therefore means updating your anchor and route prefixes to match. The two
-are configured independently and the gateway does not reconcile them for you. Full characterisation:
+`path_prefix: /api`, `GET /gw/api` is a deny-by-default miss on a `/gw` build; `path_prefix: /gw/api`
+is what makes the route match. Moving your context path means updating your anchor and route prefixes
+to match -- see
 link:../development/context-path-verification.adoc#_the_route_table_is_matched_against_the_raw_path_prefix_included[the
 verification runbook].
 ====
@@ -398,23 +392,21 @@ verification runbook].
 
 [source,bash]
 ----
-mvn install -pl api-sheriff -am -DskipTests           # step 0, if not already done
 mvn -f build-parent/example/pom.xml package -Pnative
 ----
 
-`BUILD SUCCESS` in 148s, producing `target/my-gateway-1.0.0-SNAPSHOT-runner` -- so `-Pnative` reaches
-the consumer purely by profile inheritance, with no `<profiles>` block in the example.
+*Checkpoint:* `build-parent/example/target/my-gateway-1.0.0-SNAPSHOT-runner` exists -- `-Pnative` reaches the consumer
+purely by profile inheritance, with no `<profiles>` block in the example.
 
-Because the profile sets `quarkus.native.container-build=true`, the executable is built inside the
-Mandrel builder container and is a *Linux* binary. On a macOS host it does not run directly
-(`cannot execute binary file`) -- it runs in a container, which is where the
-<<_the_container_image_boundary,image boundary>> becomes concrete rather than theoretical. This
-repository's distroless Dockerfile was copied over the example's `target/` as build context, and the
-resulting image behaved identically to the JVM run:
+Because the profile sets `quarkus.native.container-build=true`, the executable is a *Linux* binary
+built inside the Mandrel builder container. On macOS or Windows it does not run directly; run it in a
+container, which is where the <<_the_container_image_boundary,image boundary>> becomes concrete. Copy
+this repository's distroless `api-sheriff/src/main/docker/Dockerfile.native` next to the example's
+`target/`, build the image, and probe it:
 
 [cols="2,2", options="header"]
 |===
-| Request | Observed
+| Request | Expected
 
 | `GET /gw/api` | `502`, `application/problem+json`
 | `GET /gw/no-such-route` | `404`, `application/problem+json`
@@ -424,8 +416,6 @@ resulting image behaved identically to the JVM run:
 | baked `HEALTHCHECK` | `healthy`, `FailingStreak: 0`
 |===
 
-Boot line: `api-sheriff 1.0.0-SNAPSHOT native (powered by Quarkus 3.39.1) started in 0.059s`.
-
 == See also
 
 [cols="2,3", options="header"]
@@ -433,11 +423,12 @@ Boot line: `api-sheriff 1.0.0-SNAPSHOT native (powered by Quarkus 3.39.1) starte
 | Document | What it adds
 
 | link:context-path.adoc[The Context Path]
-| The mechanism: the three keys, the build-time constraint, the Maven seam and the carrier-key
-  indirection that makes it act.
+| The three keys, the build-time constraint, the configuration that carries the prefix, and what a
+  non-root path changes at the edge.
 
 | link:../development/context-path-verification.adoc[Context Path -- Verification Runbook]
-| The six-case procedure that proves the seam in this repository, with observed responses.
+| The carrier-key mechanism behind the seam, and the six-case procedure that proves it, with observed
+  responses.
 
 | link:container-image.adoc[Container Image]
 | This project's published image -- what it requires at runtime, and how its health signal reads.

@@ -1,6 +1,7 @@
 = API Sheriff -- Application Portal and HTML Error Pages
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
 :source-highlighter: highlight.js
 
@@ -174,7 +175,7 @@ The policy replaces any `content_security_policy` the global block declares, in 
 `header_modes` mode, and the response carries exactly one value for each name. The other
 gateway-owned headers (`Strict-Transport-Security`, `X-Frame-Options`) keep the global block, because
 the portal answers before route selection and no anchor block applies to it (see
-link:../configuration.adoc#_security_headers[`security_headers`]).
+link:../configuration/security-and-edge-hardening.adoc#_security_headers[`security_headers`]).
 
 The policy has consequences for a template:
 
@@ -374,7 +375,7 @@ rejections, the admission `503`, and an unexpected internal failure.
 *A rejection before the trust boundary negotiates as the unrouted `404`.* With
 `security_defaults.uniform_not_found` on, the shipped default, a rejection raised on a matched route
 before the caller is trusted is answered exactly as an unrouted address is answered
-(link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). It
+(link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). It
 therefore gets the `404` page on a navigation and the `404` problem document otherwise. That covers
 the failed CSRF origin check, the route's verb gate, the declared-`Content-Length` `413`, the
 route-scoped `400` of the security filter and the `401` of a missing or invalid bearer token. The

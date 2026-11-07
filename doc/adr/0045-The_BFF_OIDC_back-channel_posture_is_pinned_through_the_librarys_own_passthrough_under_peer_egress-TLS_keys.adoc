@@ -231,7 +231,7 @@ key named for the leg, and is implemented by the library that owns the connectio
 * link:../development/test-corpus-integrity.adoc#fitness-function-shape[Test-corpus integrity -- Fitness-function shape] -- the four-leg shape of the posture guard.
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode] -- the BFF whose IdP client this leg is.
 * link:../user/tls-scenarios.adoc#_scenario_bff_oidc_back_channel[TLS Scenarios -- Reach the BFF identity provider] and link:../user/tls-edge.adoc#_egress_tls[TLS Edge -- Egress TLS] -- the operator view.
-* link:../configuration.adoc#_oidc_back_channel_posture[Configuration Reference -- The BFF OIDC back-channel] -- the field contracts.
+* link:../configuration/tls-and-egress.adoc#_oidc_back_channel_posture[Configuration Reference -- The BFF OIDC back-channel] -- the field contracts.
 * link:../security-threat-model.adoc[Threat Model] -- the back-channel entries and the JVM-level residual.
 * link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] -- the deployment-activation standard and the trust-profile wiring guard.
 * link:../LogMessages.adoc[Log messages] -- `ApiSheriff-125` and `ApiSheriff-126`.

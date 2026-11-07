@@ -64,7 +64,7 @@ No dedicated key restores the no-exemption posture for an `http` issuer. An oper
 
 The derivation is not a local reversal of an upstream tightening. `EgressPolicy.secureDefault()` is unchanged, and the gateway does not replace or relax it. The gateway passes one host through the library's own `allowedEgressHost` seam, the seam a declared list uses. The link:../technical_aspects.adoc#_upstream_security_default_changes[policy on upstream security-default changes] is therefore not engaged: no upstream default changed and none is being worked around.
 
-The field contract is in link:../configuration.adoc#_token_validation[the configuration reference].
+The field contract is in link:../configuration/authentication-and-oidc.adoc#_token_validation[the configuration reference].
 
 === Exactly one component knows the runtime binding
 
@@ -81,7 +81,7 @@ An operator who names an unbound profile needs the exact key to set. Neutrality 
 
 === An unresolvable profile refuses to start
 
-The boot refuses a named-but-unbound profile on an `http`-sourced issuer. It never falls back to default trust. `TokenValidatorProducer.onStartup` forces the validator into existence at boot, so the failure surfaces at startup and not on the first bearer request. A `source: file` issuer opens no TLS connection and never resolves the profile, so it boots with an unbound name, and that name governs nothing (link:../configuration.adoc#_jwks_verify_hostname_profile_collision[configuration reference]).
+The boot refuses a named-but-unbound profile on an `http`-sourced issuer. It never falls back to default trust. `TokenValidatorProducer.onStartup` forces the validator into existence at boot, so the failure surfaces at startup and not on the first bearer request. A `source: file` issuer opens no TLS connection and never resolves the profile, so it boots with an unbound name, and that name governs nothing (link:../configuration/tls-and-egress.adoc#_jwks_verify_hostname_profile_collision[configuration reference]).
 
 [[_jwks_refresh_knobs]]
 === Two refresh knobs are exposed; the rest stay deferred
@@ -93,9 +93,9 @@ A knob is promoted under one discipline: a neutral key named for what API Sherif
 * *Bounded at boot, by the gateway.* A value outside its range is a boot refusal naming the issuer, the key and the range. The ranges are the gateway's: the library admits every non-negative value, and the gateway refuses values the library would take.
 * *Refused where they cannot act.* Either key on a `source: file` issuer is a boot refusal. A file source is read once and never refreshed, so the key would parse and change nothing.
 
-The link:../configuration.adoc#_jwks_key_rotation[configuration reference] holds the ranges and defaults. link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063] records the third, gateway-owned key exposed with them, the bounded refresh it governs, and why the grace period needs a gateway-side counterpart once the gateway replaces a loader itself.
+The link:../configuration/authentication-and-oidc.adoc#_jwks_key_rotation[configuration reference] holds the ranges and defaults. link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063] records the third, gateway-owned key exposed with them, the bounded refresh it governs, and why the grace period needs a gateway-side counterpart once the gateway replaces a loader itself.
 
-Every other loader knob stays deferred, and link:../configuration.adoc#_jwks_deferred_knobs[the configuration reference lists them]. Several are production-significant, so their absence is a known gap and not an oversight. Exposing one is a separate decision under the same discipline.
+Every other loader knob stays deferred, and link:../configuration/authentication-and-oidc.adoc#_jwks_deferred_knobs[the configuration reference lists them]. Several are production-significant, so their absence is a known gap and not an oversight. Exposing one is a separate decision under the same discipline.
 
 == Alternatives rejected
 
@@ -150,8 +150,8 @@ The unifying principle: the gateway configuration is the product's configuration
 
 == Links
 
-* link:../configuration.adoc#_token_validation[Configuration reference]: the `token_validation` surface, the `allowed_egress_hosts` and `tls_profile` field contracts, the trust-profile mapping, the worked example and the failure modes
-* link:../configuration.adoc#_jwks_deferred_knobs[Configuration reference]: the loader knobs that stay deferred
+* link:../configuration/authentication-and-oidc.adoc#_token_validation[Configuration reference]: the `token_validation` surface, the `allowed_egress_hosts` and `tls_profile` field contracts, the trust-profile mapping, the worked example and the failure modes
+* link:../configuration/authentication-and-oidc.adoc#_jwks_deferred_knobs[Configuration reference]: the loader knobs that stay deferred
 * link:../security-threat-model.adoc[Security threat model]: GW-05 and BFF-07, which record the egress guard, the derived allowance and its accepted trade-off
 * link:../technical_aspects.adoc#_upstream_security_default_changes[Technical aspects, adopting upstream security-default changes]: the policy on upstream security defaults, which the derived allowance does not engage
 * link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]: the bounded refresh on an unknown key id and the two refresh keys

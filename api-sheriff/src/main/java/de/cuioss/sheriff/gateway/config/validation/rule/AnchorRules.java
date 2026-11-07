@@ -137,7 +137,7 @@ public class AnchorRules {
      * any anchor namespace declares exactly that anchor — an undeclared squatter
      * fails the boot (ADR-0007); (4b) the anchor-coverage rule, the mirror of rule (4), enforced by
      * {@code checkRouteContainsUncoveredAnchor} and stated in the configuration reference
-     * {@code doc/configuration.adoc} (anchor id {@code anchor-coverage-rule}).
+     * {@code doc/configuration/validation-rules.adoc} (anchor id {@code anchor-coverage-rule}).
      * <p>
      * {@code protocol: grpc} routes are exempt from rules (3) and (4) — and from those two only.
      * Both are <em>declaration</em>-scoped: they judge a route by where its own match key sits. A
@@ -224,7 +224,7 @@ public class AnchorRules {
 
     /**
      * Enforces rule (4b), the anchor-coverage rule — the mirror of rule (4). The rule is stated once,
-     * in the configuration reference {@code doc/configuration.adoc} (anchor id
+     * in the configuration reference {@code doc/configuration/validation-rules.adoc} (anchor id
      * {@code anchor-coverage-rule}); {@code AnchorRulesTest} is its behavioural assertion.
      * <p>
      * An exact route returns at once, because an exact route inside an anchor namespace is rule (4)'s
@@ -262,7 +262,7 @@ public class AnchorRules {
      * <p>
      * Three tests, all required: the route is not exact, it narrows on no dimension beyond the path
      * ({@link MatchConfig#narrowsBeyondPath()}), and its normalized match key equals the normalized
-     * anchor prefix — the coverage definition of rule (4b) in {@code doc/configuration.adoc}.
+     * anchor prefix — the coverage definition of rule (4b) in {@code doc/configuration/validation-rules.adoc}.
      */
     private static Set<String> anchorsCoveredByOwnPrefixRoute(GatewayConfig gateway,
             List<EndpointConfig> endpoints) {

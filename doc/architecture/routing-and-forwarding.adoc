@@ -39,7 +39,7 @@ anchor and per endpoint -- gates which HTTP methods an endpoint serves beyond th
 `match.methods` matcher. A routed request whose method is outside the matched route's effective set
 is rejected `405` with an `Allow` header (rendered as the unrouted `404` without `Allow` while
 `security_defaults.uniform_not_found` is on; see
-link:../configuration.adoc#_allowed_methods[Configuration -- `allowed_methods`] and
+link:../configuration/routing-and-forwarding.adoc#_allowed_methods[Configuration -- `allowed_methods`] and
 link:observability-and-errors.adoc#_trust_boundary_rejections[Rejections before the trust boundary]).
 
 Every policy block is resolved once at boot: the nearest declared scope of
@@ -74,7 +74,7 @@ enumeration of `Accept`, `Content-Type` or `Range`.
 
 * *The request-direction never-forward set* applies under *every* mode, tested on the
   *separator-folded* name (lower-cased, `_` mapped to `-`) to close the `-`/`_` equivalence class
-  against CGI-folding backends (see link:../configuration.adoc#_never_forward_set[Configuration --
+  against CGI-folding backends (see link:../configuration/routing-and-forwarding.adoc#_never_forward_set[Configuration --
   Never-forward set] for the full request and response sets). `Authorization` is the single
   re-admittable member, honoured only where a route declares a *positive*-list naming it (and still
   overwritten by a mediated session bearer). `TE` crosses only when its value is exactly `trailers`
@@ -84,7 +84,7 @@ enumeration of `Accept`, `Content-Type` or `Range`.
   `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Range`, and the preconditions `If-Range`,
   `If-Match` and `If-Unmodified-Since` (RFC 9110 §13) unconditionally, plus `If-None-Match` and
   `If-Modified-Since` gated on `GET`/`HEAD` by the route's
-  link:../configuration.adoc#_upstream_defaults[`not_modified`] toggle (`If-None-Match` on write
+  link:../configuration/routing-and-forwarding.adoc#_upstream_defaults[`not_modified`] toggle (`If-None-Match` on write
   methods is a `412` precondition and crosses unconditionally). `User-Agent` is outside the set. An
   explicit `headers_deny` entry naming a member wins.
 
@@ -94,7 +94,7 @@ enumeration of `Accept`, `Content-Type` or `Range`.
   `trust_scheme_host` opts in) and emits freshly regenerated `X-Forwarded-*` headers by default,
   with RFC 7239 `Forwarded` opt-in and additive
   (link:../adr/0003-forwarded-headers.adoc[ADR-0003],
-  link:../configuration.adoc#_forwarded_headers[Configuration -- `forwarded`]).
+  link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]).
 
 *The merge order encodes a strict precedence rule.* Outbound headers are merged into a
 *case-insensitively keyed* map (RFC 9110) in six steps: (1) mode copy minus never-forward strip, (2)
@@ -106,7 +106,7 @@ and *gateway-owned transport truth beats operator configuration*.
 === Cookie Policy: Request Rebuild, Response Predicate and Same-Origin Check
 
 The browser `Cookie` and upstream `Set-Cookie` are governed per route by the `cookies` policy block
-(link:../configuration.adoc#_cookies[Configuration -- `cookies`],
+(link:../configuration/routing-and-forwarding.adoc#_cookies[Configuration -- `cookies`],
 link:../adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
 Asset and redirect routes always resolve `allow: none`.
 
@@ -126,7 +126,7 @@ image::../resources/diagrams/cookie-and-response-header-policy.svg[Cookie rebuil
   headers, and gRPC trailers, upstream `Set-Cookie` headers are filtered by the route's mode and
   have any `Domain` attribute stripped so cookies remain host-only. Upstream identity headers
   (`Server`, `X-Powered-By`) are stripped by default unless the route sets `keep_identity_headers:
-  true` (link:../configuration.adoc#_keep_identity_headers[Configuration -- `keep_identity_headers`]).
+  true` (link:../configuration/routing-and-forwarding.adoc#_keep_identity_headers[Configuration -- `keep_identity_headers`]).
   WebSocket upgrades relay no upstream response headers, and `source: upstream` assets strip every
   `Set-Cookie`.
 

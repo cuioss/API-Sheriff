@@ -71,7 +71,7 @@ route that relays no upstream response header.
 === The request-direction never-forward set
 
 This set holds the names a client may send that the gateway never relays upstream, whatever the forward mode.
-xref:../configuration.adoc#_never_forward_set[The never-forward section of the configuration reference] lists
+xref:../configuration/routing-and-forwarding.adoc#_never_forward_set[The never-forward section of the configuration reference] lists
 the members once. This record states the rule that admits a name. Membership answers one of five questions:
 
 * *Credentials the gateway terminates or mediates:* the inbound `Authorization`, which the gateway validates
@@ -145,7 +145,7 @@ every other upstream behind the same host.
 
 The boot rules, the request rebuild and the response predicate all read that one definition, so the three cannot
 disagree about what the gateway owns.
-xref:../configuration.adoc#_never_forward_set[The never-forward section] states how a name is matched. The BFF's
+xref:../configuration/routing-and-forwarding.adoc#_never_forward_set[The never-forward section] states how a name is matched. The BFF's
 sealed session cookie belongs to the gateway, never to the upstream. A session cookie forwarded to the proxied API
 (GHSA-vvg7-p7jw-8qr3) is the failure a second, hand-maintained drop list eventually produces, when one side learns
 a new cookie name and the other does not.
@@ -155,7 +155,7 @@ or a list of cookie names. That one declaration decides both directions. It reso
 (link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]):
 the nearest declared block wins and is taken whole. The default is `none`. An asset route or a redirect route
 always resolves `none`, because it has no upstream to give a cookie to or relay one from.
-xref:../configuration.adoc#_cookies[The `cookies` reference] and
+xref:../configuration/routing-and-forwarding.adoc#_cookies[The `cookies` reference] and
 xref:../user/endpoint-routes.adoc#_cookie_dependent_upstream[Fronting a cookie-dependent upstream] specify the
 fields, examples, rebuild and predicate. This record states what they decide:
 
@@ -173,7 +173,7 @@ fields, examples, rebuild and predicate. This record states what they decide:
 *The gateway guards a cookie-forwarding route against cross-site requests.* Once a browser cookie can reach an
 upstream, a cross-site page can make the browser send it there, which is the ambient-credential shape CSRF rests
 on. Every non-WebSocket route whose block forwards a cookie therefore carries a same-origin check
-(xref:../configuration.adoc#_cookies_same_origin_check[the same-origin check]). It trusts the origin the gateway
+(xref:../configuration/routing-and-forwarding.adoc#_cookies_same_origin_check[the same-origin check]). It trusts the origin the gateway
 received the request on, plus exactly the block's `additional_origins`. It rejects an unsafe request whose origin
 it cannot prove, before authentication and before the upstream.
 
@@ -197,7 +197,7 @@ origin list on one upgrade would only add a way for the two to disagree. A cooki
 instead declare a non-empty `websocket.allowed_origins`, and the boot refuses it otherwise.
 
 *The boot refuses a gateway-scope `allow: all`*, because "every cookie to every upstream" is the exposure the policy
-exists to scope. xref:../configuration.adoc#_cookies_boot_rules[The `cookies` boot rules] list the other boot
+exists to scope. xref:../configuration/routing-and-forwarding.adoc#_cookies_boot_rules[The `cookies` boot rules] list the other boot
 refusals and the two boot WARNs.
 
 === The gateway-understood protocol set

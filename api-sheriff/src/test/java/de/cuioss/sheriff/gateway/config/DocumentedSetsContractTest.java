@@ -70,7 +70,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <strong>Why this test exists.</strong> Sixteen shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
  * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
- * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
+ * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/edge-security.adoc} plus the
  * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — those two
  * schemas each additionally list the
  * authentication posture set carried by {@link Require} and the two {@code cookies.allow} mode
@@ -173,7 +173,15 @@ class DocumentedSetsContractTest {
 
     private static final Path REPOSITORY_ROOT = RepositoryRoot.holding("doc");
     private static final Path CONFIGURATION_ADOC = REPOSITORY_ROOT.resolve("doc/configuration.adoc");
-    private static final Path USER_README_ADOC = REPOSITORY_ROOT.resolve("doc/user/README.adoc");
+
+    /**
+     * A link from {@code doc/configuration.adoc} to one of its subsystem reference documents. The parts
+     * {@link #readConfiguration()} reads are derived from these links, so a part the index stops linking
+     * drops out of the reference the guards read, and a newly linked part joins it.
+     */
+    private static final Pattern CONFIGURATION_PART_LINK = Pattern.compile("link:(configuration/[a-z0-9-]+\\.adoc)");
+
+    private static final Path EDGE_SECURITY_ADOC = REPOSITORY_ROOT.resolve("doc/user/edge-security.adoc");
     private static final Path BFF_COOKIE_ADOC = REPOSITORY_ROOT.resolve("doc/user/bff-cookie.adoc");
     private static final Path ARCHITECTURE_ADOC = REPOSITORY_ROOT.resolve("doc/architecture/observability-and-errors.adoc");
     private static final Path THREAT_MODEL_ADOC = REPOSITORY_ROOT.resolve("doc/security-threat-model.adoc");
@@ -264,11 +272,11 @@ class DocumentedSetsContractTest {
     private static final String CONFIG_EXTENSION_ANCHOR = "-entry extension map";
 
     /**
-     * Anchor for {@code doc/user/README.adoc}'s bare extension enumeration ("The 21 built-in
+     * Anchor for {@code doc/user/edge-security.adoc}'s bare extension enumeration ("The 21 built-in
      * extensions -- `html`, … -- always win"). The count precedes it, the backticked list runs from
      * the anchor to the closing {@code --}.
      */
-    private static final String README_EXTENSION_ANCHOR = "built-in extensions --";
+    private static final String EDGE_SECURITY_EXTENSION_ANCHOR = "built-in extensions --";
 
     /** Anchor for the schema's restatement, which lists the extensions bare inside parentheses. */
     private static final String SCHEMA_EXTENSION_ANCHOR = "an entry naming a built-in extension (";
@@ -281,17 +289,17 @@ class DocumentedSetsContractTest {
     private static final String CONFIG_PROFILE_ANCHOR = "profile: strict";
 
     /**
-     * Anchor for {@code doc/user/README.adoc}'s bare mode enumeration ("The mode set is exactly
+     * Anchor for {@code doc/user/edge-security.adoc}'s bare mode enumeration ("The mode set is exactly
      * `strict`, …"). The backticked list runs from the anchor to the sentence's own full stop, which
      * no mode name can contain.
      * <p>
-     * The operator guide restates the mode set twice — this sentence and the mode table its
+     * The edge-security guide restates the mode set twice — this sentence and the mode table its
      * {@code | `mode`} rows build — and neither restatement was bound to {@link SecurityProfile}
      * until this anchor and {@link #hasModeDefinitionRow(String, String)} were pointed at it. That
      * left the document an operator is most likely to read as the one that could silently describe a
      * mode set the gateway no longer has.
      */
-    private static final String README_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly";
+    private static final String EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR = "The mode set is exactly";
 
     /**
      * Anchor for the cookie-mode exhibit in {@code doc/user/bff-cookie.adoc} — the sentence that
@@ -584,7 +592,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc enumerates exactly the built-in asset extensions, and states their count")
     void configurationAdocEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         int anchor = anchorIndex(document, CONFIG_EXTENSION_ANCHOR, CONFIGURATION_ADOC.toString());
 
         // Act
@@ -597,25 +605,26 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/user/README.adoc enumerates exactly the built-in asset extensions, and states their count")
-    void userReadmeEnumeratesTheBuiltInExtensions() throws Exception {
+    @DisplayName("doc/user/edge-security.adoc enumerates exactly the built-in asset extensions, and states their count")
+    void edgeSecurityGuideEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
-        String document = read(USER_README_ADOC);
-        int anchor = anchorIndex(document, README_EXTENSION_ANCHOR, USER_README_ADOC.toString());
+        String document = read(EDGE_SECURITY_ADOC);
+        int anchor = anchorIndex(document, EDGE_SECURITY_EXTENSION_ANCHOR, EDGE_SECURITY_ADOC.toString());
 
         // Act
-        int listStart = anchor + README_EXTENSION_ANCHOR.length();
+        int listStart = anchor + EDGE_SECURITY_EXTENSION_ANCHOR.length();
         int listEnd = document.indexOf("--", listStart);
         if (listEnd < 0) {
-            fail(USER_README_ADOC + ": the extension list after the anchor \"" + README_EXTENSION_ANCHOR
+            fail(EDGE_SECURITY_ADOC + ": the extension list after the anchor \"" + EDGE_SECURITY_EXTENSION_ANCHOR
                     + "\" is not terminated by '--'; the anchor no longer describes the document and this"
                     + " guard would otherwise assert over the rest of the file");
         }
         TokenList documented = backtickedTokens(document.substring(listStart, listEnd));
-        int statedCount = statedCountBefore(document, anchor, USER_README_ADOC.toString(), README_EXTENSION_ANCHOR);
+        int statedCount = statedCountBefore(document, anchor, EDGE_SECURITY_ADOC.toString(),
+                EDGE_SECURITY_EXTENSION_ANCHOR);
 
         // Assert
-        assertExtensionsMatch(documented, statedCount, USER_README_ADOC.toString());
+        assertExtensionsMatch(documented, statedCount, EDGE_SECURITY_ADOC.toString());
     }
 
     @Test
@@ -727,7 +736,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's mode enumeration equals the SecurityProfile value set")
     void configurationAdocEnumeratesTheSecurityProfileModes() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         String modeComment = profileModeComment(document);
 
         // Act — the raw token count comes back alongside the set: the set collapses duplicates, so
@@ -752,7 +761,7 @@ class DocumentedSetsContractTest {
     void configurationAdocDocumentsEverySecurityProfileMode() throws Exception {
         // Arrange — the per-mode text is free-form prose, so the row that introduces it is the
         // structural thing worth asserting
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
 
         // Act + Assert
         for (SecurityProfile profile : SecurityProfile.values()) {
@@ -766,53 +775,53 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/user/README.adoc's mode enumeration equals the SecurityProfile value set")
-    void userReadmeEnumeratesTheSecurityProfileModes() throws Exception {
+    @DisplayName("doc/user/edge-security.adoc's mode enumeration equals the SecurityProfile value set")
+    void edgeSecurityGuideEnumeratesTheSecurityProfileModes() throws Exception {
         // Arrange
-        String document = read(USER_README_ADOC);
-        int anchor = anchorIndex(document, README_PROFILE_MODE_SET_ANCHOR, USER_README_ADOC.toString());
+        String document = read(EDGE_SECURITY_ADOC);
+        int anchor = anchorIndex(document, EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR, EDGE_SECURITY_ADOC.toString());
 
         // Act — the sentence names the set inline and ends at its own full stop; the raw token count
         // comes back alongside the set because the set alone cannot observe a mode named twice
-        int listStart = anchor + README_PROFILE_MODE_SET_ANCHOR.length();
+        int listStart = anchor + EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR.length();
         int listEnd = document.indexOf('.', listStart);
         if (listEnd < 0) {
-            fail(USER_README_ADOC + ": the mode list after the anchor \"" + README_PROFILE_MODE_SET_ANCHOR
+            fail(EDGE_SECURITY_ADOC + ": the mode list after the anchor \"" + EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR
                     + "\" is not terminated by a full stop; the anchor no longer describes the document"
                     + " and this guard would otherwise assert over the rest of the file");
         }
         TokenList documented = backtickedTokens(document.substring(listStart, listEnd));
 
         // Assert
-        assertFalse(documented.tokens().isEmpty(), USER_README_ADOC + ": anchor \""
-                + README_PROFILE_MODE_SET_ANCHOR + "\" matched but yielded no modes — the guard would"
+        assertFalse(documented.tokens().isEmpty(), EDGE_SECURITY_ADOC + ": anchor \""
+                + EDGE_SECURITY_PROFILE_MODE_SET_ANCHOR + "\" matched but yielded no modes — the guard would"
                 + " pass vacuously");
         assertEquals(modeNames(), sorted(documented.tokens()),
-                USER_README_ADOC + " enumerates the security_defaults.profile mode set, which is"
+                EDGE_SECURITY_ADOC + " enumerates the security_defaults.profile mode set, which is"
                         + " authoritatively defined by SecurityProfile, and has drifted from it. This is the"
                         + " document an operator reads to decide which mode to set, so a mode it omits is one"
                         + " nobody is told exists, and one it names that the enum does not is a value the"
                         + " gateway refuses to boot on");
         assertEquals(SecurityProfile.values().length, documented.rawCount(),
-                USER_README_ADOC + " lists a different number of modes than SecurityProfile declares."
+                EDGE_SECURITY_ADOC + " lists a different number of modes than SecurityProfile declares."
                         + " The count is taken over the raw backticked tokens rather than over the"
                         + " de-duplicated set, so a mode listed twice fails here even though the set"
                         + " equality above still holds");
     }
 
     @Test
-    @DisplayName("doc/user/README.adoc gives every SecurityProfile mode a definition row of its own")
-    void userReadmeDocumentsEverySecurityProfileMode() throws Exception {
+    @DisplayName("doc/user/edge-security.adoc gives every SecurityProfile mode a definition row of its own")
+    void edgeSecurityGuideDocumentsEverySecurityProfileMode() throws Exception {
         // Arrange — the per-mode guidance is free-form prose, so the table row that introduces it is
         // the structural thing worth asserting, exactly as it is for doc/configuration.adoc
-        String document = read(USER_README_ADOC);
+        String document = read(EDGE_SECURITY_ADOC);
 
         // Act + Assert
         for (SecurityProfile profile : SecurityProfile.values()) {
             String mode = profile.name().toLowerCase(Locale.ROOT);
             assertTrue(hasModeDefinitionRow(document, mode),
-                    USER_README_ADOC + " has no definition row of its own for the mode '" + mode
-                            + "' declared by SecurityProfile. The operator guide's mode table must carry"
+                    EDGE_SECURITY_ADOC + " has no definition row of its own for the mode '" + mode
+                            + "' declared by SecurityProfile. The edge-security guide's mode table must carry"
                             + " one cell holding exactly \"" + modeDefinitionRow(mode) + "\" per mode, so a"
                             + " newly added mode gets the guidance that tells an operator when to choose it"
                             + " and a removed one has its entry deleted");
@@ -823,7 +832,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's oidc_discovery table has exactly one row per DiscoveryStatus.State token")
     void configurationAdocTabulatesTheDiscoveryTokens() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
 
         // Act
         TokenList documented = discoveryTableRows(document, CONFIGURATION_ADOC.toString());
@@ -866,7 +875,7 @@ class DocumentedSetsContractTest {
     @DisplayName("the oidc_discovery table extraction detects a token row removed from the document")
     void removedDiscoveryRowIsDetectedAgainstTheStateTokens() throws Exception {
         // Arrange — the negative control: the shipped document with the row of one state deleted
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         String removedToken = DiscoveryStatus.State.FAILED.token();
         String removedRow = "\n" + modeDefinitionRow(removedToken) + "\n";
         assertTrue(document.contains(removedRow), CONFIGURATION_ADOC + " carries no definition row for '"
@@ -911,7 +920,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's annotated gateway.yaml skeleton validates against the bundled schema")
     void configurationSkeletonValidatesAgainstTheBundledSchema() throws Exception {
         // Arrange — this exhibit already begins at 'version: 1', so it needs no wrapping
-        String skeleton = yamlBlockAfter(read(CONFIGURATION_ADOC), SKELETON_ANCHOR,
+        String skeleton = yamlBlockAfter(readConfiguration(), SKELETON_ANCHOR,
                 CONFIGURATION_ADOC.toString());
         assertCarriesBudgetKey(skeleton, CONFIGURATION_ADOC.toString());
 
@@ -960,7 +969,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc names exactly the gateway schema's string-item array keys, and states both counts")
     void configurationAdocEnumeratesTheGatewayArrayKeys() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         Map<String, ItemKind> derived = deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE), GATEWAY_ARRAY_ROOT,
                 GATEWAY_SCHEMA_RESOURCE);
 
@@ -999,7 +1008,7 @@ class DocumentedSetsContractTest {
     void configurationAdocEnumeratesTheEndpointOwnArrayKeys() throws Exception {
         // Arrange — "own" is what an endpoint document declares beyond the keys it shares by name with
         // gateway.yaml, so both inventories are derived
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         Set<String> ownKeys = keysOfKind(deriveArrayKeys(schemaTree(ENDPOINT_SCHEMA_RESOURCE), ENDPOINT_ARRAY_ROOT,
                 ENDPOINT_SCHEMA_RESOURCE), ItemKind.STRING);
         ownKeys.removeAll(keysOfKind(deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE), GATEWAY_ARRAY_ROOT,
@@ -1032,7 +1041,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc names exactly the arrays of objects across both schemas, and states their count")
     void configurationAdocEnumeratesTheObjectItemArrays() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         Set<String> objectArrays = keysOfKind(deriveArrayKeys(schemaTree(GATEWAY_SCHEMA_RESOURCE),
                 GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE), ItemKind.OBJECT);
         objectArrays.addAll(keysOfKind(deriveArrayKeys(schemaTree(ENDPOINT_SCHEMA_RESOURCE), ENDPOINT_ARRAY_ROOT,
@@ -1066,7 +1075,7 @@ class DocumentedSetsContractTest {
     void addedSchemaArrayKeyIsDetectedAgainstTheDocumentedSet() throws Exception {
         // Arrange — the negative control: a copy of the shipped schema with one string-item array key
         // injected into a definition the gateway reaches only through a $ref
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
         TokenList documented = documentedGatewayStringKeys(document);
         int statedTotal = statedCountBefore(document,
                 anchorSpan(document, ARRAY_TOTAL_ANCHOR, CONFIGURATION_ADOC.toString()).start(),
@@ -1308,7 +1317,7 @@ class DocumentedSetsContractTest {
     @DisplayName("doc/configuration.adoc's boot-validation list names exactly the JWKS refresh keys and their ranges")
     void configurationAdocStatesTheJwksRefreshKeyRanges() throws Exception {
         // Arrange
-        String document = read(CONFIGURATION_ADOC);
+        String document = readConfiguration();
 
         // Act — the raw bullet count comes back alongside the map: the map collapses a key listed
         // twice, so only that count can observe the duplicate
@@ -1334,7 +1343,7 @@ class DocumentedSetsContractTest {
     void divergedJwksRefreshRangeIsDetected() throws Exception {
         // Arrange — the negative control: a copy of the shipped document whose first refresh-key bullet
         // states a lower bound one above the one ConfigValidator enforces
-        String shipped = read(CONFIGURATION_ADOC);
+        String shipped = readConfiguration();
         Matcher bullet = JWKS_REFRESH_BULLET.matcher(shipped);
         assertTrue(bullet.find(), CONFIGURATION_ADOC + ": no bullet matches the JWKS refresh-key shape, so the"
                 + " negative control has no range to alter");
@@ -1361,7 +1370,7 @@ class DocumentedSetsContractTest {
     void jwksRefreshBulletOutOfShapeIsRefused() throws Exception {
         // Arrange — a bullet that still opens with the anchor but no longer states its range in the
         // extracted shape must fail the guard, not shrink the documented set into a quiet pass
-        String shipped = read(CONFIGURATION_ADOC);
+        String shipped = readConfiguration();
         Matcher bullet = JWKS_REFRESH_BULLET.matcher(shipped);
         assertTrue(bullet.find(), CONFIGURATION_ADOC + ": no bullet matches the JWKS refresh-key shape, so the"
                 + " control has no bullet to reword");
@@ -2591,6 +2600,29 @@ class DocumentedSetsContractTest {
 
     private static String read(Path document) throws IOException {
         return Files.readString(document);
+    }
+
+    /**
+     * The configuration reference as one document: {@code doc/configuration.adoc} followed by every
+     * part it links ({@link #CONFIGURATION_PART_LINK}), in link order, each separated by a line break.
+     *
+     * @return the concatenated configuration reference
+     * @throws IOException when a part cannot be read
+     */
+    private static String readConfiguration() throws IOException {
+        String index = read(CONFIGURATION_ADOC);
+        Set<String> parts = new LinkedHashSet<>();
+        Matcher link = CONFIGURATION_PART_LINK.matcher(index);
+        while (link.find()) {
+            parts.add(link.group(1));
+        }
+        assertFalse(parts.isEmpty(), CONFIGURATION_ADOC + " links no doc/configuration/*.adoc part, so the"
+                + " configuration reference the guards read would be the index alone");
+        StringBuilder reference = new StringBuilder(index);
+        for (String part : parts) {
+            reference.append('\n').append(read(REPOSITORY_ROOT.resolve("doc").resolve(part)));
+        }
+        return reference.toString();
     }
 
     /**

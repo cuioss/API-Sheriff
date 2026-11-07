@@ -2746,8 +2746,7 @@ class ConfigLoaderTest {
      * {@code additionalProperties: false}, so removing the property from the schema converts every
      * lingering declaration into a boot failure. That is deliberately a clean break with no
      * accept-and-ignore shim: silently tolerating the key would leave an operator believing a
-     * rotation key is still in force when nothing reads it. The operator remedy — delete the line —
-     * is documented in {@code doc/user/bff-cookie.adoc}.
+     * rotation key is still in force when nothing reads it. The operator remedy is to delete the line.
      */
     @Test
     void rejectsRetiredPreviousKeyAtBoot() throws Exception {

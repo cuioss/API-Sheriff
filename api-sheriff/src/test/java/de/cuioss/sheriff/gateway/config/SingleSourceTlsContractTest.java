@@ -44,7 +44,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>The allowlist is deliberately explicit and deliberately small.</strong> Every entry is a
  * ruling-sanctioned exception with its reason recorded inline and in
- * {@code doc/configuration.adoc}'s per-key verdict table. Widening it is therefore a visible diff
+ * {@code doc/configuration/tls-and-egress.adoc}'s per-key verdict table. Widening it is therefore a visible diff
  * that a reviewer must weigh against the documented classification, rather than a silent relaxation
  * of the bar.
  *
@@ -93,7 +93,7 @@ class SingleSourceTlsContractTest {
 
     /**
      * The ruling-sanctioned exceptions, each named individually so widening this set is a visible
-     * diff. Every entry is also recorded in {@code doc/configuration.adoc}'s per-key verdict table and
+     * diff. Every entry is also recorded in {@code doc/configuration/tls-and-egress.adoc}'s per-key verdict table and
      * in ADR-0025 — an undocumented exception would be a silent trim of the completion bar.
      */
     private static final Set<String> SANCTIONED_EXCEPTIONS = Set.of(
@@ -126,7 +126,7 @@ class SingleSourceTlsContractTest {
                         + "(ADR-0025). A raw key here either competes with that binding or — as the keys "
                         + "this bar replaced did — reaches no listener at all while reading as "
                         + "enforcement. If the key is genuinely deployment-bound or build-time, add it "
-                        + "to SANCTIONED_EXCEPTIONS *and* to doc/configuration.adoc's per-key verdict "
+                        + "to SANCTIONED_EXCEPTIONS *and* to doc/configuration/tls-and-egress.adoc's per-key verdict "
                         + "table; an undocumented exception is a silent trim.");
     }
 
@@ -140,7 +140,7 @@ class SingleSourceTlsContractTest {
                     () -> "SANCTIONED_EXCEPTIONS names '" + exception + "', which application.properties "
                             + "no longer declares. A stale exception is an inert allowlist entry that "
                             + "reads as a live carve-out — remove it, and remove its row from "
-                            + "doc/configuration.adoc's per-key verdict table.");
+                            + "doc/configuration/tls-and-egress.adoc's per-key verdict table.");
             assertTrue(isInScopeOfTheBar(exception) && !isMaterial(exception),
                     () -> "SANCTIONED_EXCEPTIONS names '" + exception + "', but the detector would not "
                             + "have flagged it anyway — the entry is decorative, so the bar is weaker "

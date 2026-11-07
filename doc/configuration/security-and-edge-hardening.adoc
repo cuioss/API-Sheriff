@@ -1,0 +1,781 @@
+= API Sheriff -- Configuration Reference: Security Filter and Edge Hardening
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+The inbound security filter (`security_filter`), edge hardening, per-source enumeration detection and threat classification, the per-route `rate_limit` field, `metadata`, the response security headers and the gateway-wide `security_defaults`.
+
+Part of the link:../configuration.adoc[Configuration Model]; the annotated link:../configuration.adoc#_gateway_configuration_gateway_yaml[`gateway.yaml` skeleton] shows every block in place.
+
+[[_security_filtering]]
+== `security_filter`
+
+The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature matching. The presets
+are `cui-http`'s `SecurityConfiguration` presets.
+
+*Scope and resolution.* Declarable on an anchor, an endpoint and a route. A route runs the nearest
+declared block -- its own, else its endpoint's, else its anchor's -- taken whole; with none declared,
+the `security_defaults` preset applies (see
+link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). An endpoint block
+replaces the anchor's block wholesale (boot WARN `ApiSheriff-101`) and is read by the `minimal`
+refusal and the body-size-floor check exactly as an anchor or route block is. The winning block's
+`profile` is the route's mode; a winning block that omits `profile`, or no block at all, falls back to
+`security_defaults.profile` -- *not* to the profile of a broader block it replaced (one of the two
+link:../user/anchors.adoc#_policy_block_field_level_exceptions[documented exceptions] to whole-block
+replacement). Explicit limit keys in the winning block override the resolved preset's limits
+individually.
+
+Every refusal of this block raised before the trust boundary is answered as the unrouted `404` while
+`security_defaults.uniform_not_found` is on; the true event stays in `sheriff_errors_total{event}`
+(see <<_uniform_not_found>>).
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `profile`
+| The inbound-filter mode: `strict`, `paranoid`, `lenient` or `minimal`, defined under
+  <<_security_defaults,`security_defaults`>>. `strict`, `paranoid` and `lenient` are presets whose
+  limits the keys below override individually. `minimal` is a dispatch mode with no preset: it
+  inherits its limits from the nearest non-`minimal` profile in the fallback chain (`strict` when the
+  whole chain is `minimal`). See link:#_the_minimal_mode[The `minimal` mode].
+
+| `max_body_bytes`
+| DoS guard and the route's effective body cap, enforced by the gateway while it reads the body, and
+  effective only below the framework floor (below). A breach is rejected `413` with an
+  `application/problem+json` envelope. A declared `Content-Length` over the cap but not over the floor
+  is rejected before authentication (uniform-`404` eligible); a body that crosses the cap while it
+  streams is rejected after dispatch and keeps its `413`. A declared `Content-Length` over the floor
+  gets the framework's bare `413` (see *Shadowing at the boundary*).
+
+| `max_header_count` / `max_query_params`
+| Header-count and query-parameter-count caps (hash-collision / resource-exhaustion guards).
+
+| `max_header_value_length` / `max_param_value_length`
+| Length cap for a single header value / a single parameter value (not the whole block), in
+  *characters*, not bytes.
+
+| `allowed_paths`
+| Optional path allowlist; see *`allowed_paths`* below.
+
+| `allowed_header_names` / `blocked_header_names`
+| Optional header-name allow/block lists.
+
+| `allowed_content_types`
+| Optional `Content-Type` allowlist for request bodies.
+
+| (path safety -- no key)
+| Traversal, encoding, character and pattern checks. Run in the *non-skippable pre-route floor* under
+  the gateway-wide baseline (the run that produces the canonical path), and again post-route under the
+  route's own configuration when it diverges from the baseline. Only the post-route run is switched
+  off by `profile: minimal`.
+|===
+
+*The framework body-size floor.* `quarkus.http.limits.max-body-size` is the floor every
+`max_body_bytes` sits under: a route cannot accept more, whatever it declares. API Sheriff ships it at
+*`64M`* (67108864 bytes) in `application.properties`, the largest `max_body_bytes` in the shipped
+topology; without it Vert.x's 10 MiB default silently clips every larger cap. A `max_body_bytes`
+larger than the floor -- in an anchor's, an endpoint's or a route's block, whether or not a route
+resolves the block -- *fails the boot*. Raise the floor in the same change as the cap.
+
+*Shadowing at the boundary.* With the floor *equal to* the largest declared cap, the framework's own
+`Content-Length` pre-check answers a breach of that cap with a bare `413` (`Connection: close`, empty
+body) before route selection, so the RFC 9457 envelope is rendered only for routes capped strictly
+*below* the floor. Set the floor above the largest cap to get the gateway's envelope there (the
+integration stack uses `128M`).
+
+*Chunked requests.* A chunked request carries no `Content-Length`, passes the framework pre-check, and
+is capped by the gateway's streaming byte counter: it always receives the `application/problem+json`
+envelope.
+
+*`allowed_paths`.* A request whose validated, normalized path matches no entry is rejected `400`. An
+entry is a literal path in which each `{name}` placeholder matches *exactly one* segment (any
+characters except `/`); there are no wildcards, regular expressions or multi-segment placeholders.
+Matching runs after the path is decoded and normalized, so `%2e%2e`, overlong UTF-8 and doubled
+slashes cannot bypass it. `/api/orders/{id}` matches `/api/orders/42`, not `/api/orders` or
+`/api/orders/42/items`.
+
+*Admission, not forwarding.* This block decides admission only. What reaches the upstream is decided
+by the route's link:routing-and-forwarding.adoc#_forward[`forward`] block (positive-list
+`headers_allow` / `query_allow`, negative-list `headers_deny` / `query_deny`, or forward-all).
+
+[[_preset_limits]]
+=== Preset limits
+
+A route that declares no limit key enforces these numbers. An omitted `security_defaults` block
+resolves to `strict`, so the `strict` column is what an undeclared deployment enforces. `paranoid` is
+identical to `strict` on every limit. All lengths are in *characters*.
+
+[cols="3,1,1"]
+|===
+| Limit | `strict` | `lenient`
+
+| `max_body_bytes`
+| 1 MiB (1048576)
+| 10 MiB (10485760)
+
+| `max_query_params`
+| 20
+| 500
+
+| `max_header_count`
+| 20
+| 100
+
+| `max_param_value_length`
+| 1024
+| 8192
+
+| `max_header_value_length`
+| 1024
+| 8192
+
+| path length
+| 1024
+| 8192
+
+| parameter / header *name* length
+| 64
+| 256
+|===
+
+`Cookie` and `Set-Cookie` are validated as header values under `max_header_value_length` and the
+cookie carve-out below; no separate cookie name, value or count limit is applied.
+
+Non-length validators: `strict` normalizes Unicode, fails on suspicious patterns, and rejects double
+encoding, control characters and extended ASCII; `lenient` inverts each of those. Comparison is
+case-insensitive under every preset. No preset permits null bytes. The extended-ASCII choice alone can
+be overridden gateway-wide -- see link:#_the_extended_ascii_override[The extended-ASCII override].
+
+[[_pre_route_header_carve_outs]]
+=== Pre-route header-name carve-outs
+
+The non-skippable pre-route floor measures every header value against the baseline
+`max_header_value_length`. Two header names get a raised cap, selected by header *name*. Both are
+gateway-wide because the floor runs before route selection
+(link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]).
+
+[cols="1,2,2"]
+|===
+| Header | Budget key | Applies
+
+| `Cookie` / `Set-Cookie`
+| `oidc.session.max_cookie_size` (plus a fixed cookie-header overhead) in cookie mode;
+  `oidc.session.max_cookie_header_value_length` in server mode
+| Only in an active BFF: always in cookie mode; in server mode only when the cap is declared. A
+  bearer-only gateway, and a server-mode gateway declaring no cap, keeps the baseline on every header.
+
+| `Authorization`
+| `security_defaults.max_authorization_header_value_length` (default `8192`)
+| *Unconditional* on every gateway. A bearer token with its `Bearer ` prefix routinely exceeds the
+  `strict` baseline of 1024 characters.
+|===
+
+*Only the length cap changes.* Every non-length validator -- null-byte, control-character,
+extended-ASCII, injection-pattern -- still applies to the carved-out value.
+
+*Both carve-outs survive the post-route re-run.* A route whose `security_filter` resolves to a
+configuration differing from the baseline (a raised `max_body_bytes` alone qualifies) has its headers
+re-validated under its own configuration with the same two carve-outs. The post-route cap is
+`max(route max_header_value_length, budget)`: a carve-out never lowers a route's own cap, and every
+non-length validator follows the route's configuration.
+
+[[_query_validation_raw_form]]
+=== Query parameters: validated in their raw form, forwarded unchanged
+
+The per-route url-parameter validation judges the query in its *raw, still-percent-encoded wire form*,
+and the upstream receives exactly the validated pairs -- the same bytes, never decoded or re-encoded,
+with the single `;` exception below
+(link:../adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047]):
+
+* The query is split on `&`, each pair on its first `=`. Names and values stay percent-encoded, `+`
+  stays `+`, a pair without `=` stays bare.
+* Each *name* passes the parameter-name pipeline (refuses a name decoding to a pair delimiter --
+  `a%3Db`, `a%26b` -- or a line break, and applies the name length cap); each *value* passes the
+  parameter-value pipeline. Both decode once, themselves.
+* Accepted pairs are appended to the upstream request-target verbatim on the HTTP, WebSocket and gRPC
+  paths. A double encoding such as `%252F` is judged -- and refused -- as a double encoding.
+* *A raw `;` is forwarded as `%3B`*, in any name or value, on every route and under every profile, so
+  an upstream that also splits on `;` cannot be handed a smuggled parameter (`?x=1;token=abc` past a
+  `query_deny: [token]`; CWE-235). The decoded meaning is unchanged; every other byte crosses verbatim.
+
+Legitimate values are not refused for their encoding: a space (`%20` or `+`), `M%C3%BCller`, an
+encoded colon and a literal `%` sent as `%25` pass. A value that *decodes* to `<`, `>` or `"` is judged
+by the decoded-form rules and injection patterns; output encoding remains the upstream's job.
+
+*Line breaks in parameter values.* `strict` refuses a value decoding to CR or LF (`%0D`, `%0A`) -- the
+one point where it is stricter than `cui-http`'s own strict preset. `lenient` admits them. `minimal`
+does not run url-parameter validation and forwards the raw pairs verbatim.
+
+*Known residual false positive under `strict`.* Injection patterns match the *decoded* value, so a
+value whose decoded form starts with `javascript:`, `vbscript:`, `data:` or `file:` (`q=data%3A%20x`),
+or matches a path-traversal pattern, is refused `400` (uniform-`404` eligible). A route that must
+accept such values declares `profile: lenient` or, on a public unauthenticated route, `minimal`.
+
+*Forward lists match the decoded name.* `forward.query_allow` / `forward.query_deny` entries compare
+against the *percent-decoded* name while the crossing pair keeps its raw spelling, so `%74oken=x` is
+caught by `query_deny: [token]`. Only ASCII hex digits form an escape: a name with any other digit (a
+full-width `%７４oken`) has no decoded name and crosses only a route with neither list. Pairs keep
+their arrival order (`a=1&b=2&a=3` crosses as `a=1&b=2&a=3`). See
+link:routing-and-forwarding.adoc#_forward[`forward`].
+
+[[_edge_hardening]]
+== `edge_hardening`
+
+The admission budgets of the public data-plane edge. `gateway.yaml` (global) scope only -- the pools
+are process-wide. The block and both keys are optional; an omitted key takes its default. The other
+edge bounds (framing limits, idle reap, drain window) are not configurable -- see
+link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults].
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `admission_cap`
+| Maximum concurrently in-flight requests across every route. Default `2048`, minimum `1`. A request
+  beyond it is refused `503` before a virtual thread is dispatched.
+
+| `websocket_relay_cap`
+| Maximum concurrently *established* WebSocket relays. Minimum `1`; omitted, a quarter of the
+  effective `admission_cap` (`512` at the default). A sub-budget acquired *in addition to* the general
+  permit, because a relay holds its permit for the connection's lifetime. An upgrade beyond it is
+  refused `503` and releases its general permit. A value above `admission_cap` is refused at boot.
+  Sizing: link:../user/protocol-routes.adoc[Protocol routes].
+|===
+
+*The held-answer sub-budget has no key.* An answer held on a timer -- the uniform `404` waiting for its
+timing floor (<<_uniform_not_found>>), or a rejection held by the `delay` action of
+<<_enumeration_detection,`enumeration_detection`>> -- returns its general permit while it waits and
+takes a held permit instead. There are a quarter of the effective `admission_cap` of them, at least
+one (`512` at the default). When all are taken, a further answer that would wait is a `503`, identical
+for every route and caller, written no earlier than the floor's release time (at once when
+`uniform_not_found` is off) and waiting under its own general permit until then
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#_held_answer_sub_budget[ADR-0073]).
+
+[[_enumeration_detection]]
+== `enumeration_detection`
+
+Per-source scan detection, `gateway.yaml` only. The gateway counts, per source, rejections raised
+before the trust boundary that reveal a scan -- unrouted address, wrong method, refused path or
+parameter, declared body over the cap, CSRF refusal, missing or invalid bearer token -- each under its
+true event whatever status it is answered with. A source whose count reaches `threshold` *trips*;
+`action` decides what the trip changes. Block and keys are optional: by default detection runs and a
+trip changes no answer. Mechanism:
+link:../architecture/tls-and-inbound-security.adoc#_per_source_detection[Architecture -- Per-Source Detection];
+contract: link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract].
+
+[cols="1,1,3", options="header"]
+|===
+| Key | Default | Meaning
+
+| `enabled`
+| `true`
+| `false` builds no detection: nothing is counted, logged or answered differently.
+
+| `threshold`
+| `100`
+| Weighted count at which a source trips (minimum `1`). Every counted rejection weighs `1`.
+
+| `window_seconds`
+| `60`
+| Seconds a full threshold takes to drain (minimum `1`). Drains continuously at
+  `threshold / window_seconds` per second: a threshold's worth per window stays just below it, a burst
+  of a full threshold trips at once.
+
+| `action`
+| `observe`
+| `observe`, `delay` or `block`; see below.
+
+| `block_seconds`
+| `60`
+| How long a tripped source stays blocked under `block` (minimum `1`).
+
+| `delay_millis`
+| `2000`
+| Milliseconds after admission for which a tripped source's rejection answers are held under `delay`
+  (`1` to `10000`).
+|===
+
+An out-of-range value is refused at boot, naming the key and value; an unknown key is refused by the
+schema.
+
+*The actions.* Every trip is logged as WARN `ApiSheriff-141` and counted on
+`sheriff_source_trips_total{action}`. A source trips again only after its count has drained to zero.
+
+[cols="1,4", options="header"]
+|===
+| Action | What a tripped source sees
+
+| `observe`
+| Nothing different; the trip is only recorded.
+
+| `delay`
+| Every counted rejection is answered no earlier than admission plus `delay_millis`, holding a permit
+  of the held-answer sub-budget (see <<_edge_hardening,`edge_hardening`>>). Served requests are never
+  delayed. With the uniform `404` floor, the later release wins. While the source's share of the
+  held-answer sub-budget is used up, its further requests are answered `429` before admission, with
+  `Retry-After` the delay in whole seconds.
+
+| `block`
+| For `block_seconds`, every request is answered `429` with `Retry-After` (whole seconds left, at least
+  `1`) and the `rate-limiting` problem document, before admission and route selection, taking no
+  admission permit. Counted as `SOURCE_BLOCKED` on `sheriff_errors_total`.
+|===
+
+`observe` is the default because the gateway cannot tell at boot whether one address is one client or
+every client behind a NAT, egress proxy or load balancer; enforcement is the operator's decision
+(link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0076]).
+
+*What a source is.* The pair of an address and a host:
+
+* *Address* -- the client address a trusted forwarder reported, when the peer is listed in
+  xref:routing-and-forwarding.adoc#_forwarded_headers[`forwarded.trusted_proxies`]; otherwise the TCP
+  peer, whose `X-Forwarded-For` is never read. IPv6 is reduced to its `/64`; an absent or unparseable
+  address is the one source `unknown`.
+* *Host* -- the request host when a route declares it as `match.host`, otherwise `*`, so changing
+  `Host` gives no fresh count.
+
+*Shared addresses.* Behind a load balancer not listed in `forwarded.trusted_proxies`, every client is
+one source: one scanning client trips it, and under `block` every client is answered `429`; under
+`delay` all their rejections slow down and, once the held-answer share is used up, every further
+request -- served ones included -- is answered `429`. List the balancer in
+`forwarded.trusted_proxies` before switching to `block` or `delay`. Clients behind a NAT or shared
+egress proxy stay one source; keep `observe` or raise `threshold` there.
+
+*Not counted.* Rejections after the trust boundary (valid token or live session), reserved paths,
+upstream errors, a body that stopped arriving, served requests, `PRE_TRUST_INTERNAL_FAILURE` (answered
+as the uniform `404`), and static resources: requests on an asset route and the browser-ambient
+fetches `/favicon.ico`, `/robots.txt`, `/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png`
+and the sized touch icons (`/apple-touch-icon-180x180.png`). Any other path counts whatever its
+extension (`/app.js` on no route counts).
+
+*Scope.* Counts live in one instance's memory, are not shared and are cleared by a restart. An instance
+tracks at most 65,536 sources; a source beyond that is not counted (`sheriff_source_untracked_total`,
+WARN `ApiSheriff-142`). Operator view:
+link:../user/edge-security.adoc#_enumeration_detection_operator_note[Edge Security -- Scanning
+sources and enumeration detection].
+
+[[_threat_classification]]
+== `threat_classification`
+
+Per-source threat classification, `gateway.yaml` only. The gateway keeps a weighted score per source
+over the weighted rejections it answers, before and after the trust boundary, each under its true
+event. A source whose score reaches `threshold` raises one *ALERT*: WARN `ApiSheriff-143` with an
+ECS-shaped JSON document, counted on `sheriff_threat_alerts_total`. Classification *only observes*: an
+ALERT changes no answer, status, header or timing, and there is no `action` key. Block and keys are
+optional; classification runs by default. See
+link:../architecture/tls-and-inbound-security.adoc#_threat_classification[Architecture -- Per-Source
+Threat Classification],
+link:../architecture/observability-and-errors.adoc#_threat_alert_document[the threat ALERT document] and
+link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078].
+
+[cols="1,1,3", options="header"]
+|===
+| Key | Default | Meaning
+
+| `enabled`
+| `true`
+| `false` builds no classifier: nothing is scored, logged or counted.
+
+| `threshold`
+| `100`
+| Score at which a source raises its ALERT (minimum `1`).
+
+| `window_seconds`
+| `300`
+| Seconds a full threshold takes to drain (minimum `1`); `0.33` per second with the defaults.
+
+| `weights.input_validation`
+| `10`
+| A path, parameter, header or body the route refuses (minimum `0`). One malformed request never
+  alerts; an injection scanner at one request per second alerts within about 11 seconds.
+
+| `weights.routing`
+| `1`
+| An unrouted address or a disallowed method (minimum `0`).
+
+| `weights.authentication`
+| `2`
+| A missing or invalid bearer token (minimum `0`). Low so that expired-token `401`s of many clients
+  behind one address stay below the drain rate.
+
+| `weights.authorization`
+| `2`
+| A missing scope, a CSRF or a WebSocket-origin refusal (minimum `0`).
+
+| `weights.recon_trip`
+| `50`
+| Added on a trip of <<_enumeration_detection,`enumeration_detection`>> (minimum `0`). Never an ALERT of
+  its own.
+|===
+
+*Fixed at zero* (no key):
+
+* an upstream failure (`upstream`), the `429` of a blocked source (`rate-limiting`) and a boot event
+  (`configuration`);
+* a body that stopped arriving (`INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`),
+  `PRE_TRUST_INTERNAL_FAILURE`, success and informational events, and any category weighted `0`;
+* a static resource (asset route or browser-ambient fetch) -- except `SECURITY_FILTER_VIOLATION` and
+  `PARAMETER_LIMIT_EXCEEDED`, which are scored on every path.
+
+Never reach the score at all: rejections of a reserved path, the refusal of a streaming body after
+dispatch began, and the `405` of an unparseable request method.
+
+*Boot refusals* (each names the key; an unknown key such as `action` or `rate_limiting` is refused by
+the schema):
+
+[cols="3,2", options="header"]
+|===
+| Condition | Remedy
+
+| `threshold` or `window_seconds` below `1`
+| Raise to `1` or more.
+
+| A weight below `0`
+| Use `0` or more.
+
+| `enabled` block in which no weight above `0` can act (it could never alert)
+| Set `enabled: false`.
+
+| `weights.recon_trip` declared while `enumeration_detection` is disabled (an omitted `recon_trip` is never refused)
+| Remove the key or enable `enumeration_detection`.
+|===
+
+*What a source is.* The same as for <<_enumeration_detection,`enumeration_detection`>>, resolved once
+per request; it applies with `enumeration_detection` switched off.
+
+*Scope -- single node.* Scores live in one instance's memory, are not shared and are cleared by a
+restart; a source spread over several instances is scored per instance (cross-instance correlation is
+the SIEM's job). An instance tracks at most 65,536 sources and raises at most one ALERT per tracked
+source per episode; a rejection it cannot score at that bound is counted on
+`sheriff_threat_untracked_total` and reported once by WARN `ApiSheriff-144`. Clients behind one NAT
+share a score; neither that nor a misbehaving client has a wire effect. Operator view:
+link:../user/edge-security.adoc#_threat_classification_operator_note[Edge Security -- Threat
+classification].
+
+== `rate_limit`
+
+The per-route schema (`requests_per_second`, `burst`). *Planned, not implemented*: the block is parsed
+and bound, but nothing on the request path reads it and it never causes a `429`. Every `429` comes
+from <<_enumeration_detection,`enumeration_detection`>> (`block`, and `delay` once a source's
+held-answer share is used up).
+
+Every route declaring `rate_limit` is named at boot by WARN `ApiSheriff-140` (see
+link:../LogMessages.adoc[Log Messages]); the boot continues. To clear it, remove the key. The block is
+kept parsed for the planned implementation
+(link:../adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]),
+which builds on the per-source detection substrate
+(link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
+
+== `metadata`
+
+`config_version` is an audit stamp only -- logged at boot, exposed for operational
+traceability, no runtime behaviour. Retained so the model need not change if dynamic
+discovery is added later (link:../features-analysis.adoc#_initial_scope[Feature Analysis -- Initial
+Scope]).
+
+[[_security_headers]]
+== `security_headers`
+
+Response-header middleware applied to every response. Declared in the global `gateway.yaml` block and,
+optionally, in an anchor's block; endpoints and routes can neither override nor disable it
+(link:../adr/0007-anchor-scoped-policy.adoc#_security_headers_after_route_selection[ADR-0007]). The
+anchor's block wins (see link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]).
+
+*Every header is explicit opt-in.* No block, or an empty one, sends none of the headers below. Outside
+the block, an asset served through the response envelope always carries
+`X-Content-Type-Options: nosniff`, and a portal or HTML error page carries the portal's fixed
+`Content-Security-Policy` and `nosniff`. Recommended values per header:
+link:../user/anchors.adoc#_security_headers_opt_in[Every header is opt-in -- what to configure].
+
+*Two positions in the pipeline.* The *global* block is seeded at the first stage. Immediately after
+route selection, the route's resolved block (its anchor's, else the global one) replaces the
+gateway-owned security headers. Responses before route selection (a stage-1 rejection, the unrouted
+`404`, a CORS preflight) carry the *global* block; responses after it (proxied response, asset,
+redirect, scope `403`) carry the *route's* block. A rejection answered as the unrouted `404` under
+<<_uniform_not_found>> carries the *global* block again; with `uniform_not_found: false` it carries
+the route's block.
+
+*An anchor block replaces the global block wholesale.* No key-by-key merge: a key the anchor block omits
+is absent for its routes (an anchor with only `frame_deny: true` drops the global
+`Strict-Transport-Security`), and its `header_modes` replace the global ones. See
+link:../user/anchors.adoc#_anchor_security_headers[Anchors -- Anchor `security_headers`].
+
+[cols="1,1,3"]
+|===
+| Field | Scope | Meaning
+
+| `hsts`
+| global, anchor
+| `Strict-Transport-Security` with `max_age` and `include_subdomains`.
+
+| `content_type_nosniff`
+| global, anchor
+| `X-Content-Type-Options: nosniff`.
+
+| `frame_deny`
+| global, anchor
+| `X-Frame-Options: DENY`.
+
+| `content_security_policy`
+| global, anchor
+| `Content-Security-Policy`, served *verbatim* (e.g. `"default-src 'self'"`). Omitted: no header. The
+  schema caps it at 4096 characters and refuses control characters; the validator refuses at boot a
+  blank value or one carrying CR, LF or any other control character, naming the block
+  (header-injection guard).
+
+| `header_modes`
+| global, anchor
+| Per-header precedence against the *origin's* header: optional keys `hsts`, `content_type_nosniff`,
+  `frame_deny`, `content_security_policy`, each `set` or `default`. `set` (absent key) overwrites the
+  origin's value; `default` keeps an origin-set value and emits the configured one only when the
+  origin sent none. On a gateway-authored response (rejection, redirect, asset, preflight) both modes
+  emit the configured value. A mode for a header its block does not enable (e.g. `frame_deny: default`
+  with `frame_deny` absent or `false`) fails the boot. `cors` has no mode.
+
+| `cors`
+| *global only*
+| CORS preflight/response handling. Disabled by default: no CORS headers, cross-origin browser calls
+  fail. `allowed_origins` are exact origins; a wildcard origin with `allow_credentials: true` is refused
+  at boot. Preflight `OPTIONS` is answered *before* route selection and authentication (preflights
+  carry no cookies). CORS responses carry `Vary: Origin`. A `cors` key in an anchor's block fails the
+  boot at schema load.
+|===
+
+*`default` hands the header to the upstream*, including a weaker value (a permissive
+`Content-Security-Policy`, `X-Frame-Options: SAMEORIGIN`). Keep `set` unless the upstream is trusted to
+own that header (see link:../security-threat-model.adoc#gw-14[GW-14]).
+
+[[_security_defaults]]
+== `security_defaults`
+
+The gateway-wide inbound-filter baseline. `profile` selects the *inbound-filter mode*, and the mode
+set has exactly four members:
+
+[cols="1,4"]
+|===
+| Value | Meaning
+
+| `strict`
+| The tightest posture that judges *form* alone, backed by `SecurityConfiguration.strict()`.
+
+| `paranoid`
+| `strict` plus the application-layer *content* detection no lower mode performs, backed by
+  `SecurityConfiguration.paranoid()`. It carries every one of `strict`'s limits unchanged and adds
+  two block-lists: sensitive path segments (filesystem paths and configuration filenames, matched
+  per `/`-delimited segment) and suspicious parameter names (`file`, `path`, `url` and their
+  siblings). *That is real vocabulary in many REST APIs*, so this mode has a genuine false-positive
+  profile -- choose it for a surface whose paths and parameters actually reach a filesystem, and
+  stay on `strict` everywhere else.
+
+| `lenient`
+| The relaxed posture, backed by `SecurityConfiguration.lenient()`. Even this preset never permits
+  null bytes, and path traversal is blocked regardless of configuration.
+
+| `minimal`
+| A *partial* disable of the per-route validation. It is not an off switch -- see
+  link:#_the_minimal_mode[The `minimal` mode] for the closed definition of what it does and does not
+  turn off.
+|===
+
+The set is *closed*. Any other value at any of the four declaration sites (`security_defaults`, an
+anchor's, an endpoint's or a route's `security_filter`) is refused by the JSON Schema when the
+document is bound, and the boot fails. `auth.require: none` is an unrelated key.
+
+*An omitted block, or one omitting `profile`, resolves to `strict`.* `lenient` and `paranoid` are
+declared explicitly. Numbers per mode: link:#_preset_limits[Preset limits].
+
+[cols="1,4"]
+|===
+| Key | Meaning
+
+| `allow_extended_ascii`
+| *Boolean, optional; omitted, the resolved profile decides* (`strict` rejects, `lenient` admits).
+  Gateway-wide: `true` admits non-ASCII header values and Latin-1 in paths and query-parameter
+  values, `false` rejects them, on the pre-route baseline, both header-value carve-outs and every
+  route's preset. See link:#_the_extended_ascii_override[The extended-ASCII override].
+
+| `allow_get_with_content_length_body`
+| *Boolean, default `false`.* Admits a `Content-Length`-framed request body on `GET` (for upstreams
+  such as Elasticsearch `_search`). See link:#_the_get_body_opt_in[The `GET`-body opt-in].
+
+| `max_authorization_header_value_length`
+| *Integer, minimum `1`, default `8192`* (the `lenient` header-value ceiling). The budget of the
+  `Authorization` carve-out (see link:#_pre_route_header_carve_outs[Pre-route header-name
+  carve-outs]); every other header stays on the baseline. Applied gateway-wide, pre-route and in the
+  post-route re-run, so it reaches routes declaring their own `security_filter`.
+
+| `uniform_not_found`
+| *Boolean, default `true`.* Answers a rejection raised after route selection and before the trust
+  boundary as the unrouted `404`, and holds every unrouted `404` to the response-timing floor. `false`
+  restores the honest statuses and the undelayed `404`. See link:#_uniform_not_found[The uniform 404].
+|===
+
+[[_uniform_not_found]]
+=== The uniform 404 (`uniform_not_found`)
+
+With the key on (default, also when omitted), every rejection raised in the *pre-trust window* is
+answered exactly as an unrouted address, so a `405`, `401` or `413` cannot reveal that a route exists
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
+
+*The trust boundary.* Passed once a bearer token validated offline, or once the authentication stage
+completed on any branch (a live session, or a `require: none` route). The pre-trust window runs from
+route selection to that point. The boundary is identity, never network position.
+
+*What it governs.* Answered as the unrouted `404` while the key is on:
+
+[cols="2,3", options="header"]
+|===
+| Honest answer | Raised by
+
+| `401` (missing or invalid token) | `auth.require: bearer`, and the bearer branch of `auth.session_fallback`
+| `405` | the effective `allowed_methods` verb gate
+| `413` (declared `Content-Length`, not over the framework floor) | `security_filter.max_body_bytes`
+| `400` | `allowed_paths` and the per-route `security_filter` validation
+| `403` | the `cookies` same-origin check and the `oidc.session.csrf` defence
+| trailers-only gRPC status | any of the above on a `protocol: grpc` route -- answered as the HTTP `404`
+|===
+
+The answer equals the unrouted one in status, body (the `routing` problem document, or the HTML error
+page under `portal.error_pages`), `Content-Type` and header set: no `WWW-Authenticate`, `Allow`, route
+`security_headers`, `match.headers` `Vary` or `Set-Cookie`. Every unrouted `404`, genuine or resolved,
+leaves no earlier than a fixed floor plus random jitter after admission; both are constants without a
+key (recorded in ADR-0073).
+
+*What it never touches.* These keep their status with the key on:
+
+* the pre-route floor and framing-gate `400`s (before route selection, same for every address);
+* the framework's bare `413` for a declared `Content-Length` over `quarkus.http.limits.max-body-size`
+  (see *Shadowing at the boundary* under <<_security_filtering,`security_filter`>>);
+* the reserved paths -- OIDC paths, portal, client JWKS path;
+* the scope `403` of a validated token or live session;
+* the session branch's login negotiation -- `302` for a navigation, `401` otherwise;
+* the `413` of a body crossing `max_body_bytes` while it streams, and every answer raised after
+  authentication completed (dispatch `400` / `408`, WebSocket origin `403`, upstream `5xx`).
+
+*What is still reported.* The true event (`METHOD_NOT_ALLOWED`, `TOKEN_MISSING`, `CSRF_REJECTED`, ...)
+is still counted in `sheriff_errors_total{event}` and logged in the WARN and INFO lines (see
+link:../user/edge-security.adoc#_uniform_not_found_operator_note[Edge Security -- Why an existing route answers 404]).
+
+[[_the_get_body_opt_in]]
+=== The `GET`-body opt-in
+
+`allow_get_with_content_length_body: true` relaxes the stage-1 anti-smuggling framing gate by one leg
+-- a declared `Content-Length` body on `GET` -- and nothing else. Omitted: `false`, every framing
+rejection preserved.
+
+[cols="3,2", options="header"]
+|===
+| Request | Behaviour with the key `true`
+
+| `GET` with a `Content-Length`-framed body
+| Admitted.
+
+| Body-present `GET` with no declared `Content-Length`
+| Rejected (the gate asserts this itself, ADR-0026).
+
+| `Transfer-Encoding` on `GET`
+| Rejected unconditionally; no key relaxes it.
+
+| Any body on `HEAD`
+| Rejected on every leg.
+
+| `Content-Length` and `Transfer-Encoding` both present
+| Rejected (checked before the bodyless-method rule).
+
+| Multiple `Content-Length` headers, or a comma-separated value
+| Rejected.
+
+| `Connection` naming a framing or trust header
+| Rejected.
+|===
+
+*Blast radius.* The gate runs before route selection, so the key is gateway-wide: enabling it for one
+upstream admits a `GET` body on *every* route, including `require: bearer` routes and every route under
+a `type: bff` anchor. Content on `GET` has no defined semantics (RFC 9110 §9.3.1); caches keying on
+the URL and components authorizing on the URL while the application reads the body are exposed. Keep
+it `false` unless every route tolerates a `GET` body.
+
+[[_the_extended_ascii_override]]
+=== The extended-ASCII override
+
+`allow_extended_ascii` replaces the resolved preset's extended-ASCII choice and nothing else:
+
+[cols="1,3"]
+|===
+| Declared value | Effect
+
+| _omitted_
+| The profile decides: `strict` (and every undeclared deployment) rejects, `lenient` admits.
+
+| `true`
+| Admitted on every route, including `strict` ones.
+
+| `false`
+| Rejected on every route, including `lenient` ones.
+|===
+
+What `true` admits (fixed by `cui-http`'s character validation):
+
+* *Header values* -- Latin-1 (U+00A0-U+00FF) *and* all Unicode above U+00FF. Omitted on `strict`,
+  header values are ASCII-only.
+* *Paths and query-parameter values* -- Latin-1 (U+00A0-U+00FF) only; Unicode above U+00FF stays
+  rejected (RFC 3986).
+
+Rejected *whatever the key says*:
+
+* the C1 control range U+0080-U+009F (U+0085, NEL, is a line terminator to several parsers);
+* any non-ASCII character in a header name, cookie name or cookie value (RFC 7230 / RFC 6265);
+* Unicode combining marks;
+* CR, LF and every other C0 control in a header or cookie (TAB alone stays legal in a header value).
+
+The key is gateway-wide because the pre-route floor validates the path and header values under the
+baseline before route selection: a route declaring `profile: lenient` on a `strict` gateway still has a
+non-ASCII header value rejected at the floor. It is applied to the baseline, both carve-outs and every
+route's preset, so a route declaring nothing stays equal to the baseline and skips the post-route
+re-run.
+
+*Blast radius.* `true` admits non-ASCII header values on *every* route. Check first that upstreams do
+not compare header values byte-for-byte against ASCII allowlists, and that anything logging or
+re-emitting header values handles non-ASCII safely.
+
+[[_the_minimal_mode]]
+=== The `minimal` mode
+
+`minimal` concerns *validation*, never *limits*. The two lists below are the *closed* definition:
+anything not in the disabled list keeps running.
+
+*Still enforced under `minimal`:*
+
+* The entire *non-skippable pre-route floor*: raw-path canonicalisation and validation, header name
+  and value validation, and the query-parameter and header *count* caps (route selection consumes the
+  canonical path). An encoded path separator, an over-cap parameter count and an oversized header
+  value are still rejected `400`.
+* `max_body_bytes` and `allowed_paths`.
+* The verb gate (`allowed_methods`), authentication and the auth floor, CSRF and the same-origin check
+  of a cookie-forwarding route, the route's link:routing-and-forwarding.adoc#_forward[`forward`] mode
+  and the link:routing-and-forwarding.adoc#_never_forward_set[never-forward set], the route's
+  link:routing-and-forwarding.adoc#_cookies[`cookies`] policy, the terminal-action rules, and the
+  response security-header envelope.
+
+*Disabled under `minimal` -- exactly these two:*
+
+. The *url-parameter name and value validation*. The raw pairs still cross verbatim, as the route's
+  `forward` mode decides.
+. The *per-route pipeline re-run* -- the second pass of the path and header pipelines for a route
+  whose configuration diverges from the baseline.
+
+A `minimal` route takes its limits from the nearest non-`minimal` profile in its fallback chain
+(`strict` when the whole chain is `minimal`), which gives the retained `max_body_bytes` its number.
+
+*Fail-closed rule.* A route whose *effective* profile is `minimal` *fails the boot* when its
+*effective* access level is `authenticated` (including a route or endpoint that strengthens a `public`
+anchor's auth floor, per link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007]), or when its resolving
+anchor's `type` is `bff`. The refusal joins the all-violations pass and names the route, the refusing
+dimension and the remedy. It applies identically whether `minimal` comes from the route, its endpoint,
+its anchor or `security_defaults.profile`.
+
+Rationale and rejected alternatives:
+link:../adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].

@@ -1,0 +1,66 @@
+= Group 4 -- Architectural Decision Records
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+== Scope
+
+`doc/adr/` holds 71 records (13,043 lines). Their filenames are the decision sentence, for example `0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc`. The template and rules are in `doc/development/adr-writing.adoc`:
+
+* the skeleton is Status, Decision, Alternatives rejected, Consequences, Links;
+* the template prescribes `:toc-title:` and `:source-highlighter:`;
+* the hard ceiling is 500 body lines (`AdrRecordLengthContractTest`), and there is no smaller line target.
+
+ADRs are point-in-time records, so slimming removes only material that is verbatim duplicated elsewhere.
+
+== Metadata
+
+* [ ] *G4-01*: ADR-0057 says in its body (≈101) that it supersedes part of ADR-0049, but its `// supersedes:` line is empty. Fill it in.
+* [ ] *G4-02*: Normalise `// supersedes:` in ADR-0062 (`5`) and ADR-0074 (`27`) to zero-padded ordinals (`0005`, `0027`), as ADR-0035 does.
+* [ ] *G4-03*: Verify each candidate forward link in the ADR bodies before adding it: 0008 to 0060/0066, 0018 to 0058/0072, 0027/0039/0063 to 0074, and 0076 to 0078.
+
+== Structure
+
+* [ ] *G4-04*: ADR-0005 uses `--` as the title separator. Align it with the corpus convention.
+* [ ] *G4-05*: Six records (0017, 0025, 0027, 0028, 0032, 0038) have `:toclevels: 2` and lack `:toc-title:` and `:source-highlighter:`. Align them with the template.
+* [ ] *G4-06*: ADR-0027 (345 lines) has extra top-level sections (`== Readiness ...` ≈288, `== References`). Fold them into the template skeleton and keep `[[_live_key_set_readiness]]`.
+
+== Wording
+
+* [ ] *G4-07*: Remove the filler "simply" at 0003 ≈86, 0027 ≈219, 0029 ≈109, 0034 ≈88, 0054 ≈139, 0061 ≈29 and 0063 ≈31/37.
+
+== Slimming
+
+Fifteen records exceed 250 lines:
+
+[cols="1,1", options="header"]
+|===
+| ADR | Lines
+
+| 0018 | 405
+| 0037 | 403
+| 0058 | 378
+| 0073 | 367
+| 0060 | 348
+| 0066 | 345
+| 0027 | 345
+| 0074 | 343
+| 0076 | 306
+| 0046 | 287
+| 0078 | 283
+| 0040 | 256
+| 0019 | 256
+| 0036 | 255
+| 0075 | 254
+|===
+
+* [ ] *G4-08*: In these records, replace YAML field tables, test inventories and version chronology that `doc/configuration/*` or `doc/architecture/*` already holds verbatim with links. Keep every `[[...]]` anchor.
+
+== Rejected Findings of the Earlier Draft
+
+* `<<_consequences>>` (0036), `<<_risks>>` (0048) and `<<_accepted_costs>>` (0057) resolve to auto-generated section IDs. `verify-links` reports them broken because it does not model auto-generated IDs.
+* ADR-0075 records where resource-exhaustion detection is owned. It is not a test-naming convention and stays an ADR.
+* No ADR carries a `// Maintain the metadata block` comment. The progressive-disclosure and authoring-discipline comments come from the template.
+* The "we/us" hits in 0051 and 0054 are inside quotations.

@@ -1,0 +1,79 @@
+= Group 2 -- Operator Guides & Deployment Variants
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+== Scope
+
+`doc/user/` has 15 guides (10,350 lines) and `doc/variants/` has 4 files (1,445 lines). `doc/user/` embeds one SVG (`tls-key-material.svg` in `tls-scenarios.adoc`). `doc/variants/` embeds five (`base-bearer-sequence`, `bff-login-sequence` twice, `bff-token-mediation` twice).
+
+== Existing Diagrams to Embed
+
+[cols="2,3", options="header"]
+|===
+| SVG (`doc/resources/diagrams/`) | Target
+
+| `bff-login-sequence.svg`, `bff-token-mediation.svg` | `user/bff-session.adoc`, `user/bff-cookie.adoc`
+| `route-matching-and-policy-resolution.svg`, `forward-policy-modes-and-merge-order.svg` | `user/endpoint-routes.adoc`
+| `protocol-handling.svg` | `user/protocol-routes.adoc`
+| `inbound-filter-and-framing.svg`, `per-source-detection-and-threat.svg`, `rejection-rendering-and-trust-boundary.svg` | `user/edge-security.adoc` (new)
+| `compose-sample-topology.svg` | `user/compose-sample.adoc`
+| `tls-sni-split-and-seams.svg` | `user/tls-edge.adoc`
+| `configuration-layers.svg` | `user/environment-variable-overrides.adoc`
+|===
+
+== BFF Guides
+
+`bff-session.adoc` (1,301 lines) and `bff-cookie.adoc` (1,079 lines) share these sections almost verbatim:
+
+[cols="3,1,1", options="header"]
+|===
+| Section | `bff-session` | `bff-cookie`
+
+| Prerequisites, confidential client | ≈20-141 | ≈24-93
+| Signing-key material (`#key-material` / `#_key_material`) | ≈142-391 | ≈323-587
+| Replacing a key | ≈392-422 | ≈588-620
+| Client-secret authentication | ≈423-480 | ≈621-678
+| Strict refresh-token rotation at the IdP | ≈1002-1037 | ≈891-933
+| Operate | ≈1215 | ≈1027
+| Private-CA / self-signed IdP | ≈1244 | ≈1061
+|===
+
+* [ ] *G2-01*: Create `doc/user/bff-oidc-common.adoc` from the shared sections. Both guides link to it and keep their storage model, scopes and logout. Repoint the inbound key-material and private-CA links.
+* [ ] *G2-02*: Keep `COOKIE_EXHIBIT_ANCHOR` ("A minimal cookie-based configuration:" ≈45, with `max_cookie_size:`) in `bff-cookie.adoc`.
+* [ ] *G2-03*: Remove the pre-1.0 passages from `bff-cookie.adoc`: ≈81-84 (needs a release after 0.2.4), ≈213-235 (`encryption_key` removed), ≈305-322 (`previous_key` removed) and ≈759-766 (supersedes earlier guidance). Condense ≈993-1026 (forced re-login on a format change) to the operational fact.
+* [ ] *G2-04*: Embed `bff-login-sequence.svg` and `bff-token-mediation.svg`.
+
+== `endpoint-routes.adoc` and the New `edge-security.adoc`
+
+* [ ] *G2-05*: The starter YAML carries `# INERT today` keys (≈153, ≈156) and a "planned" `rate_limit` (≈163-166). Remove them from the copy-paste block.
+* [ ] *G2-06*: Remove the migration passages ≈234-250 (former replace semantics) and ≈1019-1025 (upgrading without the `cookies` block).
+* [ ] *G2-07*: Move these sections with their anchors into `doc/user/edge-security.adoc`: uniform 404 (≈746-797), enumeration detection (≈798-876), threat classification (≈877-932) and edge-hardening defaults (≈1119-1261). Move `user/README.adoc` Inbound Filter Modes, GET body, non-ASCII and asset content types (≈185-465) with them. About 18 anchored inbound links need repointing. If `README_PROFILE_MODE_SET_ANCHOR` (≈275) or `README_EXTENSION_ANCHOR` (≈446) moves, update `DocumentedSetsContractTest`.
+* [ ] *G2-08*: Embed the routing and forwarding diagrams in `endpoint-routes.adoc`, and the edge diagrams in `edge-security.adoc`.
+
+== Other Operator Guides
+
+* [ ] *G2-09* `compose-sample.adoc`: Merge the repeated 0.2.4 image caveats (≈30-90) and the Compose 2.24.4 notes (≈361-376, ≈608-610) into one prerequisites callout. Remove the upgrade box (≈906-915). Embed `compose-sample-topology.svg`.
+* [ ] *G2-10* `tls-scenarios.adoc`: About 25 internal class names (`ServerTlsDeclarationGate`, `TokenValidatorProducer`, `TlsServerCustomizer`, ...) appear in operator prose. Describe the behaviour and the `ApiSheriff-NNN` log IDs instead.
+* [ ] *G2-11* `tls-edge.adoc`: Embed `tls-sni-split-and-seams.svg`. Link to `doc/configuration/tls-and-egress.adoc` instead of repeating field semantics.
+* [ ] *G2-12* `context-path.adoc`: Route A (≈138-371) repeats the downstream POM and native build. Replace it with the context-path delta and a link to `downstream-parent.adoc`. Move the "How it works" mechanism (≈476-798) to `doc/development/context-path-verification.adoc`, keeping the operator-visible behaviour.
+* [ ] *G2-13* `environment-variable-overrides.adoc`: Delete `=== What the sweep did not find` (≈609-623). Embed `configuration-layers.svg`.
+* [ ] *G2-14* `downstream-parent.adoc`: Condense "The procedure, and what it produced" (≈316-428, the execution log against `9ccda16`) to the procedure. Keep both `BuildParentContractTest` anchors (≈191, ≈236-256).
+* [ ] *G2-15* `anchors.adoc`: Keep `[[_policy_block_scopes]]` and its table (≈141-216).
+* [ ] *G2-16*: Run a sentence-level compression pass over `doc/user/*`. Lecturing preambles become direct steps, and semicolon-chained refusal lists become `Condition | Behaviour | Log ID` tables.
+
+== Variants
+
+* [ ] *G2-17*: `03-bff-cookie.adoc` ≈16-18 says the cookie variant is "planned". It is shipped (`SealedSessionCookieCodec`, `CookieSessionBinding`). `session.mode` has no default, so do not call it the default.
+* [ ] *G2-18*: Delete the "Status at 0.2.4" release history in `variants/README.adoc` (≈127-148).
+* [ ] *G2-19*: Slim `02-bff-session.adoc` and `03-bff-cookie.adoc` to posture datasheets that link to `user/bff-*.adoc` and `user/bff-oidc-common.adoc`.
+
+== Rejected Findings of the Earlier Draft
+
+* The named "existing" SVGs (`bff-login-callback-flow`, `route-matching-specificity`, ...) do not exist. The table above lists the real ones.
+* `doc/variants/02-bff-Minimal.adoc` and `04-fapi-2.adoc` do not exist.
+* The `01-base-gateway.adoc` block (≈173-195) is `[source,text]` pseudocode of the validation flow, not Java.
+* `context-path.adoc` "How it works" is mechanism and rationale, not a duplicate of the verification runbook.
+* Cookie sealing uses exactly one key. There is no key-rotation timeline with retired keys to draw.

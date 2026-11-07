@@ -214,8 +214,8 @@ public class TokenValidationRules {
     /**
      * The JWKS refresh keys of an issuer's {@code jwks} block, each with the inclusive range of seconds
      * it admits — the single definition both {@link #validateJwksRefresh} enforces and the boot-validation
-     * list of {@code doc/configuration.adoc} is bound to by a contract test, so a key added here or a range
-     * changed here fails that test until the documentation moves with it.
+     * list of {@code doc/configuration/validation-rules.adoc} is bound to by a contract test, so a key
+     * added here or a range changed here fails that test until the documentation moves with it.
      * <p>
      * {@link #REFRESH_INTERVAL} and {@link #KEY_ROTATION_GRACE_PERIOD} are handed to the token library;
      * both ranges were checked against the value checks of token-sheriff 0.9.6's

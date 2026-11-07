@@ -1,15 +1,17 @@
 = API Sheriff -- Endpoint Route Configuration (`endpoints/*.yaml`)
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
 :source-highlighter: highlight.js
 
 How to author the `endpoints/*.yaml` files: the route schema, the three terminal actions (proxy,
 asset, redirect), exact and prefix routes and their ordering, how `upstream.path` builds the upstream
-URI, what an omitted block resolves to, and the transport bounds at the edge. The field-level
-contract for every key mentioned here lives in the
-link:../configuration.adoc[Configuration Reference]; anchors are covered in
-link:anchors.adoc[Anchors].
+URI and what an omitted block resolves to. The field-level contract for every key mentioned here
+lives in the link:../configuration.adoc[Configuration Reference]; anchors are covered in
+link:anchors.adoc[Anchors]. What the gateway does at the edge -- inbound filtering, the uniform
+`404`, scanning-source detection and the transport bounds -- is covered in
+link:edge-security.adoc[Edge Security].
 
 == Endpoint Configuration Files (`endpoints/*.yaml`)
 
@@ -150,20 +152,11 @@ endpoint:
                                    #   "Upstream path" below)
         rewrite_location: false    # default false. true maps an upstream Location pointing
                                    #   inside this route's upstream back onto /api/orders
-        connect_timeout_ms: 2000   # INERT today: parsed, read by nothing -- every
-        read_timeout_ms: 5000      #   attempt runs under the guard's fixed 30 s timeout
-        retry: { max_attempts: 3, idempotent_only: true }
-                                   # INERT today: only retry.enabled acts (two retries,
-                                   #   100 ms apart); max_attempts and idempotent_only are
-                                   #   read by nothing. All four keys are open decisions --
-                                   #   see ADR-0064 "What this decision does not settle"
-                                   # no circuit_breaker key: the breaker is the gateway's fixed
-                                   #   policy (20-call window, ratio 0.5, 5 s open) and a route
-                                   #   declares none -- the key is refused at boot (ADR-0064)
-      rate_limit: { requests_per_second: 100, burst: 20 }
-                                   # planned, not implemented: parsed, enforced by
-                                   #   nothing, never causes a 429, and named at boot
-                                   #   by the WARN ApiSheriff-140 (ADR-0077)
+                                   # every attempt runs under the gateway's fixed 30 s guard
+                                   #   timeout and fixed breaker policy (20-call window, ratio
+                                   #   0.5, 5 s open); a circuit_breaker key is refused at boot.
+                                   #   Timing and retry keys: see "upstream" in
+                                   #   ../configuration/routing-and-forwarding.adoc
 ----
 
 The manifest's `/auth` -> IdP and `/token` -> IdP mappings are just another endpoint file bound to
@@ -195,7 +188,7 @@ endpoint:
 ----
 
 [[_upstream_path]]
-=== Upstream path
+== Upstream path
 
 A proxy route's upstream URI is built from three parts: the resolved alias, the route's
 `upstream.path`, and the *remainder* -- the request path with the route's match key stripped. The
@@ -231,26 +224,8 @@ the deployment.
 | `https://kc.internal:8443/realms/main/protocol/openid-connect/token`
 |===
 
-*Migrating a route written for the former replace semantics.* Under those semantics a declared
-`upstream.path` *replaced* the alias base path, so a route behind an alias with a base path had to
-repeat that base path. Drop the repeated part from the route:
-
-[source,yaml]
-----
-# topology.properties: UPSTREAM=http://go-httpbin:8080/anything
-
-# before (replace): the route restated the alias base path
-upstream: { path: /anything/graphql }     # reached /anything/graphql
-
-# after (append): the route names only its own segment
-upstream: { path: /graphql }              # still reaches /anything/graphql
-----
-
-A route behind an alias *without* a base path (`GRPC_ECHO=http://grpc-echo:9000`) resolves to the same
-URI under both semantics and needs no change.
-
 [[_rewrite_location]]
-==== Rewriting upstream `Location` headers (`upstream.rewrite_location`)
+=== Rewriting upstream `Location` headers (`upstream.rewrite_location`)
 
 An upstream that redirects to its own absolute path -- `Location: /login` from an application
 mounted behind `/api/orders` -- sends the browser off the gateway namespace, and an absolute
@@ -308,7 +283,7 @@ The key defaults to `false` -- `Location` is relayed exactly as the upstream sen
 neither protocol carries a redirect the gateway could rewrite.
 
 [[_keep_identity_headers]]
-=== Keeping an upstream's identity headers (`keep_identity_headers`)
+== Keeping an upstream's identity headers (`keep_identity_headers`)
 
 By default the gateway removes the upstream's `Server` and `X-Powered-By` headers -- the two
 standard software banners -- before a response reaches the client. Only these two are removed: any
@@ -334,12 +309,12 @@ banner -- for example a monitoring probe or a legacy client that branches on the
   `protocol: websocket` route relay no upstream response header, so declaring the key there -- with
   either value -- fails the boot.
 
-The field reference is link:../configuration.adoc#_keep_identity_headers[`keep_identity_headers`].
+The field reference is link:../configuration/routing-and-forwarding.adoc#_keep_identity_headers[`keep_identity_headers`].
 Removing the banner does not hide the TLS and HTTP/2 fingerprint of the gateway itself; see
 link:tls-edge.adoc#_tls_and_http2_fingerprints[TLS and HTTP/2 fingerprints].
 
 [[_base_url_only_with_proxy_routes]]
-=== `base_url` is mandatory only with a proxy route
+== `base_url` is mandatory only with a proxy route
 
 A route that declares neither an `asset` nor a `redirect` block is a *proxy route*: it reaches the
 endpoint's upstream. An endpoint must declare `base_url` *exactly when* it carries at least one proxy
@@ -356,7 +331,7 @@ link:../configuration.adoc#_endpoint_identity[`enabled`]):
   endpoint whose backend is absent here and switch it off.
 
 [[_terminal_actions]]
-=== Terminal actions
+== Terminal actions
 
 A route carries *exactly one terminal action* -- what the gateway does with a request once it has
 passed route selection, the verb gate, the thorough checks and authentication:
@@ -384,7 +359,7 @@ beside an `upstream` block, is refused rather than resolved by a silent preceden
 link:../adr/0014-asset-serving-terminal-action.adoc#_redirect_and_exact_routes[ADR-0014]).
 
 [[_asset_terminal_action]]
-=== Asset terminal action
+== Asset terminal action
 
 An asset route serves static content through an `asset` block instead of proxying. It rides a
 `type: asset` anchor: declaring an `asset` block on a route under a `proxy` or `bff` anchor (or on an
@@ -426,7 +401,7 @@ Two cross-cutting rules govern *both* sources:
   axis and auth floor) is enforced at stage 4 *before* the source is resolved, so an unauthorized
   request to an `access: authenticated` asset is rejected and never triggers a directory read or an
   upstream fetch. On a bearer route the caller sees the unrouted `404` rather than a `401` (see
-  <<_uniform_not_found_operator_note>>).
+  link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]).
 
 Every served response passes through the *gateway-owned response envelope*, so the gateway -- never
 the backing directory or upstream -- governs the response metadata: the `Content-Type` is set from
@@ -436,14 +411,14 @@ asset is forced to `Cache-Control: no-store` even when the source sent `Cache-Co
 Only `GET` and `HEAD` are served; any other verb that the route's `allowed_methods` admits is
 rejected `405` by the asset action. A verb outside `allowed_methods` is refused earlier, by the verb
 gate, and an unauthenticated caller sees that refusal as the unrouted `404` (see
-<<_uniform_not_found_operator_note>>).
+link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]).
 
 An operator may *teach* the gateway an extension it does not already map -- but never *restate* one
-it does. See link:../configuration.adoc#_asset_defaults[`asset_defaults`] for the add-only block
+it does. See link:../configuration/routing-and-forwarding.adoc#_asset_defaults[`asset_defaults`] for the add-only block
 and the security rationale behind that asymmetry.
 
 [[_asset_index_and_fallback]]
-==== Directory index and single-page-application fallback
+=== Directory index and single-page-application fallback
 
 A `source: directory` asset block may name two files the source answers with when the request does
 not address an existing file directly:
@@ -475,7 +450,7 @@ follows the *served* file's name. Each value must be a single file-name segment 
 block; either violation fails the boot.
 
 [[_redirect_terminal_action]]
-=== Redirect terminal action
+== Redirect terminal action
 
 A `redirect` block makes the gateway answer the request itself with a redirect status and a
 `Location` header -- no upstream is contacted, no body is sent. The typical use is steering an entry
@@ -558,9 +533,9 @@ terminal action: route selection, the verb gate, the thorough checks and *authen
 first. Under an anchor or endpoint that requires authentication, an unauthenticated request is
 rejected *before* any `Location` is disclosed -- the configured target is itself information an
 anonymous caller does not get. On a bearer route it receives the unrouted `404` (see
-<<_uniform_not_found_operator_note>>); on a `require: session` route a navigation is redirected into
-the login and any other request receives `401`. A public
-entry redirect declares `auth: { require: none }` like any other public route. The redirect answer
+link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]); on a
+`require: session` route a navigation is redirected into the login and any other request receives
+`401`. A public entry redirect declares `auth: { require: none }` like any other public route. The redirect answer
 carries the route's resolved security headers (see link:anchors.adoc#_anchors[Anchors]) and any
 `Set-Cookie` an earlier stage produced. Nothing is forwarded, so a `forward` block declared on the
 redirect route itself fails the boot rather than sitting there as inert configuration; an
@@ -588,7 +563,7 @@ refused on a `grpc`, `websocket` or `graphql` route: those clients do not follow
 the route would be dead configuration.
 
 [[_redirect_external_targets]]
-==== External targets and the open-redirect review
+=== External targets and the open-redirect review
 
 `location` is checked *once, at boot* -- at request time it is written verbatim, so the boot review is
 the only place a target is judged. Without `allow_external`, the value must be a *gateway path*:
@@ -640,7 +615,9 @@ origin the operator wrote down -- it says nothing about the *query*, which arriv
 See `keep_query` above for what the combination would disclose.
 
 [[_route_ordering]]
-=== Route ordering
+== Route ordering
+
+image::../resources/diagrams/route-matching-and-policy-resolution.svg[Route matching: exact routes first, then the longest path prefix; no candidate answers 404; a matched route passes the verb gate and reaches one of the three terminal actions (proxy, asset, redirect),align="center"]
 
 The routes of *all* endpoint files are merged into a single immutable route table at startup. A route
 declares exactly one path matcher:
@@ -710,7 +687,7 @@ A request that matches no route is rejected with `404`.
 
 *Reserved gateway paths.* The gateway's own OIDC endpoints are matched *exactly, before the
 route table*. The keys that register them, and the field-level contract for each, are owned by
-link:../configuration.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
+link:../configuration/authentication-and-oidc.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
 path, not what the keys mean. Up to *eight* paths are carved out. The first six are matched only on
 the *OIDC host* (the host of `oidc.redirect_uri`); the last two are matched on *every* host, because
 the identity provider calls them server-to-server at whatever address was registered with it:
@@ -743,194 +720,16 @@ carve-out, not an anchor: it claims its one path and nothing beneath it, so `/bf
 the route table like any other request, and the `/bff/*` spelling the samples use is a naming
 convention nothing validates.
 
-[[_uniform_not_found_operator_note]]
-=== Why an existing route answers 404
+== Rejections, scanning sources and threat alerts
 
-A request to a route that exists can be answered `404`, exactly as an address without any route is
-answered. That is deliberate. Every rejection a route raises before authentication has completed --
-before the trust boundary -- is answered as the unrouted `404` to every caller, one with a valid
-credential included: a missing or invalid
-bearer token, a method outside `allowed_methods`, a path outside `allowed_paths`, a refusal of the
-route's `security_filter`, a declared `Content-Length` over `max_body_bytes`, a CSRF or
-same-origin refusal, and an unexpected internal failure of the gateway while it handles the request.
-Without this, an unauthenticated scanner would learn which addresses name routes from the `401`,
-`405`, `400`, `413`, `403` or `500` it receives. The answer is the same in every
-detail: status, body, `Content-Type`, response headers -- no `WWW-Authenticate`, no `Allow` -- and
-the time it takes. A `protocol: grpc` route answers with the HTTP `404` too, not with a gRPC status
-(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
-
-*How to tell the true cause apart.* The gateway reports the real reason even though the caller does
-not see it:
-
-* `sheriff_errors_total{event}` on the management port counts the true event --
-  `TOKEN_MISSING`, `TOKEN_INVALID`, `METHOD_NOT_ALLOWED`, `PATH_NOT_ALLOWED`,
-  `SECURITY_FILTER_VIOLATION`, `CONTENT_TOO_LARGE` or `CSRF_REJECTED` -- with the route id and the
-  category, never `NO_ROUTE_MATCHED`. A rising `NO_ROUTE_MATCHED` count is a request for an address
-  that has no route; any of the others is a request a route refused. `PRE_TRUST_INTERNAL_FAILURE` is
-  the gateway failing on a request before authentication completed: it writes no WARN, because a
-  caller who found an input that triggers it could otherwise fill the log, so its stack trace is
-  logged at `DEBUG` only. A count that keeps rising is worth a `DEBUG` look at that route.
-* The WARN and INFO lines the gateway logs for a rejection name the true event as well (see
-  link:../LogMessages.adoc[Log Messages]).
-* `sheriff_uniform_not_found_overruns_total` counts the `404` answers that took longer than the
-  response floor to prepare and were therefore released one floor step later than an absent address
-  is. It should stay at zero. A non-zero value means some path answered this way is slower than the
-  floor on this deployment, so its `404` can be told from an absent address's by its timing; a
-  steady rate is a reason to report it, together with the routes involved, so the floor can be
-  re-measured.
-
-*Who still gets the honest code.* The uniform `404` covers only what is raised before the trust
-boundary. A client with a valid token keeps every answer raised after authentication: the
-`403 insufficient_scope` of a token lacking a scope, the dispatch `408` and `413`, and upstream
-`5xx`. A session route keeps its own answers too: a navigation without a session is redirected into
-the login, and any other request receives `401` `application/problem+json`. Rejections raised before
-authentication -- a wrong method, for example -- answer `404` to every caller, because the gateway
-has not looked at a credential at that point. An authenticated client that receives an unexpected
-`404` from a route it knows exists has therefore sent a request that route refuses; the metric above
-names which refusal.
-
-*Turning it off.* `security_defaults.uniform_not_found: false` in `gateway.yaml` restores the honest
-`401`, `405`, `400`, `413` and `403` for every caller, and the gRPC trailers-only status on a gRPC
-route. The default is `true`. See
-link:../configuration.adoc#_uniform_not_found[Configuration -- The uniform 404].
-
-[[_enumeration_detection_operator_note]]
-=== Scanning sources and enumeration detection
-
-The uniform `404` keeps a scanner from learning which addresses are routes. The gateway also notices
-the scanner itself. It counts, per source, the rejections a request receives before authentication
-completes -- an address without a route, a wrong method, a path or input the gateway refuses, a
-declared body over the cap, a CSRF refusal, a missing or invalid token -- and a source whose count
-reaches a threshold *trips*. All keys are in
-link:../configuration.adoc#_enumeration_detection[Configuration -- `enumeration_detection`].
-
-*By default a trip changes nothing a client sees.* Detection runs on every gateway, also without an
-`enumeration_detection` block, with the action `observe`: a trip is logged and counted, and every
-answer stays exactly what it was. The gateway cannot tell whether one address is one client or every
-client behind a NAT or a load balancer, so stopping or slowing a source is left for you to switch on.
-
-*Reading a trip.*
-
-* WARN `ApiSheriff-141` names the source, the host, the threshold, the window and the action. The
-  source is an IPv4 address, an IPv6 `/64` prefix, or `unknown`; for a request through a trusted
-  forwarder it is the client address the forwarder reported. The host is a host a route declares in
-  `match.host`, or `*`. The line never carries the requested path or a header. A source trips once
-  and is not reported again until it has stopped long enough for its count to drain.
-* `sheriff_source_trips_total{action}` on the management port counts the trips.
-* `sheriff_source_untracked_total` counts rejections from sources the gateway could not track because
-  it already tracks the maximum of 65,536 sources; WARN `ApiSheriff-142` reports the first of them.
-  A steady count there means more distinct sources are being rejected than the gateway tracks -- a
-  scan spread over many addresses, or a deployment whose sources are not per client.
-* `sheriff_errors_total{event}` keeps naming the true cause of every rejection the scanner received
-  (see <<_uniform_not_found_operator_note>>).
-
-*What a scanning source sees under each action.*
-
-[cols="1,4", options="header"]
-|===
-| `action` | What the tripped source sees
-
-| `observe` (default)
-| The same answers as before the trip.
-
-| `delay`
-| Every rejection of the kind that is counted answers only `delay_millis` after the request arrived
-  (default `2000`). Its served requests are not slowed. Scanning gets slower, and a scanner that keeps
-  fewer answers waiting than its share allows is not told why.
-  While as many of its answers wait as its share of the held-answer sub-budget allows, its further
-  requests -- served ones included -- answer as under `block`, with `Retry-After` the seconds of
-  `delay_millis`.
-
-| `block`
-| Every request answers `429` with `Retry-After`, the seconds left of the block, and the
-  `rate-limiting` problem document, for `block_seconds` (default `60`). The answer is the same on every
-  address, so it reveals no route. `sheriff_errors_total{event="SOURCE_BLOCKED"}` counts the blocked
-  requests.
-|===
-
-*Before you switch to `block` or `delay`.* Make sure one source address is one client:
-
-. If the gateway sits behind a load balancer or reverse proxy, list it in `forwarded.trusted_proxies`
-  (see link:../configuration.adoc#_forwarded_headers[Configuration -- `forwarded`]). Otherwise every client
-  arrives from the balancer's address, one scanning client trips that address, and `block` answers
-  `429` to all of them.
-. If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
-  proxy -- they are one source whatever the gateway is told. Keep `observe`, or raise `threshold` well
-  above what those clients cause together.
-. Check the trips you already have: a WARN `ApiSheriff-141` naming the address of your balancer, or
-  of a known partner, means that address is shared.
-
-*Tuning and switching it off.* `threshold` and `window_seconds` set how many counted rejections a
-source may cause before it trips: the count drains continuously, so a source stays below the line as
-long as it causes fewer than `threshold` rejections per `window_seconds`. Raise `threshold` when
-honest clients trip -- an application with many broken links, for example. Requests on an asset route
-and the fetches browsers make of every site -- `/favicon.ico`, `/robots.txt` and the
-`/apple-touch-icon` images -- are not counted, and neither is anything after a client has
-authenticated; a missing `.css` or `.js` file outside an asset route is counted. Nor is a request the gateway itself failed on (`PRE_TRUST_INTERNAL_FAILURE`): an
-operator-side failure is not caller behaviour and carries no detection weight, so clients retrying
-through an outage are never tripped by it. `enabled: false` switches detection off completely. The counts are kept per gateway
-instance and are cleared by a restart, so a source spreading its requests over several instances is
-counted on each separately
-(link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
-
-[[_threat_classification_operator_note]]
-=== Threat classification: reading and forwarding the ALERT
-
-Enumeration detection counts the probes of one kind. Threat classification adds them up: it keeps a
-weighted score per source over the rejections the source receives that carry a weight, before and after
-authentication, and raises one *ALERT* when the score reaches a threshold. All keys, and which
-rejections carry no weight or never reach the score, are in
-link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`].
-
-*An ALERT changes nothing a client sees.* Classification runs on every gateway, also without a
-`threat_classification` block, and it only observes. No answer, status, header or timing changes
-because of a score or an ALERT. To slow or stop a probing source, use the `delay` or `block` action of
-<<_enumeration_detection_operator_note,enumeration detection>>.
-
-*Reading an ALERT.*
-
-* WARN `ApiSheriff-143` names the source and the host as `ApiSheriff-141` does, and ends with a JSON
-  document after `ECS alert:`. The document names the score, the threshold and the window, and breaks
-  the score down per rejection kind (`api_sheriff.threat.contributions`) and per category
-  (`api_sheriff.threat.categories`), so you can see what the source did: mostly malformed input, or
-  mostly wrong tokens. A `recon_trip` entry means enumeration detection tripped the same source. The
-  document never carries the requested path, the raw `Host` or a header. Every field is listed in
-  link:../architecture/observability-and-errors.adoc#_threat_alert_document[the threat ALERT
-  document].
-* A source raises one ALERT per episode, however long it keeps probing. It raises its next ALERT only
-  after it has stopped long enough for its score to drain to zero.
-* `sheriff_threat_alerts_total` on the management port counts the ALERTs.
-* `sheriff_threat_untracked_total` counts rejections from sources the gateway could not score because
-  it already tracks the maximum of 65,536 sources; WARN `ApiSheriff-144` reports the first of them.
-
-*Forwarding it to a SIEM.* The document uses the field names of the Elastic Common Schema (ECS),
-version `8.17.0`, so an ECS-aware pipeline can index it as it is: take the text after `ECS alert: `
-as the event. `event.kind` is `alert` and `event.dataset` is `api_sheriff.threat`, which is enough to
-route it. `source.ip` is present only for an IPv4 source; an IPv6 source appears as its `/64` prefix
-in `source.address`. A pipeline that normalizes to OCSF finds the mapping in the same document
-reference. The SIEM is also where the ALERTs of several gateway instances are correlated: each
-instance scores only the requests it sees.
-
-*Tuning.* `threshold` and `window_seconds` set how much weight a source may collect before it alerts:
-the score drains continuously, so a source stays below the line as long as it collects less than
-`threshold` per `window_seconds`. The weights say what one rejection of each kind is worth. Raise
-`threshold`, or lower a weight, when honest clients alert; set a weight to `0` to stop scoring that
-kind of rejection at all. `enabled: false` switches classification off completely.
-
-*Known false positives.* The score is kept per source address, as for enumeration detection:
-
-* Many clients behind one NAT, a mobile carrier or an untrusted load balancer share one score. Their
-  honest mistakes add up. The low `authentication` and `routing` weights keep the expired tokens and
-  stray links of such a population below the drain rate; list a load balancer in
-  `forwarded.trusted_proxies` so that each client is keyed by its own address.
-* A client stuck in a loop -- retrying a malformed request, or a request with an expired token --
-  scores as a scanner does and alerts.
-
-Neither case has a wire effect: an ALERT is a signal to look at, not a refusal
-(link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078]).
+Why an existing route can answer `404`, how the gateway detects a scanning source and what the
+threat ALERT carries are covered in link:edge-security.adoc[Edge Security]:
+link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404],
+link:edge-security.adoc#_enumeration_detection_operator_note[Scanning sources and enumeration
+detection] and link:edge-security.adoc#_threat_classification_operator_note[Threat classification].
 
 [[_endpoint_scopes]]
-=== Endpoint scopes (`endpoint.scopes`)
+== Endpoint scopes (`endpoint.scopes`)
 
 `scopes` is an endpoint-level list, declared beside `auth` rather than inside it. It is *additive*:
 every route of the endpoint needs
@@ -970,7 +769,7 @@ The `auth` block carries no scope list of its own; the schema refuses one, so en
 declared here or not at all.
 
 [[_cookie_dependent_upstream]]
-=== Fronting a cookie-dependent upstream (`cookies`)
+== Fronting a cookie-dependent upstream (`cookies`)
 
 By default no browser cookie reaches an upstream and no upstream `Set-Cookie` reaches the browser.
 An upstream that keeps its own state in a cookie -- a legacy application's `SESSIONID`, a framework's
@@ -1004,9 +803,9 @@ What the route then does with cookies:
   a page on another site -- its `Origin` is neither the origin the gateway was reached on nor one the
   block lists in `additional_origins` -- is refused before the upstream sees it. The refusal is
   raised before authentication, so the browser sees the unrouted `404` (see
-  <<_uniform_not_found_operator_note>>), and `403` on a gateway that sets
-  `security_defaults.uniform_not_found: false`. The same
-  cross-site request *without* a `SESSIONID` cookie carries no credential to forge and is
+  link:edge-security.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]), and
+  `403` on a gateway that sets `security_defaults.uniform_not_found: false`. The same cross-site
+  request *without* a `SESSIONID` cookie carries no credential to forge and is
   forwarded, so a server-to-server client that sends no cookie and no `Origin` keeps working. A `GET`
   is never checked.
 
@@ -1016,16 +815,14 @@ browser sends an `https` `Origin`; list the public `https` origin there as well.
 forwards every cookie except the gateway's own and is refused at the gateway scope; prefer a list
 naming exactly what one upstream needs.
 
-*Upgrading from a gateway without the `cookies` block is a breaking change.* Such a gateway relayed
-every upstream `Set-Cookie` line; under the default `allow: none` none is relayed, so an upstream
-that sets cookies stops having them reach the browser until its route, endpoint or anchor names them.
-The full contract -- the three modes, the four scopes, the same-origin check, the WebSocket rule and
-every boot refusal -- is the link:../configuration.adoc#_cookies[`cookies` reference]; which headers
+Under the default `allow: none` no upstream `Set-Cookie` line is relayed: an upstream that sets
+cookies needs its route, endpoint or anchor to name them. The full contract -- the three modes, the four scopes, the same-origin check, the WebSocket rule and
+every boot refusal -- is the link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies` reference]; which headers
 the gateway withholds in either direction is the
-link:../configuration.adoc#_never_forward_set[never-forward set].
+link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set].
 
 [[_defaults_for_omitted_blocks]]
-=== Defaults for omitted blocks
+== Defaults for omitted blocks
 
 What an omitted block resolves to. Every policy block follows one rule -- the nearest declared
 scope of `gateway -> anchor -> endpoint -> route` wins and replaces every broader declaration
@@ -1059,7 +856,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | `false`: a `require: bearer` route has one authentication branch and is a plain bearer route. The
   key travels with its `auth` block exactly as `token_relay` does, so a route-level block that omits it
   resolves to `false` whatever the endpoint or anchor declares. See
-  link:../configuration.adoc#_auth_session_fallback[`auth.session_fallback`].
+  link:../configuration/authentication-and-oidc.adoc#_auth_session_fallback[`auth.session_fallback`].
 
 | `scopes` (endpoint level)
 | Empty: the endpoint's routes need `oidc.scopes` alone (nothing at all when the gateway has no
@@ -1074,7 +871,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | A declared endpoint list is the nearest scope and wins. With none, the *anchor's* list applies if
   the route's anchor declares one, else the *global* `gateway.allowed_methods`, else the standard
   verb set. There is no route-level list -- a route narrows its verbs with `match.methods` -- see
-  link:../configuration.adoc#_allowed_methods[`allowed_methods`].
+  link:../configuration/routing-and-forwarding.adoc#_allowed_methods[`allowed_methods`].
 
 | `security_filter`
 | The route takes the nearest declared block -- its endpoint's, else its anchor's -- whole; with
@@ -1088,7 +885,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | `forward`
 | The endpoint's `forward` block when the endpoint declares one, taken whole. With none at either
   scope: *forward-all* on both dimensions: every client request header and query parameter crosses,
-  minus the gateway-owned link:../configuration.adoc#_never_forward_set[never-forward set], which
+  minus the gateway-owned link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set], which
   no configuration can re-admit apart from the single `Authorization` carve-out. The `Cookie`
   header is not decided here at all: it crosses only as the route's `cookies` block admits it (see
   the `cookies` row below). The *automatic* injections apply as always. The regenerated forwarding-header set is always
@@ -1096,7 +893,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
   session branch of a `session_fallback` route only when the effective `token_relay` is `true`,
   and on the bearer branch of a `session_fallback` route always (the validated client token,
   independent of `token_relay`); a plain `require: bearer` route never receives one. A route that wants a stricter posture
-  declares it -- see link:../configuration.adoc#_forward[`forward`]. Note this is the one
+  declares it -- see link:../configuration/routing-and-forwarding.adoc#_forward[`forward`]. Note this is the one
   omitted-block default that
   is *permissive*: it filters within a route the request is already authorised for, so the
   deny-by-default guarantee is unaffected (it lives at route matching).
@@ -1111,151 +908,19 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | No rate limiting, whether the block is declared or not: per-route rate limiting is planned, not
   implemented, and the block never causes a `429`. A declared block is parsed and enforced by
   nothing, and every route that declares one is named at boot by the WARN `ApiSheriff-140` -- see
-  link:../configuration.adoc#_rate_limit[`rate_limit`]. Every `429` the gateway sends belongs to
-  per-source detection (<<_enumeration_detection_operator_note>>).
+  link:../configuration/security-and-edge-hardening.adoc#_rate_limit[`rate_limit`]. Every `429` the
+  gateway sends belongs to per-source detection
+  (link:edge-security.adoc#_enumeration_detection_operator_note[Scanning sources and enumeration
+  detection]).
 |===
 
-[[_edge_hardening_defaults]]
-=== Edge hardening (transport) defaults
+How a route's resolved `forward` and `cookies` blocks and the automatic injections combine into the
+headers and query string the upstream receives:
 
-The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
+image::../resources/diagrams/forward-policy-modes-and-merge-order.svg[Forward policy: the outbound header map is built in six ordered steps -- mode copy minus the never-forward set, rebuilt Cookie, protocol headers, static set_headers, regenerated forwarding headers, mediated session bearer -- while query parameters are filtered independently,align="center"]
 
-The *transport bounds* — the framing limits, the HTTP/2 stream, header-list, reset and connection-window bounds, the request-body idle
-timeout and deadline, the gRPC stream-idle timeout, the unrouted-`404` response floor and the drain
-window — are fixed secure defaults applied in code (`EdgeHardeningOptions`, the gRPC relay for the
-stream-idle timeout, and `UniformNotFound` for the response floor) and are not
-operator-configurable. The framing limits fail fast on abusive framing before a request is
-admitted to the pipeline. These values are recorded here doc-first: they are the
-contract the edge-hardening code implements, and any change to a constant must be reflected in this
-table.
+== Edge hardening (transport bounds)
 
-The *admission budgets* — how many requests, and how many WebSocket relays, may be in flight at once
-— are operator-facing and configurable through the optional
-link:../configuration.adoc#_edge_hardening[`edge_hardening`] block in `gateway.yaml`. Their sizing
-depends on the
-deployment's traffic shape rather than on protocol safety, which is why they are the two bounds the
-operator owns. Omitting the block, or either key, resolves to the defaults in the table below, so a
-deployment that never writes it keeps the behaviour shown here.
-
-[cols="2,1,3"]
-|===
-| Bound | Default | Effect
-
-| Maximum request header block
-| 16 KiB
-| An over-large header block is rejected by the Vert.x codec before the request reaches the pipeline.
-
-| Maximum HTTP/1.x request-line length
-| 8 KiB
-| An over-long `METHOD SP request-target SP HTTP/x` line is rejected at the transport.
-
-| Maximum chunked-transfer chunk size
-| 16 KiB
-| An over-large single chunk is rejected at the transport.
-
-| Reserved-path request body
-| 16 KiB
-| The cumulative body the edge buffers for a gateway-terminated reserved `POST` path -- in practice
-  the back-channel logout receiver, which is reached before authentication and never meets a
-  per-route body cap. A larger body is rejected `413`. Defined as the header-block bound rather than
-  as a second constant.
-
-| Idle-connection reap
-| 60 s
-| An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin
-  connection slots.
-
-| HTTP/2 concurrent streams per connection
-| 100
-| The `SETTINGS_MAX_CONCURRENT_STREAMS` value every listener announces. A listener whose own setting
-  is unbounded or larger is lowered to 100; a lower setting is kept. Not configurable.
-
-| HTTP/2 connection window
-| 6,553,500 bytes +
-  (100 streams × 65,535-byte initial stream window)
-| Each stream is bounded by its own window; the connection window is large enough that streams the
-  gateway is not yet reading cannot hold back the ones it forwards. Derived from the 100-stream bound
-  above times the initial stream window, capped at 2^31^-1 and never below one stream window. Not
-  configurable.
-
-| HTTP/2 header list per request
-| 16 KiB
-| The `SETTINGS_MAX_HEADER_LIST_SIZE` value every listener announces -- the HTTP/1.1 header-block
-  bound. It covers the whole decoded header block, `CONTINUATION` frames included, so a header block
-  grown past it over any number of frames ends the connection. A listener announcing more, or no
-  limit, is lowered to it; a lower setting is kept. Not configurable.
-
-| HTTP/2 stream resets per connection
-| 200 per 30 s
-| The Rapid-Reset guard: a connection whose client sends more `RST_STREAM` frames than this inside one
-  window is ended with `GOAWAY ENHANCE_YOUR_CALM`, and every other connection is served on. Pinned at
-  the transport's own default and never raised. Only resets the client sends count, never the
-  gateway's own. Not configurable. See
-  link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[Architecture -- HTTP/2 transport bounds].
-
-| Request-body idle timeout
-| 10 s
-| A proxied request whose body makes no progress for this long while the gateway reads it is
-  answered `408` and stops holding its upstream connection. On an HTTP/1.1 upstream that connection
-  is reused only when no body chunk had been forwarded; otherwise it is closed and the next request
-  opens a new one. Not applied to bodyless requests or
-  `protocol: grpc` routes; not configurable. Shorter than the upstream guard's 30 s timeout, which
-  bounds each upstream attempt until the upstream's response head. See
-  link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout].
-
-| Request-body deadline
-| 25 s +
-  (from the start of the upstream attempt)
-| A proxied request whose body has not ended this long after its upstream attempt started is ended,
-  however steadily the body arrives: answered `408` when the upstream has not answered yet, and
-  otherwise its relayed response is ended -- on HTTP/2 the stream is then reset, on HTTP/1.x the
-  connection is closed. The time spent waiting for a pooled upstream connection counts towards the
-  25 s: a request that obtains its connection only after the deadline is answered `408` as soon as its
-  body is read. The deadline does not reset an upstream that is not taking data, but a body that
-  upstream reads again after the deadline is ended then. Not applied to bodyless requests or
-  `protocol: grpc` routes; not configurable. See
-  link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline].
-
-| gRPC stream-idle timeout
-| 5 min
-| A `protocol: grpc` call whose upstream has sent its response headers and that then carries no frame
-  in either direction for this long is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
-  `grpc-message: stream-idle-timeout`. A frame in either direction keeps the call open; HTTP/2 `PING`
-  frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
-  upstream guard's 30 s timeout bounds the call instead. Not configurable. See
-  link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
-
-| Unrouted-`404` response floor
-| 50 ms + a random jitter below 20 ms +
-  (from admission)
-| While `security_defaults.uniform_not_found` is on, every answer rendered as the unrouted `404` is
-  written no earlier than this after the request was admitted, so the answer time does not tell an
-  existing route from an absent one (<<_uniform_not_found_operator_note>>). A Vert.x timer holds the
-  answer; no thread waits. While it waits, the answer holds a permit of the held-answer sub-budget,
-  a quarter of the effective `admission_cap`, instead of its general admission permit; when that
-  sub-budget is full the answer is a `503`, written no earlier than the floor's release time. An answer released after the first floor step is
-  counted on `sheriff_uniform_not_found_overruns_total`. Not configurable.
-
-| Admission cap (in-flight requests) +
-  [`edge_hardening.admission_cap`]
-| 2048
-| Requests beyond the cap are rejected `503` *before* a virtual thread is dispatched, so a flood
-  cannot spawn unbounded virtual threads. Operator-configurable; minimum 1.
-
-| WebSocket relay cap (established relays) +
-  [`edge_hardening.websocket_relay_cap`]
-| 512 +
-  (a quarter of the effective `admission_cap`)
-| A sub-budget acquired *in addition to* the general admission permit, never instead of it. An
-  established relay holds both permits for the connection's whole lifetime rather than for one
-  round-trip, so without this second bound a modest number of long-lived relays would consume the
-  general pool and starve ordinary HTTP traffic. An upgrade beyond the cap is refused `503` and
-  releases the general permit on the way out. Operator-configurable; minimum 1, and must not exceed
-  `admission_cap`. Omitting it takes a quarter of the *effective* `admission_cap` rather than a fixed
-  `512`, so the three-quarters-for-HTTP reservation holds at every admission cap.
-
-| Graceful-drain timeout
-| 25 s
-| The bounded wait for in-flight requests to complete on `SIGTERM`; kept below the Quarkus default
-  shutdown timeout so the drain completes within the shutdown window rather than being cut short.
-|===
+The fixed transport bounds of the public listener and the two operator-configurable admission
+budgets are tabulated in link:edge-security.adoc#_edge_hardening_defaults[Edge Security -- Edge
+hardening (transport) defaults].

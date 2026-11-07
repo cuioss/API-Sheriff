@@ -1,0 +1,79 @@
+= Group 3 -- Contributor Guides & Module Docs
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+== Scope
+
+This group covers `doc/development/*.adoc` (19 files), `benchmarks/README.adoc` and `benchmarks/doc/`, and `demo-client/README.adoc` with `demo-client/doc/{integration-sample,playwright-suite}.adoc`.
+
+== `test-corpus-integrity.adoc` (2,835 lines)
+
+About 84% of the file is the completed audit:
+
+* Census ≈97
+* Taxonomy ≈253
+* Selection ≈355
+* Classification ≈502
+* What Was Strengthened ≈694
+* Integration-lane pass ≈841
+* Unit-lane audit ≈1273
+* Unit-lane inversion audit ≈1946
+* Rows changed after the passes ≈2344
+* Empty `[[backlog]]` ≈2548
+
+Live content that is cited elsewhere:
+
+* `[[search-form-constraint]]` ≈85
+* `[[fitness-function-shape]]` ≈2133. Cited by ADRs 0027, 0040, 0044, 0045, 0068, 0071, 0074 and 0075, by `doc/architecture/README.adoc`, `doc/configuration.adoc` and `build-gate-discipline.adoc`, and by about 10 test Javadocs.
+* `[[awaits-reassertion-guard]]` ≈2258
+* `[[cumulative-finding]]` ≈2747
+* The Shape (e)-2 section, cited from `cookie-deliverability-blindness.adoc`
+* `[[relaxed-tls-census]]` ≈1164
+* The Standard for a Strengthened Assertion ≈2815
+* The target of `.github/workflows/maven.yml` ≈178
+
+* [ ] *G3-01*: Keep the live content and its anchors. Delete the completed pass, census and classification tables and the empty backlog, after grepping every anchor in the deleted range.
+
+== `integration-test-topology.adoc` (1,795 lines)
+
+* [ ] *G3-02*: Delete "Keeping the Diagram Honest" and its 8 "Diagram check" sections (≈1497-1716), and the PR `#408` dispositions (≈1717-1775). Resolve the cross-reference to `#diagram-check-signing-keys` (≈1139).
+* [ ] *G3-03*: Keep `[[upstream-path-integration-endpoints]]` (≈1776, linked from ADR-0004) and the `test-started-host-ports` tag region (≈547-631).
+
+== `declared-limit-assertion-coverage.adoc` (1,369 lines)
+
+* [ ] *G3-04*: Keep the tag regions `inventory`, `limit-key-regex` and `limit-bearing` (`DescriptorInventoryWiringTest`), and `=== Citation notation`, the legend of the coverage matrix. Remove the plan-scoped "The Gap Count and This Plan's Selection" (≈1024-1116).
+
+== `build-gate-discipline.adoc` (963 lines) and `local-test-environment-caveats.adoc` (115 lines)
+
+* [ ] *G3-05*: Condense the dated `-T1` flake notebook (≈238-860, 2026-08-31 to 09-23) to the rule it established. Keep `[[fixed-point-2026-09-21]]` and `[[linux-relay-race-occurrence]]`. Keep what `CLAUDE.md` cites: the three mechanisms, the three consequences and the recipe-scoping trap.
+* [ ] *G3-06*: Fold the single caveat class of `local-test-environment-caveats.adoc` (loopback port collisions) into `build-gate-discipline.adoc`. Delete the file after repointing its links.
+
+== `doc/development/README.adoc` (654 lines)
+
+* [ ] *G3-07*: Remove the leaked skill reference (≈189-195).
+* [ ] *G3-08*: Condense `=== Instances and open defects behind the decision` (≈312-354).
+* [ ] *G3-09*: Keep Test Lanes (≈216), Inbound Validation (≈356) and Rejections Before the Trust Boundary (≈525). `doc/architecture/` and ADR-0075 link to them. Keep the `re-review-on-loopback` row (`ReviewerRosterDocsContractTest`).
+
+== Other Contributor Guides
+
+* [ ] *G3-10* `bff-cookie.adoc`: "Four routes" (≈275-436). Collapse the three rejected routes into a short alternatives table. Keep Route 4 (settled and built), because `README.adoc` links to it.
+* [ ] *G3-11* `bff-session.adoc`: Condense without losing `[[adr-0058-residuals]]` or `[[observed-on-the-integration-stack]]`. Fix the `doc/quality-report/` reference (Group 1).
+* [ ] *G3-12* `release-process.adoc`: Keep `[#guard-refusal-predicates]` and the negative-control anchors. Condense the dated evidence. `release-publish-flow.svg` is already embedded.
+* [ ] *G3-13*: Add the missing house header attributes across the surviving files.
+
+== Module Docs
+
+* [ ] *G3-14* `benchmarks/README.adoc`: Remove "Per Clarification 1" (≈96). Reduce `== The wrk-to-k6 swap` (≈683-752) to its result. Add the house header attributes.
+* [ ] *G3-15* `demo-client/doc/integration-sample.adoc`: Embed the three unused diagrams `demo-client-login-flow.svg`, `demo-client-logout-flow.svg` and `demo-client-userinfo-probe.svg`.
+
+== Rejected Findings of the Earlier Draft
+
+* `tls-edge.adoc` has no `Certificate` obituary.
+* `protocol-processors.adoc` and `release-process.adoc` nest their `====` headings correctly.
+* `sonar-quality-gate.adoc` cites neither `CLAUDE.md` nor `AGENTS.md`.
+* `demo-client/` has no 3-way duplication, and the files named earlier do not exist.
+* `benchmarks/README.adoc` has no ASCII diagram.
+* `integration-test-topology.adoc` embeds one SVG, not eight. No `it-*.svg` files exist.

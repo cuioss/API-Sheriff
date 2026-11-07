@@ -69,7 +69,7 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
 | `401`
 | Missing/invalid bearer token (`WWW-Authenticate: Bearer` per RFC 6750); invalid or expired session
   on a non-navigation request (unauthenticated `text/html` navigations on `session` routes redirect
-  `302` to login; see link:../configuration.adoc#_auth[Configuration -- `auth`]). Bearer `401`s
+  `302` to login; see link:../configuration/authentication-and-oidc.adoc#_auth[Configuration -- `auth`]). Bearer `401`s
   render as the unrouted `404` without `WWW-Authenticate` while `security_defaults.uniform_not_found`
   is on; the session branch keeps its `302` / `401` (<<_trust_boundary_rejections>>).
 | `AUTHENTICATION`
@@ -182,7 +182,7 @@ Rejections Before the Trust Boundary]):
   (counting any answer that ran past the first step on
   `sheriff_uniform_not_found_overruns_total`). Setting `security_defaults.uniform_not_found: false`
   restores honest statuses and undelayed `404` responses (see
-  link:../configuration.adoc#_security_defaults[Configuration -- `security_defaults`]).
+  link:../configuration/security-and-edge-hardening.adoc#_security_defaults[Configuration -- `security_defaults`]).
 
 [[_html_error_pages]]
 === Negotiated HTML Error Pages
@@ -244,7 +244,7 @@ image::../resources/diagrams/management-metrics-and-health.svg[Management port (
 
 The management port is served over *HTTPS* by default (`management.tls.enabled: false` in
 `gateway.yaml` opts out behind a trusted boundary; see
-link:../configuration.adoc#_management[Configuration -- `management`]).
+link:../configuration/tls-and-egress.adoc#_management[Configuration -- `management`]).
 
 [cols="1,2", options="header"]
 |===
@@ -295,7 +295,7 @@ link:../configuration.adoc#_management[Configuration -- `management`]).
 
 | `sheriff_auth_branch_total{route,branch}`
 | Authentication branch (`bearer` or `session`) selected on a
-  link:../configuration.adoc#_auth_session_fallback[`session_fallback`] route.
+  link:../configuration/authentication-and-oidc.adoc#_auth_session_fallback[`session_fallback`] route.
 
 | `sheriff_token_validation_errors_total{event_type,result,category}`
 | Bearer token-validation failure counter published by the token-validation extension's metrics
@@ -315,7 +315,7 @@ block is configured -- whether *every configured issuer has a loaded key set*
 (link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027]):
 `DOWN` with `jwks: loading` or `jwks: unavailable` until every issuer has loaded keys, then `UP`
 with `jwks: ready` (retaining `UP` across subsequent refresh failures; see
-link:../configuration.adoc#_jwks_readiness[Key-set loading and readiness]).
+link:../configuration/authentication-and-oidc.adoc#_jwks_readiness[Key-set loading and readiness]).
 
 A deployment with an active BFF runtime -- `mode: server` or `mode: cookie` -- adds two data, whether
 or not it configures `token_validation` and whether the probe is `UP` or `DOWN`. `oidc` names the mode.
@@ -343,7 +343,7 @@ link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episo
   OCSF (`class_uid` 2004 Detection Finding) mapping are in
   link:../development/source-detection-substrate.adoc#_threat_alert_schema[Per-Source Detection
   Substrate -- ECS 8.17.0 ALERT Document and OCSF Mapping] and the operator view in
-  link:../user/endpoint-routes.adoc#_threat_classification_operator_note[Endpoint Routes].
+  link:../user/edge-security.adoc#_threat_classification_operator_note[Endpoint Routes].
 
 * *Zero request bytes, fallback marker, and bounded volume.* Every value in the document is
   gateway-derived (canonical source/host keys, enum names, ledger numbers, and fixed constants --

@@ -251,6 +251,6 @@ without that control.
 * link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017 -- SNI split] -- the L4 relay no egress key can govern.
 * link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033 -- Absence model] -- what makes an omitted profile name distinguishable from any string.
 * link:../user/tls-edge.adoc#_egress_tls[TLS Edge -- Egress TLS] and link:../user/tls-scenarios.adoc[TLS Scenarios] -- the operator view: the leg table, the boot records, and the private-CA and relaxation scenarios.
-* link:../configuration.adoc#_egress_tls[Configuration Reference -- `egress_tls`] -- the field contracts.
+* link:../configuration/tls-and-egress.adoc#_egress_tls[Configuration Reference -- `egress_tls`] -- the field contracts.
 * link:../security-threat-model.adoc[Threat Model] -- GW-06, which requires upstream certificate verification by default and a behaviour test.
 * `EgressTlsConfig`, `EgressClients`, `EgressTrustProfileResolver` -- the implementation; `EgressTlsPostureArchTest`, `EgressTrustProfileResolverTest`, `EgressVerifyActivationWiringTest` -- the tests.

@@ -134,7 +134,7 @@ the probing of one. `block` and `delay` are operator opt-ins. `LimitRules.valida
 refuses an out-of-range value at boot.
 
 The threat consumer reads its settings from the `threat_classification` block
-(link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`]). Its
+(link:../configuration/security-and-edge-hardening.adoc#_threat_classification[Configuration -- `threat_classification`]). Its
 action is fixed to `observe`, and its block duration, which the substrate requires to be positive, is
 set to the window and never used.
 

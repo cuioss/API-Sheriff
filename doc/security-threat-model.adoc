@@ -1,7 +1,9 @@
 = API Sheriff -- Threat Model & CVE-Derived Validation Baseline
 :toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 :sectnumlevels: 2
 
 This document is the security contract API Sheriff validates *against*. It has three
@@ -215,19 +217,7 @@ A request crosses these boundaries; each is a place a control must hold.
 |===
 
 .Boundary geometry
-----
-        B1                B2                      B3
-client ----> [ TLS edge ] --> [ L7 pipeline ] --------> upstream
-  |          (terminate/         (normalize,      (regenerated
-  |           SNI split)          filter, auth,     headers,
-  |                               forward policy)    mediated bearer)
-  |                                   |  ^
-  |  B5 (session cookie / BFF API)    |  | B4 (OIDC: discovery/JWKS/token/logout)
-  +-----------------------------------+  +--> IdP
-
-  B6 operator --> [ immutable config, fail-closed boot ]
-  B7 management port (health/metrics) -- never on the data-plane port, no mutation API
-----
+image::resources/diagrams/trust-boundaries.svg[Trust boundaries B1 to B7 along the request path, the OIDC control plane, the browser session, the configuration and the management port]
 
 === Residual risk: plain-HTTP termination behind an external hop (B1)
 
@@ -412,9 +402,8 @@ remainder all consume that *same* canonical output -- byte-identical -- never th
 request-URI. Two things cui-http leaves to the gateway and this control must add: an
 *encoded-slash policy* (cui-http decodes `%2f` to a structural `/`; the gateway decides
 reject-vs-accept and applies it before routing) and *matrix-param (`;`) handling* (not
-touched by cui-http). This directly answers the code-review finding that the interim
-`ProxyRoute` looks the route up on the raw URI but relies on the router's normalized match
-(raw-vs-normalized divergence).
+touched by cui-http). Route lookup and the router's match therefore read the same canonical path,
+which closes the raw-vs-normalized divergence class.
 
 *Exact routes consume the same canonical path.* A `match.path` route compares its declared path
 against that canonical output as an un-normalized string, and a prefix route matches it on a segment
@@ -432,7 +421,7 @@ let it answer addresses inside the namespace. With exact routes that gap is reac
 whose only member is `path: /admin` claims exactly one address, and `/admin/` and `/admin/x` land on
 whatever encloses it -- served with *its* auth posture and *its* `security_headers` block, which is
 the router-vs-enforcement desync of this entry expressed in configuration rather than in parsing. The
-boot now closes it with link:configuration.adoc#anchor-coverage-rule[the anchor-coverage rule], the
+boot now closes it with link:configuration/validation-rules.adoc#anchor-coverage-rule[the anchor-coverage rule], the
 mirror of the declaration-scoped rules, so no address in an anchor namespace is served by a route
 outside the anchor.
 
@@ -444,32 +433,28 @@ posture. The service-rooted argument that waives the declaration-scoped rules fo
 where a route's own match key sits, so it does not reach this threat, and waiving the mirror rule there
 would reopen precisely this entry's desync in configuration.
 
-*Naming a namespace is not covering it.* The coverage exception was first written path-geometrically
--- prefix equality alone -- which left the bypass reachable one dimension over: a member declared at
-the anchor prefix but narrowed to `methods: [GET]` marked the namespace covered while every other verb
-matched no anchored route and fell through to the enclosing one, answered under *its* auth and
-`security_headers`. A `host` or `headers` narrowing does the same, and the header case is the easiest
-of the three to reach, since the complement is any request that simply does not send the header. The
-control is that a narrowed member does not count as coverage. The matcher is the declaring source for
-what the narrowing dimensions are, and the predicate deciding it lives on the match model beside them,
-with a contract test asserting that every component of that model is classified -- so a dimension
-added later cannot silently reopen this.
+*Naming a namespace is not covering it.* A member declared at the anchor prefix but narrowed by
+`methods`, `host` or `headers` does not count as coverage. Otherwise every request outside the
+narrowing -- another verb, another host, or a request that does not send the header -- matches no
+anchored route and falls through to the enclosing one, answered under *its* auth and
+`security_headers`. The matcher declares what the narrowing dimensions are, the predicate deciding
+coverage lives on the match model beside them, and a contract test asserts that every component of
+that model is classified, so a dimension added later cannot reopen this.
 
 *The query is held to the same one-form rule, in the other direction.* A path is canonicalized
 because routing and enforcement must agree on it; a query is forwarded, so what the filter judged and
-what the upstream receives must be the same bytes. Before
-link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047] they were not:
-the transport decoded the query, the parameter pipeline decoded it a second time, and the forward path
-re-encoded a third form -- `q=a%252F` was validated as `a/` while the upstream received `a%252F`. The
-security filter now receives the raw, still-percent-encoded pairs (names through `cui-http`'s
+what the upstream receives must be the same bytes. A pipeline that decodes twice and re-encodes once
+validates `q=a%252F` as `a/` while the upstream receives `a%252F`. Per
+link:adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc[ADR-0047] the
+security filter receives the raw, still-percent-encoded pairs (names through `cui-http`'s
 parameter-name pipeline, values through the parameter-value pipeline, each decoding once) and the
 forward path appends exactly those pairs verbatim and in the order they arrived -- the query is an
 ordered pair sequence, never a map grouped by name, so `a=1&b=2&a=3` is not regrouped into
 `a=1&a=3&b=2` -- so *the validated form equals the forwarded form* and a double encoding is refused as
 one. The forward policy's `query_allow` / `query_deny` lists are
 the one consumer that needs the decoded name -- the upstream acts on it -- so they compare the
-percent-decoded name while the raw pair crosses: a percent-encoded spelling such as `%74oken` can no
-longer evade a `query_deny: [token]`. A percent-escape counts only when both digits are ASCII hex
+percent-decoded name while the raw pair crosses: a percent-encoded spelling such as `%74oken` cannot
+evade a `query_deny: [token]`. A percent-escape counts only when both digits are ASCII hex
 digits, so an escape spelled with full-width digits (`%７４oken`) is malformed rather than decoded to
 `token`: such a name has no decoded form and crosses neither a positive- nor a negative-list (CWE-20).
 The one byte the forward path does *not* pass verbatim is a raw
@@ -749,7 +734,7 @@ protocol. `cui-http` admits decoded CR, LF and TAB in parameter values under eve
 before it reaches the upstream -- answered as the unrouted `404` to an untrusted caller while
 `security_defaults.uniform_not_found` is on (<<gw-16>>). `lenient` keeps the library default, and `minimal` runs no
 parameter validation at all; both are documented as such (see
-link:configuration.adoc#_query_validation_raw_form[the configuration reference]). Because the
+link:configuration/security-and-edge-hardening.adoc#_query_validation_raw_form[the configuration reference]). Because the
 filter now judges the raw form it forwards (<<gw-01>>), the refusal covers exactly the bytes the
 upstream would have received.
 
@@ -760,7 +745,7 @@ Two properties carry this control:
 
 * *The request-direction never-forward set applies under every forward mode* -- including the
   permissive forward-all baseline. Its members are listed once, in
-  link:configuration.adoc#_never_forward_set[the never-forward section of the configuration
+  link:configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward section of the configuration
   reference]. `Authorization` is its single re-admittable member (only on a route declaring a
   positive-list naming it). No route configuration re-admits the hop-by-hop, framing or
   gateway-owned names from the request. The one path around the set is an operator's *static*
@@ -1267,7 +1252,7 @@ computed it from. Neither record carries a password, an alias or any anchor mate
 recipe -- including that the native, distroless image has no `update-ca-trust`, that the JDK triple
 must arrive as command-line `-D` arguments, that `JAVA_TOOL_OPTIONS` is not honoured by a native
 runner, and how to build a store that keeps the public roots *and* adds a private CA -- is in
-link:configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+link:configuration/tls-and-egress.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
 platform bundle].
 
 *Assertion.* A boot with no operator-supplied store reports the platform bundle on both tiers and
@@ -1293,9 +1278,8 @@ memory; config-file expansion bombs exhaust boot memory.
 
 *Evidence.* Apache httpd CVE-2007-6750 (Slowloris, pre-`mod_reqtimeout`). Envoy CVE-2022-29225
 (decompressor with no output cap -> OOM). KrakenD-triaged Go stdlib DoS CVEs (CVE-2026-42504
-MIME quadratic, CVE-2025-61723 PEM quadratic). The code review's own finding: the interim
-`ProxyRoute` buffers unbounded request *and* response bodies with no timeout in a 512 MB
-container.
+MIME quadratic, CVE-2025-61723 PEM quadratic). A relay that buffers unbounded request and response
+bodies with no timeout exhausts a memory-capped container.
 
 *Control.* Bound everything an attacker inflates: inbound header/line-size limits, an
 inbound idle/read timeout (slowloris), a max-in-flight admission cap, `max_body_bytes` as a
@@ -1439,59 +1423,24 @@ challenge ACK (RFC 5961) when the reset overtakes body data still in flight. Onl
 does the upstream keep its socket open until its own idle timeout.
 
 [#gw-07-fin-first-reproduction]
-*The FIN-first reproduction.* The hypothesis that an upstream might go on holding its side of an
-abortively closed connection was tested once, on Linux, in a throwaway container (Docker
-`debian:bookworm-slim` with `python3`, `iproute2` and `tcpdump`, run with `--cap-add NET_ADMIN`; kernel
-`7.2.9-orbstack`, `tcp_invalid_ratelimit` 500 ms). Both ends ran on the container's loopback interface.
-The upstream was a Python server that read the head of an upload declaring a 1 GiB `Content-Length`,
-answered `200` at once, then stopped reading and waited only for a hang-up or a socket error, with an
-application idle timeout of 30 s. The gateway was a Python client that streamed the body and, when the
-early answer arrived, filled its send queue and closed with `SO_LINGER {1,0}` -- at kernel level what
-`setSoLinger(0)` does for Vert.x. The gateway's send queue still held about 2.5 MB of unacknowledged
-body when it closed. The upstream socket was sampled with `ss -tano` once per second until the
-upstream's idle timeout; `nstat` recorded `TcpExtTCPChallengeACK` and `TcpExtTCPACKSkippedChallenge`,
-and `tcpdump` the reset, `FIN` and `SYN` segments. Four network variants were run:
+*The FIN-first reproduction.* Whether an upstream keeps its side of an abortively closed connection
+was reproduced once on Linux loopback: an upstream that answers an upload early and stops reading,
+and a gateway-side client that closes with `SO_LINGER {1,0}` (what `setSoLinger(0)` does for Vert.x)
+while about 2.5 MB of body is still unacknowledged.
 
-[cols="2,3,4,3,2", options="header"]
+[cols="2,4", options="header"]
 |===
-|Variant |Network on the loopback interface |What the upstream observed |Its socket |Challenge ACKs (sent / skipped)
+| Network | What the upstream observed
 
-|Loopback
-|no shaping
-|`ECONNRESET` within 10 ms of its answer
-|gone at the first sample
-|0 / 0
-
-|Delay
-|`netem delay 50ms` on every packet (100 ms round trip)
-|`ECONNRESET` 0.11 s after its answer, one round trip
-|gone at the second sample
-|0 / 0
-
-|Reset overtakes data
-|every packet delayed 50 ms except TCP reset segments
-|`ECONNRESET` 0.20 s after its answer
-|gone at the second sample
-|1 / 1
-
-|Reset dropped
-|every TCP reset segment dropped (`netem loss 100%` on a reset-only band)
-|no EOF and no reset; its own idle timeout after 30.03 s, then its own close
-|`ESTABLISHED`, 94,277 unread body bytes in its receive queue, for the full 30 s; gone at t+31 s
-|0 / 0
+| No shaping | `ECONNRESET` within 10 ms; socket gone
+| 100 ms round trip | `ECONNRESET` after one round trip; socket gone
+| Reset overtakes in-flight data | One RFC 5961 challenge ACK, then `ECONNRESET` after about 1.5 round trips; socket gone
+| Every reset dropped | Socket stays `ESTABLISHED` with the unread body until the upstream's own idle timeout
 |===
 
-When the reset overtook the body segments still in flight, its sequence number was ahead of what the
-upstream expected next, and the upstream answered with a challenge ACK instead of resetting, as RFC 5961
-requires; a second challenge was suppressed by the rate limit. The gateway's host had no socket for the
-connection any more and answered the upstream's late segments with plain resets, and one of those
-carried the expected sequence number and was accepted. An out-of-order reset therefore cost the
-upstream about one and a half round trips, not its idle timeout. The hypothesis reproduced only in the
-last variant: a reset that never arrives, on a connection where the upstream has answered and stopped
-reading and so sends nothing that could draw another reset, leaves the upstream holding its socket and
-the unread body until its own idle timeout. A FIN-first close would not have changed that case: the
-upstream had stopped reading, so the `FIN` would have stayed queued behind the body and the drain would
-have ended in the same reset. No FIN-first variant was built and no comparative benchmark was run.
+Only a lost reset leaves the upstream holding its socket. A FIN-first close would not change that
+case: the upstream has stopped reading, so the `FIN` queues behind the body and the drain ends in the
+same reset. That is an inference: no FIN-first variant was built and no comparative benchmark was run.
 
 *Residual (accepted).* Each such upload still costs one new upstream connection, and the upstream sees
 a TCP reset instead of a `FIN` for every connection the gateway closes, idle-pool evictions included,
@@ -1869,7 +1818,7 @@ bypass it. No `/api/info` or `/api/health` placeholder resource is exposed on th
 *Control -- the software fingerprint.* The upstream's `Server` and `X-Powered-By` headers are
 stripped by default on the HTTP relay, the gRPC relay and an asset route with `source: upstream`;
 a route opts out per route with `keep_identity_headers: true`
-(link:configuration.adoc#_identity_set[the identity set],
+(link:configuration/routing-and-forwarding.adoc#_identity_set[the identity set],
 link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
 A gateway-originated answer carries no `Server`, no `X-Powered-By` and no version string, and every
 `application/problem+json` error shares one shape (`type`, `title`, `status`). The body's `type`
@@ -2278,7 +2227,7 @@ lists them). The true
 event is still reported -- the event counter, the WARN and INFO lines and
 `sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is not shown. One
 switch, `security_defaults.uniform_not_found`, governs the branch and the floor and is on by default
-(link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
+(link:configuration/security-and-edge-hardening.adoc#_uniform_not_found[Configuration -- the uniform 404]).
 
 *Status:* COVERED. `UniformNotFoundTest` walks every `EventType` constant and fails for one with
 neither a closed-set nor an exclusion entry. `GatewayEdgeUniformNotFoundTest` asserts over a live
@@ -2616,7 +2565,7 @@ refresh-token rotation at the identity provider* -- on Keycloak `revokeRefreshTo
 realm. The provider refuses a replayed token with `invalid_grant`; the engine classifies that as
 `CREDENTIAL_REJECTED`, and the gateway ends the session, clears the session cookie and records
 `ApiSheriff-111` (`credential-rejected`). The other refresh failures are disposed per kind (see
-link:configuration.adoc#_refresh_failure_dispositions[the configuration reference]): a failure
+link:configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the configuration reference]): a failure
 before the provider processed the grant keeps the session with a fixed back-off; a redeemed
 response the gateway refused, or a rotated session it could not persist, ends the session and
 revokes best-effort the one live refresh token it can name -- which is none when the response was
@@ -2905,8 +2854,8 @@ keystream reuse -> plaintext recovery); mis-selecting a key drops or forges sess
 *Evidence.* "Nonce-Disrespecting Adversaries" (practical GCM nonce-reuse attacks). RFC 9700 /
 crypto guidance.
 
-*Control.* Fresh random 96-bit nonce per seal from a CSPRNG (never counter/derived); cookie
-= `version‖key-id‖nonce‖ciphertext‖tag` with version+key-id+cookie-name in the GCM AAD
+*Control.* Fresh random 96-bit nonce per seal from a CSPRNG (never counter/derived); the
+cookie is `version‖key-id‖nonce‖ciphertext‖tag`, with version+key-id+cookie-name in the GCM AAD
 (deterministic key-id gate, replay-across-format prevention); tamper -> treated as no
 session; exactly one sealing key, so withdrawing it is a fail-closed clean break (unknown key
 id -> no session -> re-authentication) with no decrypt-only companion key to mis-select; ~4 KB

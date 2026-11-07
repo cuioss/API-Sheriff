@@ -148,7 +148,7 @@ fixed token and the cause stays in the log.
 * link:0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]
   -- the record that carries the key-set readiness signal forward and keeps it the only JWKS
   readiness coverage
-* link:../configuration.adoc#_jwks_readiness[Configuration reference] -- the operator-facing
+* link:../configuration/authentication-and-oidc.adoc#_jwks_readiness[Configuration reference] -- the operator-facing
   readiness contract
 * link:../architecture/observability-and-errors.adoc#_metrics[Architecture -- Metrics and Health] --
   the readiness and metrics surfaces
