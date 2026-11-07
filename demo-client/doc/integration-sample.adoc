@@ -193,9 +193,9 @@ The identity-provider client must also meet three requirements, or the login is 
 That is the default key mode, and it is what the demo stack runs. A gateway can instead authenticate
 with a client secret; pushed requests and DPoP stay required in that mode and no key-set URL is
 registered. See
-link:../../doc/user/bff-session.adoc#client-secret[Server-Session BFF -- Client-secret
+link:../../doc/user/bff-oidc-common.adoc#client-secret[Server-Session BFF -- Client-secret
 authentication] before choosing it, and
-link:../../doc/user/bff-session.adoc#key-material[Key material] for the key setup.
+link:../../doc/user/bff-oidc-common.adoc#key-material[Key material] for the key setup.
 ====
 
 [WARNING]
