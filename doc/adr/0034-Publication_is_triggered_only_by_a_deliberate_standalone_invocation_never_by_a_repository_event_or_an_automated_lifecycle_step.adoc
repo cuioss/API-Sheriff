@@ -85,7 +85,7 @@ The publication runs as a step of the same automated pipeline that lands the wor
 
 === Inheriting recorded pre-dispatch evidence
 
-The evidence that makes a cut safe is established once, recorded, and simply read at cut time. It moves verification off the critical path and yields an auditable artefact.
+The evidence that makes a cut safe is established once, recorded, and read at cut time. It moves verification off the critical path and yields an auditable artefact.
 
 *Rejected because* most of that evidence describes a moment rather than the repository, and a record of a momentary property is shaped exactly like a record of a durable one. Inheriting it substitutes a confident claim for a check, in the one place where a wrong answer is unrecoverable. The recorded baseline keeps its full value as a statement of method: what to check, and how to check it soundly.
 

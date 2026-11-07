@@ -1,7 +1,9 @@
 = ADR-0027: The token-validation extension's unqualified beans are excluded, not accommodated
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
@@ -216,7 +218,7 @@ exclusion removed, and restoring the excluded probes would not close it.
 * *The exclusion outlives its justification.* It is correct only while the extension's issuer
   namespace remains unpopulated in this artifact. A deployment that ever supplies extension-backed
   issuers would want those beans back, and nothing detects that combination -- the configuration
-  would simply be observed by nothing. The exclusion is bound to the architectural stance that
+  would be observed by nothing. The exclusion is bound to the architectural stance that
   validation is driven from `gateway.yaml`, and it must be revisited if that stance changes.
 
 * *The list lags the extension.* Each entry was added after a symptom was observed in a running

@@ -106,7 +106,7 @@ rewriting a query-bearing `GET` as `POST` discards idempotency and cacheability.
 cannot rewrite its clients is pushed toward disabling much broader protections.
 
 *Detect the shape and admit it implicitly, with no configuration.* If a `Content-Length`-framed body on
-`GET` is acceptable on request, the gate could simply accept it. Rejected because it changes the
+`GET` is acceptable on request, the gate could accept it. Rejected because it changes the
 default posture of every deployment to serve a few. It also removes the operator's declaration of
 intent, the artefact that makes the wider surface reviewable. A relaxation nobody had to ask for is
 one nobody knows they have.

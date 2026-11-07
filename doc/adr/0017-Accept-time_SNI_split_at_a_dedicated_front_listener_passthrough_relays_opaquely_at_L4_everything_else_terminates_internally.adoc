@@ -1,7 +1,9 @@
 = ADR-0017: Accept-time SNI split at a dedicated front listener; passthrough relays opaquely at L4, everything else terminates internally
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template

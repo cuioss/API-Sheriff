@@ -136,7 +136,7 @@ HTTP specification. Any divergence, however exotic the input, is a case where th
 issued on the wrong basis.
 
 *Accept an unsatisfiable matcher and let its route be dead.* Treat `present: false` with `value`, or
-two contradictory matchers on one route, as the operator's problem: the route simply never matches.
+two contradictory matchers on one route, as the operator's problem: the route never matches.
 Rejected because this is the silent-failure class the matcher semantics exist to remove. On a security
 gateway, a route that never matches means its requests reach a different route with a different
 posture.

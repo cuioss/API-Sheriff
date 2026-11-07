@@ -28,13 +28,13 @@ Accepted
 
 === The question
 
-A gateway that validates tokens offline holds a copy of each issuer's signing keys and refreshes that copy on a timer. Between two refreshes the copy can be wrong in one direction that matters: the identity provider starts signing with a key the gateway has not fetched yet. Every token signed with that key names a key id the gateway does not know, and the gateway rejects every such token. This holds on every bearer route and at the callback of every BFF login, because both validate through the same key sets. The token library's background refresh interval is 600 seconds. An identity provider that replaces its signing key abruptly, without publishing the new key ahead of use, therefore takes the gateway's authenticated surface down for up to ten minutes. Nothing is broken on either side. The gateway is simply early.
+A gateway that validates tokens offline holds a copy of each issuer's signing keys and refreshes that copy on a timer. Between two refreshes the copy can be wrong in one direction that matters: the identity provider starts signing with a key the gateway has not fetched yet. Every token signed with that key names a key id the gateway does not know, and the gateway rejects every such token. This holds on every bearer route and at the callback of every BFF login, because both validate through the same key sets. The token library's background refresh interval is 600 seconds. An identity provider that replaces its signing key abruptly, without publishing the new key ahead of use, therefore takes the gateway's authenticated surface down for up to ten minutes. Nothing is broken on either side. The gateway is early.
 
 The obvious repair is to fetch the key set when an unknown key id arrives. The cost of that repair decides its shape. The key id sits in the token header, and the gateway reads it before it checks any signature. Any caller, holding no credential, can therefore present tokens that name arbitrary key ids. A gateway that fetches for each of them hands that caller three levers:
 
 * outbound requests to the identity provider at the caller's own rate,
 * request threads parked on the identity provider's latency,
-* a way to disturb which keys the gateway accepts, if the fetched key set simply replaces the held one.
+* a way to disturb which keys the gateway accepts, if the fetched key set replaces the held one.
 
 Three structural facts constrain the answer:
 
