@@ -93,10 +93,6 @@ class PendingAuthorizationStoreTest {
         return stored;
     }
 
-    private static boolean isSaturationRefusal(GatewayException refused) {
-        return refused.getEventType() == EventType.PENDING_AUTHORIZATION_SATURATED;
-    }
-
     @Nested
     @DisplayName("Bounded single-use in-memory store")
     class InMemoryStore {
@@ -299,7 +295,8 @@ class PendingAuthorizationStoreTest {
             store.store(first, T0);
             PendingAuthorizationRecord refused = pendingFrom(SOURCE_B, T0);
             GatewayException thrown = assertThrows(GatewayException.class, () -> store.store(refused, T0));
-            assertTrue(isSaturationRefusal(thrown), "precondition: the store is saturated");
+            assertEquals(EventType.PENDING_AUTHORIZATION_SATURATED, thrown.getEventType(),
+                    "precondition: the store is saturated");
             store.consume(first.id(), T0);
             PendingAuthorizationRecord retried = pendingFrom(SOURCE_B, T0);
 
