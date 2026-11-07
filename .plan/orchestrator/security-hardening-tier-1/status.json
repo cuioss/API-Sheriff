@@ -1,0 +1,14 @@
+{
+  "kind": "orchestrator",
+  "title": "Security hardening - tier 1",
+  "phase": "orchestrating",
+  "workstreams": [
+    "WS-01-edge-transport",
+    "WS-02-upstream-and-forwarding",
+    "WS-03-bff-login-availability"
+  ],
+  "metadata": {
+    "parallelization_scope": "2"
+  },
+  "created": "2026-11-07T16:19:33Z"
+}
