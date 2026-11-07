@@ -28,16 +28,137 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for {@link ClientHelloSniParser}: full ClientHello reassembly across TCP fragments and
- * TLS records, SNI extraction, and the fragmented / empty / malformed fail-closed (GW-06) verdicts.
+ * TLS records, SNI extraction, the fragmented / empty / malformed fail-closed (GW-06) verdicts, and
+ * fragment invariance of the incremental API — the same bytes offered whole, byte by byte, record by
+ * record or split across many tiny records yield the same verdict.
  * <p>
  * The tests construct real TLS ClientHello byte layouts (RFC 8446 §4 / RFC 6066 §3) with the
  * {@link ClientHelloFixture} helper, so the parser is exercised byte-for-byte with no framework
- * dependency.
+ * dependency. A parser holds the state of one connection, so every case uses a fresh one: JUnit
+ * creates a new test instance, and with it a new {@link #parser}, per test method.
  */
 @DisplayName("ClientHelloSniParser")
 class ClientHelloSniParserTest {
 
     private final ClientHelloSniParser parser = new ClientHelloSniParser();
+
+    /**
+     * Offers {@code bytes} to a fresh parser in chunks of {@code chunkSize}, asserting that every
+     * offer before the last answers {@link ClientHelloSniParser.Result#needMoreData()}.
+     *
+     * @return the verdict of the last offer
+     */
+    private static ClientHelloSniParser.Result offerInChunks(byte[] bytes, int chunkSize) {
+        ClientHelloSniParser fresh = new ClientHelloSniParser();
+        ClientHelloSniParser.Result result = ClientHelloSniParser.Result.needMoreData();
+        for (int offset = 0; offset < bytes.length; offset += chunkSize) {
+            assertFalse(result.complete(), "no verdict before the final byte, yet one arrived before offset " + offset);
+            result = fresh.offer(Arrays.copyOfRange(bytes, offset, Math.min(offset + chunkSize, bytes.length)));
+        }
+        return result;
+    }
+
+    @Nested
+    @DisplayName("fragment invariance of the incremental API")
+    class FragmentInvariance {
+
+        @Test
+        @DisplayName("yields the same verdict for a ClientHello offered byte by byte as offered whole")
+        void byteByByteMatchesWhole() {
+            // Arrange
+            byte[] hello = ClientHelloFixture.withSni("bytewise.example.com");
+            ClientHelloSniParser.Result whole = parser.offer(hello);
+
+            // Act
+            ClientHelloSniParser.Result byteByByte = offerInChunks(hello, 1);
+
+            // Assert
+            assertEquals(whole, byteByByte, "a ClientHello offered byte by byte yields the whole-offer verdict");
+            assertEquals("bytewise.example.com", byteByByte.serverName());
+        }
+
+        @Test
+        @DisplayName("yields the same verdict for a ClientHello offered record by record as offered whole")
+        void recordByRecordMatchesWhole() {
+            // Arrange — two records, the first carrying 40 handshake bytes behind its 5-byte header
+            byte[] twoRecords = ClientHelloFixture.withSniSplitAcrossRecords("records.example.org", 40);
+            byte[] firstRecord = Arrays.copyOf(twoRecords, 5 + 40);
+            byte[] secondRecord = Arrays.copyOfRange(twoRecords, 5 + 40, twoRecords.length);
+            ClientHelloSniParser.Result whole = new ClientHelloSniParser().offer(twoRecords);
+
+            // Act
+            ClientHelloSniParser.Result afterFirst = parser.offer(firstRecord);
+            ClientHelloSniParser.Result afterSecond = parser.offer(secondRecord);
+
+            // Assert
+            assertFalse(afterFirst.complete(), "the first record alone leaves the ClientHello incomplete");
+            assertEquals(whole, afterSecond, "record-by-record offers yield the whole-offer verdict");
+            assertEquals("records.example.org", afterSecond.serverName());
+        }
+
+        @Test
+        @DisplayName("yields the same verdict for a ClientHello split across many one-byte records")
+        void manyTinyRecordsMatchWhole() {
+            // Arrange — every handshake byte in a record of its own: the shape that made the whole-buffer
+            // re-parse quadratic
+            byte[] tinyRecords = ClientHelloFixture.withSniSplitIntoRecordsOf("tiny.example.net", 1);
+
+            // Act
+            ClientHelloSniParser.Result whole = parser.offer(tinyRecords);
+            ClientHelloSniParser.Result byteByByte = offerInChunks(tinyRecords, 1);
+            ClientHelloSniParser.Result oddChunks = offerInChunks(tinyRecords, 7);
+
+            // Assert
+            assertEquals("tiny.example.net", whole.serverName(), "many tiny records reassemble into one ClientHello");
+            assertEquals(whole, byteByByte, "tiny records offered byte by byte yield the whole-offer verdict");
+            assertEquals(whole, oddChunks, "tiny records offered in odd chunks yield the whole-offer verdict");
+        }
+
+        @Test
+        @DisplayName("keeps a reached verdict for every later offer without reading the new bytes")
+        void verdictIsFinal() {
+            // Arrange
+            byte[] hello = ClientHelloFixture.withSni("final.example.com");
+            ClientHelloSniParser.Result reached = parser.offer(hello);
+
+            // Act — bytes that would fail closed if they were ever parsed as a record
+            ClientHelloSniParser.Result later = parser.offer("GET / HTTP/1.1\r\n".getBytes(StandardCharsets.US_ASCII));
+
+            // Assert
+            assertEquals(reached, later, "a reached verdict is final");
+        }
+
+        @Test
+        @DisplayName("fails closed at the bound whether the buffer arrives whole or in two chunks")
+        void boundVerdictIsFragmentInvariant() {
+            // Arrange — the at-bound shape of FailClosed#bufferedBytesAtBoundFailClosed
+            byte[] atBound = ClientHelloFixture.incompleteHelloWithPartialNextHeader(
+                    ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES, 1);
+
+            // Act
+            ClientHelloSniParser.Result twoChunks = offerInChunks(atBound, atBound.length - 1);
+
+            // Assert
+            assertTrue(twoChunks.complete(), "the buffer reaching the bound in its second chunk is decided");
+            assertNull(twoChunks.serverName(), "reaching the buffering bound fails closed");
+        }
+
+        @Test
+        @DisplayName("fails closed on a chunk that runs past the bound, keeping only the bytes up to it")
+        void chunkPastBoundFailsClosed() {
+            // Arrange — the at-bound shape followed by bytes past the bound in the same chunk
+            byte[] atBound = ClientHelloFixture.incompleteHelloWithPartialNextHeader(
+                    ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES, 1);
+            byte[] pastBound = ClientHelloFixture.concat(atBound, new byte[1024]);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.offer(pastBound);
+
+            // Assert
+            assertTrue(result.complete(), "a chunk running past the bound is decided");
+            assertNull(result.serverName(), "a chunk running past the bound fails closed");
+        }
+    }
 
     @Nested
     @DisplayName("SNI extraction from a complete ClientHello")
@@ -50,7 +171,7 @@ class ClientHelloSniParserTest {
             byte[] hello = ClientHelloFixture.withSni("api.example.com");
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             // Assert
             assertTrue(result.complete(), "a full ClientHello is complete");
@@ -62,7 +183,7 @@ class ClientHelloSniParserTest {
         void preservesCase() {
             byte[] hello = ClientHelloFixture.withSni("API.Example.COM");
 
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             assertEquals("API.Example.COM", result.serverName());
         }
@@ -72,7 +193,7 @@ class ClientHelloSniParserTest {
         void noSniExtension() {
             byte[] hello = ClientHelloFixture.withoutSni();
 
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             assertTrue(result.complete(), "a full ClientHello without SNI is still complete");
             assertNull(result.serverName(), "no SNI extension → null → fail closed");
@@ -83,7 +204,7 @@ class ClientHelloSniParserTest {
         void emptyHostName() {
             byte[] hello = ClientHelloFixture.withSni("");
 
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             assertTrue(result.complete());
             assertNull(result.serverName());
@@ -100,10 +221,11 @@ class ClientHelloSniParserTest {
             // Arrange
             byte[] hello = ClientHelloFixture.withSni("relay.internal");
             byte[] prefix = Arrays.copyOf(hello, hello.length - 4);
+            byte[] rest = Arrays.copyOfRange(hello, hello.length - 4, hello.length);
 
             // Act
-            ClientHelloSniParser.Result partial = parser.parse(prefix);
-            ClientHelloSniParser.Result full = parser.parse(hello);
+            ClientHelloSniParser.Result partial = parser.offer(prefix);
+            ClientHelloSniParser.Result full = parser.offer(rest);
 
             // Assert
             assertFalse(partial.complete(), "a truncated ClientHello is incomplete");
@@ -118,7 +240,7 @@ class ClientHelloSniParserTest {
             byte[] hello = ClientHelloFixture.withSni("relay.internal");
             byte[] justHeader = Arrays.copyOf(hello, 3);
 
-            ClientHelloSniParser.Result result = parser.parse(justHeader);
+            ClientHelloSniParser.Result result = parser.offer(justHeader);
 
             assertFalse(result.complete());
         }
@@ -133,7 +255,7 @@ class ClientHelloSniParserTest {
             byte[] oneByteShortHeader = Arrays.copyOf(hello, 4);
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(oneByteShortHeader);
+            ClientHelloSniParser.Result result = parser.offer(oneByteShortHeader);
 
             // Assert
             assertFalse(result.complete(), "a header one byte short is buffered, never read past");
@@ -151,7 +273,7 @@ class ClientHelloSniParserTest {
             byte[] truncated = Arrays.copyOf(twoRecords, 5 + 40 + 4);
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(truncated);
+            ClientHelloSniParser.Result result = parser.offer(truncated);
 
             // Assert
             assertFalse(result.complete(),
@@ -166,7 +288,7 @@ class ClientHelloSniParserTest {
             byte[] twoRecords = ClientHelloFixture.withSniSplitAcrossRecords("split.example.org", 40);
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(twoRecords);
+            ClientHelloSniParser.Result result = parser.offer(twoRecords);
 
             // Assert
             assertTrue(result.complete(), "two handshake records reassemble into one ClientHello");
@@ -183,7 +305,7 @@ class ClientHelloSniParserTest {
         void nonTlsFirstByte() {
             byte[] httpRequest = "GET / HTTP/1.1\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
 
-            ClientHelloSniParser.Result result = parser.parse(httpRequest);
+            ClientHelloSniParser.Result result = parser.offer(httpRequest);
 
             assertTrue(result.complete(), "a non-TLS stream is decided immediately, never buffered");
             assertNull(result.serverName(), "not a TLS handshake → fail closed");
@@ -194,7 +316,7 @@ class ClientHelloSniParserTest {
         void wrongHandshakeType() {
             byte[] serverHello = ClientHelloFixture.handshakeRecord((byte) 0x02, new byte[16]);
 
-            ClientHelloSniParser.Result result = parser.parse(serverHello);
+            ClientHelloSniParser.Result result = parser.offer(serverHello);
 
             assertTrue(result.complete());
             assertNull(result.serverName());
@@ -205,7 +327,7 @@ class ClientHelloSniParserTest {
         void malformedExtensionLength() {
             byte[] hello = ClientHelloFixture.withCorruptExtensionLength();
 
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             assertTrue(result.complete());
             assertNull(result.serverName(), "a structural inconsistency fails closed");
@@ -216,7 +338,7 @@ class ClientHelloSniParserTest {
         void oversizeRecordFailsClosed() {
             byte[] oversize = ClientHelloFixture.oversizeRecordHeader();
 
-            ClientHelloSniParser.Result result = parser.parse(oversize);
+            ClientHelloSniParser.Result result = parser.offer(oversize);
 
             assertTrue(result.complete(), "an oversize declared record is decided, never buffered");
             assertNull(result.serverName());
@@ -233,7 +355,7 @@ class ClientHelloSniParserTest {
                     ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES, 1);
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(atBound);
+            ClientHelloSniParser.Result result = parser.offer(atBound);
 
             // Assert
             assertTrue(result.complete(),
@@ -251,7 +373,7 @@ class ClientHelloSniParserTest {
                     ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES - 1, 1);
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(belowBound);
+            ClientHelloSniParser.Result result = parser.offer(belowBound);
 
             // Assert
             assertFalse(result.complete(), "a buffer below the bound is still reassembling");
@@ -273,7 +395,7 @@ class ClientHelloSniParserTest {
             byte[] hello = ClientHelloFixture.withRawExtensions(ClientHelloFixture.concat(preceding, sni));
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             // Assert
             assertTrue(result.complete());
@@ -293,7 +415,7 @@ class ClientHelloSniParserTest {
                     ClientHelloFixture.serverNameExtensionFromEntries(entries));
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             // Assert
             assertEquals("host.example", result.serverName(),
@@ -309,7 +431,7 @@ class ClientHelloSniParserTest {
             byte[] hello = ClientHelloFixture.withRawExtensions(sni);
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             // Assert
             assertTrue(result.complete());
@@ -325,7 +447,7 @@ class ClientHelloSniParserTest {
             byte[] hello = ClientHelloFixture.withRawExtensions(sni);
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             // Assert
             assertTrue(result.complete());
@@ -341,7 +463,7 @@ class ClientHelloSniParserTest {
                     ClientHelloFixture.serverNameExtensionFromEntries(entry));
 
             // Act
-            ClientHelloSniParser.Result result = parser.parse(hello);
+            ClientHelloSniParser.Result result = parser.offer(hello);
 
             // Assert
             assertTrue(result.complete());
@@ -383,6 +505,20 @@ class ClientHelloSniParserTest {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             writeRecord(out, first);
             writeRecord(out, second);
+            return out.toByteArray();
+        }
+
+        /**
+         * A ClientHello whose handshake message is split into consecutive handshake records of
+         * {@code recordPayload} bytes each (the last one possibly shorter).
+         */
+        static byte[] withSniSplitIntoRecordsOf(String sni, int recordPayload) {
+            byte[] handshake = handshakeMessage(HANDSHAKE_CLIENT_HELLO, clientHelloBody(sni));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            for (int offset = 0; offset < handshake.length; offset += recordPayload) {
+                writeRecord(out, Arrays.copyOfRange(handshake, offset, Math.min(offset + recordPayload,
+                        handshake.length)));
+            }
             return out.toByteArray();
         }
 

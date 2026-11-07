@@ -48,10 +48,20 @@
  * is filled by the TLS handshake of an SSL-enabled server. A passthrough connection must not be
  * terminated, because the gateway relays it unchanged at L4 and the backend presents its own
  * certificate to the client (ADR-0017). {@link SniFrontListener} is therefore a plain-TCP
- * {@code NetServer}. It hands the bytes buffered so far to the parser, which reads the
- * {@code server_name} extension out of the cleartext ClientHello before any handshake, and
- * {@link PassthroughRelay} then replays the same bytes to the chosen target. No platform API yields
- * the name at that point.
+ * {@code NetServer}. Each accepted connection owns its own incremental parser and offers it every
+ * received chunk exactly once; the parser consumes only the TLS records each chunk completes and reads
+ * the {@code server_name} extension out of the cleartext ClientHello before any handshake, and
+ * {@link PassthroughRelay} then replays the same bytes, kept in a per-connection buffer, to the chosen
+ * target. No platform API yields the name at that point.
+ *
+ * <h2>The bounds of the front</h2>
+ *
+ * The front closes a connection that has not completed its ClientHello within a fixed ten-second
+ * deadline, refuses a connection at accept while 1024 accepted connections are still waiting for
+ * theirs, and bounds every relayed leg with a Vert.x idle timeout that {@link TlsEdgeProducer} derives
+ * at boot so it never undercuts an idle bound inside the gateway. {@link SniFrontListener} documents
+ * the deadline and the cap, {@link TlsEdgeProducer} the derivation of the idle timeout; none of them
+ * is configurable.
  *
  * @author API Sheriff Team
  * @since 1.0

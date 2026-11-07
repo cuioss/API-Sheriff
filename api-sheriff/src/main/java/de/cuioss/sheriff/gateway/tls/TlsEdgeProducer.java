@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -28,12 +29,16 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
 import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetClientOptions;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
@@ -56,6 +61,20 @@ import org.jspecify.annotations.Nullable;
  * topology (terminated Quarkus HTTPS on the public port) is unchanged, at zero runtime overhead. A
  * bind failure of the front listener fails the boot (fail fast), so the gateway never serves on a
  * half-open TLS edge.
+ * <p>
+ * <strong>The relay idle timeout is derived, not configured.</strong> Both legs of every relayed
+ * connection — the front server's accepted connection and the relay's dial-client connection — carry
+ * the same Vert.x idle timeout, derived once at boot by {@link #relayIdleTimeout(Duration, RouteTable)}
+ * as the longest idle bound the gateway applies behind the terminated branch plus
+ * {@link #RELAY_IDLE_MARGIN}: the longest of {@code quarkus.http.idle-timeout} (default thirty
+ * minutes), the gRPC stream-idle bound ({@link GrpcStreamIdleBound#STREAM_IDLE_TIMEOUT_MILLIS}) and
+ * the longest effective WebSocket {@code idle_timeout_seconds} across the route table (300 seconds for
+ * a route that declares none). A derivation is required rather than a fixed value because
+ * {@code idle_timeout_seconds} has no upper bound: only a value computed from the route table can
+ * guarantee that the relay never closes a connection before the inner bound would — which would cut
+ * off a WebSocket or gRPC stream the route still allows to be idle. The margin lets the inner close
+ * (a WebSocket close frame, gRPC trailers, the HTTP idle close) traverse the relay first. No
+ * configuration key reaches the value.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -67,9 +86,14 @@ public class TlsEdgeProducer {
     private static final String TERMINATED_HOST = "localhost";
     private static final int BIND_TIMEOUT_SECONDS = 15;
 
+    /** How much longer than the longest inner idle bound a relayed leg may stay idle. */
+    static final Duration RELAY_IDLE_MARGIN = Duration.ofSeconds(60);
+
     private final Vertx vertx;
     private final GatewayConfig gatewayConfig;
     private final ResolvedTopology topology;
+    private final RouteTable routeTable;
+    private final Duration httpIdleTimeout;
     private final int publicPort;
     private final int internalHttpsPort;
 
@@ -80,23 +104,32 @@ public class TlsEdgeProducer {
      * @param vertx             the managed Vert.x instance the front listener and backend client run on
      * @param gatewayConfig     the bound global gateway document (source of {@code tls.passthrough_sni})
      * @param topology          the resolved topology the passthrough aliases are looked up against
+     * @param routeTable        the route table whose WebSocket idle timeouts the relay idle timeout must
+     *                          not undercut
+     * @param httpIdleTimeout   the idle timeout of the terminated Quarkus HTTPS listener
+     *                          ({@code quarkus.http.idle-timeout}), which the relay idle timeout must
+     *                          not undercut
      * @param publicPort        the public TLS port the front listener binds when passthrough is active
      * @param internalHttpsPort the internal loopback port the terminated Quarkus HTTPS listener owns
      */
     @Inject
-    public TlsEdgeProducer(Vertx vertx, GatewayConfig gatewayConfig, ResolvedTopology topology,
+    public TlsEdgeProducer(Vertx vertx, GatewayConfig gatewayConfig, ResolvedTopology topology, RouteTable routeTable,
+            @ConfigProperty(name = "quarkus.http.idle-timeout", defaultValue = "30M") Duration httpIdleTimeout,
             @ConfigProperty(name = "sheriff.tls.public-port", defaultValue = "8443") int publicPort,
             @ConfigProperty(name = "sheriff.tls.internal-https-port", defaultValue = "8444") int internalHttpsPort) {
         this.vertx = Objects.requireNonNull(vertx, "vertx");
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.topology = Objects.requireNonNull(topology, "topology");
+        this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
+        this.httpIdleTimeout = Objects.requireNonNull(httpIdleTimeout, "httpIdleTimeout");
         this.publicPort = publicPort;
         this.internalHttpsPort = internalHttpsPort;
     }
 
     /**
-     * Builds the relay map and, when passthrough is configured, starts the front listener — blocking
-     * the boot until the public port is bound so a bind failure aborts startup.
+     * Builds the relay map and, when passthrough is configured, derives the relay idle timeout and
+     * starts the front listener — blocking the boot until the public port is bound so a bind failure
+     * aborts startup.
      *
      * @param event the Quarkus startup event
      */
@@ -106,12 +139,49 @@ public class TlsEdgeProducer {
             LOGGER.debug("tls.passthrough_sni is empty — accept-time SNI front listener not started");
             return;
         }
-        this.netClient = vertx.createNetClient();
+        Duration relayIdleTimeout = relayIdleTimeout(httpIdleTimeout, routeTable);
+        LOGGER.debug("Relay idle timeout derived as %s", relayIdleTimeout);
+        NetClientOptions clientOptions = new NetClientOptions();
+        SniFrontListener.applyIdleTimeout(clientOptions, relayIdleTimeout);
+        this.netClient = vertx.createNetClient(clientOptions);
         PassthroughRelay relay = new PassthroughRelay(netClient);
         RelayTarget terminatedTarget = new RelayTarget(TERMINATED_HOST, internalHttpsPort);
-        SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, publicPort);
+        SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, publicPort,
+                relayIdleTimeout);
         this.listener = front;
         awaitBind(front);
+    }
+
+    /**
+     * Derives the idle timeout of both relay legs: the longest idle bound the gateway applies behind
+     * the terminated branch, plus {@link #RELAY_IDLE_MARGIN}. The bounds compared are
+     * {@code httpIdleTimeout}, the gRPC stream-idle bound
+     * {@link GrpcStreamIdleBound#STREAM_IDLE_TIMEOUT_MILLIS}, and the longest effective WebSocket idle
+     * timeout across {@code routeTable}. The route table materializes that timeout on every WebSocket
+     * route, the 300-second default included for a route that declares none, and leaves it absent on
+     * every other route. The result is therefore never shorter than any of them.
+     *
+     * @param httpIdleTimeout the idle timeout of the terminated Quarkus HTTPS listener
+     * @param routeTable      the route table whose WebSocket routes are compared
+     * @return the relay idle timeout
+     */
+    static Duration relayIdleTimeout(Duration httpIdleTimeout, RouteTable routeTable) {
+        long longestWebSocketIdleSeconds = routeTable.routes().stream()
+                .map(Route::effectiveWebSocketIdleTimeoutSeconds)
+                .filter(Objects::nonNull)
+                .mapToLong(Integer::longValue)
+                .max()
+                .orElse(0L);
+        Duration longestInnerBound = httpIdleTimeout;
+        Duration grpcStreamIdle = Duration.ofMillis(GrpcStreamIdleBound.STREAM_IDLE_TIMEOUT_MILLIS);
+        if (grpcStreamIdle.compareTo(longestInnerBound) > 0) {
+            longestInnerBound = grpcStreamIdle;
+        }
+        Duration webSocketIdle = Duration.ofSeconds(longestWebSocketIdleSeconds);
+        if (webSocketIdle.compareTo(longestInnerBound) > 0) {
+            longestInnerBound = webSocketIdle;
+        }
+        return longestInnerBound.plus(RELAY_IDLE_MARGIN);
     }
 
     /**
