@@ -305,11 +305,17 @@ public final class ClientHelloSniParser {
     }
 
     /**
-     * Walks the fully-reassembled {@code client_hello} body to the {@code server_name} extension and
-     * returns the first {@code host_name}. {@code handshake} holds exactly the declared ClientHello
-     * (header included) and nothing past it. Any structural inconsistency (a declared length that runs
-     * past the buffer, or an extension that runs past the declared extensions block) yields
-     * {@code null} so the caller fails closed.
+     * Walks the fully-reassembled {@code client_hello} body to the end of its extensions block and
+     * returns the first {@code host_name} of the first {@code server_name} extension. {@code handshake}
+     * holds exactly the declared ClientHello (header included) and nothing past it. Any structural
+     * inconsistency (a declared length that runs past the buffer, or an extension that runs past the
+     * declared extensions block) yields {@code null} so the caller fails closed.
+     * <p>
+     * <strong>The walk does not stop at the {@code server_name} extension.</strong> The host read from it
+     * is kept, and every extension after it is checked against the block as well; the host is returned
+     * only once the walk has reached the end of the block. A ClientHello whose later extension overruns
+     * the block is malformed — a conforming TLS stack rejects it — so the host read before the overrun
+     * must not route it.
      */
     private static @Nullable String extractServerName(byte[] handshake) {
         Cursor cursor = new Cursor(handshake, HANDSHAKE_HEADER_LENGTH);
@@ -326,21 +332,26 @@ public final class ClientHelloSniParser {
             if (extensionsEnd > handshake.length) {
                 return null;
             }
+            @Nullable String host = null;
+            boolean serverNameRead = false;
             while (cursor.position() < extensionsEnd) {
                 int type = cursor.readUint16();
                 int length = cursor.readUint16();
                 int next = cursor.position() + length;
                 if (next > extensionsEnd) {
-                    // An extension running past the declared extensions block is malformed; its body
-                    // must not be read from the bytes that follow the block.
+                    // An extension running past the declared extensions block is malformed — wherever it
+                    // sits, before or after the server_name — and its body must not be read from the
+                    // bytes that follow the block.
                     return null;
                 }
-                if (type == EXTENSION_TYPE_SERVER_NAME) {
-                    return readServerNameExtension(new Cursor(handshake, cursor.position()), length);
+                if (type == EXTENSION_TYPE_SERVER_NAME && !serverNameRead) {
+                    serverNameRead = true;
+                    host = readServerNameExtension(new Cursor(handshake, cursor.position()), length);
                 }
                 cursor.seek(next);
             }
-            return null;
+            // The walk reached the end of the block, so every extension in it was within bounds.
+            return host;
         } catch (MalformedHelloException _) {
             return null;
         }

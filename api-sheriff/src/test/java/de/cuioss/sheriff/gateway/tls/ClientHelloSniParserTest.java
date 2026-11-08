@@ -508,6 +508,45 @@ class ClientHelloSniParserTest {
             assertTrue(result.complete());
             assertNull(result.serverName(), "an extension past the extensions block fails closed");
         }
+
+        @Test
+        @DisplayName("fails closed when an extension after a valid server_name runs past the extensions block, offered whole or byte by byte")
+        void laterExtensionPastExtensionsBlock() {
+            // Arrange — a well-formed server_name extension, then an extension whose header declares a
+            // 0x40-byte body while only two body bytes remain in the block. A conforming TLS stack
+            // rejects this hello, so the SNI read before the overrun must not route it.
+            byte[] overrunning = {0x00, 0x10, 0x00, 0x40, 0x00, 0x00};
+            byte[] hello = ClientHelloFixture.withRawExtensions(ClientHelloFixture.concat(
+                    ClientHelloFixture.serverNameExtension("first.example.com"), overrunning));
+
+            // Act
+            ClientHelloSniParser.Result whole = parser.offer(hello);
+            ClientHelloSniParser.Result byteByByte = offerInChunks(hello, 1);
+
+            // Assert
+            assertAll("the overrun after the server_name is checked before the SNI is returned",
+                    () -> assertTrue(whole.complete()),
+                    () -> assertNull(whole.serverName(), "a later extension past the block fails closed"),
+                    () -> assertEquals(whole, byteByByte, "the verdict does not depend on the fragmentation"));
+        }
+
+        @Test
+        @DisplayName("control: a well-formed extension after the server_name leaves the SNI in place, offered whole or byte by byte")
+        void laterWellFormedExtensionKeepsTheSni() {
+            // Arrange — the same layout with the trailing extension's declared length matching its body
+            byte[] trailing = ClientHelloFixture.rawExtension(0x0010, new byte[]{0x00, 0x00});
+            byte[] hello = ClientHelloFixture.withRawExtensions(ClientHelloFixture.concat(
+                    ClientHelloFixture.serverNameExtension("first.example.com"), trailing));
+
+            // Act
+            ClientHelloSniParser.Result whole = parser.offer(hello);
+            ClientHelloSniParser.Result byteByByte = offerInChunks(hello, 1);
+
+            // Assert
+            assertAll("a well-formed walk to the end of the block keeps the first host_name",
+                    () -> assertEquals("first.example.com", whole.serverName()),
+                    () -> assertEquals(whole, byteByByte, "the verdict does not depend on the fragmentation"));
+        }
     }
 
     /**
