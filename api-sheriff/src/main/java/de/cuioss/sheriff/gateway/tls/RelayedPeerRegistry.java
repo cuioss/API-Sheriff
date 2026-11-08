@@ -69,8 +69,9 @@ public final class RelayedPeerRegistry {
 
     /**
      * Records that the SNI front listener relays terminated connections to the internal listener on
-     * {@code port}. From then on a connection that arrived on that port without an exact hit is
-     * {@linkplain Attribution#unattributed() unattributed}. Set once, before the first request can
+     * {@code port}. From then on a connection without an exact hit can be reported
+     * {@linkplain Attribution#unattributed() unattributed}, as {@link #attribute} states. Set once,
+     * before the first request can
      * reach the edge; setting the same port again changes nothing.
      *
      * @param port the local port of the internal terminated listener, {@code 1..65535}
@@ -104,8 +105,8 @@ public final class RelayedPeerRegistry {
 
     /**
      * What the registry knows about the connection a request arrived on: the relayed client's address
-     * on an exact hit, else whether the connection arrived on the internal terminated listener behind
-     * the front without one.
+     * on an exact hit, else whether the connection, behind the front and without one, arrived on the
+     * terminated listener's port or on an unknown local address.
      *
      * <p>
      * Behind the front, a miss whose local address is unknown fails closed: without a local address
@@ -113,8 +114,7 @@ public final class RelayedPeerRegistry {
      * reported {@linkplain Attribution#unattributed() unattributed} rather than neutral.
      *
      * @param connectionLocalAddress  the local socket address of the connection a request arrived on,
-     *                                {@code null} when the transport supplied none; behind the front a
-     *                                {@code null} on a miss is treated as the terminated listener
+     *                                {@code null} when the transport supplied none
      * @param connectionRemoteAddress the remote socket address of the connection a request arrived on,
      *                                {@code null} when the transport supplied none
      * @return the attribution; {@link Attribution#UNATTRIBUTED} for a miss behind the front whose
@@ -167,12 +167,13 @@ public final class RelayedPeerRegistry {
 
     /**
      * The registry's verdict on one connection. At most one of the two components is set: a relayed
-     * client's address, or the {@code unattributed} mark of a connection that reached the fronted
-     * terminated listener without a hand-off.
+     * client's address, or the {@code unattributed} mark of a connection behind the front that arrived
+     * without a hand-off on the terminated listener's port or on an unknown local address.
      *
      * @param clientAddress the relayed client's address on an exact hit; {@code null} otherwise
-     * @param unattributed  {@code true} when the connection arrived on the internal terminated listener
-     *                      behind the front and the registry holds no entry for it
+     * @param unattributed  {@code true} when the connection arrived behind the front, on the terminated
+     *                      listener's port or on an unknown local address, and the registry holds no
+     *                      entry for it
      * @author API Sheriff Team
      * @since 1.0
      */

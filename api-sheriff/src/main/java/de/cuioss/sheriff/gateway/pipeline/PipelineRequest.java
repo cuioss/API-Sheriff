@@ -653,9 +653,10 @@ public final class PipelineRequest {
         }
 
         /**
-         * @param unattributedTerminatedLeg whether the request arrived on the fronted internal
-         *                                  terminated listener without a relay hand-off; never set
-         *                                  together with a relayed peer address
+         * @param unattributedTerminatedLeg whether the request arrived behind the front, on the
+         *                                  terminated listener's port or on an unknown local address,
+         *                                  without a relay hand-off; never set together with a
+         *                                  relayed peer address
          * @return this builder
          */
         public Builder unattributedTerminatedLeg(boolean unattributedTerminatedLeg) {
@@ -683,6 +684,8 @@ public final class PipelineRequest {
 
         /**
          * @return the assembled immutable-inbound {@link PipelineRequest}
+         * @throws IllegalStateException when a relayed peer address is set together with the
+         *                               unattributed mark
          */
         public PipelineRequest build() {
             return new PipelineRequest(this);

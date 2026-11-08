@@ -3697,7 +3697,9 @@ by these rules, in this order:
   no header can supply the handed-over address. Without that match the count fails closed: a request
   that reached the internal terminated listener on a connection the relay did not dial, or on a leg
   whose relay session has already ended, is counted under its own TCP peer, and its forwarding
-  headers are never read -- even when that peer is listed in `forwarded.trusted_proxies`.
+  headers are never read -- even when that peer is listed in `forwarded.trusted_proxies`. A request
+  without that match whose local address the transport did not supply is counted the same way: it
+  cannot be shown to have arrived on another listener, so it fails closed.
   Only this count reads the handed-over address; every other stage, the regenerated
   `X-Forwarded-For` included, still sees the relay leg as the peer
   (link:development/tls-edge.adoc[TLS edge]). An IPv4 address counts whole and an IPv6
@@ -3793,14 +3795,21 @@ binding-cookie value), its source nor its `state`, nonce or PKCE verifier
 the trusted proxy's resolved client, the untrusted peer's own address with its `X-Forwarded-For`
 ignored, or `unknown`, with IPv6 reduced to its `/64`; behind the SNI front two relayed clients are
 keyed apart where without the hand-off they share the loopback key, and the relayed client is the
-peer the trust gate judges in both of its branches (`PendingQuotaKeysTest`). The registry names a
-client only on an exact host and port hit, and a stale release does not drop a newer session's
-entry (`RelayedPeerRegistryTest`); a terminated relay registers its client before the first byte
+peer the trust gate judges in both of its branches (`PendingQuotaKeysTest`); a request marked
+unattributed is keyed on its TCP peer even when that peer is a trusted proxy, where the unmarked
+control's header names the source (`PendingQuotaKeysTest.unattributedTerminatedLegIsKeyedOnItsPeer`).
+The registry names a client only on an exact host and port hit, and a stale release does not drop a
+newer session's entry (`RelayedPeerRegistryTest`); behind the front, a miss whose local address is
+unknown is unattributed, while a hit still names its client
+(`RelayedPeerRegistryTest.unknownLocalAddressFailsClosed`); a terminated relay registers its client before the first byte
 reaches the backend and releases the entry when either leg closes, and a passthrough relay
 registers nothing (`PassthroughRelayTest`, `SniFrontListenerTest`). Through the edge, two relayed
 logins are counted under their own clients, and an untrusted connection the relay did not register
 is counted under its own TCP peer whatever forwarding headers it sends (`GatewayEdgeRouteBffWiringTest`,
-nested `RelayedClientHandOff`). Also through the edge, a
+nested `RelayedClientHandOff`). Behind the front, an unregistered connection to a trusting edge is
+counted under its own TCP peer, not the client its forged `X-Forwarded-For` names, while a
+registered relay leg keeps its relayed client and the unfronted control reads the header
+(`GatewayEdgeRouteBffWiringTest.FrontedTerminatedListenerQuotaKey`). Also through the edge, a
 refused login on the login path and on a session-route navigation is answered `503` with
 `Retry-After: 30` and the `rate-limiting` problem type (`GatewayEdgeRouteBffWiringTest`). On the
 integration stack, the first of 256 logins from one source completes into a session, and with 256

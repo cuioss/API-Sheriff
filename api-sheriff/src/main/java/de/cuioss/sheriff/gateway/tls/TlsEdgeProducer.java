@@ -139,7 +139,8 @@ public class TlsEdgeProducer {
      * and the edge looks a request's connection up in it. Produced whether or not the front listener
      * runs; without it the registry stays empty and every lookup misses. With
      * {@code tls.passthrough_sni} set it also knows the internal terminated listener's port, so a
-     * request on that listener without a hand-off is reported unattributed.
+     * request without a hand-off can be reported unattributed, as
+     * {@link RelayedPeerRegistry#attribute} states.
      *
      * @return the registry shared by the terminated relay and the edge
      */

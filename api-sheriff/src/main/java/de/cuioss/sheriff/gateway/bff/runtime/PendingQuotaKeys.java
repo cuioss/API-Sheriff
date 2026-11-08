@@ -52,13 +52,8 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * (see {@link ForwardedTrust}).
  * <p>
  * <strong>Fail closed without the hand-off.</strong> A request the edge marked
- * {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed} — it reached the internal
- * terminated listener behind the front, or arrived on a local address the transport did not supply,
- * and the relay holds no hand-off for its connection — is counted under its own TCP peer, and its
- * forwarding headers are never read, even when that peer is a trusted proxy, so no header can move it
- * onto another source's quota. For a stale relay leg that peer is the relay's loopback address; a host
- * that reaches the internal listener directly is keyed on its own address. Without a front listener
- * no request carries the mark.
+ * {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed} is counted under its own TCP
+ * peer, and its forwarding headers are never read, even when that peer is a trusted proxy.
  * <p>
  * <strong>One derivation, independent of detection.</strong> The key is derived here for every
  * producer of a pending record — the session stage and the reserved login, step-up and callback
@@ -67,8 +62,9 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * <p>
  * Usage:
  * <pre>{@code
- * PendingQuotaKeys quotaKeys = new PendingQuotaKeys(new TcpPeerGate(trustedProxies),
- *         new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()));
+ * ForwardedTrust trust = ForwardedTrust.of(gatewayConfig);
+ * PendingQuotaKeys quotaKeys = new PendingQuotaKeys(trust.peerGate(),
+ *         trust.resolver(new SecurityEventCounter()));
  * String quotaKey = quotaKeys.quotaKeyOf(request);
  * }</pre>
  * <p>

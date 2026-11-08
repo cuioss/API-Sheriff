@@ -59,8 +59,8 @@ public final class EdgeRequests {
      * When the request's connection is a relay leg the gateway's own SNI front listener dialled — an
      * exact hit of its remote address in {@code relayedPeers} — the original client's address is
      * recorded as the {@linkplain PipelineRequest#relayedPeerAddress() relayed peer address}; the peer
-     * address stays the TCP peer. No header is consulted for it. A request that arrived on the internal
-     * terminated listener behind the front without such a hit is marked
+     * address stays the TCP peer. No header is consulted for it. A request behind the front without
+     * such a hit, arriving on the terminated listener's port or on an unknown local address, is marked
      * {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed} instead.
      *
      * @param raw          the Vert.x request

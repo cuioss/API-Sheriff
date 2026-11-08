@@ -194,7 +194,11 @@ class PendingQuotaKeysTest {
         assertThrows(NullPointerException.class, () -> quotaKeys.quotaKeyOf(null));
     }
 
-    /** The derivation with the given trusted proxies, the resolver configured as the forward stage's. */
+    /**
+     * The derivation with the given trusted proxies and a resolver validating under
+     * {@link SecurityConfiguration#defaults()} — not the gateway baseline {@link ForwardedTrust}
+     * derives; these cases exercise the key rules, not the baseline.
+     */
     private static PendingQuotaKeys quotaKeys(List<String> trustedProxies) {
         return new PendingQuotaKeys(new TcpPeerGate(trustedProxies), resolver(trustedProxies));
     }
@@ -216,7 +220,7 @@ class PendingQuotaKeysTest {
         return builder(peer, headers).relayedPeerAddress(relayedPeer).build();
     }
 
-    /** A request the edge marked as arriving on the fronted terminated listener without a hand-off. */
+    /** A request the edge marked {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed}. */
     private static PipelineRequest unattributed(String peer, Map<String, String> headers) {
         return builder(peer, headers).unattributedTerminatedLeg(true).build();
     }
