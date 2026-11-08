@@ -144,7 +144,7 @@ class GatewayEdgeRelayFailureResetTest {
             response.end(ANSWER);
             return;
         }
-        CompletableFuture<Long> reset = upstreamReset.computeIfAbsent(request.path(), path -> new CompletableFuture<>());
+        CompletableFuture<Long> reset = upstreamReset(request.path());
         response.closeHandler(closed -> reset.complete(System.nanoTime()));
         response.exceptionHandler(failure -> reset.complete(System.nanoTime()));
         response.setChunked(true).write(CHUNK);
