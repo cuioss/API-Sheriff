@@ -241,9 +241,23 @@ public final class TerminalDispatch {
      * Dispatches a {@code protocol: websocket} route: validates the handshake {@code Origin} against
      * the route's effective allowlist (a foreign / absent origin throws a
      * {@link EventType#WEBSOCKET_ORIGIN_REJECTED} {@link GatewayException} rendered as {@code 403}
-     * before any upstream contact — GW-09 / CSWSH), then hands the upgrade to the opaque
-     * {@link WebSocketRelayStage}. The upstream dial and the client upgrade are performed by the
-     * relay stage, so no HTTP {@link ResponseStage} relay runs for a WebSocket route.
+     * before any upstream contact — GW-09 / CSWSH), checks that the request is a valid WebSocket
+     * opening handshake, then hands the upgrade to the opaque {@link WebSocketRelayStage}. The upstream
+     * dial and the client upgrade are performed by the relay stage, so no HTTP {@link ResponseStage}
+     * relay runs for a WebSocket route.
+     * <p>
+     * <strong>Upgrade gate.</strong> Right after the {@code Origin} check, and before the request is
+     * tracked with its session, takes a relay sub-budget permit or dials the upstream, the
+     * {@link WebSocketUpgradeGate} judges the handshake. A request that is not HTTP/1.1, or does not
+     * carry the {@code Connection: upgrade} and {@code Upgrade: websocket} tokens, is refused
+     * {@code 426} — on HTTP/1.x with {@code Upgrade: websocket} and {@code Connection: Upgrade}; a
+     * {@code Sec-WebSocket-Version} other than {@code 13} is refused {@code 426} with
+     * {@code Sec-WebSocket-Version: 13}; a missing version, or a missing or malformed
+     * {@code Sec-WebSocket-Key}, is refused {@code 400}. A refusal releases the general admission permit
+     * through the shared guard and answers on the event loop through {@link ResponseEnds#reject}; it is
+     * logged at {@code DEBUG} with the route id and the answered status, and no request data. Without the gate an HTTP/2 request or a plain
+     * {@code GET} would have dialed the upstream and held a permit until the relay's client upgrade
+     * failed.
      * <p>
      * <strong>Admission accounting.</strong> Because a completed upgrade takes the connection over, the
      * HTTP end handler the edge root registers never fires for an established relay — the permit
@@ -281,6 +295,17 @@ public final class TerminalDispatch {
     public void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, Route route,
             ForwardPolicyStage.Result forward) {
         originValidationStage.validate(request, route.id(), route.effectiveAllowedOrigins());
+        AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(EdgeAdmission.ADMISSION_GUARD_KEY),
+                "admission guard missing — handle() must stash it before dispatch");
+        // A request that is no valid WebSocket opening handshake is refused here, before it is tracked,
+        // takes a relay permit or dials the upstream: nothing it could not use is spent on it.
+        if (WebSocketUpgradeGate.judge(ctx.request()) instanceof WebSocketUpgradeGate.Verdict.Refused refused) {
+            LOGGER.debug("Request on WebSocket route '%s' is no valid WebSocket upgrade — refusing it with %s",
+                    route.id(), refused.status());
+            edgeAdmission.releaseAdmission(ctx, admissionGuard);
+            ctx.vertx().runOnContext(v -> rejectInvalidUpgrade(ctx, refused));
+            return;
+        }
         String remainder = EdgeRequests.remainderAfterMatchKey(route, EdgeRequests.requireCanonicalPath(request));
         String query = EdgeRequests.renderQuery(forward.query());
         ResolvedUpstream upstreamTarget = route.upstream();
@@ -288,8 +313,6 @@ public final class TerminalDispatch {
             throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
         }
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(EdgeAdmission.ADMISSION_GUARD_KEY),
-                "admission guard missing — handle() must stash it before dispatch");
         Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
                 "client connection context missing — handle() must capture it before dispatch");
         // A relay opened for a request a session was let through with is tracked under that session, so
@@ -327,6 +350,20 @@ public final class TerminalDispatch {
         webSocketRelayStage.relay(ctx, clientContext, route, forward.headers(),
                 request.gatewayAuthoredResponseHeaders(), uri, () -> edgeAdmission.releaseAdmission(ctx, admissionGuard),
                 sessionRelay);
+    }
+
+    /**
+     * Answers a request the {@link WebSocketUpgradeGate} refused, on the event loop: the verdict's
+     * headers, then its status through {@link ResponseEnds#reject}. A response that has already ended
+     * is left as it is.
+     */
+    private static void rejectInvalidUpgrade(RoutingContext ctx, WebSocketUpgradeGate.Verdict.Refused refused) {
+        HttpServerResponse response = ctx.response();
+        if (response.ended()) {
+            return;
+        }
+        refused.headers().forEach(response::putHeader);
+        ResponseEnds.reject(ctx, refused.status());
     }
 
     /**

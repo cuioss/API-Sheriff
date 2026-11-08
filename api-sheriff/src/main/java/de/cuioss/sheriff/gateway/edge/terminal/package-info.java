@@ -18,8 +18,10 @@
  * relaying a gRPC or WebSocket exchange, serving an asset, or answering with a redirect.
  * <p>
  * <strong>Contents.</strong> {@link de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch}, which
- * serves every terminal action, and {@link de.cuioss.sheriff.gateway.edge.terminal.RedirectStage},
- * which computes a redirect route's answer.
+ * serves every terminal action, {@link de.cuioss.sheriff.gateway.edge.terminal.RedirectStage},
+ * which computes a redirect route's answer, and the package-private {@code WebSocketUpgradeGate},
+ * which refuses a request on a WebSocket route that is no valid opening handshake before any upstream
+ * dial.
  * <p>
  * <strong>Dependencies.</strong> This package may depend on the edge packages
  * {@code relay}, {@code upstream}, {@code error}, {@code end}, {@code admission}, {@code request}
