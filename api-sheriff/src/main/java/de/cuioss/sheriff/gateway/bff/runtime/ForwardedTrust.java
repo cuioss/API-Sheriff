@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.forward;
+package de.cuioss.sheriff.gateway.bff.runtime;
 
 import java.util.List;
 import java.util.Objects;
@@ -30,6 +30,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 
 /**
  * The one derivation of the gateway's forwarded-header trust from the bound configuration: the
@@ -38,10 +39,14 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
  * <p>
  * Every consumer that judges a forwarding header builds its {@link TcpPeerGate} and its
  * {@link ForwardedHeaderResolver} here: the edge's forward stage, which regenerates
- * {@code X-Forwarded-For} from the resolved client, and the pending-authorization quota key, which
- * counts a login under that same client. A second, hand-written derivation could drift from the first
- * — a different trusted set, or a different baseline rejecting a header the other accepts — and the
- * two would then name different clients for one request.
+ * {@code X-Forwarded-For} from the resolved client, and the pending-authorization quota key
+ * ({@link PendingQuotaKeys}), which counts a login under that same client. A second, hand-written
+ * derivation could drift from the first — a different trusted set, or a different baseline rejecting a
+ * header the other accepts — and the two would then name different clients for one request.
+ * <p>
+ * <strong>Why it lives here.</strong> It sits beside {@link PendingQuotaKeys}, the consumer it was
+ * extracted for, and is reachable from both callers: the edge entry point and the session-runtime
+ * producer already depend on this package.
  * <p>
  * <strong>The baseline.</strong> The resolved {@code security_defaults} profile
  * ({@link RouteTableBuilder#globalProfile}), limited by itself, with the declared
