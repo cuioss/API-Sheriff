@@ -51,6 +51,13 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * header can name different clients for one request; what they share is the trust, not the peer
  * (see {@link ForwardedTrust}).
  * <p>
+ * <strong>Fail closed without the hand-off.</strong> A request the edge marked
+ * {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed} — it reached the internal
+ * terminated listener behind the front, but the relay holds no hand-off for its connection — is keyed
+ * on its TCP peer, and its forwarding headers are never read, even when that peer is a trusted proxy.
+ * Its TCP peer is a loopback address, so every such request shares one key; no header can move it
+ * onto another source's quota. Without a front listener no request carries the mark.
+ * <p>
  * <strong>One derivation, independent of detection.</strong> The key is derived here for every
  * producer of a pending record — the session stage and the reserved login, step-up and callback
  * paths — and never read from the edge-stashed source key, which exists only while
@@ -95,6 +102,9 @@ public final class PendingQuotaKeys {
      */
     public String quotaKeyOf(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
+        if (request.unattributedTerminatedLeg()) {
+            return SourceKeyResolver.canonicalSource(request.peerAddress());
+        }
         String relayedPeer = request.relayedPeerAddress();
         String peerAddress = relayedPeer != null ? relayedPeer : request.peerAddress();
         if (!peerGate.isTrustedPeer(peerAddress)) {

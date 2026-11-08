@@ -23,7 +23,10 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.vertx.core.net.SocketAddress;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The relayed-peer hand-off: an exact (host and port) hit names the client a relay leg carries, any
@@ -116,5 +119,100 @@ class RelayedPeerRegistryTest {
         assertAll(
                 () -> assertThrows(NullPointerException.class, () -> registry.register(null, CLIENT_A)),
                 () -> assertThrows(NullPointerException.class, () -> registry.register(LEG, null)));
+    }
+
+    /**
+     * Behind the front, a miss on the terminated listener's port is reported, not merely absent: a
+     * connection the relay never dialled and one whose session it already released both come back
+     * unattributed, while a hit keeps its client and a connection on another listener stays neutral.
+     */
+    @Nested
+    @DisplayName("attribute — behind the front, a terminated-listener miss is reported unattributed")
+    class Attribute {
+
+        private static final int TERMINATED_PORT = 8444;
+        private static final SocketAddress ON_TERMINATED = SocketAddress.inetSocketAddress(TERMINATED_PORT, LOOPBACK);
+        private static final SocketAddress ON_OTHER_LISTENER = SocketAddress.inetSocketAddress(8080, LOOPBACK);
+
+        @Test
+        @DisplayName("a registered relay leg on the fronted terminated listener names its client")
+        void hitNamesTheClient() {
+            registry.frontTerminatedListener(TERMINATED_PORT);
+            registry.register(LEG, CLIENT_A);
+
+            assertEquals(new RelayedPeerRegistry.Attribution(CLIENT_A, false), registry.attribute(ON_TERMINATED, LEG));
+        }
+
+        @Test
+        @DisplayName("a connection the relay never dialled, on the fronted terminated listener, is unattributed")
+        void unregisteredConnectionIsUnattributed() {
+            registry.frontTerminatedListener(TERMINATED_PORT);
+            registry.register(LEG, CLIENT_A);
+
+            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED,
+                    registry.attribute(ON_TERMINATED, SocketAddress.inetSocketAddress(50002, LOOPBACK)));
+        }
+
+        @Test
+        @DisplayName("a relay leg whose session was released is unattributed, not neutral")
+        void releasedLegIsUnattributed() {
+            registry.frontTerminatedListener(TERMINATED_PORT);
+            RelayedPeerRegistry.Registration registration = registry.register(LEG, CLIENT_A);
+
+            registration.release();
+
+            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED, registry.attribute(ON_TERMINATED, LEG));
+        }
+
+        @Test
+        @DisplayName("a connection on another listener, or with no local address, is neutral even behind the front")
+        void otherListenerIsNeutral() {
+            registry.frontTerminatedListener(TERMINATED_PORT);
+            SocketAddress remote = SocketAddress.inetSocketAddress(50002, LOOPBACK);
+
+            assertAll(
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE, registry.attribute(ON_OTHER_LISTENER, remote)),
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE, registry.attribute(null, remote)));
+        }
+
+        @Test
+        @DisplayName("control: without a front the same terminated-listener miss is neutral")
+        void withoutFrontNothingIsUnattributed() {
+            registry.register(LEG, CLIENT_A);
+
+            assertAll(
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE,
+                            registry.attribute(ON_TERMINATED, SocketAddress.inetSocketAddress(50002, LOOPBACK))),
+                    () -> assertEquals(new RelayedPeerRegistry.Attribution(CLIENT_A, false),
+                            registry.attribute(ON_TERMINATED, LEG), "a hit needs no front"));
+        }
+
+        @Test
+        @DisplayName("the terminated listener's port is set once: the same port again is accepted, another refused")
+        void portIsSetOnce() {
+            registry.frontTerminatedListener(TERMINATED_PORT);
+
+            assertAll(
+                    () -> assertDoesNotThrow(() -> registry.frontTerminatedListener(TERMINATED_PORT)),
+                    () -> assertThrows(IllegalStateException.class, () -> registry.frontTerminatedListener(8445)));
+        }
+
+        @ParameterizedTest(name = "[{0}]")
+        @ValueSource(ints = {0, -1, 65_536})
+        @DisplayName("a port outside 1..65535 is refused")
+        void outOfRangePortIsRefused(int port) {
+            assertThrows(IllegalArgumentException.class, () -> registry.frontTerminatedListener(port));
+        }
+
+        @Test
+        @DisplayName("an attribution never prints the client's address and cannot be both relayed and unattributed")
+        void attributionHidesTheAddressAndIsConsistent() {
+            RelayedPeerRegistry.Attribution relayed = new RelayedPeerRegistry.Attribution(CLIENT_A, false);
+
+            assertAll(
+                    () -> assertFalse(relayed.toString().contains(CLIENT_A)),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> new RelayedPeerRegistry.Attribution(CLIENT_A, true)));
+        }
     }
 }

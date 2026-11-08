@@ -127,12 +127,19 @@ public class TlsEdgeProducer {
         this.httpIdleTimeout = Objects.requireNonNull(httpIdleTimeout, "httpIdleTimeout");
         this.publicPort = publicPort;
         this.internalHttpsPort = internalHttpsPort;
+        if (passthroughConfigured(gatewayConfig)) {
+            // Recorded before the registry is produced, so no request can reach the edge while the
+            // internal terminated listener is still unknown to it.
+            relayedPeers.frontTerminatedListener(internalHttpsPort);
+        }
     }
 
     /**
      * The runtime's one relayed-peer registry: the front listener's terminated relay registers into it
      * and the edge looks a request's connection up in it. Produced whether or not the front listener
-     * runs; without it the registry stays empty and every lookup misses.
+     * runs; without it the registry stays empty and every lookup misses. With
+     * {@code tls.passthrough_sni} set it also knows the internal terminated listener's port, so a
+     * request on that listener without a hand-off is reported unattributed.
      *
      * @return the registry shared by the terminated relay and the edge
      */
@@ -224,6 +231,17 @@ public class TlsEdgeProducer {
         if (netClient != null) {
             netClient.close();
         }
+    }
+
+    /**
+     * Whether {@code tls.passthrough_sni} names any host — the condition the front listener starts
+     * under. A validated configuration resolves every entry (ADR-0009), so this agrees with a
+     * non-empty {@link #buildRelayMap()}; where it would not, the registry errs towards reporting a
+     * terminated-listener connection unattributed.
+     */
+    private static boolean passthroughConfigured(GatewayConfig gatewayConfig) {
+        TlsConfig tls = gatewayConfig.tls();
+        return tls != null && !tls.passthroughSni().isEmpty();
     }
 
     private Map<String, RelayTarget> buildRelayMap() {

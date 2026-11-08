@@ -173,6 +173,15 @@ the request only on an exact hit for the request connection's remote address, so
 relay did not dial gets nothing, whatever it sends. The address feeds only the pending-login quota
 key (`PendingQuotaKeys`); the TCP peer every other stage reads stays the relay leg.
 
+The quota key fails closed without that hit. When `tls.passthrough_sni` is set, `TlsEdgeProducer`
+records the internal HTTPS port in the registry, and a request that arrived on that port without an
+exact hit -- a connection the relay never dialled, or one whose relay session has already ended --
+is marked unattributed (`PipelineRequest.unattributedTerminatedLeg()`). `PendingQuotaKeys` keys such
+a request on its own TCP peer and never reads its `X-Forwarded-For` or `Forwarded` header for it,
+even when that peer is listed in `forwarded.trusted_proxies`. A registry hit keeps the relayed
+client's address, and without a front listener no request is marked, so the forwarded-header rules
+apply exactly as configured.
+
 `TlsEdgeProducer` builds the immutable SNI -> `RelayTarget` map from `GatewayConfig.tls()` and the
 resolved topology. Per link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] an
 unresolved passthrough alias means the `ConfigValidator` already failed the boot, so a present entry

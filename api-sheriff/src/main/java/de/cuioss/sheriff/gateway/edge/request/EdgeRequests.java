@@ -59,7 +59,9 @@ public final class EdgeRequests {
      * When the request's connection is a relay leg the gateway's own SNI front listener dialled — an
      * exact hit of its remote address in {@code relayedPeers} — the original client's address is
      * recorded as the {@linkplain PipelineRequest#relayedPeerAddress() relayed peer address}; the peer
-     * address stays the TCP peer. No header is consulted for it.
+     * address stays the TCP peer. No header is consulted for it. A request that arrived on the internal
+     * terminated listener behind the front without such a hit is marked
+     * {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed} instead.
      *
      * @param raw          the Vert.x request
      * @param method       the parsed request method
@@ -74,6 +76,7 @@ public final class EdgeRequests {
         long contentLength = parseContentLength(raw);
         boolean bodyPresent = contentLength > 0 || raw.headers().contains("Transfer-Encoding");
         var authority = raw.authority();
+        RelayedPeerRegistry.Attribution attribution = relayedPeers.attribute(raw.localAddress(), raw.remoteAddress());
         return PipelineRequest.builder()
                 .method(method)
                 .requestPath(rawPath)
@@ -83,7 +86,8 @@ public final class EdgeRequests {
                 .host(authorityHost(raw))
                 .authorityPort(authority == null ? -1 : authority.port())
                 .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
-                .relayedPeerAddress(relayedPeers.clientOf(raw.remoteAddress()).orElse(null))
+                .relayedPeerAddress(attribution.clientAddress())
+                .unattributedTerminatedLeg(attribution.unattributed())
                 .declaredContentLength(contentLength)
                 .bodyPresent(bodyPresent)
                 .build();

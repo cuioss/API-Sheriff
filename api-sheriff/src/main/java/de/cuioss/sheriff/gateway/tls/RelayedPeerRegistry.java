@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 import io.vertx.core.net.SocketAddress;
@@ -37,19 +38,51 @@ import org.jspecify.annotations.Nullable;
  * not hold yields nothing, so a client that reaches the internal listener directly, or sends any
  * header, cannot supply an address. No header is read.
  * <p>
+ * <strong>A miss on the terminated listener is reported, not just absent.</strong> Once the front
+ * listener is known to relay to the internal terminated listener ({@link #frontTerminatedListener}),
+ * a connection that arrived on that listener's port without an exact hit — one the relay never
+ * dialled, or one whose session the relay has already released — is reported as
+ * {@linkplain Attribution#unattributed() unattributed}, so its consumer can refuse to let any header
+ * stand in for the missing hand-off. Without a front listener nothing is ever reported unattributed.
+ * <p>
  * An entry lives exactly as long as its relay session: {@link Registration#release()} removes it
  * only while the entry is still the one that registration put there, so a session that ends after
  * its local port was reused never drops the newer session's entry.
  * <p>
  * <strong>Thread safety.</strong> Safe for concurrent use: the relay registers and releases on its
- * event loop while the edge looks up from request threads.
+ * event loop while the edge looks up from request threads; the terminated listener's port is set at
+ * most once.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 public final class RelayedPeerRegistry {
 
+    /** The {@link #terminatedListenerPort} value while no front listener relays to a terminated listener. */
+    private static final int NOT_FRONTED = -1;
+    private static final int MAX_PORT = 65_535;
+
     private final Map<String, Registration> byRelayLeg = new ConcurrentHashMap<>();
+    private final AtomicInteger terminatedListenerPort = new AtomicInteger(NOT_FRONTED);
+
+    /**
+     * Records that the SNI front listener relays terminated connections to the internal listener on
+     * {@code port}. From then on a connection that arrived on that port without an exact hit is
+     * {@linkplain Attribution#unattributed() unattributed}. Set once, before the first request can
+     * reach the edge; setting the same port again changes nothing.
+     *
+     * @param port the local port of the internal terminated listener, {@code 1..65535}
+     * @throws IllegalArgumentException when {@code port} is outside {@code 1..65535}
+     * @throws IllegalStateException    when another port was already recorded
+     */
+    public void frontTerminatedListener(int port) {
+        if (port < 1 || port > MAX_PORT) {
+            throw new IllegalArgumentException("Terminated listener port out of range: " + port);
+        }
+        if (!terminatedListenerPort.compareAndSet(NOT_FRONTED, port) && terminatedListenerPort.get() != port) {
+            throw new IllegalStateException("A different terminated listener port is already recorded");
+        }
+    }
 
     /**
      * Records that the relay leg whose local socket address is {@code relayLegLocalAddress} carries
@@ -68,6 +101,30 @@ public final class RelayedPeerRegistry {
     }
 
     /**
+     * What the registry knows about the connection a request arrived on: the relayed client's address
+     * on an exact hit, else whether the connection arrived on the internal terminated listener behind
+     * the front without one.
+     *
+     * @param connectionLocalAddress  the local socket address of the connection a request arrived on,
+     *                                {@code null} when the transport supplied none
+     * @param connectionRemoteAddress the remote socket address of the connection a request arrived on,
+     *                                {@code null} when the transport supplied none
+     * @return the attribution; {@link Attribution#NONE} for a connection that neither hit nor reached
+     *         the fronted terminated listener
+     */
+    public Attribution attribute(@Nullable SocketAddress connectionLocalAddress,
+            @Nullable SocketAddress connectionRemoteAddress) {
+        Optional<String> client = clientOf(connectionRemoteAddress);
+        if (client.isPresent()) {
+            return new Attribution(client.get(), false);
+        }
+        int port = terminatedListenerPort.get();
+        boolean onTerminatedListener = port != NOT_FRONTED && connectionLocalAddress != null
+                && connectionLocalAddress.port() == port;
+        return onTerminatedListener ? Attribution.UNATTRIBUTED : Attribution.NONE;
+    }
+
+    /**
      * The original client address of the connection whose remote socket address is
      * {@code connectionRemoteAddress}.
      *
@@ -76,7 +133,7 @@ public final class RelayedPeerRegistry {
      * @return the client address on an exact hit (host and port); empty for any connection this
      *         process did not relay
      */
-    public Optional<String> clientOf(@Nullable SocketAddress connectionRemoteAddress) {
+    Optional<String> clientOf(@Nullable SocketAddress connectionRemoteAddress) {
         if (connectionRemoteAddress == null) {
             return Optional.empty();
         }
@@ -94,6 +151,50 @@ public final class RelayedPeerRegistry {
     private static String keyOf(SocketAddress address) {
         String host = address.hostAddress() != null ? address.hostAddress() : address.host();
         return host + "|" + address.port();
+    }
+
+    /**
+     * The registry's verdict on one connection. At most one of the two components is set: a relayed
+     * client's address, or the {@code unattributed} mark of a connection that reached the fronted
+     * terminated listener without a hand-off.
+     *
+     * @param clientAddress the relayed client's address on an exact hit; {@code null} otherwise
+     * @param unattributed  {@code true} when the connection arrived on the internal terminated listener
+     *                      behind the front and the registry holds no entry for it
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public record Attribution(@Nullable String clientAddress, boolean unattributed) {
+
+        /** A connection the registry neither attributes nor marks: no front, or another listener. */
+        public static final Attribution NONE = new Attribution(null, false);
+
+        /** A connection on the fronted terminated listener that the registry holds no entry for. */
+        public static final Attribution UNATTRIBUTED = new Attribution(null, true);
+
+        /**
+         * Canonical constructor rejecting a verdict that both names a client and marks it unattributed.
+         *
+         * @throws IllegalArgumentException when {@code clientAddress} is set and {@code unattributed} too
+         */
+        public Attribution {
+            if (clientAddress != null && unattributed) {
+                throw new IllegalArgumentException("An attributed connection cannot be unattributed");
+            }
+        }
+
+        /**
+         * Overridden so the client address is never printed.
+         *
+         * @return a fixed text naming the verdict only
+         */
+        @Override
+        public String toString() {
+            if (clientAddress != null) {
+                return "Attribution[relayed]";
+            }
+            return unattributed ? "Attribution[unattributed]" : "Attribution[none]";
+        }
     }
 
     /**

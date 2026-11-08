@@ -161,6 +161,28 @@ class PendingQuotaKeysTest {
                         "an untrusted client behind the front is keyed on its own address, its header ignored"));
     }
 
+    /**
+     * Behind the front, a request on the terminated listener that the relay holds no hand-off for
+     * arrives from the loopback relay leg — here a trusted forwarder. Its forwarding header must not
+     * name its source; the matched control is the same request without the mark, whose header is read.
+     */
+    @Test
+    @DisplayName("an unattributed terminated-listener request is keyed on its TCP peer, even from a trusted peer")
+    void unattributedTerminatedLegIsKeyedOnItsPeer() {
+        PendingQuotaKeys trustingRelayLeg = quotaKeys(List.of(RELAY_LEG + "/32"));
+        Map<String, String> forged = Map.of(FORWARDED_FOR, FORWARDED_CLIENT);
+
+        String unattributed = trustingRelayLeg.quotaKeyOf(unattributed(RELAY_LEG, forged));
+        String unattributedUntrusting = quotaKeys(List.of()).quotaKeyOf(unattributed(RELAY_LEG, forged));
+        String unmarked = trustingRelayLeg.quotaKeyOf(request(RELAY_LEG, forged));
+
+        assertAll("the mark keeps the forwarding header out of the key",
+                () -> assertEquals(RELAY_LEG, unattributed, "no header stands in for the missing hand-off"),
+                () -> assertEquals(RELAY_LEG, unattributedUntrusting, "the same key without any trusted proxy"),
+                () -> assertEquals(FORWARDED_CLIENT, unmarked,
+                        "control: without the mark the trusted peer's header names the source"));
+    }
+
     @Test
     @DisplayName("Should reject absent collaborators and an absent request")
     void shouldRejectNulls() {
@@ -191,9 +213,18 @@ class PendingQuotaKeysTest {
     /** A request whose TCP peer is {@code peer} and for which the edge recorded {@code relayedPeer}. */
     private static PipelineRequest relayed(@Nullable String peer, @Nullable String relayedPeer,
             Map<String, String> headers) {
+        return builder(peer, headers).relayedPeerAddress(relayedPeer).build();
+    }
+
+    /** A request the edge marked as arriving on the fronted terminated listener without a hand-off. */
+    private static PipelineRequest unattributed(String peer, Map<String, String> headers) {
+        return builder(peer, headers).unattributedTerminatedLeg(true).build();
+    }
+
+    private static PipelineRequest.Builder builder(@Nullable String peer, Map<String, String> headers) {
         Map<String, List<String>> multi = new LinkedHashMap<>();
         headers.forEach((name, value) -> multi.put(name, List.of(value)));
         return PipelineRequest.builder().method(HttpMethod.GET).requestPath("/auth/login").peerAddress(peer)
-                .relayedPeerAddress(relayedPeer).headers(multi).build();
+                .headers(multi);
     }
 }

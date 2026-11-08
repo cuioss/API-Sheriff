@@ -43,6 +43,7 @@ import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
 import io.vertx.core.net.NetClientOptions;
+import io.vertx.core.net.SocketAddress;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -355,6 +356,44 @@ class TlsEdgeProducerTest {
                 assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
                         "shutdown is a no-op when the only alias was skipped");
             }
+        }
+    }
+
+    /**
+     * The produced registry knows the internal terminated listener exactly when a front listener is
+     * configured: a connection on that port without a hand-off is unattributed with
+     * {@code passthrough_sni} set, and neutral without it. No listener is started here — the producer
+     * records the port on construction, before the registry can be handed to the edge.
+     */
+    @Nested
+    @DisplayName("The produced relayed-peer registry")
+    class ProducedRegistry {
+
+        private final SocketAddress onTerminated = SocketAddress.inetSocketAddress(INTERNAL_HTTPS_PORT,
+                LoopbackHost.ADDRESS);
+        private final SocketAddress unregisteredLeg = SocketAddress.inetSocketAddress(50001, LoopbackHost.ADDRESS);
+
+        @Test
+        @DisplayName("knows the internal terminated listener when passthrough_sni is set")
+        void frontedWhenPassthroughConfigured() {
+            GatewayConfig config = GatewayConfig.builder().version(1)
+                    .tls(TlsConfig.builder().passthroughSni(Map.of("sni.resolved.example", RESOLVED_ALIAS)).build())
+                    .build();
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, new ResolvedTopology(Map.of()), NO_ROUTES,
+                    HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
+
+            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED,
+                    producer.relayedPeerRegistry().attribute(onTerminated, unregisteredLeg));
+        }
+
+        @Test
+        @DisplayName("control: leaves every connection neutral when passthrough_sni is empty")
+        void neutralWhenPassthroughUnconfigured() {
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, GatewayConfig.builder().version(1).build(),
+                    new ResolvedTopology(Map.of()), NO_ROUTES, HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
+
+            assertEquals(RelayedPeerRegistry.Attribution.NONE,
+                    producer.relayedPeerRegistry().attribute(onTerminated, unregisteredLeg));
         }
     }
 

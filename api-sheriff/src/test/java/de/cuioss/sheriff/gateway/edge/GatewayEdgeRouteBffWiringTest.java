@@ -2129,34 +2129,138 @@ public class GatewayEdgeRouteBffWiringTest {
                             "no header names a client, and another connection's entry is not this one's"));
         }
 
-        /**
-         * Drives one login over a raw connection, so the connection's local address is known before the
-         * request is sent and can be registered as a relay leg would be.
-         *
-         * @param relayedClient the client the stand-in relay hands over for the connection, or
-         *                      {@code null} to send the request over an unregistered connection
-         * @param headers       extra request headers
-         * @return the response status
-         */
         private int login(@Nullable String relayedClient, Map<String, String> headers) throws Exception {
-            NetSocket socket = Awaits.connect(client.connect(front.actualPort(), LoopbackHost.ADDRESS),
-                    "the connection to the edge");
-            RelayedPeerRegistry.Registration registration = relayedClient == null ? null
-                    : relayedPeers.register(socket.localAddress(), relayedClient);
-            Buffer response = Buffer.buffer();
-            CompletableFuture<Buffer> closed = new CompletableFuture<>();
-            socket.handler(response::appendBuffer);
-            socket.closeHandler(v -> closed.complete(response));
-            StringBuilder request = new StringBuilder("GET " + LOGIN_PATH + " HTTP/1.1\r\nHost: " + OIDC_HOST
-                    + "\r\nConnection: close\r\n");
-            headers.forEach((name, value) -> request.append(name).append(": ").append(value).append("\r\n"));
-            Awaits.connect(socket.write(request.append("\r\n").toString()), "the login request to be written");
-            String answer = Awaits.connect(closed, "the edge to answer and close").toString(StandardCharsets.US_ASCII);
-            if (registration != null) {
-                registration.release();
-            }
-            return Integer.parseInt(answer.substring("HTTP/1.1 ".length(), "HTTP/1.1 ".length() + 3));
+            return rawLogin(client, front, relayedPeers, relayedClient, headers);
         }
+    }
+
+    /**
+     * The fail-closed rule behind the SNI front, observed where it takes effect: the reserved login
+     * path's pending record. Here the loopback peer IS a trusted forwarder, so a request whose
+     * forwarding header the quota key reads is counted under the client that header names. Behind the
+     * front, a connection on the internal terminated listener that the relay holds no hand-off for must
+     * not be: it is counted under its own TCP peer, whatever it forwards. The test stands in for the
+     * front by recording its edge's own port as the terminated listener, and for the relay by
+     * registering a connection's local address.
+     * <p>
+     * The unfronted edge is the matched control: the identical request is counted under the client its
+     * header names. Before the rule existed no code distinguished the two edges, so the fronted case
+     * received exactly that key too.
+     */
+    @Nested
+    @DisplayName("behind the SNI front, a terminated-listener connection without a hand-off is keyed on its TCP peer")
+    class FrontedTerminatedListenerQuotaKey {
+
+        private static final String FORGED_CLIENT = "198.51.100.1";
+        private static final String RELAYED_CLIENT = "198.51.100.2";
+
+        private final RelayedPeerRegistry frontedPeers = new RelayedPeerRegistry();
+        private final RelayedPeerRegistry unfrontedPeers = new RelayedPeerRegistry();
+        private final List<String> frontedKeys = new CopyOnWriteArrayList<>();
+        private final List<String> unfrontedKeys = new CopyOnWriteArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer frontedFront;
+        private HttpServer unfrontedFront;
+        private NetClient client;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            frontedFront = trustingLoopbackEdge(frontedPeers, frontedKeys);
+            frontedPeers.frontTerminatedListener(frontedFront.actualPort());
+            unfrontedFront = trustingLoopbackEdge(unfrontedPeers, unfrontedKeys);
+            client = vertx.createNetClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the TCP client to close");
+            Awaits.teardown(frontedFront.close(), "the fronted edge front server to close");
+            Awaits.teardown(unfrontedFront.close(), "the unfronted edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("(a) an unregistered connection with a forged X-Forwarded-For is keyed on its TCP peer")
+        void unregisteredConnectionIsKeyedOnItsTcpPeer() throws Exception {
+            int status = rawLogin(client, frontedFront, frontedPeers, null, Map.of("X-Forwarded-For", FORGED_CLIENT));
+
+            assertAll("the forwarding header does not stand in for the missing hand-off",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(LoopbackHost.ADDRESS), frontedKeys,
+                            "the request is counted under its own TCP peer, not the client its header names"));
+        }
+
+        @Test
+        @DisplayName("(b) a registered relay leg is still keyed on the relayed client")
+        void registeredConnectionKeepsTheRelayedClient() throws Exception {
+            int status = rawLogin(client, frontedFront, frontedPeers, RELAYED_CLIENT,
+                    Map.of("X-Forwarded-For", FORGED_CLIENT));
+
+            assertAll("the hand-off still names the client",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(RELAYED_CLIENT), frontedKeys,
+                            "an exact registry hit keys the login on the client the relay handed over"));
+        }
+
+        @Test
+        @DisplayName("(c) without a front listener the trusted peer's forwarding header is honoured as before")
+        void withoutAFrontTheForwardingHeaderIsHonoured() throws Exception {
+            int status = rawLogin(client, unfrontedFront, unfrontedPeers, null,
+                    Map.of("X-Forwarded-For", FORGED_CLIENT));
+
+            assertAll("the unfronted edge reads the trusted forwarder's header",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(FORGED_CLIENT), unfrontedKeys,
+                            "control: with no front the identical request is counted under its forwarded client"));
+        }
+
+        private HttpServer trustingLoopbackEdge(RelayedPeerRegistry registry, List<String> storedKeys)
+                throws Exception {
+            return EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(storedKeys),
+                            quotaKeysTrusting(List.of(LoopbackHost.ADDRESS + "/32"))))
+                    .relayedPeers(registry)
+                    .serve();
+        }
+    }
+
+    /**
+     * Drives one login over a raw connection, so the connection's local address is known before the
+     * request is sent and can be registered as a relay leg would be.
+     *
+     * @param client        the TCP client to connect with
+     * @param front         the edge to send the login to
+     * @param relayedPeers  the registry the edge looks the connection up in
+     * @param relayedClient the client the stand-in relay hands over for the connection, or
+     *                      {@code null} to send the request over an unregistered connection
+     * @param headers       extra request headers
+     * @return the response status
+     */
+    private static int rawLogin(NetClient client, HttpServer front, RelayedPeerRegistry relayedPeers,
+            @Nullable String relayedClient, Map<String, String> headers) throws Exception {
+        NetSocket socket = Awaits.connect(client.connect(front.actualPort(), LoopbackHost.ADDRESS),
+                "the connection to the edge");
+        RelayedPeerRegistry.Registration registration = relayedClient == null ? null
+                : relayedPeers.register(socket.localAddress(), relayedClient);
+        Buffer response = Buffer.buffer();
+        CompletableFuture<Buffer> closed = new CompletableFuture<>();
+        socket.handler(response::appendBuffer);
+        socket.closeHandler(v -> closed.complete(response));
+        StringBuilder request = new StringBuilder("GET " + LOGIN_PATH + " HTTP/1.1\r\nHost: " + OIDC_HOST
+                + "\r\nConnection: close\r\n");
+        headers.forEach((name, value) -> request.append(name).append(": ").append(value).append("\r\n"));
+        Awaits.connect(socket.write(request.append("\r\n").toString()), "the login request to be written");
+        String answer = Awaits.connect(closed, "the edge to answer and close").toString(StandardCharsets.US_ASCII);
+        if (registration != null) {
+            registration.release();
+        }
+        return Integer.parseInt(answer.substring("HTTP/1.1 ".length(), "HTTP/1.1 ".length() + 3));
     }
 
     /** An in-memory pending store that records the quota key of every record offered to it. */
