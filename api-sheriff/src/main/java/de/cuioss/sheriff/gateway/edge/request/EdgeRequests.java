@@ -27,6 +27,7 @@ import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.tls.RelayedPeerRegistry;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpServerRequest;
 import org.jspecify.annotations.Nullable;
@@ -54,12 +55,19 @@ public final class EdgeRequests {
      * Builds the pipeline request from the Vert.x request: the raw path, the raw query pairs in wire
      * order (see {@link #rawQueryPairs}), every header, the scheme, the authority host and port, the
      * peer address, the declared body length and whether a body is present at all.
+     * <p>
+     * When the request's connection is a relay leg the gateway's own SNI front listener dialled — an
+     * exact hit of its remote address in {@code relayedPeers} — the original client's address is
+     * recorded as the {@linkplain PipelineRequest#relayedPeerAddress() relayed peer address}; the peer
+     * address stays the TCP peer. No header is consulted for it.
      *
-     * @param raw    the Vert.x request
-     * @param method the parsed request method
+     * @param raw          the Vert.x request
+     * @param method       the parsed request method
+     * @param relayedPeers the in-process hand-off of relayed clients' addresses
      * @return the pipeline request
      */
-    public static PipelineRequest buildPipelineRequest(HttpServerRequest raw, HttpMethod method) {
+    public static PipelineRequest buildPipelineRequest(HttpServerRequest raw, HttpMethod method,
+            RelayedPeerRegistry relayedPeers) {
         String rawUri = raw.uri();
         int queryStart = rawUri.indexOf('?');
         String rawPath = queryStart < 0 ? rawUri : rawUri.substring(0, queryStart);
@@ -75,6 +83,7 @@ public final class EdgeRequests {
                 .host(authorityHost(raw))
                 .authorityPort(authority == null ? -1 : authority.port())
                 .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
+                .relayedPeerAddress(relayedPeers.clientOf(raw.remoteAddress()).orElse(null))
                 .declaredContentLength(contentLength)
                 .bodyPresent(bodyPresent)
                 .build();

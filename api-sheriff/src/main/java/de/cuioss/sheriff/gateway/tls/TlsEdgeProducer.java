@@ -41,7 +41,9 @@ import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jspecify.annotations.Nullable;
 
@@ -96,6 +98,7 @@ public class TlsEdgeProducer {
     private final Duration httpIdleTimeout;
     private final int publicPort;
     private final int internalHttpsPort;
+    private final RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
 
     private @Nullable NetClient netClient;
     private @Nullable SniFrontListener listener;
@@ -127,6 +130,19 @@ public class TlsEdgeProducer {
     }
 
     /**
+     * The runtime's one relayed-peer registry: the front listener's terminated relay registers into it
+     * and the edge looks a request's connection up in it. Produced whether or not the front listener
+     * runs; without it the registry stays empty and every lookup misses.
+     *
+     * @return the registry shared by the terminated relay and the edge
+     */
+    @Produces
+    @Singleton
+    RelayedPeerRegistry relayedPeerRegistry() {
+        return relayedPeers;
+    }
+
+    /**
      * Builds the relay map and, when passthrough is configured, derives the relay idle timeout and
      * starts the front listener — blocking the boot until the public port is bound so a bind failure
      * aborts startup.
@@ -142,7 +158,7 @@ public class TlsEdgeProducer {
         Duration relayIdleTimeout = relayIdleTimeout(httpIdleTimeout, routeTable);
         LOGGER.debug("Relay idle timeout derived as %s", relayIdleTimeout);
         this.netClient = vertx.createNetClient(relayClientOptions(relayIdleTimeout));
-        PassthroughRelay relay = new PassthroughRelay(netClient);
+        PassthroughRelay relay = new PassthroughRelay(netClient, relayedPeers);
         RelayTarget terminatedTarget = new RelayTarget(TERMINATED_HOST, internalHttpsPort);
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, publicPort,
                 relayIdleTimeout);

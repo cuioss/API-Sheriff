@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -99,6 +100,7 @@ import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.tls.RelayedPeerRegistry;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
@@ -126,6 +128,8 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -2039,23 +2043,137 @@ public class GatewayEdgeRouteBffWiringTest {
                             .compose(request -> request.putHeader("X-Forwarded-For", forwardedClient).send()),
                     "the login response forwarding " + forwardedClient).statusCode();
         }
+    }
 
-        /** An in-memory pending store that records the quota key of every record offered to it. */
-        private static PendingAuthorizationStore recordingStore(List<String> quotaKeys) {
-            InMemoryPendingAuthorizationStore delegate = new InMemoryPendingAuthorizationStore(16);
-            return new PendingAuthorizationStore() {
-                @Override
-                public void store(PendingAuthorizationRecord pending, Instant now) {
-                    quotaKeys.add(pending.quotaKey());
-                    delegate.store(pending, now);
-                }
+    /**
+     * The SNI front listener's in-process hand-off, observed where it takes effect: the reserved login
+     * path's pending record. The test stands in for the front's terminated relay by registering the
+     * local address of its own connection to the edge — exactly the address the relay registers for its
+     * loopback leg — and the gateway trusts no forwarder, so without the hand-off every request is keyed
+     * on the loopback peer.
+     */
+    @Nested
+    @DisplayName("the SNI front's client hand-off keys a pending login, and only over a registered relay leg")
+    class RelayedClientHandOff {
 
-                @Override
-                public Optional<PendingAuthorizationRecord> consume(String recordId, Instant now) {
-                    return delegate.consume(recordId, now);
-                }
-            };
+        private static final String CLIENT_A = "198.51.100.1";
+        private static final String CLIENT_B = "198.51.100.2";
+
+        private final RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
+        private final List<String> storedKeys = new CopyOnWriteArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private NetClient client;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(storedKeys),
+                            untrustingQuotaKeys()))
+                    .relayedPeers(relayedPeers)
+                    .serve();
+            client = vertx.createNetClient();
         }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the TCP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("two relayed clients are counted apart, where unrelayed they share the loopback key")
+        void relayedClientsGetDistinctQuotaKeys() throws Exception {
+            List<Integer> statuses = List.of(
+                    login(CLIENT_A, Map.of()), login(CLIENT_B, Map.of()),
+                    login(null, Map.of()), login(null, Map.of()));
+
+            assertAll("each relay leg's login is counted under the client the relay handed over",
+                    () -> assertEquals(List.of(302, 302, 302, 302), statuses,
+                            "precondition: every login stored its record and redirected"),
+                    () -> assertEquals(List.of(CLIENT_A, CLIENT_B, LoopbackHost.ADDRESS, LoopbackHost.ADDRESS),
+                            storedKeys, "the two relayed clients are keyed apart; without the hand-off "
+                                    + "the same requests share the loopback key"));
+        }
+
+        /**
+         * The hand-off is an exact hit on a connection the relay registered, and nothing a client sends
+         * can produce one. Another connection is registered while the request runs, so the registry is
+         * not empty — the request's own connection is simply not in it.
+         */
+        @Test
+        @DisplayName("a connection the relay did not register gets no hand-off, whatever headers it sends")
+        void unregisteredConnectionCannotInjectAHandOff() throws Exception {
+            NetSocket registeredElsewhere = Awaits.connect(client.connect(front.actualPort(), LoopbackHost.ADDRESS),
+                    "a relay leg to connect to the edge");
+            relayedPeers.register(registeredElsewhere.localAddress(), CLIENT_B);
+            Map<String, String> forged = Map.of(
+                    "X-Forwarded-For", CLIENT_A,
+                    "Forwarded", "for=" + CLIENT_A,
+                    "X-Real-IP", CLIENT_A,
+                    "X-Relayed-Peer", CLIENT_A,
+                    "X-Sheriff-Relayed-Peer", CLIENT_A);
+
+            int status = login(null, forged);
+
+            assertAll("the request is keyed on its own TCP peer",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(LoopbackHost.ADDRESS), storedKeys,
+                            "no header names a client, and another connection's entry is not this one's"));
+        }
+
+        /**
+         * Drives one login over a raw connection, so the connection's local address is known before the
+         * request is sent and can be registered as a relay leg would be.
+         *
+         * @param relayedClient the client the stand-in relay hands over for the connection, or
+         *                      {@code null} to send the request over an unregistered connection
+         * @param headers       extra request headers
+         * @return the response status
+         */
+        private int login(@Nullable String relayedClient, Map<String, String> headers) throws Exception {
+            NetSocket socket = Awaits.connect(client.connect(front.actualPort(), LoopbackHost.ADDRESS),
+                    "the connection to the edge");
+            RelayedPeerRegistry.Registration registration = relayedClient == null ? null
+                    : relayedPeers.register(socket.localAddress(), relayedClient);
+            Buffer response = Buffer.buffer();
+            CompletableFuture<Buffer> closed = new CompletableFuture<>();
+            socket.handler(response::appendBuffer);
+            socket.closeHandler(v -> closed.complete(response));
+            StringBuilder request = new StringBuilder("GET " + LOGIN_PATH + " HTTP/1.1\r\nHost: " + OIDC_HOST
+                    + "\r\nConnection: close\r\n");
+            headers.forEach((name, value) -> request.append(name).append(": ").append(value).append("\r\n"));
+            Awaits.connect(socket.write(request.append("\r\n").toString()), "the login request to be written");
+            String answer = Awaits.connect(closed, "the edge to answer and close").toString(StandardCharsets.US_ASCII);
+            if (registration != null) {
+                registration.release();
+            }
+            return Integer.parseInt(answer.substring("HTTP/1.1 ".length(), "HTTP/1.1 ".length() + 3));
+        }
+    }
+
+    /** An in-memory pending store that records the quota key of every record offered to it. */
+    private static PendingAuthorizationStore recordingStore(List<String> quotaKeys) {
+        InMemoryPendingAuthorizationStore delegate = new InMemoryPendingAuthorizationStore(16);
+        return new PendingAuthorizationStore() {
+            @Override
+            public void store(PendingAuthorizationRecord pending, Instant now) {
+                quotaKeys.add(pending.quotaKey());
+                delegate.store(pending, now);
+            }
+
+            @Override
+            public Optional<PendingAuthorizationRecord> consume(String recordId, Instant now) {
+                return delegate.consume(recordId, now);
+            }
+        };
     }
 
     private static OidcConfig fullOidc() {

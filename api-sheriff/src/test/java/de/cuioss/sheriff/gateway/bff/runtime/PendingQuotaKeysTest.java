@@ -49,6 +49,10 @@ class PendingQuotaKeysTest {
     private static final String PROXY = "192.0.2.10";
     private static final String PEER = "198.51.100.23";
     private static final String FORWARDED_CLIENT = "203.0.113.7";
+    /** The loopback relay leg every request behind the gateway's own SNI front arrives from. */
+    private static final String RELAY_LEG = "127.0.0.1";
+    private static final String CLIENT_A = "198.51.100.1";
+    private static final String CLIENT_B = "198.51.100.2";
 
     private final PendingQuotaKeys quotaKeys = quotaKeys(List.of(PROXY + "/32"));
 
@@ -123,6 +127,40 @@ class PendingQuotaKeysTest {
         assertEquals(PROXY, untrusting.quotaKeyOf(request(PROXY, Map.of(FORWARDED_FOR, FORWARDED_CLIENT))));
     }
 
+    /**
+     * Behind the gateway's own SNI front every terminated request arrives from the relay's loopback
+     * leg. Without the hand-off two clients share that one key; with it each is keyed on its own
+     * address — the matched pair that ties the distinct keys to the hand-off.
+     */
+    @Test
+    @DisplayName("two relayed clients are keyed apart, where without the hand-off they share the relay leg's key")
+    void relayedClientsAreKeyedApart() {
+        PendingQuotaKeys untrusting = quotaKeys(List.of());
+
+        String first = untrusting.quotaKeyOf(relayed(RELAY_LEG, CLIENT_A, Map.of()));
+        String second = untrusting.quotaKeyOf(relayed(RELAY_LEG, CLIENT_B, Map.of()));
+        String firstWithoutHandOff = untrusting.quotaKeyOf(request(RELAY_LEG, Map.of()));
+        String secondWithoutHandOff = untrusting.quotaKeyOf(request(RELAY_LEG, Map.of()));
+
+        assertAll("the relayed client takes the relay leg's place",
+                () -> assertEquals(List.of(CLIENT_A, CLIENT_B), List.of(first, second)),
+                () -> assertEquals(List.of(RELAY_LEG, RELAY_LEG), List.of(firstWithoutHandOff, secondWithoutHandOff),
+                        "control: without the hand-off every relayed client shares the loopback key"));
+    }
+
+    @Test
+    @DisplayName("the relayed client is the peer the trust gate judges, in both of its branches")
+    void relayedClientIsThePeerTheGateJudges() {
+        String trustedForwarder = quotaKeys.quotaKeyOf(relayed(RELAY_LEG, PROXY, Map.of(FORWARDED_FOR, FORWARDED_CLIENT)));
+        String untrustedClient = quotaKeys.quotaKeyOf(relayed(RELAY_LEG, PEER, Map.of(FORWARDED_FOR, FORWARDED_CLIENT)));
+
+        assertAll(
+                () -> assertEquals(FORWARDED_CLIENT, trustedForwarder,
+                        "a trusted proxy behind the front is judged as the peer, so its header is read"),
+                () -> assertEquals(PEER, untrustedClient,
+                        "an untrusted client behind the front is keyed on its own address, its header ignored"));
+    }
+
     @Test
     @DisplayName("Should reject absent collaborators and an absent request")
     void shouldRejectNulls() {
@@ -147,9 +185,15 @@ class PendingQuotaKeysTest {
     }
 
     private static PipelineRequest request(@Nullable String peer, Map<String, String> headers) {
+        return relayed(peer, null, headers);
+    }
+
+    /** A request whose TCP peer is {@code peer} and for which the edge recorded {@code relayedPeer}. */
+    private static PipelineRequest relayed(@Nullable String peer, @Nullable String relayedPeer,
+            Map<String, String> headers) {
         Map<String, List<String>> multi = new LinkedHashMap<>();
         headers.forEach((name, value) -> multi.put(name, List.of(value)));
         return PipelineRequest.builder().method(HttpMethod.GET).requestPath("/auth/login").peerAddress(peer)
-                .headers(multi).build();
+                .relayedPeerAddress(relayedPeer).headers(multi).build();
     }
 }

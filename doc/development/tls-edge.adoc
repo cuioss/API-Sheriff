@@ -163,6 +163,16 @@ the TLS termination and L7 processing it would do anyway. This keeps the termina
 identical whether or not the front listener is present -- the split is purely an accept-time
 prefix, and the terminated listener is unaware it sits behind a relay.
 
+The one thing the relay hands over is the client's address, and it does so in process, never in a
+header. Every terminated connection reaches the internal listener from the relay's loopback leg, so
+the edge would otherwise see one peer for every client. A terminated relay registers its backend
+leg's local socket address (host and port) against the client's address in the
+`RelayedPeerRegistry` after the dial succeeds and before it writes the buffered ClientHello, and
+releases the entry when the session closes on either leg. The edge records the client's address on
+the request only on an exact hit for the request connection's remote address, so a connection the
+relay did not dial gets nothing, whatever it sends. The address feeds only the pending-login quota
+key (`PendingQuotaKeys`); the TCP peer every other stage reads stays the relay leg.
+
 `TlsEdgeProducer` builds the immutable SNI -> `RelayTarget` map from `GatewayConfig.tls()` and the
 resolved topology. Per link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] an
 unresolved passthrough alias means the `ConfigValidator` already failed the boot, so a present entry

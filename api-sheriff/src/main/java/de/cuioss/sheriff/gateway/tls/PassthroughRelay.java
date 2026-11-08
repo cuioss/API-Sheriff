@@ -23,6 +23,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.SocketAddress;
 
 /**
  * The opaque L4 TCP pipe: a {@link NetSocket} ↔ {@link NetSocket} relay, backpressured in both
@@ -45,6 +46,14 @@ import io.vertx.core.net.NetSocket;
  * relays to the topology-resolved backend, and a terminated (non-passthrough) connection relays to
  * the internal Quarkus HTTPS listener — the only difference is the target and the lifecycle log
  * level.
+ * <p>
+ * <strong>A terminated relay hands the client's address over.</strong> The internal listener sees
+ * every terminated connection arrive from the relay's loopback leg, so a terminated relay registers
+ * that leg's local socket address against the client's address in the {@link RelayedPeerRegistry}
+ * once the backend dial succeeded and before the first byte — the buffered ClientHello — is written
+ * to it, so no request can reach the internal listener on that leg without its entry. The entry is
+ * released when the session closes on either leg, an abort included. A passthrough relay registers
+ * nothing: the gateway never sees a request on it.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -54,13 +63,16 @@ public final class PassthroughRelay {
     private static final CuiLogger LOGGER = new CuiLogger(PassthroughRelay.class);
 
     private final NetClient netClient;
+    private final RelayedPeerRegistry relayedPeers;
 
     /**
-     * @param netClient the shared plain-TCP client the relay dials the backend with (no TLS), carrying
-     *                  the derived relay idle timeout
+     * @param netClient    the shared plain-TCP client the relay dials the backend with (no TLS), carrying
+     *                     the derived relay idle timeout
+     * @param relayedPeers the registry a terminated relay hands its client's address over through
      */
-    public PassthroughRelay(NetClient netClient) {
+    public PassthroughRelay(NetClient netClient, RelayedPeerRegistry relayedPeers) {
         this.netClient = Objects.requireNonNull(netClient, "netClient");
+        this.relayedPeers = Objects.requireNonNull(relayedPeers, "relayedPeers");
     }
 
     /**
@@ -91,14 +103,34 @@ public final class PassthroughRelay {
                 });
     }
 
-    private static void establish(NetSocket client, NetSocket backend, Buffer clientHello, RelayTarget target,
+    private void establish(NetSocket client, NetSocket backend, Buffer clientHello, RelayTarget target,
             RelayKind kind, String sniLabel) {
+        Runnable release = () -> {
+        };
         if (kind == RelayKind.PASSTHROUGH) {
             LOGGER.info(ApiSheriffLogMessages.INFO.PASSTHROUGH_RELAY_ESTABLISHED, sniLabel, target.toString());
         } else {
+            release = handOver(client, backend);
             LOGGER.debug("Terminated relay established to %s", target);
         }
-        new RelaySession(client, backend).start(clientHello);
+        new RelaySession(client, backend, release).start(clientHello);
+    }
+
+    /**
+     * Registers the backend leg's local address against the client's address, before the session
+     * writes its first byte to the backend.
+     *
+     * @return the action that releases the entry when the session ends
+     */
+    private Runnable handOver(NetSocket client, NetSocket backend) {
+        SocketAddress clientAddress = client.remoteAddress();
+        SocketAddress relayLeg = backend.localAddress();
+        if (clientAddress == null || relayLeg == null) {
+            return () -> {
+            };
+        }
+        String address = clientAddress.hostAddress() != null ? clientAddress.hostAddress() : clientAddress.host();
+        return relayedPeers.register(relayLeg, address)::release;
     }
 
     private static void closeQuietly(NetSocket socket) {
@@ -144,11 +176,14 @@ public final class PassthroughRelay {
 
         private final NetSocket client;
         private final NetSocket backend;
+        /** Releases the session's relayed-peer entry; a no-op for a passthrough relay. */
+        private final Runnable release;
         private boolean closed;
 
-        RelaySession(NetSocket client, NetSocket backend) {
+        RelaySession(NetSocket client, NetSocket backend, Runnable release) {
             this.client = client;
             this.backend = backend;
+            this.release = release;
         }
 
         void start(Buffer clientHello) {
@@ -190,6 +225,7 @@ public final class PassthroughRelay {
                 return;
             }
             closed = true;
+            release.run();
             closeLeg(client);
             closeLeg(backend);
         }

@@ -713,7 +713,9 @@ neither number is configurable.
 
 *Each source holds at most 256.* A pending login is counted under the address it came from: the
 client address the forwarding headers name when the request arrives through a proxy listed in
-`forwarded.trusted_proxies`, otherwise the address of the TCP connection. An IPv6 address counts by
+`forwarded.trusted_proxies`, otherwise the address of the TCP connection. Behind the gateway's own
+SNI front listener (`tls.passthrough_sni` set), that connection is the client's connection to the
+front listener, not the internal hop the gateway relays it over. An IPv6 address counts by
 its `/64`. Requests through a trusted proxy whose forwarding headers name no client, and requests
 without a usable address, are all counted as one source, `unknown`. When a source starts its 257th
 pending login, its oldest one is dropped; that user's callback is refused `403` and the login has to

@@ -70,6 +70,7 @@ public final class PipelineRequest {
     private final @Nullable String host;
     private final int authorityPort;
     private final @Nullable String peerAddress;
+    private final @Nullable String relayedPeerAddress;
     private final long declaredContentLength;
     private final boolean bodyPresent;
 
@@ -97,6 +98,7 @@ public final class PipelineRequest {
         this.host = builder.host;
         this.authorityPort = builder.authorityPort;
         this.peerAddress = builder.peerAddress;
+        this.relayedPeerAddress = builder.relayedPeerAddress;
         this.declaredContentLength = builder.declaredContentLength;
         this.bodyPresent = builder.bodyPresent;
     }
@@ -235,6 +237,19 @@ public final class PipelineRequest {
      */
     public @Nullable String peerAddress() {
         return peerAddress;
+    }
+
+    /**
+     * The address of the client whose connection the gateway's own SNI front listener relayed to the
+     * internal terminated listener. The edge sets it only when the request's connection is a relay leg
+     * this process dialled itself, from an in-process hand-off — never from a header — so a client
+     * cannot supply it. {@link #peerAddress()} stays the TCP peer, the relay leg.
+     *
+     * @return the relayed client's address, or {@code null} when the request did not arrive over the
+     *         gateway's own relay
+     */
+    public @Nullable String relayedPeerAddress() {
+        return relayedPeerAddress;
     }
 
     /**
@@ -520,6 +535,7 @@ public final class PipelineRequest {
         private @Nullable String host;
         private int authorityPort = -1;
         private @Nullable String peerAddress;
+        private @Nullable String relayedPeerAddress;
         private long declaredContentLength = -1L;
         private boolean bodyPresent;
 
@@ -601,6 +617,16 @@ public final class PipelineRequest {
          */
         public Builder peerAddress(@Nullable String peerAddress) {
             this.peerAddress = peerAddress;
+            return this;
+        }
+
+        /**
+         * @param relayedPeerAddress the client address the gateway's own relay handed over for the
+         *                           request's connection; {@code null} when there is none
+         * @return this builder
+         */
+        public Builder relayedPeerAddress(@Nullable String relayedPeerAddress) {
+            this.relayedPeerAddress = relayedPeerAddress;
             return this;
         }
 

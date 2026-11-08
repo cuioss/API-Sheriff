@@ -39,6 +39,13 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * or unparseable address folded to {@link SourceKey#UNKNOWN_SOURCE}. No authority host is part of the
  * key.
  * <p>
+ * <strong>The peer behind the gateway's own SNI front.</strong> With {@code tls.passthrough_sni} set,
+ * every terminated connection reaches the edge over the front listener's loopback relay leg, so the
+ * TCP peer would be that leg for every client. Where the edge recorded a
+ * {@linkplain PipelineRequest#relayedPeerAddress() relayed peer address} — handed over in process by
+ * the relay, never read from a header — that address takes the TCP peer's place in both rules above:
+ * it is the peer the trust gate judges and the address an untrusted peer is keyed on.
+ * <p>
  * <strong>One derivation, independent of detection.</strong> The key is derived here for every
  * producer of a pending record — the session stage and the reserved login, step-up and callback
  * paths — and never read from the edge-stashed source key, which exists only while
@@ -83,7 +90,8 @@ public final class PendingQuotaKeys {
      */
     public String quotaKeyOf(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
-        String peerAddress = request.peerAddress();
+        String relayedPeer = request.relayedPeerAddress();
+        String peerAddress = relayedPeer != null ? relayedPeer : request.peerAddress();
         if (!peerGate.isTrustedPeer(peerAddress)) {
             return SourceKeyResolver.canonicalSource(peerAddress);
         }

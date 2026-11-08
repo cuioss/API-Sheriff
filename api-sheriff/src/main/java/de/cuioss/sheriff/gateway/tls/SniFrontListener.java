@@ -51,7 +51,9 @@ import org.jspecify.annotations.Nullable;
  * ClientHello included — to the opaque {@link PassthroughRelay} targeting the resolved backend; the
  * gateway never handshakes;</li>
  * <li>an SNI that is not in the passthrough set relays the still-encrypted stream to the internal
- * terminated Quarkus HTTPS listener;</li>
+ * terminated Quarkus HTTPS listener, handing the client's address over through the relay's
+ * {@link RelayedPeerRegistry} so the edge does not see every such client as the loopback relay
+ * leg;</li>
  * <li>a missing / malformed SNI fails closed (GW-06): it takes the same terminated-strict path and
  * an audited {@code WARN} records the disposition only, never raw bytes.</li>
  * </ul>

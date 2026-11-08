@@ -33,6 +33,7 @@ import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
+import de.cuioss.sheriff.gateway.tls.RelayedPeerRegistry;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -138,6 +139,7 @@ public final class EdgeFixtures {
         private BffRuntime runtime = BffRuntime.inert();
         private EgressTrustProfileResolver egressTrust = EgressTrustProfiles.unconsulted();
         private PortalEndpoint portal = PortalEndpoint.inert();
+        private RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
 
         private Edge(Vertx vertx, ExecutorService virtualThreadExecutor) {
             this.vertx = vertx;
@@ -225,6 +227,16 @@ public final class EdgeFixtures {
         }
 
         /**
+         * @param registry the relayed-peer hand-off the edge looks a connection up in, so a case can
+         *                 stand in for the SNI front listener's terminated relay; default an empty one
+         * @return this builder
+         */
+        public Edge relayedPeers(RelayedPeerRegistry registry) {
+            this.relayedPeers = registry;
+            return this;
+        }
+
+        /**
          * Assembles the edge through its CDI constructor.
          *
          * @return the edge
@@ -232,7 +244,7 @@ public final class EdgeFixtures {
         public GatewayEdgeRoute build() {
             return new GatewayEdgeRoute(routeTable, gatewayConfig, singleton(tokenValidator), vertx,
                     virtualThreadExecutor, hardening, metrics, runtime, egressTrust, portal,
-                    GatewayEdgeRouteBffWiringTest.gatewayJson());
+                    GatewayEdgeRouteBffWiringTest.gatewayJson(), relayedPeers);
         }
 
         /**

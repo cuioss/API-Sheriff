@@ -105,6 +105,7 @@ import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
+import de.cuioss.sheriff.gateway.tls.RelayedPeerRegistry;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
@@ -295,6 +296,8 @@ public class GatewayEdgeRoute {
     private final ReservedBodyReader reservedBodyReader;
     private final ReservedPathHandler reservedPathHandler;
     private final TerminalDispatch terminalDispatch;
+    /** The SNI front listener's hand-off of each terminated relay leg's client address. */
+    private final RelayedPeerRegistry relayedPeers;
 
     /**
      * Assembles the routes and every stage once, at boot.
@@ -328,6 +331,9 @@ public class GatewayEdgeRoute {
      *                              {@linkplain PortalEndpoint#inert() inert} endpoint (no
      *                              {@code portal} block) never matches and leaves the edge unchanged
      * @param gatewayJson           the serializer the RFC 9457 problem body is rendered through
+     * @param relayedPeers          the in-process hand-off through which the SNI front listener's
+     *                              terminated relay names the client of each relay leg; empty when the
+     *                              front listener is not running
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
@@ -335,10 +341,10 @@ public class GatewayEdgeRoute {
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
-            GatewayJson gatewayJson) {
+            GatewayJson gatewayJson, RelayedPeerRegistry relayedPeers) {
         this(routeTable, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening, sheriffMetrics,
                 bffRuntime, egressTrustProfileResolver, portalEndpoint, gatewayJson,
-                WebSocketRelayStage.RelayObserver.NO_OP);
+                WebSocketRelayStage.RelayObserver.NO_OP, relayedPeers);
     }
 
     /**
@@ -374,6 +380,39 @@ public class GatewayEdgeRoute {
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
             GatewayJson gatewayJson, WebSocketRelayStage.RelayObserver relayObserver) {
+        this(routeTable, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening, sheriffMetrics,
+                bffRuntime, egressTrustProfileResolver, portalEndpoint, gatewayJson, relayObserver,
+                new RelayedPeerRegistry());
+    }
+
+    /**
+     * <strong>Test-only.</strong> Assembles the edge exactly as the CDI constructor does, with the
+     * given WebSocket relay observer and relayed-peer registry, so a test can stand in for the SNI
+     * front listener's terminated relay by registering a connection's address itself. Not a CDI entry
+     * point, for the same reasons as the observer overload above.
+     *
+     * @param routeTable                 as for the CDI constructor
+     * @param gatewayConfig             as for the CDI constructor
+     * @param tokenValidator             as for the CDI constructor
+     * @param vertx                      as for the CDI constructor
+     * @param virtualThreadExecutor      as for the CDI constructor
+     * @param hardening                  as for the CDI constructor
+     * @param sheriffMetrics             as for the CDI constructor
+     * @param bffRuntime                 as for the CDI constructor
+     * @param egressTrustProfileResolver as for the CDI constructor
+     * @param portalEndpoint             as for the CDI constructor
+     * @param gatewayJson                as for the CDI constructor
+     * @param relayObserver              the observer every WebSocket relay this edge builds reports to
+     * @param relayedPeers               as for the CDI constructor
+     */
+    @SuppressWarnings("java:S107") // test-only overload of the @Inject constructor
+    public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig, Instance<TokenValidator> tokenValidator,
+            Vertx vertx, ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
+            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
+            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
+            GatewayJson gatewayJson, WebSocketRelayStage.RelayObserver relayObserver,
+            RelayedPeerRegistry relayedPeers) {
+        this.relayedPeers = Objects.requireNonNull(relayedPeers, "relayedPeers");
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.sheriffMetrics = sheriffMetrics;
         this.bffRuntime = bffRuntime;
@@ -667,7 +706,7 @@ public class GatewayEdgeRoute {
                 return;
             }
             HttpMethod method = parsedMethod.get();
-            request = EdgeRequests.buildPipelineRequest(raw, method);
+            request = EdgeRequests.buildPipelineRequest(raw, method, relayedPeers);
 
             securityHeadersStage.process(request);
             basicChecksStage.process(request);
