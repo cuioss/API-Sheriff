@@ -137,7 +137,7 @@ public class TlsEdgeProducer {
      * @return the registry shared by the terminated relay and the edge
      */
     @Produces
-    @Singleton
+    @Singleton // NOSONAR java:S9068 RelayedPeerRegistry is final, a client proxy is neither possible nor needed
     RelayedPeerRegistry relayedPeerRegistry() {
         return relayedPeers;
     }
