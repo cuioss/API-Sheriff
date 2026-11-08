@@ -21,10 +21,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import io.vertx.core.MultiMap;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
 import org.jspecify.annotations.Nullable;
@@ -34,23 +36,30 @@ import org.jspecify.annotations.Nullable;
  * handshake (RFC 6455 §4.2.1) before the edge spends anything on it — no session-relay tracking, no
  * relay sub-budget permit and no upstream dial happens for a request this gate refuses.
  * <p>
- * The rules are the gateway's own, read from the request's public version and headers; no Vert.x
- * internal API (such as {@code HttpUtils.canUpgradeToWebSocket}) is consulted. They are checked in
- * this order, and the first one broken decides the answer:
+ * The rules are the gateway's own, read from the request's public method, version and headers; no
+ * Vert.x internal API (such as {@code HttpUtils.canUpgradeToWebSocket}) is consulted. They are checked
+ * in this order, and the first one broken decides the answer:
  * <ol>
+ *   <li>the method is <strong>{@code GET}</strong> — an opening handshake is a {@code GET}
+ *       (RFC 6455 §4.1, item 2), so any other method is refused {@code 405} with {@code Allow: GET}.
+ *       The gate is the only place this is enforced: a {@code protocol: websocket} route's effective
+ *       {@code allowed_methods} falls back to every standard method like any other route's;</li>
  *   <li>the request is <strong>HTTP/1.1</strong> — a WebSocket is opened by the HTTP/1.1 upgrade
  *       mechanism (RFC 9110 §7.8), so any other version is refused {@code 426};</li>
  *   <li>{@code Connection} carries the token {@code upgrade} — refused {@code 426} otherwise;</li>
  *   <li>{@code Upgrade} carries the token {@code websocket} — refused {@code 426} otherwise;</li>
+ *   <li>neither {@code Sec-WebSocket-Version} nor {@code Sec-WebSocket-Key} occurs on more than one
+ *       header line — refused {@code 400} otherwise, before either value is read (RFC 6455 §11.3.1,
+ *       §11.3.5);</li>
  *   <li>{@code Sec-WebSocket-Version} is present — refused {@code 400} otherwise — and is
  *       {@code 13} — refused {@code 426} with {@code Sec-WebSocket-Version: 13} otherwise
  *       (RFC 6455 §4.4);</li>
- *   <li>{@code Sec-WebSocket-Key} is present and decodes from base64 to 16 bytes — refused
- *       {@code 400} otherwise (RFC 6455 §4.1, item 7).</li>
+ *   <li>{@code Sec-WebSocket-Key} is present, is padded base64 (RFC 4648 §4) of exactly 24
+ *       characters — 22 base64-alphabet characters followed by {@code ==} — and decodes to 16 bytes —
+ *       refused {@code 400} otherwise (RFC 6455 §4.1, item 7).</li>
  * </ol>
  * Token matching is case-insensitive and reads every value of the header as a comma-separated list,
- * across repeated header lines (RFC 9110 §5.3). The request method is not judged here: a
- * {@code protocol: websocket} route serves {@code GET} only, which the router has already enforced.
+ * across repeated header lines (RFC 9110 §5.3).
  * <p>
  * <strong>The headers of a {@code 426}.</strong> A {@code 426} names the protocol the client has to
  * switch to (RFC 9110 §15.5.22), so on HTTP/1.x it carries {@code Upgrade: websocket} together with
@@ -68,6 +77,9 @@ final class WebSocketUpgradeGate {
     static final int UPGRADE_REQUIRED = 426;
     /** The status of a WebSocket handshake that is malformed. */
     static final int BAD_REQUEST = 400;
+    /** The status of a request sent with another method than {@code GET}. */
+    static final int METHOD_NOT_ALLOWED = 405;
+    static final String ALLOW_HEADER = "Allow";
     /** The one WebSocket protocol version this gateway speaks (RFC 6455 §4.1). */
     static final String SUPPORTED_VERSION = "13";
     static final String CONNECTION_HEADER = "Connection";
@@ -80,6 +92,11 @@ final class WebSocketUpgradeGate {
     private static final String CONNECTION_UPGRADE = "Upgrade";
     /** The decoded length of a valid {@code Sec-WebSocket-Key}: a 16-byte nonce. */
     private static final int KEY_LENGTH = 16;
+    /**
+     * The encoded form of a valid {@code Sec-WebSocket-Key}: a 16-byte nonce in padded base64
+     * (RFC 4648 §4) is 22 base64-alphabet characters followed by {@code ==}.
+     */
+    private static final Pattern KEY_SYNTAX = Pattern.compile("[A-Za-z0-9+/]{22}==");
     private static final String TOKEN_SEPARATOR = ",";
 
     private WebSocketUpgradeGate() {
@@ -89,33 +106,43 @@ final class WebSocketUpgradeGate {
     /**
      * Judges the opening handshake of a request on a {@code protocol: websocket} route.
      *
-     * @param request the request to judge; only its version and headers are read
+     * @param request the request to judge; only its method, version and headers are read
      * @return {@link Verdict.Accepted} for a valid handshake, otherwise the {@link Verdict.Refused}
      * answer to send
      */
     static Verdict judge(HttpServerRequest request) {
         Objects.requireNonNull(request, "request");
-        return judge(request.version(), request.headers());
+        return judge(request.method(), request.version(), request.headers());
     }
 
     /**
-     * Judges an opening handshake given as its HTTP version and its headers — the body of
+     * Judges an opening handshake given as its method, its HTTP version and its headers — the body of
      * {@link #judge(HttpServerRequest)}.
      *
+     * @param method  the request method
      * @param version the negotiated HTTP version of the request
      * @param headers the request headers
      * @return {@link Verdict.Accepted} for a valid handshake, otherwise the {@link Verdict.Refused}
      * answer to send
      */
-    static Verdict judge(HttpVersion version, MultiMap headers) {
+    static Verdict judge(HttpMethod method, HttpVersion version, MultiMap headers) {
+        Objects.requireNonNull(method, "method");
         Objects.requireNonNull(version, "version");
         Objects.requireNonNull(headers, "headers");
+        if (!HttpMethod.GET.equals(method)) {
+            return new Verdict.Refused(METHOD_NOT_ALLOWED, Map.of(ALLOW_HEADER, HttpMethod.GET.name()));
+        }
         if (version != HttpVersion.HTTP_1_1) {
             return upgradeRequired(version, Map.of());
         }
         if (!carriesToken(headers.getAll(CONNECTION_HEADER), UPGRADE_TOKEN)
                 || !carriesToken(headers.getAll(UPGRADE_HEADER), WEBSOCKET_TOKEN)) {
             return upgradeRequired(version, Map.of());
+        }
+        // Neither field may appear more than once (RFC 6455 §11.3.1, §11.3.5); headers.get() would read
+        // only the first line, so a repeat is refused before either value is looked at.
+        if (headers.getAll(VERSION_HEADER).size() > 1 || headers.getAll(KEY_HEADER).size() > 1) {
+            return new Verdict.Refused(BAD_REQUEST, Map.of());
         }
         String protocolVersion = trimmedOrNull(headers.get(VERSION_HEADER));
         if (protocolVersion == null) {
@@ -159,9 +186,12 @@ final class WebSocketUpgradeGate {
         return false;
     }
 
-    /** @return whether {@code key} is present and decodes from base64 to the 16-byte nonce */
+    /**
+     * @return whether {@code key} is present, is the padded base64 form of a 16-byte value and decodes
+     * to the 16-byte nonce
+     */
     private static boolean isValidKey(@Nullable String key) {
-        if (key == null) {
+        if (key == null || !KEY_SYNTAX.matcher(key).matches()) {
             return false;
         }
         try {
@@ -201,7 +231,7 @@ final class WebSocketUpgradeGate {
         /**
          * A request that is no valid opening handshake.
          *
-         * @param status  the status to answer with, {@code 426} or {@code 400}
+         * @param status  the status to answer with, {@code 405}, {@code 426} or {@code 400}
          * @param headers the response headers to add before the answer, in the order to write them;
          *                empty when there are none
          * @since 1.0

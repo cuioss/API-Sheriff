@@ -1788,12 +1788,17 @@ socket is not authenticated by ambient cookies alone.
 
 *The upgrade gate.* Right after the `Origin` check, and before the request is tracked with its
 session, takes a relay sub-budget permit or dials the upstream, `WebSocketUpgradeGate` judges whether
-a request on a `protocol: websocket` route is a valid opening handshake (RFC 6455 §4.2.1). A request
-that is not HTTP/1.1, or does not carry the `Connection: upgrade` and `Upgrade: websocket` tokens, is
-refused `426` -- on HTTP/1.x with `Upgrade: websocket` and `Connection: Upgrade`, on HTTP/2 with
-neither, as both are connection-specific fields HTTP/2 forbids. A `Sec-WebSocket-Version` other than
-`13` is refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or malformed
-`Sec-WebSocket-Key`, is refused `400`. The refusal returns the general admission permit and is a bare
+a request on a `protocol: websocket` route is a valid opening handshake (RFC 6455 §4.2.1). A method
+other than `GET` is refused `405` with `Allow: GET` first -- the route's effective `allowed_methods`
+falls back to every standard method, so nothing before the gate enforces it. A request that is not
+HTTP/1.1, or does not carry the `Connection: upgrade` and `Upgrade: websocket` tokens, is refused
+`426` -- on HTTP/1.x with `Upgrade: websocket` and `Connection: Upgrade`, on HTTP/2 with neither, as
+both are connection-specific fields HTTP/2 forbids. A `Sec-WebSocket-Version` or `Sec-WebSocket-Key`
+sent on more than one header line is refused `400` before either value is read, so a handshake is
+never judged on its first line alone (RFC 6455 §11.3.1, §11.3.5). A `Sec-WebSocket-Version` other
+than `13` is refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or
+malformed `Sec-WebSocket-Key` -- anything but padded base64 (RFC 4648 §4) of a 16-byte nonce -- is
+refused `400`. The refusal returns the general admission permit and is a bare
 status written through `ResponseEnds.reject`, as the edge's other refusals before processing are: it
 carries no problem document and no route security headers. Without the gate an HTTP/2 request or a
 plain `GET` dialed the upstream and held its permit until the client upgrade failed.
@@ -1815,9 +1820,10 @@ route. `SameSite=Lax` is pinned by `SessionCookieCodecTest.SetCookie.shouldEmitH
 (server mode) and `SealedSessionCookieCodecTest.SetCookieHeader.shouldEmitHardenedAttributes`
 (cookie mode). `WebSocketUpgradeGateTest` pins each rule of the upgrade gate, every case breaking
 exactly one rule of a valid handshake. `GatewayEdgeWebSocketUpgradeGateTest` drives refused requests
-through the edge -- an HTTP/2 `GET`, a plain HTTP/1.1 `GET`, an unsupported version and a missing key
-(`http2GetIsRefusedBeforeAnyDial`, `plainHttp11GetIsRefusedBeforeAnyDial`,
-`unsupportedVersionIsRefusedNamingVersion13`, `missingKeyIsRefused400`) -- and asserts the answer,
+through the edge -- an HTTP/2 `GET`, a plain HTTP/1.1 `GET`, an unsupported version, a missing key and
+a valid handshake sent with `POST`, `PUT` and `DELETE` (`http2GetIsRefusedBeforeAnyDial`,
+`plainHttp11GetIsRefusedBeforeAnyDial`, `unsupportedVersionIsRefusedNamingVersion13`,
+`missingKeyIsRefused400`, `nonGetHandshakeIsRefused405`) -- and asserts the answer,
 that the upstream was never contacted and that every admission permit came back; a valid upgrade
 relayed end to end is the matched control (`validUpgradeIsRelayed`). `WebSocketRelayStageTest`
 asserts the `502` to a failed HTTP/2 client upgrade (`answersBadGatewayWhenTheHttp2ClientUpgradeFails`)
@@ -4137,7 +4143,7 @@ outstanding hardening work (next section).
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no configuration key sets any of them | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
 | <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
-| <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `426`/`400` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
+| <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `405`/`426`/`400` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs; upstream `Server` / `X-Powered-By` stripped by default with a per-route opt-out; no version string on gateway errors | cui-http + token-sheriff mappers + gateway error contract + `UpstreamIdentityHeaders` (ADR-0037) | PARTIAL

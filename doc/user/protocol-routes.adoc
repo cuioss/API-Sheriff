@@ -93,6 +93,11 @@ contact* -- it takes no relay budget and the upstream is never dialled:
 |===
 | Request | Status | Headers on the answer
 
+| Any method other than `GET` that the route's `allowed_methods` admits -- by default every
+  standard method (a method it does not admit is refused before this check, as on every route)
+| `405`
+| `Allow: GET`
+
 | Not HTTP/1.1 -- an HTTP/2 request, for example -- or missing the `Connection: Upgrade` /
   `Upgrade: websocket` pair (a plain `GET`)
 | `426`
@@ -102,14 +107,20 @@ contact* -- it takes no relay budget and the upstream is never dialled:
 | `426`
 | `Sec-WebSocket-Version: 13`, plus the HTTP/1.x pair above
 
-| No `Sec-WebSocket-Version`, or a missing or malformed `Sec-WebSocket-Key`
+| `Sec-WebSocket-Version` or `Sec-WebSocket-Key` sent on more than one header line (RFC 6455
+  §11.3.1, §11.3.5)
+| `400`
+| --
+
+| No `Sec-WebSocket-Version`, or a missing or malformed `Sec-WebSocket-Key` -- the key must be padded
+  base64 (RFC 4648 §4) of a 16-byte nonce: exactly 24 characters, the last two `==`
 | `400`
 | --
 |===
 
-Each refusal is a bare status with no body. The rules are checked in a fixed order -- the HTTP
-version, the upgrade headers, the WebSocket version, the key -- and the first one broken decides the
-answer. A WebSocket can only be opened over HTTP/1.1, so a client that
+Each refusal is a bare status with no body. The rules are checked in a fixed order -- the method,
+the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key --
+and the first one broken decides the answer. A WebSocket can only be opened over HTTP/1.1, so a client that
 negotiated HTTP/2 with the gateway has to offer HTTP/1.1 for its WebSocket connections.
 
 *A failed client upgrade is answered `502`.* The gateway dials the upstream before it upgrades the

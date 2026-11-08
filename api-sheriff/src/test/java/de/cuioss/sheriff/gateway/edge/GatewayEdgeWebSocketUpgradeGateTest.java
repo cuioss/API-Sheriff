@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -193,6 +194,22 @@ class GatewayEdgeWebSocketUpgradeGateTest {
     }
 
     @Test
+    @DisplayName("a valid handshake sent with another method than GET is answered 405 Allow: GET, dials nothing and returns its permit")
+    void nonGetHandshakeIsRefused405() throws Exception {
+        List<Answer> answers = new ArrayList<>();
+        for (String method : List.of("POST", "PUT", "DELETE")) {
+            answers.add(rawHttp11(method, handshake("13", SAMPLE_KEY)));
+        }
+
+        assertAll("every non-GET handshake is refused by the edge, though the route allows every standard method",
+                answers.stream().map(answer -> (Executable) () -> assertAll("non-GET refusal",
+                        () -> assertEquals(405, answer.status(), "a WebSocket is opened by a GET only"),
+                        () -> assertEquals("GET", answer.headers().get("Allow"),
+                                "the 405 names GET as the one method the handshake allows"))));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
     @DisplayName("control: a valid upgrade is still relayed end to end, its one handshake reaching the upstream")
     void validUpgradeIsRelayed() throws Exception {
         WebSocket socket = openRelay();
@@ -263,6 +280,11 @@ class GatewayEdgeWebSocketUpgradeGateTest {
      * handshake headers these cases depend on.
      */
     private Answer rawHttp11(List<String> headerLines) throws Exception {
+        return rawHttp11("GET", headerLines);
+    }
+
+    /** Like {@link #rawHttp11(List)}, sending the request with {@code method} instead of {@code GET}. */
+    private Answer rawHttp11(String method, List<String> headerLines) throws Exception {
         NetSocket socket = Awaits.connect(netClient.connect(front.actualPort(), LoopbackHost.ADDRESS),
                 "the TCP connection to the edge");
         CompletableFuture<Answer> answer = new CompletableFuture<>();
@@ -276,7 +298,7 @@ class GatewayEdgeWebSocketUpgradeGateTest {
             }
         });
         List<String> request = new ArrayList<>();
-        request.add("GET " + WS_URI + " HTTP/1.1");
+        request.add(method + " " + WS_URI + " HTTP/1.1");
         request.add("Host: " + LoopbackHost.ADDRESS + ":" + front.actualPort());
         request.addAll(headerLines);
         request.add("");
@@ -313,9 +335,16 @@ class GatewayEdgeWebSocketUpgradeGateTest {
         return headers;
     }
 
+    /**
+     * The WebSocket route under test, allowing every standard method — what route-table assembly resolves
+     * for a route no scope declares {@code allowed_methods} for ({@code PolicyBlock.ALLOWED_METHODS}) —
+     * rather than the fixture seed's {@code GET} alone, so a non-{@code GET} handshake reaches the gate
+     * instead of being refused by the method check in front of it.
+     */
     private static Route webSocketRoute(int upstreamPort) {
         return ConfigFixtures.route("ws", WS_PATH)
                 .protocol(Protocol.WEBSOCKET)
+                .effectiveAllowedMethods(EnumSet.allOf(de.cuioss.sheriff.gateway.config.model.HttpMethod.class))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(Set.of(ORIGIN))
                 .effectiveForward(ForwardConfig.builder().headersAllow(List.of()).build())
