@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.tls;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -52,8 +53,9 @@ import io.vertx.core.net.SocketAddress;
  * that leg's local socket address against the client's address in the {@link RelayedPeerRegistry}
  * once the backend dial succeeded and before the first byte — the buffered ClientHello — is written
  * to it, so no request can reach the internal listener on that leg without its entry. The entry is
- * released when the session closes on either leg, an abort included. A passthrough relay registers
- * nothing: the gateway never sees a request on it.
+ * released when the session closes on either leg, an abort included. A client that is already gone
+ * when the dial succeeds gets no session at all, so no entry is registered for it and the backend leg
+ * is closed at once. A passthrough relay registers nothing: the gateway never sees a request on it.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -79,6 +81,10 @@ public final class PassthroughRelay {
      * Dials the target and, on success, replays the buffered ClientHello and establishes the opaque
      * bidirectional pipe. On a dial failure the accepted client connection is closed (abort, never a
      * hang).
+     * <p>
+     * The client's close is observed from before the dial: a client that left while the dial was
+     * pending gets no session — the dialled backend leg is closed at once and, for a terminated relay,
+     * no relayed-peer entry is ever registered.
      *
      * @param client      the accepted client connection, already paused by the caller
      * @param clientHello the bytes buffered while the SNI was being read, replayed to the backend
@@ -95,8 +101,20 @@ public final class PassthroughRelay {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(sniLabel, "sniLabel");
+        // Replaced by the session's own close handler once it starts; until then it records that the
+        // client is gone. Both run on the accepted connection's event loop, as the dial callbacks do.
+        AtomicBoolean clientGone = new AtomicBoolean();
+        client.closeHandler(v -> clientGone.set(true));
         netClient.connect(target.port(), target.host())
-                .onSuccess(backend -> establish(client, backend, clientHello, target, kind, sniLabel))
+                .onSuccess(backend -> {
+                    if (clientGone.get()) {
+                        LOGGER.debug("Relay client left during the backend dial to %s — closing the backend leg",
+                                target);
+                        closeQuietly(backend);
+                        return;
+                    }
+                    establish(client, backend, clientHello, target, kind, sniLabel);
+                })
                 .onFailure(failure -> {
                     LOGGER.debug(failure, "Relay backend dial to %s failed: %s", target, failure.getMessage());
                     closeQuietly(client);
