@@ -66,10 +66,24 @@ import org.jspecify.annotations.Nullable;
  * bytes received.</li>
  * <li><em>Undecided-connection cap</em> — {@link #MAX_UNDECIDED_CONNECTIONS}, 1024 connections
  * accepted and not yet routed, across every event loop of the front. A connection accepted beyond
- * the cap is closed at once, without reading from it. Each undecided connection receives at most
- * {@link ClientHelloSniParser#MAX_CLIENT_HELLO_BYTES} (32 KiB) before its verdict and holds those bytes
- * in three copies — the replay buffer and the parser's received and reassembled arrays — so the cap
- * bounds the front's pre-route buffer memory at about 96 MiB. The trade-off is deliberate: a client that holds
+ * the cap is closed at once, without reading from it. An undecided connection has received less than
+ * {@link ClientHelloSniParser#MAX_CLIENT_HELLO_BYTES} (32 KiB) — the parser reaches its verdict as soon
+ * as that much has arrived — and between two reads holds those bytes in three copies: the replay
+ * buffer and the parser's received and reassembled arrays. Between reads, the cap therefore bounds the
+ * front's pre-route buffer memory at about 96 MiB. Three amounts lie outside that figure, each stated
+ * for the transport's default read sizing — Netty's adaptive receive allocator, whose largest single
+ * read is 64 KiB; the front sets no receive-buffer option:
+ * <ol>
+ * <li>the read that decides a connection is appended to the replay buffer whole, because the relay
+ * replays the client's bytes exactly, so that buffer ends up to one read past 32 KiB — below 96 KiB;</li>
+ * <li>while a read is processed its bytes exist twice more, as the transport's buffer and as the copy
+ * offered to the parser, and the extension walk of a complete ClientHello copies it once more —
+ * transient copies of at most 64 + 64 + 32 KiB per event loop, which processes one read at a time;</li>
+ * <li>a decided connection returns its slot before the relay dials its backend, and keeps its replay
+ * buffer, below 96 KiB, until that dial succeeds or fails. That window is bounded by the dial client's
+ * connect timeout — the Vert.x default of 60 seconds — not by the cap.</li>
+ * </ol>
+ * The trade-off is deliberate: a client that holds
  * 1024 silent sockets makes new handshakes wait for at most one deadline window per wave of such
  * sockets — the deadline frees every slot again — and that bounded delay is preferred over unbounded
  * pre-route memory. Since a legitimate client completes its ClientHello within one round trip, 1024

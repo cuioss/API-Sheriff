@@ -72,13 +72,30 @@ indefinitely. None of them is configurable.
 
 * *Undecided-connection cap* -- `SniFrontListener.MAX_UNDECIDED_CONNECTIONS`, 1024 connections
   accepted and not yet settled, across every event loop of the front. A connection accepted beyond the
-  cap is closed at once, without reading from it. Each undecided connection receives at most
-  `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB) before its verdict and holds them in three
-  copies -- the listener's replay buffer and the parser's received and reassembled arrays -- so the
-  cap bounds the front's pre-route buffer memory at 1024 x 3 x 32 KiB = 96 MiB. The trade-off is deliberate: a client
-  that holds 1024 silent sockets makes new handshakes wait for at most one deadline window per wave of
-  such sockets -- the deadline frees every slot again -- and that bounded delay is preferred over
-  unbounded pre-route memory.
+  cap is closed at once, without reading from it. An undecided connection has received less than
+  `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB) -- the parser reaches its verdict as soon as
+  that much has arrived -- and between two reads holds those bytes in three copies: the listener's
+  replay buffer and the parser's received and reassembled arrays. Between reads, the cap therefore
+  bounds the front's pre-route buffer memory at 1024 x 3 x 32 KiB = 96 MiB. The trade-off is
+  deliberate: a client that holds 1024 silent sockets makes new handshakes wait for at most one
+  deadline window per wave of such sockets -- the deadline frees every slot again -- and that bounded
+  delay is preferred over unbounded pre-route memory.
++
+*What the 96 MiB does not include.* Three amounts lie outside it. Each is stated for the transport's
+default read sizing: Netty's adaptive receive allocator, whose largest single read is 64 KiB. The
+front sets no receive-buffer option.
++
+.. *The deciding read, whole.* The read that decides a connection is appended to the replay buffer in
+   full, because the relay replays the client's bytes exactly. That buffer therefore ends up to one
+   read past 32 KiB, which keeps it below 96 KiB. The parser truncates only its own copy.
+.. *Transient copies.* While a read is processed, its bytes exist twice more: as the transport's buffer
+   and as the copy offered to the parser. The extension walk of a complete ClientHello copies it once
+   more. That is at most 64 + 64 + 32 KiB per event loop, since an event loop processes one read at a
+   time.
+.. *The dialing window.* A decided connection returns its slot before the relay dials its backend. It
+   keeps its replay buffer, below 96 KiB, until that dial succeeds or fails. The dial client's connect
+   timeout bounds that window -- the Vert.x default of 60 s, since `TlsEdgeProducer` sets none -- and the
+   cap does not.
 
 * *Relay idle timeout* -- the Vert.x idle timeout of the front's `NetServer`, which `TlsEdgeProducer`
   also sets on the relay's dial `NetClient`, so both legs of every relayed connection -- passthrough

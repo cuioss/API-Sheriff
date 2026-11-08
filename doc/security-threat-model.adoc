@@ -1601,10 +1601,15 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   with the disposition only, never the bytes received.
 * *An undecided-connection cap.* At most 1024 accepted connections may wait for their ClientHello at
   the same time, across every event loop of the front. A connection accepted beyond the cap is closed
-  at once, without being read. Each waiting connection receives at most 32 KiB, the ClientHello bound
-  beyond which the parser fails closed, and holds those bytes in three copies -- the replay buffer the
-  relay sends on, and the parser's received and reassembled bytes -- so the cap bounds the front's
-  pre-route buffer memory at about 96 MiB (1024 x 3 x 32 KiB).
+  at once, without being read. A waiting connection has received less than 32 KiB, the ClientHello
+  bound at which the parser decides, and between two reads holds those bytes in three copies -- the
+  replay buffer the relay sends on, and the parser's received and reassembled bytes. Between reads,
+  the cap therefore bounds the front's pre-route buffer memory at about 96 MiB (1024 x 3 x 32 KiB).
+  Three amounts lie outside that figure, each stated for the transport's default largest read of
+  64 KiB. The deciding read is kept whole in the replay buffer, which ends below 96 KiB. Each event
+  loop briefly holds up to 64 + 64 + 32 KiB of transient copies. And a decided connection keeps its
+  replay buffer after returning its slot, until the relay's backend dial succeeds or fails -- a window
+  bounded by the dial client's 60 s connect timeout, not by the cap.
 * *An incremental parse.* Each connection owns its own parser and offers it every received chunk
   exactly once; the parser consumes only the TLS records a chunk completes. A ClientHello split into
   many one-byte records therefore costs work linear in its length, where re-parsing the whole buffer
@@ -1629,7 +1634,11 @@ bounds: a connection that sends nothing and one whose ClientHello stops halfway 
 deadline and never relayed (`closesSilentConnection`, `closesHalfSentClientHello`), a connection
 accepted beyond the cap is closed at once while the admitted ones stay open, and a slot freed by a
 routed connection admits a new one (`closesConnectionBeyondCapAndReleasesSlot`), and a relay that
-carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`). Matched
+carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`), also when
+only the front server or only the relay's dial client carries that timeout
+(`closesSilentRelayWithTheFrontTimeoutAlone`, `closesSilentRelayWithTheDialClientTimeoutAlone`).
+`SniFrontListenerTest.ApplyIdleTimeout` and `TlsEdgeProducerTest.DialClientOptions` pin that the
+timeout set is never shorter than the one derived, or zero. Matched
 controls show that a ClientHello dripped within the deadline is still routed
 (`routesSlowChunkedClientHelloWithinDeadline`) and that a relay carrying traffic outlives its idle
 timeout (`keepsActiveRelayOpen`). `ClientHelloSniParserTest.FragmentInvariance` asserts that a
