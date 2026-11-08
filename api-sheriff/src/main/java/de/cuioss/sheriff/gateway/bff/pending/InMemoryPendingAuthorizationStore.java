@@ -53,7 +53,8 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>Refuse at saturation.</strong> Otherwise, when the store holds its capacity of live
  *       records, the record is refused with
  *       {@link EventType#PENDING_AUTHORIZATION_SATURATED} and nothing stored is touched.</li>
- *   <li>Otherwise the record is inserted.</li>
+ *   <li>Otherwise the record is inserted. A record stored under an id the store already holds replaces
+ *       the held record in every index.</li>
  * </ol>
  * A refusal is logged as {@link BffLogMessages.WARN#PENDING_AUTHORIZATION_STORE_SATURATED} once per
  * saturation episode and every further refusal of the episode at {@code DEBUG}; neither carries any
@@ -156,10 +157,13 @@ public final class InMemoryPendingAuthorizationStore implements PendingAuthoriza
         return records.size();
     }
 
-    /** Removes every record expired at {@code now}, earliest expiry first, wherever it was stored. */
+    /**
+     * Removes every record expired at {@code now}, earliest expiry first, wherever it was stored. Each
+     * iteration takes its entry off the expiry index, so the loop always terminates.
+     */
     private void purgeExpired(Instant now) {
         while (!byExpiry.isEmpty() && byExpiry.getFirst().isExpired(now)) {
-            remove(byExpiry.getFirst().id());
+            forget(byExpiry.removeFirst());
         }
     }
 
@@ -168,7 +172,12 @@ public final class InMemoryPendingAuthorizationStore implements PendingAuthoriza
         return 2L * records.size() < maxEntries;
     }
 
+    /**
+     * Inserts {@code pending} into every index. A record already stored under the same id is removed
+     * first, so the three indexes never hold an entry for a record {@link #records} no longer maps.
+     */
     private void insert(PendingAuthorizationRecord pending) {
+        remove(pending.id());
         records.put(pending.id(), pending);
         byExpiry.add(pending);
         idsBySource.computeIfAbsent(pending.quotaKey(), _ -> new LinkedHashSet<>()).add(pending.id());
@@ -180,15 +189,22 @@ public final class InMemoryPendingAuthorizationStore implements PendingAuthoriza
      * @return the removed record, or {@code null} when none is stored under that id
      */
     private @Nullable PendingAuthorizationRecord remove(String recordId) {
-        PendingAuthorizationRecord removed = records.remove(recordId);
-        if (removed != null) {
-            byExpiry.remove(removed);
-            forgetId(removed);
+        PendingAuthorizationRecord stored = records.get(recordId);
+        if (stored != null) {
+            byExpiry.remove(stored);
+            forget(stored);
         }
-        return removed;
+        return stored;
     }
 
-    private void forgetId(PendingAuthorizationRecord removed) {
+    /**
+     * Drops a record already taken off the expiry index from the id map and its source's ids — only
+     * when it is still the record stored under its id, so a stale entry never removes a live record.
+     */
+    private void forget(PendingAuthorizationRecord removed) {
+        if (!records.remove(removed.id(), removed)) {
+            return;
+        }
         SequencedSet<String> ownIds = idsBySource.get(removed.quotaKey());
         if (ownIds != null) {
             ownIds.remove(removed.id());

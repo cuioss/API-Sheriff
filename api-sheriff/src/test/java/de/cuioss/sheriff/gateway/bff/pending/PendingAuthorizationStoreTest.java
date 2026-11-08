@@ -226,6 +226,39 @@ class PendingAuthorizationStoreTest {
         }
 
         @Test
+        @DisplayName("Should keep every index consistent when a record id is stored again")
+        void shouldStayConsistentWhenIdIsStoredAgain() {
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(10_000);
+            PendingAuthorizationRecord earlier = pendingFrom(SOURCE_A, T0);
+            Instant restoredAt = T0.plusSeconds(60);
+            PendingAuthorizationRecord reused = PendingAuthorizationRecord.builder()
+                    .id(earlier.id())
+                    .flowContext(flow())
+                    .returnUrl("/app")
+                    .requestedScopes(Set.copyOf(REQUESTED_SCOPES))
+                    .createdAt(restoredAt)
+                    .ttl(PendingAuthorizationRecord.FIXED_TTL)
+                    .quotaKey(SOURCE_B)
+                    .build();
+            store.store(earlier, T0);
+            store.store(reused, restoredAt);
+            Instant earlierExpired = earlier.expiresAt();
+            PendingAuthorizationRecord incoming = pendingFrom(SOURCE_C, earlierExpired);
+
+            assertTimeoutPreemptively(Duration.ofSeconds(5), () -> store.store(incoming, earlierExpired),
+                    "the replaced record's expiry entry must not stall the purge of the next store call");
+            List<PendingAuthorizationRecord> fromA = storeFrom(store, SOURCE_A, PER_SOURCE, earlierExpired);
+
+            assertEquals(PER_SOURCE + 2, store.size(),
+                    "the re-stored id is held once, and source A holds exactly its quota beside it");
+            assertTrue(store.consume(reused.id(), earlierExpired).isPresent(),
+                    "the live re-stored record survives both the purge and source A filling its quota");
+            assertTrue(store.consume(fromA.getFirst().id(), earlierExpired).isPresent(),
+                    "the replaced record no longer counts against source A, so A evicted none of its own");
+            assertTrue(store.consume(incoming.id(), earlierExpired).isPresent());
+        }
+
+        @Test
         @DisplayName("Should refuse a net-new record at capacity and leave every live record in place")
         void shouldRefuseAtSaturation() {
             InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(3);
