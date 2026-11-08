@@ -3688,7 +3688,16 @@ by these rules, in this order:
 * *Each source holds at most 256 live records.* Every record is counted under its requester's
   source (`PendingQuotaKeys`): for a peer listed in `forwarded.trusted_proxies`, the client address
   its forwarding headers resolve to, and `unknown` when they resolve none; for any other peer, the
-  TCP peer address, whose forwarding headers are never read. An IPv4 address counts whole and an IPv6
+  TCP peer address, whose forwarding headers are never read. Behind the gateway's own SNI front
+  listener (`tls.passthrough_sni` set) every terminated connection reaches the edge from the relay's
+  loopback leg, so there the client address the relay hands over in process, never in a header,
+  takes the TCP peer's place in both rules: it is the peer judged against
+  `forwarded.trusted_proxies` and the address an untrusted peer is counted under. The edge takes it
+  only on an exact match of the request connection's address against a leg the relay registered, so
+  a connection the relay did not dial is counted under its own TCP peer, whatever headers it sends.
+  Only this count reads the handed-over address; every other stage, the regenerated
+  `X-Forwarded-For` included, still sees the relay leg as the peer
+  (link:development/tls-edge.adoc[TLS edge]). An IPv4 address counts whole and an IPv6
   address by its `/64`; an absent or unparseable address is `unknown`. The source is derived for
   every login, step-up and widening start, whether or not `enumeration_detection` or
   `threat_classification` is enabled. A source that already holds 256 live records gets its new
@@ -3779,7 +3788,16 @@ source, `state`, nonce or record id; a record's `toString` renders neither its i
 binding-cookie value), its source nor its `state`, nonce or PKCE verifier
 (`PendingAuthorizationStoreTest`). The source is
 the trusted proxy's resolved client, the untrusted peer's own address with its `X-Forwarded-For`
-ignored, or `unknown`, with IPv6 reduced to its `/64` (`PendingQuotaKeysTest`). Through the edge, a
+ignored, or `unknown`, with IPv6 reduced to its `/64`; behind the SNI front two relayed clients are
+keyed apart where without the hand-off they share the loopback key, and the relayed client is the
+peer the trust gate judges in both of its branches (`PendingQuotaKeysTest`). The registry names a
+client only on an exact host and port hit, and a stale release does not drop a newer session's
+entry (`RelayedPeerRegistryTest`); a terminated relay registers its client before the first byte
+reaches the backend and releases the entry when either leg closes, and a passthrough relay
+registers nothing (`PassthroughRelayTest`, `SniFrontListenerTest`). Through the edge, two relayed
+logins are counted under their own clients, and a connection the relay did not register is counted
+under its own TCP peer whatever forwarding headers it sends (`GatewayEdgeRouteBffWiringTest`, nested
+`RelayedClientHandOff`). Also through the edge, a
 refused login on the login path and on a session-route navigation is answered `503` with
 `Retry-After: 30` and the `rate-limiting` problem type (`GatewayEdgeRouteBffWiringTest`). On the
 integration stack, the first of 256 logins from one source completes into a session, and with 256

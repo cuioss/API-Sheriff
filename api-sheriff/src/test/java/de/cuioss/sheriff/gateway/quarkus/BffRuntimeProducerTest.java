@@ -4963,16 +4963,20 @@ class BffRuntimeProducerTest {
         }
 
         /**
-         * The agreement with the edge: the forward stage judges a forwarding header with the peer gate and
-         * the resolver {@link ForwardedTrust} derives from the configuration, and the produced runtime must
-         * name the same client for every request. The cases cover a single trusted hop, a chain whose
-         * second hop is trusted only through the configured set, a chain whose second hop is not trusted,
-         * and an untrusted peer — each a request on which a derivation built from a different trusted set
-         * would name a different client than the edge.
+         * The shared trust: the producer's quota-key derivation must judge every forwarding header under
+         * the trusted-proxy set and the resolver configuration {@link ForwardedTrust} derives from the
+         * configuration — the derivation the edge builds its peer gate and resolver from as well. The
+         * reference is the trust rule applied by hand to {@link ForwardedTrust#of}'s gate and resolver,
+         * not the forward stage itself: this test never runs {@code ForwardPolicyStage}, and no request
+         * carries a relayed peer address, so it proves the two callers share one trust and claims nothing
+         * about the {@code X-Forwarded-For} the forward stage regenerates. The cases cover a single trusted
+         * hop, a chain whose second hop is trusted only through the configured set, a chain whose second
+         * hop is not trusted, and an untrusted peer — each a request on which a derivation built from a
+         * different trusted set would name a different client.
          */
         @Test
-        @DisplayName("Should name the client the edge's forward stage resolves for the same configuration")
-        void shouldAgreeWithTheEdgeForwardStage() {
+        @DisplayName("Should judge forwarding headers under the trust ForwardedTrust derives for the edge")
+        void shouldShareTheEdgeForwardedTrust() {
             String secondHop = "192.0.2.11";
             String untrustedHop = "192.0.2.12";
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(serverModeOidc())
@@ -4991,16 +4995,21 @@ class BffRuntimeProducerTest {
                     request(DIRECT_PEER, FORWARDED_CLIENT));
 
             List<String> produced = requests.stream().map(runtime::pendingQuotaKey).toList();
-            List<String> edge = requests.stream().map(request -> edgeClientOf(edgeTrust, request)).toList();
+            List<String> underEdgeTrust = requests.stream()
+                    .map(request -> clientUnder(edgeTrust, request)).toList();
 
-            assertAll("the producer and the edge judge every forwarding header alike",
-                    () -> assertEquals(edge, produced, "one client per request, whichever side names it"),
+            assertAll("the producer judges every forwarding header under the edge's trust",
+                    () -> assertEquals(underEdgeTrust, produced,
+                            "one client per request under the shared trusted-proxy set and resolver"),
                     () -> assertEquals(List.of(FORWARDED_CLIENT, FORWARDED_CLIENT, untrustedHop, DIRECT_PEER),
                             produced, "precondition: the cases name four different outcomes of the trust"));
         }
 
-        /** The client the edge's forward stage takes {@code request} to come from, canonicalized. */
-        private static String edgeClientOf(ForwardedTrust trust, PipelineRequest request) {
+        /**
+         * The client {@code request} resolves to under {@code trust}'s peer gate and resolver, judged
+         * against the request's TCP peer and canonicalized.
+         */
+        private static String clientUnder(ForwardedTrust trust, PipelineRequest request) {
             if (!trust.peerGate().isTrustedPeer(request.peerAddress())) {
                 return SourceKeyResolver.canonicalSource(request.peerAddress());
             }

@@ -428,7 +428,9 @@ public class GatewayEdgeRoute {
         // what makes an omitted security_defaults block genuinely mean 'strict' for every route. The
         // declared allow_extended_ascii override lands on it here, and on every route's preset below.
         // ForwardedTrust is the one derivation of the baseline and the forwarded-header trust, shared
-        // with the pending-authorization quota key, so both name the same client for one request.
+        // with the pending-authorization quota key, so both judge forwarding headers under the same
+        // trusted-proxy set and resolver configuration. They do not judge the same peer behind the SNI
+        // front: the quota key reads the relayed client, the forward stage the relay's loopback leg.
         SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
         SecurityDefaultsConfig securityDefaultsConfig = gatewayConfig.securityDefaults();
         Boolean allowExtendedAscii = securityDefaultsConfig == null ? null : securityDefaultsConfig.allowExtendedAscii();

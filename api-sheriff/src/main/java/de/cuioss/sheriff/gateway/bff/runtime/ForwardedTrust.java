@@ -39,10 +39,22 @@ import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
  * <p>
  * Every consumer that judges a forwarding header builds its {@link TcpPeerGate} and its
  * {@link ForwardedHeaderResolver} here: the edge's forward stage, which regenerates
- * {@code X-Forwarded-For} from the resolved client, and the pending-authorization quota key
- * ({@link PendingQuotaKeys}), which counts a login under that same client. A second, hand-written
- * derivation could drift from the first — a different trusted set, or a different baseline rejecting a
- * header the other accepts — and the two would then name different clients for one request.
+ * {@code X-Forwarded-For}, and the pending-authorization quota key ({@link PendingQuotaKeys}), which
+ * counts a login under the requester's source. What the two share is the trust itself — the
+ * trusted-proxy set and the resolver configuration. A second, hand-written derivation could drift from
+ * the first — a different trusted set, or a different baseline rejecting a header the other accepts —
+ * and the two would then judge the same peer and the same forwarding headers differently.
+ * <p>
+ * <strong>What is not shared: the peer the trust is applied to.</strong> Each consumer judges the peer
+ * it reads. On a connection that reaches the edge directly both read the TCP peer, so they judge one
+ * peer under one trust and resolve one client. Behind the gateway's own SNI front listener
+ * ({@code tls.passthrough_sni} set) they do not: the quota key judges the relayed client address the
+ * relay handed over in process
+ * ({@link de.cuioss.sheriff.gateway.pipeline.PipelineRequest#relayedPeerAddress()}), while the forward
+ * stage judges the TCP peer, which there is the relay's loopback leg. The regenerated
+ * {@code X-Forwarded-For} and the quota key can then name different clients for one request. That is
+ * by design: the relayed address feeds only the quota key, and the TCP peer every other stage reads
+ * stays the relay leg ({@code doc/development/tls-edge.adoc}).
  * <p>
  * <strong>Why it lives here.</strong> It sits beside {@link PendingQuotaKeys}, the consumer it was
  * extracted for, and is reachable from both callers: the edge entry point and the session-runtime

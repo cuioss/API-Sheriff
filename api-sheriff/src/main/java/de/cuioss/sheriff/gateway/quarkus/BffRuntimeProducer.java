@@ -782,9 +782,12 @@ public class BffRuntimeProducer {
      * Builds the derivation of the quota key a pending-authorization record is counted under, from the
      * global {@code forwarded.trusted_proxies}: the peer gate and the forwarded-header resolver come from
      * {@link ForwardedTrust}, the one derivation the edge builds its forward stage from as well
-     * ({@code GatewayEdgeRoute}), so the address a pending record is counted under is the one the
-     * gateway regenerates {@code X-Forwarded-For} from. The resolver has a security-event counter of its
-     * own, so a malformed forwarding header of a trusted proxy is not counted twice.
+     * ({@code GatewayEdgeRoute}), so both judge forwarding headers under the same trusted-proxy set and
+     * resolver configuration. They share the trust, not the peer: behind the gateway's own SNI front
+     * listener the quota key judges the relayed client address while the forward stage judges the TCP
+     * peer, the relay's loopback leg, so the two can name different clients for one request (see
+     * {@link ForwardedTrust}). The resolver has a security-event counter of its own, so a malformed
+     * forwarding header of a trusted proxy is not counted twice.
      *
      * @return the quota-key derivation the session stage and the reserved paths share
      */

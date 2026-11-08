@@ -30,10 +30,11 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * displaces only that source's own records.
  * <p>
  * <strong>The source.</strong> For a peer the {@link TcpPeerGate} trusts, the client address the
- * {@link ForwardedHeaderResolver} resolves from its forwarding headers — the resolver is configured as
- * the forward stage's, so the address is the one the gateway regenerates {@code X-Forwarded-For} from —
- * and {@link SourceKey#UNKNOWN_SOURCE} when those headers resolve no client, never the trusted peer's
- * own address, which every such request through that peer would otherwise share. For any other peer,
+ * {@link ForwardedHeaderResolver} resolves from its forwarding headers — the gate and the resolver come
+ * from {@link ForwardedTrust}, so they carry the forward stage's trusted-proxy set and resolver
+ * configuration — and {@link SourceKey#UNKNOWN_SOURCE} when those headers resolve no client, never the
+ * trusted peer's own address, which every such request through that peer would otherwise share. For
+ * any other peer,
  * the TCP peer address; its forwarding headers are never read. The address is canonicalized by
  * {@link SourceKeyResolver#canonicalSource}: IPv4 kept whole, IPv6 reduced to its {@code /64}, an absent
  * or unparseable address folded to {@link SourceKey#UNKNOWN_SOURCE}. No authority host is part of the
@@ -44,7 +45,11 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * TCP peer would be that leg for every client. Where the edge recorded a
  * {@linkplain PipelineRequest#relayedPeerAddress() relayed peer address} — handed over in process by
  * the relay, never read from a header — that address takes the TCP peer's place in both rules above:
- * it is the peer the trust gate judges and the address an untrusted peer is keyed on.
+ * it is the peer the trust gate judges and the address an untrusted peer is keyed on. Only this key
+ * makes that substitution. The forward stage keeps judging the TCP peer — the relay's loopback leg —
+ * when it regenerates {@code X-Forwarded-For}, so behind the front the quota key and the regenerated
+ * header can name different clients for one request; what they share is the trust, not the peer
+ * (see {@link ForwardedTrust}).
  * <p>
  * <strong>One derivation, independent of detection.</strong> The key is derived here for every
  * producer of a pending record — the session stage and the reserved login, step-up and callback
@@ -73,7 +78,7 @@ public final class PendingQuotaKeys {
      * Creates the derivation.
      *
      * @param peerGate          the immediate-TCP-peer trust gate of the {@code forwarded} block
-     * @param forwardedResolver a forwarded-header resolver configured exactly as the forward stage's,
+     * @param forwardedResolver a forwarded-header resolver over the forward stage's resolver configuration,
      *                          with a security-event counter of its own so a malformed forwarding
      *                          header of a trusted proxy is not counted twice
      */
