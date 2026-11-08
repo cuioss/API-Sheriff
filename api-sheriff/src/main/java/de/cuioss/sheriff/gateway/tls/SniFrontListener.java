@@ -131,6 +131,7 @@ public final class SniFrontListener {
      * @param publicPort         the public TLS port the front server binds
      * @param relayIdleTimeout   the idle timeout of the front server, derived by
      *                           {@link TlsEdgeProducer}; positive
+     * @throws IllegalArgumentException when {@code relayIdleTimeout} is not positive
      */
     public SniFrontListener(Vertx vertx, PassthroughRelay relay, Map<String, RelayTarget> passthroughTargets,
             RelayTarget terminatedTarget, int publicPort, Duration relayIdleTimeout) {

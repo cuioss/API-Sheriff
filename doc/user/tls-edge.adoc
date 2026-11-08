@@ -213,8 +213,8 @@ uses, from being held indefinitely:
 | 1024
 | At most 1024 accepted connections may be waiting for their ClientHello at the same time. A
   connection accepted beyond that is closed at once, without being read. A client holding many silent
-  sockets therefore delays new handshakes by at most one deadline window, until the deadline frees the
-  held slots.
+  sockets therefore delays new handshakes by at most one deadline window per wave of held sockets,
+  until the deadline frees the held slots.
 
 | Relay idle timeout
 | derived

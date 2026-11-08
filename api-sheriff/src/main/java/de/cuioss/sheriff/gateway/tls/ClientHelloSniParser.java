@@ -225,7 +225,9 @@ public final class ClientHelloSniParser {
             return Result.parsed(null);
         }
         if (span == HandshakeSpan.COMPLETE) {
-            return Result.parsed(extractServerName(Arrays.copyOf(handshake, handshakeLength)));
+            // Bound the walk to the ClientHello's declared length, never to the bytes reassembled: a
+            // record may carry bytes past the ClientHello, and those must not supply the routed SNI.
+            return Result.parsed(extractServerName(Arrays.copyOf(handshake, declaredHandshakeLength)));
         }
         return null;
     }
@@ -304,7 +306,8 @@ public final class ClientHelloSniParser {
 
     /**
      * Walks the fully-reassembled {@code client_hello} body to the {@code server_name} extension and
-     * returns the first {@code host_name}. Any structural inconsistency (a declared length that runs
+     * returns the first {@code host_name}. {@code handshake} holds exactly the declared ClientHello
+     * (header included) and nothing past it. Any structural inconsistency (a declared length that runs
      * past the buffer) yields {@code null} so the caller fails closed.
      */
     private static @Nullable String extractServerName(byte[] handshake) {
