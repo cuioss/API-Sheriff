@@ -246,8 +246,8 @@ class GatewayEdgeWebSocketUpgradeGateTest {
     /** Sends an HTTP/2 GET on the WebSocket route and returns the edge's answer, which must come promptly. */
     private Answer http2Get() throws Exception {
         CompletableFuture<Answer> answer = http2Client.request(new RequestOptions()
-                        .setHost(LoopbackHost.ADDRESS).setPort(front.actualPort())
-                        .setMethod(HttpMethod.GET).setURI(WS_URI))
+                .setHost(LoopbackHost.ADDRESS).setPort(front.actualPort())
+                .setMethod(HttpMethod.GET).setURI(WS_URI))
                 .compose(request -> request.putHeader("Origin", ORIGIN).send())
                 .compose(response -> response.body().map(body -> new Answer(response.statusCode(),
                         headersOf(response.headers().entries()))))

@@ -433,7 +433,7 @@ class SniFrontListenerTest {
      * future completed when its first accepted connection closes.
      */
     private record Backend(RelayTarget target, CompletableFuture<Buffer> firstBytes,
-            CompletableFuture<Void> firstClosed) {
+    CompletableFuture<Void> firstClosed) {
     }
 
     /**
