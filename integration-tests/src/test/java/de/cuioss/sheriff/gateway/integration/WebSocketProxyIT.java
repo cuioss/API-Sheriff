@@ -16,12 +16,15 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -32,8 +35,11 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
@@ -41,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
@@ -121,6 +128,16 @@ import org.junit.jupiter.api.Test;
  * relays, then a claim about the edge's remaining capacity. Adding an eighth per-request test would
  * have left the leak equally invisible.
  * <p>
+ * <strong>Upgrade gate.</strong> A request on a WebSocket route that is no valid opening handshake is
+ * refused before any upstream dial: a plain HTTP/1.1 {@code GET} gets {@code 426} with
+ * {@code Upgrade: websocket}, an HTTP/2 {@code GET} gets {@code 426} with no {@code Upgrade} header,
+ * and an upgrade offering an unsupported {@code Sec-WebSocket-Version} gets {@code 426} with
+ * {@code Sec-WebSocket-Version: 13}. Each refusal is bounded by {@link #GATE_ANSWER_TIMEOUT}. The relay
+ * cases above, which complete a valid upgrade, are the matched positive control. None of the other
+ * cases is affected by the gate: every handshake the JDK WebSocket client sends is a valid upgrade, the
+ * {@code Origin} and bearer refusals are made before the gate runs, and the held requests and the
+ * probe's HTTP request go to routes that are not WebSocket routes.
+ * <p>
  * <strong>Early first frame.</strong> {@link #firstFrameSentOnOpenEchoesOnEveryUpgrade()} measures the
  * relay's <em>client leg</em> against the production gateway: across {@link #EARLY_FRAME_UPGRADES}
  * sequential upgrades, the client sends its first text frame from {@code WebSocket.Listener.onOpen} —
@@ -190,15 +207,32 @@ class WebSocketProxyIT extends BaseIntegrationTest {
      */
     private static final int EARLY_FRAME_UPGRADES = 50;
 
+    /** The status a request that is no valid WebSocket upgrade is refused with by the upgrade gate. */
+    private static final int UPGRADE_REQUIRED = 426;
+
+    /** A {@code Sec-WebSocket-Version} other than the one supported version, {@code 13}. */
+    private static final String UNSUPPORTED_WEBSOCKET_VERSION = "8";
+
+    /**
+     * How soon the upgrade gate's refusal must arrive. It is answered before any upstream dial, so it
+     * takes one round trip; a request that dialed the upstream first would take far longer to fail.
+     */
+    private static final Duration GATE_ANSWER_TIMEOUT = Duration.ofSeconds(5);
+
     private static String wsBaseUri;
+    private static String httpsBaseUri;
+    private static int httpsPort;
     private static String lowCapWsBaseUri;
     private static int lowCapHttpPort;
+    private static SSLContext trustAllContext;
     private static HttpClient httpClient;
 
     @BeforeAll
     static void setUpWebSocketClient() throws Exception {
         String testPort = System.getProperty("test.https.port", "10443");
+        httpsPort = Integer.parseInt(testPort);
         wsBaseUri = "wss://localhost:" + testPort;
+        httpsBaseUri = "https://localhost:" + testPort;
 
         // The dedicated low-admission-budget instance (api-sheriff-ws-admission), published on its
         // own host port and mounting the sheriff-config-ws-admission gateway.yaml overlay. It shares
@@ -210,9 +244,9 @@ class WebSocketProxyIT extends BaseIntegrationTest {
         // the case BaseIntegrationTest handles for REST Assured via useRelaxedHTTPSValidation(). The
         // JDK WebSocket client offers no equivalent one-liner, so a trust-all context is built here.
         // Scoped to this black-box IT against a throwaway local certificate — never production trust.
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(null, new TrustManager[]{new TrustAllManager()}, new SecureRandom());
-        httpClient = HttpClient.newBuilder().sslContext(sslContext).build();
+        trustAllContext = SSLContext.getInstance("TLS");
+        trustAllContext.init(null, new TrustManager[]{new TrustAllManager()}, new SecureRandom());
+        httpClient = HttpClient.newBuilder().sslContext(trustAllContext).build();
     }
 
     @Test
@@ -291,6 +325,93 @@ class WebSocketProxyIT extends BaseIntegrationTest {
                     "a heartbeated relay must survive past the idle timeout — it was reclaimed");
         } finally {
             socket.sendClose(WebSocket.NORMAL_CLOSURE, "done");
+        }
+    }
+
+    @Test
+    @DisplayName("a plain HTTP/1.1 GET to a WebSocket route is answered 426 with Upgrade: websocket, without a dial")
+    void plainHttp1GetIsRefused426() throws Exception {
+        HttpResponse<String> response = plainGet(HttpClient.Version.HTTP_1_1);
+
+        assertAll("a plain HTTP/1.1 GET on a protocol: websocket route",
+                () -> assertEquals(HttpClient.Version.HTTP_1_1, response.version(), "the request went out as HTTP/1.1"),
+                () -> assertEquals(UPGRADE_REQUIRED, response.statusCode(),
+                        "a request that is no WebSocket upgrade is refused 426 before any upstream dial"),
+                () -> assertEquals("websocket", response.headers().firstValue("Upgrade").orElse(null),
+                        "the HTTP/1.1 refusal names the protocol to upgrade to"));
+    }
+
+    @Test
+    @DisplayName("an HTTP/2 GET to a WebSocket route is answered 426 without an Upgrade header, without a dial")
+    void http2GetIsRefused426() throws Exception {
+        HttpResponse<String> response = plainGet(HttpClient.Version.HTTP_2);
+
+        assertAll("an HTTP/2 GET on a protocol: websocket route",
+                () -> assertEquals(HttpClient.Version.HTTP_2, response.version(), "the request went out as HTTP/2"),
+                () -> assertEquals(UPGRADE_REQUIRED, response.statusCode(),
+                        "an HTTP/2 request cannot upgrade and is refused 426 before any upstream dial"),
+                () -> assertTrue(response.headers().firstValue("Upgrade").isEmpty(),
+                        "HTTP/2 forbids the Upgrade header, so the refusal carries none"));
+    }
+
+    @Test
+    @DisplayName("an upgrade with an unsupported Sec-WebSocket-Version is answered 426 with Sec-WebSocket-Version: 13")
+    void unsupportedWebSocketVersionIsRefused426() throws Exception {
+        String head = rawUpgradeHead("/ws/echo", UNSUPPORTED_WEBSOCKET_VERSION);
+        String lowerHead = head.toLowerCase(Locale.ROOT);
+
+        assertAll("an HTTP/1.1 upgrade offering Sec-WebSocket-Version: " + UNSUPPORTED_WEBSOCKET_VERSION,
+                () -> assertTrue(head.startsWith("HTTP/1.1 " + UPGRADE_REQUIRED + " "),
+                        () -> "an unsupported version is refused 426: " + head),
+                () -> assertTrue(lowerHead.contains("\r\nsec-websocket-version: 13\r\n"),
+                        () -> "the refusal names the one supported version: " + head));
+    }
+
+    /**
+     * Sends a plain {@code GET} — no upgrade — carrying the allow-listed {@code Origin} to the
+     * {@code ws-echo} route over {@code version}, bounded by {@link #GATE_ANSWER_TIMEOUT}.
+     */
+    private static HttpResponse<String> plainGet(HttpClient.Version version) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(httpsBaseUri + "/ws/echo"))
+                .version(version)
+                .header("Origin", ALLOWED_ORIGIN)
+                .timeout(GATE_ANSWER_TIMEOUT)
+                .GET()
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * Writes a WebSocket opening handshake offering {@code version} to {@code path} over a raw TLS
+     * socket — the JDK clients refuse to set {@code Sec-WebSocket-Version} — and returns the response
+     * head, read within {@link #GATE_ANSWER_TIMEOUT}.
+     */
+    private static String rawUpgradeHead(String path, String version) throws Exception {
+        byte[] keyBytes = new byte[16];
+        new SecureRandom().nextBytes(keyBytes);
+        String request = "GET " + path + " HTTP/1.1\r\n"
+                + "Host: localhost:" + httpsPort + "\r\n"
+                + "Upgrade: websocket\r\n"
+                + "Connection: Upgrade\r\n"
+                + "Sec-WebSocket-Key: " + Base64.getEncoder().encodeToString(keyBytes) + "\r\n"
+                + "Sec-WebSocket-Version: " + version + "\r\n"
+                + "Origin: " + ALLOWED_ORIGIN + "\r\n"
+                + "\r\n";
+        try (SSLSocket socket = (SSLSocket) trustAllContext.getSocketFactory().createSocket("localhost", httpsPort)) {
+            socket.setSoTimeout((int) GATE_ANSWER_TIMEOUT.toMillis());
+            OutputStream out = socket.getOutputStream();
+            out.write(request.getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            InputStream in = socket.getInputStream();
+            StringBuilder head = new StringBuilder();
+            while (!head.toString().endsWith("\r\n\r\n")) {
+                int next = in.read();
+                if (next == -1) {
+                    break;
+                }
+                head.append((char) next);
+            }
+            return head.toString();
         }
     }
 

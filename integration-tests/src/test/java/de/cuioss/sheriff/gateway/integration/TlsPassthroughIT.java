@@ -16,13 +16,22 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -44,6 +53,12 @@ import org.junit.jupiter.api.Test;
  * {@code CN=localhost} identity. A terminated request on the same public listener is still fully
  * served, proving the split is per-connection and does not disturb the L7 path.
  * <p>
+ * <strong>The ClientHello deadline.</strong> The front holds a connection it has not routed yet for at
+ * most its ClientHello deadline: a connection that sends nothing, and one whose ClientHello stops
+ * halfway, are both closed within that deadline plus a stated margin, without an answer. The passthrough
+ * handshake above is the positive control — a client that sends its ClientHello at once is routed long
+ * before the deadline could end it.
+ * <p>
  * <strong>Runtime preconditions</strong> (supplied by the {@code -Pintegration-tests} stack, not by
  * this black-box client): the gateway is configured with a {@code passthrough_sni} entry for
  * {@link #passthroughSni()} resolving to {@code passthrough-backend:8443}, and the terminated
@@ -51,6 +66,34 @@ import org.junit.jupiter.api.Test;
  * it only observes the negotiated peer identity.
  */
 class TlsPassthroughIT extends BaseIntegrationTest {
+
+    /**
+     * The ClientHello deadline of the SNI front: an accepted connection that has not completed its
+     * ClientHello within it is closed. Stated here, not read from the gateway: a bound read from the
+     * code under test would hold by construction.
+     */
+    private static final Duration CLIENT_HELLO_DEADLINE = Duration.ofSeconds(10);
+
+    /**
+     * How long past {@link #CLIENT_HELLO_DEADLINE} a close may arrive: room for a loaded machine and the
+     * Docker port forward, and far below the front's relay idle timeout, so a close inside this bound is
+     * the deadline's and not the idle timeout's.
+     */
+    private static final Duration CLOSE_MARGIN = Duration.ofSeconds(5);
+
+    private static final int CONNECT_TIMEOUT_MILLIS = 5_000;
+
+    /**
+     * The first bytes of a TLS ClientHello whose record announces 512 bytes: the record header, the
+     * handshake header announcing 508 bytes, the client version and the first four bytes of the client
+     * random. The rest never follows, so the front can never complete the ClientHello.
+     */
+    private static final byte[] HALF_SENT_CLIENT_HELLO = {
+            0x16, 0x03, 0x01, 0x02, 0x00,
+            0x01, 0x00, 0x01, (byte) 0xFC,
+            0x03, 0x03,
+            0x5A, 0x5A, 0x5A, 0x5A
+    };
 
     /** The passthrough SNI the gateway splits off at L4; overridable for a differently-named stack. */
     private static String passthroughSni() {
@@ -86,6 +129,57 @@ class TlsPassthroughIT extends BaseIntegrationTest {
                 .statusCode(200)
                 .extract();
         assertNotNull(response.path("method"), "terminated traffic must still reach the go-httpbin upstream");
+    }
+
+    @Test
+    @DisplayName("a connection that sends nothing is closed by the SNI front at its ClientHello deadline")
+    void silentConnectionIsClosedAtTheClientHelloDeadline() throws Exception {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("localhost", httpsPort()), CONNECT_TIMEOUT_MILLIS);
+
+            long closedMillis = awaitClosedByTheGateway(socket);
+
+            assertTrue(closedMillis <= CLIENT_HELLO_DEADLINE.plus(CLOSE_MARGIN).toMillis(),
+                    "a silent connection must be closed by the ClientHello deadline, was closed after "
+                            + closedMillis + " ms");
+        }
+    }
+
+    @Test
+    @DisplayName("a connection whose ClientHello stops halfway is closed by the SNI front at its ClientHello deadline")
+    void halfSentClientHelloIsClosedAtTheClientHelloDeadline() throws Exception {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("localhost", httpsPort()), CONNECT_TIMEOUT_MILLIS);
+            OutputStream out = socket.getOutputStream();
+            out.write(HALF_SENT_CLIENT_HELLO);
+            out.flush();
+
+            long closedMillis = awaitClosedByTheGateway(socket);
+
+            assertTrue(closedMillis <= CLIENT_HELLO_DEADLINE.plus(CLOSE_MARGIN).toMillis(),
+                    "a stalled ClientHello must be closed by the ClientHello deadline, was closed after "
+                            + closedMillis + " ms");
+        }
+    }
+
+    /**
+     * Reads from {@code socket} until the gateway closes it — an end of stream, or a reset — and returns
+     * how long that took. Fails when the gateway sends a byte, or has not closed the connection within
+     * {@link #CLIENT_HELLO_DEADLINE} plus {@link #CLOSE_MARGIN}.
+     */
+    private static long awaitClosedByTheGateway(Socket socket) throws IOException {
+        socket.setSoTimeout((int) CLIENT_HELLO_DEADLINE.plus(CLOSE_MARGIN).toMillis());
+        long startNanos = System.nanoTime();
+        try {
+            int read = socket.getInputStream().read();
+            assertEquals(-1, read, "the front must close the connection without answering it");
+        } catch (SocketTimeoutException stillOpen) {
+            throw new AssertionError("the front did not close the connection within the ClientHello deadline plus "
+                    + CLOSE_MARGIN.toSeconds() + " s", stillOpen);
+        } catch (SocketException reset) {
+            // A reset is a close by the gateway too.
+        }
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
     }
 
     /**
