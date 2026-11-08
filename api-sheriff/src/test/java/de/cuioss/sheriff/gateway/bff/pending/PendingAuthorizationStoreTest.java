@@ -388,14 +388,17 @@ class PendingAuthorizationStoreTest {
             PendingAuthorizationRecord held = pendingFrom(SOURCE_A, T0);
             store.store(held, T0);
 
-            IntStream.range(0, 3).forEach(attempt -> assertThrows(GatewayException.class,
-                    () -> store.store(pendingFrom(SOURCE_B, T0), T0)));
+            IntStream.range(0, 3).forEach(attempt -> {
+                PendingAuthorizationRecord refused = pendingFrom(SOURCE_B, T0);
+                assertThrows(GatewayException.class, () -> store.store(refused, T0));
+            });
             int firstEpisode = saturationWarnings().size();
             long debugRefusals = storeRecords().stream().filter(captured -> Level.FINE.equals(captured.getLevel()))
                     .count();
             store.consume(held.id(), T0);
             store.store(pendingFrom(SOURCE_C, T0), T0);
-            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            PendingAuthorizationRecord nextEpisode = pendingFrom(SOURCE_B, T0);
+            assertThrows(GatewayException.class, () -> store.store(nextEpisode, T0));
 
             assertEquals(1, firstEpisode, "three refusals of one episode log the WARN once");
             assertEquals(2, debugRefusals, "the further refusals of the episode stay at DEBUG");
@@ -408,25 +411,29 @@ class PendingAuthorizationStoreTest {
         void shouldReArmOnlyBelowHalfCapacity() {
             InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
             List<PendingAuthorizationRecord> held = new ArrayList<>(storeFrom(store, SOURCE_A, 4, T0));
-            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            PendingAuthorizationRecord firstRefused = pendingFrom(SOURCE_B, T0);
+            assertThrows(GatewayException.class, () -> store.store(firstRefused, T0));
             int afterFirstRefusal = saturationWarnings().size();
 
             store.consume(held.removeFirst().id(), T0);
             held.addAll(storeFrom(store, SOURCE_A, 1, T0));
-            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            PendingAuthorizationRecord refusedAfterOneFreedSlot = pendingFrom(SOURCE_B, T0);
+            assertThrows(GatewayException.class, () -> store.store(refusedAfterOneFreedSlot, T0));
             int afterOneFreedSlot = saturationWarnings().size();
 
             store.consume(held.removeFirst().id(), T0);
             store.consume(held.removeFirst().id(), T0);
             held.addAll(storeFrom(store, SOURCE_A, 2, T0));
-            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            PendingAuthorizationRecord refusedAfterDrainToHalf = pendingFrom(SOURCE_B, T0);
+            assertThrows(GatewayException.class, () -> store.store(refusedAfterDrainToHalf, T0));
             int afterDrainToHalf = saturationWarnings().size();
 
             store.consume(held.removeFirst().id(), T0);
             store.consume(held.removeFirst().id(), T0);
             store.consume(held.removeFirst().id(), T0);
             storeFrom(store, SOURCE_A, 3, T0);
-            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            PendingAuthorizationRecord refusedAfterDrainBelowHalf = pendingFrom(SOURCE_B, T0);
+            assertThrows(GatewayException.class, () -> store.store(refusedAfterDrainBelowHalf, T0));
             int afterDrainBelowHalf = saturationWarnings().size();
 
             assertAll("the latch re-arms by hysteresis, not on a single freed slot",
@@ -446,8 +453,9 @@ class PendingAuthorizationStoreTest {
             store.store(held, T0);
             PendingAuthorizationRecord refused = pendingFrom(SOURCE_B, T0);
 
+            PendingAuthorizationRecord laterRefused = pendingFrom(SOURCE_C, T0);
             assertThrows(GatewayException.class, () -> store.store(refused, T0));
-            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_C, T0), T0));
+            assertThrows(GatewayException.class, () -> store.store(laterRefused, T0));
 
             assertEquals(1, saturationWarnings().size(), "precondition: the saturation WARN was logged");
             SheriffDebugCapture.assertDebugIsCaptured(InMemoryPendingAuthorizationStore.class);

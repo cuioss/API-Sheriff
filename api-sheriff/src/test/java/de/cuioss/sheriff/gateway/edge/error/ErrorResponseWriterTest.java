@@ -290,6 +290,29 @@ class ErrorResponseWriterTest {
                     () -> assertNull(response.headers().get(WWW_AUTHENTICATE)));
         }
 
+        /**
+         * The saturated-login refusal on the HTML path. {@link #saturatedPendingStoreCarriesItsRetryDelay}
+         * proves the header is seeded on the gateway-authored map; this proves the portal's HTML page — a
+         * writer of its own, with its own envelope headers — still carries it to a browser navigation.
+         */
+        @Test
+        @DisplayName("a saturated login refused to a browser navigation is an HTML 503 carrying Retry-After: 30")
+        void saturatedLoginHtmlPageCarriesRetryAfter() throws Exception {
+            Response response = reject(writer(true, errorPagesPortal()), Protocol.HTTP, List.of("text/html"),
+                    EventType.PENDING_AUTHORIZATION_SATURATED);
+
+            assertAll("the HTML refusal tells the browser when to retry",
+                    () -> assertEquals(ErrorPageClassifier.Classification.HTML_ELIGIBLE,
+                            ErrorPageClassifier.classify(EventType.PENDING_AUTHORIZATION_SATURATED),
+                            "precondition: the saturated refusal is HTML-eligible"),
+                    () -> assertEquals(503, response.status()),
+                    () -> assertTrue(response.headers().getOrDefault(CONTENT_TYPE, "").startsWith("text/html"),
+                            String.valueOf(response.headers())),
+                    () -> assertTrue(response.body().startsWith("<!DOCTYPE html>"), response.body()),
+                    () -> assertEquals("30", response.headers().get(ErrorResponseWriter.RETRY_AFTER_HEADER),
+                            String.valueOf(response.headers())));
+        }
+
         @Test
         @DisplayName("rendered TO, not CALLED: the true event is counted and metered, NO_ROUTE_MATCHED is not")
         void theTrueEventIsReported() throws Exception {
