@@ -243,10 +243,12 @@ class WebSocketUpgradeGateTest {
             assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
-        @ParameterizedTest(name = "Sec-WebSocket-Key: {0}")
-        @ValueSource(strings = {"dGhlIHNhbXBsZSBub25jZQ", "dGhlIHNhbXBsZSBub25jZQ="})
+        @ParameterizedTest(name = "the RFC 6455 sample key with {0} of its two padding characters cut off")
+        @ValueSource(ints = {1, 2})
         @DisplayName("a Sec-WebSocket-Key that decodes to 16 bytes but is not padded base64 is refused 400")
-        void refusesUnpaddedKey(String key) {
+        void refusesUnpaddedKey(int paddingCutOff) {
+            String rfcSampleKey = "dGhlIHNhbXBsZSBub25jZQ==";
+            String key = rfcSampleKey.substring(0, rfcSampleKey.length() - paddingCutOff);
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, key);
 
             assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));

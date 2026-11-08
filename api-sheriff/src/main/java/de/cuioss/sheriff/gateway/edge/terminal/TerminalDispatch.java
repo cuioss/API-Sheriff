@@ -317,12 +317,13 @@ public final class TerminalDispatch {
         List<String> refusalSetCookies = List.copyOf(request.responseSetCookies());
         // A request that is no valid WebSocket opening handshake is refused here, before it is tracked,
         // takes a relay permit or dials the upstream: nothing it could not use is spent on it.
-        if (WebSocketUpgradeGate.judge(ctx.request()) instanceof WebSocketUpgradeGate.Verdict.Refused refused) {
+        if (WebSocketUpgradeGate.judge(ctx.request())
+                instanceof WebSocketUpgradeGate.Verdict.Refused(int status, Map<String, String> verdictHeaders)) {
             LOGGER.debug("Request on WebSocket route '%s' is no valid WebSocket upgrade — refusing it with %s",
-                    route.id(), refused.status());
+                    route.id(), status);
             edgeAdmission.releaseAdmission(ctx, admissionGuard);
-            ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, refused.headers(),
-                    refusalSetCookies, refused.status()));
+            ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, verdictHeaders,
+                    refusalSetCookies, status));
             return;
         }
         String remainder = EdgeRequests.remainderAfterMatchKey(route, EdgeRequests.requireCanonicalPath(request));
