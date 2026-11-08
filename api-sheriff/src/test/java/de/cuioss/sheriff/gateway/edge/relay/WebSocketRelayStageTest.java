@@ -552,9 +552,12 @@ class WebSocketRelayStageTest {
             HttpServer relayServer = startRelayOnlyServer(closeRecordingUpstream.actualPort(),
                     releases::incrementAndGet);
             try {
+                // The answer counts only once its body has ended: a status head on a response left open
+                // would still leave the client waiting.
                 Future<Integer> answered = client.request(HttpMethod.GET, relayServer.actualPort(),
                         LoopbackHost.ADDRESS, "/relay").compose(HttpClientRequest::send)
-                        .map(HttpClientResponse::statusCode);
+                        .compose((HttpClientResponse response) ->
+                                response.body().map(_ -> response.statusCode()));
 
                 // The answer is written as the upgrade fails, so a short deadline separates it from a
                 // client left waiting for its own timeout.

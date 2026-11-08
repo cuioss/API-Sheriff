@@ -166,7 +166,7 @@ final class WebSocketUpgradeGate {
         }
         try {
             return Base64.getDecoder().decode(key).length == KEY_LENGTH;
-        } catch (IllegalArgumentException notBase64) {
+        } catch (IllegalArgumentException _) {
             return false;
         }
     }

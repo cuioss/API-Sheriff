@@ -316,9 +316,14 @@ class SniFrontListenerTest {
             Awaits.connect(client.socket().write(Buffer.buffer(hello)), "the ClientHello to be written");
             Awaits.connect(passthrough.firstBytes(), "the relay to be established");
 
-            // Assert — both legs are closed
-            Awaits.connect(client.closedNanos(), "the idle timeout to close the client leg");
+            // Assert — both legs are closed, and not before the idle timeout: every leg was last active
+            // after the client connected, so a close earlier than that is not the idle timeout's doing
+            long closedAt = Awaits.connect(client.closedNanos(), "the idle timeout to close the client leg");
             Awaits.connect(passthrough.firstClosed(), "the idle timeout to close the backend leg");
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(closedAt - client.connectedNanos());
+            assertTrue(elapsedMillis >= IDLE.toMillis() - 100,
+                    "the relay must be closed by its idle timeout, not before it: closed after " + elapsedMillis
+                            + " ms");
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
