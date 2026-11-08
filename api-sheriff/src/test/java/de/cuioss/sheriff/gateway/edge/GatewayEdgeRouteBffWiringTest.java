@@ -1960,6 +1960,104 @@ public class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * The reserved login path, driven over a live edge, counts each pending record under the quota key
+     * the edge derives from that request — not under a key shared by every requester. The runtime trusts
+     * the loopback peer as a forwarder, so two requests over the same loopback connection that forward
+     * two different clients must reach the store under two different keys; a dispatch that handed the
+     * store one fixed key would count both under it. The untrusting runtime is the matched control: the
+     * same two requests are counted under the loopback peer itself, so the distinct keys above come from
+     * the forwarded clients and not from anything else that differs between the two requests.
+     */
+    @Nested
+    @DisplayName("reserved login counts its pending record under the requester's own quota key")
+    class ReservedLoginQuotaKey {
+
+        private static final String CLIENT_A = "198.51.100.1";
+        private static final String CLIENT_B = "198.51.100.2";
+
+        private final List<String> trustingKeys = new CopyOnWriteArrayList<>();
+        private final List<String> untrustingKeys = new CopyOnWriteArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer trustingFront;
+        private HttpServer untrustingFront;
+        private HttpClient client;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            trustingFront = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(trustingKeys),
+                            quotaKeysTrusting(List.of(LoopbackHost.ADDRESS + "/32"))))
+                    .serve();
+            untrustingFront = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(untrustingKeys),
+                            untrustingQuotaKeys()))
+                    .serve();
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(trustingFront.close(), "the trusting edge front server to close");
+            Awaits.teardown(untrustingFront.close(), "the untrusting edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("two forwarded clients reach the store under two different quota keys")
+        void distinctClientsAreCountedApart() throws Exception {
+            int first = login(trustingFront, CLIENT_A);
+            int second = login(trustingFront, CLIENT_B);
+            int controlFirst = login(untrustingFront, CLIENT_A);
+            int controlSecond = login(untrustingFront, CLIENT_B);
+
+            assertAll("each login is counted under the source the edge derived for it",
+                    () -> assertEquals(List.of(302, 302, 302, 302),
+                            List.of(first, second, controlFirst, controlSecond),
+                            "precondition: every login stored its record and redirected"),
+                    () -> assertEquals(List.of(CLIENT_A, CLIENT_B), trustingKeys,
+                            "a trusted forwarder's two clients are counted apart, so one client's records "
+                                    + "never share a quota with the other's"),
+                    () -> assertEquals(List.of(LoopbackHost.ADDRESS, LoopbackHost.ADDRESS), untrustingKeys,
+                            "control: without the trust both requests are counted under their own TCP peer"));
+        }
+
+        private int login(HttpServer front, String forwardedClient) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGIN_PATH);
+            return Awaits.connect(client.request(options)
+                            .compose(request -> request.putHeader("X-Forwarded-For", forwardedClient).send()),
+                    "the login response forwarding " + forwardedClient).statusCode();
+        }
+
+        /** An in-memory pending store that records the quota key of every record offered to it. */
+        private static PendingAuthorizationStore recordingStore(List<String> quotaKeys) {
+            InMemoryPendingAuthorizationStore delegate = new InMemoryPendingAuthorizationStore(16);
+            return new PendingAuthorizationStore() {
+                @Override
+                public void store(PendingAuthorizationRecord pending, Instant now) {
+                    quotaKeys.add(pending.quotaKey());
+                    delegate.store(pending, now);
+                }
+
+                @Override
+                public Optional<PendingAuthorizationRecord> consume(String recordId, Instant now) {
+                    return delegate.consume(recordId, now);
+                }
+            };
+        }
+    }
+
     private static OidcConfig fullOidc() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
                 .path(LOGOUT_PATH)
@@ -2019,7 +2117,7 @@ public class GatewayEdgeRouteBffWiringTest {
         return assembleRuntime(binding, clientJwksEndpoint, sessionRelays, sessionHeld,
                 new InMemoryPendingAuthorizationStore(16), scopes -> {
                     throw new AssertionError("engine authorize must not be reached");
-                }, false);
+                }, false, untrustingQuotaKeys());
     }
 
     /**
@@ -2036,19 +2134,33 @@ public class GatewayEdgeRouteBffWiringTest {
         return assembleRuntime(binding, ClientJwksEndpoint.withheld(), new SessionRelayRegistry(16, Clock.systemUTC()),
                 sessionId -> true, saturated, scopes -> new AuthorizationCodeFlow.AuthorizationRedirect(
                         "https://idp.example.com/authorize", FlowContext.create(ORIGIN + CALLBACK_PATH)),
-                true);
+                true, untrustingQuotaKeys());
+    }
+
+    /**
+     * An engine-free active runtime whose login seam yields a redirect, so the reserved login path stores
+     * a pending record in {@code pendingStore}, and whose quota-key derivation is {@code quotaKeys}.
+     */
+    private static BffRuntime loginStoringRuntime(SessionBinding binding, PendingAuthorizationStore pendingStore,
+            PendingQuotaKeys quotaKeys) {
+        return assembleRuntime(binding, ClientJwksEndpoint.withheld(), new SessionRelayRegistry(16, Clock.systemUTC()),
+                sessionId -> true, pendingStore, scopes -> new AuthorizationCodeFlow.AuthorizationRedirect(
+                        "https://idp.example.com/authorize", FlowContext.create(ORIGIN + CALLBACK_PATH)),
+                false, quotaKeys);
     }
 
     /**
      * Assembles the engine-free active runtime over {@code pendingStore}, with {@code authorization} as
-     * the login flow's push seam. When {@code stageLoginThroughFlow} is set, the session stage's
-     * navigation login goes through that login flow as production wires it; otherwise it answers the
-     * fixed {@link #LOGIN_CHALLENGE_LOCATION} without storing anything.
+     * the login flow's push seam and {@code quotaKeys} as the runtime's quota-key derivation. When
+     * {@code stageLoginThroughFlow} is set, the session stage's navigation login goes through that login
+     * flow as production wires it; otherwise it answers the fixed {@link #LOGIN_CHALLENGE_LOCATION}
+     * without storing anything.
      */
     @SuppressWarnings("java:S107") // fixture assembly, one call site per runtime shape
     private static BffRuntime assembleRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
             SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld, PendingAuthorizationStore pendingStore,
-            LoginFlow.AuthorizationInitiation authorization, boolean stageLoginThroughFlow) {
+            LoginFlow.AuthorizationInitiation authorization, boolean stageLoginThroughFlow,
+            PendingQuotaKeys quotaKeys) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         Duration ttl = Duration.ofHours(1);
 
@@ -2092,7 +2204,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
                 userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson(),
-                sessionRelays, sessionHeld, untrustingQuotaKeys());
+                sessionRelays, sessionHeld, quotaKeys);
     }
 
     /**
@@ -2100,8 +2212,13 @@ public class GatewayEdgeRouteBffWiringTest {
      * keyed on its TCP peer, exactly as the producer builds it for that configuration.
      */
     private static PendingQuotaKeys untrustingQuotaKeys() {
-        return new PendingQuotaKeys(new TcpPeerGate(List.of()), new ForwardedHeaderResolver(
-                ForwardedResolverConfig.builder().trustedProxies(Set.of())
+        return quotaKeysTrusting(List.of());
+    }
+
+    /** The quota-key derivation of a gateway whose {@code forwarded.trusted_proxies} is {@code trustedProxies}. */
+    private static PendingQuotaKeys quotaKeysTrusting(List<String> trustedProxies) {
+        return new PendingQuotaKeys(new TcpPeerGate(trustedProxies), new ForwardedHeaderResolver(
+                ForwardedResolverConfig.builder().trustedProxies(Set.copyOf(trustedProxies))
                         .securityConfig(SecurityConfiguration.defaults()).build(),
                 new SecurityEventCounter()));
     }

@@ -32,7 +32,6 @@ import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.OnFailur
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.RefreshResult;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -77,6 +76,14 @@ class SessionAuthenticationStageScopeEnforcementTest {
     private static final String NAVIGATION_ACCEPT = "text/html,application/xhtml+xml";
     private static final String API_ACCEPT = "application/json";
     private static final String WWW_AUTHENTICATE = "WWW-Authenticate";
+
+    /**
+     * The TCP peer of the widened request: an IPv6 address written in upper case with leading zeros, so
+     * the derived key differs from the raw text and from every fixed fallback.
+     */
+    private static final String PEER_ADDRESS = "2001:0DB8:000A:000B:1:2:3:4";
+    /** The canonical source an untrusting gateway derives from {@link #PEER_ADDRESS}: its {@code /64}. */
+    private static final String PEER_QUOTA_KEY = "2001:db8:a:b::/64";
 
     @Nested
     @DisplayName("Session carries every needed scope")
@@ -346,7 +353,7 @@ class SessionAuthenticationStageScopeEnforcementTest {
             SessionRecord live = session(SESSION_TOKEN, Set.of(OPENID), Set.of(OPENID));
             RecordingWidening widening = new RecordingWidening();
             SessionAuthenticationStage stage = stage(bindingWith(live), unreachableScopeRefresh(), widening);
-            PipelineRequest request = sessionRequest(NEEDED, navigationHeaders(), null);
+            PipelineRequest request = sessionRequest(NEEDED, navigationHeaders(), null, List.of(), PEER_ADDRESS);
 
             stage.process(request);
 
@@ -361,8 +368,8 @@ class SessionAuthenticationStageScopeEnforcementTest {
                             "the widening is asked for the route's needed scopes"),
                     () -> assertEquals(List.of("/app/orders"), widening.returnUrls,
                             "the browser returns to the requested path"),
-                    () -> assertEquals(List.of(SourceKey.UNKNOWN_SOURCE), widening.quotaKeys,
-                            "the widening is counted under the request's quota key — unknown without a peer"),
+                    () -> assertEquals(List.of(PEER_QUOTA_KEY), widening.quotaKeys,
+                            "the widening is counted under the quota key derived from the request's own peer"),
                     () -> assertTrue(request.mediatedBearer().isEmpty(), "no bearer is recorded on a redirect"));
         }
 

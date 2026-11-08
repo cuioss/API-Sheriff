@@ -30,9 +30,6 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
-import de.cuioss.http.forwarded.ForwardedHeaderResolver;
-import de.cuioss.http.forwarded.ForwardedResolverConfig;
-import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
@@ -82,18 +79,13 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
-import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
-import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
-import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
-import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
-import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.validation.rule.OidcClientRules;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
+import de.cuioss.sheriff.gateway.forward.ForwardedTrust;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
@@ -788,29 +780,17 @@ public class BffRuntimeProducer {
 
     /**
      * Builds the derivation of the quota key a pending-authorization record is counted under, from the
-     * global {@code forwarded.trusted_proxies}: a {@link TcpPeerGate} and a {@link ForwardedHeaderResolver}
-     * configured with the same trusted proxies and the same resolved {@code security_defaults}
-     * configuration the edge builds its forward stage with ({@code GatewayEdgeRoute}), so the address a
-     * pending record is counted under is the one the gateway regenerates {@code X-Forwarded-For} from. The
-     * resolver has a security-event counter of its own, so a malformed forwarding header of a trusted
-     * proxy is not counted twice.
+     * global {@code forwarded.trusted_proxies}: the peer gate and the forwarded-header resolver come from
+     * {@link ForwardedTrust}, the one derivation the edge builds its forward stage from as well
+     * ({@code GatewayEdgeRoute}), so the address a pending record is counted under is the one the
+     * gateway regenerates {@code X-Forwarded-For} from. The resolver has a security-event counter of its
+     * own, so a malformed forwarding header of a trusted proxy is not counted twice.
      *
      * @return the quota-key derivation the session stage and the reserved paths share
      */
     private PendingQuotaKeys pendingQuotaKeys() {
-        ForwardedConfig forwardedConfig = gatewayConfig.forwarded();
-        List<String> trustedProxies = forwardedConfig == null ? List.of() : forwardedConfig.trustedProxies();
-        SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
-        SecurityDefaultsConfig securityDefaults = gatewayConfig.securityDefaults();
-        Boolean allowExtendedAscii = securityDefaults == null ? null : securityDefaults.allowExtendedAscii();
-        SecurityConfiguration securityConfiguration = SecurityConfigurations.withDeclaredCharacterPolicy(
-                SecurityProfile.limitsProfile(globalProfile, globalProfile).preset(), allowExtendedAscii);
-        ForwardedResolverConfig resolverConfig = ForwardedResolverConfig.builder()
-                .trustedProxies(Set.copyOf(trustedProxies))
-                .securityConfig(securityConfiguration)
-                .build();
-        return new PendingQuotaKeys(new TcpPeerGate(trustedProxies),
-                new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()));
+        ForwardedTrust forwardedTrust = ForwardedTrust.of(gatewayConfig);
+        return new PendingQuotaKeys(forwardedTrust.peerGate(), forwardedTrust.resolver(new SecurityEventCounter()));
     }
 
     /**

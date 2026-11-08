@@ -82,6 +82,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
@@ -130,8 +131,11 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.detection.SourceKey;
+import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.ForwardedTrust;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -4956,6 +4960,58 @@ class BffRuntimeProducerTest {
 
             assertEquals(1, derivations.size(),
                     "one quota-key derivation serves the reserved paths and the session stage alike");
+        }
+
+        /**
+         * The agreement with the edge: the forward stage judges a forwarding header with the peer gate and
+         * the resolver {@link ForwardedTrust} derives from the configuration, and the produced runtime must
+         * name the same client for every request. The cases cover a single trusted hop, a chain whose
+         * second hop is trusted only through the configured set, a chain whose second hop is not trusted,
+         * and an untrusted peer — each a request on which a derivation built from a different trusted set
+         * would name a different client than the edge.
+         */
+        @Test
+        @DisplayName("Should name the client the edge's forward stage resolves for the same configuration")
+        void shouldAgreeWithTheEdgeForwardStage() {
+            String secondHop = "192.0.2.11";
+            String untrustedHop = "192.0.2.12";
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(serverModeOidc())
+                    .forwarded(ForwardedConfig.builder()
+                            .trustedProxies(List.of(FORWARDER + "/32", secondHop + "/32")).build())
+                    .build();
+            BffRuntime runtime = new BffRuntimeProducer(gatewayConfig, new RouteTable(List.of()),
+                    new SingletonInstance<>(TOKEN_VALIDATOR), new SingletonInstance<>(LOGOUT_TOKEN_VERIFIER),
+                    new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
+                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx()).bffRuntime();
+            ForwardedTrust edgeTrust = ForwardedTrust.of(gatewayConfig);
+            List<PipelineRequest> requests = List.of(
+                    request(FORWARDER, FORWARDED_CLIENT),
+                    request(FORWARDER, FORWARDED_CLIENT + ", " + secondHop),
+                    request(FORWARDER, FORWARDED_CLIENT + ", " + untrustedHop),
+                    request(DIRECT_PEER, FORWARDED_CLIENT));
+
+            List<String> produced = requests.stream().map(runtime::pendingQuotaKey).toList();
+            List<String> edge = requests.stream().map(request -> edgeClientOf(edgeTrust, request)).toList();
+
+            assertAll("the producer and the edge judge every forwarding header alike",
+                    () -> assertEquals(edge, produced, "one client per request, whichever side names it"),
+                    () -> assertEquals(List.of(FORWARDED_CLIENT, FORWARDED_CLIENT, untrustedHop, DIRECT_PEER),
+                            produced, "precondition: the cases name four different outcomes of the trust"));
+        }
+
+        /** The client the edge's forward stage takes {@code request} to come from, canonicalized. */
+        private static String edgeClientOf(ForwardedTrust trust, PipelineRequest request) {
+            if (!trust.peerGate().isTrustedPeer(request.peerAddress())) {
+                return SourceKeyResolver.canonicalSource(request.peerAddress());
+            }
+            return trust.resolver(new SecurityEventCounter()).resolve(request::headerValues).clientIp()
+                    .map(SourceKeyResolver::canonicalSource)
+                    .orElse(SourceKey.UNKNOWN_SOURCE);
+        }
+
+        private static PipelineRequest request(String peer, String forwardedFor) {
+            return PipelineRequest.builder().method(HttpMethod.GET).requestPath("/auth/login").peerAddress(peer)
+                    .headers(Map.of("X-Forwarded-For", List.of(forwardedFor))).build();
         }
 
         @Test

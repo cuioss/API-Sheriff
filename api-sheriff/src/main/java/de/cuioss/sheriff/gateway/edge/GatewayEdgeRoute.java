@@ -46,7 +46,6 @@ import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
-import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.ThreatClassificationConfig;
@@ -86,6 +85,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.forward.ForwardPolicyStage;
+import de.cuioss.sheriff.gateway.forward.ForwardedTrust;
 import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.BasicChecksStage;
@@ -388,25 +388,23 @@ public class GatewayEdgeRoute {
         // ForwardedResolverConfig.securityConfig and defaultMaxBodySize — so seeding it here is
         // what makes an omitted security_defaults block genuinely mean 'strict' for every route. The
         // declared allow_extended_ascii override lands on it here, and on every route's preset below.
+        // ForwardedTrust is the one derivation of the baseline and the forwarded-header trust, shared
+        // with the pending-authorization quota key, so both name the same client for one request.
         SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
         SecurityDefaultsConfig securityDefaultsConfig = gatewayConfig.securityDefaults();
         Boolean allowExtendedAscii = securityDefaultsConfig == null ? null : securityDefaultsConfig.allowExtendedAscii();
-        SecurityConfiguration defaultConfiguration = SecurityConfigurations.withDeclaredCharacterPolicy(
-                SecurityProfile.limitsProfile(globalProfile, globalProfile).preset(), allowExtendedAscii);
+        ForwardedTrust forwardedTrust = ForwardedTrust.of(gatewayConfig);
+        SecurityConfiguration defaultConfiguration = forwardedTrust.baseline();
         long defaultMaxBodySize = defaultConfiguration.maxBodySize();
         GatewayEventCounter gatewayEventCounter = new GatewayEventCounter();
         UpstreamFailureMapper upstreamFailureMapper = new UpstreamFailureMapper(gatewayEventCounter);
 
         ForwardedConfig forwardedConfig = gatewayConfig.forwarded();
-        List<String> trustedProxies = forwardedConfig == null ? List.of() : forwardedConfig.trustedProxies();
         String declaredEmitMode = forwardedConfig == null ? null : forwardedConfig.emit();
         String emitMode = declaredEmitMode != null ? declaredEmitMode : DEFAULT_EMIT_MODE;
-        ForwardedResolverConfig resolverConfig = ForwardedResolverConfig.builder()
-                .trustedProxies(Set.copyOf(trustedProxies))
-                .securityConfig(defaultConfiguration)
-                .build();
-        ForwardedHeaderResolver resolver = new ForwardedHeaderResolver(resolverConfig, securityEventCounter);
-        TcpPeerGate peerGate = new TcpPeerGate(trustedProxies);
+        ForwardedResolverConfig resolverConfig = forwardedTrust.resolverConfig();
+        ForwardedHeaderResolver resolver = forwardedTrust.resolver(securityEventCounter);
+        TcpPeerGate peerGate = forwardedTrust.peerGate();
 
         // The add-only asset content-type additions are resolved ONCE here, at boot, and handed to
         // every asset source the assembler builds — so the request path performs no config lookup

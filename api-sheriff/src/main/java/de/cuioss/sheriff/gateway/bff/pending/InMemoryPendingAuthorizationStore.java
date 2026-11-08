@@ -34,7 +34,9 @@ import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The bounded, single-node in-memory store — the only implementation for server mode.
+ * The bounded, single-node in-memory store — the only implementation, used in both session modes:
+ * a pending login is held server-side whether the session it completes into is held in the server
+ * store or sealed into a cookie.
  * <p>
  * Unauthenticated browsers create these records, so the store is bounded (an unbounded map would be
  * a denial-of-service amplifier) and the bound is enforced <em>fairly</em>: one requester's login

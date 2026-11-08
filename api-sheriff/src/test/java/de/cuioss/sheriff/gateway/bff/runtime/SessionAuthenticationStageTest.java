@@ -1308,11 +1308,18 @@ class SessionAuthenticationStageTest {
 
     static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers,
             @Nullable Boolean tokenRelay, List<QueryParameter> query) {
+        return sessionRequest(neededScopes, headers, tokenRelay, query, null);
+    }
+
+    /** As the other overloads, arriving from the TCP peer {@code peerAddress} ({@code null}: none). */
+    static PipelineRequest sessionRequest(Set<String> neededScopes, Map<String, List<String>> headers,
+            @Nullable Boolean tokenRelay, List<QueryParameter> query, @Nullable String peerAddress) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/app/orders")
                 .queryParameters(query)
                 .headers(headers)
+                .peerAddress(peerAddress)
                 .build();
         request.canonicalPath("/app/orders");
         request.selectedRoute(sessionRoute(
