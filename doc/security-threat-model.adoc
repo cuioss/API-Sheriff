@@ -1584,6 +1584,87 @@ bound to the overload: the unit tests assert the five minutes the factory builds
 overload with a shorter bound, and `GrpcProxyIT` sends real calls through the public method without
 asserting the bound.
 
+[#gw-07-sni-front]
+*The SNI front listener holds a connection it has not routed, and a relay nobody uses, for a bounded
+time.* When `tls.passthrough_sni` is configured, a plain-TCP front listener owns the public TLS port.
+It reads the server name out of each connection's cleartext ClientHello and then relays the
+connection to a passthrough backend or to the terminated listener (<<gw-06>>). Until that decision the
+gateway holds an open socket and the bytes buffered so far; after it, two relay legs. A client that
+opens connections and sends nothing, or drips its ClientHello a byte at a time, would hold both for as
+long as it kept its sockets open -- Slowloris at L4 -- and an abandoned relay would hold its two legs
+for good (CWE-400). The front bounds each with a fixed value that no configuration key sets
+(link:development/tls-edge.adoc#front-listener-bounds[Development -- the bounds of the front]):
+
+* *A ClientHello deadline.* A connection that has not completed its ClientHello 10 s after it was
+  accepted is closed, without an answer. A legitimate client sends its ClientHello in its first flight,
+  so the deadline only ends a silent, stalled or dripping connection. The close is logged at `DEBUG`
+  with the disposition only, never the bytes received.
+* *An undecided-connection cap.* At most 1024 accepted connections may wait for their ClientHello at
+  the same time, across every event loop of the front. A connection accepted beyond the cap is closed
+  at once, without being read. Each waiting connection buffers at most 32 KiB, the ClientHello bound
+  beyond which the parser fails closed, so the cap bounds the front's pre-route buffer memory at
+  32 MiB.
+* *An incremental parse.* Each connection owns its own parser and offers it every received chunk
+  exactly once; the parser consumes only the TLS records a chunk completes. A ClientHello split into
+  many one-byte records therefore costs work linear in its length, where re-parsing the whole buffer
+  after every chunk cost quadratic work.
+* *A derived relay idle timeout.* Both legs of a relayed connection are closed when they carry no byte
+  in either direction for the relay idle timeout, and the close of one leg closes the other. The value
+  is derived at boot as the longest of `quarkus.http.idle-timeout` (thirty minutes by default), the
+  gRPC stream-idle bound (five minutes) and the longest effective WebSocket `idle_timeout_seconds` of
+  the route table (300 s for a route that declares none), plus 60 s. The relay therefore never cuts off
+  a connection that an idle bound behind the terminated branch still allows to be idle. No key sets it
+  directly; it moves only with the values it is derived from.
+
+*Residual (accepted).* A client that holds 1024 silent sockets makes new handshakes wait: a connection
+accepted while the cap is full is closed, and the deadline frees the held slots again within one
+10 s window per wave of such sockets. That bounded delay is preferred over unbounded pre-route memory.
+The cap counts connections per gateway instance, not per source. A relayed connection that carries a
+byte at least once per relay idle timeout stays open: the relay bounds idleness, not duration, and a
+route that declares a long WebSocket idle timeout lengthens the relay idle timeout with it.
+
+*Status of this control:* COVERED. `SniFrontListenerTest` drives a live front listener with shortened
+bounds: a connection that sends nothing and one whose ClientHello stops halfway are closed at the
+deadline and never relayed (`closesSilentConnection`, `closesHalfSentClientHello`), a connection
+accepted beyond the cap is closed at once while the admitted ones stay open, and a slot freed by a
+routed connection admits a new one (`closesConnectionBeyondCapAndReleasesSlot`), and a relay that
+carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`). Matched
+controls show that a ClientHello dripped within the deadline is still routed
+(`routesSlowChunkedClientHelloWithinDeadline`) and that a relay carrying traffic outlives its idle
+timeout (`keepsActiveRelayOpen`). `ClientHelloSniParserTest.FragmentInvariance` asserts that a
+ClientHello offered byte by byte, record by record or split into many one-byte records yields the
+verdict of the whole offer, and that the 32 KiB bound fails closed however the bytes arrive.
+`TlsEdgeProducerTest.RelayIdleTimeoutDerivation` pins the derivation for each bound that can be the
+longest. Against the native image `TlsPassthroughIT` asserts that a silent connection and a half-sent
+ClientHello are closed without an answer within the 10 s deadline plus a 5 s margin
+(`silentConnectionIsClosedAtTheClientHelloDeadline`,
+`halfSentClientHelloIsClosedAtTheClientHelloDeadline`). No integration test exercises the cap or the
+relay idle timeout.
+
+[#gw-07-relay-failure-reset]
+*A client that leaves mid-response cannot keep an upstream connection leased.* Once the gateway hands
+an upstream response over for relay, only the relay reads its body. When the client leaves mid-body --
+an HTTP/1.x client closing its connection, an HTTP/2 client resetting its stream -- the relay fails. A
+Vert.x pipe whose destination fails resumes its source with no handler on it, so the upstream body
+would be read and discarded to its end, and the pooled upstream connection would stay leased until
+the upstream finished. An upstream whose body never ends would hold its connection for the life of
+the process, and a few such requests, which any client of the route can produce by leaving, would
+exhaust the pool for every client of that route (CWE-400).
+
+*Control.* A relay that fails -- to start, or after the hand-over -- resets the upstream exchange once,
+in the failure handler of the terminal dispatch, before the client is answered. On an HTTP/1.x
+upstream the reset closes the connection, abortively (<<gw-07-upstream-ports>>); on an HTTP/2 upstream
+it ends the one stream. An exchange that has already ended, or was already reset -- by a late body
+refusal, or by a gRPC call's stream-idle expiry -- is not reset again.
+
+*Status of this control:* COVERED. `GatewayEdgeRelayFailureResetTest` takes every connection the
+upstream client pools with an endless chunked answer whose client leaves after reading the response
+head, over HTTP/1.1 (`http1ClientClosingAfterTheHeadResetsTheUpstreamExchange`) and HTTP/2
+(`http2ClientResettingAfterTheHeadResetsTheUpstreamExchange`). It asserts that each upstream request is
+reset within 2 s of its client leaving, and that a request that follows on the same route is then
+served within the same bound; without the reset that request waits on the exhausted pool. The stub
+upstream is HTTP/1.1, so the reset against an HTTP/2 upstream is not driven.
+
 [#gw-08]
 === GW-08 -- HTTP/2 & gRPC abuse (Rapid Reset, CONTINUATION flood, downgrade smuggling, h2c)
 
@@ -1704,6 +1785,25 @@ route always has one; only a `require: none` route may omit it
 `SameSite=Lax` in both session modes, a fixed attribute with no configuration key, so the
 socket is not authenticated by ambient cookies alone.
 
+*The upgrade gate.* Right after the `Origin` check, and before the request is tracked with its
+session, takes a relay sub-budget permit or dials the upstream, `WebSocketUpgradeGate` judges whether
+a request on a `protocol: websocket` route is a valid opening handshake (RFC 6455 §4.2.1). A request
+that is not HTTP/1.1, or does not carry the `Connection: upgrade` and `Upgrade: websocket` tokens, is
+refused `426` -- on HTTP/1.x with `Upgrade: websocket` and `Connection: Upgrade`, on HTTP/2 with
+neither, as both are connection-specific fields HTTP/2 forbids. A `Sec-WebSocket-Version` other than
+`13` is refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or malformed
+`Sec-WebSocket-Key`, is refused `400`. The refusal returns the general admission permit and is a bare
+status written through `ResponseEnds.reject`, as the edge's other refusals before processing are: it
+carries no problem document and no route security headers. Without the gate an HTTP/2 request or a
+plain `GET` dialed the upstream and held its permit until the client upgrade failed.
+
+*A failed client upgrade is answered.* When the upstream has confirmed `101` and the client upgrade
+then fails, the relay closes the already-upgraded upstream leg with `1011` and answers the client
+`502`, carrying the stage-0 security headers, unless Vert.x has answered it already. On HTTP/1.1
+Vert.x refuses an invalid handshake itself with `400` or `426`, and that answer stands. An HTTP/2
+request cannot be upgraded at all and Vert.x fails it without answering, so the `502` is the only
+answer the client receives instead of a stream left open until the client gives up.
+
 *Status:* COVERED. The boot requirement is pinned for both authenticated postures by
 `ProtocolRulesTest.WebSocketOriginAllowlist`: `shouldRefuseAbsentAllowlist` and
 `shouldRefuseEmptyAllowlist` refuse a bearer and a session route, `shouldAcceptPopulatedAllowlist`
@@ -1712,11 +1812,25 @@ admits both, and `shouldAcceptUnauthenticatedRouteWithoutAllowlist` is the match
 the auth posture, so it holds a session route to its allowlist exactly as it holds a bearer
 route. `SameSite=Lax` is pinned by `SessionCookieCodecTest.SetCookie.shouldEmitHardenedCookie`
 (server mode) and `SealedSessionCookieCodecTest.SetCookieHeader.shouldEmitHardenedAttributes`
-(cookie mode).
+(cookie mode). `WebSocketUpgradeGateTest` pins each rule of the upgrade gate, every case breaking
+exactly one rule of a valid handshake. `GatewayEdgeWebSocketUpgradeGateTest` drives refused requests
+through the edge -- an HTTP/2 `GET`, a plain HTTP/1.1 `GET`, an unsupported version and a missing key
+(`http2GetIsRefusedBeforeAnyDial`, `plainHttp11GetIsRefusedBeforeAnyDial`,
+`unsupportedVersionIsRefusedNamingVersion13`, `missingKeyIsRefused400`) -- and asserts the answer,
+that the upstream was never contacted and that every admission permit came back; a valid upgrade
+relayed end to end is the matched control (`validUpgradeIsRelayed`). `WebSocketRelayStageTest`
+asserts the `502` to a failed HTTP/2 client upgrade (`answersBadGatewayWhenTheHttp2ClientUpgradeFails`)
+and that Vert.x's own `400` stands on HTTP/1.1
+(`keepsTheOwnRefusalWhenTheHttp11ClientUpgradeFails`), each closing the upstream leg with `1011` and
+releasing the permit once. Against the native image `WebSocketProxyIT` asserts the `426` to a plain
+HTTP/1.1 `GET`, an HTTP/2 `GET` and an unsupported version (`plainHttp1GetIsRefused426`,
+`http2GetIsRefused426`, `unsupportedWebSocketVersionIsRefused426`).
 
 *Assertion.* A WebSocket upgrade with a foreign `Origin` on a session-authenticated route is
 rejected before any upstream dial; only allowlisted origins complete the handshake; a bearer
-or session WebSocket route without a non-empty allowlist fails the boot.
+or session WebSocket route without a non-empty allowlist fails the boot; a request on a WebSocket
+route that is no valid opening handshake is refused `426` or `400` before it is tracked, takes a relay
+permit or dials the upstream; a failed client upgrade is answered, never left open.
 
 [#gw-10]
 === GW-10 -- Control-plane exposure / default credentials / config-driven code execution
@@ -4019,8 +4133,10 @@ outstanding hardening work (next section).
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
+| <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at 32 MiB); a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no configuration key sets any of them | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap or the relay idle timeout)
+| <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
 | <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
-| <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
+| <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `426`/`400` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs; upstream `Server` / `X-Powered-By` stripped by default with a per-route opt-out; no version string on gateway errors | cui-http + token-sheriff mappers + gateway error contract + `UpstreamIdentityHeaders` (ADR-0037) | PARTIAL

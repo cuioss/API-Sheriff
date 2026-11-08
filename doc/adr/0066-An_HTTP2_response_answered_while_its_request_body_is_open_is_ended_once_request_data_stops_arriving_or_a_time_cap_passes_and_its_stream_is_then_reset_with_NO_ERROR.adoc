@@ -22,7 +22,9 @@ An HTTP/2 server may answer a request before it has read the request body. An up
 it decides from the headers alone. The gateway does it for every answer it writes itself to an
 upload: a problem document, an HTML error page, the portal page, a reserved-path answer, an asset, a
 redirect, a short-circuit, a gRPC trailers-only status, an admission `503`, a framing rejection, a
-reserved-body `413`, the WebSocket relay's failed-dial answer and the upgrade refusal it relays. RFC 9113 §8.1 permits the server to send the complete response and then reset
+reserved-body `413`, the WebSocket upgrade gate's `426` / `400` refusal of a request that is no
+valid opening handshake, and the WebSocket relay's failed-dial answer, the upgrade refusal it relays
+and its `502` to a failed client upgrade. RFC 9113 §8.1 permits the server to send the complete response and then reset
 the stream with `NO_ERROR`. The reset asks the client to stop sending without signalling an error.
 
 A stream left half-open after a complete response puts the decision on the client. A client that
@@ -132,9 +134,17 @@ No reset code is chosen per case.
 
 The late rejection of a body on a bodyless method stays a `CANCEL` reset taken before any end
 (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#bodyless-method[ADR-0060]),
-because that response is deliberately not completed. The WebSocket upgrade and the L4 passthrough
-relay are not HTTP/2 response ends. The answer the WebSocket relay writes when the upstream dial fails
-comes before any upgrade, so it is an ordinary response end and passes the seam.
+because that response is deliberately not completed. The completed WebSocket upgrade and the L4
+passthrough relay are not HTTP/2 response ends: an upgrade that succeeds takes the connection over and
+stays outside the rule. Every answer on a WebSocket route that is written while no upgrade holds the
+connection is an ordinary response end and passes the seam:
+
+* the upgrade gate's `426` or `400` refusal of a request that is no valid opening handshake, written
+  through `ResponseEnds.reject` before the request is tracked, takes a relay permit or dials the
+  upstream;
+* the relay's answer when the upstream dial fails, and its relay of an upstream's upgrade refusal;
+* the relay's `502` when the upstream has confirmed `101` but the client upgrade then fails.
+
 No `quarkus.http.limits.rst-flood-*` key is set or changed.
 
 [[abortive-upstream-close]]
