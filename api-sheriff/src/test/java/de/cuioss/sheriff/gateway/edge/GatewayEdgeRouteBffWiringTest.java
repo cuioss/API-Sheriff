@@ -2100,7 +2100,7 @@ public class GatewayEdgeRouteBffWiringTest {
                             "precondition: every login stored its record and redirected"),
                     () -> assertEquals(List.of(CLIENT_A, CLIENT_B, LoopbackHost.ADDRESS, LoopbackHost.ADDRESS),
                             storedKeys, "the two relayed clients are keyed apart; without the hand-off "
-                                    + "the same requests share the loopback key"));
+                            + "the same requests share the loopback key"));
         }
 
         /**
