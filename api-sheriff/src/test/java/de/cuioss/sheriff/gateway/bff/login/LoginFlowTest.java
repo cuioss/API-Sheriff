@@ -17,7 +17,9 @@ package de.cuioss.sheriff.gateway.bff.login;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -31,6 +33,7 @@ import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.testsupport.SettableClock;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,6 +54,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 class LoginFlowTest {
 
     private static final Instant T0 = Instant.parse("2026-07-23T10:00:00Z");
+    /** No time passes during a push unless a case moves it. */
+    private static final Clock CLOCK = Clock.fixed(T0, ZoneOffset.UTC);
     private static final String GATEWAY_ORIGIN = "https://gw.example.com";
     private static final String AUTHORIZATION_URL = "https://idp.example.com/authorize?client_id=api-sheriff";
     /** A configured {@code oidc.login.default_return_url} distinct from {@code /}. */
@@ -80,7 +85,7 @@ class LoginFlowTest {
             requestedScopes.set(scopes);
             return redirect;
         };
-        loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+        loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, CLOCK);
     }
 
     private PendingAuthorizationRecord consumeBoundRecord(LoginRedirect result) {
@@ -149,7 +154,7 @@ class LoginFlowTest {
                     new GatewayException(EventType.UPSTREAM_ERROR, "Pushed authorization request refused (push-failed)");
             LoginFlow failing = new LoginFlow(scopes -> {
                 throw refusal;
-            }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+            }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, CLOCK);
 
             GatewayException thrown =
                     assertThrows(GatewayException.class, () -> failing.initiate("/dashboard", SCOPES, QUOTA_KEY, T0));
@@ -179,7 +184,8 @@ class LoginFlowTest {
             PendingAuthorizationRecord held = PendingAuthorizationRecord.create(flowContext, "/held", SCOPES,
                     OTHER_QUOTA_KEY, T0);
             saturated.store(held, T0);
-            LoginFlow flow = new LoginFlow(authorization, saturated, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+            LoginFlow flow = new LoginFlow(authorization, saturated, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT,
+                    CLOCK);
 
             GatewayException thrown =
                     assertThrows(GatewayException.class, () -> flow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0));
@@ -189,6 +195,37 @@ class LoginFlowTest {
             assertEquals(SCOPES, requestedScopes.get(), "the refusal follows the push, like the 502 path");
             assertEquals(1, saturated.size(), "no record was added");
             assertTrue(saturated.consume(held.id(), T0).isPresent(), "the other source's live record was not evicted");
+        }
+
+        /**
+         * The store is full at the caller's {@code now}, but its one record expires while the push is in
+         * flight: the clock is moved past that expiry inside the authorization seam. The flow must let
+         * the store purge at the reading taken after the push, so the login is admitted — while the new
+         * record's own lifetime still runs from the caller's {@code now}.
+         */
+        @Test
+        @DisplayName("Should admit the login when the held record expired during the push, its TTL anchored at now")
+        void shouldAdmitWhenTheHeldRecordExpiredDuringThePush() {
+            InMemoryPendingAuthorizationStore full = new InMemoryPendingAuthorizationStore(1);
+            Instant heldCreatedAt = T0.minus(PendingAuthorizationRecord.FIXED_TTL).plusSeconds(1);
+            full.store(PendingAuthorizationRecord.create(flowContext, "/held", SCOPES, OTHER_QUOTA_KEY,
+                    heldCreatedAt), heldCreatedAt);
+            SettableClock clock = new SettableClock(T0);
+            AuthorizationCodeFlow.AuthorizationRedirect redirect =
+                    new AuthorizationCodeFlow.AuthorizationRedirect(AUTHORIZATION_URL, flowContext);
+            LoginFlow flow = new LoginFlow(scopes -> {
+                clock.set(T0.plusSeconds(2));
+                return redirect;
+            }, full, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, clock);
+
+            LoginRedirect result = flow.initiate("/dashboard", SCOPES, QUOTA_KEY, T0);
+
+            String recordId = bindingCodec.readRecordId(result.setCookieHeaders().getFirst().split(";", 2)[0])
+                    .orElseThrow();
+            PendingAuthorizationRecord stored = full.consume(recordId, T0).orElseThrow();
+            assertAll("admitted at the post-push reading, anchored at the caller's now",
+                    () -> assertEquals(T0, stored.createdAt(), "the push latency does not move the TTL anchor"),
+                    () -> assertEquals(T0.plus(PendingAuthorizationRecord.FIXED_TTL), stored.expiresAt()));
         }
     }
 
@@ -226,7 +263,7 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should fall back to '/' when the flow is assembled with the unset default")
         void shouldFallBackToRootDefault() {
-            LoginFlow rootDefault = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, "/");
+            LoginFlow rootDefault = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, "/", CLOCK);
 
             LoginRedirect absent = rootDefault.initiate(null, SCOPES, QUOTA_KEY, T0);
             LoginRedirect offOrigin = rootDefault.initiate("https://evil.example.com/app", SCOPES, QUOTA_KEY, T0);
@@ -270,7 +307,15 @@ class LoginFlowTest {
         @DisplayName("Should reject a null default return URL")
         void shouldRejectNullDefaultReturnUrl() {
             assertThrows(NullPointerException.class,
-                    () -> new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, null));
+                    () -> new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, null, CLOCK));
+        }
+
+        @Test
+        @DisplayName("Should reject a null clock")
+        void shouldRejectNullClock() {
+            assertThrows(NullPointerException.class,
+                    () -> new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT,
+                            null));
         }
     }
 }

@@ -891,10 +891,10 @@ public class GatewayEdgeRouteBffWiringTest {
                     challenge -> {
                         throw new AssertionError("engine step-up must not be reached");
                     },
-                    pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
+                    pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of(), Clock.systemUTC());
             LoginFlow loginFlow = new LoginFlow(scopes -> {
                 throw new AssertionError("engine authorize must not be reached");
-            }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+            }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, Clock.systemUTC());
             BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
                             rawToken -> {
                                 throw new AssertionError("engine verify must not be reached");
@@ -2282,7 +2282,8 @@ public class GatewayEdgeRouteBffWiringTest {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         Duration ttl = Duration.ofHours(1);
 
-        LoginFlow loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+        LoginFlow loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET,
+                Clock.systemUTC());
 
         SessionAuthenticationStage sessionStage = stageLoginThroughFlow
                 ? engineFreeSessionStage(binding, (returnUrl, scopes, quotaKey, instant) -> {
@@ -2299,7 +2300,7 @@ public class GatewayEdgeRouteBffWiringTest {
                 challenge -> {
                     throw new AssertionError("engine step-up must not be reached");
                 },
-                pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
+                pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of(), Clock.systemUTC());
 
         SessionWidening widening = engineFreeSessionWidening(pendingStore, bindingCodec);
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
@@ -2407,7 +2408,7 @@ public class GatewayEdgeRouteBffWiringTest {
             BindingCookieCodec bindingCodec) {
         return new SessionWidening((scopes, silent) -> {
             throw new AssertionError("engine widening authorize must not be reached");
-        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, Clock.systemUTC());
     }
 
     private static LogoutEndpoint logoutEndpoint(SessionBinding binding) {

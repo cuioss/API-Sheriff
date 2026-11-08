@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.login;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -67,7 +68,10 @@ import org.jspecify.annotations.Nullable;
  * requester's quota key on the pending record; when the store is full of live records it refuses the
  * record with {@link de.cuioss.sheriff.gateway.events.EventType#PENDING_AUTHORIZATION_SATURATED}, which
  * propagates out of this class — after the push, before the binding cookie is set, with the live
- * session unchanged — and the edge answers it {@code 503} with {@code Retry-After}.
+ * session unchanged — and the edge answers it {@code 503} with {@code Retry-After}. The store judges
+ * "live" at a clock reading taken after the push returned, so records that expired during the push's
+ * round trip free their places first; the new record's own lifetime still runs from the caller's
+ * {@code now}.
  * <p>
  * <strong>What the pending record carries.</strong> The record is a widening record
  * ({@link PendingAuthorizationRecord#createWidening}): it names the live session's {@code sub}, so
@@ -100,6 +104,7 @@ public final class SessionWidening {
     private final BindingCookieCodec bindingCookieCodec;
     private final String gatewayOrigin;
     private final String defaultReturnUrl;
+    private final Clock clock;
 
     /**
      * Assembles the widening coordinator with the engine authorization seam and the gateway-side stores.
@@ -111,14 +116,17 @@ public final class SessionWidening {
      * @param gatewayOrigin      the gateway's own origin used to same-origin-validate the return URL
      * @param defaultReturnUrl   the resolved {@code oidc.login.default_return_url} ({@code /} when
      *                           unset): the landing when no valid same-origin return URL is supplied
+     * @param clock              the clock read once the authorization push returned, for the instant
+     *                           the pending store purges expired records at
      */
     public SessionWidening(AuthorizationWidening authorization, PendingAuthorizationStore pendingStore,
-            BindingCookieCodec bindingCookieCodec, String gatewayOrigin, String defaultReturnUrl) {
+            BindingCookieCodec bindingCookieCodec, String gatewayOrigin, String defaultReturnUrl, Clock clock) {
         this.authorization = Objects.requireNonNull(authorization, "authorization");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
         this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -133,7 +141,8 @@ public final class SessionWidening {
      * @param attempt      the attempt to issue — {@link Widening.Attempt#SILENT} for a fresh widening
      * @param quotaKey     the requester's canonical source, recorded on the pending record for the
      *                     store's per-source cap
-     * @param now          the reference instant (the pending record's TTL anchor)
+     * @param now          the reference instant: the pending record's TTL anchor. The store's purge
+     *                     uses the admission-time clock reading taken after the push
      * @return the redirect to the IdP authorization URL carrying the binding {@code Set-Cookie}
      * @throws de.cuioss.sheriff.gateway.events.GatewayException with
      *                                                           {@code PENDING_AUTHORIZATION_SATURATED}
@@ -163,7 +172,8 @@ public final class SessionWidening {
      *                 whose attempt is {@link Widening.Attempt#SILENT}
      * @param quotaKey the canonical source of the callback request re-driving the widening, recorded on
      *                 the new pending record for the store's per-source cap
-     * @param now      the reference instant (the new pending record's TTL anchor)
+     * @param now      the reference instant: the new pending record's TTL anchor. The store's purge uses
+     *                 the admission-time clock reading taken after the push
      * @return the redirect to the IdP authorization URL carrying a new binding {@code Set-Cookie}
      * @throws IllegalArgumentException when {@code silent} is not the record of a silent widening
      * @throws de.cuioss.sheriff.gateway.events.GatewayException with
@@ -190,7 +200,9 @@ public final class SessionWidening {
                 attempt == Widening.Attempt.SILENT);
         PendingAuthorizationRecord pending = PendingAuthorizationRecord.createWidening(redirect.context(), returnUrl,
                 requested, sub, attempt, quotaKey, now);
-        pendingStore.store(pending, now);
+        // The record's TTL runs from now; the store purges at a reading taken after the push returned, so
+        // records that expired during the push do not count against the capacity.
+        pendingStore.store(pending, clock.instant());
         LOGGER.debug("Initiated %s session widening; pending record persisted, redirecting to the IdP", attempt);
         List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));
         return new LoginRedirect(redirect.authorizationUrl(), setCookies);

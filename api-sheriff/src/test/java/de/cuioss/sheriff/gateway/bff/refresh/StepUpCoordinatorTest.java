@@ -17,7 +17,9 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -32,6 +34,7 @@ import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator.StepUpOutcome;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.testsupport.SettableClock;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.flow.StepUpChallengeParser.StepUpChallenge;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
@@ -52,6 +55,8 @@ import org.junit.jupiter.api.Test;
 class StepUpCoordinatorTest {
 
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
+    /** No time passes during a push unless a case moves it. */
+    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final String GATEWAY_ORIGIN = "https://gw.example.com";
     private static final String STEP_UP_URL = "https://idp.example.com/authorize?acr_values=urn:example:gold";
     private static final String REPLAY_URL = "/orders/42";
@@ -92,7 +97,7 @@ class StepUpCoordinatorTest {
 
     private StepUpCoordinator coordinator(SilentSatisfaction silent, StepUpInitiation initiation) {
         return new StepUpCoordinator(silent, initiation, pendingStore, bindingCodec, GATEWAY_ORIGIN,
-                CONFIGURED_DEFAULT, STEP_UP_SCOPES);
+                CONFIGURED_DEFAULT, STEP_UP_SCOPES, CLOCK);
     }
 
     private StepUpCoordinator reDrivingCoordinator() {
@@ -104,6 +109,35 @@ class StepUpCoordinatorTest {
     private String recordIdFrom(StepUpOutcome outcome) {
         String cookieHeader = outcome.setCookieHeaders().getFirst().split(";", 2)[0];
         return bindingCodec.readRecordId(cookieHeader).orElseThrow();
+    }
+
+    /**
+     * A store full at the caller's {@code now} whose one record expires while the step-up push is in
+     * flight — the clock is moved past that expiry inside the initiation seam. The re-drive must let the
+     * store purge at the reading taken after the push, so it is admitted, while the new record's
+     * lifetime still runs from the caller's {@code now}.
+     */
+    @Test
+    @DisplayName("Should admit the re-drive when the held record expired during the push, its TTL anchored at now")
+    void shouldAdmitReDriveWhenTheHeldRecordExpiredDuringThePush() {
+        InMemoryPendingAuthorizationStore full = new InMemoryPendingAuthorizationStore(1);
+        FlowContext context = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
+        Instant heldCreatedAt = NOW.minus(PendingAuthorizationRecord.FIXED_TTL).plusSeconds(1);
+        full.store(PendingAuthorizationRecord.create(context, "/held", STEP_UP_SCOPES, "198.51.100.20",
+                heldCreatedAt), heldCreatedAt);
+        SettableClock clock = new SettableClock(NOW);
+        StepUpHandler.StepUpRequest request = new StepUpHandler.StepUpRequest(STEP_UP_URL, context);
+        StepUpCoordinator coordinator = new StepUpCoordinator((s, c, now) -> Optional.empty(), c -> {
+            clock.set(NOW.plusSeconds(2));
+            return request;
+        }, full, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, STEP_UP_SCOPES, clock);
+
+        StepUpOutcome outcome = coordinator.coordinate(session(null), challenge(), REPLAY_URL, QUOTA_KEY, NOW);
+
+        PendingAuthorizationRecord stored = full.consume(recordIdFrom(outcome), NOW).orElseThrow();
+        assertAll("admitted at the post-push reading, anchored at the caller's now",
+                () -> assertEquals(NOW, stored.createdAt(), "the push latency does not move the TTL anchor"),
+                () -> assertEquals(NOW.plus(PendingAuthorizationRecord.FIXED_TTL), stored.expiresAt()));
     }
 
     @Nested
@@ -299,7 +333,19 @@ class StepUpCoordinatorTest {
             };
 
             assertThrows(NullPointerException.class, () -> new StepUpCoordinator(silent, initiation, pendingStore,
-                    bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, null));
+                    bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, null, CLOCK));
+        }
+
+        @Test
+        @DisplayName("Should reject an absent clock")
+        void shouldRejectNullClock() {
+            SilentSatisfaction silent = (s, c, now) -> Optional.empty();
+            StepUpInitiation initiation = c -> {
+                throw new IllegalStateException("never reached");
+            };
+
+            assertThrows(NullPointerException.class, () -> new StepUpCoordinator(silent, initiation, pendingStore,
+                    bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, STEP_UP_SCOPES, null));
         }
 
         @Test

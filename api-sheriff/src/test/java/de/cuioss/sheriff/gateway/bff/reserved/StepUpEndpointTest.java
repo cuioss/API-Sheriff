@@ -17,8 +17,10 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -112,7 +114,7 @@ class StepUpEndpointTest {
         sessionWidening = new SessionWidening((scopes, silent) -> {
             seamCalls.add(new SeamCall(scopes, silent));
             return redirect;
-        }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+        }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, Clock.fixed(T0, ZoneOffset.UTC));
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
         sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
         });

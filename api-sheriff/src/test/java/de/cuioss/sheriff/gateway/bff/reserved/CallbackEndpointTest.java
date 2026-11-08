@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -149,7 +150,7 @@ class CallbackEndpointTest {
             FlowContext context = FlowContext.create(CALLBACK_URI);
             wideningCalls.add(new WideningCall(Set.copyOf(scopes), silent, context));
             return new AuthorizationCodeFlow.AuthorizationRedirect(WIDENING_AUTHORIZATION_URL, context);
-        }, pendingStore, bindingCodec, GATEWAY_ORIGIN, RETURN_URL);
+        }, pendingStore, bindingCodec, GATEWAY_ORIGIN, RETURN_URL, Clock.fixed(T0, ZoneOffset.UTC));
         endpoint = endpoint(successfulExchange(), sessionBinding);
 
         FlowContext flow = FlowContext.create(CALLBACK_URI);
@@ -1109,7 +1110,7 @@ class CallbackEndpointTest {
                     FlowContext context = FlowContext.create(CALLBACK_URI);
                     wideningCalls.add(new WideningCall(Set.copyOf(scopes), silent, context));
                     return new AuthorizationCodeFlow.AuthorizationRedirect(WIDENING_AUTHORIZATION_URL, context);
-                }, saturated, bindingCodec, GATEWAY_ORIGIN, RETURN_URL);
+                }, saturated, bindingCodec, GATEWAY_ORIGIN, RETURN_URL, Clock.fixed(T0, ZoneOffset.UTC));
                 CallbackEndpoint refusing = new CallbackEndpoint(successfulExchange(), pendingStore, bindingCodec,
                         sessionBinding, SESSION_TTL, refusingWidening);
                 String query = "error=login_required&state=" + wideningState;

@@ -136,7 +136,7 @@ class SessionScopeTruthfulnessFlowTest {
         FlowContext context = FlowContext.create(CALLBACK_URI);
         wideningCalls.add(new WideningCall(Set.copyOf(scopes), silent, context));
         return new AuthorizationCodeFlow.AuthorizationRedirect(WIDENING_URL, context);
-    }, pendingStore, bindingCodec, ORIGIN, "/");
+    }, pendingStore, bindingCodec, ORIGIN, "/", Clock.fixed(NOW, ZoneOffset.UTC));
 
     /** The request-cookie pair of the live session. */
     private String sessionCookie;

@@ -608,7 +608,7 @@ public class BffRuntimeProducer {
         LoginFlow loginFlow = new LoginFlow(
                 scopes -> pushed(pushedRequests, metadata.get(), clientId,
                         scopedFlows.authorize(metadata.get(), scopes)),
-                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, clock);
 
         // Session widening — the live-session sibling of the login flow, on the same pending store,
         // binding cookie and callback landing. Its authorization leg is built per call on
@@ -622,7 +622,7 @@ public class BffRuntimeProducer {
         SessionWidening sessionWidening = new SessionWidening(
                 (scopes, silent) -> pushed(pushedRequests, metadata.get(), clientId,
                         scopedFlows.widen(metadata.get(), scopes, silent)),
-                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, clock);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
         // then hands the result to the refresh policy, which is where the exchange's refresh token is
@@ -708,7 +708,7 @@ public class BffRuntimeProducer {
                 (sessionRecord, challenge, now) -> Optional.empty(),
                 challenge -> pushed(pushedRequests, metadata.get(), clientId,
                         stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge)),
-                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes());
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes(), clock);
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
         // JSON types, capped by the allowlist.

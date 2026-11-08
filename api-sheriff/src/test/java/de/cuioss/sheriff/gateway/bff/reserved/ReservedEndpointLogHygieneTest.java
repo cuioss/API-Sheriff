@@ -17,8 +17,10 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -123,7 +125,7 @@ class ReservedEndpointLogHygieneTest {
     private CallbackEndpoint callback(CodeExchange exchange) {
         SessionWidening widening = new SessionWidening((scopes, silent) -> {
             throw new AssertionError("no widening is driven here");
-        }, pendingStore, bindingCodec, ORIGIN, "/dashboard");
+        }, pendingStore, bindingCodec, ORIGIN, "/dashboard", Clock.fixed(NOW, ZoneOffset.UTC));
         return new CallbackEndpoint(exchange, pendingStore, bindingCodec, sessionBinding, SESSION_TTL, widening);
     }
 
