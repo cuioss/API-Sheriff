@@ -3681,8 +3681,10 @@ per login it starts. The records live in one in-memory store per gateway process
 records, and each record expires five minutes after its login started. The store admits a new record
 by these rules, in this order:
 
-* *Expired records go first.* Records past their five minutes are removed, oldest first, before any
-  live record is considered.
+* *Expired records go first.* Every record past its five minutes is removed before any live record
+  is considered, wherever it sits in the store. A login's start time is taken before its push and
+  the record is stored after it, so the order records were stored in is not the order they expire
+  in, and an expired record stored behind a younger live one is removed too.
 * *Each source holds at most 256 live records.* Every record is counted under its requester's
   source (`PendingQuotaKeys`): for a peer listed in `forwarded.trusted_proxies`, the client address
   its forwarding headers resolve to, and `unknown` when they resolve none; for any other peer, the
@@ -3699,8 +3701,10 @@ by these rules, in this order:
   step-up path and the interactive re-drive of a widening callback. It is raised after the push and
   before the binding cookie is set, so the refused browser holds no login state. The first refusal
   of a saturation episode is logged as `WARN ApiSheriff-145`, which carries no request data; every
-  further refusal of the episode stays at `DEBUG`, and the episode ends when the store next accepts
-  a new record. Every refusal is counted on
+  further refusal of the episode stays at `DEBUG`. The episode ends only once the store has drained
+  below half its capacity (fewer than 5,000 records), so freeing one place and filling it again keeps
+  the episode open: a caller cannot turn each refusal into a `WARN` line by completing one login
+  between two floods. Every refusal is counted on
   `sheriff_errors_total{event="PENDING_AUTHORIZATION_SATURATED"}`.
 
 The threat these rules answer: a bounded store that makes room by removing its oldest record,
@@ -3766,10 +3770,14 @@ asserts the same redirect shape on a widening started by a session route and by 
 completes both, and asserts the `502` and the `ApiSheriff-132` record of a push Keycloak refuses.
 
 For the pending-login store: a flood from one source beyond the store's capacity does not remove
-another source's live record; expired records are removed before any live one; a full store of live
-records refuses a new record with `PENDING_AUTHORIZATION_SATURATED` and keeps every record; a source
-over 256 records loses only its own oldest; `ApiSheriff-145` is logged once per saturation episode
-and carries no source, `state`, nonce or record id (`PendingAuthorizationStoreTest`). The source is
+another source's live record; expired records are removed before any live one, an expired record
+stored behind a younger live one included; a full store of live records refuses a new record with
+`PENDING_AUTHORIZATION_SATURATED` and keeps every record; a source over 256 records loses only its
+own oldest; `ApiSheriff-145` is logged once per saturation episode, not again after one freed place
+is refilled, and once more only after the store drained below half its capacity, and it carries no
+source, `state`, nonce or record id; a record's `toString` renders neither its id (the
+binding-cookie value), its source nor its `state`, nonce or PKCE verifier
+(`PendingAuthorizationStoreTest`). The source is
 the trusted proxy's resolved client, the untrusted peer's own address with its `X-Forwarded-For`
 ignored, or `unknown`, with IPv6 reduced to its `/64` (`PendingQuotaKeysTest`). Through the edge, a
 refused login on the login path and on a session-route navigation is answered `503` with

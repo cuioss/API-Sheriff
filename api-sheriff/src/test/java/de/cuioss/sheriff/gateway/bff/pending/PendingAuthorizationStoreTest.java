@@ -203,6 +203,29 @@ class PendingAuthorizationStoreTest {
         }
 
         @Test
+        @DisplayName("Should purge an expired record stored behind a younger live one")
+        void shouldPurgeExpiredRecordBehindYoungerLiveOne() {
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(2);
+            // createdAt is stamped before the push and the record is stored after it, so a login started
+            // earlier can be stored later: insertion order is not createdAt order.
+            Instant startedLater = T0.plusSeconds(60);
+            PendingAuthorizationRecord younger = pendingFrom(SOURCE_A, startedLater);
+            PendingAuthorizationRecord older = pendingFrom(SOURCE_B, T0);
+            store.store(younger, startedLater);
+            store.store(older, startedLater);
+            Instant olderExpired = older.expiresAt();
+            PendingAuthorizationRecord incoming = pendingFrom(SOURCE_C, olderExpired);
+
+            assertDoesNotThrow(() -> store.store(incoming, olderExpired),
+                    "the expired record frees its place although a live record was stored before it");
+
+            assertEquals(2, store.size(), "the expired record was purged and the net-new record admitted");
+            assertTrue(store.consume(older.id(), olderExpired).isEmpty(), "the expired record is gone");
+            assertTrue(store.consume(younger.id(), olderExpired).isPresent(), "the live record is never evicted");
+            assertTrue(store.consume(incoming.id(), olderExpired).isPresent());
+        }
+
+        @Test
         @DisplayName("Should refuse a net-new record at capacity and leave every live record in place")
         void shouldRefuseAtSaturation() {
             InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(3);
@@ -344,7 +367,42 @@ class PendingAuthorizationStoreTest {
             assertEquals(1, firstEpisode, "three refusals of one episode log the WARN once");
             assertEquals(2, debugRefusals, "the further refusals of the episode stay at DEBUG");
             assertEquals(2, saturationWarnings().size(),
-                    "an accepted net-new record ends the episode, so the next saturation warns again");
+                    "draining below half the capacity ends the episode, so the next saturation warns again");
+        }
+
+        @Test
+        @DisplayName("Should re-arm the WARN only after the store drained below half its capacity")
+        void shouldReArmOnlyBelowHalfCapacity() {
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
+            List<PendingAuthorizationRecord> held = new ArrayList<>(storeFrom(store, SOURCE_A, 4, T0));
+            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            int afterFirstRefusal = saturationWarnings().size();
+
+            store.consume(held.removeFirst().id(), T0);
+            held.addAll(storeFrom(store, SOURCE_A, 1, T0));
+            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            int afterOneFreedSlot = saturationWarnings().size();
+
+            store.consume(held.removeFirst().id(), T0);
+            store.consume(held.removeFirst().id(), T0);
+            held.addAll(storeFrom(store, SOURCE_A, 2, T0));
+            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            int afterDrainToHalf = saturationWarnings().size();
+
+            store.consume(held.removeFirst().id(), T0);
+            store.consume(held.removeFirst().id(), T0);
+            store.consume(held.removeFirst().id(), T0);
+            storeFrom(store, SOURCE_A, 3, T0);
+            assertThrows(GatewayException.class, () -> store.store(pendingFrom(SOURCE_B, T0), T0));
+            int afterDrainBelowHalf = saturationWarnings().size();
+
+            assertAll("the latch re-arms by hysteresis, not on a single freed slot",
+                    () -> assertEquals(1, afterFirstRefusal, "the first refusal of the episode warns"),
+                    () -> assertEquals(1, afterOneFreedSlot,
+                            "a freed slot refilled by one insert is the same episode, so no second WARN"),
+                    () -> assertEquals(1, afterDrainToHalf, "a store drained to exactly half is still the same episode"),
+                    () -> assertEquals(2, afterDrainBelowHalf,
+                            "a store drained below half its capacity ends the episode, so the next saturation warns"));
         }
 
         @Test
@@ -526,6 +584,38 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should create a plain login record without a widening marker")
         void shouldCreateLoginWithoutWidening() {
             assertNull(pendingRecord("/app", T0).widening(), "create(...) always yields a plain login");
+        }
+
+        @Test
+        @DisplayName("Should render neither the id, the quota key nor the flow secrets in toString")
+        void shouldRedactToString() {
+            FlowContext flow = flow();
+            PendingAuthorizationRecord login = PendingAuthorizationRecord.create(flow, "/app", REQUESTED_SCOPES,
+                    SOURCE_B, T0);
+            PendingAuthorizationRecord widening = PendingAuthorizationRecord.createWidening(flow(), "/orders",
+                    REQUESTED_SCOPES, "user-sub-1", Widening.Attempt.SILENT, SOURCE_C, T0);
+
+            String rendered = login.toString();
+            String renderedWidening = widening.toString();
+
+            assertAll("only createdAt, ttl and the widening flag are rendered",
+                    () -> assertFalse(rendered.contains(login.id()), "the binding-cookie id is never rendered"),
+                    () -> assertFalse(renderedWidening.contains(widening.id()),
+                            "the binding-cookie id is never rendered"),
+                    () -> assertFalse(rendered.contains("id="), "no id field is rendered at all"),
+                    () -> assertTrue(rendered.contains(T0.toString()), "createdAt is rendered"),
+                    () -> assertTrue(rendered.contains(PendingAuthorizationRecord.FIXED_TTL.toString()),
+                            "the ttl is rendered"),
+                    () -> assertTrue(rendered.contains("widening=false"), "a plain login renders no widening"),
+                    () -> assertTrue(renderedWidening.contains("widening=true"), "a widening is flagged"),
+                    () -> assertFalse(rendered.contains(SOURCE_B), "the quota key is never rendered"),
+                    () -> assertFalse(renderedWidening.contains(SOURCE_C), "the quota key is never rendered"),
+                    () -> assertFalse(renderedWidening.contains("user-sub-1"), "the widening subject is not rendered"),
+                    () -> assertFalse(rendered.contains(flow.state()), "the state is never rendered"),
+                    () -> assertFalse(rendered.contains(flow.nonce()), "the nonce is never rendered"),
+                    () -> assertFalse(rendered.contains(flow.pkceChallenge().codeVerifier()),
+                            "the PKCE verifier is never rendered"),
+                    () -> assertFalse(rendered.contains("flowContext"), "the flow context is not rendered at all"));
         }
     }
 

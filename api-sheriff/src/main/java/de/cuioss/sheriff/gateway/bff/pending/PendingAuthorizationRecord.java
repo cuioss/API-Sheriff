@@ -173,6 +173,22 @@ String quotaKey,
     }
 
     /**
+     * A redacting rendering: the {@link #createdAt()}, the {@link #ttl()} and whether a
+     * {@link #widening()} is present — nothing else. The {@link #id()} is the binding-cookie value, a
+     * bearer secret for the in-flight login; the {@link #quotaKey()} is an address-derived value; and the
+     * {@link #flowContext()} holds the {@code state}, nonce and PKCE verifier — so none of them is ever
+     * rendered, nor are the return URL, the requested scopes or the widening subject. A record that
+     * reaches a log line, an exception message or a debugger therefore discloses none of them.
+     *
+     * @return {@code PendingAuthorizationRecord[createdAt=…, ttl=…, widening=true|false]}
+     */
+    @Override
+    public String toString() {
+        return "PendingAuthorizationRecord[createdAt=" + createdAt + ", ttl=" + ttl + ", widening="
+                + (widening != null) + "]";
+    }
+
+    /**
      * @return the instant this record expires ({@code createdAt + ttl})
      */
     public Instant expiresAt() {

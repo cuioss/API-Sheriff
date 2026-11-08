@@ -353,7 +353,8 @@ public final class BffLogMessages {
          * <strong>Latched per saturation episode.</strong> The login-initiation path is reachable
          * without a credential, so the record is emitted once when the store becomes saturated and
          * every further refusal of the same episode drops to {@code DEBUG} (ADR-0051); the latch is
-         * released when the store next accepts a net-new record — see
+         * released only once the store has drained below half its capacity, so freeing one place and
+         * filling it again does not end the episode — see
          * {@code de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore}. The refusal
          * rate is {@code sheriff_errors_total} under {@code PENDING_AUTHORIZATION_SATURATED}.
          */

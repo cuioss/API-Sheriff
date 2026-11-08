@@ -733,9 +733,10 @@ The gateway has already pushed the refused login's authorization request to the 
 no room, so a refused login still costs the IdP one request.
 
 *What you see.* The first refusal logs `WARN` `ApiSheriff-145` once; every further refusal stays at
-`DEBUG` until the gateway accepts a new login again, and the next full period logs it once more. The
-record names no address and no login. Every refusal is counted on
-`sheriff_errors_total{event="PENDING_AUTHORIZATION_SATURATED"}` (see
+`DEBUG` until fewer than half of the places -- fewer than 5,000 -- hold pending logins. The next full
+period after that logs it once more. A gateway that frees a few places and fills them again is still
+in the same period and logs nothing new. The record names no address and no login. Every refusal is
+counted on `sheriff_errors_total{event="PENDING_AUTHORIZATION_SATURATED"}` (see
 link:../LogMessages.adoc[Log Messages] and
 link:../architecture/observability-and-errors.adoc[Observability and error handling]).
 
