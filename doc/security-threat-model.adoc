@@ -3694,7 +3694,8 @@ by these rules, in this order:
   takes the TCP peer's place in both rules: it is the peer judged against
   `forwarded.trusted_proxies` and the address an untrusted peer is counted under. The edge takes it
   only on an exact match of the request connection's address against a leg the relay registered, so
-  a connection the relay did not dial is counted under its own TCP peer, whatever headers it sends.
+  a connection the relay did not dial is judged by the two rules above on its own TCP peer, and no
+  header can supply the handed-over address.
   Only this count reads the handed-over address; every other stage, the regenerated
   `X-Forwarded-For` included, still sees the relay leg as the peer
   (link:development/tls-edge.adoc[TLS edge]). An IPv4 address counts whole and an IPv6
@@ -3795,9 +3796,9 @@ client only on an exact host and port hit, and a stale release does not drop a n
 entry (`RelayedPeerRegistryTest`); a terminated relay registers its client before the first byte
 reaches the backend and releases the entry when either leg closes, and a passthrough relay
 registers nothing (`PassthroughRelayTest`, `SniFrontListenerTest`). Through the edge, two relayed
-logins are counted under their own clients, and a connection the relay did not register is counted
-under its own TCP peer whatever forwarding headers it sends (`GatewayEdgeRouteBffWiringTest`, nested
-`RelayedClientHandOff`). Also through the edge, a
+logins are counted under their own clients, and an untrusted connection the relay did not register
+is counted under its own TCP peer whatever forwarding headers it sends (`GatewayEdgeRouteBffWiringTest`,
+nested `RelayedClientHandOff`). Also through the edge, a
 refused login on the login path and on a session-route navigation is answered `503` with
 `Retry-After: 30` and the `rate-limiting` problem type (`GatewayEdgeRouteBffWiringTest`). On the
 integration stack, the first of 256 logins from one source completes into a session, and with 256
