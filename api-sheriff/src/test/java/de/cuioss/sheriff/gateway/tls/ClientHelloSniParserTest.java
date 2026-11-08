@@ -490,6 +490,24 @@ class ClientHelloSniParserTest {
             assertTrue(result.complete());
             assertNull(result.serverName(), "a name length past the list end fails closed");
         }
+
+        @Test
+        @DisplayName("fails closed when the server_name extension runs past the declared extensions block")
+        void serverNameExtensionPastExtensionsBlock() {
+            // Arrange — the extensions block declares only 4 bytes, enough for the server_name
+            // extension's type and length, while that extension's body lies past the block (still inside
+            // the declared ClientHello). A conforming TLS stack rejects this hello, so the body must never
+            // supply the routed SNI.
+            byte[] sni = ClientHelloFixture.serverNameExtension("smuggled.example.com");
+            byte[] hello = ClientHelloFixture.withRawExtensionsDeclaring(sni, 4);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.offer(hello);
+
+            // Assert
+            assertTrue(result.complete());
+            assertNull(result.serverName(), "an extension past the extensions block fails closed");
+        }
     }
 
     /**

@@ -308,7 +308,8 @@ public final class ClientHelloSniParser {
      * Walks the fully-reassembled {@code client_hello} body to the {@code server_name} extension and
      * returns the first {@code host_name}. {@code handshake} holds exactly the declared ClientHello
      * (header included) and nothing past it. Any structural inconsistency (a declared length that runs
-     * past the buffer) yields {@code null} so the caller fails closed.
+     * past the buffer, or an extension that runs past the declared extensions block) yields
+     * {@code null} so the caller fails closed.
      */
     private static @Nullable String extractServerName(byte[] handshake) {
         Cursor cursor = new Cursor(handshake, HANDSHAKE_HEADER_LENGTH);
@@ -329,6 +330,11 @@ public final class ClientHelloSniParser {
                 int type = cursor.readUint16();
                 int length = cursor.readUint16();
                 int next = cursor.position() + length;
+                if (next > extensionsEnd) {
+                    // An extension running past the declared extensions block is malformed; its body
+                    // must not be read from the bytes that follow the block.
+                    return null;
+                }
                 if (type == EXTENSION_TYPE_SERVER_NAME) {
                     return readServerNameExtension(new Cursor(handshake, cursor.position()), length);
                 }
