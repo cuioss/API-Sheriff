@@ -53,10 +53,12 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * <p>
  * <strong>Fail closed without the hand-off.</strong> A request the edge marked
  * {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed} — it reached the internal
- * terminated listener behind the front, but the relay holds no hand-off for its connection — is keyed
- * on its TCP peer, and its forwarding headers are never read, even when that peer is a trusted proxy.
- * Its TCP peer is a loopback address, so every such request shares one key; no header can move it
- * onto another source's quota. Without a front listener no request carries the mark.
+ * terminated listener behind the front, or arrived on a local address the transport did not supply,
+ * and the relay holds no hand-off for its connection — is counted under its own TCP peer, and its
+ * forwarding headers are never read, even when that peer is a trusted proxy, so no header can move it
+ * onto another source's quota. For a stale relay leg that peer is the relay's loopback address; a host
+ * that reaches the internal listener directly is keyed on its own address. Without a front listener
+ * no request carries the mark.
  * <p>
  * <strong>One derivation, independent of detection.</strong> The key is derived here for every
  * producer of a pending record — the session stage and the reserved login, step-up and callback

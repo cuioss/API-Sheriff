@@ -258,13 +258,16 @@ public final class PipelineRequest {
     }
 
     /**
-     * Whether the request arrived on the internal terminated listener behind the gateway's own SNI
-     * front listener over a connection the relay holds no hand-off for — one it never dialled, or one
-     * whose relay session already ended. Such a request has no {@link #relayedPeerAddress()}, and its
-     * TCP peer is a loopback address, so nothing about it may be read as naming its client. Never set
+     * Whether the request arrived behind the gateway's own SNI front listener on the internal
+     * terminated listener, or on a local address the transport did not supply, over a connection the
+     * relay holds no hand-off for — one it never dialled, or one whose relay session already ended.
+     * Such a request has no {@link #relayedPeerAddress()}; it is counted under its own TCP peer and its
+     * forwarding headers are never read for it. For a stale relay leg that peer is the relay's loopback
+     * address, while a host that reaches the internal listener directly is its own address. Never set
      * without a front listener.
      *
-     * @return {@code true} for a request on the fronted terminated listener without a hand-off
+     * @return {@code true} for a request behind the front, on the terminated listener or an unknown
+     *         local address, without a hand-off
      */
     public boolean unattributedTerminatedLeg() {
         return unattributedTerminatedLeg;

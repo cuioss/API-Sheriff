@@ -43,7 +43,9 @@ import org.jspecify.annotations.Nullable;
  * a connection that arrived on that listener's port without an exact hit — one the relay never
  * dialled, or one whose session the relay has already released — is reported as
  * {@linkplain Attribution#unattributed() unattributed}, so its consumer can refuse to let any header
- * stand in for the missing hand-off. Without a front listener nothing is ever reported unattributed.
+ * stand in for the missing hand-off. A miss whose local address the transport did not supply is
+ * reported unattributed too, since it cannot be shown to have arrived elsewhere. Without a front
+ * listener nothing is ever reported unattributed.
  * <p>
  * An entry lives exactly as long as its relay session: {@link Registration#release()} removes it
  * only while the entry is still the one that registration put there, so a session that ends after
@@ -105,12 +107,20 @@ public final class RelayedPeerRegistry {
      * on an exact hit, else whether the connection arrived on the internal terminated listener behind
      * the front without one.
      *
+     * <p>
+     * Behind the front, a miss whose local address is unknown fails closed: without a local address
+     * the registry cannot rule out that the connection arrived on the terminated listener, so it is
+     * reported {@linkplain Attribution#unattributed() unattributed} rather than neutral.
+     *
      * @param connectionLocalAddress  the local socket address of the connection a request arrived on,
-     *                                {@code null} when the transport supplied none
+     *                                {@code null} when the transport supplied none; behind the front a
+     *                                {@code null} on a miss is treated as the terminated listener
      * @param connectionRemoteAddress the remote socket address of the connection a request arrived on,
      *                                {@code null} when the transport supplied none
-     * @return the attribution; {@link Attribution#NONE} for a connection that neither hit nor reached
-     *         the fronted terminated listener
+     * @return the attribution; {@link Attribution#UNATTRIBUTED} for a miss behind the front whose
+     *         local address is the terminated listener's port or unknown; {@link Attribution#NONE} for
+     *         a miss with no front listener configured, or one whose known local port is another
+     *         listener's
      */
     public Attribution attribute(@Nullable SocketAddress connectionLocalAddress,
             @Nullable SocketAddress connectionRemoteAddress) {
@@ -119,9 +129,11 @@ public final class RelayedPeerRegistry {
             return new Attribution(client.get(), false);
         }
         int port = terminatedListenerPort.get();
-        boolean onTerminatedListener = port != NOT_FRONTED && connectionLocalAddress != null
-                && connectionLocalAddress.port() == port;
-        return onTerminatedListener ? Attribution.UNATTRIBUTED : Attribution.NONE;
+        if (port == NOT_FRONTED) {
+            return Attribution.NONE;
+        }
+        boolean mayBeTerminatedListener = connectionLocalAddress == null || connectionLocalAddress.port() == port;
+        return mayBeTerminatedListener ? Attribution.UNATTRIBUTED : Attribution.NONE;
     }
 
     /**
@@ -166,10 +178,13 @@ public final class RelayedPeerRegistry {
      */
     public record Attribution(@Nullable String clientAddress, boolean unattributed) {
 
-        /** A connection the registry neither attributes nor marks: no front, or another listener. */
+        /** A connection the registry neither attributes nor marks: no front, or a known other listener. */
         public static final Attribution NONE = new Attribution(null, false);
 
-        /** A connection on the fronted terminated listener that the registry holds no entry for. */
+        /**
+         * A connection behind the front that the registry holds no entry for, arriving on the
+         * terminated listener or on an unknown local address.
+         */
         public static final Attribution UNATTRIBUTED = new Attribution(null, true);
 
         /**

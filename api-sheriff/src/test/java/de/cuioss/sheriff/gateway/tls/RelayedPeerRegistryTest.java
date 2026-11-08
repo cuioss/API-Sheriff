@@ -124,7 +124,8 @@ class RelayedPeerRegistryTest {
     /**
      * Behind the front, a miss on the terminated listener's port is reported, not merely absent: a
      * connection the relay never dialled and one whose session it already released both come back
-     * unattributed, while a hit keeps its client and a connection on another listener stays neutral.
+     * unattributed, as does a miss whose local address is unknown; a hit keeps its client and a
+     * connection on a known other listener stays neutral.
      */
     @Nested
     @DisplayName("attribute — behind the front, a terminated-listener miss is reported unattributed")
@@ -165,24 +166,40 @@ class RelayedPeerRegistryTest {
         }
 
         @Test
-        @DisplayName("a connection on another listener, or with no local address, is neutral even behind the front")
+        @DisplayName("a connection on a known other listener is neutral even behind the front")
         void otherListenerIsNeutral() {
             registry.frontTerminatedListener(TERMINATED_PORT);
-            SocketAddress remote = SocketAddress.inetSocketAddress(50002, LOOPBACK);
+
+            assertEquals(RelayedPeerRegistry.Attribution.NONE,
+                    registry.attribute(ON_OTHER_LISTENER, SocketAddress.inetSocketAddress(50002, LOOPBACK)));
+        }
+
+        @Test
+        @DisplayName("behind the front, a miss with no local address fails closed as unattributed")
+        void unknownLocalAddressFailsClosed() {
+            registry.frontTerminatedListener(TERMINATED_PORT);
+            registry.register(LEG, CLIENT_A);
 
             assertAll(
-                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE, registry.attribute(ON_OTHER_LISTENER, remote)),
-                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE, registry.attribute(null, remote)));
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED,
+                            registry.attribute(null, SocketAddress.inetSocketAddress(50002, LOOPBACK)),
+                            "an unknown local address cannot be shown to be another listener"),
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED, registry.attribute(null, null),
+                            "neither address known is unattributed too"),
+                    () -> assertEquals(new RelayedPeerRegistry.Attribution(CLIENT_A, false), registry.attribute(null, LEG),
+                            "a hit names its client whatever the local address"));
         }
 
         @Test
         @DisplayName("control: without a front the same terminated-listener miss is neutral")
         void withoutFrontNothingIsUnattributed() {
             registry.register(LEG, CLIENT_A);
+            SocketAddress miss = SocketAddress.inetSocketAddress(50002, LOOPBACK);
 
             assertAll(
-                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE,
-                            registry.attribute(ON_TERMINATED, SocketAddress.inetSocketAddress(50002, LOOPBACK))),
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE, registry.attribute(ON_TERMINATED, miss)),
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE, registry.attribute(null, miss),
+                            "with no front an unknown local address stays neutral"),
                     () -> assertEquals(new RelayedPeerRegistry.Attribution(CLIENT_A, false),
                             registry.attribute(ON_TERMINATED, LEG), "a hit needs no front"));
         }
