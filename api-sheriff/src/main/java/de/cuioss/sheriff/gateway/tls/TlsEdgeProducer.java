@@ -141,9 +141,7 @@ public class TlsEdgeProducer {
         }
         Duration relayIdleTimeout = relayIdleTimeout(httpIdleTimeout, routeTable);
         LOGGER.debug("Relay idle timeout derived as %s", relayIdleTimeout);
-        NetClientOptions clientOptions = new NetClientOptions();
-        SniFrontListener.applyIdleTimeout(clientOptions, relayIdleTimeout);
-        this.netClient = vertx.createNetClient(clientOptions);
+        this.netClient = vertx.createNetClient(relayClientOptions(relayIdleTimeout));
         PassthroughRelay relay = new PassthroughRelay(netClient);
         RelayTarget terminatedTarget = new RelayTarget(TERMINATED_HOST, internalHttpsPort);
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, publicPort,
@@ -182,6 +180,20 @@ public class TlsEdgeProducer {
             longestInnerBound = webSocketIdle;
         }
         return longestInnerBound.plus(RELAY_IDLE_MARGIN);
+    }
+
+    /**
+     * The options of the relay's dial client: the relay idle timeout, set exactly as the front server
+     * sets it ({@link SniFrontListener#applyIdleTimeout}), so both legs of a relayed connection carry
+     * the same bound.
+     *
+     * @param relayIdleTimeout the derived relay idle timeout; positive
+     * @return the dial-client options carrying that idle timeout
+     */
+    static NetClientOptions relayClientOptions(Duration relayIdleTimeout) {
+        NetClientOptions clientOptions = new NetClientOptions();
+        SniFrontListener.applyIdleTimeout(clientOptions, relayIdleTimeout);
+        return clientOptions;
     }
 
     /**

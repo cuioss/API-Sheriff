@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.tls;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -103,6 +104,10 @@ public final class SniFrontListener {
 
     /** The Vert.x timer id meaning "no deadline timer was armed". */
     private static final long NO_TIMER = -1L;
+
+    /** The units an idle timeout is set in, finest first; see {@link #applyIdleTimeout}. */
+    private static final List<TimeUnit> IDLE_TIMEOUT_UNITS = List.of(TimeUnit.MILLISECONDS, TimeUnit.SECONDS,
+            TimeUnit.MINUTES, TimeUnit.HOURS, TimeUnit.DAYS);
 
     private final Vertx vertx;
     private final PassthroughRelay relay;
@@ -215,24 +220,32 @@ public final class SniFrontListener {
     }
 
     /**
-     * Sets {@code idleTimeout} as the Vert.x idle timeout of a server or client. The timeout is set in
-     * milliseconds when that fits the {@code int} Vert.x takes, and in whole seconds (rounded up,
-     * capped at {@link Integer#MAX_VALUE}) otherwise, so a very long timeout is never shortened to a
-     * wrapped-around value.
+     * Sets {@code idleTimeout} as the Vert.x idle timeout of a server or client, in the finest of
+     * milliseconds, seconds, minutes, hours and days whose count fits the {@code int} Vert.x takes. The
+     * count is rounded up, so the timeout set is <strong>never shorter</strong> than the one given: a
+     * positive duration below one millisecond is set as one millisecond — a zero would mean no idle
+     * timeout at all — and a duration past {@link Integer#MAX_VALUE} seconds falls back to whole
+     * minutes instead of being capped, so the {@link TlsEdgeProducer#RELAY_IDLE_MARGIN} over the
+     * longest inner bound is kept.
      *
      * @param options     the server or client options to configure
      * @param idleTimeout the idle timeout; positive
+     * @throws IllegalArgumentException when the timeout exceeds {@link Integer#MAX_VALUE} days, which no
+     *                                  unit Vert.x takes can carry
      */
     static void applyIdleTimeout(TCPSSLOptions options, Duration idleTimeout) {
-        long millis = idleTimeout.toMillis();
-        if (millis <= Integer.MAX_VALUE) {
-            options.setIdleTimeout((int) millis);
-            options.setIdleTimeoutUnit(TimeUnit.MILLISECONDS);
-        } else {
-            long seconds = idleTimeout.plusMillis(999).toSeconds();
-            options.setIdleTimeout((int) Math.min(seconds, Integer.MAX_VALUE));
-            options.setIdleTimeoutUnit(TimeUnit.SECONDS);
+        for (TimeUnit unit : IDLE_TIMEOUT_UNITS) {
+            Duration oneUnit = Duration.of(1, unit.toChronoUnit());
+            if (idleTimeout.compareTo(oneUnit.multipliedBy(Integer.MAX_VALUE)) <= 0) {
+                long whole = idleTimeout.dividedBy(oneUnit);
+                // whole < Integer.MAX_VALUE whenever a remainder is left, so rounding up still fits
+                long roundedUp = oneUnit.multipliedBy(whole).equals(idleTimeout) ? whole : whole + 1;
+                options.setIdleTimeout((int) roundedUp);
+                options.setIdleTimeoutUnit(unit);
+                return;
+            }
         }
+        throw new IllegalArgumentException("idle timeout too long for a Vert.x idle timeout: " + idleTimeout);
     }
 
     /**

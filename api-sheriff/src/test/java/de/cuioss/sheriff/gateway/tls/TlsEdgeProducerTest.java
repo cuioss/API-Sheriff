@@ -25,6 +25,7 @@ import java.net.Socket;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 
@@ -41,6 +42,7 @@ import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
+import io.vertx.core.net.NetClientOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -160,6 +162,40 @@ class TlsEdgeProducerTest {
                     .upstream(WS_UPSTREAM)
                     .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)
                     .build();
+        }
+    }
+
+    @Nested
+    @DisplayName("Relay dial-client options")
+    class DialClientOptions {
+
+        @Test
+        @DisplayName("carry the derived relay idle timeout, in milliseconds when it fits")
+        void carryTheDerivedRelayIdleTimeout() {
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, NO_ROUTES);
+
+            NetClientOptions options = TlsEdgeProducer.relayClientOptions(derived);
+
+            assertAll("the dial client is bounded exactly like the front server",
+                    () -> assertEquals(derived.toMillis(), options.getIdleTimeout()),
+                    () -> assertEquals(TimeUnit.MILLISECONDS, options.getIdleTimeoutUnit()));
+        }
+
+        @Test
+        @DisplayName("keep the margin over a WebSocket idle timeout of Integer.MAX_VALUE seconds")
+        void keepTheMarginOverTheLongestWebSocketIdleTimeout() {
+            RouteTable routes = new RouteTable(List.of(ConfigFixtures.route("ws", "/ws")
+                    .protocol(Protocol.WEBSOCKET)
+                    .upstream(WS_UPSTREAM)
+                    .effectiveWebSocketIdleTimeoutSeconds(Integer.MAX_VALUE)
+                    .build()));
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, routes);
+
+            NetClientOptions options = TlsEdgeProducer.relayClientOptions(derived);
+
+            Duration set = Duration.of(options.getIdleTimeout(), options.getIdleTimeoutUnit().toChronoUnit());
+            assertTrue(set.compareTo(Duration.ofSeconds(Integer.MAX_VALUE).plus(TlsEdgeProducer.RELAY_IDLE_MARGIN)) >= 0,
+                    "the timeout set is never shorter than the WebSocket bound plus the margin: " + set);
         }
     }
 

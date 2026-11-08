@@ -36,6 +36,7 @@ import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetSocket;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -305,19 +306,38 @@ class SniFrontListenerTest {
         @Test
         @DisplayName("closes both legs of a relay that carries nothing for the idle timeout")
         void closesSilentRelayOnBothLegs() throws Exception {
-            // Arrange
+            assertSilentRelayClosedByItsIdleTimeout(IDLE, IDLE);
+        }
+
+        @Test
+        @DisplayName("closes both legs of a silent relay when only the front server carries the idle timeout")
+        void closesSilentRelayWithTheFrontTimeoutAlone() throws Exception {
+            assertSilentRelayClosedByItsIdleTimeout(IDLE, null);
+        }
+
+        @Test
+        @DisplayName("closes both legs of a silent relay when only the relay's dial client carries the idle timeout")
+        void closesSilentRelayWithTheDialClientTimeoutAlone() throws Exception {
+            // The front's own timeout is one no case reaches; the relay leg alone has to close the relay
+            assertSilentRelayClosedByItsIdleTimeout(LONG_IDLE, IDLE);
+        }
+
+        /**
+         * Establishes a relay through a front with the given leg timeouts, falls silent, and asserts
+         * that both legs are closed and not before {@link #IDLE}: every leg was last active after the
+         * client connected, so a close earlier than that is not the idle timeout's doing.
+         */
+        private void assertSilentRelayClosedByItsIdleTimeout(Duration frontIdle, @Nullable Duration relayIdle)
+                throws Exception {
             byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
             Backend passthrough = startBackend(hello.length);
             SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), passthrough.target(),
-                    SniFrontListener.CLIENT_HELLO_DEADLINE, SniFrontListener.MAX_UNDECIDED_CONNECTIONS, IDLE);
+                    SniFrontListener.CLIENT_HELLO_DEADLINE, SniFrontListener.MAX_UNDECIDED_CONNECTIONS, frontIdle,
+                    relayIdle);
             ClientLeg client = connectClient(front);
-
-            // Act — establish the relay, then fall silent
             Awaits.connect(client.socket().write(Buffer.buffer(hello)), "the ClientHello to be written");
             Awaits.connect(passthrough.firstBytes(), "the relay to be established");
 
-            // Assert — both legs are closed, and not before the idle timeout: every leg was last active
-            // after the client connected, so a close earlier than that is not the idle timeout's doing
             long closedAt = Awaits.connect(client.closedNanos(), "the idle timeout to close the client leg");
             Awaits.connect(passthrough.firstClosed(), "the idle timeout to close the backend leg");
             long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(closedAt - client.connectedNanos());
@@ -350,6 +370,49 @@ class SniFrontListenerTest {
         }
     }
 
+    @Nested
+    @DisplayName("applyIdleTimeout")
+    class ApplyIdleTimeout {
+
+        @Test
+        @DisplayName("sets a positive duration below one millisecond as one millisecond, never as no timeout")
+        void subMillisecondIsOneMillisecond() {
+            NetClientOptions options = new NetClientOptions();
+
+            SniFrontListener.applyIdleTimeout(options, Duration.ofNanos(1));
+
+            assertAll("a zero would mean no idle timeout at all",
+                    () -> assertEquals(1, options.getIdleTimeout()),
+                    () -> assertEquals(TimeUnit.MILLISECONDS, options.getIdleTimeoutUnit()));
+        }
+
+        @Test
+        @DisplayName("sets a duration too long for int milliseconds in whole seconds")
+        void tooLongForMillisecondsIsSeconds() {
+            NetClientOptions options = new NetClientOptions();
+
+            SniFrontListener.applyIdleTimeout(options, Duration.ofDays(30));
+
+            assertAll("thirty days exceed Integer.MAX_VALUE milliseconds",
+                    () -> assertEquals(Duration.ofDays(30).toSeconds(), options.getIdleTimeout()),
+                    () -> assertEquals(TimeUnit.SECONDS, options.getIdleTimeoutUnit()));
+        }
+
+        @Test
+        @DisplayName("sets a duration beyond Integer.MAX_VALUE seconds in whole minutes, rounded up, never shortened")
+        void beyondIntSecondsIsMinutesRoundedUp() {
+            NetClientOptions options = new NetClientOptions();
+            Duration beyond = Duration.ofSeconds(Integer.MAX_VALUE).plusSeconds(60);
+
+            SniFrontListener.applyIdleTimeout(options, beyond);
+
+            assertAll("the margin above Integer.MAX_VALUE seconds survives",
+                    () -> assertEquals(TimeUnit.MINUTES, options.getIdleTimeoutUnit()),
+                    () -> assertEquals((beyond.toSeconds() + 59) / 60, options.getIdleTimeout(),
+                            "the minutes are rounded up, so the timeout set is never shorter than the one given"));
+        }
+    }
+
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget)
             throws Exception {
         return startFront(targets, terminatedTarget, SniFrontListener.CLIENT_HELLO_DEADLINE,
@@ -362,11 +425,25 @@ class SniFrontListenerTest {
      */
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget,
             Duration deadline, int cap, Duration idle) throws Exception {
+        return startFront(targets, terminatedTarget, deadline, cap, idle, idle);
+    }
+
+    /**
+     * Starts a front whose server and relay dial client carry different idle timeouts, so a case can
+     * prove each leg's timeout on its own.
+     *
+     * @param frontIdle the idle timeout of the front server; positive
+     * @param relayIdle the idle timeout of the relay's dial client, or {@code null} for none at all
+     */
+    private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget,
+            Duration deadline, int cap, Duration frontIdle, @Nullable Duration relayIdle) throws Exception {
         NetClientOptions relayOptions = new NetClientOptions();
-        SniFrontListener.applyIdleTimeout(relayOptions, idle);
+        if (relayIdle != null) {
+            SniFrontListener.applyIdleTimeout(relayOptions, relayIdle);
+        }
         PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient(relayOptions));
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, 0, HOST, deadline,
-                cap, idle);
+                cap, frontIdle);
         Awaits.connect(front.start(), "the SNI front listener to start");
         return front;
     }
