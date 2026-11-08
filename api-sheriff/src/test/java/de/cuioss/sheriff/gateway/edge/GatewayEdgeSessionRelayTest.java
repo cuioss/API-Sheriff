@@ -516,8 +516,8 @@ class GatewayEdgeSessionRelayTest {
             HttpClientResponse refused = Awaits.connect(httpClient.request(new RequestOptions()
                             .setHost(LoopbackHost.ADDRESS).setPort(requireFront().actualPort())
                             .setMethod(HttpMethod.GET).setURI(SESSION_WS + "/room"))
-                    .compose(request -> request.putHeader("Origin", ORIGIN).putHeader("Cookie", cookie).send())
-                    .compose(response -> response.body().map(body -> response)),
+                            .compose(request -> request.putHeader("Origin", ORIGIN).putHeader("Cookie", cookie).send())
+                            .compose(response -> response.body().map(body -> response)),
                     "the edge's answer to a plain GET on the session WebSocket route");
 
             assertAll("the refusal keeps the stage's cookie",
