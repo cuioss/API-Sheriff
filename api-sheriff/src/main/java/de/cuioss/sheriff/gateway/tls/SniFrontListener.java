@@ -65,9 +65,10 @@ import org.jspecify.annotations.Nullable;
  * bytes received.</li>
  * <li><em>Undecided-connection cap</em> — {@link #MAX_UNDECIDED_CONNECTIONS}, 1024 connections
  * accepted and not yet routed, across every event loop of the front. A connection accepted beyond
- * the cap is closed at once, without reading from it. Each undecided connection buffers at most
- * {@link ClientHelloSniParser#MAX_CLIENT_HELLO_BYTES} (32 KiB) before its verdict, so the cap bounds
- * the front's pre-route buffer memory at 32 MiB. The trade-off is deliberate: a client that holds
+ * the cap is closed at once, without reading from it. Each undecided connection receives at most
+ * {@link ClientHelloSniParser#MAX_CLIENT_HELLO_BYTES} (32 KiB) before its verdict and holds those bytes
+ * in three copies — the replay buffer and the parser's received and reassembled arrays — so the cap
+ * bounds the front's pre-route buffer memory at about 96 MiB. The trade-off is deliberate: a client that holds
  * 1024 silent sockets makes new handshakes wait for at most one deadline window per wave of such
  * sockets — the deadline frees every slot again — and that bounded delay is preferred over unbounded
  * pre-route memory. Since a legitimate client completes its ClientHello within one round trip, 1024

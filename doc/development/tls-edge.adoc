@@ -72,9 +72,10 @@ indefinitely. None of them is configurable.
 
 * *Undecided-connection cap* -- `SniFrontListener.MAX_UNDECIDED_CONNECTIONS`, 1024 connections
   accepted and not yet settled, across every event loop of the front. A connection accepted beyond the
-  cap is closed at once, without reading from it. Each undecided connection buffers at most
-  `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB) before its verdict, so the cap bounds the
-  front's pre-route buffer memory at 1024 x 32 KiB = 32 MiB. The trade-off is deliberate: a client
+  cap is closed at once, without reading from it. Each undecided connection receives at most
+  `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB) before its verdict and holds them in three
+  copies -- the listener's replay buffer and the parser's received and reassembled arrays -- so the
+  cap bounds the front's pre-route buffer memory at 1024 x 3 x 32 KiB = 96 MiB. The trade-off is deliberate: a client
   that holds 1024 silent sockets makes new handshakes wait for at most one deadline window per wave of
   such sockets -- the deadline frees every slot again -- and that bounded delay is preferred over
   unbounded pre-route memory.
