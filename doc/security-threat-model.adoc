@@ -1798,10 +1798,15 @@ sent on more than one header line is refused `400` before either value is read, 
 never judged on its first line alone (RFC 6455 §11.3.1, §11.3.5). A `Sec-WebSocket-Version` other
 than `13` is refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or
 malformed `Sec-WebSocket-Key` -- anything but padded base64 (RFC 4648 §4) of a 16-byte nonce -- is
-refused `400`. The refusal returns the general admission permit and is a bare
-status written through `ResponseEnds.reject`, as the edge's other refusals before processing are: it
-carries no problem document and no route security headers. Without the gate an HTTP/2 request or a
-plain `GET` dialed the upstream and held its permit until the client upgrade failed.
+refused `400`. The refusal returns the general admission permit and is written through
+`ResponseEnds.reject` with no problem document. Being decided after route selection and
+authentication, it carries what every response after route selection carries: the route's
+`security_headers`, its own headers (which win over a security header of the same name) and the
+pipeline's `Set-Cookie` lines -- among them a successor session cookie written while the session was
+refreshed, which the browser would otherwise lose, leaving it on a spent refresh token. The two `503`
+refusals of an upgrade -- a full session relay registry and an exhausted relay sub-budget -- carry the
+same. Without the gate an HTTP/2 request or a plain `GET` dialed the upstream and held its permit
+until the client upgrade failed.
 
 *A failed client upgrade is answered.* When the upstream has confirmed `101` and the client upgrade
 then fails, the relay closes the already-upgraded upstream leg with `1011` and answers the client
@@ -1825,7 +1830,12 @@ a valid handshake sent with `POST`, `PUT` and `DELETE` (`http2GetIsRefusedBefore
 `plainHttp11GetIsRefusedBeforeAnyDial`, `unsupportedVersionIsRefusedNamingVersion13`,
 `missingKeyIsRefused400`, `nonGetHandshakeIsRefused405`) -- and asserts the answer,
 that the upstream was never contacted and that every admission permit came back; a valid upgrade
-relayed end to end is the matched control (`validUpgradeIsRelayed`). `WebSocketRelayStageTest`
+relayed end to end is the matched control (`validUpgradeIsRelayed`). The same class asserts that a
+`426`, a `400` and a relay sub-budget `503` carry the route's security headers
+(`gateRefusalsCarryTheRouteSecurityHeaders`, `relayBudgetRefusalCarriesTheRouteSecurityHeaders`), and
+`GatewayEdgeSessionRelayTest` that a gate refusal on a cookie-mode session route keeps the
+`Set-Cookie` line the session stage wrote for the request (`refusedUpgradeCarriesTheStageSetCookie`).
+`WebSocketRelayStageTest`
 asserts the `502` to a failed HTTP/2 client upgrade (`answersBadGatewayWhenTheHttp2ClientUpgradeFails`)
 and that Vert.x's own `400` stands on HTTP/1.1
 (`keepsTheOwnRefusalWhenTheHttp11ClientUpgradeFails`), each closing the upstream leg with `1011` and

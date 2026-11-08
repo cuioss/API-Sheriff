@@ -258,11 +258,19 @@ public final class TerminalDispatch {
      * refused {@code 400}; a {@code Sec-WebSocket-Version} other than {@code 13} is refused
      * {@code 426} with {@code Sec-WebSocket-Version: 13}; a missing version, or a missing
      * {@code Sec-WebSocket-Key} or one that is not the padded base64 of a 16-byte nonce, is refused
-     * {@code 400}. A refusal releases the general admission permit
-     * through the shared guard and answers on the event loop through {@link ResponseEnds#reject}; it is
-     * logged at {@code DEBUG} with the route id and the answered status, and no request data. Without the gate an HTTP/2 request or a plain
-     * {@code GET} would have dialed the upstream and held a permit until the relay's client upgrade
-     * failed.
+     * {@code 400}. A refusal releases the general admission permit through the shared guard and is
+     * logged at {@code DEBUG} with the route id and the answered status, and no request data. Without
+     * the gate an HTTP/2 request or a plain {@code GET} would have dialed the upstream and held a permit
+     * until the relay's client upgrade failed.
+     * <p>
+     * <strong>What a refusal carries.</strong> Every refusal on this path — the gate's, and the two
+     * {@code 503}s below — is answered after route selection and authentication, so it carries what any
+     * other response after route selection carries: the route's gateway-authored response headers
+     * (its {@code security_headers}), then the refusal's own headers, which win over a gateway header of
+     * the same name, then the pipeline's {@code Set-Cookie} lines — among them a successor session
+     * cookie the session stage wrote while refreshing the session, which the browser would otherwise
+     * never receive. Both are snapshotted on the virtual thread and written on the event loop before
+     * the status goes out through {@link ResponseEnds#reject}.
      * <p>
      * <strong>Admission accounting.</strong> Because a completed upgrade takes the connection over, the
      * HTTP end handler the edge root registers never fires for an established relay — the permit
@@ -302,13 +310,19 @@ public final class TerminalDispatch {
         originValidationStage.validate(request, route.id(), route.effectiveAllowedOrigins());
         AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(EdgeAdmission.ADMISSION_GUARD_KEY),
                 "admission guard missing — handle() must stash it before dispatch");
+        // Every refusal below is answered after route selection and authentication, so it carries the
+        // route's security headers and the pipeline's Set-Cookie lines — a successor session cookie among
+        // them. Snapshotted here, on the virtual thread, before the event-loop hop.
+        Map<String, String> refusalHeaders = Map.copyOf(request.gatewayAuthoredResponseHeaders());
+        List<String> refusalSetCookies = List.copyOf(request.responseSetCookies());
         // A request that is no valid WebSocket opening handshake is refused here, before it is tracked,
         // takes a relay permit or dials the upstream: nothing it could not use is spent on it.
         if (WebSocketUpgradeGate.judge(ctx.request()) instanceof WebSocketUpgradeGate.Verdict.Refused refused) {
             LOGGER.debug("Request on WebSocket route '%s' is no valid WebSocket upgrade — refusing it with %s",
                     route.id(), refused.status());
             edgeAdmission.releaseAdmission(ctx, admissionGuard);
-            ctx.vertx().runOnContext(v -> rejectInvalidUpgrade(ctx, refused));
+            ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, refused.headers(),
+                    refusalSetCookies, refused.status()));
             return;
         }
         String remainder = EdgeRequests.remainderAfterMatchKey(route, EdgeRequests.requireCanonicalPath(request));
@@ -333,7 +347,8 @@ public final class TerminalDispatch {
                 LOGGER.debug("Session relay registry at its capacity on route '%s' — refusing the upgrade",
                         route.id());
                 edgeAdmission.releaseAdmission(ctx, admissionGuard);
-                ctx.vertx().runOnContext(v -> ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE));
+                ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, Map.of(),
+                        refusalSetCookies, SERVICE_UNAVAILABLE));
                 return;
             }
             sessionRelay = tracked.get();
@@ -346,7 +361,8 @@ public final class TerminalDispatch {
             LOGGER.debug("WebSocket relay budget exhausted on route '%s' — refusing the upgrade",
                     route.id());
             edgeAdmission.releaseAdmission(ctx, admissionGuard);
-            ctx.vertx().runOnContext(v -> ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE));
+            ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, Map.of(),
+                    refusalSetCookies, SERVICE_UNAVAILABLE));
             return;
         }
         ResponseEnds.applyStageSetCookies(ctx.response(), request.responseSetCookies());
@@ -358,17 +374,30 @@ public final class TerminalDispatch {
     }
 
     /**
-     * Answers a request the {@link WebSocketUpgradeGate} refused, on the event loop: the verdict's
-     * headers, then its status through {@link ResponseEnds#reject}. A response that has already ended
-     * is left as it is.
+     * Answers a refused request on a {@code protocol: websocket} route, on the event loop — an upgrade
+     * the {@link WebSocketUpgradeGate} refused, or a {@code 503} for a full session relay registry or an
+     * exhausted relay sub-budget. The route's gateway-authored response headers are written first, then
+     * {@code ownHeaders} — the gate verdict's {@code Allow}, {@code Upgrade}, {@code Connection} or
+     * {@code Sec-WebSocket-Version}, which win over a gateway header of the same name — then the
+     * pipeline's {@code Set-Cookie} lines, then the status through {@link ResponseEnds#reject}. A
+     * response that has already ended is left as it is.
+     *
+     * @param ctx            the refused request
+     * @param gatewayHeaders the route's gateway-authored response headers, snapshotted before the hop
+     * @param ownHeaders     the headers the refusal itself carries; empty when there are none
+     * @param setCookies     the pipeline's {@code Set-Cookie} values, snapshotted before the hop
+     * @param status         the status to answer with
      */
-    private static void rejectInvalidUpgrade(RoutingContext ctx, WebSocketUpgradeGate.Verdict.Refused refused) {
+    private static void rejectWebSocketUpgrade(RoutingContext ctx, Map<String, String> gatewayHeaders,
+            Map<String, String> ownHeaders, List<String> setCookies, int status) {
         HttpServerResponse response = ctx.response();
         if (response.ended()) {
             return;
         }
-        refused.headers().forEach(response::putHeader);
-        ResponseEnds.reject(ctx, refused.status());
+        gatewayHeaders.forEach(response::putHeader);
+        ownHeaders.forEach(response::putHeader);
+        ResponseEnds.applyStageSetCookies(response, setCookies);
+        ResponseEnds.reject(ctx, status);
     }
 
     /**

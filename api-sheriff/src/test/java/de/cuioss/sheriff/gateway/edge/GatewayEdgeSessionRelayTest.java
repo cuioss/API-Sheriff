@@ -474,7 +474,11 @@ class GatewayEdgeSessionRelayTest {
         }
 
         private String login(Duration sessionTtl) {
-            Instant login = Instant.now();
+            return login(Instant.now(), sessionTtl);
+        }
+
+        /** Logs a session in at {@code login} and returns the cookie its browser presents. */
+        private String login(Instant login, Duration sessionTtl) {
             return requestCookie(binding.bind(SessionRecord.builder().sessionId(SessionRecord.newSessionId())
                     .accessToken(Generators.letterStrings(16, 32).next())
                     .idToken(Generators.letterStrings(16, 32).next())
@@ -493,6 +497,33 @@ class GatewayEdgeSessionRelayTest {
 
             assertEquals(302, logoutStatus, "precondition: the logout was answered");
             assertStillRelaying(relay, 1);
+        }
+
+        /**
+         * The session logged in five activity-cookie intervals ago and carries no activity cookie, so its
+         * last access is the login instant: the session is live — well inside the 30-minute idle timeout
+         * — and the session stage's access writes a fresh activity cookie, the one {@code Set-Cookie} line
+         * the pipeline produces for the request. A plain {@code GET} on the session WebSocket route is
+         * let through by the stage and then refused {@code 426} by the upgrade gate.
+         */
+        @Test
+        @DisplayName("an upgrade the gate refuses still carries the Set-Cookie line the session stage wrote")
+        void refusedUpgradeCarriesTheStageSetCookie() throws Exception {
+            startEdge(SESSION_TTL);
+            String cookie = login(Instant.now().minus(CookieSessionBinding.ACTIVITY_COOKIE_INTERVAL.multipliedBy(5)),
+                    SESSION_TTL);
+
+            HttpClientResponse refused = Awaits.connect(httpClient.request(new RequestOptions()
+                            .setHost(LoopbackHost.ADDRESS).setPort(requireFront().actualPort())
+                            .setMethod(HttpMethod.GET).setURI(SESSION_WS + "/room"))
+                    .compose(request -> request.putHeader("Origin", ORIGIN).putHeader("Cookie", cookie).send())
+                    .compose(response -> response.body().map(body -> response)),
+                    "the edge's answer to a plain GET on the session WebSocket route");
+
+            assertAll("the refusal keeps the stage's cookie",
+                    () -> assertEquals(426, refused.statusCode(), "a plain GET is no WebSocket upgrade"),
+                    () -> assertFalse(refused.headers().getAll("Set-Cookie").isEmpty(),
+                            "the activity cookie the stage wrote for the access reaches the browser"));
         }
 
         @Test

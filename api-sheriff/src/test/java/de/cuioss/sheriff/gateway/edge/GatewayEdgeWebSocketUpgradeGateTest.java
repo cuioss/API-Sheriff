@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -87,6 +88,10 @@ class GatewayEdgeWebSocketUpgradeGateTest {
     /** The refusals each case sends: more than the two general permits, so one kept permit would starve the rest. */
     private static final int REFUSED_ATTEMPTS = 3;
     private static final String SAMPLE_KEY = "dGhlIHNhbXBsZSBub25jZQ==";
+    private static final String HSTS = "Strict-Transport-Security";
+    private static final String CSP = "Content-Security-Policy";
+    private static final int ROUTE_HSTS_MAX_AGE = 31536000;
+    private static final String ROUTE_POLICY = "default-src 'self'";
 
     /** Every WebSocket handshake and every plain request the stub upstream received. */
     private final AtomicInteger upstreamContacts = new AtomicInteger();
@@ -210,6 +215,38 @@ class GatewayEdgeWebSocketUpgradeGateTest {
     }
 
     @Test
+    @DisplayName("a 426 and a 400 carry the route's security headers beside their own, dial nothing and return their permits")
+    void gateRefusalsCarryTheRouteSecurityHeaders() throws Exception {
+        List<String> withoutKey = new ArrayList<>(handshake("13", SAMPLE_KEY));
+        withoutKey.removeIf(line -> line.startsWith("Sec-WebSocket-Key"));
+
+        Answer upgradeRequired = rawHttp11(List.of("Origin: " + ORIGIN));
+        Answer badRequest = rawHttp11(withoutKey);
+
+        assertAll("a refusal after route selection is a response after route selection",
+                () -> assertEquals(426, upgradeRequired.status()),
+                () -> assertEquals("websocket", upgradeRequired.headers().get("Upgrade"),
+                        "the 426 keeps its own header beside the route's"),
+                () -> assertRouteSecurityHeaders(upgradeRequired, "the 426"),
+                () -> assertEquals(400, badRequest.status()),
+                () -> assertRouteSecurityHeaders(badRequest, "the 400"));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
+    @DisplayName("a 503 for an exhausted relay sub-budget carries the route's security headers")
+    void relayBudgetRefusalCarriesTheRouteSecurityHeaders() throws Exception {
+        WebSocket held = openRelay();
+
+        Answer refused = rawHttp11(handshake("13", SAMPLE_KEY));
+
+        assertAll("the sub-budget refusal",
+                () -> assertEquals(503, refused.status(), "the relay sub-budget of one is held by the open relay"),
+                () -> assertRouteSecurityHeaders(refused, "the 503"));
+        Awaits.teardown(held.close(), "the held relay to close");
+    }
+
+    @Test
     @DisplayName("control: a valid upgrade is still relayed end to end, its one handshake reaching the upstream")
     void validUpgradeIsRelayed() throws Exception {
         WebSocket socket = openRelay();
@@ -237,6 +274,12 @@ class GatewayEdgeWebSocketUpgradeGateTest {
                 () -> assertEquals(404, plainStatus,
                         "the second general permit is free while the relay holds the first"));
         Awaits.teardown(relay.close(), "the control relay to close");
+    }
+
+    private static void assertRouteSecurityHeaders(Answer answer, String which) {
+        assertAll(which + " carries the route's security_headers",
+                () -> assertEquals("max-age=" + ROUTE_HSTS_MAX_AGE, answer.headers().get(HSTS)),
+                () -> assertEquals(ROUTE_POLICY, answer.headers().get(CSP)));
     }
 
     private WebSocket openRelay() throws Exception {
@@ -339,12 +382,17 @@ class GatewayEdgeWebSocketUpgradeGateTest {
      * The WebSocket route under test, allowing every standard method — what route-table assembly resolves
      * for a route no scope declares {@code allowed_methods} for ({@code PolicyBlock.ALLOWED_METHODS}) —
      * rather than the fixture seed's {@code GET} alone, so a non-{@code GET} handshake reaches the gate
-     * instead of being refused by the method check in front of it.
+     * instead of being refused by the method check in front of it. It resolves a {@code security_headers}
+     * block, so a refusal can be checked for the headers every response after route selection carries.
      */
     private static Route webSocketRoute(int upstreamPort) {
         return ConfigFixtures.route("ws", WS_PATH)
                 .protocol(Protocol.WEBSOCKET)
                 .effectiveAllowedMethods(EnumSet.allOf(de.cuioss.sheriff.gateway.config.model.HttpMethod.class))
+                .securityHeaders(SecurityHeadersConfig.builder()
+                        .hsts(new SecurityHeadersConfig.Hsts(ROUTE_HSTS_MAX_AGE, false))
+                        .contentSecurityPolicy(ROUTE_POLICY)
+                        .build())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(Set.of(ORIGIN))
                 .effectiveForward(ForwardConfig.builder().headersAllow(List.of()).build())

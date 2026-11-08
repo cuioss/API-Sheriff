@@ -101,8 +101,9 @@ before either value is read (RFC 6455 §11.3.1, §11.3.5); a `Sec-WebSocket-Vers
 refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or malformed
 `Sec-WebSocket-Key` -- anything but 24 characters of padded base64 (RFC 4648 §4) decoding to 16 bytes
 -- is refused `400`. A refusal is answered on the
-event loop through `ResponseEnds.reject` -- a bare status, like the edge's other refusals before
-processing -- and logged at `DEBUG` with the route id and the status only (see
+event loop through `ResponseEnds.reject` with no body, carrying the route's security headers, its own
+headers and the pipeline's `Set-Cookie` lines, as every response after route selection does -- the two
+`503` refusals of an upgrade too -- and logged at `DEBUG` with the route id and the status only (see
 link:../security-threat-model.adoc#gw-09[Threat model -- GW-09]).
 
 A request the gate accepts is handed to `WebSocketRelayStage`. The relay stage dials the upstream,

@@ -118,7 +118,9 @@ contact* -- it takes no relay budget and the upstream is never dialled:
 | --
 |===
 
-Each refusal is a bare status with no body. The rules are checked in a fixed order -- the method,
+Each refusal has no body; like every response on the route, it carries the route's
+`security_headers` and any `Set-Cookie` line the session handling wrote for the request, such as a
+refreshed session cookie. The rules are checked in a fixed order -- the method,
 the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key --
 and the first one broken decides the answer. A WebSocket can only be opened over HTTP/1.1, so a client that
 negotiated HTTP/2 with the gateway has to offer HTTP/1.1 for its WebSocket connections.

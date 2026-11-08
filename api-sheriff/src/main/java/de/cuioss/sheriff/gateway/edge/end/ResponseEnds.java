@@ -70,7 +70,7 @@ public final class ResponseEnds {
      * the WebSocket relay's answer to a failed upstream dial, its relay of an upstream's upgrade
      * refusal and its {@code 502} answer to a failed client upgrade, all written before any upgrade
      * (through {@link de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage}), the upgrade gate's
-     * {@code 426} / {@code 400} refusal of a request that is no valid WebSocket opening handshake (through
+     * {@code 405} / {@code 426} / {@code 400} refusal of a request that is no valid WebSocket opening handshake (through
      * {@link #reject}), and the admission {@code 503}.
      * <ul>
      *   <li><strong>HTTP/1.x, or a request body that has ended</strong> — the response is ended at once
@@ -145,8 +145,12 @@ public final class ResponseEnds {
     /**
      * Answers a request the edge refuses before or instead of processing it — the admission or
      * draining {@code 503}, an executor rejection, an exhausted WebSocket relay budget or session relay
-     * registry, a request on a WebSocket route that is no valid opening handshake (whose {@code 426}
-     * headers the caller writes first) — with a bare status. Called on the event loop; the end passes the one end rule ({@link #endResponse}), so an
+     * registry, a request on a WebSocket route that is no valid opening handshake — with the status and
+     * no body. This writes the status only: whatever headers the response already carries go out with
+     * it. A refusal before route selection is a bare status; the WebSocket route's refusals, decided
+     * after route selection, have the route's security headers, their own headers and the pipeline's
+     * {@code Set-Cookie} lines written by their caller first. Called on the event loop; the end passes
+     * the one end rule ({@link #endResponse}), so an
      * HTTP/2 upload refused here has its open stream reset with {@code NO_ERROR} once its body stops
      * arriving or the time cap passes and the answer has been written.
      *
