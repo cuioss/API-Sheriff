@@ -159,9 +159,7 @@ public final class InMemoryPendingAuthorizationStore implements PendingAuthoriza
     /** Removes every record expired at {@code now}, earliest expiry first, wherever it was stored. */
     private void purgeExpired(Instant now) {
         while (!byExpiry.isEmpty() && byExpiry.getFirst().isExpired(now)) {
-            PendingAuthorizationRecord expired = byExpiry.removeFirst();
-            records.remove(expired.id());
-            forgetId(expired);
+            remove(byExpiry.getFirst().id());
         }
     }
 
