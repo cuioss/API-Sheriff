@@ -30,23 +30,90 @@ The front never holds the gateway's certificate; it only reads the SNI and forwa
 
 On each accepted connection an `Incoming` reassembles the ClientHello:
 
-* bytes are appended to a per-connection buffer as they arrive, and handed to
-  `ClientHelloSniParser` after every chunk;
+* the connection owns its own *incremental* `ClientHelloSniParser` and offers it every chunk it
+  receives exactly once (`offer(...)`). The parser consumes only the TLS records the new bytes
+  complete and never re-parses what it has already consumed, so a ClientHello dripped one byte at a
+  time, or split across many tiny records, costs work linear in its length. The chunks are also kept
+  in a per-connection buffer, solely so the relay can replay the ClientHello byte-identically;
 
-* the parser returns `complete() == false` until the full ClientHello record is present -- the
-  listener *never routes on a partial record* (a fragmented-ClientHello defence, see
-  <<_fail_closed_gw_06>>);
+* the parser answers `Result.needMoreData()` until the full ClientHello is present -- across as
+  many records as it spans -- and only then a complete verdict, so the listener *never routes on a
+  partial ClientHello* (a fragmented-ClientHello defence, see <<_fail_closed_gw_06>>). Reassembly is
+  bounded by `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB): a ClientHello that has not
+  completed within the bound is a complete verdict with no SNI, which fails closed;
 
-* once the parser reports a complete ClientHello the socket is *paused* (`socket.pause()`),
-  `decided` latches true, and the connection is routed exactly once.
+* once the parser reports a complete ClientHello the socket is *paused* (`socket.pause()`), the
+  per-connection `settled` latch is set, and the connection is routed exactly once.
 
-All callbacks run on the connection's Vert.x event loop, so the reassembly buffer and the `decided`
-latch are single-threaded and need no synchronization.
+The data, exception and close handlers and the deadline timer of a connection all run on that
+connection's Vert.x event loop, so the reassembly buffer, the parser and the `settled` latch are
+single-threaded and need no synchronization. The one state shared across the front's event loops is
+the counter of the undecided-connection cap below: it is claimed with an atomic increment, rolled back
+with an atomic decrement when the claim overshoots the cap, and returned with an atomic decrement
+exactly once per admitted connection, by whichever of the route decision, the connection closing or
+failing, and the deadline comes first.
 
 The front listener is *conditional*: `TlsEdgeProducer` constructs and starts it only when
 `tls.passthrough_sni` is non-empty. When passthrough is unconfigured the front is never created, the
 terminated Quarkus HTTPS listener owns the public port directly, and the edge adds *zero* runtime
 overhead -- the default single-listener topology is unchanged.
+
+[#front-listener-bounds]
+=== The bounds of the front
+
+Three bounds keep a connection the front has not routed yet, or a relay nobody uses, from being held
+indefinitely. None of them is configurable.
+
+* *ClientHello deadline* -- `SniFrontListener.CLIENT_HELLO_DEADLINE`, 10 s. The timer is armed when the
+  connection is accepted and cancelled when the connection settles; a connection that has not
+  completed its ClientHello by then is closed, without an answer. A legitimate client sends its
+  ClientHello in its first flight, so the deadline only ends a silent, stalled or dripping
+  connection. The close is logged at `DEBUG` with the disposition only, never the bytes received.
+
+* *Undecided-connection cap* -- `SniFrontListener.MAX_UNDECIDED_CONNECTIONS`, 1024 connections
+  accepted and not yet settled, across every event loop of the front. A connection accepted beyond the
+  cap is closed at once, without reading from it. An undecided connection has received less than
+  `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB) -- the parser reaches its verdict as soon as
+  that much has arrived -- and between two reads holds those bytes in three copies: the listener's
+  replay buffer and the parser's received and reassembled arrays. Between reads, the cap therefore
+  bounds the front's pre-route buffer memory at 1024 x 3 x 32 KiB = 96 MiB. The trade-off is
+  deliberate: a client that holds 1024 silent sockets makes new handshakes wait for at most one
+  deadline window per wave of such sockets -- the deadline frees every slot again -- and that bounded
+  delay is preferred over unbounded pre-route memory.
++
+*What the 96 MiB does not include.* Three amounts lie outside it. Each is stated for the transport's
+default read sizing: Netty's adaptive receive allocator, whose largest single read is 64 KiB. The
+front sets no receive-buffer option.
++
+.. *The deciding read, whole.* The read that decides a connection is appended to the replay buffer in
+   full, because the relay replays the client's bytes exactly. That buffer therefore ends up to one
+   read past 32 KiB, which keeps it below 96 KiB. The parser truncates only its own copy.
+.. *Transient copies.* While a read is processed, its bytes exist twice more: as the transport's buffer
+   and as the copy offered to the parser. The extension walk of a complete ClientHello copies it once
+   more. That is at most 64 + 64 + 32 KiB per event loop, since an event loop processes one read at a
+   time.
+.. *The dialing window.* A decided connection returns its slot before the relay dials its backend. It
+   keeps its replay buffer, below 96 KiB, until that dial succeeds or fails. The dial client's connect
+   timeout bounds that window -- the Vert.x default of 60 s, since `TlsEdgeProducer` sets none -- and the
+   cap does not.
+
+* *Relay idle timeout* -- the Vert.x idle timeout of the front's `NetServer`, which `TlsEdgeProducer`
+  also sets on the relay's dial `NetClient`, so both legs of every relayed connection -- passthrough
+  and terminated alike -- carry it. A leg that carries no byte in either direction for that long is
+  closed by Vert.x, and `PassthroughRelay`'s close handlers propagate the close to the other leg; the
+  relay itself sets no timer. `TlsEdgeProducer.relayIdleTimeout(...)` derives the value once at boot
+  as `max(quarkus.http.idle-timeout, gRPC stream-idle bound, longest effective WebSocket
+  idle_timeout_seconds) + 60 s`. The gRPC bound is `GrpcStreamIdleBound.STREAM_IDLE_TIMEOUT_MILLIS`
+  (five minutes), and the route table materializes the WebSocket value on every WebSocket route, the
+  300 s default included. A derivation is required rather than a fixed value because
+  `idle_timeout_seconds` has no upper bound: only a value computed from the route table guarantees
+  that the relay never closes a connection before an idle bound inside the gateway would. The 60 s
+  margin lets the inner close -- a WebSocket close frame, gRPC trailers, the HTTP idle close -- cross
+  the relay first. No configuration key reaches the value; it moves only with the values it is derived
+  from.
+
+The threat these bounds answer is recorded under
+link:../security-threat-model.adoc#gw-07-sni-front[GW-07 -- the SNI front listener].
 
 == The Accept-Time L4/L7 Split
 
@@ -138,11 +205,13 @@ under the strict policy, never relayed and never dropped to a permissive default
 this concrete, and both are direct responses to real gateway CVEs catalogued under
 link:../security-threat-model.adoc#gw-06[GW-06]:
 
-* *Full-ClientHello reassembly before routing.* The listener buffers until `ClientHelloSniParser`
-  reports a complete record and only then decides. This defeats the *fragmented-ClientHello* class:
+* *Full-ClientHello reassembly before routing.* The listener offers every chunk to the connection's
+  `ClientHelloSniParser` until it reports a complete ClientHello, however many records it spans, and
+  only then decides. This defeats the *fragmented-ClientHello* class:
   *Traefik CVE-2026-32305*, where a fragmented ClientHello yielded an empty SNI that fell through to
-  a *permissive* default TLS config and bypassed mTLS. A partial record here yields no decision at
-  all -- the front waits for the rest.
+  a *permissive* default TLS config and bypassed mTLS. A partial ClientHello here yields no decision
+  at all -- the front waits for the rest, for at most the ClientHello deadline
+  (<<front-listener-bounds>>), and then closes the connection rather than route it.
 
 * *Empty/unresolved SNI takes the strict path, never a permissive default.* A missing or malformed
   SNI is routed to the terminated-strict listener (which still enforces `mtls`), not to a

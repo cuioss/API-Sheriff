@@ -35,6 +35,12 @@ import io.vertx.core.net.NetSocket;
  * write-queue contract (pause the busy source until the target drains); a graceful {@code FIN} on
  * either leg is propagated as a half-close, and an exception on either leg aborts both.
  * <p>
+ * <strong>Both legs are bounded by the derived relay idle timeout.</strong> The client leg inherits it
+ * from the {@link SniFrontListener}'s server and the backend leg from the dial {@link NetClient}; both
+ * carry the value {@link TlsEdgeProducer} derives at boot. When a leg carries no byte in either
+ * direction for that long, Vert.x closes it, and the close handlers below propagate the close to the
+ * other leg, so an abandoned pipe is released on both sides. The relay itself sets no timer.
+ * <p>
  * The same pipe backs both branches of the {@link SniFrontListener}: a {@code passthrough_sni} match
  * relays to the topology-resolved backend, and a terminated (non-passthrough) connection relays to
  * the internal Quarkus HTTPS listener — the only difference is the target and the lifecycle log
@@ -50,7 +56,8 @@ public final class PassthroughRelay {
     private final NetClient netClient;
 
     /**
-     * @param netClient the shared plain-TCP client the relay dials the backend with (no TLS)
+     * @param netClient the shared plain-TCP client the relay dials the backend with (no TLS), carrying
+     *                  the derived relay idle timeout
      */
     public PassthroughRelay(NetClient netClient) {
         this.netClient = Objects.requireNonNull(netClient, "netClient");

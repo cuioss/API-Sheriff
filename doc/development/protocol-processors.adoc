@@ -89,10 +89,32 @@ link:../architecture/README.adoc#_edge_package_structure[Architecture -- Edge Pa
 
 `dispatchWebSocket` validates the handshake `Origin` against the route's effective allowlist via
 `OriginValidationStage` (a foreign or absent origin is rejected `403` *before* any upstream dial --
-GW-09 / CSWSH), then hands the upgrade to `WebSocketRelayStage`. The relay stage dials the
-upstream, completes the client upgrade, relays frames opaquely in both directions, and reclaims an
-established relay that idles past the route's `idle_timeout_seconds` (closing both legs with
-WebSocket code `1001`). No HTTP `ResponseStage` relay runs for a WebSocket route.
+GW-09 / CSWSH). It then asks `WebSocketUpgradeGate` whether the request is a valid WebSocket opening
+handshake, before the request is tracked with its session, takes a relay sub-permit or dials the
+upstream. The gate reads only the request's method, version and headers, in a fixed order: a method
+other than `GET` is refused `405` with `Allow: GET` -- the route's effective `allowed_methods` falls
+back to every standard method, so the router does not enforce this; a request that is not HTTP/1.1,
+or does not carry the `Connection: upgrade` and `Upgrade: websocket` tokens, is refused `426` (on
+HTTP/1.x with `Upgrade: websocket` and `Connection: Upgrade`, on HTTP/2 with neither); a
+`Sec-WebSocket-Version` or `Sec-WebSocket-Key` sent on more than one header line is refused `400`
+before either value is read (RFC 6455 §11.3.1, §11.3.5); a `Sec-WebSocket-Version` other than `13` is
+refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or malformed
+`Sec-WebSocket-Key` -- anything but 24 characters of padded base64 (RFC 4648 §4) decoding to 16 bytes
+-- is refused `400`. A refusal is answered on the
+event loop through `ResponseEnds.reject` with no body, carrying the route's security headers, its own
+headers and the pipeline's `Set-Cookie` lines, as every response after route selection does -- the two
+`503` refusals of an upgrade too -- and logged at `DEBUG` with the route id and the status only (see
+link:../security-threat-model.adoc#gw-09[Threat model -- GW-09]).
+
+A request the gate accepts is handed to `WebSocketRelayStage`. The relay stage dials the upstream,
+completes the client upgrade, relays frames opaquely in both directions, and reclaims an established
+relay that idles past the route's `idle_timeout_seconds` (closing both legs with WebSocket code
+`1001`). When the upstream has confirmed `101` but the client upgrade fails, the relay stage closes
+the upstream leg with `1011` and answers the client `502` through `ResponseEnds.endResponse`, unless
+Vert.x has answered the request already -- it refuses an invalid HTTP/1.1 handshake itself with `400`
+or `426`, while it fails an HTTP/2 request, which cannot be upgraded, without answering. Every answer
+the relay stage writes before an upgrade holds the connection is an ordinary response end and passes
+the one end rule. No HTTP `ResponseStage` relay runs for a WebSocket route.
 
 ==== The admission-permit lifecycle
 
@@ -112,6 +134,9 @@ the release from that point. The contract, in full:
 
 * *Acquired* at admission in `handle()`, before the pipeline runs, and *held across the upgrade* for
   the relay's whole lifetime.
+* A request the upgrade gate refuses releases the general permit *before* any sub-permit is taken,
+  through the shared guard, and only then is answered; the end handler that fires when the refusal
+  ends the response finds the permit already returned.
 * An upgrade additionally acquires the *relay sub-permit* (`edge_hardening.websocket_relay_cap`)
   before the hand-off — taken *in addition to* the general permit, not instead of it, so long-lived
   relays cannot squeeze HTTP out of the admission pool. An upgrade beyond that cap is refused `503`
@@ -120,6 +145,9 @@ the release from that point. The contract, in full:
   — the single idempotent teardown funnel every established-relay terminal path converges on (client
   close, upstream close, idle reclaim, relay error) — or the *client-upgrade-failure* branch, where
   the upstream connected but the client upgrade did not complete, so no session exists to tear down.
+  That branch answers the request `502` unless Vert.x has answered it already, then releases the
+  permit itself; where its `502` ends the response, the edge's end handler fires as well, and the
+  shared CAS-guarded release keeps the permit returned exactly once.
   `closeBoth` releases *before* it closes either leg, which is what lets an integration test treat an
   observed close frame as proof the permit is already back.
 * Both permits are returned *together*, each behind its own idempotence latch, so an upstream-dial

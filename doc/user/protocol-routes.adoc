@@ -82,6 +82,54 @@ Author each permitted origin *in full* -- `scheme://host[:port]`:
 For the full field contract see
 link:../configuration/routing-and-forwarding.adoc#_allowed_origins[Configuration -- `allowed_origins`].
 
+[[_invalid_upgrade_requests]]
+=== Requests that are no valid WebSocket upgrade
+
+A WebSocket route serves WebSocket opening handshakes only. Right after the `Origin` check, the
+gateway checks that the request is a valid upgrade, and refuses one that is not *before any upstream
+contact* -- it takes no relay budget and the upstream is never dialled:
+
+[cols="2,1,2", options="header"]
+|===
+| Request | Status | Headers on the answer
+
+| Any method other than `GET` that the route's `allowed_methods` admits -- by default every
+  standard method (a method it does not admit is refused before this check, as on every route)
+| `405`
+| `Allow: GET`
+
+| Not HTTP/1.1 -- an HTTP/2 request, for example -- or missing the `Connection: Upgrade` /
+  `Upgrade: websocket` pair (a plain `GET`)
+| `426`
+| On HTTP/1.x `Upgrade: websocket` and `Connection: Upgrade`; on HTTP/2 none, as HTTP/2 forbids both
+
+| A `Sec-WebSocket-Version` other than `13`
+| `426`
+| `Sec-WebSocket-Version: 13`, plus the HTTP/1.x pair above
+
+| `Sec-WebSocket-Version` or `Sec-WebSocket-Key` sent on more than one header line (RFC 6455
+  §11.3.1, §11.3.5)
+| `400`
+| --
+
+| No `Sec-WebSocket-Version`, or a missing or malformed `Sec-WebSocket-Key` -- the key must be padded
+  base64 (RFC 4648 §4) of a 16-byte nonce: exactly 24 characters, the last two `==`
+| `400`
+| --
+|===
+
+Each refusal has no body; like every response on the route, it carries the route's
+`security_headers` and any `Set-Cookie` line the session handling wrote for the request, such as a
+refreshed session cookie. The rules are checked in a fixed order -- the method,
+the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key --
+and the first one broken decides the answer. A WebSocket can only be opened over HTTP/1.1, so a client that
+negotiated HTTP/2 with the gateway has to offer HTTP/1.1 for its WebSocket connections.
+
+*A failed client upgrade is answered `502`.* The gateway dials the upstream before it upgrades the
+client connection. If the upstream accepts the upgrade and the client upgrade then fails, the gateway
+closes the upstream connection and answers the client `502`. Where the HTTP stack has already refused
+the client's handshake itself -- with `400` or `426` on HTTP/1.1 -- that answer stands instead.
+
 === Tuning `websocket.idle_timeout_seconds`
 
 The `websocket` block's second key tunes an *established* relay. `idle_timeout_seconds` bounds how long a relay may sit with *no frame in either direction*

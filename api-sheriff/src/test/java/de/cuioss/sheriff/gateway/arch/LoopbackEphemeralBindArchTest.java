@@ -90,7 +90,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>Scope: the test tree only.</strong> Production binds configured ports rather than
  * ephemeral ones, and {@code SniFrontListener.start()} binds through the host-bound
- * {@code netServer.listen(publicPort, host)} overload, where the delegating five-argument constructor
+ * {@code netServer.listen(publicPort, host)} overload, where the delegating six-argument constructor
  * that {@code TlsEdgeProducer} uses supplies the Vert.x wildcard default host deliberately. Selecting
  * production would make this guard demand a change that would break the gateway.
  * {@link MatchedControls#productionWildcardBinderIsOutOfScope()} pins that exclusion so it cannot

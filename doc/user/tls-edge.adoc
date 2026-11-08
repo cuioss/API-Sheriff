@@ -191,6 +191,46 @@ Operating rules:
   guard is automatic; it normalises the `Host` the same way and also strips one `:port` suffix, so
   `backend.example.com:8443` cannot slip past it.
 
+[[_front_listener_bounds]]
+=== How long the front listener holds a connection
+
+With passthrough configured, an accept-time front listener owns the public TLS port and reads the SNI
+out of each connection's ClientHello before it relays the connection -- to the passthrough backend or
+to the terminated listener. Three bounds keep a connection it has not routed yet, or a relay nobody
+uses, from being held indefinitely:
+
+[cols="1,1,3", options="header"]
+|===
+| Bound | Value | What it does
+
+| ClientHello deadline
+| 10 s
+| A connection that has not sent its complete ClientHello 10 s after it was accepted is closed,
+  without an answer. A client sends its ClientHello in its first flight, so only a silent, stalled or
+  dripping connection reaches the deadline.
+
+| Undecided connections
+| 1024
+| At most 1024 accepted connections may be waiting for their ClientHello at the same time. A
+  connection accepted beyond that is closed at once, without being read. A client holding many silent
+  sockets therefore delays new handshakes by at most one deadline window per wave of held sockets,
+  until the deadline frees the held slots.
+
+| Relay idle timeout
+| derived
+| Both legs of a relayed connection -- passthrough and terminated alike -- are closed when no byte
+  crosses them in either direction for this long. The value is the longest of the terminated
+  listener's HTTP idle timeout (`quarkus.http.idle-timeout`, thirty minutes by default), the gRPC
+  stream-idle bound (five minutes) and the longest `websocket.idle_timeout_seconds` of any route (300 s
+  for a WebSocket route that declares none), plus 60 s. It is never below any of them, so the relay
+  never cuts off a connection the gateway behind it still allows to be idle.
+|===
+
+None of the three is configurable. The relay idle timeout moves only with the values it is derived
+from: a route that declares a long WebSocket idle timeout, or a longer `quarkus.http.idle-timeout`,
+keeps idle relayed connections open longer. The front closes a connection without logging its bytes;
+the close is recorded at `DEBUG` only.
+
 == mTLS (client-certificate verification)
 
 Enabling `mtls` makes the *terminated* listener require and verify a client certificate against one

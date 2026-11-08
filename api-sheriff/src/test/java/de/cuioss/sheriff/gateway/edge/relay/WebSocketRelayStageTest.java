@@ -97,6 +97,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
@@ -500,27 +501,77 @@ class WebSocketRelayStageTest {
             }
         }
 
+        /**
+         * An HTTP/2 request cannot be upgraded to a WebSocket, and Vert.x fails the upgrade without
+         * answering it, so the relay's {@code 502} is the only answer the client gets. Without it the
+         * stream stays open until the client gives up, while the upstream leg the gateway already
+         * upgraded is closed under it.
+         */
         @Test
-        @DisplayName("releases once on the client-upgrade-failure branch, which builds no relay session")
-        void releasesOnceWhenTheClientUpgradeFails() throws Exception {
-            // Arrange — the upstream accepts the upgrade, but the client request is a plain GET, so
-            // ctx.request().toWebSocket() fails. That branch constructs no RelaySession and renders no
-            // HTTP response, so it must return the permit itself or the request strands one forever.
-            AtomicInteger releases = new AtomicInteger();
-            HttpServer relayServer = startRelayOnlyServer(upstreamPort, releases::incrementAndGet);
+        @DisplayName("HTTP/2: a failed client upgrade is answered 502, closes the upstream leg and releases once")
+        void answersBadGatewayWhenTheHttp2ClientUpgradeFails() throws Exception {
+            HttpClient http2Client = vertx.createHttpClient(new HttpClientOptions()
+                    .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
+            try {
+                assertFailedClientUpgrade(http2Client, 502);
+            } finally {
+                Awaits.teardown(http2Client.close(), "the HTTP/2 client to close");
+            }
+        }
+
+        /**
+         * Vert.x refuses a plain HTTP/1.1 GET as a WebSocket handshake itself, with {@code 400}, before
+         * the failure reaches the relay. The relay leaves that answer as it is — the response has ended —
+         * and still closes the upstream leg and returns the permit.
+         */
+        @Test
+        @DisplayName("HTTP/1.1: a failed client upgrade keeps Vert.x's own 400, closes the upstream leg and releases once")
+        void keepsTheOwnRefusalWhenTheHttp11ClientUpgradeFails() throws Exception {
             HttpClient plainClient = vertx.createHttpClient();
             try {
-                // Act — deliberately not awaited: the branch under test ends no response, so the
-                // send future never completes; the release callback is the observable outcome.
-                plainClient.request(HttpMethod.GET, relayServer.actualPort(),
-                        LoopbackHost.ADDRESS, "/relay").compose(HttpClientRequest::send);
+                assertFailedClientUpgrade(plainClient, 400);
+            } finally {
+                Awaits.teardown(plainClient.close(), "the plain HTTP client to close");
+            }
+        }
 
-                // Assert
+        /**
+         * Sends a plain GET — no WebSocket handshake — through {@code client} to a relay-only server whose
+         * upstream accepts the upgrade, so the relay reaches its client-upgrade-failure branch, and asserts
+         * the client is answered {@code expectedStatus} within the teardown tier, the upstream leg is
+         * closed with {@code 1011} and the admission permit is released exactly once.
+         */
+        private void assertFailedClientUpgrade(HttpClient client, int expectedStatus) throws Exception {
+            CompletableFuture<Short> upstreamClose = new CompletableFuture<>();
+            HttpServer closeRecordingUpstream = Awaits.connect(vertx.createHttpServer()
+                            .webSocketHandler(ws -> ws.closeHandler(
+                                    v -> upstreamClose.complete(ws.closeStatusCode())))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the close-recording stub upstream to start listening");
+            AtomicInteger releases = new AtomicInteger();
+            HttpServer relayServer = startRelayOnlyServer(closeRecordingUpstream.actualPort(),
+                    releases::incrementAndGet);
+            try {
+                // The answer counts only once its body has ended: a status head on a response left open
+                // would still leave the client waiting.
+                Future<Integer> answered = client.request(HttpMethod.GET, relayServer.actualPort(),
+                        LoopbackHost.ADDRESS, "/relay").compose(HttpClientRequest::send)
+                        .compose((HttpClientResponse response) ->
+                                response.body().map(_ -> response.statusCode()));
+
+                // The answer is written as the upgrade fails, so a short deadline separates it from a
+                // client left waiting for its own timeout.
+                Awaits.until(answered::isComplete, "the failed client upgrade to be answered",
+                        Awaits.TEARDOWN_CEILING_SECONDS);
+                assertTrue(answered.succeeded(), () -> "the request to be answered, not failed: " + answered.cause());
+                assertEquals(expectedStatus, answered.result(), "the answer to a failed client upgrade");
+                assertEquals((short) 1011, Awaits.connect(upstreamClose, "the upstream leg to be closed"),
+                        "the already-upgraded upstream leg is closed with 1011");
                 awaitReleases(releases, "the client-upgrade-failure branch releases the admission permit");
                 assertNoFurtherRelease(releases, "the upgrade-failure branch releases exactly once");
             } finally {
-                Awaits.teardown(plainClient.close(), "the plain HTTP client to close");
                 Awaits.teardown(relayServer.close(), "the relay-only server to close");
+                Awaits.teardown(closeRecordingUpstream.close(), "the close-recording stub upstream to close");
             }
         }
 

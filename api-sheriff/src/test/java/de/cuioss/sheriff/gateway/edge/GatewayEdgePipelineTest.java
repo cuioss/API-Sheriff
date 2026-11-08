@@ -111,6 +111,13 @@ class GatewayEdgePipelineTest {
     private static final String CACHE_CONTROL = "Cache-Control";
     /** The status the stub upstream refuses every WebSocket upgrade with. */
     private static final int UPGRADE_REFUSED_STATUS = 403;
+    /**
+     * The headers of a valid WebSocket opening handshake (RFC 6455 §4.1). A request on a websocket route
+     * that does not carry them is refused by the edge's upgrade gate before the upstream is dialed, so
+     * the upstream's own refusal is reached only through a valid handshake.
+     */
+    private static final Map<String, String> WEBSOCKET_HANDSHAKE = Map.of("Upgrade", "websocket",
+            "Connection", "Upgrade", "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version", "13");
     /** The gRPC status a trailers-only rejection of a missing bearer token carries. */
     private static final String GRPC_UNAUTHENTICATED = "16";
     private static final String ASSET_FILE = "index.html";
@@ -681,7 +688,7 @@ class GatewayEdgePipelineTest {
         responses.put("grpc-trailers-only", send(honestPort, io.vertx.core.http.HttpMethod.POST,
                 "/frontend-grpc/Svc/Call", Map.of("Content-Type", "application/grpc"), null));
         responses.put("websocket-handshake-failure", send(honestPort, io.vertx.core.http.HttpMethod.GET,
-                "/frontend-ws/socket", Map.of(), null));
+                "/frontend-ws/socket", WEBSOCKET_HANDSHAKE, null));
 
         assertExpectedStatuses(responses);
         assertAll("every response produced after selecting an anchored route carries the anchor block",
@@ -707,7 +714,7 @@ class GatewayEdgePipelineTest {
         responses.put("grpc-trailers-only", send(honestPort, io.vertx.core.http.HttpMethod.POST, "/grpc/Svc/Call",
                 Map.of("Content-Type", "application/grpc"), null));
         responses.put("websocket-handshake-failure", send(honestPort, io.vertx.core.http.HttpMethod.GET,
-                "/ws/socket", Map.of(), null));
+                "/ws/socket", WEBSOCKET_HANDSHAKE, null));
 
         assertExpectedStatuses(responses);
         assertAll("THE CONTROL: the identical response kinds outside the anchor never carry its frame_deny",
@@ -860,7 +867,8 @@ class GatewayEdgePipelineTest {
 
     /**
      * A public WebSocket route without an Origin allowlist, dialing the stub upstream — which refuses
-     * the upgrade, so every request on it ends in the handshake-failure response.
+     * the upgrade, so every valid handshake on it ({@link #WEBSOCKET_HANDSHAKE}) ends in the
+     * handshake-failure response.
      */
     private static Route webSocketRoute(String id, String pathPrefix, int upstreamPort,
             @Nullable String anchor) {

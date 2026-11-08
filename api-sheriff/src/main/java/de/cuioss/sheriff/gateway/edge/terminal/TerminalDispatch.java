@@ -241,9 +241,36 @@ public final class TerminalDispatch {
      * Dispatches a {@code protocol: websocket} route: validates the handshake {@code Origin} against
      * the route's effective allowlist (a foreign / absent origin throws a
      * {@link EventType#WEBSOCKET_ORIGIN_REJECTED} {@link GatewayException} rendered as {@code 403}
-     * before any upstream contact — GW-09 / CSWSH), then hands the upgrade to the opaque
-     * {@link WebSocketRelayStage}. The upstream dial and the client upgrade are performed by the
-     * relay stage, so no HTTP {@link ResponseStage} relay runs for a WebSocket route.
+     * before any upstream contact — GW-09 / CSWSH), checks that the request is a valid WebSocket
+     * opening handshake, then hands the upgrade to the opaque {@link WebSocketRelayStage}. The upstream
+     * dial and the client upgrade are performed by the relay stage, so no HTTP {@link ResponseStage}
+     * relay runs for a WebSocket route.
+     * <p>
+     * <strong>Upgrade gate.</strong> Right after the {@code Origin} check, and before the request is
+     * tracked with its session, takes a relay sub-budget permit or dials the upstream, the
+     * {@link WebSocketUpgradeGate} judges the handshake. A request sent with another method than
+     * {@code GET} is refused {@code 405} with {@code Allow: GET} — the route's effective
+     * {@code allowed_methods} does not narrow a WebSocket route to {@code GET}, so the gate is where
+     * that is enforced. A request that is not HTTP/1.1, or does not carry the
+     * {@code Connection: upgrade} and {@code Upgrade: websocket} tokens, is refused {@code 426} — on
+     * HTTP/1.x with {@code Upgrade: websocket} and {@code Connection: Upgrade}; a
+     * {@code Sec-WebSocket-Version} or {@code Sec-WebSocket-Key} repeated on a second header line is
+     * refused {@code 400}; a {@code Sec-WebSocket-Version} other than {@code 13} is refused
+     * {@code 426} with {@code Sec-WebSocket-Version: 13}; a missing version, or a missing
+     * {@code Sec-WebSocket-Key} or one that is not the padded base64 of a 16-byte nonce, is refused
+     * {@code 400}. A refusal releases the general admission permit through the shared guard and is
+     * logged at {@code DEBUG} with the route id and the answered status, and no request data. Without
+     * the gate an HTTP/2 request or a plain {@code GET} would have dialed the upstream and held a permit
+     * until the relay's client upgrade failed.
+     * <p>
+     * <strong>What a refusal carries.</strong> Every refusal on this path — the gate's, and the two
+     * {@code 503}s below — is answered after route selection and authentication, so it carries what any
+     * other response after route selection carries: the route's gateway-authored response headers
+     * (its {@code security_headers}), then the refusal's own headers, which win over a gateway header of
+     * the same name, then the pipeline's {@code Set-Cookie} lines — among them a successor session
+     * cookie the session stage wrote while refreshing the session, which the browser would otherwise
+     * never receive. Both are snapshotted on the virtual thread and written on the event loop before
+     * the status goes out through {@link ResponseEnds#reject}.
      * <p>
      * <strong>Admission accounting.</strong> Because a completed upgrade takes the connection over, the
      * HTTP end handler the edge root registers never fires for an established relay — the permit
@@ -281,6 +308,24 @@ public final class TerminalDispatch {
     public void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, Route route,
             ForwardPolicyStage.Result forward) {
         originValidationStage.validate(request, route.id(), route.effectiveAllowedOrigins());
+        AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(EdgeAdmission.ADMISSION_GUARD_KEY),
+                "admission guard missing — handle() must stash it before dispatch");
+        // Every refusal below is answered after route selection and authentication, so it carries the
+        // route's security headers and the pipeline's Set-Cookie lines — a successor session cookie among
+        // them. Snapshotted here, on the virtual thread, before the event-loop hop.
+        Map<String, String> refusalHeaders = Map.copyOf(request.gatewayAuthoredResponseHeaders());
+        List<String> refusalSetCookies = List.copyOf(request.responseSetCookies());
+        // A request that is no valid WebSocket opening handshake is refused here, before it is tracked,
+        // takes a relay permit or dials the upstream: nothing it could not use is spent on it.
+        if (WebSocketUpgradeGate.judge(ctx.request())
+                instanceof WebSocketUpgradeGate.Verdict.Refused(int status, Map<String, String> verdictHeaders)) {
+            LOGGER.debug("Request on WebSocket route '%s' is no valid WebSocket upgrade — refusing it with %s",
+                    route.id(), status);
+            edgeAdmission.releaseAdmission(ctx, admissionGuard);
+            ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, verdictHeaders,
+                    refusalSetCookies, status));
+            return;
+        }
         String remainder = EdgeRequests.remainderAfterMatchKey(route, EdgeRequests.requireCanonicalPath(request));
         String query = EdgeRequests.renderQuery(forward.query());
         ResolvedUpstream upstreamTarget = route.upstream();
@@ -288,8 +333,6 @@ public final class TerminalDispatch {
             throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
         }
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(EdgeAdmission.ADMISSION_GUARD_KEY),
-                "admission guard missing — handle() must stash it before dispatch");
         Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
                 "client connection context missing — handle() must capture it before dispatch");
         // A relay opened for a request a session was let through with is tracked under that session, so
@@ -305,7 +348,8 @@ public final class TerminalDispatch {
                 LOGGER.debug("Session relay registry at its capacity on route '%s' — refusing the upgrade",
                         route.id());
                 edgeAdmission.releaseAdmission(ctx, admissionGuard);
-                ctx.vertx().runOnContext(v -> ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE));
+                ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, Map.of(),
+                        refusalSetCookies, SERVICE_UNAVAILABLE));
                 return;
             }
             sessionRelay = tracked.get();
@@ -318,7 +362,8 @@ public final class TerminalDispatch {
             LOGGER.debug("WebSocket relay budget exhausted on route '%s' — refusing the upgrade",
                     route.id());
             edgeAdmission.releaseAdmission(ctx, admissionGuard);
-            ctx.vertx().runOnContext(v -> ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE));
+            ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, Map.of(),
+                    refusalSetCookies, SERVICE_UNAVAILABLE));
             return;
         }
         ResponseEnds.applyStageSetCookies(ctx.response(), request.responseSetCookies());
@@ -327,6 +372,33 @@ public final class TerminalDispatch {
         webSocketRelayStage.relay(ctx, clientContext, route, forward.headers(),
                 request.gatewayAuthoredResponseHeaders(), uri, () -> edgeAdmission.releaseAdmission(ctx, admissionGuard),
                 sessionRelay);
+    }
+
+    /**
+     * Answers a refused request on a {@code protocol: websocket} route, on the event loop — an upgrade
+     * the {@link WebSocketUpgradeGate} refused, or a {@code 503} for a full session relay registry or an
+     * exhausted relay sub-budget. The route's gateway-authored response headers are written first, then
+     * {@code ownHeaders} — the gate verdict's {@code Allow}, {@code Upgrade}, {@code Connection} or
+     * {@code Sec-WebSocket-Version}, which win over a gateway header of the same name — then the
+     * pipeline's {@code Set-Cookie} lines, then the status through {@link ResponseEnds#reject}. A
+     * response that has already ended is left as it is.
+     *
+     * @param ctx            the refused request
+     * @param gatewayHeaders the route's gateway-authored response headers, snapshotted before the hop
+     * @param ownHeaders     the headers the refusal itself carries; empty when there are none
+     * @param setCookies     the pipeline's {@code Set-Cookie} values, snapshotted before the hop
+     * @param status         the status to answer with
+     */
+    private static void rejectWebSocketUpgrade(RoutingContext ctx, Map<String, String> gatewayHeaders,
+            Map<String, String> ownHeaders, List<String> setCookies, int status) {
+        HttpServerResponse response = ctx.response();
+        if (response.ended()) {
+            return;
+        }
+        gatewayHeaders.forEach(response::putHeader);
+        ownHeaders.forEach(response::putHeader);
+        ResponseEnds.applyStageSetCookies(response, setCookies);
+        ResponseEnds.reject(ctx, status);
     }
 
     /**
@@ -516,13 +588,18 @@ public final class TerminalDispatch {
      * runOnContext task: it would reach only Vert.x's uncaught-exception handler, the client response
      * would never end, and the client would wait for its own timeout.
      * <p>
-     * <strong>A relay that fails to start releases the upstream response.</strong> The dispatched
-     * upstream response is still paused when the relay is started, and only the relay would consume
-     * it. When starting the relay throws, the upstream exchange is therefore reset before the client is
-     * answered — on HTTP/1.x its connection is closed instead of being held, on HTTP/2 the one stream is
-     * reset. For a response that already ended the reset is a no-op. A failure the relay reports on its
-     * future goes to {@code failRelay} as described above; the upstream exchange is not reset on that
-     * path.
+     * <strong>A relay that fails releases the upstream response.</strong> The dispatched upstream
+     * response is still paused when the relay is started, and only the relay would consume it. When
+     * starting the relay throws, the upstream exchange is therefore reset before the client is answered.
+     * A failure the relay reports on its future — above all a client that left mid-body, an HTTP/1.x
+     * client closing its connection or an HTTP/2 client resetting its stream — resets the upstream
+     * exchange too, before {@code failRelay} answers: a Vert.x pipe whose destination fails resumes its
+     * source with no handler on it, so without the reset the upstream body would be read and discarded to
+     * its end, and an upstream whose body never ends would hold its pooled connection for good. Either
+     * way, on HTTP/1.x the upstream connection is closed instead of being held, and on HTTP/2 the one
+     * stream is reset. For an exchange that already ended, or was already reset — a late body refusal
+     * resets the upstream request before the relay fails, a gRPC call's stream-idle expiry resets it and
+     * then completes the relay rather than failing it — the reset is a no-op.
      * <p>
      * <strong>A relay ends its response through the one end rule.</strong> The relay is handed a
      * {@link ResponseEnd} that routes the end of the client response through
@@ -540,8 +617,14 @@ public final class TerminalDispatch {
      */
     public static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, HttpClientResponse upstream,
             Function<ResponseEnd, Future<Void>> relay) {
-        ctx.vertx().runOnContext(v -> startRelay(ctx, stageSetCookies, upstream, relay)
-                .onFailure(failure -> failRelay(ctx, failure, upstream.statusCode())));
+        ctx.vertx().runOnContext(v -> startRelay(ctx, stageSetCookies, relay)
+                .onFailure(failure -> {
+                    // The one reset site for a relay that failed to start or failed after the hand-over:
+                    // nothing reads the upstream body any more, so release the exchange instead of letting
+                    // it drain.
+                    upstream.request().reset();
+                    failRelay(ctx, failure, upstream.statusCode());
+                }));
     }
 
     /**
@@ -726,10 +809,11 @@ public final class TerminalDispatch {
 
     /**
      * Starts the relay on the event loop, turning a failure thrown while starting it into a failed
-     * future after releasing the paused upstream response (see {@link #relayOnEventLoop}).
+     * future, which {@link #relayOnEventLoop} answers — releasing the paused upstream response first —
+     * exactly like a failure the relay reports on its future.
      */
     private static Future<Void> startRelay(RoutingContext ctx, List<String> stageSetCookies,
-            HttpClientResponse upstream, Function<ResponseEnd, Future<Void>> relay) {
+            Function<ResponseEnd, Future<Void>> relay) {
         // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
         // must be answered, so no narrower catch is correct. The failure is not swallowed — it is
         // handed to failRelay exactly like a failure the relay reports on its future.
@@ -738,8 +822,6 @@ public final class TerminalDispatch {
             ResponseEnds.applyStageSetCookies(ctx.response(), stageSetCookies);
             return relay.apply(ending -> ResponseEnds.endResponse(ctx, ending));
         } catch (RuntimeException startFailure) {
-            // Nothing consumes the paused upstream response once the relay did not start: release it.
-            upstream.request().reset();
             return Future.failedFuture(startFailure);
         }
     }

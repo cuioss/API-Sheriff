@@ -61,8 +61,15 @@ import org.jspecify.annotations.Nullable;
  * then relayed opaquely. If the upstream is unreachable or times out, the failure is mapped to
  * {@code 502}/{@code 504} <em>before</em> the client upgrade, so no half-open upgrade is ever left
  * dangling. If the upstream <em>refuses</em> the upgrade with a status, that status is relayed to
- * the client verbatim. Either answer is an ordinary response end, written before any upgrade, so it is
- * ended through the edge's one end rule ({@link ResponseEnds#endResponse}).
+ * the client verbatim. If the upstream confirms {@code 101} but the client upgrade then fails, the
+ * already-upgraded upstream leg is closed, and the client's request — which no upgrade took over — is
+ * answered {@code 502} unless Vert.x has answered it already. Vert.x refuses an invalid HTTP/1.1
+ * handshake itself, with {@code 400} or {@code 426}, before the failure reaches the relay, and that
+ * answer is left as it is; an HTTP/2 request cannot be upgraded at all, and Vert.x fails it without
+ * answering, so without the {@code 502} the stream would stay open until the client gave up. Each of
+ * the relay's answers is an ordinary response end, written while no client upgrade holds the
+ * connection, so it carries the gateway's stage-0 security headers and is ended through the edge's one
+ * end rule ({@link ResponseEnds#endResponse}).
  * <p>
  * <strong>Opaque bidirectional relay.</strong> Every frame — text, binary, continuation, ping,
  * pong — is forwarded to the other leg with fragmentation preserved and no per-frame filtering;
@@ -129,9 +136,11 @@ import org.jspecify.annotations.Nullable;
  * {@code RelaySession.closeBoth} funnel (graceful close, abrupt disconnect, idle reclaim, relay error,
  * session end),
  * and the client-upgrade-failure branch of {@link #onUpstreamConnected}, which constructs no
- * {@code RelaySession} at all. The upstream-dial-failure path ({@link #onUpstreamFailure}) does not
- * invoke it: that path ends the HTTP response, so the edge's own end handler releases the permit
- * through the same idempotent guard.
+ * {@code RelaySession} at all. Where that branch ends the response with its {@code 502}, the edge's own
+ * end handler fires as well and both releases pass the same idempotent guard; the branch's own release
+ * is what returns the permit for a request it does not answer itself. The
+ * upstream-dial-failure path ({@link #onUpstreamFailure}) does not invoke it: that path ends the HTTP
+ * response, so the edge's own end handler releases the permit through the same idempotent guard.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -188,9 +197,10 @@ public final class WebSocketRelayStage {
      * caller returns immediately.
      * <p>
      * The stage-0 security headers accumulated on the request are retained across the asynchronous
-     * dial so that a handshake-failure response ({@link #onUpstreamFailure}) carries the same
-     * gateway-controlled headers as the HTTP ({@link ResponseStage#relay}) and gRPC
-     * ({@link GrpcStatusMapper#renderRejection}) rejection paths.
+     * dial so that a handshake-failure response — a failed dial or an upstream refusal
+     * ({@link #onUpstreamFailure}), or the {@code 502} answering a failed client upgrade
+     * ({@link #onUpstreamConnected}) — carries the same gateway-controlled headers as the HTTP
+     * ({@link ResponseStage#relay}) and gRPC ({@link GrpcStatusMapper#renderRejection}) rejection paths.
      *
      * @param ctx             the routing context (client request/response and Vert.x handle)
      * @param clientContext   the client connection's own Vert.x context, captured on its event loop
@@ -243,7 +253,8 @@ public final class WebSocketRelayStage {
         // client upgrade's completion off the connection's event loop.
         clientContext.runOnContext(v -> webSocketClient.connect(options)
                 .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs,
-                        new RelayLifetime(clientContext, releaseAdmission, sessionRelay)))
+                        new RelayLifetime(clientContext, releaseAdmission, sessionRelay),
+                        retainedSecurityHeaders))
                 .onFailure(failure -> onUpstreamFailure(ctx, route, failure, retainedSecurityHeaders)));
     }
 
@@ -260,7 +271,7 @@ public final class WebSocketRelayStage {
     }
 
     private void onUpstreamConnected(RoutingContext ctx, Route route, WebSocket upstreamWs,
-            RelayLifetime lifetime) {
+            RelayLifetime lifetime, Map<String, String> securityHeaders) {
         // Hold the upstream leg's inbound frames from the moment it is acquired: an upstream that speaks
         // first would otherwise reach a leg with no frame handler during the asynchronous client upgrade.
         // RelaySession.start() resumes it once every handler is installed.
@@ -272,13 +283,17 @@ public final class WebSocketRelayStage {
                     establishRelay(ctx, route, clientWs, upstreamWs, lifetime);
                 })
                 .onFailure(failure -> {
-                    // The upstream is already upgraded but the client handshake could not complete;
-                    // there is no HTTP response to render anymore. Close the upstream leg and drop.
-                    // No RelaySession is constructed here, so this branch owns its own admission
-                    // release — without it the permit acquired for this request is stranded, since the
-                    // HTTP end handler no longer has a response to fire on.
+                    // The upstream is already upgraded but the client handshake could not complete. No
+                    // upgrade took the client connection over, so its request still needs an answer: Vert.x
+                    // gives an invalid HTTP/1.1 handshake its own 400 or 426 before failing, but fails an
+                    // HTTP/2 request without answering, so answer 502 — as a failed dial is answered —
+                    // unless the response has already ended. Then return the admission permit — ending the
+                    // response fires the edge's end handler too, and both releases pass the same idempotent
+                    // guard — and close the upstream leg. No RelaySession is constructed here, so this
+                    // branch owns its own release rather than relying on the end handler alone.
                     LOGGER.debug(failure, "WebSocket client upgrade failed on route '%s': %s", route.id(),
                             failure.getMessage());
+                    endBeforeUpgrade(ctx, BAD_GATEWAY, securityHeaders);
                     lifetime.releaseAdmission().run();
                     closeQuietly(upstreamWs, CLOSE_INTERNAL_ERROR, "client upgrade failed");
                 });
@@ -298,6 +313,15 @@ public final class WebSocketRelayStage {
             LOGGER.debug(failure, "WebSocket upstream dial failed on route '%s': %s", route.id(),
                     failure.getMessage());
         }
+        endBeforeUpgrade(ctx, status, securityHeaders);
+    }
+
+    /**
+     * Ends a response no client upgrade took over with {@code status}, carrying the gateway's stage-0
+     * security headers. A response that has already ended is left as it is; on one whose head is
+     * already written only the end is added.
+     */
+    private static void endBeforeUpgrade(RoutingContext ctx, int status, Map<String, String> securityHeaders) {
         HttpServerResponse response = ctx.response();
         if (response.ended()) {
             return;
@@ -308,7 +332,7 @@ public final class WebSocketRelayStage {
             securityHeaders.forEach(response::putHeader);
             response.setStatusCode(status);
         }
-        // No upgrade has happened yet, so this is an ordinary response end and passes the one end rule.
+        // No upgrade has happened, so this is an ordinary response end and passes the one end rule.
         ResponseEnds.endResponse(ctx, response::end);
     }
 
