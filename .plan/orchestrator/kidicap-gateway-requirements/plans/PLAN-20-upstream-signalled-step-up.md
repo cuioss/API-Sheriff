@@ -209,21 +209,51 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 ## Claim Labels
 
 - OBSERVED: `BffRuntime.stepUpCoordinator()` has no production caller — the only references are `BffRuntimeProducerTest`; grep over `api-sheriff/src/main` at 93a4b3e finds the accessor's declaration and nothing else — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java` § `stepUpCoordinator`
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntime.java:220 declares stepUpCoordinator(); no caller under api-sheriff/src/main (GatewayEdgeRoute never reads it); references are BffRuntimeProducerTest, StepUpCoordinatorTest, GatewayEdgeRouteBffWiringTest only
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntime.java :221 declares stepUpCoordinator; grep of api-sheriff/src/main finds no call site, only plumbing, BffRuntimeProducer :693 and Javadoc
 - OBSERVED: `StepUpCoordinator` is RFC 9470 shaped, driven by a parsed upstream challenge — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java` § `coordinate`
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: StepUpCoordinator.detectChallenge :138 uses the engine StepUpChallengeParser; coordinate :157 has only silent-satisfaction and RE_DRIVE outcomes, no insufficient_scope branch; request still carries static oidc.scopes (:118-129, :173-176)
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: StepUpCoordinator handles only insufficient_user_authentication and BffRuntimeProducer :696-697 seeds static oidc.scopes; unchanged since 54f82f03 apart from #559 formatting
 - HYPOTHESIS: the silent-satisfaction seam is bound to `(sessionRecord, challenge, now) -> Optional.empty()` at the construction site — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § step-up construction (verify-at-outline)
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.java:641 binds (sessionRecord, challenge, now) -> Optional.empty(); comment :629-631 says no edge code drives the coordinator
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer :694 binds (sessionRecord, challenge, now) -> Optional.empty()
 - HYPOTHESIS: `doc/configuration.adoc`'s `step_up.*` rows describe the honouring of an upstream challenge as present behaviour — confirm/refute at `doc/configuration.adoc` § `step_up` (verify-at-outline)
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/configuration.adoc:2952-2956 still describes honouring an upstream challenge; same false claim in variants/02-bff-session.adoc:401-407 and user/bff-session.adoc:903-905; oidc.step_up.enabled and honor_upstream_challenge are read by no production code (only stepUp.path() at BffRuntimeProducer:626)
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: false step_up claims remain in doc/configuration/authentication-and-oidc.adoc :777-780, doc/configuration.adoc :575-576, doc/user/bff-session.adoc :542-543 and gateway.schema.json :632; variants, development and fapi_status are now honest
 - HYPOTHESIS: the upstream response path can reach a step-up decision before the response is relayed, and the request body can be buffered for a replay within the route's filter body cap — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java` and the dispatch path (verify-at-outline)
-  - verdict: contradicted | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: Seam half holds: TerminalDispatch.dispatchAndRelay :196-237 has the live upstream response before relayOnEventLoop :234, WWW-Authenticate relayed unchanged. Buffering half false: DispatchStage.java is streamed never buffered, inbound body is a one-shot InboundBody. Spec re-scoped 2026-10-26 into interception point (verified) and bounded replay buffer (unbuilt)
+  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: seam half holds (TerminalDispatch.dispatchAndRelay :197, relayOnEventLoop :235; WWW-Authenticate passes, UpstreamIdentityHeaders strips only server and x-powered-by); buffer half false (DispatchStage :68 streamed, never buffered); rescoped in the spec banner 2026-11-09
 - HYPOTHESIS: the Keycloak behaviours the flow rests on (a refresh never adds a scope outside the grant; a narrowed refresh keeps the grant in the refresh token) hold for the integration realm as measured downstream — confirm/refute with an IT against the integration Keycloak (verify-at-outline)
-  - verdict: unverifiable | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: live Keycloak behaviour, not readable from the repo; bff-session.adoc:908-917 records one integration-realm observation and ADR-0057:297-301 states refresh-inside-grant depends on the IdP
+  - verdict: unverifiable | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: live Keycloak behaviour is not readable from the repository; doc/user/bff-session.adoc :385 and :502 record the invalid_scope refresh back-off observation
 - Verify-first clause: settle the replay seam first (deliverable 2) — where in the response path a challenge can be intercepted, and whether a body can be buffered and re-sent without breaking streaming or the body cap. If a replay cannot be done safely for all methods, loop back and re-scope: the flow degrades to the browser step-up with no replay, which changes the acceptance rows.
-  - verdict: unverifiable | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: process rule; the factual answer is available: interception point exists in TerminalDispatch, replay-for-all-methods needs a bounded pre-dispatch buffer that is unbuilt and conflicts with the ADR-0006/0008 streaming stance
+  - verdict: unverifiable | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: process rule; the interception point exists in TerminalDispatch and the bounded pre-dispatch buffer is unbuilt, which conflicts with the ADR-0006 and ADR-0008 streaming stance
 
 ## Expected Surface
+
+> ⚠ **Re-grounded 2026-11-09 (cleanup at `c85817d9`, 54 commits after `54f82f03`).** The premise is intact:
+> `BffRuntime.stepUpCoordinator()` still has no caller, the silent-satisfaction seam is still
+> `Optional.empty()` (`BffRuntimeProducer` :694), and `DispatchStage` still streams and never buffers (:68).
+> The 2026-10-26 operator decision (delete `oidc.step_up.enabled` and `honor_upstream_challenge`) has NOT
+> landed: `OidcConfig.StepUp` :511 and `gateway.schema.json` :629 still carry both, and
+> `ConfigModelContractTest` :730 and `ConfigLoaderTest` :1811 still assert them. **Every line number in this
+> spec is stale: locate by symbol.** Moved: `stepUpCoordinator()` :221; `TerminalDispatch`
+> `dispatchAndRelay` :197, `relayOnEventLoop` :235 (definition :618), `failRelay` :846;
+> `PipelineRequest.mediatedBearer` :446; `OidcConfig.StepUp` :511; `ConfigModelReflection` `StepUp` :109;
+> `ReservedPathRules.validateStepUpPath` :264.
+> - **ADR ordinal: the next free one is 0080** (0072 to 0079 are taken: cookie key file, unrouted 404, JWT
+>   metrics, exhaustion detection, per-source substrate, rate-limit key, threat classification, oidc_discovery).
+>   Re-list `doc/adr` at write time. **WARN ids:** the catalogue grew through #527, #528, #530 and #537, so
+>   derive the next free id at write time, never from a number in this spec.
+> - **Documentation moved.** `doc/configuration.adoc` is now an index (#575); the `step_up.*` rows are
+>   `doc/configuration/authentication-and-oidc.adoc` :777-790. The false "honours an upstream challenge"
+>   statement still stands there, in `doc/configuration.adoc` :575-576 (YAML comment),
+>   `doc/user/bff-session.adoc` :542-543, the `gateway.schema.json` :632 prose and the `StepUpCoordinator`
+>   Javadoc :74 (which also names the wrong block, `session.step_up`). `doc/variants/02-bff-session.adoc`,
+>   `doc/development/bff-session.adoc` and `doc/fapi_status.adoc` are already honest ("assembled but not
+>   wired"). `doc/quality-report/` was deleted by #575: that surface entry is void.
+> - **New constraints from landed work.** #526: `UpstreamIdentityHeaders` strips only `server` and
+>   `x-powered-by` from the response, so `WWW-Authenticate` still reaches the response seam. #582 added
+>   `WebSocketUpgradeGate` in `edge/terminal`, which `TerminalDispatch` now touches. #532 and #582 changed
+>   `DispatchStage` framing: re-read ADR-0066 and ADR-0060 before deliverable 2. #528 and #537 added
+>   `edge/admission` and `edge/error` under the ADR-0068 acyclic edge rule.
+> - **Gate.** The running siblings named elsewhere in this spec (V02-05, V02-06, V02-20) are shipped and their
+>   epic is archived. The live overlap is `security-hardening-tier-1` (PLAN-SEC-03, open PR #581), which shares
+>   15 files with this plan, so sequence after #581 merges.
 
 > ⚠ Re-grounded 2026-10-14 (cleanup at `5490144f`): #450 moved the reserved BFF paths to `/bff/*`; a new
 > step-up path belongs there. #448 changed `GatewayEdgeRoute` and `DispatchStage` (abortive upstream close,
@@ -265,8 +295,9 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
   deliverable 8; `ApiSheriffLogMessages.java` is the wrong catalogue for the BFF surface. Ids are allocated
   across catalogues and enforced by `LogMessagesCatalogueTest`; derive the next free WARN id at write time
   (V02-06 and V02-20 claim ids concurrently)
-- OBSERVED (added 2026-10-05): `doc/variants/02-bff-session.adoc` and `doc/quality-report/code-correctness.adoc`
-  — both describe the RFC 9470 coordinator and go stale with deliverable 8
+- OBSERVED (added 2026-10-05; corrected 2026-11-09): `doc/variants/02-bff-session.adoc`
+  — describes the RFC 9470 coordinator (already honest: "assembled but not wired") and goes stale with
+  deliverable 8. `doc/quality-report/` was deleted by #575 and is no longer a surface
 - OBSERVED (moved by #487, re-grounded 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/ResponseStage.java` (moved from the edge package root by #487)
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`
 - HYPOTHESIS (added 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ReservedPathRules.java` (`validateStepUpPath`, registered in the `ConfigValidator` rule list at :242), plus the OidcSessionRules and OidcClientRules classes in the same package for any new `step_up` boot rule (`BootValidationConcernMapContractTest`) (verify-at-outline)
@@ -293,6 +324,8 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 - HYPOTHESIS: `integration-tests/src/test/java/` — step-up ITs (verify-at-outline)
 - HYPOTHESIS: `integration-tests/src/main/docker/` — echo upstream emitting a challenge, Keycloak realm (verify-at-outline)
 - HYPOTHESIS: `doc/configuration.adoc`, `doc/user/bff-session.adoc`, `doc/security-threat-model.adoc`, `doc/LogMessages.adoc`, `doc/adr/` (verify-at-outline)
+- OBSERVED (added 2026-11-09, re-grounding at `c85817d9`: the configuration and architecture documents were split by #575 and #533, and these carry the false or relevant statements): `doc/configuration/authentication-and-oidc.adoc` (the live `step_up.*` rows, :777-790), `doc/architecture/authentication-and-bff.adoc`, `doc/architecture/observability-and-errors.adoc` (both mention `step_up_url` and `missing_scopes`), `doc/features-analysis.adoc` (:268-273) and `doc/fapi_status.adoc` (:81-91, :364-366), both of which describe `StepUpCoordinator`
+- OBSERVED (added 2026-11-09): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/UpstreamIdentityHeaders.java` (read-only reference: the response-header strip seam since #526; `WWW-Authenticate` passes it)
 
 ## Dependencies and Sequencing
 

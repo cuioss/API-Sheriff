@@ -105,24 +105,55 @@ Split guard: 3 deliverables.
 ## Claim Labels
 
 - OBSERVED: `settleRefresh` discards the fresh delegate when `fresh.getKeyInfo(kid).isEmpty()` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java` § `settleRefresh`, at `5c2a8143`
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.java:553-565, :555 discards when closed or status != OK or fresh.getKeyInfo(kid).isEmpty(); file untouched since 5c2a8143 (#449)
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader :554-556 settleRefresh discards on fresh.getKeyInfo(kid).isEmpty(); only #559 added a blank line since 54f82f03
 - OBSERVED: `RetryingJwksLoader.getKeyIds()` delegates to the current delegate's active set and was added by #449 — read in the diff of `5c2a8143`
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.java:674-685 getKeyIds() returns Set.copyOf(snapshot.get().delegate().getKeyIds()); added by #449, unchanged; the @Override still compiles at token-sheriff 0.9.8
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader :684-685 is Set.copyOf(snapshot.get().delegate().getKeyIds()); tests RetryingJwksLoaderTest :297-324 and :1103-1109
 - OBSERVED: `main` pins `version.token-sheriff` 0.9.7 — read at `pom.xml`, at `5c2a8143`
-  - verdict: contradicted | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: pom.xml:63 now pins version.token-sheriff 0.9.8 (#491, 199a0cda); premise survives; the 0.9.8 jar was not readable locally (~/.m2 stops at 0.9.6), so the outline must read it before relying on empty and blank-id semantics; spec re-scoped
+  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: pom.xml :63 pins version.token-sheriff 0.9.8, not 0.9.7, unchanged since 54f82f03; the 0.9.8 jar is not in ~/.m2, so the outline resolves it; rescoped in the spec banner 2026-11-09
 - OBSERVED: ADR-0063 § Risks and the threat model's GW-07 residual both say closing the residual needs a key-id accessor that 0.9.6 lacks — read at `doc/adr/0063-…adoc` (~lines 219–227) and `doc/security-threat-model.adoc` (~lines 1276–1290), at `5c2a8143`
-  - verdict: contradicted | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: ADR half holds (ADR-0063 Risks :219-227, file name exact); threat-model half contradicted: the residual is now security-threat-model.adoc:1355-1369, #492 dropped the 0.9.6 clause and says the refresh does not use the key ids; spec D3 location and edit rewritten
+  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: premise holds but the locations moved: ADR-0063 was rewritten (Risks :161, rule at :12 and :71-81) and the threat-model residual is now :1348-1362; rescoped in the spec banner 2026-11-09
 - HYPOTHESIS: `JwksKeyRotationIT` can drive a rotation behind a claimed window end to end — confirm/refute at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/JwksKeyRotationIT.java` (verify-at-outline)
-  - verdict: unverifiable | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: outline judgement; JwksKeyRotationIT drives rotation (:171-199) and an invented-key-id flood (:202-245) separately; a combined leg looks constructible with the existing rig; the IT prose :62-70 and message :242-244 state the old rule
+  - verdict: unverifiable | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: outline judgement: JwksKeyRotationIT has a rotation leg (:171-200) and a flood leg (:202-250) and a combined leg looks constructible from the rig helpers, unproven
 
 ## Expected Surface
+
+> ⚠ **Re-grounded 2026-11-09 (cleanup at `c85817d9`, 54 commits after `54f82f03`).** The premise is intact:
+> the publish rule is still approximate and no landed commit changed it. `settleRefresh` still discards when
+> `fresh.getKeyInfo(kid).isEmpty()` (`RetryingJwksLoader` :554-556) and `getKeyIds()` is still the plain
+> delegate (:684-685); the only commit on the file since `54f82f03` is #559's blank line.
+> - **The version pin is 0.9.8, not 0.9.7** (`pom.xml` :63, unchanged since `54f82f03`), and the 0.9.8 jar is
+>   **still not in `~/.m2`** (it holds 0.9.2, 0.9.3-SNAPSHOT, 0.9.5, 0.9.6 and 0.9.9-SNAPSHOT builds). The
+>   outline must resolve and read it, through the build or by fetching it, before relying on the
+>   empty-before-load and blank-id semantics.
+> - **Locate by symbol.** The approximate-rule paragraph is now `RetryingJwksLoader` :88-90, the
+>   `settleRefresh` Javadoc :546-550 and the method :554; `kid` is still a parameter of `onUnknownKeyId` :459,
+>   `runRefresh` :505 and `settleRefresh`. The tests that pin the old rule are `RetryingJwksLoaderTest` :981 and
+>   :1077 (`ROTATED_KEY_ID` :1032); #559 trimmed that file by six lines.
+> - **ADR and threat model.** ADR-0063 was rewritten to the ADR skeleton (#544, #554, #575, #576) and is now
+>   178 lines: the approximate rule is at :12, :71-81, :123-125, :146-147 and the Risks bullet :161, and the
+>   References entry cited at :344-345 no longer exists (Links :165). The threat-model residual is now
+>   `doc/security-threat-model.adoc` :1348-1362 (the "A flood cannot evict valid keys" bullet :1324-1328, Status
+>   :1364-1372, summary row :4159). It already says the key ids have been exposed since 0.9.7 and that the
+>   refresh does not use them.
+> - **`doc/LogMessages.adoc` leaves the surface.** `ApiSheriff-136` (:99) no longer states the approximate
+>   rule (its Trigger reads "one record after an IdP key change needs no action"); at most a link-text re-check.
+> - **`doc/configuration.adoc` is the wrong path.** #575 moved the key-rotation prose to
+>   `doc/configuration/authentication-and-oidc.adoc`: "The refresh replaces the key set only if it holds the
+>   triggering key id" at :299-300 and the second paragraph at :304-308.
+> - **`JwksKeyRotationIT`** is changed since `54f82f03` (by #528): the Javadoc old-rule text is now about
+>   :62-75, the rotation leg about :171-200 (`rig.replaceSigningKey()` :191) and the invented-key-id flood leg
+>   :202-250 (`rig.accessTokenNamingKeyId(...)` :221). The combined leg looks constructible from the existing
+>   helpers (`keySetRequests(rig)`), unproven. `doc/development/integration-test-topology.adoc` names no leg or
+>   test this plan would rename.
+> - **ADR ordinal and gate.** No new ADR is expected (ADR-0063 is amended); if one is needed, the next free
+>   ordinal is 0080. This plan shares two files with `security-hardening-tier-1` `PLAN-SEC-03` (open PR #581),
+>   an overlap the operator decides. The three sibling plans the earlier hold named have all shipped.
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java`
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoaderTest.java`
 - OBSERVED: `doc/adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc`
 - OBSERVED: `doc/security-threat-model.adoc`
-- OBSERVED (added 2026-10-14, cleanup at `5490144f`): `doc/LogMessages.adoc` — ApiSheriff-136 states the approximate rule
-- OBSERVED (added 2026-10-14; located 2026-10-26): `doc/configuration.adoc` — states the approximate rule in section _jwks_key_rotation (:2333–2335 and a second paragraph :2343–2346). No page under the user documentation directory states the publish rule, so it is not on the surface
+- OBSERVED (added 2026-10-14; located 2026-10-26; corrected 2026-11-09: #575 split the configuration document, and ApiSheriff-136 in the LogMessages catalogue no longer states the rule, so that entry is dropped): `doc/configuration/authentication-and-oidc.adoc` — states the approximate rule in the key-rotation section (:299–300 and a second paragraph :304–308). No page under the user documentation directory states the publish rule, so it is not on the surface
 - OBSERVED (re-grounded 2026-10-26 at `54f82f03`): `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/JwksKeyRotationIT.java` — must change: its Javadoc (:62–70) and an assertion message (:242–244) state the approximate rule
 - HYPOTHESIS: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/StubIdentityProviderRig.java` — only if the combined leg needs a helper the rig lacks (verify-at-outline)
 - HYPOTHESIS: `doc/development/integration-test-topology.adoc`, `doc/development/test-corpus-integrity.adoc` — only if they cite a key-rotation leg or a test this plan renames or removes (verify-at-outline)

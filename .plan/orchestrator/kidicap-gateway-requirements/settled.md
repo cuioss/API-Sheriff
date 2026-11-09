@@ -454,3 +454,84 @@ stays in `epic.md`. These three bullets record the first cut and why it was made
   but the store-then-mint-cookie order its claims 4-5 rest on is unchanged), and PLAN-20's claims survive
   too. ⚠ Treat it as a live input for PLAN-24 and PLAN-26: a DPoP-bound token changes what "relay the
   token" and "revoke at the IdP" mean. — observed 2026-10-02 by the orchestrator
+
+## Cross-epic hold on api-sheriff-0-2-0, resolved by its closure
+
+> ↪ **Relocated 2026-11-09** (cleanup at `c85817d9`) from `epic.md` § Watches: every sibling plan the hold names has shipped and `api-sheriff-0-2-0` is closed and archived. The text below is the original, moved verbatim.
+
+- **Cross-epic hold (2026-10-14): `api-sheriff-0-2-0` reworks the edge pipeline and policy-block
+  resolution before any further edge or config feature.** Operator ruling; sequence there:
+  `PLAN-V02-24` (one resolution mechanism for every policy block, test builders) → `PLAN-V02-25`
+  (decompose `GatewayEdgeRoute`) in parallel with `PLAN-V02-26` (split `ConfigValidator`). They start
+  after this epic's PLAN-32 has landed. **PLAN-20, -21, -26 and -29 are held until the refactor plan for
+  their surface lands** (config blocks → V02-24, edge → V02-25, boot rules → V02-26), then are re-grounded
+  against the new seams before emitting. PLAN-31 (`auth/RetryingJwksLoader` only) is not held.
+  **Update 2026-10-14 (#461, refactor design settled with the operator):** `PLAN-V02-24` and `PLAN-V02-26`
+  were emitted in parallel and run now — they no longer wait for PLAN-32. `PLAN-V02-25` (edge) follows
+  once V02-24 **and this epic's PLAN-32** have landed, so PLAN-32 now gates the edge refactor and with it
+  PLAN-29. Release order for the held plans: PLAN-26 when V02-26 lands; PLAN-20 and PLAN-21 when V02-24
+  lands; PLAN-29 when V02-25 lands. V02-24 first moves every policy block onto one resolution mechanism
+  (gateway → anchor → endpoint → route) with the current chains, then applies per-block scope sets the
+  operator decides at its outline **as explicit breaking changes** — re-grounding PLAN-20 and PLAN-21 must
+  read those decisions, not only the new seams. The config records gain Lombok `@Builder`; tests stop
+  constructing them positionally. A later `PLAN-V02-27` simplifies the tests in `config/`, `edge/`,
+  `routing/` after the refactor.
+  **Update 2026-10-15 (operator ruling, this epic's PLAN-32 landing analysis):** PLAN-32 shipped as #466,
+  V02-24 as #465 and V02-26's first slice as #463. The release points above are **replaced** by the
+  sibling's chain: validator slices V02-28 → V02-40..43, V02-44 → V02-25, then V02-23, then V02-27.
+  **PLAN-20, -21, -26 and -29 stay held until that whole chain has landed**, then each is re-grounded
+  (cleanup) before emitting. PLAN-31 is not under this hold, but the operator held it on 2026-10-15 over
+  multi-file overlaps with the running V02-12 (8 files: docs, `JwksKeyRotationIT`), the parked V02-23 (8 doc
+  files) and the running V02-44 (`RetryingJwksLoaderTest`, `doc/LogMessages.adoc`). Re-run the gate once
+  V02-12's second PR and V02-44 have landed.
+  **Update 2026-10-26 (cleanup at `54f82f03`): the chain has landed and the hold is lifted.** V02-28, V02-40
+  to V02-43 (#485, #489, #502, #505), V02-44 (#476), V02-25 (#487), V02-12 (#450, #492), V02-23 (#515) and
+  V02-27 (#520) are all shipped, plus V02-45 (#506), V02-46 (#513), V02-15 (#516), V02-22 (#512) and V02-04
+  (#521). PLAN-20, -26 and -29 have been re-grounded and may be emitted subject to the gate (PLAN-21 is held
+  for V02-06 by the operator's decision of the same day): the sibling
+  runs V02-05, V02-06 and V02-20 (three of three slots) and the gate finds a 4 to 20 file overlap with each, so
+  an emit needs a free slot and the operator's overlap answer. Never two WS-04 plans at once (PLAN-20, -21, -26).
+  The reason for the PLAN-31 hold (V02-12, V02-23, V02-44) is gone for the same reason.
+  **Update 2026-11-07 (sibling `api-sheriff-0-2-0` closed and archived; written on operator instruction by
+  that epic's close-out session):** every sibling plan this entry and the 2026-10-26 decisions name has
+  shipped — V02-05 (#526), V02-06 (#528), V02-20 (#527), V02-12 (#450, #492), V02-45 (#506), V02-48 (#544)
+  — so **PLAN-21's hold condition (V02-06 shipped) is met** and no sibling plan is running. The "running
+  siblings V02-05, V02-06 and V02-20" overlap statements above, at the 2026-10-26 decisions and in the
+  PLAN-20, -21, -26, -29 and -31 specs are therefore stale: re-ground those specs (cleanup) against what
+  V02-06 and V02-20 actually landed before emitting. The sibling's ledger is now at
+  `.plan/archived-orchestrators/api-sheriff-0-2-0/`; its open work moved to `api-sheriff-0-3-0`.
+
+## PLAN-32 landing and the 2026-10-15 holds
+
+> ↪ **Relocated 2026-11-09** (cleanup at `c85817d9`) from `epic.md` § Decisions: PLAN-32 shipped as #466 and the holds were lifted 2026-10-26. The text below is the original, moved verbatim.
+
+- 2026-10-15 — **PLAN-32 shipped** as PR #466 / 73233f1e, closing #455. The inbound HTTP/2 connection window
+  is now sized to max concurrent streams × stream window, and streams are capped at 100 per connection.
+  A 10 s request-body idle bound on HTTP dispatch resets the upstream request and answers `408`. ADR-0060
+  amended. 6/6 deliverables; 22h22m wall, 10.3M tokens. Landing record: `landings/PLAN-32.md`;
+  `landing-check` reports it complete. Corroborated against `ci pr view 466`, `ci checks status`
+  (success), the merged diff (17 files), and issue #455 (closed). The spec's suspect `SO_LINGER 0` was
+  refuted and stays in place. The real cause was flow-control windows interacting with the upstream pool.
+  - **Drain (29 messages, 2026-10-15):** `-029` reconciled. `-020`/`-021`, `-026` and `-027` promoted to
+    the API-Sheriff corpus as `2026-10-15-12-001`, `-002` and `-003`. The other 24 (`-001`..`-019`, `-022`..`-025`,
+    `-028`) are plan-marshall process and tooling lessons. They were grouped into 13 messages and routed to
+    plan-marshall's lessons-routing epic: sibling repository `plan-marshall`, inbox
+    `.plan/local/worktrees/_orchestrator/.plan/orchestrator/lessons-routing/inbox/` (relative to that
+    repository's root, written through its own `orchestrator inbox write --slug lessons-routing`), sender
+    `api-sheriff-kidicap-gateway-requirements`, messages `-001`..`-013`. `-023` (the verification-feedback
+    producer gap) went as a recurrence of plan-marshall's `lessons-routing-019` / PLAN-LB-24.
+    **Standing rule (operator, 2026-10-15): every plan-marshall-related finding from this epic is
+    routed to that inbox**, not promoted into this repository's corpus.
+  - **Holds (operator, 2026-10-15):** PLAN-20, -21, -26 and -29 stay held until the sibling's whole refactor
+    chain lands (Watches). PLAN-31 is held over its multi-file overlap with V02-12, V02-23 and V02-44.
+    Nothing is emitted. **Lifted 2026-10-26**: the chain has landed (see the Watches update).
+
+## Project config housekeeping (marshal.json provisioning, build queue cap)
+
+> ↪ **Relocated 2026-11-09** (cleanup at `c85817d9`) from `epic.md` § Open Defects, on operator instruction. The provisioning half was fixed on 2026-11-09 (`manage-config sync-defaults` refreshed `provisioned_version` to 0.1.2073, uncommitted in the primary checkout at the time); the `build.queue.max_slots` half stays an operator action (`manage-build-server config migrate`). The text below is the original, moved verbatim.
+
+- Project config housekeeping, both operator actions: `marshal.json` is older than the installed
+  plan-marshall (remedy `/marshall-steward`), and its `build.queue.max_slots=2` is **ignored** in favour of
+  the machine-wide cap of 5 — every build logs a `[BUILD-QUEUE] WARNING` (about 35 times in the PLAN-16
+  run), and the remedy is `manage-build-server config migrate`. On a WSL host running native-image builds
+  the effective cap is the one that matters. — source: inbox `plan-16-application-portal-012.md`
