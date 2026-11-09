@@ -131,11 +131,13 @@ set of things well, with zero mandatory external dependencies.
 | Traefik/KrakenD headers middleware: HSTS, `X-Content-Type-Options: nosniff`, frame-deny,
   CORS. Cheap, high value, on-brand.
 
-| *Per-route timeouts, retry, circuit breaker*
-| Traefik/KrakenD built-ins. All three are gateway-side per
-  link:adr/0008-data-plane-transport.adoc[ADR-0008]: retry and the breaker are per-route
-  programmatic SmallRye Fault-Tolerance guards (retry stream-aware), timeouts are options on
-  the shared Vert.x data-plane client -- component ownership is stated in
+| *Per-route retry toggle, fixed attempt timeout and circuit breaker*
+| Traefik/KrakenD built-ins, shipped narrower. Retry is a per-route toggle (`retry.enabled`) over
+  a fixed, stream-aware retry policy; the per-attempt timeout and the circuit breaker are the
+  gateway's fixed policy, and a route declares neither a timeout, an attempt count nor a breaker
+  shape (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
+  All three run in programmatic SmallRye Fault-Tolerance guards around the data-plane dispatch
+  (link:adr/0008-data-plane-transport.adoc[ADR-0008]) -- component ownership is stated in
   link:architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client].
 
 | *WebSocket + HTTP/2 + gRPC + GraphQL in OSS, from the start*

@@ -209,8 +209,6 @@ bare-reference check has read the document.
   widen or empty them, but belong in the committed document
   (link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]).
   An empty resolution at any of them fails the boot.
-* `upstream.connect_timeout_ms` / `read_timeout_ms` must be positive integers (millisecond
-  precision; link:../adr/0008-data-plane-transport.adoc[ADR-0008]).
 * The one secret in `oidc`, `client_secret`, must be a *bare* `${ENV_VAR}` reference -- not a
   literal, and not the defaulted `${ENV_VAR:-...}` form, whose default would itself be a literal
   secret in a committed document. Both shapes fail the boot. The three `key_file` values

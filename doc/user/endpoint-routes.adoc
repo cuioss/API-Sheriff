@@ -155,7 +155,8 @@ endpoint:
                                    # every attempt runs under the gateway's fixed 30 s guard
                                    #   timeout and fixed breaker policy (20-call window, ratio
                                    #   0.5, 5 s open); a circuit_breaker key is refused at boot.
-                                   #   Timing and retry keys: see "upstream" in
+                                   #   A route declares no timeout or attempt count; the
+                                   #   retry toggle: see "upstream" in
                                    #   ../configuration/routing-and-forwarding.adoc
 ----
 

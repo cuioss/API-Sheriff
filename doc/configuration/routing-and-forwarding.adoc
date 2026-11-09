@@ -509,9 +509,6 @@ link:../user/endpoint-routes.adoc#_upstream_path[Endpoint Routes -- Upstream pat
   `grpc` or `websocket` it fails the boot. See
   link:../user/endpoint-routes.adoc#_rewrite_location[Rewriting upstream `Location` headers].
 
-| `connect_timeout_ms`, `read_timeout_ms` | Milliseconds. Bound and validated, but *not applied*: the data-plane client
-  (link:../adr/0008-data-plane-transport.adoc[ADR-0008]) is built without them.
-
 | `retry.enabled`
 | Gates retry for the route, overriding link:#_upstream_defaults[`upstream_defaults`]. The policy is
   fixed: two retries 100 ms apart, idempotent methods only (`GET`, `HEAD`, `OPTIONS`, `PUT`,
@@ -519,13 +516,16 @@ link:../user/endpoint-routes.adoc#_upstream_path[Endpoint Routes -- Upstream pat
   body, even if none of its bytes reached the upstream (a bodyless request never subscribes it). A
   fixed 30 s timeout bounds each attempt.
 
-| `retry.max_attempts`, `retry.idempotent_only` | Bound and validated, but *not applied*.
 | `not_modified.enabled` | Overrides the link:#_upstream_defaults[`upstream_defaults`] toggle for this route.
 |===
 
-NOTE: Of the timeout and retry keys, only `retry.enabled` takes effect. The unapplied keys are
-recorded as undecided in
-link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064].
+*Timeout and attempt count.* A route declares no timeout and no attempt count
+(link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc#_amendment_2026_10_26_the_timeout_and_retry_keys_are_removed[ADR-0064, amendment]).
+Each attempt runs under the gateway's fixed 30 s timeout, so a dispatch on a route whose
+`retry.enabled` is `true` can take about 90 s across its three attempts. The upstream client keeps
+the Vert.x default connect timeout of 60 s, which the 30 s timeout ends first, and sets no idle
+timeout. `connect_timeout_ms` and `read_timeout_ms` in an `upstream` block, and `max_attempts` and
+`idempotent_only` in its `retry` block, fail the boot as unknown keys, as `circuit_breaker` does.
 
 *Circuit breaker.* A route declares no circuit-breaker settings; `circuit_breaker` in an `upstream`
 block fails the boot as an unknown key. The gateway's fixed breaker

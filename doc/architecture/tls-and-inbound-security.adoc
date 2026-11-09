@@ -200,7 +200,8 @@ response head preserves the upstream status and resets/closes the stream.
 
 [[_grpc_stream_idle_bound]]
 *gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages,
-`protocol: grpc` routes use the 30 s upstream head timeout until response headers arrive and then a
+`protocol: grpc` routes use the upstream guard's fixed 30 s per-attempt head timeout until response
+headers arrive and then a
 5-minute bidirectional frame-idle timer (HTTP/2 `PING` excluded). Expiry resets the upstream request
 and ends the client stream with trailers `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message:
 stream-idle-timeout`

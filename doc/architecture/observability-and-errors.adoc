@@ -139,7 +139,8 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
 | `UPSTREAM`; `RATE_LIMITING` for `PENDING_AUTHORIZATION_SATURATED` (`--` for bare `503`)
 
 | `504`
-| Upstream dispatch timeout (the upstream guard's fixed 30 s head timeout, `UPSTREAM_TIMEOUT`).
+| Upstream dispatch timeout (the upstream guard's fixed 30 s per-attempt head timeout, about 90 s
+  across three attempts on a retry-enabled route; `UPSTREAM_TIMEOUT`).
 | `UPSTREAM`
 |===
 
@@ -238,7 +239,7 @@ document:
 | `UNIMPLEMENTED`      | 12 | `405` -- `METHOD_NOT_ALLOWED`
 | `RESOURCE_EXHAUSTED` | 8  | `413` -- `CONTENT_TOO_LARGE` (`max_body_bytes` cap)
 | `UNAVAILABLE`        | 14 | `502` / `503` -- `UPSTREAM_ERROR`, `UPSTREAM_CIRCUIT_OPEN`, or upstream `h2` negotiation failure
-| `DEADLINE_EXCEEDED`  | 4  | `504` -- `UPSTREAM_TIMEOUT` (the upstream guard's fixed 30 s head timeout)
+| `DEADLINE_EXCEEDED`  | 4  | `504` -- `UPSTREAM_TIMEOUT` (the upstream guard's fixed 30 s per-attempt head timeout)
 |===
 
 [[_metrics]]
