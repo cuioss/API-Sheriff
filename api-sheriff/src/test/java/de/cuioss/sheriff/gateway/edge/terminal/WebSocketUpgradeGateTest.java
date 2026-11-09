@@ -47,6 +47,11 @@ class WebSocketUpgradeGateTest {
 
     private static final String UPGRADE_REQUIRED_CONNECTION = "Upgrade";
     private static final String WEBSOCKET = "websocket";
+    /** A valid origin-form request URI, the one every case sends unless it breaks the URI rule. */
+    private static final String REQUEST_URI = "/ws/room";
+    /** The {@code 413} of an over-bound declared body: no headers of its own, and the connection retired. */
+    private static final WebSocketUpgradeGate.Verdict CONTENT_TOO_LARGE =
+            new WebSocketUpgradeGate.Verdict.Refused(413, Map.of(), true);
 
     @Nested
     @DisplayName("a valid handshake is accepted")
@@ -56,7 +61,7 @@ class WebSocketUpgradeGateTest {
         @DisplayName("the canonical HTTP/1.1 handshake with a generated 16-byte key is accepted")
         void acceptsCanonicalHandshake() {
             assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, validHandshake()));
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, validHandshake()));
         }
 
         @Test
@@ -67,7 +72,7 @@ class WebSocketUpgradeGateTest {
                     .set(WebSocketUpgradeGate.UPGRADE_HEADER, mixedCase(WEBSOCKET));
 
             assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -78,7 +83,7 @@ class WebSocketUpgradeGateTest {
                     .set(WebSocketUpgradeGate.UPGRADE_HEADER, "foo/1, websocket");
 
             assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -90,7 +95,7 @@ class WebSocketUpgradeGateTest {
                     .add(WebSocketUpgradeGate.CONNECTION_HEADER, "Upgrade");
 
             assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
     }
 
@@ -103,7 +108,7 @@ class WebSocketUpgradeGateTest {
         @DisplayName("a valid handshake sent with another method is refused 405 naming GET as the only allowed one")
         void refusesNonGetMethod(String method) {
             assertEquals(refused(405, Map.of("Allow", "GET")),
-                    WebSocketUpgradeGate.judge(HttpMethod.valueOf(method), HttpVersion.HTTP_1_1, validHandshake()));
+                    judge(HttpMethod.valueOf(method), HttpVersion.HTTP_1_1, validHandshake()));
         }
     }
 
@@ -114,14 +119,14 @@ class WebSocketUpgradeGateTest {
         @Test
         @DisplayName("HTTP/2 is refused 426 without Upgrade or Connection, both forbidden on HTTP/2")
         void refusesHttp2WithoutConnectionSpecificHeaders() {
-            assertEquals(refused(426, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_2, validHandshake()));
+            assertEquals(refused(426, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_2, validHandshake()));
         }
 
         @Test
         @DisplayName("HTTP/1.0 is refused 426 naming the websocket protocol")
         void refusesHttp10NamingTheProtocol() {
             assertEquals(refused(426, upgradeHeaders()),
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_0, validHandshake()));
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_0, validHandshake()));
         }
 
         @Test
@@ -130,7 +135,7 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake();
             headers.remove(WebSocketUpgradeGate.CONNECTION_HEADER);
 
-            assertEquals(refused(426, upgradeHeaders()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -138,7 +143,7 @@ class WebSocketUpgradeGateTest {
         void refusesConnectionWithoutWholeToken() {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONNECTION_HEADER, "keep-alive, upgraded");
 
-            assertEquals(refused(426, upgradeHeaders()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -147,7 +152,7 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake();
             headers.remove(WebSocketUpgradeGate.UPGRADE_HEADER);
 
-            assertEquals(refused(426, upgradeHeaders()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -156,14 +161,14 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.UPGRADE_HEADER,
                     Generators.letterStrings(3, 10).next() + "/2");
 
-            assertEquals(refused(426, upgradeHeaders()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
         @DisplayName("a plain GET carrying none of the handshake headers is refused 426")
         void refusesPlainGet() {
             assertEquals(refused(426, upgradeHeaders()),
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, MultiMap.caseInsensitiveMultiMap()));
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, MultiMap.caseInsensitiveMultiMap()));
         }
 
         @ParameterizedTest(name = "Sec-WebSocket-Version: {0}")
@@ -174,7 +179,7 @@ class WebSocketUpgradeGateTest {
 
             Map<String, String> expected = new LinkedHashMap<>(upgradeHeaders());
             expected.put(WebSocketUpgradeGate.VERSION_HEADER, "13");
-            assertEquals(refused(426, expected), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(426, expected), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
     }
 
@@ -188,7 +193,7 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake();
             headers.remove(WebSocketUpgradeGate.VERSION_HEADER);
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -196,7 +201,7 @@ class WebSocketUpgradeGateTest {
         void refusesBlankVersion() {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.VERSION_HEADER, "   ");
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -205,7 +210,7 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake();
             headers.remove(WebSocketUpgradeGate.KEY_HEADER);
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @ParameterizedTest(name = "{0} decoded bytes")
@@ -214,7 +219,7 @@ class WebSocketUpgradeGateTest {
         void refusesKeyOfWrongDecodedLength(int length) {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, keyOfLength(length));
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @ParameterizedTest(name = "Sec-WebSocket-Key: {0}")
@@ -224,7 +229,7 @@ class WebSocketUpgradeGateTest {
         void refusesNonBase64Key(String key) {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, key);
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -232,7 +237,7 @@ class WebSocketUpgradeGateTest {
         void refusesRepeatedVersionLine() {
             MultiMap headers = validHandshake().add(WebSocketUpgradeGate.VERSION_HEADER, "8");
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -240,7 +245,7 @@ class WebSocketUpgradeGateTest {
         void refusesRepeatedKeyLine() {
             MultiMap headers = validHandshake().add(WebSocketUpgradeGate.KEY_HEADER, keyOfLength(16));
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @ParameterizedTest(name = "the RFC 6455 sample key with {0} of its two padding characters cut off")
@@ -251,7 +256,7 @@ class WebSocketUpgradeGateTest {
             String key = rfcSampleKey.substring(0, rfcSampleKey.length() - paddingCutOff);
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, key);
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -260,7 +265,91 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, "dGhlIHNhbXBsZSBub25jZQ==");
 
             assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+    }
+
+    /**
+     * vertx-core 4.5.34 buffers at most 8192 bytes of a handshake request body and answers a larger one
+     * {@code 413} with a connection close ({@code Http1xServerRequest.webSocket()}); the gate refuses
+     * the same body from its declared length.
+     */
+    @Nested
+    @DisplayName("a handshake declaring a body above 8192 bytes is refused 413 and retires its connection")
+    class ContentTooLarge {
+
+        @ParameterizedTest(name = "Content-Length: {0}")
+        @ValueSource(strings = {"8193", "65536", "9223372036854775807"})
+        @DisplayName("a declared Content-Length above 8192 is refused 413, closing the connection")
+        void refusesDeclaredLengthAboveTheBound(String contentLength) {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, contentLength);
+
+            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @Test
+        @DisplayName("a generated declared length above the bound is refused 413")
+        void refusesGeneratedLengthAboveTheBound() {
+            long declared = Generators.longs(WebSocketUpgradeGate.MAX_HANDSHAKE_BODY + 1, Long.MAX_VALUE).next();
+            MultiMap headers = validHandshake()
+                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, Long.toString(declared));
+
+            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @ParameterizedTest(name = "Content-Length: {0}")
+        @ValueSource(strings = {"-1", "+1", "1e3", "abc", "", "99999999999999999999"})
+        @DisplayName("a declared Content-Length that is no decimal number within a long is refused 413 like an over-bound one")
+        void refusesNonDecimalDeclaredLength(String contentLength) {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, contentLength);
+
+            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @ParameterizedTest(name = "Content-Length: {0}")
+        @ValueSource(strings = {"8192", "0", "1"})
+        @DisplayName("boundary: a declared Content-Length of at most 8192 is accepted, 8192 itself included")
+        void acceptsDeclaredLengthWithinTheBound(String contentLength) {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, contentLength);
+
+            assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @Test
+        @DisplayName("an over-bound length on any of several Content-Length lines is refused 413")
+        void refusesOverBoundLengthOnAnyLine() {
+            MultiMap headers = validHandshake().add(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, "0")
+                    .add(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, "8193");
+
+            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+    }
+
+    /**
+     * vertx-core 4.5.34 composes the handshake's WebSocket location from the request URI and answers
+     * {@code 400} when {@code new URI(request.uri())} fails ({@code HttpUtils.getWebSocketLocation},
+     * {@code Http1xServerConnection.createHandshaker}).
+     */
+    @Nested
+    @DisplayName("a handshake whose request URI does not parse is refused 400")
+    class UnparseableRequestUri {
+
+        @ParameterizedTest(name = "request URI: {0}")
+        @ValueSource(strings = {"/ws/room?a|b", "/ws/room?q={x}", "/ws/room?a^b", "/ws/ro om", "/ws/%zz",
+                "/ws/room#a#b"})
+        @DisplayName("a request URI java.net.URI cannot parse is refused 400, keeping the connection")
+        void refusesUnparseableRequestUri(String requestUri) {
+            assertEquals(refused(400, Map.of()),
+                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, requestUri, validHandshake()));
+        }
+
+        @ParameterizedTest(name = "request URI: {0}")
+        @ValueSource(strings = {"/ws/room?a=b&c=%20d", "http://gw.example.com/ws/room", "/ws/room#top", "/"})
+        @DisplayName("control: an origin-form, absolute-form or fragment-carrying URI that parses is accepted")
+        void acceptsParseableRequestUri(String requestUri) {
+            assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
+                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, requestUri, validHandshake()));
         }
     }
 
@@ -272,7 +361,7 @@ class WebSocketUpgradeGateTest {
         @EnumSource(value = HttpVersion.class, names = {"HTTP_1_0", "HTTP_2"})
         @DisplayName("the HTTP version is judged first: a request that breaks every rule is refused for its version")
         void versionIsJudgedFirst(HttpVersion version) {
-            WebSocketUpgradeGate.Verdict verdict = WebSocketUpgradeGate.judge(HttpMethod.GET, version, MultiMap.caseInsensitiveMultiMap());
+            WebSocketUpgradeGate.Verdict verdict = judge(HttpMethod.GET, version, MultiMap.caseInsensitiveMultiMap());
 
             assertEquals(426, assertInstanceOf(WebSocketUpgradeGate.Verdict.Refused.class, verdict).status());
         }
@@ -280,7 +369,7 @@ class WebSocketUpgradeGateTest {
         @Test
         @DisplayName("the method is judged first: an HTTP/2 POST that breaks every other rule is refused 405")
         void methodIsJudgedFirst() {
-            WebSocketUpgradeGate.Verdict verdict = WebSocketUpgradeGate.judge(HttpMethod.POST, HttpVersion.HTTP_2,
+            WebSocketUpgradeGate.Verdict verdict = judge(HttpMethod.POST, HttpVersion.HTTP_2,
                     MultiMap.caseInsensitiveMultiMap());
 
             assertEquals(405, assertInstanceOf(WebSocketUpgradeGate.Verdict.Refused.class, verdict).status());
@@ -292,7 +381,7 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.VERSION_HEADER, "8")
                     .add(WebSocketUpgradeGate.VERSION_HEADER, "8");
 
-            assertEquals(refused(400, Map.of()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -300,7 +389,7 @@ class WebSocketUpgradeGateTest {
         void tokensAreJudgedBeforeTheKey() {
             MultiMap headers = MultiMap.caseInsensitiveMultiMap().set(WebSocketUpgradeGate.KEY_HEADER, "short");
 
-            assertEquals(refused(426, upgradeHeaders()), WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -310,7 +399,34 @@ class WebSocketUpgradeGateTest {
                     .set(WebSocketUpgradeGate.KEY_HEADER, "short");
 
             assertEquals(426, assertInstanceOf(WebSocketUpgradeGate.Verdict.Refused.class,
-                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers)).status());
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers)).status());
+        }
+
+        @Test
+        @DisplayName("the key is judged before the declared length: a bad key with an over-bound body is refused 400")
+        void keyIsJudgedBeforeTheDeclaredLength() {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, "short")
+                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, "8193");
+
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @Test
+        @DisplayName("the declared length is judged before the request URI: both broken is refused 413")
+        void declaredLengthIsJudgedBeforeTheRequestUri() {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, "8193");
+
+            assertEquals(CONTENT_TOO_LARGE,
+                    WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, "/ws/room?a|b", headers));
+        }
+
+        @Test
+        @DisplayName("the version is judged before the request URI: an HTTP/2 request with an unparseable URI is refused 426")
+        void versionIsJudgedBeforeTheRequestUri() {
+            WebSocketUpgradeGate.Verdict verdict = WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_2,
+                    "/ws/room?a|b", validHandshake());
+
+            assertEquals(refused(426, Map.of()), verdict);
         }
     }
 
@@ -318,7 +434,7 @@ class WebSocketUpgradeGateTest {
     @DisplayName("a refusal's headers cannot be changed after the verdict was made")
     void refusalHeadersAreUnmodifiable() {
         WebSocketUpgradeGate.Verdict.Refused refused = assertInstanceOf(WebSocketUpgradeGate.Verdict.Refused.class,
-                WebSocketUpgradeGate.judge(HttpMethod.GET, HttpVersion.HTTP_1_1, MultiMap.caseInsensitiveMultiMap()));
+                judge(HttpMethod.GET, HttpVersion.HTTP_1_1, MultiMap.caseInsensitiveMultiMap()));
         Map<String, String> headers = refused.headers();
 
         assertThrows(UnsupportedOperationException.class, () -> headers.put("X-Injected", "value"));
@@ -358,7 +474,13 @@ class WebSocketUpgradeGateTest {
                 WebSocketUpgradeGate.CONNECTION_HEADER, UPGRADE_REQUIRED_CONNECTION);
     }
 
+    /** Judges a handshake sent to the valid request URI {@link #REQUEST_URI}. */
+    private static WebSocketUpgradeGate.Verdict judge(HttpMethod method, HttpVersion version, MultiMap headers) {
+        return WebSocketUpgradeGate.judge(method, version, REQUEST_URI, headers);
+    }
+
+    /** A refusal that leaves the connection open, as every refusal but the {@code 413} does. */
     private static WebSocketUpgradeGate.Verdict refused(int status, Map<String, String> headers) {
-        return new WebSocketUpgradeGate.Verdict.Refused(status, headers);
+        return new WebSocketUpgradeGate.Verdict.Refused(status, headers, false);
     }
 }

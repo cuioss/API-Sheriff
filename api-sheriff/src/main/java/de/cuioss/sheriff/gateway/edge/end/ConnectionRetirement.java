@@ -33,9 +33,9 @@ import io.vertx.ext.web.RoutingContext;
  * Retires an HTTP/1.x connection whose request boundaries can no longer be trusted: after a framing
  * rejection — the framing gate's, or a body the dispatch could not finish reading. A connection so
  * marked is closed once its answer has been written, and a request that still arrives on it is never
- * processed (see {@link #isRetired}). A reserved-body {@code 413} closes its connection after the
- * answer too, but only through {@link #retireConnectionAfterResponse}: it is not recorded in the
- * retired set. An HTTP/2 rejection ends only its stream instead, through the one end rule
+ * processed (see {@link #isRetired}). A reserved-body {@code 413} and the WebSocket upgrade gate's
+ * {@code 413} close their connection after the answer too, but only through
+ * {@link #retireConnectionAfterResponse}: they are not recorded in the retired set. An HTTP/2 rejection ends only its stream instead, through the one end rule
  * ({@link ResponseEnds#endResponse}).
  * <p>
  * Thread-safe: the retired-connection set is synchronized, and a mark is recorded on the virtual
@@ -165,7 +165,7 @@ public final class ConnectionRetirement {
      * connection is closed once the response has been written. Must be called on the event loop,
      * before the response is ended.
      * <p>
-     * It has three callers, all for an HTTP/1.x request only — an HTTP/2 rejection ends just its
+     * It has four callers, all for an HTTP/1.x request only — an HTTP/2 rejection ends just its
      * stream instead (see {@link ResponseEnds#endResponse}) — and all retire the connection because
      * the bytes behind the rejected request cannot be trusted to frame the next one:
      * <ul>
@@ -177,6 +177,10 @@ public final class ConnectionRetirement {
      *       the next request framed on that connection, or pin the connection until the idle timeout —
      *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
      *       still tie up connections by repeatedly tripping the {@code 413};</li>
+     *   <li>the WebSocket upgrade gate's {@code 413} of a handshake declaring a {@code Content-Length}
+     *       above 8192 bytes — the body is never read, for the same reason as the reserved-body
+     *       {@code 413}, and vertx-core closes the connection on its own {@code 413} of an oversized
+     *       handshake body too ({@code TerminalDispatch.rejectWebSocketUpgrade});</li>
      *   <li>a framing rejection of an HTTP/1.x request — the framing gate's, or a body the dispatch
      *       could not finish reading (see {@link #markFramingRejection});</li>
      *   <li>the end of a relay that failed after a request body outlived the request-body deadline

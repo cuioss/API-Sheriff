@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.edge.terminal;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -36,9 +38,13 @@ import org.jspecify.annotations.Nullable;
  * handshake (RFC 6455 §4.2.1) before the edge spends anything on it — no session-relay tracking, no
  * relay sub-budget permit and no upstream dial happens for a request this gate refuses.
  * <p>
- * The rules are the gateway's own, read from the request's public method, version and headers; no
- * Vert.x internal API (such as {@code HttpUtils.canUpgradeToWebSocket}) is consulted. They are checked
- * in this order, and the first one broken decides the answer:
+ * The rules are the gateway's own, read from the request's public method, version, request URI and
+ * headers; no Vert.x internal API (such as {@code HttpUtils.canUpgradeToWebSocket} or
+ * {@code HttpUtils.getWebSocketLocation}) is consulted. Together they cover every refusal the HTTP/1.1
+ * upgrade path of vertx-core 4.5.34 itself answers ({@code Http1xServerRequest.webSocket()},
+ * {@code Http1xServerConnection.createHandshaker}), so no request the gate admits is refused by the
+ * HTTP stack after the edge has spent a relay permit and an upstream dial on it. They are checked in
+ * this order, and the first one broken decides the answer:
  * <ol>
  *   <li>the method is <strong>{@code GET}</strong> — an opening handshake is a {@code GET}
  *       (RFC 6455 §4.1, item 2), so any other method is refused {@code 405} with {@code Allow: GET}.
@@ -56,7 +62,21 @@ import org.jspecify.annotations.Nullable;
  *       (RFC 6455 §4.4);</li>
  *   <li>{@code Sec-WebSocket-Key} is present, is padded base64 (RFC 4648 §4) of exactly 24
  *       characters — 22 base64-alphabet characters followed by {@code ==} — and decodes to 16 bytes —
- *       refused {@code 400} otherwise (RFC 6455 §4.1, item 7).</li>
+ *       refused {@code 400} otherwise (RFC 6455 §4.1, item 7);</li>
+ *   <li>a declared {@code Content-Length} is at most 8192 bytes — refused {@code 413} otherwise, and
+ *       the connection is closed once the answer has been written, so the answer carries
+ *       {@code Connection: close} (see {@link Verdict.Refused#retiresConnection()}). Vert.x buffers at
+ *       most 8192 bytes of a handshake request body and answers a larger one {@code 413} and closes
+ *       the connection; the gate refuses the same body from its declared length, before a byte of it
+ *       is read. A declared length that is no decimal number is refused the same way, since it cannot
+ *       be shown to stay within the bound. A {@code GET} reaches the gate with a declared length only
+ *       under the {@code security_defaults.allow_get_with_content_length_body} opt-in, and never with
+ *       {@code Transfer-Encoding}: the framing gate refuses a declared length on {@code GET} without
+ *       that opt-in, and {@code Transfer-Encoding} on {@code GET} always, before route selection;</li>
+ *   <li>the request URI parses as a {@link URI} — refused {@code 400} otherwise. Vert.x composes the
+ *       handshake's WebSocket location from it and answers {@code 400} when it cannot be parsed. The
+ *       location's other part, the {@code Host} header, is concatenated as it is and never refused
+ *       there, so the gate adds no {@code Host} rule.</li>
  * </ol>
  * Token matching is case-insensitive and reads every value of the header as a comma-separated list,
  * across repeated header lines (RFC 9110 §5.3).
@@ -79,7 +99,15 @@ final class WebSocketUpgradeGate {
     static final int BAD_REQUEST = 400;
     /** The status of a request sent with another method than {@code GET}. */
     static final int METHOD_NOT_ALLOWED = 405;
+    /** The status of a handshake request declaring a body above {@link #MAX_HANDSHAKE_BODY}. */
+    static final int CONTENT_TOO_LARGE = 413;
+    /**
+     * The largest handshake request body, in bytes, vertx-core 4.5.34 buffers before it answers
+     * {@code 413} ({@code Http1xServerRequest.webSocket()}).
+     */
+    static final long MAX_HANDSHAKE_BODY = 8192;
     static final String ALLOW_HEADER = "Allow";
+    static final String CONTENT_LENGTH_HEADER = "Content-Length";
     /** The one WebSocket protocol version this gateway speaks (RFC 6455 §4.1). */
     static final String SUPPORTED_VERSION = "13";
     static final String CONNECTION_HEADER = "Connection";
@@ -97,6 +125,8 @@ final class WebSocketUpgradeGate {
      * (RFC 4648 §4) is 22 base64-alphabet characters followed by {@code ==}.
      */
     private static final Pattern KEY_SYNTAX = Pattern.compile("[A-Za-z0-9+/]{22}==");
+    /** A declared {@code Content-Length}: one or more ASCII digits, no sign (RFC 9110 §8.6). */
+    private static final Pattern DECIMAL_LENGTH = Pattern.compile("\\d+");
     private static final String TOKEN_SEPARATOR = ",";
 
     private WebSocketUpgradeGate() {
@@ -106,28 +136,30 @@ final class WebSocketUpgradeGate {
     /**
      * Judges the opening handshake of a request on a {@code protocol: websocket} route.
      *
-     * @param request the request to judge; only its method, version and headers are read
+     * @param request the request to judge; only its method, version, request URI and headers are read
      * @return {@link Verdict.Accepted} for a valid handshake, otherwise the {@link Verdict.Refused}
      * answer to send
      */
     static Verdict judge(HttpServerRequest request) {
         Objects.requireNonNull(request, "request");
-        return judge(request.method(), request.version(), request.headers());
+        return judge(request.method(), request.version(), request.uri(), request.headers());
     }
 
     /**
-     * Judges an opening handshake given as its method, its HTTP version and its headers — the body of
-     * {@link #judge(HttpServerRequest)}.
+     * Judges an opening handshake given as its method, its HTTP version, its request URI and its
+     * headers — the body of {@link #judge(HttpServerRequest)}.
      *
-     * @param method  the request method
-     * @param version the negotiated HTTP version of the request
-     * @param headers the request headers
+     * @param method     the request method
+     * @param version    the negotiated HTTP version of the request
+     * @param requestUri the request URI as received, the request-target of the request line
+     * @param headers    the request headers
      * @return {@link Verdict.Accepted} for a valid handshake, otherwise the {@link Verdict.Refused}
      * answer to send
      */
-    static Verdict judge(HttpMethod method, HttpVersion version, MultiMap headers) {
+    static Verdict judge(HttpMethod method, HttpVersion version, String requestUri, MultiMap headers) {
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(version, "version");
+        Objects.requireNonNull(requestUri, "requestUri");
         Objects.requireNonNull(headers, "headers");
         if (!HttpMethod.GET.equals(method)) {
             return new Verdict.Refused(METHOD_NOT_ALLOWED, Map.of(ALLOW_HEADER, HttpMethod.GET.name()));
@@ -154,7 +186,49 @@ final class WebSocketUpgradeGate {
         if (!isValidKey(trimmedOrNull(headers.get(KEY_HEADER)))) {
             return new Verdict.Refused(BAD_REQUEST, Map.of());
         }
+        // The body behind an over-bound declared length is never read, so it would frame the next
+        // request on this keep-alive connection: the connection is retired with the answer, as Vert.x
+        // closes it.
+        if (declaresBodyAboveBound(headers.getAll(CONTENT_LENGTH_HEADER))) {
+            return new Verdict.Refused(CONTENT_TOO_LARGE, Map.of(), true);
+        }
+        if (!isParseableUri(requestUri)) {
+            return new Verdict.Refused(BAD_REQUEST, Map.of());
+        }
         return Verdict.Accepted.INSTANCE;
+    }
+
+    /**
+     * @return whether any of {@code contentLengths} declares more than {@link #MAX_HANDSHAKE_BODY}
+     * bytes, or is no decimal number ({@code 1*DIGIT}, RFC 9110 §8.6) and so cannot be shown to stay
+     * within that bound
+     */
+    private static boolean declaresBodyAboveBound(List<String> contentLengths) {
+        for (String contentLength : contentLengths) {
+            String declared = contentLength.trim();
+            if (!DECIMAL_LENGTH.matcher(declared).matches()) {
+                return true;
+            }
+            try {
+                if (Long.parseLong(declared) > MAX_HANDSHAKE_BODY) {
+                    return true;
+                }
+            } catch (NumberFormatException _) {
+                // 1*DIGIT beyond the range of a long: far above the bound
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return whether {@code requestUri} parses as a {@link URI}, as Vert.x parses it */
+    private static boolean isParseableUri(String requestUri) {
+        try {
+            new URI(requestUri); // NOSONAR java:S1848 parsing is the check, the parsed URI is not needed
+            return true;
+        } catch (URISyntaxException _) {
+            return false;
+        }
     }
 
     /**
@@ -231,21 +305,37 @@ final class WebSocketUpgradeGate {
         /**
          * A request that is no valid opening handshake.
          *
-         * @param status  the status to answer with, {@code 405}, {@code 426} or {@code 400}
-         * @param headers the response headers to add before the answer, in the order to write them;
-         *                empty when there are none
+         * @param status            the status to answer with, {@code 405}, {@code 426}, {@code 400} or
+         *                          {@code 413}
+         * @param headers           the response headers to add before the answer, in the order to write
+         *                          them; empty when there are none
+         * @param retiresConnection whether the connection is closed once the answer has been written —
+         *                          the answer then carries {@code Connection: close}. Only the
+         *                          {@code 413} retires it: the declared body behind it is never read and
+         *                          would otherwise frame the next request on the connection
          * @since 1.0
          */
-        record Refused(int status, Map<String, String> headers) implements Verdict {
+        record Refused(int status, Map<String, String> headers, boolean retiresConnection) implements Verdict {
 
             /**
              * Copies {@code headers}, keeping their order.
              *
-             * @param status  the status to answer with
-             * @param headers the response headers to add
+             * @param status            the status to answer with
+             * @param headers           the response headers to add
+             * @param retiresConnection whether the connection is closed after the answer
              */
             public Refused {
                 headers = Collections.unmodifiableMap(new LinkedHashMap<>(headers));
+            }
+
+            /**
+             * A refusal that leaves the connection open.
+             *
+             * @param status  the status to answer with
+             * @param headers the response headers to add
+             */
+            public Refused(int status, Map<String, String> headers) {
+                this(status, headers, false);
             }
         }
     }

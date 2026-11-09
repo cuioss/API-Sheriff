@@ -117,19 +117,36 @@ contact* -- it takes no relay budget and the upstream is never dialled:
   base64 (RFC 4648 §4) of a 16-byte nonce: exactly 24 characters, the last two `==`
 | `400`
 | --
+
+| A declared `Content-Length` above 8192 bytes -- reachable only on a gateway that admits a `GET`
+  body through `security_defaults.allow_get_with_content_length_body`
+| `413`
+| `Connection: close` -- the gateway closes the connection after the answer, since the body is never
+  read
+
+| A request URI that cannot be parsed as a URI -- reached on a route with
+  `security_filter.profile: minimal`; under every other profile the route's query-parameter check
+  refuses such a URI before this one
+| `400`
+| --
 |===
 
 Each refusal has no body; like every response on the route, it carries the route's
 `security_headers` and any `Set-Cookie` line the session handling wrote for the request, such as a
 refreshed session cookie. The rules are checked in a fixed order -- the method,
-the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key --
-and the first one broken decides the answer. A WebSocket can only be opened over HTTP/1.1, so a client that
-negotiated HTTP/2 with the gateway has to offer HTTP/1.1 for its WebSocket connections.
+the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key, the
+declared body length, the request URI -- and the first one broken decides the answer. The last two
+mirror what the gateway's HTTP stack (vertx-core 4.5.34) would itself refuse in a handshake, so a
+request the gateway lets through is not refused by the stack after the upstream was dialled. A
+WebSocket can only be opened over HTTP/1.1, so a client that negotiated HTTP/2 with the gateway has to
+offer HTTP/1.1 for its WebSocket connections.
 
 *A failed client upgrade is answered `502`.* The gateway dials the upstream before it upgrades the
 client connection. If the upstream accepts the upgrade and the client upgrade then fails, the gateway
 closes the upstream connection and answers the client `502`. Where the HTTP stack has already refused
-the client's handshake itself -- with `400` or `426` on HTTP/1.1 -- that answer stands instead.
+the client's handshake itself -- with `400`, `405`, `413` or `426` on HTTP/1.1 -- that answer stands
+instead; each of those is a refusal the gateway's own check above answers first, so it is not expected
+for a request that check let through.
 
 === Tuning `websocket.idle_timeout_seconds`
 

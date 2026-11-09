@@ -259,8 +259,14 @@ public final class TerminalDispatch {
      * refused {@code 400}; a {@code Sec-WebSocket-Version} other than {@code 13} is refused
      * {@code 426} with {@code Sec-WebSocket-Version: 13}; a missing version, or a missing
      * {@code Sec-WebSocket-Key} or one that is not the padded base64 of a 16-byte nonce, is refused
-     * {@code 400}. A refusal releases the general admission permit through the shared guard and is
-     * logged at {@code DEBUG} with the route id and the answered status, and no request data. Without
+     * {@code 400}; a declared {@code Content-Length} above 8192 bytes is refused {@code 413} with
+     * {@code Connection: close}, and the connection is closed once the answer has been written, since
+     * the unread body behind it would frame the next request; a request URI that does not parse as a
+     * {@link java.net.URI} is refused {@code 400}. Those last two mirror the remaining refusals of the
+     * vertx-core 4.5.34 HTTP/1.1 upgrade path, so a request the gate admits is not refused by the HTTP
+     * stack after the upstream was dialed. A refusal releases the general admission permit through the
+     * shared guard and is logged at {@code DEBUG} with the route id and the answered status, and no
+     * request data. Without
      * the gate an HTTP/2 request or a plain {@code GET} would have dialed the upstream and held a permit
      * until the relay's client upgrade failed.
      * <p>
@@ -319,12 +325,13 @@ public final class TerminalDispatch {
         // A request that is no valid WebSocket opening handshake is refused here, before it is tracked,
         // takes a relay permit or dials the upstream: nothing it could not use is spent on it.
         if (WebSocketUpgradeGate.judge(ctx.request())
-                instanceof WebSocketUpgradeGate.Verdict.Refused(int status, Map<String, String> verdictHeaders)) {
+                instanceof WebSocketUpgradeGate.Verdict.Refused(int status, Map<String, String> verdictHeaders,
+                        boolean retiresConnection)) {
             LOGGER.debug("Request on WebSocket route '%s' is no valid WebSocket upgrade — refusing it with %s",
                     route.id(), status);
             edgeAdmission.releaseAdmission(ctx, admissionGuard);
             ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, verdictHeaders,
-                    refusalSetCookies, status));
+                    refusalSetCookies, status, retiresConnection));
             return;
         }
         String remainder = EdgeRequests.remainderAfterMatchKey(route, EdgeRequests.requireCanonicalPath(request));
@@ -350,7 +357,7 @@ public final class TerminalDispatch {
                         route.id());
                 edgeAdmission.releaseAdmission(ctx, admissionGuard);
                 ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, Map.of(),
-                        refusalSetCookies, SERVICE_UNAVAILABLE));
+                        refusalSetCookies, SERVICE_UNAVAILABLE, false));
                 return;
             }
             sessionRelay = tracked.get();
@@ -364,7 +371,7 @@ public final class TerminalDispatch {
                     route.id());
             edgeAdmission.releaseAdmission(ctx, admissionGuard);
             ctx.vertx().runOnContext(v -> rejectWebSocketUpgrade(ctx, refusalHeaders, Map.of(),
-                    refusalSetCookies, SERVICE_UNAVAILABLE));
+                    refusalSetCookies, SERVICE_UNAVAILABLE, false));
             return;
         }
         ResponseEnds.applyStageSetCookies(ctx.response(), request.responseSetCookies());
@@ -382,16 +389,20 @@ public final class TerminalDispatch {
      * {@code ownHeaders} — the gate verdict's {@code Allow}, {@code Upgrade}, {@code Connection} or
      * {@code Sec-WebSocket-Version}, which win over a gateway header of the same name — then the
      * pipeline's {@code Set-Cookie} lines, then the status through {@link ResponseEnds#reject}. A
-     * response that has already ended is left as it is.
+     * refusal that retires its connection — the gate's {@code 413}, whose declared body is never read —
+     * additionally advertises {@code Connection: close} and closes the connection once the answer has
+     * been written ({@link ConnectionRetirement#retireConnectionAfterResponse}). A response that has
+     * already ended is left as it is.
      *
-     * @param ctx            the refused request
-     * @param gatewayHeaders the route's gateway-authored response headers, snapshotted before the hop
-     * @param ownHeaders     the headers the refusal itself carries; empty when there are none
-     * @param setCookies     the pipeline's {@code Set-Cookie} values, snapshotted before the hop
-     * @param status         the status to answer with
+     * @param ctx               the refused request
+     * @param gatewayHeaders    the route's gateway-authored response headers, snapshotted before the hop
+     * @param ownHeaders        the headers the refusal itself carries; empty when there are none
+     * @param setCookies        the pipeline's {@code Set-Cookie} values, snapshotted before the hop
+     * @param status            the status to answer with
+     * @param retiresConnection whether the connection is closed once the answer has been written
      */
     private static void rejectWebSocketUpgrade(RoutingContext ctx, Map<String, String> gatewayHeaders,
-            Map<String, String> ownHeaders, List<String> setCookies, int status) {
+            Map<String, String> ownHeaders, List<String> setCookies, int status, boolean retiresConnection) {
         HttpServerResponse response = ctx.response();
         if (response.ended()) {
             return;
@@ -399,6 +410,9 @@ public final class TerminalDispatch {
         gatewayHeaders.forEach(response::putHeader);
         ownHeaders.forEach(response::putHeader);
         ResponseEnds.applyStageSetCookies(response, setCookies);
+        if (retiresConnection) {
+            ConnectionRetirement.retireConnectionAfterResponse(ctx);
+        }
         ResponseEnds.reject(ctx, status);
     }
 
