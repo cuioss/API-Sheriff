@@ -75,12 +75,19 @@ login-initiation rate limiter is out of scope (`rate_limit` stays planned).
 ## Claim Labels
 
 - OBSERVED: `store()` puts the record and calls `evictOldestBeyondCapacity()`, which removes the oldest records by insertion order with no liveness or expiry check; expired records are dropped only on `consume` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/InMemoryPendingAuthorizationStore.java` § `store` / `evictOldestBeyondCapacity` / `consume`
+  - verdict: corroborated | checked_at: 3eef748b | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: base 3eef748b^1 InMemoryPendingAuthorizationStore.store put + evictOldestBeyondCapacity, no expiry test; expiry only in consume
 - OBSERVED: the bound is `DEFAULT_MAX_PENDING = 10_000`, one per-process store shared by login, step-up and widening — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § `DEFAULT_MAX_PENDING` and the store construction
+  - verdict: corroborated | checked_at: 3eef748b | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: base BffRuntimeProducer DEFAULT_MAX_PENDING = 10_000, one store instance shared by LoginFlow, SessionWidening, StepUpCoordinator
 - OBSERVED: the three producers call `pendingStore.store(pending)` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/SessionWidening.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java` § `store` call sites
+  - verdict: corroborated | checked_at: 3eef748b | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: base LoginFlow:140, SessionWidening:173, StepUpCoordinator:178 call pendingStore.store
 - OBSERVED: the record TTL is a fixed 5 minutes — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationRecord.java` § `FIXED_TTL`
+  - verdict: corroborated | checked_at: 3eef748b | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: base PendingAuthorizationRecord FIXED_TTL = Duration.ofMinutes(5)
 - HYPOTHESIS: `LoginFlow` performs the PAR request (`authorization.authorize(scopes)`) before storing the record, so each flood request also costs one IdP round trip — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `authorize` call vs `store` call (verify-at-outline)
+  - verdict: corroborated | checked_at: 3eef748b | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: LoginFlow.initiate calls authorization.authorize(scopes) (the PAR push) before pendingStore.store, at base and at 3eef748b
 - HYPOTHESIS: no limiter of any kind applies to successful login initiations (`rate_limit` is planned, not implemented; `SourceGate` only counts pre-trust rejections) — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RateLimitConfig.java` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/SourceGate.java` § `admit` (verify-at-outline)
+  - verdict: corroborated | checked_at: 3eef748b | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: RateLimitConfig is planned-not-implemented and read by no request-time component; SourceGate.admit only admits reported rejections; only the global, non-per-caller EdgeAdmission cap applies
 - HYPOTHESIS (derived count): the flood rates (≈330 req/s for a 30 s window, ≈5,000 req/s for 2 s) are arithmetic `10,000 / window`, not measurements — confirm/refute by the deliverable-4 tests at store level; no load test is required
+  - verdict: corroborated | checked_at: 3eef748b | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: arithmetic on the 10,000 bound (330/s x 30 s, 5,000/s x 2 s), labelled as derived
 - Verify-first clause: before scoping deliverable 2, settle how the BFF reserved-path request (`BffRuntime.ReservedHttpRequest` / `ReservedPathHandler`) can carry the canonical source key computed at the edge, without the BFF package depending on edge internals beyond `SourceKeys`; if it cannot be plumbed cleanly, fall back to keying the quota on the peer address and record the decision.
 
 ## Expected Surface
@@ -103,6 +110,20 @@ login-initiation rate limiter is out of scope (`rate_limit` stays planned).
 - OBSERVED: `doc/LogMessages.adoc`
 - OBSERVED: `doc/security-threat-model.adoc` — pending-store residual
 - HYPOTHESIS: `doc/user/bff-session.adoc` — only if it documents login failure modes (verify-at-outline)
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/PassthroughRelay.java` — added at landing (2026-11-09): operator-authorised relayed-peer hand-over (PR #581); collided with PLAN-SEC-01
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/RelayedPeerRegistry.java` — added at landing: new class
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/TlsEdgeProducer.java` — added at landing; collided with PLAN-SEC-01
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/SniFrontListener.java` — added at landing; collided with PLAN-SEC-01
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/package-info.java` — added at landing
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/request/EdgeRequests.java` — added at landing: relayed-peer lookup
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/PipelineRequest.java` — added at landing
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` — added at landing
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/ErrorResponseWriter.java` — added at landing
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/ForwardedTrust.java` — added at landing: new class
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/PendingQuotaKeys.java` — added at landing: new class
+- OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/tls/SniFrontListenerTest.java` — added at landing; collided with PLAN-SEC-01
+- OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/tls/TlsEdgeProducerTest.java` — added at landing; collided with PLAN-SEC-01
+- OBSERVED: `doc/development/tls-edge.adoc` — added at landing; collided with PLAN-SEC-01
 
 ## Dependencies and Sequencing
 
