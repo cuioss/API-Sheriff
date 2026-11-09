@@ -588,7 +588,7 @@ public final class ForwardPolicyStage {
      * member re-admits nothing.
      */
     private static Set<String> readmittedNames(@Nullable List<String> headersAllow) {
-        if (headersAllow == null || headersAllow.isEmpty()) {
+        if (headersAllow == null) {
             return Set.of();
         }
         Set<String> readmitted = new LinkedHashSet<>();
