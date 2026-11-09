@@ -124,8 +124,9 @@ class RelayedPeerRegistryTest {
     /**
      * Behind the front, a miss on the terminated listener's port is reported, not merely absent: a
      * connection the relay never dialled and one whose session it already released both come back
-     * unattributed, as does a miss whose local address is unknown; a hit keeps its client and a
-     * connection on a known other listener stays neutral.
+     * unattributed, as does a miss whose local address is unknown; a hit on the terminated listener
+     * or an unknown local address keeps its client, and any connection on a known other listener —
+     * a hit included — stays neutral.
      */
     @Nested
     @DisplayName("attribute — behind the front, a terminated-listener miss is reported unattributed")
@@ -150,8 +151,35 @@ class RelayedPeerRegistryTest {
             registry.frontTerminatedListener(TERMINATED_PORT);
             registry.register(LEG, CLIENT_A);
 
-            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED,
+            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED_CONNECTION,
                     registry.attribute(ON_TERMINATED, SocketAddress.inetSocketAddress(50002, LOOPBACK)));
+        }
+
+        @Test
+        @DisplayName("behind the front, a registered relay leg arriving on a known other listener is neutral")
+        void hitOnOtherListenerIsNeutral() {
+            registry.frontTerminatedListener(TERMINATED_PORT);
+            registry.register(LEG, CLIENT_A);
+
+            RelayedPeerRegistry.Attribution attribution = registry.attribute(ON_OTHER_LISTENER, LEG);
+
+            assertAll(
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.NONE, attribution,
+                            "the relay dials only the terminated listener, so a hit elsewhere names no client"),
+                    () -> assertNull(attribution.clientAddress()),
+                    () -> assertFalse(attribution.unattributed()));
+        }
+
+        @Test
+        @DisplayName("control: without a front a registered relay leg names its client on any listener")
+        void withoutFrontHitOnAnyListenerNamesTheClient() {
+            registry.register(LEG, CLIENT_A);
+
+            assertAll(
+                    () -> assertEquals(new RelayedPeerRegistry.Attribution(CLIENT_A, false),
+                            registry.attribute(ON_OTHER_LISTENER, LEG)),
+                    () -> assertEquals(new RelayedPeerRegistry.Attribution(CLIENT_A, false),
+                            registry.attribute(ON_TERMINATED, LEG)));
         }
 
         @Test
@@ -162,7 +190,7 @@ class RelayedPeerRegistryTest {
 
             registration.release();
 
-            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED, registry.attribute(ON_TERMINATED, LEG));
+            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED_CONNECTION, registry.attribute(ON_TERMINATED, LEG));
         }
 
         @Test
@@ -181,13 +209,14 @@ class RelayedPeerRegistryTest {
             registry.register(LEG, CLIENT_A);
 
             assertAll(
-                    () -> assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED,
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED_CONNECTION,
                             registry.attribute(null, SocketAddress.inetSocketAddress(50002, LOOPBACK)),
                             "an unknown local address cannot be shown to be another listener"),
-                    () -> assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED, registry.attribute(null, null),
+                    () -> assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED_CONNECTION,
+                            registry.attribute(null, null),
                             "neither address known is unattributed too"),
                     () -> assertEquals(new RelayedPeerRegistry.Attribution(CLIENT_A, false), registry.attribute(null, LEG),
-                            "a hit names its client whatever the local address"));
+                            "a hit on an unknown local address cannot be ruled out as the terminated listener"));
         }
 
         @Test

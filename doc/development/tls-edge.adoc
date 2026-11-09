@@ -170,8 +170,12 @@ leg's local socket address (host and port) against the client's address in the
 `RelayedPeerRegistry` after the dial succeeds and before it writes the buffered ClientHello, and
 releases the entry when the session closes on either leg. The edge records the client's address on
 the request only on an exact hit for the request connection's remote address, so a connection the
-relay did not dial gets nothing, whatever it sends. The address feeds only the pending-login quota
-key (`PendingQuotaKeys`); the TCP peer every other stage reads stays the relay leg.
+relay did not dial gets nothing, whatever it sends. Once the internal HTTPS port is recorded (see
+below), a hit is honoured only when the request arrived on that port or on a local address the
+transport did not supply; a hit on a connection whose known local port is another listener's names no
+client and is not marked either, since the relay dials no other listener. The address feeds only the
+pending-login quota key (`PendingQuotaKeys`); the TCP peer every other stage reads stays the relay
+leg.
 
 The quota key fails closed without that hit. When `tls.passthrough_sni` is set, `TlsEdgeProducer`
 records the internal HTTPS port in the registry, and a request without an exact hit -- a connection
@@ -180,9 +184,9 @@ the relay never dialled, or one whose relay session has already ended -- is mark
 address the transport did not supply is marked unattributed too: without it the registry cannot
 show that the request arrived on another listener, so it fails closed. `PendingQuotaKeys` keys such
 a request on its own TCP peer and never reads its `X-Forwarded-For` or `Forwarded` header for it,
-even when that peer is listed in `forwarded.trusted_proxies`. A registry hit keeps the relayed
-client's address, and without a front listener no request is marked, so the forwarded-header rules
-apply exactly as configured.
+even when that peer is listed in `forwarded.trusted_proxies`. A registry hit honoured under the rule
+above keeps the relayed client's address, and without a front listener every hit is honoured and no
+request is marked, so the forwarded-header rules apply exactly as configured.
 
 `TlsEdgeProducer` builds the immutable SNI -> `RelayTarget` map from `GatewayConfig.tls()` and the
 resolved topology. Per link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] an

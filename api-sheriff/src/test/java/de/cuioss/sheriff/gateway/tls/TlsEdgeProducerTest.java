@@ -382,7 +382,7 @@ class TlsEdgeProducerTest {
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, new ResolvedTopology(Map.of()), NO_ROUTES,
                     HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
 
-            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED,
+            assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED_CONNECTION,
                     producer.relayedPeerRegistry().attribute(onTerminated, unregisteredLeg));
         }
 

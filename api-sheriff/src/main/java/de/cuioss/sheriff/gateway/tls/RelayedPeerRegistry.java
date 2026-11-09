@@ -38,6 +38,12 @@ import org.jspecify.annotations.Nullable;
  * not hold yields nothing, so a client that reaches the internal listener directly, or sends any
  * header, cannot supply an address. No header is read.
  * <p>
+ * <strong>Behind the front, a hit is honoured only on the terminated listener.</strong> Once the
+ * front listener is known ({@link #frontTerminatedListener}), an exact hit names its client only when
+ * the connection's local port is the terminated listener's port, or when the transport supplied no
+ * local address; a hit on a connection whose known local port is another listener's is
+ * {@linkplain Attribution#NONE neutral}, since the relay never dials any other listener.
+ * <p>
  * <strong>A miss on the terminated listener is reported, not just absent.</strong> Once the front
  * listener is known to relay to the internal terminated listener ({@link #frontTerminatedListener}),
  * a connection that arrived on that listener's port without an exact hit — one the relay never
@@ -70,9 +76,9 @@ public final class RelayedPeerRegistry {
     /**
      * Records that the SNI front listener relays terminated connections to the internal listener on
      * {@code port}. From then on a connection without an exact hit can be reported
-     * {@linkplain Attribution#unattributed() unattributed}, as {@link #attribute} states. Set once,
-     * before the first request can
-     * reach the edge; setting the same port again changes nothing.
+     * {@linkplain Attribution#unattributed() unattributed}, and a hit is honoured only on this port or
+     * on an unknown local address, as {@link #attribute} states. Set once, before the first request
+     * can reach the edge; setting the same port again changes nothing.
      *
      * @param port the local port of the internal terminated listener, {@code 1..65535}
      * @throws IllegalArgumentException when {@code port} is outside {@code 1..65535}
@@ -105,8 +111,15 @@ public final class RelayedPeerRegistry {
 
     /**
      * What the registry knows about the connection a request arrived on: the relayed client's address
-     * on an exact hit, else whether the connection, behind the front and without one, arrived on the
-     * terminated listener's port or on an unknown local address.
+     * on an exact hit the registry honours, else whether the connection, behind the front and without
+     * one, arrived on the terminated listener's port or on an unknown local address.
+     *
+     * <p>
+     * Behind the front, a hit is honoured only on the terminated listener: the relay dials nothing
+     * else, so a connection whose known local port is another listener's yields
+     * {@link Attribution#NONE} even when its remote address matches a registered relay leg. A hit
+     * whose local address is unknown is honoured, because the registry cannot rule out that it
+     * arrived on the terminated listener. Without a front listener every hit names its client.
      *
      * <p>
      * Behind the front, a miss whose local address is unknown fails closed: without a local address
@@ -117,23 +130,25 @@ public final class RelayedPeerRegistry {
      *                                {@code null} when the transport supplied none
      * @param connectionRemoteAddress the remote socket address of the connection a request arrived on,
      *                                {@code null} when the transport supplied none
-     * @return the attribution; {@link Attribution#UNATTRIBUTED} for a miss behind the front whose
-     *         local address is the terminated listener's port or unknown; {@link Attribution#NONE} for
-     *         a miss with no front listener configured, or one whose known local port is another
-     *         listener's
+     * @return the attribution; the relayed client for a hit with no front listener configured, or for
+     *         a hit behind the front whose local address is the terminated listener's port or unknown;
+     *         {@link Attribution#UNATTRIBUTED_CONNECTION} for a miss behind the front whose local
+     *         address is the terminated listener's port or unknown; {@link Attribution#NONE} for a miss
+     *         with no front listener configured, or for any connection behind the front whose known
+     *         local port is another listener's
      */
     public Attribution attribute(@Nullable SocketAddress connectionLocalAddress,
             @Nullable SocketAddress connectionRemoteAddress) {
         Optional<String> client = clientOf(connectionRemoteAddress);
-        if (client.isPresent()) {
-            return new Attribution(client.get(), false);
-        }
         int port = terminatedListenerPort.get();
         if (port == NOT_FRONTED) {
-            return Attribution.NONE;
+            return client.map(address -> new Attribution(address, false)).orElse(Attribution.NONE);
         }
         boolean mayBeTerminatedListener = connectionLocalAddress == null || connectionLocalAddress.port() == port;
-        return mayBeTerminatedListener ? Attribution.UNATTRIBUTED : Attribution.NONE;
+        if (!mayBeTerminatedListener) {
+            return Attribution.NONE;
+        }
+        return client.map(address -> new Attribution(address, false)).orElse(Attribution.UNATTRIBUTED_CONNECTION);
     }
 
     /**
@@ -170,7 +185,9 @@ public final class RelayedPeerRegistry {
      * client's address, or the {@code unattributed} mark of a connection behind the front that arrived
      * without a hand-off on the terminated listener's port or on an unknown local address.
      *
-     * @param clientAddress the relayed client's address on an exact hit; {@code null} otherwise
+     * @param clientAddress the relayed client's address on an exact hit the registry honours — any hit
+     *                      without a front listener, and behind the front only a hit on the terminated
+     *                      listener's port or on an unknown local address; {@code null} otherwise
      * @param unattributed  {@code true} when the connection arrived behind the front, on the terminated
      *                      listener's port or on an unknown local address, and the registry holds no
      *                      entry for it
@@ -179,14 +196,17 @@ public final class RelayedPeerRegistry {
      */
     public record Attribution(@Nullable String clientAddress, boolean unattributed) {
 
-        /** A connection the registry neither attributes nor marks: no front, or a known other listener. */
+        /**
+         * A connection the registry neither attributes nor marks: a miss with no front, or — hit or
+         * miss — a connection behind the front on a known other listener.
+         */
         public static final Attribution NONE = new Attribution(null, false);
 
         /**
          * A connection behind the front that the registry holds no entry for, arriving on the
          * terminated listener or on an unknown local address.
          */
-        public static final Attribution UNATTRIBUTED = new Attribution(null, true);
+        public static final Attribution UNATTRIBUTED_CONNECTION = new Attribution(null, true);
 
         /**
          * Canonical constructor rejecting a verdict that both names a client and marks it unattributed.
