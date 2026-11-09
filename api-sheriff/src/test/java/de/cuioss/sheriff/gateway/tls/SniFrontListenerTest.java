@@ -538,19 +538,34 @@ class SniFrontListenerTest {
         private final CompletableFuture<Void> releaseDials = new CompletableFuture<>();
         /** Completed by the next dial the relay requests; replaced before every probe connection. */
         private volatile CompletableFuture<Void> nextDial = new CompletableFuture<>();
+        /** Every probe connection {@link #admitsAConnection} saw admitted, in order. */
+        private final List<ClientLeg> admittedProbes = new CopyOnWriteArrayList<>();
 
         @Test
         @DisplayName("a routed connection holds its slot while its backend dial is pending and returns it once the dial settles")
         void holdsItsSlotUntilTheDialSettles() throws Exception {
             Backend passthrough = startBackend(hello.length);
             SniFrontListener front = startHeldDialFront(passthrough.target());
-            holdTheOnlySlotWithAPendingDial(front);
+            ClientLeg dialling = holdTheOnlySlotWithAPendingDial(front);
 
             releaseDials.complete(null);
             Awaits.connect(passthrough.firstBytes(), "the released dial to establish the relay");
 
             Awaits.until(() -> admitsAConnection(front), "the slot of the connection whose dial settled to be returned",
                     Awaits.CONNECT_CEILING_SECONDS);
+
+            // Re-assert the awaited state: the returned slot admitted a probe, which the front routed
+            // and did not close, while the connection whose dial settled is still open — the slot came
+            // back because the dial settled, not because that connection went away
+            assertAll("the slot of the connection whose dial settled was returned",
+                    () -> assertEquals(1, admittedProbes.size(),
+                            "exactly one probe was admitted, the one the wait stopped on"),
+                    () -> assertFalse(admittedProbes.getFirst().closedNanos().isDone(),
+                            "the admitted probe was routed, not closed at accept"),
+                    () -> assertFalse(dialling.closedNanos().isDone(),
+                            "the connection whose dial settled is still open, so it did not return the slot by leaving"),
+                    () -> assertTrue(refusals.stream().allMatch(Refusal.CAP::equals),
+                            "every refusal while the slot was held was a cap refusal: " + refusals));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
@@ -569,6 +584,21 @@ class SniFrontListenerTest {
 
             Awaits.until(() -> admitsAConnection(front),
                     "the slot of the client that left during the dial to be returned", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Re-assert the awaited state: the returned slot admitted a probe whose own dial is now held,
+            // so that probe holds the cap's only slot again and the next connection is refused — the slot
+            // was returned once, not leaked twice
+            int refusalsBefore = refusals.size();
+            refuseNext(front);
+            assertAll("the slot of the client that left during the dial was returned exactly once",
+                    () -> assertEquals(1, admittedProbes.size(),
+                            "exactly one probe was admitted, the one the wait stopped on"),
+                    () -> assertFalse(admittedProbes.getFirst().closedNanos().isDone(),
+                            "the admitted probe was routed, not closed at accept"),
+                    () -> assertEquals(Refusal.CAP, refusals.get(refusalsBefore),
+                            "the admitted probe holds the returned slot, so the next connection is a cap refusal"),
+                    () -> assertTrue(refusals.stream().allMatch(Refusal.CAP::equals),
+                            "every refusal while the slot was held was a cap refusal: " + refusals));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
@@ -599,7 +629,9 @@ class SniFrontListenerTest {
 
         /**
          * Offers the front one more connection carrying a ClientHello. Admitted, it is routed and its
-         * backend dial requested; refused, it is closed at accept. Whichever happens first decides.
+         * backend dial requested; refused, it is closed at accept. Whichever happens first decides. An
+         * admitted probe is recorded in {@link #admittedProbes}, so the case can re-assert it after the
+         * wait.
          *
          * @return {@code true} when the connection was admitted
          */
@@ -610,7 +642,11 @@ class SniFrontListenerTest {
             probe.socket().write(Buffer.buffer(hello));
             Awaits.connect(CompletableFuture.anyOf(dialled, probe.closedNanos()),
                     "the front to admit or refuse the probe connection");
-            return dialled.isDone();
+            if (dialled.isDone()) {
+                admittedProbes.add(probe);
+                return true;
+            }
+            return false;
         }
     }
 
