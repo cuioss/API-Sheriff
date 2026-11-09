@@ -387,7 +387,7 @@ class SniFrontListenerTest {
                             "the WARN names the reason token: " + warnings.getFirst().getMessage()),
                     () -> assertFalse(warnings.getFirst().getMessage().contains(HOST),
                             "the WARN never names the peer address: " + warnings.getFirst().getMessage()),
-                    () -> assertEquals(2, refusalDebugLines("(cap)").size(),
+                    () -> assertEquals(2, debugLines("Front connection refused at accept (cap)").size(),
                             "every further refusal inside the window is a DEBUG diagnostic"),
                     () -> assertFalse(held.closedNanos().isDone(), "the connection holding the cap stays open"));
 
@@ -502,11 +502,6 @@ class SniFrontListenerTest {
         private static List<LogRecord> refusalWarnings() {
             return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
                     ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.resolveIdentifierString());
-        }
-
-        private static List<LogRecord> refusalDebugLines(String reasonToken) {
-            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG,
-                    "Front connection refused at accept " + reasonToken);
         }
 
         /**
@@ -948,10 +943,10 @@ class SniFrontListenerTest {
             }
             return false;
         }
+    }
 
-        private static List<LogRecord> debugLines(String text) {
-            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, text);
-        }
+    private static List<LogRecord> debugLines(String text) {
+        return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, text);
     }
 
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget)
