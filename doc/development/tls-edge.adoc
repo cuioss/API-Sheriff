@@ -143,6 +143,13 @@ wins the comparison, so the result is `max(gRPC stream-idle bound, longest WebSo
 never undercuts an inner bound -- the terminated listener then applies none of its own -- but it makes the
 relay the effective idle bound of every terminated connection behind the front.
 +
+*A refuted premise.* The work that reviewed this bound started from the assumption that
+`quarkus.http.idle-timeout=0` shortens the relay idle timeout. Reading `relayIdleTimeout(...)` refutes
+it: the method takes the longest of the inner bounds and adds the margin, so a zero HTTP idle timeout
+contributes no bound and cannot make the result shorter. The method body was therefore left unchanged,
+and the zero-HTTP-idle cases of `TlsEdgeProducerTest.RelayIdleTimeoutDerivation` pin that behaviour so a
+later change cannot turn the assumption true unnoticed.
++
 *Why the value stays derived and fixed (option b).* The alternative considered was a configuration key
 for the relay idle timeout (option a). It was rejected: the derivation already guarantees that the relay
 never undercuts an inner bound, and a configured value could break that guarantee; the only safe values

@@ -1751,8 +1751,11 @@ verdict of the whole offer, and that the 32 KiB bound fails closed however the b
 longest. Against the native image `TlsPassthroughIT` asserts that a silent connection and a half-sent
 ClientHello are closed without an answer within the 10 s deadline plus a 5 s margin
 (`silentConnectionIsClosedAtTheClientHelloDeadline`,
-`halfSentClientHelloIsClosedAtTheClientHelloDeadline`). No integration test exercises the cap or the
-relay idle timeout.
+`halfSentClientHelloIsClosedAtTheClientHelloDeadline`). The close is bounded from below as well: it
+must arrive no earlier than the deadline minus a slack of 1 s (`EARLY_CLOSE_SLACK`, which covers the
+deadline being armed at accept before the client starts its clock), so a connection closed at once --
+refused at accept, or closed for any other reason -- cannot pass as the deadline's close. No
+integration test exercises the cap or the relay idle timeout.
 
 [#gw-07-relay-failure-reset]
 *A client that leaves mid-response cannot keep an upstream connection leased.* Once the gateway hands
@@ -1773,7 +1776,13 @@ refusal, or by a gRPC call's stream-idle expiry -- is not reset again.
 *Status of this control:* COVERED. `GatewayEdgeRelayFailureResetTest` takes every connection the
 upstream client pools with an endless chunked answer whose client leaves after reading the response
 head, over HTTP/1.1 (`http1ClientClosingAfterTheHeadResetsTheUpstreamExchange`) and HTTP/2
-(`http2ClientResettingAfterTheHeadResetsTheUpstreamExchange`). It asserts that each upstream request is
+(`http2ClientResettingAfterTheHeadResetsTheUpstreamExchange`). The same two cases run against a quiet
+upstream, which sends the head and a first chunk and then nothing without ending its body: an HTTP/1.1
+client closing its connection
+(`http1ClientClosingAfterTheHeadOfAQuietUpstreamResetsTheUpstreamExchange`) and an HTTP/2 client
+resetting its stream (`http2ClientResettingAfterTheHeadOfAQuietUpstreamResetsTheUpstreamExchange`).
+There the relay has nothing to write, so no failed write reveals the departed client; the reset has to
+come from the client response closing before it ended. Each case asserts that each upstream request is
 reset within 2 s of its client leaving, and that a request that follows on the same route is then
 served within the same bound; without the reset that request waits on the exhausted pool. The stub
 upstream is HTTP/1.1, so the reset against an HTTP/2 upstream is not driven.
