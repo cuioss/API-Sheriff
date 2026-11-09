@@ -359,6 +359,60 @@ class TlsEdgeProducerTest {
         }
 
         /**
+         * The relay idle timeout {@code onStartup} derives reaches both legs of a relayed connection: the
+         * front server's options and the dial client's options. Both are observed through the
+         * package-private test seams rather than by waiting for an idle connection to close, which would
+         * make the test wait out the derived duration. A WebSocket route of one hour makes the derived
+         * value differ from the thirty-minute HTTP default, so the route table demonstrably reached the
+         * derivation {@code onStartup} ran.
+         */
+        @Test
+        @DisplayName("wires the derived relay idle timeout onto the front server and the dial client")
+        void wiresTheDerivedRelayIdleTimeoutOntoBothLegs() throws Exception {
+            int port = freePort();
+            RouteTable routes = new RouteTable(List.of(ConfigFixtures.route("ws", "/ws")
+                    .protocol(Protocol.WEBSOCKET)
+                    .upstream(WS_UPSTREAM)
+                    .effectiveWebSocketIdleTimeoutSeconds(3600)
+                    .build()));
+            TlsConfig tls = TlsConfig.builder()
+                    .passthroughSni(Map.of("sni.resolved.example", RESOLVED_ALIAS))
+                    .build();
+            GatewayConfig config = GatewayConfig.builder().version(1).tls(tls).build();
+            ResolvedTopology topology = new ResolvedTopology(Map.of(
+                    RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, routes, metrics,
+                    HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
+            Duration expected = Duration.ofSeconds(3600 + 60);
+            assertAll("control precondition: nothing is observable before onStartup",
+                    () -> assertTrue(producer.dialClientOptions().isEmpty(), "no dial client before startup"),
+                    () -> assertTrue(producer.frontListener().isEmpty(), "no front listener before startup"));
+
+            producer.onStartup(new StartupEvent());
+
+            try {
+                NetClientOptions dialClient = producer.dialClientOptions()
+                        .orElseThrow(() -> new AssertionError("onStartup built no dial client"));
+                SniFrontListener front = producer.frontListener()
+                        .orElseThrow(() -> new AssertionError("onStartup started no front listener"));
+                Duration frontIdleTimeout = front.appliedIdleTimeout()
+                        .orElseThrow(() -> new AssertionError("the started front listener applied no idle timeout"));
+                Duration dialIdleTimeout = Duration.of(dialClient.getIdleTimeout(),
+                        dialClient.getIdleTimeoutUnit().toChronoUnit());
+                assertAll("both relay legs carry the idle timeout derived from the route table",
+                        () -> assertEquals(expected, frontIdleTimeout,
+                                "the front server carries the longest WebSocket idle timeout plus the margin"),
+                        () -> assertEquals(expected, dialIdleTimeout,
+                                "the dial client carries the same idle timeout as the front server"),
+                        () -> assertEquals(10_000, dialClient.getConnectTimeout(),
+                                "the dial client onStartup built carries the fixed ten-second connect timeout"));
+            } finally {
+                producer.onShutdown(new ShutdownEvent());
+                awaitNotListening(port, "shutdown stops the started listener and releases the public port");
+            }
+        }
+
+        /**
          * The matched control for both negative cases. They read "onStartup returned quietly" as
          * "no bind was attempted"; that inference is only sound if a bind attempt against a held
          * port would in fact have been noisy. This pins that it is.
@@ -435,6 +489,9 @@ class TlsEdgeProducerTest {
                 // Act + Assert
                 assertDoesNotThrow(() -> producer.onStartup(new StartupEvent()),
                         "an empty passthrough map short-circuits before any bind is attempted");
+                assertAll("an unconfigured front builds neither relay leg",
+                        () -> assertTrue(producer.dialClientOptions().isEmpty(), "no dial client is built"),
+                        () -> assertTrue(producer.frontListener().isEmpty(), "no front listener is started"));
 
                 // Act + Assert — shutdown is a clean no-op because nothing was ever created
                 assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),

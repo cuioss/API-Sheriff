@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -224,6 +225,7 @@ public final class SniFrontListener {
     private final Map<Refusal, AtomicLong> lastWarnNanos = new EnumMap<>(Refusal.class);
 
     private @Nullable NetServer server;
+    private @Nullable NetServerOptions serverOptions;
 
     /**
      * Creates a front listener bound on the Vert.x default host ({@link NetServerOptions#DEFAULT_HOST},
@@ -313,6 +315,7 @@ public final class SniFrontListener {
     public Future<Void> start() {
         NetServerOptions options = new NetServerOptions();
         applyIdleTimeout(options, relayIdleTimeout);
+        this.serverOptions = options;
         NetServer netServer = vertx.createNetServer(options);
         netServer.connectHandler(this::onConnect);
         this.server = netServer;
@@ -341,6 +344,23 @@ public final class SniFrontListener {
     public int actualPort() {
         NetServer current = server;
         return current == null ? -1 : current.actualPort();
+    }
+
+    /**
+     * Test seam: the idle timeout {@link #start()} set on the front server's {@link NetServerOptions},
+     * read back from those options — count and unit as {@link #applyIdleTimeout} chose them — so a test
+     * can observe the bound the server was created with instead of waiting for it to elapse. Reading it
+     * changes nothing.
+     *
+     * @return the idle timeout applied to the front server, or empty when the listener has not been
+     *         started
+     */
+    Optional<Duration> appliedIdleTimeout() {
+        NetServerOptions current = serverOptions;
+        if (current == null) {
+            return Optional.empty();
+        }
+        return Optional.of(Duration.of(current.getIdleTimeout(), current.getIdleTimeoutUnit().toChronoUnit()));
     }
 
     /**

@@ -132,6 +132,7 @@ public class TlsEdgeProducer {
     private final RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
 
     private @Nullable NetClient netClient;
+    private @Nullable NetClientOptions dialClientOptions;
     private @Nullable SniFrontListener listener;
 
     /**
@@ -200,13 +201,39 @@ public class TlsEdgeProducer {
         }
         Duration relayIdleTimeout = relayIdleTimeout(httpIdleTimeout, routeTable);
         LOGGER.debug("Relay idle timeout derived as %s", relayIdleTimeout);
-        this.netClient = vertx.createNetClient(relayClientOptions(relayIdleTimeout));
+        NetClientOptions clientOptions = relayClientOptions(relayIdleTimeout);
+        this.dialClientOptions = clientOptions;
+        this.netClient = vertx.createNetClient(clientOptions);
         PassthroughRelay relay = new PassthroughRelay(netClient, relayedPeers);
         RelayTarget terminatedTarget = new RelayTarget(TERMINATED_HOST, internalHttpsPort);
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, publicPort,
                 relayIdleTimeout, this::recordRefusal);
         this.listener = front;
         awaitBind(front);
+    }
+
+    /**
+     * Test seam: the options {@link #onStartup} built the relay's dial client from, so a test can
+     * observe the idle and connect timeouts the client was created with instead of waiting for either to
+     * elapse. Reading them changes nothing: the returned value is a copy.
+     *
+     * @return a copy of the dial-client options, or empty when the front listener was not started —
+     *         before {@link #onStartup}, or because {@code tls.passthrough_sni} is empty
+     */
+    Optional<NetClientOptions> dialClientOptions() {
+        NetClientOptions current = dialClientOptions;
+        return current == null ? Optional.empty() : Optional.of(new NetClientOptions(current));
+    }
+
+    /**
+     * Test seam: the front listener {@link #onStartup} started, so a test can observe how its server
+     * was configured.
+     *
+     * @return the started front listener, or empty when it was not started — before
+     *         {@link #onStartup}, or because {@code tls.passthrough_sni} is empty
+     */
+    Optional<SniFrontListener> frontListener() {
+        return Optional.ofNullable(listener);
     }
 
     /**

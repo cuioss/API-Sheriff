@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -763,6 +765,192 @@ class SniFrontListenerTest {
                     () -> assertEquals(TimeUnit.MINUTES, options.getIdleTimeoutUnit()),
                     () -> assertEquals((beyond.toSeconds() + 59) / 60, options.getIdleTimeout(),
                             "the minutes are rounded up, so the timeout set is never shorter than the one given"));
+        }
+
+        @Test
+        @DisplayName("sets a duration beyond Integer.MAX_VALUE minutes in whole hours, rounded up, never shortened")
+        void beyondIntMinutesIsHoursRoundedUp() {
+            NetClientOptions options = new NetClientOptions();
+            // Integer.MAX_VALUE + 1 minutes = 2_147_483_648 minutes = 35_791_394 hours and 8 minutes
+            Duration beyond = Duration.ofMinutes(Integer.MAX_VALUE).plusMinutes(1);
+
+            SniFrontListener.applyIdleTimeout(options, beyond);
+
+            assertAll("a duration no int count of minutes carries falls back to hours",
+                    () -> assertEquals(TimeUnit.HOURS, options.getIdleTimeoutUnit()),
+                    () -> assertEquals(35_791_395, options.getIdleTimeout(),
+                            "the hours are rounded up, so the timeout set is never shorter than the one given"));
+        }
+
+        @Test
+        @DisplayName("sets a duration beyond Integer.MAX_VALUE hours in whole days, rounded up, never shortened")
+        void beyondIntHoursIsDaysRoundedUp() {
+            NetClientOptions options = new NetClientOptions();
+            // Integer.MAX_VALUE + 1 hours = 2_147_483_648 hours = 89_478_485 days and 8 hours
+            Duration beyond = Duration.ofHours(Integer.MAX_VALUE).plusHours(1);
+
+            SniFrontListener.applyIdleTimeout(options, beyond);
+
+            assertAll("a duration no int count of hours carries falls back to days",
+                    () -> assertEquals(TimeUnit.DAYS, options.getIdleTimeoutUnit()),
+                    () -> assertEquals(89_478_486, options.getIdleTimeout(),
+                            "the days are rounded up, so the timeout set is never shorter than the one given"));
+        }
+
+        @Test
+        @DisplayName("refuses a duration beyond Integer.MAX_VALUE days, which no unit Vert.x takes can carry")
+        void refusesADurationBeyondIntDays() {
+            NetClientOptions options = new NetClientOptions();
+            Duration beyond = Duration.ofDays(Integer.MAX_VALUE).plusDays(1);
+
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> SniFrontListener.applyIdleTimeout(options, beyond));
+
+            assertTrue(refused.getMessage().contains("too long"),
+                    "the refusal names why no unit carries the timeout: " + refused.getMessage());
+        }
+
+        @Test
+        @DisplayName("control: still sets exactly Integer.MAX_VALUE days, the longest timeout any unit carries")
+        void setsExactlyIntDays() {
+            NetClientOptions options = new NetClientOptions();
+
+            SniFrontListener.applyIdleTimeout(options, Duration.ofDays(Integer.MAX_VALUE));
+
+            assertAll("the last unit's own bound is inclusive",
+                    () -> assertEquals(TimeUnit.DAYS, options.getIdleTimeoutUnit()),
+                    () -> assertEquals(Integer.MAX_VALUE, options.getIdleTimeout()));
+        }
+    }
+
+    /**
+     * The undecided slot is returned on every path that ends a connection before its route: the
+     * ClientHello deadline, the client closing, and the connection failing. Each case holds the only
+     * slot of a cap of one, shows it held — the next connection is refused at accept — then ends the
+     * held connection on one path and shows a fresh connection admitted and routed. The log line each
+     * path writes, or the timing that rules the deadline out, ties the returned slot to the path under
+     * test.
+     */
+    @Nested
+    @DisplayName("slot return before the route")
+    class SlotReturnBeforeTheRoute {
+
+        private static final int CAP = 1;
+        /** Long enough that a slot returned well inside it cannot be the deadline's doing. */
+        private static final Duration LONG_DEADLINE = Duration.ofSeconds(6);
+        private static final String DEADLINE_LINE = "no complete ClientHello within";
+        private static final String FAILURE_LINE = "Front connection failed before ClientHello was read";
+
+        private final byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
+        /** Every probe connection {@link #admitsAFreshConnection} saw admitted, in order. */
+        private final List<ClientLeg> admittedProbes = new CopyOnWriteArrayList<>();
+
+        @Test
+        @DisplayName("returns the slot when the ClientHello deadline closes a silent connection")
+        void returnsTheSlotOnTheDeadline() throws Exception {
+            Backend passthrough = startBackend(hello.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), passthrough.target(),
+                    Duration.ofSeconds(1), CAP, LONG_IDLE);
+            ClientLeg silent = connectClient(front);
+            assertSlotHeld(front);
+
+            Awaits.connect(silent.closedNanos(), "the deadline to close the silent connection");
+
+            assertFreshConnectionAdmitted(front, passthrough, "the slot the deadline freed to admit a connection");
+            assertFalse(debugLines(DEADLINE_LINE).isEmpty(), "the deadline path closed the silent connection");
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("returns the slot when the client closes before sending its ClientHello")
+        void returnsTheSlotOnTheClose() throws Exception {
+            Backend passthrough = startBackend(hello.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), passthrough.target(),
+                    LONG_DEADLINE, CAP, LONG_IDLE);
+            ClientLeg leaving = connectClient(front);
+            assertSlotHeld(front);
+
+            Awaits.teardown(leaving.socket().close(), "the undecided client to leave");
+
+            assertFreshConnectionAdmitted(front, passthrough, "the slot the closed connection freed to admit a connection");
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - leaving.connectedNanos());
+            assertAll("the close, not the deadline, returned the slot",
+                    () -> assertTrue(elapsedMillis < LONG_DEADLINE.toMillis(),
+                            "the slot came back before the deadline could fire: after " + elapsedMillis + " ms"),
+                    () -> assertTrue(debugLines(DEADLINE_LINE).isEmpty(), "no deadline fired"),
+                    () -> assertTrue(debugLines(FAILURE_LINE).isEmpty(), "an orderly close is not a failure"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * A client socket closed with a zero linger time sends a reset instead of an orderly close,
+         * which the front reads as a failure of the connection rather than as its end.
+         */
+        @Test
+        @DisplayName("returns the slot when the connection fails before its ClientHello")
+        void returnsTheSlotOnTheError() throws Exception {
+            Backend passthrough = startBackend(hello.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), passthrough.target(),
+                    LONG_DEADLINE, CAP, LONG_IDLE);
+            long connectedNanos = System.nanoTime();
+            try (Socket resetting = new Socket()) {
+                resetting.connect(new InetSocketAddress(HOST, front.actualPort()), (int) PROMPT_CLOSE_MILLIS);
+                assertSlotHeld(front);
+
+                resetting.setSoLinger(true, 0);
+            }
+
+            assertFreshConnectionAdmitted(front, passthrough, "the slot the failed connection freed to admit a connection");
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectedNanos);
+            assertAll("the failure, not the deadline, returned the slot",
+                    () -> assertTrue(elapsedMillis < LONG_DEADLINE.toMillis(),
+                            "the slot came back before the deadline could fire: after " + elapsedMillis + " ms"),
+                    () -> assertFalse(debugLines(FAILURE_LINE).isEmpty(), "the reset reached the failure path"),
+                    () -> assertTrue(debugLines(DEADLINE_LINE).isEmpty(), "no deadline fired"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /** The next connection is refused at accept: the held connection has the cap's only slot. */
+        private void assertSlotHeld(SniFrontListener front) throws Exception {
+            refuseNext(front);
+            assertEquals(List.of(Refusal.CAP), refusals, "the undecided connection holds the cap's only slot");
+        }
+
+        /**
+         * Waits until a fresh connection is admitted, then asserts it was routed — its ClientHello
+         * reached the backend — and not closed at accept.
+         */
+        private void assertFreshConnectionAdmitted(SniFrontListener front, Backend backend, String waitFor)
+                throws Exception {
+            Awaits.until(() -> admitsAFreshConnection(front, backend), waitFor, Awaits.CONNECT_CEILING_SECONDS);
+            assertAll("a fresh connection was admitted into the returned slot",
+                    () -> assertEquals(1, admittedProbes.size(), "exactly one probe was admitted, the one the wait stopped on"),
+                    () -> assertEquals(Buffer.buffer(hello), Awaits.connect(backend.firstBytes(),
+                            "the admitted probe to be routed"), "the admitted probe's ClientHello is relayed"),
+                    () -> assertFalse(admittedProbes.getFirst().closedNanos().isDone(),
+                            "the admitted probe was routed, not closed at accept"));
+        }
+
+        /**
+         * Offers the front one more connection carrying a ClientHello. Admitted, it is routed to the
+         * backend; refused, it is closed at accept. Whichever happens first decides.
+         *
+         * @return {@code true} when the connection was admitted
+         */
+        private boolean admitsAFreshConnection(SniFrontListener front, Backend backend) throws Exception {
+            ClientLeg probe = connectClient(front);
+            probe.socket().write(Buffer.buffer(hello));
+            Awaits.connect(CompletableFuture.anyOf(backend.firstBytes(), probe.closedNanos()),
+                    "the front to admit or refuse the probe connection");
+            if (backend.firstBytes().isDone()) {
+                admittedProbes.add(probe);
+                return true;
+            }
+            return false;
+        }
+
+        private static List<LogRecord> debugLines(String text) {
+            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, text);
         }
     }
 
