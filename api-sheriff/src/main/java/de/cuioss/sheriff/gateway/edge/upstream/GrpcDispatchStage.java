@@ -53,15 +53,30 @@ import io.vertx.core.streams.ReadStream;
  * <p>
  * <strong>No request-body idle timeout and no request-body deadline.</strong> The dispatch is built
  * with {@link DispatchStage#NO_BODY_IDLE_TIMEOUT} and without a request-body deadline, so a gRPC request
- * body is never ended for making no progress, nor for not having ended in time. Client-streaming and
+ * body is never ended for pausing between messages, nor for not having ended in time. Client-streaming and
  * bidirectional RPCs legitimately pause between messages, and a forced-HTTP/2 upstream multiplexes the
  * call on a shared connection instead of holding a pooled connection of its own, so there is no
  * connection for such a bound to release.
  * <p>
- * <strong>The exemption is bounded.</strong> Until the upstream sends its response headers the guard's
- * timeout bounds the call. That timeout bounds each attempt, and a gRPC call is a {@code POST}, which the
- * retry predicate never retries, so its one attempt is the whole call. Once the headers have arrived the guarded call has returned, and the
- * call's stream-idle bound takes over: the edge hands this stage the request body
+ * <strong>The wait for the first request message is bounded.</strong> The forced-HTTP/2 upstream request
+ * head is written only with the first body chunk, so a client that opens a call and sends no request
+ * message would leave the dispatch waiting until the guard's timeout — and the breaker would count that
+ * timeout as an upstream failure, so idle clients could open the breaker for every caller of a healthy
+ * upstream. The dispatch is therefore built with a fixed first-message bound,
+ * {@value #GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS} ms, counted from the moment the attempt hands its body to
+ * the upstream request. When no request byte has been forwarded by then, the gateway resets the upstream
+ * request and ends the call as the client's own abort, a {@link DispatchStage.FirstMessageTimeout}
+ * ({@link EventType#INBOUND_BODY_ABORTED}), which the breaker skips. The bound is shorter than the guard's
+ * timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds), so it always fires first. A body that
+ * ends without any message is not ended by it, and the bound no longer applies once the upstream has
+ * answered.
+ * <p>
+ * <strong>The rest of the call is bounded too.</strong> Once the first message has gone, and until the
+ * upstream sends its response headers, the guard's timeout bounds the call — an upstream that received the
+ * request and never answers is ended there and counted as an upstream failure. That timeout bounds each
+ * attempt, and a gRPC call is a {@code POST}, which the retry predicate never retries, so its one attempt
+ * is the whole call. Once the headers have arrived the guarded call has returned, and the call's
+ * stream-idle bound takes over: the edge hands this stage the request body
  * {@linkplain de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound#watch watched} by
  * that bound, so every request frame counts as activity, and the trailer relay ends a call that carried
  * no frame in either direction for the bound's fixed five minutes with a gRPC status.
@@ -71,9 +86,20 @@ import io.vertx.core.streams.ReadStream;
  */
 public final class GrpcDispatchStage {
 
+    /**
+     * How long, in milliseconds, a gRPC call may wait for its first request byte once its attempt has
+     * handed the body to the upstream request, before it is ended as the client's abort
+     * ({@link DispatchStage.FirstMessageTimeout}). Fixed, and shorter than the guard's timeout
+     * ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds).
+     */
+    public static final long GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS = 10_000;
+
     private final DispatchStage dispatchStage;
 
     /**
+     * A gRPC dispatch with the production first-message bound,
+     * {@value #GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS} ms.
+     *
      * @param upstreamClients the boot-built lookup the route's shared forced-h2 client and guard are
      *                        resolved from
      * @param maxBodyBytes    the streaming request-body ceiling in bytes ({@code max_body_bytes})
@@ -82,7 +108,29 @@ public final class GrpcDispatchStage {
      */
     public GrpcDispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             UpstreamFailureMapper failureMapper) {
+        this(upstreamClients, maxBodyBytes, failureMapper, GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * A gRPC dispatch with the given first-message bound — the seam a test shortens the bound through.
+     *
+     * @param upstreamClients           the boot-built lookup the route's shared forced-h2 client and guard
+     *                                  are resolved from
+     * @param maxBodyBytes              the streaming request-body ceiling in bytes ({@code max_body_bytes})
+     * @param failureMapper             the mapper turning a guarded-dispatch (including h2-negotiation)
+     *                                  failure into the error contract
+     * @param firstMessageTimeoutMillis how long, in milliseconds, the call may wait for its first request
+     *                                  byte; positive
+     * @throws IllegalArgumentException when {@code firstMessageTimeoutMillis} is not positive
+     */
+    GrpcDispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, UpstreamFailureMapper failureMapper,
+            long firstMessageTimeoutMillis) {
+        if (firstMessageTimeoutMillis <= DispatchStage.NO_FIRST_MESSAGE_TIMEOUT) {
+            throw new IllegalArgumentException(
+                    "firstMessageTimeoutMillis must be positive: " + firstMessageTimeoutMillis);
+        }
         this.dispatchStage = new DispatchStage(upstreamClients, maxBodyBytes, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+                DispatchStage.NO_BODY_DEADLINE, firstMessageTimeoutMillis,
                 Objects.requireNonNull(failureMapper, "failureMapper"));
     }
 

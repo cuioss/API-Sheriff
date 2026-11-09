@@ -60,6 +60,11 @@ public final class RejectionReporter {
     private static final String INBOUND_BODY_ABORTED_DISPOSITION = "body-stream-failed";
     /** The fixed disposition of the same record for a client that left before it was answered. */
     private static final String CLIENT_DEPARTED_DISPOSITION = "client-left";
+    /**
+     * The fixed disposition of the same record for a gRPC call whose client sent no request message
+     * within the first-message bound.
+     */
+    private static final String NO_FIRST_MESSAGE_DISPOSITION = "no-first-message";
 
     private final GatewayEventCounter gatewayEventCounter;
     private final SheriffMetrics sheriffMetrics;
@@ -125,10 +130,9 @@ public final class RejectionReporter {
             case PASSTHROUGH_HOST_SMUGGLED -> LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED,
                     rejected.getMessage());
             // A client-caused termination, not a security event: an INFO, latched per route. A client that
-            // left before it was answered carries a disposition of its own.
-            case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx),
-                    rejected instanceof DispatchStage.ClientDeparted
-                            ? CLIENT_DEPARTED_DISPOSITION : INBOUND_BODY_ABORTED_DISPOSITION);
+            // left before it was answered, and a gRPC call that sent no first message, each carry a
+            // disposition of their own.
+            case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx), inboundBodyAbortDisposition(rejected));
             // A body that stopped arriving while the dispatch held an upstream connection, or one still
             // arriving at the request-body deadline: an INFO each, latched per route.
             case REQUEST_BODY_TIMEOUT -> {
@@ -211,10 +215,25 @@ public final class RejectionReporter {
     }
 
     /**
+     * @param rejected an {@link EventType#INBOUND_BODY_ABORTED} rejection
+     * @return the fixed disposition its record carries: {@code client-left} for a
+     *         {@link DispatchStage.ClientDeparted}, {@code no-first-message} for a
+     *         {@link DispatchStage.FirstMessageTimeout}, {@code body-stream-failed} otherwise
+     */
+    private static String inboundBodyAbortDisposition(GatewayException rejected) {
+        return switch (rejected) {
+            case DispatchStage.ClientDeparted _ -> CLIENT_DEPARTED_DISPOSITION;
+            case DispatchStage.FirstMessageTimeout _ -> NO_FIRST_MESSAGE_DISPOSITION;
+            default -> INBOUND_BODY_ABORTED_DISPOSITION;
+        };
+    }
+
+    /**
      * Records one {@link EventType#INBOUND_BODY_ABORTED} — a request body that failed after dispatch
-     * began, such as a client disconnecting mid-upload (disposition {@code body-stream-failed}), or a
+     * began, such as a client disconnecting mid-upload (disposition {@code body-stream-failed}), a
      * client that left before its proxied request was answered, with or without a body (disposition
-     * {@code client-left}).
+     * {@code client-left}), or a gRPC call whose client sent no request message within the first-message
+     * bound (disposition {@code no-first-message}).
      * <p>
      * <strong>Latched per route.</strong> Every caller a route admits can end its own upload at will,
      * and on a route without authentication that is any caller at all, so a record per occurrence

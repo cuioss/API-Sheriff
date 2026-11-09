@@ -54,7 +54,9 @@ public final class UpstreamGuards {
      * would end it as the upstream's. So is the request-body deadline
      * ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}),
      * counted from the start of the attempt like this timeout, so a body still arriving when this timeout
-     * would end the attempt is ended as the request's first.
+     * would end the attempt is ended as the request's first. So is the gRPC first-message bound
+     * ({@link GrpcDispatchStage#GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS}), so a gRPC call whose client sends no
+     * request message is ended as the client's abort before this timeout could end it as the upstream's.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -77,14 +79,15 @@ public final class UpstreamGuards {
      * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
      * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
      * length, a body that made no progress for the request-body idle timeout, a body still arriving at
-     * the request-body deadline — reaches the guard as such a skipped {@link GatewayException} (see
-     * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records a
-     * skipped exception as a success; keeping these dispatches out of its window would need the guarded
-     * call to be restructured. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each
-     * attempt: it is nested inside the retry, so a route that enables retry gives each of up to three
-     * attempts (two retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The
-     * request-body idle timeout and the request-body deadline are shorter, so a body the gateway is still
-     * waiting for ends as the request's, and the timeout ends an attempt the upstream holds up.
+     * the request-body deadline, a gRPC call whose client sent no request message within the first-message
+     * bound — reaches the guard as such a skipped {@link GatewayException} (see {@link DispatchStage}).
+     * SmallRye Fault Tolerance has no neutral outcome, so the breaker records a skipped exception as a
+     * success; keeping these dispatches out of its window would need the guarded call to be restructured.
+     * The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each attempt: it is nested inside the
+     * retry, so a route that enables retry gives each of up to three attempts (two retries, 100 ms apart)
+     * its own timeout, about 90 s for the whole dispatch. The request-body idle timeout, the request-body
+     * deadline and the gRPC first-message bound are shorter, so a body the gateway is still waiting for
+     * ends as the request's, and the timeout ends an attempt the upstream holds up.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard

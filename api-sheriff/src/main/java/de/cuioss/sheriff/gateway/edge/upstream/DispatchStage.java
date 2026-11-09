@@ -132,9 +132,21 @@ import org.jspecify.annotations.Nullable;
  * upstream reads it again, and an attempt that obtained its pooled connection only after the deadline —
  * the wait for the connection counts against it — is ended as soon as its body starts to be read; either
  * way on the same path, before or after the hand-over, as a body still arriving when it passes. An attempt
- * the dispatch no longer waits for stops the deadline and the idle clock of its body (see
- * {@link UpstreamAttempt}), so neither reports anything afterwards. A dispatch constructed without a
+ * the dispatch no longer waits for stops the deadline and every other clock of its body (see
+ * {@link UpstreamAttempt}), so none of them reports anything afterwards. A dispatch constructed without a
  * deadline ({@link #NO_BODY_DEADLINE}) never arms it.
+ * <p>
+ * <strong>A body whose first byte does not arrive in time is ended at the first-message bound.</strong> A
+ * dispatch constructed with a first-message bound — the gRPC dispatch, whose upstream request head is
+ * written only with the first body chunk — bounds how long an attempt waits for its first body byte. The
+ * clock starts when the attempt hands its body to the upstream request, so the wait for a pooled
+ * connection is never counted, and the bound is shorter than the guard's timeout. When it passes before
+ * a body byte was forwarded, the body ended or the attempt's send completed, the attempt's upstream
+ * request is reset and the dispatch is ended as a {@link FirstMessageTimeout}
+ * ({@link EventType#INBOUND_BODY_ABORTED}): a client that opens a call and sends nothing ends it as its
+ * own abort, never as the guard's timeout. A body that ends without any byte is not ended by the bound,
+ * and once the send completed — the upstream answered — the bound no longer applies. A dispatch
+ * constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — never arms it.
  * <p>
  * The dispatch is awaited synchronously on the caller's virtual thread inside the guard so the
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
@@ -144,11 +156,12 @@ import org.jspecify.annotations.Nullable;
  * <strong>What the breaker sees of a client-ended dispatch.</strong> A dispatch the client itself
  * ended — the body-cap breach, an inbound body stream that failed after dispatch began, a body byte
  * on a bodyless method, a body that disagreed with its declared length, a body that made no progress
- * for the request-body idle timeout, or a body still arriving at the request-body deadline — reaches the
- * guard as the {@link GatewayException} the body stream recorded for it
- * ({@link EventType#CONTENT_TOO_LARGE}, {@link EventType#INBOUND_BODY_ABORTED} for the failed or short
- * inbound body, {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT}
- * for the idle body and the body past its deadline), never as the transport error the aborted upstream
+ * for the request-body idle timeout, a body still arriving at the request-body deadline, or a body whose
+ * first byte did not arrive within the first-message bound — reaches the guard as the
+ * {@link GatewayException} the body stream recorded for it ({@link EventType#CONTENT_TOO_LARGE},
+ * {@link EventType#INBOUND_BODY_ABORTED} for the failed or short inbound body and for the body with no
+ * first byte, {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for
+ * the idle body and the body past its deadline), never as the transport error the aborted upstream
  * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
  * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
  * breaker, though: SmallRye Fault Tolerance has no neutral outcome, so a skipped exception is
@@ -249,6 +262,13 @@ public final class DispatchStage {
     public static final long NO_BODY_DEADLINE = 0L;
 
     /**
+     * The first-message bound of a dispatch that does not bound the wait for its first request-body
+     * byte: the first-message clock is never armed. Every HTTP dispatch is constructed with it; only the
+     * gRPC dispatch ({@link GrpcDispatchStage}) arms the clock.
+     */
+    static final long NO_FIRST_MESSAGE_TIMEOUT = 0L;
+
+    /**
      * The retry state of the dispatch the guard is running, bound on the dispatching thread for the
      * duration of its guard call. The guard is shared by every route of one resilience shape, so this
      * is how its retry predicate learns which dispatch failed.
@@ -259,6 +279,7 @@ public final class DispatchStage {
     private final long maxBodyBytes;
     private final long bodyIdleTimeoutMillis;
     private final long bodyDeadlineMillis;
+    private final long firstMessageTimeoutMillis;
     private final UpstreamFailureMapper failureMapper;
 
     /**
@@ -280,6 +301,9 @@ public final class DispatchStage {
     }
 
     /**
+     * A dispatch that does not bound the wait for its first request-body byte
+     * ({@link #NO_FIRST_MESSAGE_TIMEOUT}) — every HTTP dispatch.
+     *
      * @param upstreamClients       the boot-built lookup the route's shared client and guard are
      *                              resolved from
      * @param maxBodyBytes          the streaming request-body ceiling in bytes ({@code max_body_bytes})
@@ -298,6 +322,38 @@ public final class DispatchStage {
      */
     public DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
+        this(upstreamClients, maxBodyBytes, bodyIdleTimeoutMillis, bodyDeadlineMillis, NO_FIRST_MESSAGE_TIMEOUT,
+                failureMapper);
+    }
+
+    /**
+     * @param upstreamClients           the boot-built lookup the route's shared client and guard are
+     *                                  resolved from
+     * @param maxBodyBytes              the streaming request-body ceiling in bytes
+     *                                  ({@code max_body_bytes})
+     * @param bodyIdleTimeoutMillis     how long, in milliseconds, a body-carrying attempt holding its
+     *                                  upstream connection may go without request-body progress before
+     *                                  it is ended as {@link EventType#REQUEST_BODY_TIMEOUT}, or
+     *                                  {@link #NO_BODY_IDLE_TIMEOUT} when the body is not watched
+     * @param bodyDeadlineMillis        how long, in milliseconds from the start of its attempt, a
+     *                                  body-carrying dispatch may wait for the whole body before it is
+     *                                  ended as a {@link RequestBodyDeadlineExceeded}, or
+     *                                  {@link #NO_BODY_DEADLINE} when the whole body is not bounded in
+     *                                  time; a deadline needs an armed idle timeout, whose timer seam it
+     *                                  shares
+     * @param firstMessageTimeoutMillis how long, in milliseconds from the moment the attempt hands its
+     *                                  body to the upstream request, a body-carrying attempt may wait for
+     *                                  its first body byte before it is ended as a
+     *                                  {@link FirstMessageTimeout}, or {@link #NO_FIRST_MESSAGE_TIMEOUT}
+     *                                  when that wait is not bounded
+     * @param failureMapper             the mapper turning guarded-dispatch failures into the error
+     *                                  contract
+     * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis}, {@code bodyDeadlineMillis} or
+     *                                  {@code firstMessageTimeoutMillis} is negative, or a deadline is
+     *                                  given without an idle timeout
+     */
+    DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, long bodyIdleTimeoutMillis,
+            long bodyDeadlineMillis, long firstMessageTimeoutMillis, UpstreamFailureMapper failureMapper) {
         if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
         }
@@ -307,10 +363,15 @@ public final class DispatchStage {
         if (bodyDeadlineMillis != NO_BODY_DEADLINE && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("a request-body deadline needs a request-body idle timeout");
         }
+        if (firstMessageTimeoutMillis < NO_FIRST_MESSAGE_TIMEOUT) {
+            throw new IllegalArgumentException(
+                    "firstMessageTimeoutMillis must not be negative: " + firstMessageTimeoutMillis);
+        }
         this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
         this.bodyIdleTimeoutMillis = bodyIdleTimeoutMillis;
         this.bodyDeadlineMillis = bodyDeadlineMillis;
+        this.firstMessageTimeoutMillis = firstMessageTimeoutMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
     }
 
@@ -596,7 +657,8 @@ public final class DispatchStage {
         // From here on a body byte on a bodyless method, and a body still arriving at the request-body
         // deadline, reach the edge through the late-violation callback. One that came while the response
         // was still being received is this dispatch's own refusal instead: the response is not relayed,
-        // and the edge answers 400 or 408.
+        // and the edge answers 400 or 408. So is a first-message bound that passed in that window; the
+        // bound itself stops with the send, so it never fires after the hand-over.
         GatewayException refusedBeforeHandOver = body.handOver(cappedBody.get());
         if (refusedBeforeHandOver != null) {
             throw refusedBeforeHandOver;
@@ -858,14 +920,15 @@ public final class DispatchStage {
          * the body to its upstream request — so the time spent waiting for a pooled connection is never
          * counted — and stops it as soon as the attempt's send completes, whether its response arrived
          * or the send failed. The clock therefore never runs once the response is handed over. The
-         * request-body deadline is armed at the same moment, counted from the start of
-         * {@code attempt}, and keeps running after the send completed, until the body ends. The body is
-         * attached to {@code attempt} before either is armed, so an attempt the dispatch no longer waits
-         * for stops both. Both timers are scheduled through the Vert.x instance owning the context this
-         * callback runs on, the upstream request's own.
+         * first-message clock is armed and stopped at the same two moments. The request-body deadline is
+         * armed at the same moment, counted from the start of {@code attempt}, and keeps running after
+         * the send completed, until the body ends. The body is attached to {@code attempt} before any of
+         * them is armed, so an attempt the dispatch no longer waits for stops them all. Every timer is
+         * scheduled through the Vert.x instance owning the context this callback runs on, the upstream
+         * request's own.
          *
-         * @throws IllegalStateException when the idle clock is to be armed and no Vert.x context is
-         *                               current — the send callback always runs on one
+         * @throws IllegalStateException when the idle clock or the first-message clock is to be armed and
+         *                               no Vert.x context is current — the send callback always runs on one
          */
         Future<HttpClientResponse> send(UpstreamAttempt attempt, HttpClientRequest request,
                 AtomicReference<@Nullable ByteCappedBodyStream> cappedBody) {
@@ -888,12 +951,16 @@ public final class DispatchStage {
             // stall) — see allowsRetryAfter.
             subscribed.set(true);
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
-                    request::reset, bytesSent::addAndGet, idleClock(), bodyDeadlineOf(attempt));
+                    request::reset, bytesSent::addAndGet, idleClock(), bodyDeadlineOf(attempt), firstMessageClock());
             cappedBody.set(body);
             attempt.attachBody(body);
             body.startIdleClock();
+            body.startFirstMessageClock();
             Future<HttpClientResponse> sent = request.send(body);
-            sent.onComplete(_ -> body.stopIdleClock());
+            sent.onComplete(_ -> {
+                body.stopIdleClock();
+                body.stopFirstMessageClock();
+            });
             return sent;
         }
 
@@ -905,12 +972,34 @@ public final class DispatchStage {
             if (bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
                 return IdleClock.UNARMED;
             }
+            return new IdleClock(bodyIdleTimeoutMillis, currentContextScheduler("request-body idle clock"),
+                    System::nanoTime);
+        }
+
+        /**
+         * @return the first-message clock of a body-carrying attempt: unarmed for a dispatch constructed
+         *         with {@link #NO_FIRST_MESSAGE_TIMEOUT}, otherwise timed on the current Vert.x context
+         */
+        private IdleClock firstMessageClock() {
+            if (firstMessageTimeoutMillis == NO_FIRST_MESSAGE_TIMEOUT) {
+                return IdleClock.UNARMED;
+            }
+            return new IdleClock(firstMessageTimeoutMillis, currentContextScheduler("first-message clock"),
+                    System::nanoTime);
+        }
+
+        /**
+         * @param clockName names the clock in the failure message
+         * @return a scheduler on the Vert.x instance owning the current context, the upstream request's
+         * @throws IllegalStateException when no Vert.x context is current
+         */
+        private static IdleScheduler currentContextScheduler(String clockName) {
             Context context = Vertx.currentContext();
             if (context == null) {
-                throw new IllegalStateException("the request-body idle clock is armed on the upstream request's "
+                throw new IllegalStateException("the " + clockName + " is armed on the upstream request's "
                         + "Vert.x context, and none is current");
             }
-            return new IdleClock(bodyIdleTimeoutMillis, new VertxIdleScheduler(context.owner()), System::nanoTime);
+            return new VertxIdleScheduler(context.owner());
         }
 
         /**
@@ -946,8 +1035,9 @@ public final class DispatchStage {
          *
          * @param cappedBody the attempt's body stream, {@code null} for a bodyless request
          * @return the refusal that came before the hand-over — the client's departure, a bodyless
-         *         request's body byte, or a body still arriving at the request-body deadline — or
-         *         {@code null} when there was none
+         *         request's body byte, a body still arriving at the request-body deadline, or a body whose
+         *         first byte did not arrive within the first-message bound — or {@code null} when there
+         *         was none
          */
         @Nullable
         GatewayException handOver(@Nullable ByteCappedBodyStream cappedBody) {
@@ -980,8 +1070,8 @@ public final class DispatchStage {
      * sent. Resetting the request also releases a response the attempt already received and paused.
      * <p>
      * <strong>Its body's clocks stop with it.</strong> {@link #abandon()} also stops the request-body idle
-     * clock and deadline of the body stream the attempt sends, and a body attached only after that has
-     * them stopped at once, before they could start. A stopped clock has no timer pending and reports
+     * clock, the deadline and the first-message clock of the body stream the attempt sends, and a body
+     * attached only after that has them stopped at once, before they could start. A stopped clock has no timer pending and reports
      * nothing: it neither refuses the body, nor resets the request, nor reaches the late-violation callback.
      * <p>
      * <strong>A bodyless request is reset after its own head write.</strong> A bodyless attempt sends its
@@ -1518,6 +1608,31 @@ public final class DispatchStage {
     }
 
     /**
+     * The client abort of a dispatch whose first request-body byte did not arrive within the
+     * first-message bound — on a gRPC call, a client that opened the call and sent no request message.
+     * The attempt's upstream request is reset when it is raised. It is an
+     * {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told apart from
+     * it by its type so it is reported with its own disposition. Like every client-ended dispatch it is a
+     * gateway rejection: the breaker skips it and the retry predicate refuses it, so an idle client is
+     * never counted against a healthy upstream.
+     *
+     * @since 1.0
+     */
+    public static final class FirstMessageTimeout extends GatewayException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        /** Fixed disposition of the abort; carries nothing the client supplied. */
+        private static final String NO_FIRST_MESSAGE =
+                "Request body sent no first byte within the first-message bound; the upstream request was aborted";
+
+        FirstMessageTimeout() {
+            super(EventType.INBOUND_BODY_ABORTED, NO_FIRST_MESSAGE);
+        }
+    }
+
+    /**
      * A {@link ReadStream} decorator that forwards each request-body chunk to the upstream as it
      * arrives — never accumulating the body — while counting bytes against a ceiling. On breach it
      * aborts the in-flight upstream request and fails the stream with a
@@ -1595,6 +1710,19 @@ public final class DispatchStage {
      * it. {@link #stopClocks()} — the end of the body, an abort, or an attempt the dispatch no longer waits
      * for — cancels both timers and drops a passed deadline: a stopped clock reports nothing.
      * <p>
+     * <strong>A body whose first byte does not arrive is ended at the first-message bound.</strong> A
+     * stream constructed with an armed first-message clock arms one more timer at
+     * {@link #startFirstMessageClock()}, for the bound's length. It is a single timer, never re-armed: the
+     * first forwarded chunk carrying a byte stops it, and so do the inbound end, any abort claim,
+     * {@link #stopFirstMessageClock()} — which the dispatch calls when the attempt's send completes — and
+     * {@link #stopClocks()}. A chunk of length zero is not a first byte. When the timer fires before any of
+     * these, the expiry takes the single abort claim with a {@link FirstMessageTimeout}
+     * ({@link EventType#INBOUND_BODY_ABORTED}), pauses the inbound stream, runs the abort action and
+     * propagates the failure, exactly like the other client-caused aborts. The claim is taken under the
+     * clocks' monitor, the same monitor a first chunk and the inbound end stop the clock under, so either
+     * the expiry wins and the chunk or the end is dropped, or the chunk or the end wins and the expiry
+     * reports nothing.
+     * <p>
      * Thread-safe: chunks arrive on the inbound connection's event loop, the consumer pauses and
      * resumes from either loop, and the timers fire on the loop they were scheduled from. The last
      * progress time is a volatile field; the rest of the clocks' state is held under one monitor, and
@@ -1661,6 +1789,19 @@ public final class DispatchStage {
          */
         private volatile boolean deadlinePassed;
         private long deadlineTimer = NO_TIMER;
+        /** The first-message clock, {@link IdleClock#UNARMED} for a body whose first byte is not awaited. */
+        private final IdleClock firstMessageClock;
+        /**
+         * Whether the first-message clock can no longer fire: a first byte was forwarded, the body ended,
+         * an abort was claimed, the clocks were stopped, or the bound expired.
+         */
+        private boolean firstMessageEnded;
+        private long firstMessageTimer = NO_TIMER;
+        /**
+         * Whether a first body byte was forwarded, so later chunks skip the first-message clock. Read and
+         * written by chunk delivery only, which runs on the inbound connection's event loop.
+         */
+        private boolean firstByteForwarded;
         /** Receives a deadline refusal once the response was handed over; {@code null} until then. */
         private @Nullable Consumer<GatewayException> lateViolation;
         /** Whether the inbound body's end arrived, whatever was made of it. */
@@ -1715,6 +1856,8 @@ public final class DispatchStage {
         }
 
         /**
+         * A stream whose first byte is not awaited: the first-message clock is never armed.
+         *
          * @param delegate       the inbound request body
          * @param maxBytes       the {@code max_body_bytes} ceiling
          * @param declaredLength the checked declared length the body is held to exactly, or a
@@ -1731,6 +1874,31 @@ public final class DispatchStage {
          */
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos) {
+            this(delegate, maxBytes, declaredLength, abortAction, bytesForwarded, idleClock, deadlineNanos,
+                    IdleClock.UNARMED);
+        }
+
+        /**
+         * @param delegate          the inbound request body
+         * @param maxBytes          the {@code max_body_bytes} ceiling
+         * @param declaredLength    the checked declared length the body is held to exactly, or a
+         *                          negative value when the request declares none
+         * @param abortAction       resets the upstream request
+         * @param bytesForwarded    receives the length of every chunk forwarded to the upstream
+         * @param idleClock         the request-body idle clock, {@link IdleClock#UNARMED} for none; it
+         *                          runs only once {@link #startIdleClock()} is called
+         * @param deadlineNanos     the {@code idleClock}'s {@link IdleClock#nanoTime()} reading at which
+         *                          the request-body deadline passes, or empty for none; its timer is
+         *                          scheduled through the idle clock's scheduler once
+         *                          {@link #startIdleClock()} is called; a deadline needs an armed
+         *                          {@code idleClock}, which the dispatch's constructor guarantees
+         * @param firstMessageClock the first-message clock, {@link IdleClock#UNARMED} for none; its one
+         *                          timer, for the clock's timeout, is scheduled through its own scheduler
+         *                          once {@link #startFirstMessageClock()} is called
+         */
+        ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
+                LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos,
+                IdleClock firstMessageClock) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
             this.maxBytes = maxBytes;
             this.declaredLength = declaredLength;
@@ -1738,6 +1906,7 @@ public final class DispatchStage {
             this.bytesForwarded = Objects.requireNonNull(bytesForwarded, "bytesForwarded");
             this.idleClock = Objects.requireNonNull(idleClock, "idleClock");
             this.deadlineNanos = Objects.requireNonNull(deadlineNanos, "deadlineNanos");
+            this.firstMessageClock = Objects.requireNonNull(firstMessageClock, "firstMessageClock");
             delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
         }
@@ -1763,7 +1932,7 @@ public final class DispatchStage {
 
         /**
          * Takes the single abort claim for {@code reason}; the trigger that wins it also stops the idle
-         * clock and the deadline, so nothing expires after an abort.
+         * clock, the deadline and the first-message clock, so nothing expires after an abort.
          *
          * @return {@code true} when this call won the claim
          */
@@ -1803,6 +1972,10 @@ public final class DispatchStage {
                         "Request body exceeded max_body_bytes=" + maxBytes));
                 return;
             }
+            if (chunk.length() > 0 && firstMessageBoundExpired()) {
+                // The first-message bound expired just before this first byte: the body was ended there.
+                return;
+            }
             // The chunk cleared every bound and is about to cross to the upstream — record it so the
             // stream-aware retry gate can see that a body byte has been sent on this attempt.
             bytesForwarded.accept(chunk.length());
@@ -1816,17 +1989,19 @@ public final class DispatchStage {
         }
 
         /**
-         * The inbound stream ended, which stops the idle clock and the deadline. A body short of its
-         * declared length did not arrive whole: the upstream request is aborted instead of being ended on
-         * a message shorter than its framing. After an abort the end is not passed on — the consumer has
-         * already been told the body failed, or the gateway reset the stream itself.
+         * The inbound stream ended, which stops the idle clock, the deadline and the first-message clock.
+         * A body short of its declared length did not arrive whole: the upstream request is aborted
+         * instead of being ended on a message shorter than its framing. After an abort the end is not
+         * passed on — the consumer has already been told the body failed, or the gateway reset the stream
+         * itself. The clocks are stopped before the abort is read, so an expiry the stop did not prevent
+         * has already claimed the abort and is seen here.
          */
         private void onInboundEnd(@Nullable Void end) {
             inboundEnded = true;
+            stopClocks();
             if (abortReason.get() != null) {
                 return;
             }
-            stopClocks();
             if (declaredLength >= 0 && bytesSeen < declaredLength) {
                 GatewayException shortBody = new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_SHORT);
                 if (claimAbort(shortBody)) {
@@ -1900,12 +2075,14 @@ public final class DispatchStage {
         }
 
         /**
-         * Stops the idle clock and the request-body deadline for good and cancels their timers: the body
-         * ended or was aborted, or its attempt is no longer waited for. A stopped clock reports nothing —
-         * a deadline that had already passed unread is dropped with it. Idempotent.
+         * Stops the idle clock, the request-body deadline and the first-message clock for good and cancels
+         * their timers: the body ended or was aborted, or its attempt is no longer waited for. A stopped
+         * clock reports nothing — a deadline that had already passed unread is dropped with it.
+         * Idempotent.
          */
         private void stopClocks() {
             stopIdleClock();
+            stopFirstMessageClock();
             if (deadlineNanos.isEmpty()) {
                 return;
             }
@@ -1924,15 +2101,99 @@ public final class DispatchStage {
          * {@code lateViolation} before the upstream request is reset, instead of failing the dispatch.
          *
          * @param lateViolation receives a deadline refusal that comes after the hand-over
-         * @return the deadline refusal that came before the hand-over, or {@code null} when there was
-         *         none
+         * @return the deadline refusal or the first-message timeout that came before the hand-over, or
+         *         {@code null} when there was none
          */
         @Nullable
         GatewayException handOver(Consumer<GatewayException> lateViolation) {
             synchronized (clockLock) {
                 this.lateViolation = lateViolation;
-                return abortReason.get() instanceof RequestBodyDeadlineExceeded exceeded ? exceeded : null;
+                return switch (abortReason.get()) {
+                    case RequestBodyDeadlineExceeded exceeded -> exceeded;
+                    case FirstMessageTimeout noFirstMessage -> noFirstMessage;
+                    case null, default -> null;
+                };
             }
+        }
+
+        /**
+         * Starts the first-message clock: from now on, the clock's timeout passing before a first body
+         * byte was forwarded ends the stream as a {@link FirstMessageTimeout}. A no-op for an unarmed
+         * clock, a clock already started, and one already stopped — by a first byte forwarded before it
+         * was started among others.
+         */
+        void startFirstMessageClock() {
+            if (!firstMessageClock.armed()) {
+                return;
+            }
+            synchronized (clockLock) {
+                if (firstMessageEnded || firstMessageTimer != NO_TIMER) {
+                    return;
+                }
+                firstMessageTimer = firstMessageClock.scheduler().schedule(firstMessageClock.timeoutMillis(),
+                        this::onFirstMessageTimer);
+            }
+        }
+
+        /**
+         * Stops the first-message clock for good and cancels its timer. Idempotent; a no-op for an unarmed
+         * clock.
+         */
+        void stopFirstMessageClock() {
+            if (!firstMessageClock.armed()) {
+                return;
+            }
+            synchronized (clockLock) {
+                firstMessageEnded = true;
+                if (firstMessageTimer != NO_TIMER) {
+                    firstMessageClock.scheduler().cancel(firstMessageTimer);
+                    firstMessageTimer = NO_TIMER;
+                }
+            }
+        }
+
+        /**
+         * A first body byte arrived: stops the first-message clock, unless its expiry came first.
+         *
+         * @return {@code true} when the bound had already expired and ended the body — the byte must not
+         *         be forwarded
+         */
+        private boolean firstMessageBoundExpired() {
+            if (!firstMessageClock.armed() || firstByteForwarded) {
+                return false;
+            }
+            // The expiry claims the abort under the same monitor the stop takes, so once the stop returns,
+            // an expiry that came first has already recorded its claim.
+            stopFirstMessageClock();
+            if (abortReason.get() != null) {
+                return true;
+            }
+            firstByteForwarded = true;
+            return false;
+        }
+
+        /**
+         * The first-message timer fired before a first byte was forwarded and before the clock was
+         * stopped: the stream is refused as a {@link FirstMessageTimeout} through the single abort claim,
+         * taken under the clocks' monitor. Outside it, the inbound stream is paused, the upstream request
+         * reset and the failure propagated.
+         */
+        private void onFirstMessageTimer() {
+            FirstMessageTimeout noFirstMessage;
+            synchronized (clockLock) {
+                firstMessageTimer = NO_TIMER;
+                if (firstMessageEnded) {
+                    return;
+                }
+                firstMessageEnded = true;
+                noFirstMessage = new FirstMessageTimeout();
+                if (!claimAbort(noFirstMessage)) {
+                    return;
+                }
+            }
+            delegate.pause();
+            abortAction.run();
+            propagateFailure(noFirstMessage);
         }
 
         /** Schedules the one pending deadline timer; called holding {@link #clockLock}. */
@@ -2197,8 +2458,9 @@ public final class DispatchStage {
     }
 
     /**
-     * The scheduling seam of the request-body idle clock: schedules a task after a delay and cancels
-     * it. Production schedules on Vert.x ({@link VertxIdleScheduler}); a unit test drives it by hand.
+     * The scheduling seam of the request-body clocks — the idle clock, the deadline and the first-message
+     * clock: schedules a task after a delay and cancels it. Production schedules on Vert.x
+     * ({@link VertxIdleScheduler}); a unit test drives it by hand.
      */
     interface IdleScheduler {
 
@@ -2220,11 +2482,11 @@ public final class DispatchStage {
     }
 
     /**
-     * The request-body idle clock of one dispatch: its timeout, the scheduler its timer runs on, and
-     * the nano-time source it measures progress with.
+     * A request-body clock of one dispatch — the idle clock, or the first-message clock: its timeout, the
+     * scheduler its timer runs on, and the nano-time source it measures progress with.
      *
-     * @param timeoutMillis the idle timeout in milliseconds, or {@link #NO_BODY_IDLE_TIMEOUT} for a
-     *                      clock that is never armed
+     * @param timeoutMillis the clock's timeout in milliseconds, or {@link #NO_BODY_IDLE_TIMEOUT} (equal to
+     *                      {@link #NO_FIRST_MESSAGE_TIMEOUT}) for a clock that is never armed
      * @param scheduler     schedules and cancels the clock's one pending timer
      * @param nanoTime      the monotonic time source, in nanoseconds
      */

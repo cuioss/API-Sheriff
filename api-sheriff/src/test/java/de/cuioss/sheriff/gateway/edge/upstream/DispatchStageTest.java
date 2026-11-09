@@ -132,20 +132,37 @@ class DispatchStageTest {
                     failureMapper);
         }
 
+        /** A route served by the public constructor: an HTTP dispatch, which bounds no first-message wait. */
         static Routed of(String id, ResolvedUpstream upstream, boolean retryEnabled, HttpClient client, Guard guard,
                 long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
-            Route route = Route.builder()
+            Route route = route(id, upstream, retryEnabled);
+            return new Routed(route, new DispatchStage(clientsFor(route, client, guard), BODY_CAP,
+                    bodyIdleTimeoutMillis, bodyDeadlineMillis, failureMapper));
+        }
+
+        /** A route served by a stage that bounds the wait for the first body byte by {@code firstMessageTimeoutMillis}. */
+        static Routed withFirstMessageBound(String id, ResolvedUpstream upstream, HttpClient client, Guard guard,
+                long firstMessageTimeoutMillis, UpstreamFailureMapper failureMapper) {
+            Route route = route(id, upstream, false);
+            return new Routed(route, new DispatchStage(clientsFor(route, client, guard), BODY_CAP,
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, firstMessageTimeoutMillis,
+                    failureMapper));
+        }
+
+        private static Route route(String id, ResolvedUpstream upstream, boolean retryEnabled) {
+            return Route.builder()
                     .id(id)
                     .match(MatchConfig.builder().pathPrefix("/" + id).build())
                     .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                     .upstream(upstream)
                     .retryEnabled(retryEnabled)
                     .build();
+        }
+
+        private static UpstreamClients clientsFor(Route route, HttpClient client, Guard guard) {
             UpstreamTarget target = UpstreamTarget.of(route);
-            UpstreamClients clients = new UpstreamClients(Map.of(target, client),
-                    Map.of(new ResilienceShape(target, retryEnabled), guard));
-            return new Routed(route, new DispatchStage(clients, BODY_CAP, bodyIdleTimeoutMillis, bodyDeadlineMillis,
-                    failureMapper));
+            return new UpstreamClients(Map.of(target, client),
+                    Map.of(new ResilienceShape(target, route.retryEnabled()), guard));
         }
 
         HttpClientResponse dispatch(HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
@@ -760,6 +777,264 @@ class DispatchStageTest {
         }
     }
 
+    /**
+     * The first-message clock of {@link DispatchStage.ByteCappedBodyStream} — the gRPC dispatch's bound on
+     * the wait for the first body byte — driven by hand on a {@link ManualTime}. The probes arm no idle
+     * clock and no deadline, so the first-message clock is the only timer a case can observe. Every case
+     * that pins the clock staying quiet also pins that it was scheduled first, so a clock that never ran
+     * cannot pass for one that was stopped.
+     */
+    @Nested
+    @DisplayName("first-message clock of the byte-capped body")
+    class FirstMessageClock {
+
+        private static final long BOUND_MILLIS = 1_000L;
+
+        @Test
+        @DisplayName("no body byte within the bound: ends once as a FirstMessageTimeout, resets the upstream request and propagates the failure")
+        void noFirstByteWithinTheBoundEndsTheBody() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startFirstMessageClock();
+
+            probe.time.advanceMillis(BOUND_MILLIS - 1);
+            boolean quietBeforeTheBound = probe.failure.get() == null && probe.aborts.get() == 0;
+            probe.time.advanceMillis(1);
+            GatewayException expiry = probe.capped.clientAbort();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("a body with no byte within the first-message bound",
+                    () -> assertTrue(quietBeforeTheBound, "nothing may fire before the whole bound passed"),
+                    () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, expiry,
+                            "the expiry is recorded as the stream's client abort"),
+                    () -> assertEquals(EventType.INBOUND_BODY_ABORTED,
+                            assertInstanceOf(GatewayException.class, expiry).getEventType()),
+                    () -> assertSame(expiry, probe.failure.get(), "the expiry is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the inbound stream is paused by the expiry"),
+                    () -> assertEquals(1, probe.time.scheduledCount(), "the clock is one timer, never re-armed"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending after the expiry"));
+        }
+
+        @Test
+        @DisplayName("a first body byte within the bound stops the clock for good: later silence is never ended by it")
+        void firstByteStopsTheClock() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startFirstMessageClock();
+            int scheduledOnStart = probe.time.scheduledCount();
+            probe.time.advanceMillis(BOUND_MILLIS - 1);
+
+            probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+            int pendingAfterTheFirstByte = probe.time.pendingCount();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+            probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("a body whose first byte arrived within the bound",
+                    () -> assertEquals(1, scheduledOnStart, "the clock was armed when it was started"),
+                    () -> assertEquals(0, pendingAfterTheFirstByte, "the first byte cancels the pending timer"),
+                    () -> assertEquals(1, probe.time.scheduledCount(), "a later chunk never re-arms the clock"),
+                    () -> assertEquals(2, probe.forwarded.size(), "both chunks are forwarded"),
+                    () -> assertNull(probe.capped.clientAbort(), "nothing is refused"),
+                    () -> assertNull(probe.failure.get()),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("a chunk of length zero is not a first byte: the clock still ends the body at the bound")
+        void emptyChunkIsNotAFirstByte() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startFirstMessageClock();
+
+            probe.source.emit(Buffer.buffer());
+            int pendingAfterTheEmptyChunk = probe.time.pendingCount();
+            probe.time.advanceMillis(BOUND_MILLIS);
+
+            assertAll("an empty chunk before the bound",
+                    () -> assertEquals(1, pendingAfterTheEmptyChunk, "the empty chunk leaves the timer pending"),
+                    () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, probe.capped.clientAbort()),
+                    () -> assertEquals(1, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("a body that ends without any byte stops the clock: the end is passed on and nothing is refused")
+        void inboundEndStopsTheClock() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startFirstMessageClock();
+            int scheduledOnStart = probe.time.scheduledCount();
+
+            probe.source.end();
+            int pendingAfterTheEnd = probe.time.pendingCount();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("a body that ended without a byte",
+                    () -> assertEquals(1, scheduledOnStart, "the clock was armed when it was started"),
+                    () -> assertEquals(0, pendingAfterTheEnd, "the end cancels the pending timer"),
+                    () -> assertTrue(probe.ended.get(), "the end is passed on"),
+                    () -> assertNull(probe.failure.get(), "an ended body is never ended by the bound"),
+                    () -> assertNull(probe.capped.clientAbort()),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(EarlierAbort.class)
+        @DisplayName("an abort claimed first stops the clock: a later expiry changes nothing")
+        void earlierAbortKeepsItsClaim(EarlierAbort earlier) {
+            IdleProbe probe = firstMessageProbe(earlier.declaredLength);
+            probe.capped.startFirstMessageClock();
+            int scheduledOnStart = probe.time.scheduledCount();
+
+            earlier.trigger(probe);
+            GatewayException claimed = probe.capped.clientAbort();
+            int pendingAfterTheClaim = probe.time.pendingCount();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll(earlier.name(),
+                    () -> assertEquals(1, scheduledOnStart, "the clock was armed when it was started"),
+                    () -> assertEquals(earlier.expected, claimed == null ? null : claimed.getEventType(),
+                            "the earlier trigger owns the abort claim"),
+                    () -> assertEquals(0, pendingAfterTheClaim, "the earlier abort cancels the pending timer"),
+                    () -> assertSame(claimed, probe.capped.clientAbort(), "the expiry does not replace the claim"),
+                    () -> assertEquals(1, probe.aborts.get(), "the abort action runs once, for the earlier trigger"),
+                    () -> assertFalse(probe.failure.get() instanceof DispatchStage.FirstMessageTimeout,
+                            "no first-message timeout is propagated after the earlier abort"));
+        }
+
+        @Test
+        @DisplayName("the attempt's send completing stops the clock: nothing fires and nothing is refused at the hand-over")
+        void completedSendStopsTheClock() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startFirstMessageClock();
+            int scheduledOnStart = probe.time.scheduledCount();
+
+            probe.capped.stopFirstMessageClock();
+            int pendingOnceStopped = probe.time.pendingCount();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+            GatewayException atTheHandOver = probe.handOver();
+
+            assertAll("a body whose attempt's send completed before a byte arrived",
+                    () -> assertEquals(1, scheduledOnStart, "the clock was armed when it was started"),
+                    () -> assertEquals(0, pendingOnceStopped, "the stop cancels the pending timer"),
+                    () -> assertNull(atTheHandOver, "nothing is refused when the response is handed over"),
+                    () -> assertNull(probe.capped.clientAbort()),
+                    () -> assertNull(probe.failure.get()),
+                    () -> assertEquals(0, probe.aborts.get()),
+                    () -> assertEquals(List.of(), probe.lateViolations, "the clock never reaches the late callback"));
+        }
+
+        @Test
+        @DisplayName("an attempt the dispatch no longer waits for stops the clock of its body: nothing fires afterwards")
+        void abandonedAttemptStopsTheClock() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            DispatchStage.UpstreamAttempt attempt = new DispatchStage.UpstreamAttempt();
+            attempt.attachBody(probe.capped);
+            probe.capped.startFirstMessageClock();
+            int pendingWhileWaitedFor = probe.time.pendingCount();
+
+            attempt.abandon();
+            int pendingOnceAbandoned = probe.time.pendingCount();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("the first-message clock of an abandoned attempt",
+                    () -> assertEquals(1, pendingWhileWaitedFor, "the clock is pending while the attempt is waited for"),
+                    () -> assertEquals(0, pendingOnceAbandoned, "abandoning the attempt cancels it"),
+                    () -> assertNull(probe.capped.clientAbort(), "a stopped clock records no refusal"),
+                    () -> assertNull(probe.failure.get(), "a stopped clock reports nothing to the consumer"),
+                    () -> assertEquals(0, probe.aborts.get(), "a stopped clock resets no upstream request"));
+        }
+
+        @Test
+        @DisplayName("a body handed to an attempt the dispatch already stopped waiting for never starts the clock")
+        void bodyOfAnAlreadyAbandonedAttemptNeverStartsTheClock() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            DispatchStage.UpstreamAttempt attempt = new DispatchStage.UpstreamAttempt();
+            attempt.abandon();
+
+            attempt.attachBody(probe.capped);
+            probe.capped.startFirstMessageClock();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("the body of an attempt abandoned before it was attached",
+                    () -> assertEquals(0, probe.time.scheduledCount(), "the clock is never scheduled"),
+                    () -> assertNull(probe.capped.clientAbort()),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("a first byte arriving after the expiry is dropped: the expiry keeps the claim")
+        void firstByteAfterTheExpiryIsDropped() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startFirstMessageClock();
+            probe.time.advanceMillis(BOUND_MILLIS);
+            GatewayException expiry = probe.capped.clientAbort();
+
+            probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+
+            assertAll("a byte after the expiry",
+                    () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, expiry),
+                    () -> assertSame(expiry, probe.capped.clientAbort(), "the expiry keeps the claim"),
+                    () -> assertEquals(List.of(), probe.forwarded, "the late byte never crosses to the upstream"),
+                    () -> assertEquals(1, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("an expiry before the hand-over is the dispatch's own refusal, never a late one")
+        void expiryBeforeTheHandOverIsReturnedByIt() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startFirstMessageClock();
+            probe.time.advanceMillis(BOUND_MILLIS);
+
+            GatewayException returned = probe.handOver();
+
+            assertAll("an expiry before the hand-over",
+                    () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, returned),
+                    () -> assertSame(probe.capped.clientAbort(), returned, "the hand-over reports the expiry"),
+                    () -> assertEquals(List.of(), probe.lateViolations, "the late-violation callback is not run"));
+        }
+
+        @Test
+        @DisplayName("NO_FIRST_MESSAGE_TIMEOUT, the bound of every HTTP dispatch: the clock is never armed and nothing is scheduled")
+        void unarmedClockSchedulesNothing() {
+            IdleProbe probe = new IdleProbe(DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_DECLARED_LENGTH,
+                    OptionalLong.empty(), DispatchStage.NO_FIRST_MESSAGE_TIMEOUT);
+
+            probe.capped.startFirstMessageClock();
+            probe.time.advanceMillis(60 * BOUND_MILLIS);
+            probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+            probe.capped.stopFirstMessageClock();
+
+            assertAll("an unarmed first-message clock",
+                    () -> assertEquals(0, probe.time.scheduledCount(), "nothing is ever scheduled"),
+                    () -> assertEquals(1, probe.forwarded.size(), "the late first byte is forwarded"),
+                    () -> assertNull(probe.capped.clientAbort()),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("a negative first-message bound is refused when the stage is built; NO_FIRST_MESSAGE_TIMEOUT is accepted")
+        void negativeBoundIsRefused() {
+            UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
+            UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+                            DispatchStage.NO_BODY_DEADLINE, -1L, failureMapper));
+
+            assertAll("the first-message bound of a stage",
+                    () -> assertTrue(refused.getMessage().contains("firstMessageTimeoutMillis"),
+                            "the refusal names the bound"),
+                    () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
+                            DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE,
+                            DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, failureMapper),
+                            "the unarmed bound is a valid bound"));
+        }
+
+        /** A probe whose only clock is the first-message clock, bounded by {@link #BOUND_MILLIS}. */
+        private IdleProbe firstMessageProbe(long declaredLength) {
+            return new IdleProbe(DispatchStage.NO_BODY_IDLE_TIMEOUT, declaredLength, OptionalLong.empty(),
+                    BOUND_MILLIS);
+        }
+    }
+
     /** An abort that claims the stream before its idle clock would expire, with the event it records. */
     enum EarlierAbort {
         CAP_BREACH(DispatchStage.NO_DECLARED_LENGTH, EventType.CONTENT_TOO_LARGE),
@@ -788,7 +1063,8 @@ class DispatchStageTest {
 
     /**
      * A {@link DispatchStage.ByteCappedBodyStream} over an armed {@link DispatchStage.InboundBody}, as the
-     * dispatch builds one, whose idle clock and request-body deadline run on a {@link ManualTime}; it records
+     * dispatch builds one, whose idle clock, request-body deadline and first-message clock run on a
+     * {@link ManualTime}; it records
      * what it forwards, its failure, its end, every abort and every late refusal, and the order the abort
      * action and the late-violation callback ran in.
      */
@@ -819,6 +1095,16 @@ class DispatchStageTest {
          *                       {@code 0} for one passing at once — or empty for none
          */
         IdleProbe(long timeoutMillis, long declaredLength, OptionalLong deadlineMillis) {
+            this(timeoutMillis, declaredLength, deadlineMillis, DispatchStage.NO_FIRST_MESSAGE_TIMEOUT);
+        }
+
+        /**
+         * @param deadlineMillis       how long after the probe's creation its request-body deadline passes —
+         *                             {@code 0} for one passing at once — or empty for none
+         * @param firstMessageMillis   the first-message bound, timed on the same {@link ManualTime}, or
+         *                             {@link DispatchStage#NO_FIRST_MESSAGE_TIMEOUT} for an unarmed clock
+         */
+        IdleProbe(long timeoutMillis, long declaredLength, OptionalLong deadlineMillis, long firstMessageMillis) {
             OptionalLong deadlineNanos = deadlineMillis.isPresent()
                     ? OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis.getAsLong()))
                     : OptionalLong.empty();
@@ -827,7 +1113,8 @@ class DispatchStageTest {
                 sequence.add(ABORT);
             }, _ -> {
                 // The forwarded count feeds the retry gate, which these cases do not exercise.
-            }, new DispatchStage.IdleClock(timeoutMillis, time, time::nanoTime), deadlineNanos);
+            }, new DispatchStage.IdleClock(timeoutMillis, time, time::nanoTime), deadlineNanos,
+                    new DispatchStage.IdleClock(firstMessageMillis, time, time::nanoTime));
             capped.handler(forwarded::add);
             capped.exceptionHandler(failure::set);
             capped.endHandler(_ -> ended.set(true));
@@ -2274,6 +2561,10 @@ class DispatchStageTest {
         private static final long BODY_DEADLINE_MILLIS = 5 * IDLE_TIMEOUT_MILLIS;
         /** How long after the failed dispatch the failed-attempt case takes its first look at the body. */
         private static final long SETTLE_MILLIS = 200L;
+        /** The path of the late-first-byte cases, whose body the stub upstream reads whole and answers. */
+        private static final String LATE_FIRST_BYTE_PATH = "/late-first-byte";
+        /** How long after the dispatch subscribed the late first byte arrives: three idle timeouts. */
+        private static final long LATE_FIRST_BYTE_MILLIS = 3 * IDLE_TIMEOUT_MILLIS;
         private static final String ANSWER = "ok";
 
         private Vertx vertx;
@@ -2436,6 +2727,68 @@ class DispatchStageTest {
                     () -> assertEquals(before + after, received,
                             "the body reaches the upstream whole: the idle clock stopped when the send completed"),
                     () -> assertEquals(List.of(EARLY_PATH), receivedPaths));
+        }
+
+        /**
+         * An HTTP dispatch is built with {@link DispatchStage#NO_FIRST_MESSAGE_TIMEOUT}, so it never arms the
+         * first-message clock: a body whose first byte arrives {@link #LATE_FIRST_BYTE_MILLIS} after the
+         * dispatch subscribed to it — three times the bound of the matched control below — is forwarded
+         * whole. The stage arms no idle clock either, so nothing else could end it.
+         */
+        @Test
+        @DisplayName("an HTTP dispatch never arms the first-message clock: a late first byte is forwarded and answered")
+        void httpDispatchNeverArmsTheFirstMessageClock() throws Exception {
+            TestReadStream inbound = new TestReadStream();
+            String chunk = Generators.letterStrings(4, 8).next();
+
+            Future<HttpClientResponse> dispatched = dispatch(routed(DispatchStage.NO_BODY_IDLE_TIMEOUT, patientGuard(),
+                    false), HttpMethod.POST, LATE_FIRST_BYTE_PATH, inbound);
+            emitLateFirstByte(inbound, chunk);
+            String answer = answerOf(dispatched);
+
+            assertAll("an HTTP dispatch whose first body byte arrived late",
+                    () -> assertEquals("200 " + ANSWER, answer, "the late first byte does not end the dispatch"),
+                    () -> assertEquals(Integer.valueOf(chunk.length()), receivedBodyBytes.get(LATE_FIRST_BYTE_PATH),
+                            "the upstream receives the whole body"));
+        }
+
+        /**
+         * Matched control of {@link #httpDispatchNeverArmsTheFirstMessageClock()}: the same late first byte
+         * under a stage bounding the first-message wait at {@link #IDLE_TIMEOUT_MILLIS} ends the dispatch at
+         * the bound as the client's abort. The request head leaves with the first chunk, so the reset leaves
+         * the pool's only connection reusable for the next dispatch.
+         */
+        @Test
+        @DisplayName("control — the same late first byte under a first-message bound ends the dispatch as a FirstMessageTimeout")
+        void firstMessageBoundEndsALateFirstByte() throws Exception {
+            TestReadStream inbound = new TestReadStream();
+            Routed bounded = Routed.withFirstMessageBound("first-message",
+                    new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""), upstreamClient,
+                    patientGuard(), IDLE_TIMEOUT_MILLIS, failureMapper);
+
+            Future<HttpClientResponse> dispatched = dispatch(bounded, HttpMethod.POST, LATE_FIRST_BYTE_PATH, inbound);
+            emitLateFirstByte(inbound, Generators.letterStrings(4, 8).next());
+            GatewayException rejection = rejectionOf(dispatched);
+            String next = answerOf(dispatch(routed(DispatchStage.NO_BODY_IDLE_TIMEOUT, patientGuard(), false),
+                    HttpMethod.GET, ANSWERING_PATH, new TestReadStream()));
+
+            assertAll("a bounded dispatch whose first body byte arrived late",
+                    () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, rejection,
+                            () -> "the client's abort, not an upstream failure: " + rejection),
+                    () -> assertEquals(EventType.INBOUND_BODY_ABORTED, rejection.getEventType()),
+                    () -> assertEquals("200 " + ANSWER, next, "the pool's only connection is free for the next dispatch"),
+                    () -> assertEquals(List.of(ANSWERING_PATH), receivedPaths,
+                            "the bounded request never sent its head; only the next dispatch reached the upstream"));
+        }
+
+        /** Emits {@code chunk} and ends the body {@link #LATE_FIRST_BYTE_MILLIS} after the dispatch subscribed to it. */
+        private void emitLateFirstByte(TestReadStream inbound, String chunk) throws Exception {
+            Awaits.until(inbound::subscribed, "the dispatch to subscribe to the request body",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            vertx.setTimer(LATE_FIRST_BYTE_MILLIS, _ -> {
+                inbound.emit(Buffer.buffer(chunk));
+                inbound.end();
+            });
         }
 
         /**
