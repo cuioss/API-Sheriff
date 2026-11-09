@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -33,18 +32,20 @@ import org.jspecify.annotations.Nullable;
  * mirror of {@link CallbackEndpoint} for the logout direction (D5). It owns the two reserved logout
  * legs ({@link ReservedPathRegistry.ReservedEndpoint#LOGOUT} and
  * {@link ReservedPathRegistry.ReservedEndpoint#LOGOUT_RETURN}) and the session binding; the
- * transport-free logic — the call to the token-revocation seam, {@code state} minting, the engine
- * end-session redirect, and the return-leg {@code state} verification — lives in
+ * transport-free logic — the revocation of the session's refresh token, {@code state} minting, the
+ * engine end-session redirect, and the return-leg {@code state} verification — lives in
  * {@link RpInitiatedLogout}.
  * <p>
  * <strong>Logout leg.</strong> {@link #logout(String, Instant)} resolves the request's live
  * {@link SessionRecord} through the mode-neutral {@link SessionBinding} seam and
  * <strong>destroys it first</strong> ({@link SessionBinding#destroy}): the local session
  * destruction is the authoritative, immediately-effective logout, and nothing that follows can
- * prevent it. Only then does it drive {@link RpInitiatedLogout#initiate} (which calls its
- * token-revocation seam and builds the {@code end_session_endpoint} redirect carrying the
- * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the single-use logout-state
- * cookie). Every answer clears every cookie the binding sets
+ * prevent it. Only then does it drive {@link RpInitiatedLogout#initiate}, which first revokes the
+ * session's refresh token at the identity provider (RFC 7009, synchronously) and then builds the
+ * {@code end_session_endpoint} redirect carrying the {@code id_token_hint}, the exact
+ * {@code post_logout_redirect_uri}, and the single-use logout-state cookie. A failed revocation is
+ * reported by {@link RpInitiatedLogout} and never turns the logout into an error; the access token is
+ * not revoked. Every answer clears every cookie the binding sets
  * ({@link SessionBinding#clearingSetCookieHeaders()} — in cookie mode the session cookie and its
  * activity cookie).
  * <p>

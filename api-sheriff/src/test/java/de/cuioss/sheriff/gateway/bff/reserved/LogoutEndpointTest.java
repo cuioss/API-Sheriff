@@ -23,7 +23,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.crypto.spec.SecretKeySpec;
 
 
@@ -46,6 +47,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link LogoutEndpoint}, focused on the invariant that local logout ALWAYS succeeds. When
@@ -54,6 +56,9 @@ import org.junit.jupiter.params.provider.EnumSource;
  * the endpoint must still destroy the server-side session and clear the session cookie before landing
  * the browser on {@code final_redirect} — a redirect-construction failure must never leave the local
  * session usable.
+ * <p>
+ * The token-revocation seam is driven the same way: it receives the logged-out session once, after the
+ * binding has destroyed it, and a seam that throws never changes the {@code 302} the logout answers.
  */
 class LogoutEndpointTest {
 
@@ -295,19 +300,70 @@ class LogoutEndpointTest {
     }
 
     @Test
-    @DisplayName("Should end the session before the end-session redirect is built")
-    void shouldDestroyBeforeInitiating() {
-        AtomicReference<Boolean> liveWhenInitiated = new AtomicReference<>();
-        TokenRevocation observingStore = ignored ->
-                liveWhenInitiated.set(store.resolve(COOKIE_HANDLE, NOW).isPresent());
+    @DisplayName("Should hand the revocation seam the logged-out session once, after the binding destroyed it")
+    void shouldDestroyBeforeRevoking() {
+        SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
+        List<String> revokedSessionIds = new CopyOnWriteArrayList<>();
+        List<Boolean> liveWhenRevoked = new CopyOnWriteArrayList<>();
+        TokenRevocation observingStore = ended -> {
+            revokedSessionIds.add(ended.sessionId());
+            liveWhenRevoked.add(store.resolve(COOKIE_HANDLE, NOW).isPresent());
+        };
         LogoutEndpoint endpoint = endpoint(observingStore, () -> Optional.of(END_SESSION), REGISTERED_RETURN,
                 binding);
 
         LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
 
-        assertTrue(outcome.location().startsWith(END_SESSION), "precondition: the redirect was built");
-        assertEquals(Boolean.FALSE, liveWhenInitiated.get(),
-                "the session was already gone when the redirect construction began");
+        assertAll("the revocation seam of one logout",
+                () -> assertTrue(outcome.location().startsWith(END_SESSION), "precondition: the redirect was built"),
+                () -> assertEquals(List.of(stored.sessionId()), revokedSessionIds,
+                        "the seam receives the session the request presented, exactly once"),
+                () -> assertEquals(List.of(Boolean.FALSE), liveWhenRevoked,
+                        "the binding had already destroyed the session when the seam ran"));
+    }
+
+    @Test
+    @DisplayName("Should not call the revocation seam when the request carries no live session")
+    void shouldNotRevokeWithoutSession() {
+        AtomicInteger revocations = new AtomicInteger();
+        LogoutEndpoint endpoint = endpoint(ended -> revocations.incrementAndGet(), () -> Optional.of(END_SESSION),
+                REGISTERED_RETURN, binding);
+
+        LogoutOutcome outcome = endpoint.logout(null, NOW);
+
+        assertEquals(FINAL_REDIRECT, outcome.location(), "precondition: the logout landed without a session");
+        assertEquals(0, revocations.get(), "there is no session whose token could be revoked");
+    }
+
+    /**
+     * Whether the browser is sent to the identity provider or lands on {@code final_redirect}, a
+     * revocation seam that throws changes nothing about the answer: the session is ended, its cookie
+     * cleared, and the answer is the same {@code 302} a logout whose revocation succeeded gets.
+     */
+    @ParameterizedTest(name = "end_session_endpoint published: {0}")
+    @ValueSource(booleans = {true, false})
+    @DisplayName("Should answer the same 302 and end the session when the revocation seam throws")
+    void shouldAnswerTheSameRedirectWhenRevocationFails(boolean published) {
+        EndSessionEndpointSource source = published ? () -> Optional.of(END_SESSION) : Optional::empty;
+        AtomicInteger attempts = new AtomicInteger();
+        TokenRevocation failing = ended -> {
+            attempts.incrementAndGet();
+            throw new IllegalStateException("revocation endpoint answered 503");
+        };
+        String expectedLocation = published ? END_SESSION : FINAL_REDIRECT;
+
+        LogoutOutcome outcome = endpoint(failing, source, REGISTERED_RETURN, binding).logout(cookieHeader, NOW);
+
+        assertAll("a logout whose revocation fails",
+                () -> assertEquals(1, attempts.get(), "precondition: the seam was called and threw"),
+                () -> assertEquals(302, outcome.status(), "never an error answer"),
+                () -> assertTrue(outcome.location().startsWith(expectedLocation),
+                        "the browser goes where a successful revocation would send it: " + outcome.location()),
+                () -> assertEquals(published, outcome.carriesIdToken()),
+                () -> assertTrue(store.resolve(COOKIE_HANDLE, NOW).isEmpty(), "the session is ended"),
+                () -> assertEquals(0, store.size(), "nothing is left in the store"),
+                () -> assertTrue(outcome.setCookieHeaders().containsAll(binding.clearingSetCookieHeaders()),
+                        "the session cookie is cleared"));
     }
 
     @Test

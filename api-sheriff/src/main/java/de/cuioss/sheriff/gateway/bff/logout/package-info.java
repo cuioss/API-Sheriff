@@ -23,15 +23,18 @@
  * coupling), so every class is unit-testable without a container or a live IdP:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout} orchestrates RP-initiated
- *       logout — it hands the session to the token-revocation seam it is given (best-effort; the
- *       class sends no revocation request itself), mints a session-bound
+ *       logout — it hands the session to the token-revocation seam, mints a session-bound
  *       {@code state}, carries it in the short-lived single-use {@code __Host-sheriff-logout} cookie,
  *       and on the return leg verifies the returned {@code state} against that cookie before landing
- *       the browser on {@code final_redirect}.</li>
+ *       the browser on {@code final_redirect}. The runtime binds the seam to an RFC 7009 revocation of
+ *       the session's refresh token at the identity provider, so an RP-initiated logout revokes that
+ *       token; the access token is not revoked, and a failed revocation is a latched {@code WARN} that
+ *       never stops the logout.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver} receives an OIDC
  *       back-channel {@code logout_token}: it signature-verifies the token through the engine's
  *       issuer/JWKS infrastructure, runs the claim residual, then destroys the affected sessions
- *       through the store's O(1) secondary index.</li>
+ *       through the store's O(1) secondary index. It revokes nothing: the identity provider initiated
+ *       that logout.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator} is the pure OIDC
  *       back-channel-logout-token check pipeline the receiver applies after signature verification —
  *       the gateway-side residual the engine library does not carry.</li>
