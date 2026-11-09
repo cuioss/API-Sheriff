@@ -161,8 +161,8 @@ import org.jspecify.annotations.Nullable;
  * failed leaves that failure attributed to the upstream. A failure with no client-side abort behind
  * it — a refused connection, an upstream reset, a timeout — is counted and mapped as an upstream
  * failure. One timing edge is attributed by what happened first: the edge's idle timeout can reap an
- * inbound connection before the route's read timeout fires, and the dispatch then ends as the
- * client-ended dispatch it is.
+ * inbound connection before the upstream guard's fixed per-attempt timeout fires, and the dispatch then
+ * ends as the client-ended dispatch it is.
  * <p>
  * <strong>An attempt the dispatch stops waiting for is released.</strong> Every attempt's upstream
  * exchange is tracked from before its request is obtained, whatever the body framing. Once the

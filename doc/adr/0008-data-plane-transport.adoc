@@ -45,7 +45,7 @@ Every path that relays upstream response headers strips the upstream identity he
 
 *Resilience uses SmallRye Fault Tolerance's programmatic API* (`quarkus-smallrye-fault-tolerance`), without annotations or CDI interception on the hot path. `UpstreamGuards` builds the guards at boot in the edge layer, and the dispatch call runs inside its guard. Breaker state transitions surface as WARN records and metrics.
 
-The breaker is a fixed policy of the gateway, and one guard serves every route dialing the same upstream target with the same retry setting. link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064] records that policy and removes the `upstream.circuit_breaker` block. ADR-0064 also lists the upstream timeout and retry keys that parse and act on nothing, and it leaves them open.
+The breaker is a fixed policy of the gateway, and one guard serves every route dialing the same upstream target with the same retry setting. link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064] records that policy and removes the `upstream.circuit_breaker` block. Its amendment removes the upstream timeout and retry keys that parsed and acted on nothing as well: a route declares no timeout and no attempt count, and a descriptor that declares one of those keys is a boot refusal.
 
 *Retry is stream-aware gateway policy.* The retry predicate retries a failed attempt only when the method is idempotent *and no attempt has taken up the one-shot request body*. Once an attempt has subscribed the body stream no retry follows, even when none of its bytes reached the upstream. A request without a body is sent upstream with no body: the gateway reads its inbound stream only to watch for a body byte it then refuses, and no attempt takes that stream up, so the request stays eligible for retry. No replay buffering in the initial release.
 
@@ -110,7 +110,7 @@ The ETag adapter on the data plane would serve a cached body on an upstream `304
 * link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]: the three forward modes the validators cross under
 * link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]: the gateway-owned header sets, the identity set and the `not_modified` decision
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: the platform-mechanism rule SmallRye Fault Tolerance is used under
-* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]: the fixed breaker policy and the open upstream keys
+* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]: the fixed breaker policy and the removed upstream timeout and retry keys
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamGuards.java`: the guard
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/ForwardPolicyStage.java`: the request half of `not_modified`
 * https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus, SmallRye Fault Tolerance]

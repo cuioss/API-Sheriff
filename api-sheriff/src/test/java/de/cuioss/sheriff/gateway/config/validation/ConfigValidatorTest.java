@@ -28,8 +28,6 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.RouteConfig;
-import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -64,26 +62,6 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should accept a millisecond-precision upstream timeout")
-        void shouldAcceptMillisecondPrecisionTimeout() {
-            RouteConfig route = RouteConfig.builder()
-                    .id("r").match(match("/r", HttpMethod.GET))
-                    .upstream(UpstreamConfig.builder().readTimeoutMs(2500).build())
-                    .build();
-            EndpointConfig endpoint = EndpointConfig.builder()
-                    .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(auth(Require.NONE))
-                    .routes(List.of(route))
-                    .build();
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-
-            assertTrue(errors.isEmpty(),
-                    () -> "expected no violations for a millisecond-precision timeout, got: " + errors);
         }
     }
 

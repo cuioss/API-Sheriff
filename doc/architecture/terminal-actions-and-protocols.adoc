@@ -38,9 +38,9 @@ image::../resources/diagrams/downstream-client-planes.svg[Upstream client split 
      bodies, framing mismatches, and 10 s / 25 s request-body timeouts) are neither retried nor
      counted as failures.
   ** *Attempt timeout.* Each attempt is bounded until its response head by a fixed 30 s timeout
-     inside the retry loop (up to ~90 s across 3 attempts when `retry.enabled` is true; see
-     link:runtime-and-dependencies.adoc#_implementation_deviations[Implementation Deviations] for
-     parsed-only timeout/retry keys).
+     inside the retry loop (up to ~90 s across 3 attempts when `retry.enabled` is true). A route
+     declares no timeout or attempt count
+     (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
 
 * *Control plane -- `cui-http`.* The gateway's bounded JSON calls (OIDC discovery, JWKS, PAR, token
   exchange, revocation inside the token-sheriff libraries) use `cui-http`'s `HttpHandler`,

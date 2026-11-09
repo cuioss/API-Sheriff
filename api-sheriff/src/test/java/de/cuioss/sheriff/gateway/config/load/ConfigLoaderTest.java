@@ -617,7 +617,6 @@ class ConfigLoaderTest {
                         path: /v1/orders
                         retry:
                           enabled: true
-                          max_attempts: 3
                 """);
 
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
@@ -636,7 +635,8 @@ class ConfigLoaderTest {
         assertEquals("orders-read", route.id());
         assertEquals(Protocol.HTTP, route.protocol());
         assertNull(route.auth().tokenRelay(), "an omitted token_relay binds as absent");
-        assertNotNull(route.upstream().retry());
+        assertEquals(Boolean.TRUE, route.upstream().retry().enabled(),
+                "a declared upstream.retry.enabled: true must bind onto the route");
     }
 
     @Test
@@ -784,6 +784,25 @@ class ConfigLoaderTest {
                                           reset_ms: 30000
                                 """,
                         "/endpoint/routes/0/upstream"),
+                // upstream.connect_timeout_ms and read_timeout_ms are removed, not renamed: no code ever
+                // read them, and each attempt runs under the gateway's fixed upstream timeout
+                // (ADR-0064). A lingering declaration must fail the boot rather than parse and act
+                // nowhere — these rows are what keep the keys from coming back inert.
+                Arguments.of("a removed connect_timeout_ms in a route's upstream block",
+                        endpointWithUpstreamMembers("connect_timeout_ms: 2000"), "/endpoint/routes/0/upstream"),
+                Arguments.of("a removed read_timeout_ms in a route's upstream block",
+                        endpointWithUpstreamMembers("read_timeout_ms: 5000"), "/endpoint/routes/0/upstream"),
+                // upstream.retry.max_attempts and idempotent_only are removed, not renamed: no code ever
+                // read them, and a route that enables retry gets the gateway's fixed retry policy
+                // (ADR-0064). A lingering declaration must fail the boot rather than parse and act
+                // nowhere — these rows are what keep the keys from coming back inert. The still-valid
+                // enabled: true beside each keeps the removed key the only possible cause of the refusal.
+                Arguments.of("a removed max_attempts in a route's upstream retry block",
+                        endpointWithUpstreamMembers("retry:\n  enabled: true\n  max_attempts: 3"),
+                        "/endpoint/routes/0/upstream/retry"),
+                Arguments.of("a removed idempotent_only in a route's upstream retry block",
+                        endpointWithUpstreamMembers("retry:\n  enabled: true\n  idempotent_only: true"),
+                        "/endpoint/routes/0/upstream/retry"),
                 // AS-3: a matcher carries exactly one path form, so declaring both is refused at load.
                 Arguments.of("a matcher declaring both path and path_prefix",
                         """
@@ -874,6 +893,29 @@ class ConfigLoaderTest {
                       security_filter:
                         profile: %s
                 """.formatted(profile);
+    }
+
+    /**
+     * @param upstreamMembers further members of the route's {@code upstream} block, written at the
+     *                        block's own indentation; continuation lines indent relative to it
+     * @return an otherwise-valid bearer {@code endpoints/orders.yaml} whose single route's
+     *         {@code upstream} block declares {@code path} followed by {@code upstreamMembers}
+     */
+    private static String endpointWithUpstreamMembers(String upstreamMembers) {
+        return """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: bearer
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                      upstream:
+                        path: /v1/orders
+                %s
+                """.formatted(upstreamMembers.indent(8).stripTrailing());
     }
 
     /** A redirect route whose {@code redirect} block ends with {@code redirectMember}, which may be empty. */

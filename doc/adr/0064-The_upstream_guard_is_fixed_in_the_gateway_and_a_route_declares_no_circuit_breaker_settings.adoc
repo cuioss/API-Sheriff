@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The circuit breaker in front of every upstream is a fixed policy of the gateway -- a rolling window of 20 calls, a failure ratio of 0.5, an open delay of 5 s (BREAKER_RESET_SECONDS) and two successful trials to close -- and a route declares no circuit_breaker settings; the upstream.circuit_breaker block, which parsed and acted on nothing, is removed. The Retry-After of the open circuit's 503 is that same delay by construction and carries no jitter. Wiring the keys and keeping them inert were both rejected. The other upstream keys that parse and act on nothing (connect_timeout_ms, read_timeout_ms, retry.max_attempts, retry.idempotent_only) are out of scope and stay open.
+// summary: The circuit breaker in front of every upstream is a fixed policy of the gateway -- a rolling window of 20 calls, a failure ratio of 0.5, an open delay of 5 s (BREAKER_RESET_SECONDS) and two successful trials to close -- and a route declares no circuit_breaker settings; the upstream.circuit_breaker block, which parsed and acted on nothing, is removed. The Retry-After of the open circuit's 503 is that same delay by construction and carries no jitter. Wiring the keys and keeping them inert were both rejected. Amended 2026-10-26: the four other upstream keys that parsed and acted on nothing (connect_timeout_ms, read_timeout_ms, retry.max_attempts, retry.idempotent_only) are removed as well, and a descriptor that declares one is a boot refusal; a route keeps only the retry.enabled toggle, and the per-attempt timeout and the retry policy are fixed in the gateway.
 // tags: resilience, circuit-breaker, upstream, retry-after, configuration, smallrye-fault-tolerance, inert-configuration
 // affects: api-sheriff, documentation
 // supersedes:
@@ -59,14 +59,49 @@ The `503` an open circuit answers carries `Retry-After: 5`. One constant, `BREAK
 
 The header carries no jitter. It states the breaker's real window on this node. Spreading retries out is the client's responsibility: RFC 9110 section 10.2.3 defines `Retry-After` as the minimum time the client is asked to wait and permits a client to wait longer. The security-audit finding that the header carries no jitter is accepted on this basis.
 
-=== What this decision does not settle
+=== Amendment 2026-10-26: the timeout and retry keys are removed
 
-The other per-route upstream keys share the defect and are not decided here:
+The first version of this record left four more per-route upstream keys undecided. Each one parsed and acted on nothing:
 
-* `connect_timeout_ms` and `read_timeout_ms` are bound into the model and read by nothing. The upstream client sets no connect or idle timeout of its own, so the Vert.x defaults apply (a 60 s connect timeout, which the guard's timeout ends first, and no idle timeout), and the guard applies a fixed 30 s timeout to every attempt of a dispatch.
-* `retry.max_attempts` and `retry.idempotent_only` are bound and read by nothing. Only `retry.enabled` acts. A route that enables retry gets two retries 100 ms apart, gated by the stream-aware retry predicate, and each retry gets its own 30 s timeout.
+* `connect_timeout_ms` and `read_timeout_ms` were bound into the model and read by nothing.
+* `retry.max_attempts` and `retry.idempotent_only` were bound and read by nothing. Only `retry.enabled` acted.
 
-Each needs its own decision, wire it or remove it, and the code-correctness report records it as open until it gets one.
+On 2026-10-26 the operator decided to remove all four, for the reason the breaker block was removed.
+
+*A route declares no timeout and no retry shape. It keeps one retry toggle, `retry.enabled`.*
+
+The four keys, their model fields and their schema entries are removed. The schema admits no unknown member in an `upstream` block or in its `retry` block. A descriptor that declares one of the four keys is therefore a boot refusal.
+
+The behaviour the keys appeared to configure is a fixed policy of the gateway. `UpstreamGuards` builds it. This record names the policy and does not restate the code.
+
+[cols="1,1,3", options="header"]
+|===
+| Property | Value | Meaning
+
+| Timeout per attempt
+| 30 s
+| `UPSTREAM_TIMEOUT_SECONDS`. The guard ends an attempt the upstream holds up for 30 seconds. The timeout sits inside the retry, so it bounds each attempt, not the whole dispatch.
+
+| Retry
+| 2 retries, 100 ms apart
+| SmallRye `maxRetries(2)`, only on a route whose effective `retry.enabled` is `true`. A retried dispatch runs up to three attempts, about 90 s in all (#582).
+
+| Retried methods
+| `GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`
+| The idempotent method set. The stream-aware retry predicate also refuses a retry once an attempt has subscribed the request body. `POST` and `PATCH` are never retried.
+
+| Connect timeout
+| 60 s
+| The Vert.x default. The upstream client sets no connect timeout of its own, and the guard's 30 s timeout ends the attempt first.
+
+| Idle timeout
+| None
+| The upstream client sets no idle timeout. The guard's timeout bounds an upstream that stops answering.
+
+| Request-body bounds
+| 10 s idle, 25 s deadline
+| Unchanged from #506. Both are shorter than the guard's timeout. A body that stops arriving ends as the request's failure, not the upstream's.
+|===
 
 == Alternatives rejected
 
@@ -88,11 +123,29 @@ A randomised value around the delay would spread clients that retry exactly when
 
 *Rejected because* the header would then misstate the breaker's window, and because the clients that need spreading are the ones that implement their own backoff anyway.
 
+=== Wire the timeout and retry keys
+
+`connect_timeout_ms` and `read_timeout_ms` would set the upstream client's timeouts. `retry.max_attempts` and `retry.idempotent_only` would shape the guard's retry.
+
+*Rejected because* no deployment needs a timeout or a retry shape other than the gateway's, and wiring the keys changes runtime behaviour for every route that declares them. Each key also needs a decision of its own:
+
+* A per-route timeout must stay longer than the request-body bounds. Otherwise a stalled body ends as the upstream's failure, and the breaker counts it.
+* `read_timeout_ms` has no single meaning on the Vert.x client. It could be an idle timeout or a bound on the whole response.
+* `retry.idempotent_only: false` would let the guard retry a `POST` or a `PATCH`. A retried write can apply twice on the upstream.
+
+It belongs in a plan of its own if a deployment ever needs it.
+
+=== Keep the four keys parsed and warn at boot, as ADR-0077 does for `rate_limit`
+
+The schema and the model would keep the keys. A boot WARN would name every route that declares one.
+
+*Rejected because* the reason ADR-0077 keeps `rate_limit` does not apply here. Per-route rate limiting is a planned feature, and the `rate_limit` block is where it will be declared. No feature is planned for these four keys: the timeout and the retry policy are decided as fixed, as the breaker is. A kept key would stay a configuration surface that no feature fills, and its WARN would fire at every boot without end.
+
 == Consequences
 
 === Properties of the design
 
-* Every key left in the `upstream` block either acts or is recorded as an open defect. An operator can no longer declare a breaker shape the gateway does not run.
+* Every key left in the `upstream` block acts. An operator can no longer declare a breaker shape, a timeout or a retry shape that the gateway does not run.
 * The breaker's shape is stated once, in the code that builds it, and documented as the gateway's policy.
 * A client reading `Retry-After` on an open circuit is told the window the breaker applies, by construction.
 
@@ -100,6 +153,7 @@ A randomised value around the delay would spread clients that retry exactly when
 
 * A route cannot have a breaker more or less sensitive than the gateway's. An upstream that needs a different shape needs a code change and a new decision.
 * A descriptor that declares `upstream.circuit_breaker` is a boot refusal. The key never acted, so the refusal changes no runtime behaviour, but it is a breaking change to the accepted configuration surface.
+* A descriptor that declares `connect_timeout_ms`, `read_timeout_ms`, `retry.max_attempts` or `retry.idempotent_only` is a boot refusal. The keys never acted, so the refusal changes no runtime behaviour either. It is a second breaking change to the same surface.
 
 === Risks
 
@@ -111,7 +165,8 @@ A randomised value around the delay would spread clients that retry exactly when
 * link:0008-data-plane-transport.adoc#_resilience[ADR-0008, Resilience]: the data-plane transport and the guard; its resilience section defers the breaker's shape to this record
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: the platform-mechanism rule SmallRye Fault Tolerance is used under
 * link:../architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture, Downstream Client]: the resilience description and the `503` error row
-* link:../configuration/routing-and-forwarding.adoc#_upstream[Configuration Reference, `upstream`]: the open item, the upstream keys that are bound and validated but not applied
+* link:../configuration/routing-and-forwarding.adoc#_upstream[Configuration Reference, `upstream`]: the keys a route declares, the `retry.enabled` toggle and the fixed timeout and retry policy
+* link:0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]: the inert `rate_limit` block kept and warned at boot, the alternative the amendment rejects for the timeout and retry keys
 * link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage]: why a key that parses is not a key that acts
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamGuards.java`: the guard and `BREAKER_RESET_SECONDS`
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamGuards.java`: the guard, `BREAKER_RESET_SECONDS` and `UPSTREAM_TIMEOUT_SECONDS`
 * https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3[RFC 9110 section 10.2.3, Retry-After]
