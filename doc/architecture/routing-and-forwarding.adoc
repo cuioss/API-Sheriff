@@ -98,8 +98,9 @@ enumeration of `Accept`, `Content-Type` or `Range`.
   `X-ProxyHost`, `X-ProxyPort` and `X-ProxyContextPath` -- are never copied from the client, under
   any mode or `-`/`_` spelling, a `headers_allow` naming one included. For an immediate peer the
   TCP-peer gate does not trust, every resolver input is masked from the resolver. `cui-http`'s
-  forwarding resolver normalizes client IP behind the `trusted_proxies` allowlist plus that gate
-  (and scheme/host/port/prefix only when `trust_scheme_host` opts in) and emits freshly regenerated
+  forwarding resolver normalizes client IP behind the `trusted_proxies` allowlist plus that gate. It
+  honours no forwarded scheme, host, port or prefix: the resolver is built from `trusted_proxies` and
+  the baseline alone, so `trust_scheme_host` parses but has no effect. The resolver emits freshly regenerated
   `X-Forwarded-*` headers by default, with RFC 7239 `Forwarded` opt-in and additive
   (link:../adr/0003-forwarded-headers.adoc[ADR-0003],
   link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]).

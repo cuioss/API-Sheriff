@@ -231,11 +231,13 @@ service path.
 
 A gRPC call is not held to the request-body idle timeout or the request-body deadline of an HTTP
 route, so a client-streaming or bidirectional call may pause between its messages. The wait for the
-*first* request message is bounded: a call whose client sends no request message within the fixed
-10 s first-message bound is ended by the gateway as a client abort (`INBOUND_BODY_ABORTED`, rendered
+*first* request byte is bounded: a call whose client sends no request byte within the fixed 10 s
+first-message bound is ended by the gateway as a client abort (`INBOUND_BODY_ABORTED`, rendered
 `INVALID_ARGUMENT`) before the upstream request head is written, and the upstream's circuit breaker
-does not count it. Once the first message has gone, the upstream guard's 30 s timeout bounds the call
-until the upstream sends its response headers. After them,
+does not count it as a failure. The bound ends with the first request byte, not with a complete gRPC
+message. The upstream guard's 30 s timeout runs from the start of the attempt, and after the first
+request byte it alone keeps bounding the call until the upstream sends its response headers. After
+them,
 the call stays open while a frame travels in either direction, and a call that carries no frame for
 five minutes is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
 `grpc-message: stream-idle-timeout` in place of the upstream's trailers. HTTP/2 `PING` frames do not
