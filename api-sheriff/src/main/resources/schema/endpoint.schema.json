@@ -256,15 +256,11 @@
                     "default": false,
                     "description": "Whether an upstream Location response header pointing inside this route's upstream is mapped back onto the gateway. A relative path or an absolute URI whose scheme, host and effective port equal the route upstream, and whose path equals the effective upstream base path or continues it on a segment boundary, is rewritten to the route's match key plus the remainder, emitted as a gateway-relative path; query and fragment are kept verbatim. Foreign origins, scheme-relative //host values, unparseable values and paths outside the base path are relayed unchanged. Defaults to false (Location relayed unchanged). Valid on http and graphql routes only; refused on grpc and websocket routes (enforced in code)."
                   },
-                  "connect_timeout_ms": { "type": "integer" },
-                  "read_timeout_ms": { "type": "integer" },
                   "retry": {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                      "enabled": { "type": "boolean" },
-                      "max_attempts": { "type": "integer" },
-                      "idempotent_only": { "type": "boolean" }
+                      "enabled": { "type": "boolean" }
                     }
                   },
                   "not_modified": {

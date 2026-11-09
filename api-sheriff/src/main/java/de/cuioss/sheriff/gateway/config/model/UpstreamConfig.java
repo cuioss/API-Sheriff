@@ -27,7 +27,9 @@ import org.jspecify.annotations.Nullable;
  * materialized once by the route-table builder.
  * <p>
  * The block carries no circuit-breaker settings: the breaker in front of an upstream is
- * the gateway's fixed policy (ADR-0064).
+ * the gateway's fixed policy (ADR-0064). It carries no timeout and no attempt-count settings
+ * either: each attempt runs under the gateway's fixed upstream timeout, and a route that
+ * enables retry gets the gateway's fixed retry policy (ADR-0064).
  *
  * @param path             the upstream path appended to the alias base path, joined on
  *                         exactly one {@code /} (ADR-0004); the request
@@ -37,8 +39,6 @@ import org.jspecify.annotations.Nullable;
  *                         upstream base path is mapped back onto the route's match key;
  *                         {@code null} (absent) means off — the {@code Location} is relayed
  *                         unchanged. Meaningful on http / graphql proxy routes only
- * @param connectTimeoutMs the connect timeout in milliseconds, {@code null} when omitted
- * @param readTimeoutMs    the read timeout in milliseconds, {@code null} when omitted
  * @param retry            the retry settings, {@code null} when omitted
  * @param notModified      the HTTP-304 not-modified settings, {@code null} when omitted
  * @author API Sheriff Team
@@ -49,25 +49,20 @@ import org.jspecify.annotations.Nullable;
 public record UpstreamConfig(
 @Nullable String path,
 @Nullable Boolean rewriteLocation,
-@Nullable Integer connectTimeoutMs,
-@Nullable Integer readTimeoutMs,
 @Nullable Retry retry,
 @Nullable NotModified notModified) {
 
     /**
      * Per-route retry settings.
      *
-     * @param enabled        whether retry is enabled for this route; {@code null} inherits
-     *                       the resolved endpoint/global default
-     * @param maxAttempts    the maximum retry attempts, {@code null} when omitted
-     * @param idempotentOnly whether only idempotent methods are retried, {@code null} when
-     *                       omitted
+     * @param enabled whether retry is enabled for this route; {@code null} inherits
+     *                the resolved endpoint/global default
      * @author API Sheriff Team
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Retry(@Nullable Boolean enabled, @Nullable Integer maxAttempts, @Nullable Boolean idempotentOnly) {
+    public record Retry(@Nullable Boolean enabled) {
     }
 
     /**

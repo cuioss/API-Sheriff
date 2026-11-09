@@ -292,9 +292,7 @@ class ConfigModelContractTest {
         return UpstreamConfig.builder()
                 .path("/v1/orders")
                 .rewriteLocation(true)
-                .connectTimeoutMs(2000)
-                .readTimeoutMs(5000)
-                .retry(UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build())
+                .retry(UpstreamConfig.Retry.builder().enabled(true).build())
                 .notModified(UpstreamConfig.NotModified.builder().enabled(true).build())
                 .build();
     }
@@ -595,8 +593,8 @@ class ConfigModelContractTest {
                             UpstreamConfig.builder().path("/v1").rewriteLocation(true).build(),
                             UpstreamConfig.builder().path("/v1").build()),
                     voCase("UpstreamConfig.Retry",
-                            UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build(),
-                            UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build(),
+                            UpstreamConfig.Retry.builder().enabled(true).build(),
+                            UpstreamConfig.Retry.builder().enabled(true).build(),
                             UpstreamConfig.Retry.builder().enabled(false).build()),
                     voCase("UpstreamConfig.NotModified", UpstreamConfig.NotModified.builder().enabled(true).build(),
                             UpstreamConfig.NotModified.builder().enabled(true).build(),
