@@ -57,14 +57,11 @@ decision.
   V02-26; nothing collided. The cause was not the `SO_LINGER 0` the spec suspected. It was a deadlock between
   the inbound HTTP/2 connection window and the upstream pool. The fix added an operator-requested 10 s
   request-body idle bound that answers `408`. Realized 17 files against 5 declared entries.
-- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** HELD by the cross-epic hold (Watches) until the sibling's refactor chain completes; then re-ground and emit. Must read #466's changes to `GatewayEdgeRoute`/`DispatchStage` (request-body idle bound, 408). Its line references into
-  `GatewayEdgeRoute` are stale since #431 and #448: run `cleanup` before emitting it. Its D4 (DP-6) must
-  be read against #448's abortive close and guard-keyed breaker. Carries two wire-or-remove decisions for
-  the operator at outline.
-  **Re-grounded 2026-10-26 at `54f82f03`:** the four keys are still inert (#506 added fixed constants, none
-  reads them); the guard and client code now live in `edge/upstream/UpstreamGuards.java` and
-  `EgressClients.java` (#487); D4 stays a record correction; the cross-epic hold is lifted. See the spec's
-  re-grounding table for every moved reference. `PLAN-V02-48` must not run beside it (both write ADRs 0008 and 0064).
+- PLAN-29 — shipped #586 (`ab568dab`, 2026-11-09), the four inert upstream keys removed, `retry.enabled` kept, recorded
+  as an ADR-0064 amendment. Ran alone in this epic beside the sibling's merged #581 and #582: one shared file with #581
+  (`observability-and-errors.adoc`), none with #582, no conflict. Declared 37 entries (both outcomes), realized 16
+  files; three realized docs were undeclared. Landing record: `landings/PLAN-29.md`; the three-layer read found
+  no blocker.
 - **PLAN-31 (staged 2026-10-14 by the other orchestrator session, WS-01) — the exact JWKS publish rule**
   via token-sheriff 0.9.7's `getKeyIds()`. **Re-grounded 2026-10-26 at `54f82f03`:** premise intact, `main` is
   on 0.9.8 (#491; the jar was not readable locally, so the outline reads it first), the threat-model residual
@@ -154,6 +151,17 @@ decision.
   `landings/`.
 
 ## Decisions
+
+- 2026-11-09 — **PLAN-29 landed and was reconciled** (analyze, inbox drain of 5 messages, origin/main `ab568dab`).
+  Shipped as #586; corroborated against `ci pr view 586`, `ci checks status` (24 checks, success), the merged
+  diff and the post-merge runs (Performance Benchmark `42620028579` and every push run for the merge commit
+  green). The lane's landing message was complete (`landing-check`). The landing was read on three layers by one
+  read-only leaf, and the orchestrator re-read the points it recorded: no blocker. The spec's "no edit needed"
+  list for `endpoint-routes.adoc`, ADR-0008 and the 504 row was wrong and the lane's code review caught it. The
+  four candidate-lesson messages (`-001`..`-004`) are plan-marshall tooling lessons and were routed to its
+  `lessons-routing` inbox as `-014`..`-017` under the 2026-10-15 standing rule, then dispositioned `discarded`
+  from this epic's corpus (no corpus entry, spec or queue row here). One minor layer-3 lead is a Watch.
+  PLAN-21 stays held (below); #581 has merged, so the supersede decision is now actionable after a re-ground.
 
 - 2026-11-09 — **PLAN-21 is HELD as a probable duplicate of `security-hardening-tier-1` PLAN-SEC-03**
   (operator, cleanup at `c85817d9`). Both fix the pending-authorization store's global oldest-first eviction
@@ -368,6 +376,12 @@ decision.
 
 > ↪ Relocated to `settled.md` § "Cross-epic hold on api-sheriff-0-2-0, resolved by its closure" — every sibling plan it names has shipped and the sibling epic is closed and archived
 
+- **Retry gap "100 ms apart" is unverified against SmallRye's default jitter (2026-11-09).** ADR-0064:86,
+  `doc/configuration/routing-and-forwarding.adoc` and `UpstreamGuards.java:85` state retries are 100 ms apart;
+  the guard sets `.delay(100, MILLIS)` and no `.jitter(...)`. Whether the library jitters by default is not
+  readable in this repository. Settle it with one measuring test or soften the wording; it moves the "about 90 s"
+  bound by a fraction of a second at most. Closes on whichever. The operator decides whether it earns a plan. —
+  source: `landings/PLAN-29.md` L3-1
 - **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
   FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`
   (cuioss/TokenSheriff#801 → PR #803); `main` pins 0.9.7 since #449 (`5c2a8143`), which implemented
