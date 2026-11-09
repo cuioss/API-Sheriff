@@ -25,8 +25,10 @@ import java.net.Socket;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -34,6 +36,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -52,6 +55,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /**
  * Boot-wiring contract of {@link TlsEdgeProducer}: the relay map is built from {@code
@@ -59,7 +63,8 @@ import org.junit.jupiter.api.Test;
  * when at least one passthrough SNI resolves, and shutdown is a clean no-op when nothing was started.
  * An unresolved passthrough alias is defensively skipped rather than aborting boot (ADR-0009). The
  * relay idle timeout is derived as the longest inner idle bound plus 60 seconds, which
- * {@link RelayIdleTimeoutDerivation} pins for each bound that can be the longest.
+ * {@link RelayIdleTimeoutDerivation} pins for each bound that can be the longest — a disabled
+ * ({@code 0}) HTTP idle timeout included, which is no bound rather than a bound of zero.
  * <p>
  * The positive case is asserted against the <em>public port itself</em>: it allocates a free port,
  * hands it to the producer, and probes whether anything accepts a connection there. A quiet
@@ -111,6 +116,16 @@ class TlsEdgeProducerTest {
         vertx.close().toCompletionStage().toCompletableFuture().join();
     }
 
+    /**
+     * Every case pins the derived value exactly, and every case also asserts the invariant the
+     * derivation exists for: the relay never undercuts an idle bound the gateway still applies behind
+     * the terminated branch.
+     * <p>
+     * The three cases with an HTTP idle timeout of zero, or one above both other bounds, are regression
+     * pins on existing behaviour rather than failing-first tests: they were written against the
+     * unchanged derivation and pass there. They keep the zero rule documented on
+     * {@link TlsEdgeProducer#relayIdleTimeout(Duration, RouteTable)} from silently changing.
+     */
     @Nested
     @DisplayName("Relay idle timeout derivation")
     class RelayIdleTimeoutDerivation {
@@ -118,47 +133,110 @@ class TlsEdgeProducerTest {
         @Test
         @DisplayName("is the HTTP idle timeout plus 60 s when no WebSocket route exists")
         void httpIdleTimeoutWithoutWebSocketRoute() {
-            // Arrange — a plain HTTP route carries no WebSocket idle timeout and must not count
+            // A plain HTTP route carries no WebSocket idle timeout and must not count
             RouteTable routes = new RouteTable(List.of(
                     ConfigFixtures.route("api", "/api").upstream(WS_UPSTREAM).build()));
 
-            // Act
             Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, routes);
 
-            // Assert
             assertEquals(HTTP_IDLE_TIMEOUT.plusSeconds(60), derived,
                     "without a WebSocket route the HTTP idle timeout is the longest inner bound");
+            assertNotShorterThanEveryPositiveInnerBound(derived, HTTP_IDLE_TIMEOUT, routes);
         }
 
         @Test
         @DisplayName("is a WebSocket idle timeout above the HTTP idle timeout plus 60 s")
         void webSocketIdleTimeoutAboveHttpIdleTimeout() {
-            // Arrange — a route declaring one hour, above the thirty-minute HTTP idle timeout, next to a
-            // route declaring less, so the longest one has to win
+            // A route declaring one hour, above the thirty-minute HTTP idle timeout, next to a route
+            // declaring less, so the longest one has to win
             RouteTable routes = new RouteTable(List.of(
                     webSocketRoute("ws-short", "/ws-short", 120),
                     webSocketRoute("ws-long", "/ws-long", 3600)));
 
-            // Act
             Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, routes);
 
-            // Assert
             assertEquals(Duration.ofSeconds(3600 + 60), derived,
                     "the longest WebSocket idle timeout plus the margin bounds the relay");
+            assertNotShorterThanEveryPositiveInnerBound(derived, HTTP_IDLE_TIMEOUT, routes);
         }
 
         @Test
         @DisplayName("is the gRPC stream-idle bound of five minutes plus 60 s when the HTTP idle timeout is shorter")
         void grpcStreamIdleBoundAboveShortHttpIdleTimeout() {
-            // Arrange — an HTTP idle timeout below five minutes and a WebSocket route below it too
+            // An HTTP idle timeout below five minutes and a WebSocket route below it too
+            Duration httpIdleTimeout = Duration.ofMinutes(2);
             RouteTable routes = new RouteTable(List.of(webSocketRoute("ws", "/ws", 30)));
 
-            // Act
-            Duration derived = TlsEdgeProducer.relayIdleTimeout(Duration.ofMinutes(2), routes);
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(httpIdleTimeout, routes);
 
-            // Assert
             assertEquals(Duration.ofMinutes(5).plusSeconds(60), derived,
                     "the gRPC stream-idle bound is the floor of the derivation");
+            assertNotShorterThanEveryPositiveInnerBound(derived, httpIdleTimeout, routes);
+        }
+
+        @Test
+        @DisplayName("is the gRPC stream-idle bound of five minutes plus 60 s when the HTTP idle timeout is zero")
+        void zeroHttpIdleTimeoutLeavesTheGrpcStreamIdleBound() {
+            // quarkus.http.idle-timeout=0 is Vert.x's "no idle timeout": it is no bound, so the relay
+            // must not collapse to the margin alone. The WebSocket route stays below five minutes, so
+            // max(gRPC stream idle, longest WebSocket idle) is the gRPC bound.
+            RouteTable routes = new RouteTable(List.of(webSocketRoute("ws", "/ws", 120)));
+
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(Duration.ZERO, routes);
+
+            assertEquals(Duration.ofMinutes(6), derived,
+                    "a disabled HTTP idle timeout leaves the gRPC stream-idle bound plus the margin");
+            assertNotShorterThanEveryPositiveInnerBound(derived, Duration.ZERO, routes);
+        }
+
+        @Test
+        @DisplayName("is a WebSocket idle timeout above the gRPC bound plus 60 s when the HTTP idle timeout is zero")
+        void zeroHttpIdleTimeoutLeavesTheLongestWebSocketIdleTimeout() {
+            // Ten minutes, above the five-minute gRPC bound, next to a route declaring less
+            RouteTable routes = new RouteTable(List.of(
+                    webSocketRoute("ws-short", "/ws-short", 120),
+                    webSocketRoute("ws-long", "/ws-long", 600)));
+
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(Duration.ZERO, routes);
+
+            assertEquals(Duration.ofSeconds(600 + 60), derived,
+                    "under a disabled HTTP idle timeout the longest WebSocket idle timeout still wins");
+            assertNotShorterThanEveryPositiveInnerBound(derived, Duration.ZERO, routes);
+        }
+
+        @Test
+        @DisplayName("is a positive HTTP idle timeout above the WebSocket and gRPC bounds plus 60 s")
+        void positiveHttpIdleTimeoutAboveBothOtherBounds() {
+            // Thirty minutes of HTTP idle, above a ten-minute WebSocket route and the five-minute gRPC
+            // bound, so neither of those may win
+            RouteTable routes = new RouteTable(List.of(webSocketRoute("ws", "/ws", 600)));
+
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, routes);
+
+            assertEquals(Duration.ofMinutes(31), derived,
+                    "a positive HTTP idle timeout above both other bounds still bounds the relay");
+            assertNotShorterThanEveryPositiveInnerBound(derived, HTTP_IDLE_TIMEOUT, routes);
+        }
+
+        /**
+         * Asserts that {@code derived} is not shorter than any positive inner idle bound: the HTTP idle
+         * timeout unless it is zero (no bound), the gRPC stream-idle bound as production applies it, and
+         * every WebSocket route's effective idle timeout.
+         */
+        private static void assertNotShorterThanEveryPositiveInnerBound(Duration derived, Duration httpIdleTimeout,
+                RouteTable routes) {
+            Stream<Duration> webSocketBounds = routes.routes().stream()
+                    .map(Route::effectiveWebSocketIdleTimeoutSeconds)
+                    .filter(Objects::nonNull)
+                    .mapToLong(Integer::longValue)
+                    .mapToObj(Duration::ofSeconds);
+            Stream<Duration> positiveInnerBounds = Stream.concat(
+                    Stream.of(httpIdleTimeout, Duration.ofMillis(GrpcStreamIdleBound.STREAM_IDLE_TIMEOUT_MILLIS)),
+                    webSocketBounds)
+                    .filter(Duration::isPositive);
+            assertAll("the relay idle timeout " + derived + " never undercuts a positive inner idle bound",
+                    positiveInnerBounds.<Executable>map(bound -> () -> assertFalse(derived.compareTo(bound) < 0,
+                            "the relay idle timeout is shorter than the inner bound " + bound)));
         }
 
         private static Route webSocketRoute(String id, String prefix, int idleTimeoutSeconds) {

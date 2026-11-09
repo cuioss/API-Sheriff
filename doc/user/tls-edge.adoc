@@ -245,6 +245,15 @@ from: a route that declares a long WebSocket idle timeout, or a longer `quarkus.
 keeps idle relayed connections open longer. The front never logs a connection's bytes; a connection
 the deadline closes is recorded at `DEBUG` only.
 
+*`quarkus.http.idle-timeout=0` with passthrough active.* A zero HTTP idle timeout switches the
+terminated listener's own idle close off; it does not switch the relay's off. Zero contributes no
+bound to the derivation, so the relay idle timeout becomes the longer of the gRPC stream-idle bound and
+the longest WebSocket idle timeout, plus 60 s -- six minutes unless a WebSocket route declares more than
+five. The relay is then the idle bound of every terminated connection: an idle connection behind the
+front is closed after that time, even though the HTTP idle timeout is off. There is no key to raise it;
+to keep idle terminated connections open longer, set `quarkus.http.idle-timeout` to the duration you
+want instead of zero.
+
 *An unreachable passthrough backend.* When a passthrough backend is down or filtered, clients for its
 hostname see their connection closed after at most 10 s, during the TLS handshake and without a TLS
 alert -- the gateway never terminates a passthrough connection, so it has no certificate to answer

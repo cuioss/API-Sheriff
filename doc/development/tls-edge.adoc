@@ -134,6 +134,21 @@ the client is known gone. The window is bounded by `TlsEdgeProducer.RELAY_CONNEC
   margin lets the inner close -- a WebSocket close frame, gRPC trailers, the HTTP idle close -- cross
   the relay first. No configuration key reaches the value; it moves only with the values it is derived
   from.
++
+*A zero HTTP idle timeout is no bound.* Vert.x reads `quarkus.http.idle-timeout=0` as "no idle timeout",
+and the derivation treats it the same way without a special case: as the shortest candidate it never
+wins the comparison, so the result is `max(gRPC stream-idle bound, longest WebSocket idle) + 60 s`. That
+never undercuts an inner bound -- the terminated listener then applies none of its own -- but it makes the
+relay the effective idle bound of every terminated connection behind the front.
++
+*Why the value stays derived and fixed (option b).* The alternative considered was a configuration key
+for the relay idle timeout (option a). It was rejected: the derivation already guarantees that the relay
+never undercuts an inner bound, and a configured value could break that guarantee; the only safe values
+of such a key would be the derived one or a larger one, so it would add an operator surface without a
+safe use the derivation does not already cover. An operator who wants idle terminated connections kept
+open longer sets `quarkus.http.idle-timeout` to that duration, which the derivation follows. The method
+body of `relayIdleTimeout(...)` is pinned by `TlsEdgeProducerTest` for a zero HTTP idle timeout, a long
+WebSocket idle timeout and a long HTTP idle timeout.
 
 The threat these bounds answer is recorded under
 link:../security-threat-model.adoc#gw-07-sni-front[GW-07 -- the SNI front listener].

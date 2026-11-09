@@ -79,6 +79,16 @@ import org.jspecify.annotations.Nullable;
  * (a WebSocket close frame, gRPC trailers, the HTTP idle close) traverse the relay first. No
  * configuration key reaches the value.
  * <p>
+ * <strong>A disabled HTTP idle timeout leaves the relay as the bound.</strong> A
+ * {@code quarkus.http.idle-timeout} of zero is read by Vert.x as "no idle timeout", so it contributes no
+ * bound to the derivation: the relay idle timeout is then the longer of the gRPC stream-idle bound and the
+ * longest WebSocket idle timeout, plus the margin — six minutes unless a WebSocket route declares an idle
+ * timeout above five minutes. It never
+ * undercuts an inner bound the gateway still applies, since the terminated listener then applies none of
+ * its own. It does mean that the relay becomes the effective idle bound of a terminated connection: an
+ * idle connection behind the front is closed after the relay idle timeout even though the operator
+ * disabled the HTTP idle timeout.
+ * <p>
  * <strong>The relay's backend dial is bounded.</strong> The relay's dial client carries the fixed
  * {@link #RELAY_CONNECT_TIMEOUT} of ten seconds as its connect timeout, replacing the implicit Vert.x
  * default of sixty seconds. A connection the front has routed keeps its undecided-connection slot until
@@ -219,8 +229,15 @@ public class TlsEdgeProducer {
      * timeout across {@code routeTable}. The route table materializes that timeout on every WebSocket
      * route, the 300-second default included for a route that declares none, and leaves it absent on
      * every other route. The result is therefore never shorter than any of them.
+     * <p>
+     * <strong>The zero rule.</strong> An {@code httpIdleTimeout} of zero — Vert.x's "no idle timeout" —
+     * is the absence of a bound, not a bound of zero, and the derivation needs no special case for it: as
+     * the shortest candidate it never wins the comparison, so the result is the longer of the gRPC
+     * stream-idle bound and the longest WebSocket idle timeout, plus the margin. The relay is then the
+     * effective idle bound of a terminated connection.
      *
-     * @param httpIdleTimeout the idle timeout of the terminated Quarkus HTTPS listener
+     * @param httpIdleTimeout the idle timeout of the terminated Quarkus HTTPS listener; zero when the
+     *                        operator disabled it
      * @param routeTable      the route table whose WebSocket routes are compared
      * @return the relay idle timeout
      */
