@@ -326,7 +326,7 @@ public final class TerminalDispatch {
         // takes a relay permit or dials the upstream: nothing it could not use is spent on it.
         if (WebSocketUpgradeGate.judge(ctx.request())
                 instanceof WebSocketUpgradeGate.Verdict.Refused(int status, Map<String, String> verdictHeaders,
-                        boolean retiresConnection)) {
+                boolean retiresConnection)) {
             LOGGER.debug("Request on WebSocket route '%s' is no valid WebSocket upgrade — refusing it with %s",
                     route.id(), status);
             edgeAdmission.releaseAdmission(ctx, admissionGuard);
