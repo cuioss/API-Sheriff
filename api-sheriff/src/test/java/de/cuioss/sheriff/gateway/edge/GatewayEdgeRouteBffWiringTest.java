@@ -2431,14 +2431,19 @@ public class GatewayEdgeRouteBffWiringTest {
     }
 
     /**
-     * The quota-key derivation of a gateway with no {@code forwarded.trusted_proxies}: every request is
-     * keyed on its TCP peer, exactly as the producer builds it for that configuration.
+     * A quota-key derivation that trusts no proxy: {@link #quotaKeysTrusting} over an empty
+     * trusted-proxy list, so every request is keyed on its TCP peer.
      */
     private static PendingQuotaKeys untrustingQuotaKeys() {
         return quotaKeysTrusting(List.of());
     }
 
-    /** The quota-key derivation of a gateway whose {@code forwarded.trusted_proxies} is {@code trustedProxies}. */
+    /**
+     * A quota-key derivation over {@code trustedProxies}: a {@link TcpPeerGate} and a
+     * {@link ForwardedHeaderResolver} built from that list and {@link SecurityConfiguration#defaults()}.
+     * It is not the producer's derivation: only the trusted-proxy list is the fixture's input, and the
+     * security configuration is always the defaults.
+     */
     private static PendingQuotaKeys quotaKeysTrusting(List<String> trustedProxies) {
         return new PendingQuotaKeys(new TcpPeerGate(trustedProxies), new ForwardedHeaderResolver(
                 ForwardedResolverConfig.builder().trustedProxies(Set.copyOf(trustedProxies))
