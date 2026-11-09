@@ -24,6 +24,7 @@ import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.GrpcSslContexts;
@@ -175,9 +176,15 @@ class GrpcProxyIT extends BaseIntegrationTest {
      * A call that opens its stream and never sends a request message is ended by the gateway's
      * first-message bound, as the client's own abort, and does not count against the upstream.
      * <p>
-     * The call is driven through a raw {@link ClientCall}: {@code start} writes the HTTP/2 HEADERS
-     * frame and nothing else — no {@code sendMessage}, no {@code halfClose} — so the gateway holds a
-     * gRPC call whose upstream request head it can never write. The gateway must end it after
+     * The call is driven through a raw {@link ClientCall} that is started and never sent anything — no
+     * {@code sendMessage}, no {@code halfClose} — so the gateway holds a gRPC call whose upstream request
+     * head it can never write. It dials the real {@code Echo/Unary} path, but through a descriptor typed
+     * {@link MethodDescriptor.MethodType#BIDI_STREAMING}: grpc-netty flushes the HEADERS frame on
+     * {@code start} only for a method whose client may send more than one message. For a unary (or
+     * server-streaming) descriptor it queues HEADERS unflushed until the first message, so a unary
+     * call that sends nothing never reaches the wire, and the gateway would never see it. The method
+     * type is client-side only — it is not on the wire — so the route, the upstream and the path are
+     * those of the ordinary unary call. The gateway must end it after
      * {@link GrpcDispatchStage#GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS} with the trailers-only rendering of
      * {@code INBOUND_BODY_ABORTED}, {@code INVALID_ARGUMENT}, well before the guard's
      * {@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS}-second timeout would end it as the upstream's
@@ -195,7 +202,10 @@ class GrpcProxyIT extends BaseIntegrationTest {
         long bound = GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS;
         long guardTimeout = TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS);
         CompletableFuture<Status> closed = new CompletableFuture<>();
-        ClientCall<EchoRequest, EchoResponse> call = channel.newCall(EchoGrpc.getUnaryMethod(),
+        MethodDescriptor<EchoRequest, EchoResponse> headersFlushedOnStart = EchoGrpc.getUnaryMethod().toBuilder()
+                .setType(MethodDescriptor.MethodType.BIDI_STREAMING)
+                .build();
+        ClientCall<EchoRequest, EchoResponse> call = channel.newCall(headersFlushedOnStart,
                 CallOptions.DEFAULT.withDeadlineAfter(IDLE_CALL_DEADLINE_SECONDS, TimeUnit.SECONDS));
 
         long started = System.nanoTime();
