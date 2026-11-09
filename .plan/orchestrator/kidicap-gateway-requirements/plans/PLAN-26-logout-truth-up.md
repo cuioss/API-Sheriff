@@ -164,21 +164,51 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/` § the logout handler's revocation call
   (verify-at-outline). ⛔ If BFF-09 is already corrected, close deliverable 1 and say so — do not rewrite
   a row that someone has since fixed.
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.buildLogoutEndpoint :1271 passes sessionRecord -> no-op at :1284-1287; threat model BFF-09 :2473, Control line 'revoke the RT family' :2487, Status :2537, summary row :3853 has no revocation caveat; the Not-delivered paragraph :2544-2550 already exists, so two lines remain
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.buildLogoutEndpoint :1376, empty no-op lambda :1389-1392; threat model BFF-09 Control :2788, Status COVERED :2838, summary row :4181 carries no revocation caveat
 - HYPOTHESIS: the cookie-mode residual is documented in the user docs but carries no disposition of
   CodeRabbit's Medium rating — confirm/refute at `doc/user/bff-cookie.adoc` and
   `doc/security-threat-model.adoc` § the cookie-mode rows (verify-at-outline).
-  - verdict: contradicted | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: cookie-mode residual already disposed: threat model :2552-2568 accepted with bound and mitigations, summary :3853 PARTIAL-accepted, variants/03-bff-cookie.adoc:310-321, user/bff-cookie.adoc:805-813, ADR-0018:359-363; deliverable 3 stays dropped
+  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: the cookie-mode residual is an accepted residual with its bound and mitigations (threat model :2853-2869, summary row :4181, doc/user/bff-cookie.adoc :501-508); deliverable 3 stays dropped; rescoped in the spec banner 2026-11-09
 - HYPOTHESIS: neither the problem+json extension-member rule nor the reserved-path boot rule has an ADR at
   HEAD — confirm/refute by searching `doc/adr/` for both subjects (verify-at-outline).
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: no ADR states either rule: ADR-0057:134-139 names missing_scopes and step_up_url only for its own 403; ADR-0018:51-74 covers reserved-path precedence only; the rule is now ReservedPathRules.java (validateReservedPath :340, ABSOLUTE_GATEWAY_PATH_REQUIREMENT :90)
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr hits for extension member are only 0057:67, 0059:124 and 0073:138; no ADR covers the reserved-path boot rule (ReservedPathRules); ADR-0018 :51-59 covers precedence only
 - OBSERVED: ADR ordinals 0053, 0056 and 0057 are taken at HEAD (0053 once, after PR #367 resolved the
   collision; 0056 the header-matcher ADR; 0057 PLAN-23's session-scope ADR) — orchestrator-verified
   2026-10-02 by listing `doc/adr/`. **Re-scoped 2026-10-26: 0053 and 0057 are still taken; 0056 no longer
   exists (merged into 0054) and the next free ordinal is 0072.**
-  - verdict: contradicted | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: 0053 and 0057 taken; 0056 does not exist (merged into 0054 by #521) and 0065 left the corpus; highest is 0071, next free ordinal 0072; spec text corrected 2026-10-26
+  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: ordinals are stale: highest ADR is 0079, the next free is 0080; 0053 and 0057 exist and 0056 is gone; rescoped in the spec banner 2026-11-09
 
 ## Expected Surface
+
+> ⚠ **Re-grounded 2026-11-09 (cleanup at `c85817d9`, 54 commits after `54f82f03`).** The premise is intact:
+> the revocation seam is still bound to a no-op (`BffRuntimeProducer.buildLogoutEndpoint` :1376, the empty
+> lambda :1389-1392) and the threat model still over-claims BFF-09 (Control line :2788, Status "COVERED in
+> server mode" :2838, summary row :4181, which carries no revocation caveat). No commit since `54f82f03` binds
+> logout revocation. The enabling facts for deliverable 2 still hold: the `RevocationClient` is built at :638
+> and used by the refresh coordinator at :645, and `revokeRefreshToken` is at :1241-1249 (the DEBUG branch for a
+> missing `revocation_endpoint` is :1244-1247).
+> - **Locate by symbol, not by line.** Threat-model anchors now: BFF-09 :2775, "Not delivered" paragraph
+>   :2845-2851 (already present, so deliverable 1 stays two lines), cookie-mode residual :2853-2869. The
+>   `BffRuntimeProducer` explaining comment is :749-751, `RpInitiatedLogout` catches to DEBUG at :153-157, the
+>   seam interface is :300, `LogoutEndpoint` `destroy` :117 and `initiate` :125. Problem+json members are now
+>   ADR-0057 :67.
+> - **ADR ordinal: the next free one is 0080** (0072 to 0079 are taken); 0053 and 0057 exist and 0056 is gone.
+>   ADR-0018 is 406 lines, leaving about 94 under the 500-line ceiling. Re-list `doc/adr` at write time. **WARN
+>   ids:** ids up to 143 are taken (138 to 143 landed since `54f82f03`); derive any new id at write time.
+>   `ApiSheriff-132` is still the latched-per-reason precedent (`doc/LogMessages.adoc` :95).
+> - **Documentation moved or gone** (#575, #576). `doc/configuration.adoc` is an index: the revocation-seam
+>   statement ("no token is revoked at the IdP on logout") is `doc/configuration/authentication-and-oidc.adoc`
+>   :584-585, and the `back_channel_origin` text :496. `doc/quality-report/` was deleted, so the
+>   `security-posture.adoc` SEC-7 touch is void. `doc/user/tls-edge.adoc` no longer states the no-op seam
+>   (:411-415 speaks of the refresh path only): remove it from the list of records that change.
+>   `doc/variants/02-bff-session.adoc` :166 and `doc/variants/03-bff-cookie.adoc` :201-202 now read "The
+>   gateway revokes no token at the IdP on logout"; `doc/user/bff-session.adoc` logout section is :702-723 and
+>   `doc/user/bff-cookie.adoc` :496-508, and neither states that logout sends no revocation request.
+> - **The cookie-mode deliverable stays dropped.** The residual is an accepted residual with its bound and
+>   mitigations (threat model :2853-2869, summary row :4181, `doc/user/bff-cookie.adoc` :501-508).
+> - **Gate.** This plan shares `BffRuntimeProducer` and `BffLogMessages` with `security-hardening-tier-1`
+>   `PLAN-SEC-03` (open PR #581), and 12 declared files overall. Sequence after #581 merges. Never beside
+>   PLAN-20 or PLAN-21.
 
 - OBSERVED: `doc/security-threat-model.adoc` — BFF-09, and the cookie-mode logout rows
 - OBSERVED: `doc/adr/` — two new records, or one new record plus an ADR-0018 amendment
@@ -196,15 +226,16 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
   `TokenRevocation` seam, :33–47 and :287–309; its Javadoc changes with the binding
 - OBSERVED (scope decided 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java` — javadoc :35–48 describes the revocation call
 - OBSERVED (added 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/BffLogMessages.java` — only if the failure semantics decided at outline add a latched WARN (derive the WARN id at write time)
-- HYPOTHESIS: `doc/configuration.adoc` — one revocation-seam statement exists; read it, and edit it if the
-  operator-facing mitigation of deliverable 1 names a configuration key (verify-at-outline)
-- OBSERVED (added 2026-10-26, re-grounding at `54f82f03`): `doc/variants/02-bff-session.adoc` (states the
-  no-op seam; only the 03 variant was listed) and `doc/user/tls-edge.adoc` :436–441 (explicitly states the
-  seam is bound to a no-op)
+- HYPOTHESIS (corrected 2026-11-09: #575 split `doc/configuration.adoc` into an index, so the statement is
+  now in `doc/configuration/authentication-and-oidc.adoc` :584-585): `doc/configuration/authentication-and-oidc.adoc` — one
+  revocation-seam statement exists; read it, and edit it if the operator-facing mitigation of deliverable 1
+  names a configuration key (verify-at-outline)
+- OBSERVED (added 2026-10-26, re-grounding at `54f82f03`; corrected 2026-11-09): `doc/variants/02-bff-session.adoc`
+  (:166 states the gateway revokes no token on logout; only the 03 variant was listed). The user TLS-edge
+  page no longer states the no-op seam and is not part of this surface
 - OBSERVED (scope decided 2026-10-26): `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffLogoutIT.java`
   (javadoc :31–38, "bound as a best-effort no-op") — must change: it asserts the revocation request reaches the IdP stub
 - OBSERVED (added 2026-10-26): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogoutTest.java` and `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducerTest.java` — the unit homes for the binding and its failure semantics
-- HYPOTHESIS (added 2026-10-26): `doc/quality-report/security-posture.adoc` (SEC-7 and a BFF-09 row) — a dated report, an optional consistency touch (verify-at-outline)
 - OBSERVED (added 2026-10-26, read-only references for deliverables 4 and 5, not files this plan edits):
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ReservedPathRules.java` and
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`

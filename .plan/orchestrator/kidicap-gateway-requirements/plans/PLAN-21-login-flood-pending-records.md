@@ -131,23 +131,63 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 ## Claim Labels
 
 - HYPOTHESIS: `PendingAuthorizationStore.InMemory` bounds at `DEFAULT_MAX_PENDING = 10_000` and evicts the oldest beyond capacity — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/` § pending-authorization store and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § store construction (verify-at-outline)
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.java:280 DEFAULT_MAX_PENDING = 10_000; :527 new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING); eviction PendingAuthorizationStore.java:115-121; store untouched since #377
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer :296 DEFAULT_MAX_PENDING = 10_000, :580 construction; eviction InMemoryPendingAuthorizationStore :78-84 (class extracted from PendingAuthorizationStore by #573, behaviour unchanged)
 - HYPOTHESIS: eviction is global rather than per-client, so a flood from one client evicts another client's live record — confirm/refute at the same store's eviction method (verify-at-outline)
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java:75 one LinkedHashMap, :91-95 store puts then evictOldestBeyondCapacity; no client partition; eviction ignores expiry and the store has no clock, logger or metric dependency
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: InMemoryPendingAuthorizationStore :38 is one LinkedHashMap, :54-58 put then evictOldestBeyondCapacity, no client partition, no clock; expiry is checked only in consume :65
 - HYPOTHESIS: `rate_limit` is reserved in the schema with no reader — confirm/refute at `api-sheriff/src/main/resources/schema/gateway.schema.json` § `rate_limit` and a grep for its config accessor (verify-at-outline)
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: rate_limit is in endpoint.schema.json:335, read by no validation rule, stage or limiter (only RateLimitConfig, RouteConfig, ConfigModelReflection, tests and docs); doc/configuration.adoc:4249 says not implemented; V02-06 D9 (running) will add a boot WARN
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: endpoint.schema.json :335 declares rate_limit as reserved and ignored; only LimitRules.validateRateLimitNotEnforced and boot WARN ApiSheriff-140 (ADR-0077) mention it; no limiter reads it
 - OBSERVED: `LoginFlow.initiate` creates the pending record and validates the return URL's origin — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.java:128 initiate; :131 authorize (PAR push before the store); :132-134 sameOrigin else defaultReturnUrl; :137 create; :139 pendingStore.store; unchanged since #377
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate :129; authorize :132, sameOrigin :133-135, create :138, store :140 (all one line lower than cited after #559)
 - OBSERVED (cleanup re-grounding, 3abc370): the binding cookie is minted from the newly created record's own id — `PendingAuthorizationRecord.create(...)` → `pendingStore.store(pending)` → `bindingCookieCodec.toSetCookieHeader(pending.id())` — so no inbound binding identity exists at record-creation time — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.java:141 toSetCookieHeader(pending.id()); cookie __Host-sheriff-binding=<recordId> (BindingCookieCodec:55,:75-79); the login seams take no source or client identity; only PipelineRequest.peerAddress() exists and is not passed to them
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow :142 mints the binding cookie from pending.id(); no source argument on initiate; same pattern in SessionWidening :175 and StepUpCoordinator :180
 - OBSERVED: `PendingAuthorizationStore.InMemory` keys one shared insertion-ordered map on `pending.id()` with no per-client partition, and `evictOldestBeyondCapacity` walks that single map — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` § `InMemory`, `evictOldestBeyondCapacity`
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java:72-121 one insertion-ordered map keyed on pending.id(); eviction walks that map
+  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: InMemoryPendingAuthorizationStore :38, :56, :78-84 keys one shared insertion-ordered map on pending.id() with no per-client partition
 - Verify-first clause (SETTLED and absorbed 2026-09-21): the clause's own "if not" branch fired — a per-binding cap keyed on an existing cookie is not viable, and deliverable 1 now carries the three re-scoped options. What remains open for outline is only WHICH option, and the cost of option (a)'s pre-login cookie on the unauthenticated path.
-  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: per-binding cap keyed on an existing cookie stays non-viable (claim 4); no per-source limiter in api-sheriff/src/main; PLAN-V02-06 is running with no PR or landing, so options b/c are unbuilt
+  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: first half holds (no inbound client identity at record creation); second half stale: the per-source substrate landed (#532 ADR-0076 SourceLedger.admit) but is edge-only and unused by bff/; rescoped in the spec banner 2026-11-09
 
 ## Expected Surface
 
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` — the store and its eviction (corrected 2026-09-21: it lives in `bff/pending/`, not `bff/login/`)
+> ⚠ **Re-grounded 2026-11-09 (cleanup at `c85817d9`, 54 commits after `54f82f03`). DO NOT EMIT: probable
+> duplicate of a plan another epic is landing.** `security-hardening-tier-1` `PLAN-SEC-03`
+> (pending-authorization store fairness, open PR #581, branch
+> `feature/plan-sec-03-pending-authorization-store-fairness`) addresses this plan's defect: expired records
+> are purged first, each source holds at most K live records and evicts only its own, and a store full of live
+> records refuses new initiations (`503` with `Retry-After`) instead of evicting another user's record. It
+> changes the same store, the same producers and the same integration test (`BffPendingLoginBoundIT`), and
+> shares 12 declared files with this spec. The cross-check found no shared source-origin pointer, so the
+> duplication is the orchestrator's reading of the two specs and the PR's file list, not a tool verdict.
+> **Re-ground this spec against what #581 lands, then decide:** supersede (the likely outcome, since its
+> acceptance criterion is the same), or keep only the part #581 does not cover. What #581 does not appear to
+> cover: a WARN and a metric when a LIVE record is evicted (it refuses instead of evicting, so that event no
+> longer arises), and a login-initiation rate limit (`rate_limit` stays planned, and is out of SEC-03's scope).
+>
+> **Premise otherwise intact at `c85817d9`:** eviction is still global, oldest-first and expiry-blind
+> (`InMemoryPendingAuthorizationStore` :78-84), and no login-path admission cap exists.
+> - **The class moved.** #573 extracted the nested `PendingAuthorizationStore.InMemory` into
+>   `bff/pending/InMemoryPendingAuthorizationStore.java`; `PendingAuthorizationStore.java` is now the interface
+>   only. `DEFAULT_MAX_PENDING` :296 and its construction :580 are in `BffRuntimeProducer`. `LoginFlow` lines
+>   are all one lower than cited (`authorize` :132, `sameOrigin` :133-135, `create` :138, `store` :140, cookie
+>   :142). `LoginInitiationEndpoint` :131; `SessionAuthenticationStage` still :430.
+> - **The V02-06 hold is met and its substrate has landed**, under other names. #532 (`9794fa41`, ADR-0076):
+>   `SourceLedger.admit(key, weight, tag)`, a leaky bucket over at most 65,536 keys with
+>   CLEAR/TRIPPED/BLOCKED states and a trusted-proxy-resolved source (`SourceKeys`, `SourceKeyResolver`, IPv6
+>   /64, one `unknown` fold). #532 (ADR-0077): an unenforced `rate_limit` is kept parsed and warned at boot
+>   (`ApiSheriff-140`). #537 (`996f36bd`, ADR-0078): the threat ledger and the ALERT `ApiSheriff-143`. ADR-0076
+>   states "no second per-source limiter", so the ADR-0062 "why not reuse" branch does not arise.
+>   Options (b) and (c) are buildable; the contract is `doc/development/source-detection-substrate.adoc`.
+> - **The substrate is edge-only.** The source key is stashed on the Vert.x `RoutingContext`
+>   (`SourceKeys.SOURCE_KEY`); `PipelineRequest` carries only the raw `peerAddress()` (:236). The BFF login
+>   seams still take no source argument, so the signature change stands. The `enumeration_detection` default is
+>   `observe`, and the substrate admits recon-set rejections, not login initiations.
+> - **ADR ordinal: the next free one is 0080** (0072 to 0079 are taken). **WARN ids:** `doc/LogMessages.adoc`
+>   lists up to `ApiSheriff-144`; derive the next free id at write time. The `ApiSheriff-132` latch is still the
+>   precedent for a flood-safe WARN.
+> - **Documentation moved** (#575): the `rate_limit` section is `doc/configuration/security-and-edge-hardening.adoc`
+>   and the OIDC keys are `doc/configuration/authentication-and-oidc.adoc`; `doc/configuration.adoc` is an index.
+>   The threat-model residual is at about :3679-3685 and the `bff-02` anchor at :2476; the line numbers cited in
+>   this spec are stale.
+
+- OBSERVED (corrected 2026-11-09: #573 split the interface from its implementation): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` (the interface) and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/InMemoryPendingAuthorizationStore.java` (the store and its eviction, :78-84) — it lives in `bff/pending/`, not `bff/login/`
 - OBSERVED (added 2026-10-05, re-grounding at `35f2bb37`): ⛔ **`rate_limit` is declared in the WRONG
   schema by this spec.** It is a PER-ROUTE key in
   `api-sheriff/src/main/resources/schema/endpoint.schema.json` (`:335` at `54f82f03`); `gateway.schema.json`
@@ -189,6 +229,8 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 - HYPOTHESIS: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/login/` (verify-at-outline)
 - HYPOTHESIS: `integration-tests/src/test/java/` — flood IT (verify-at-outline)
 - HYPOTHESIS: `doc/user/bff-session.adoc`, `doc/configuration.adoc`, `doc/security-threat-model.adoc`, `doc/LogMessages.adoc`, `doc/adr/` (verify-at-outline)
+- OBSERVED (added 2026-11-09, re-grounding at `c85817d9`): the per-source substrate options (b) and (c) would consume, read-only unless a consumer seam is added: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/detection/SourceLedger.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/detection/SourceKeyResolver.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/SourceKeys.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/PipelineRequest.java` (`peerAddress()` :236) and `doc/development/source-detection-substrate.adoc`
+- OBSERVED (added 2026-11-09, the documents the split of #575 moved the relevant sections into): `doc/configuration/security-and-edge-hardening.adoc` (the `rate_limit` section) and `doc/configuration/authentication-and-oidc.adoc` (any new OIDC key)
 
 ## Dependencies and Sequencing
 
