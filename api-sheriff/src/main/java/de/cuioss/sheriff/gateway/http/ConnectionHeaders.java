@@ -215,6 +215,7 @@ public class ConnectionHeaders {
      * applied by the request-direction application in {@code forward.ForwardPolicyStage}, not by a
      * test of this set.
      */
+    @SuppressWarnings("java:S2386") // false positive: union(...) returns Set.copyOf(...), which is unmodifiable
     public static final Set<String> REQUEST_STRIP = union(Set.of(
             "authorization", "connection", "content-length", "date", "host",
             "http2-settings", "keep-alive", "origin", "proxy-authenticate", "proxy-authorization",
@@ -241,6 +242,7 @@ public class ConnectionHeaders {
      * {@code forward.ForwardPolicyStage} are not members of either set and are never copied from the
      * client at all.
      */
+    @SuppressWarnings("java:S2386") // false positive: union(...) returns Set.copyOf(...), which is unmodifiable
     public static final Set<String> REQUEST_READMITTABLE = union(Set.of("authorization"), PROVENANCE_OVERRIDE);
 
     /**

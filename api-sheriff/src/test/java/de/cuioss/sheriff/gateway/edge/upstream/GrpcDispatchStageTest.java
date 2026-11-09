@@ -711,16 +711,17 @@ class GrpcDispatchStageTest {
          */
         @Test
         @DisplayName("an idle client sending no request message ends as its own abort within the first-message bound and never moves the breaker")
-        void idleClientEndsAsItsOwnAbortAndLeavesTheBreakerClosed() throws Exception {
+        void idleClientEndsAsItsOwnAbortAndLeavesTheBreakerClosed() {
             Route route = grpcRoute();
             GrpcDispatchStage stage = boundedStage(route, breakerGuard());
             List<GatewayException> aborts = new ArrayList<>();
             List<Long> endedAfterMillis = new ArrayList<>();
 
             for (int call = 0; call <= BREAKER_THRESHOLD; call++) {
+                PushedBody idle = new PushedBody();
                 long started = System.nanoTime();
                 aborts.add(assertThrows(GatewayException.class,
-                        () -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), new PushedBody(), -1L),
+                        () -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), idle, -1L),
                         "an idle call is not answered"));
                 endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             }
@@ -794,7 +795,7 @@ class GrpcDispatchStageTest {
          */
         @Test
         @DisplayName("a call whose request stream ends without any message is not ended by the first-message bound")
-        void bodyEndingWithoutAMessageIsNotAborted() throws Exception {
+        void bodyEndingWithoutAMessageIsNotAborted() {
             Route route = grpcRoute();
             GrpcDispatchStage stage = boundedStage(route, longGuard());
             PushedBody noMessage = new PushedBody();

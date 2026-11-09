@@ -264,9 +264,11 @@ public final class DispatchStage {
     /**
      * The first-message bound of a dispatch that does not bound the wait for its first request-body
      * byte: the first-message clock is never armed. Every HTTP dispatch is constructed with it; only the
-     * gRPC dispatch ({@link GrpcDispatchStage}) arms the clock.
+     * gRPC dispatch ({@link GrpcDispatchStage}) arms the clock. It is derived from
+     * {@link #NO_BODY_IDLE_TIMEOUT} because both clocks are {@link IdleClock}s, whose armed test compares
+     * against that one value.
      */
-    static final long NO_FIRST_MESSAGE_TIMEOUT = 0L;
+    static final long NO_FIRST_MESSAGE_TIMEOUT = NO_BODY_IDLE_TIMEOUT;
 
     /**
      * The retry state of the dispatch the guard is running, bound on the dispatching thread for the
@@ -1896,6 +1898,7 @@ public final class DispatchStage {
          *                          timer, for the clock's timeout, is scheduled through its own scheduler
          *                          once {@link #startFirstMessageClock()} is called
          */
+        @SuppressWarnings("java:S107") // each argument is an independent collaborator of the stream
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos,
                 IdleClock firstMessageClock) {
