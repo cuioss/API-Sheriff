@@ -540,9 +540,8 @@ class PassthroughRelayTest {
             NeverAnsweringBackend backend = new NeverAnsweringBackend(listener.getLocalPort(),
                     new ArrayList<>(List.of(listener)));
             // Only the DROPPED path hands the backend over open; every other exit, including an exception
-            // from a dial, closes the listener and every queued socket. Try-with-resources cannot express
-            // that conditional hand-over, so each closing exit closes the backend explicitly.
-            try {
+            // or an error thrown by a dial, closes the listener and every queued socket.
+            try (HandOverGuard guard = new HandOverGuard(backend)) {
                 for (int attempt = 0; attempt < MAX_QUEUED; attempt++) {
                     Socket queued = new Socket();
                     backend.held.add(queued);
@@ -551,21 +550,16 @@ class PassthroughRelayTest {
                             // queued and never accepted: the queue is one connection fuller
                         }
                         case DROPPED -> {
-                            return Optional.of(backend);
+                            return Optional.of(guard.handOver());
                         }
                         case RESET -> {
-                            backend.close();
                             return Optional.empty();
                         }
                     }
                 }
-            } catch (IOException | RuntimeException e) {
-                backend.close();
-                throw e;
+                throw new IllegalStateException("The accept queue of a listener with backlog " + BACKLOG
+                        + " still accepted after " + MAX_QUEUED + " connections");
             }
-            backend.close();
-            throw new IllegalStateException("The accept queue of a listener with backlog " + BACKLOG
-                    + " still accepted after " + MAX_QUEUED + " connections");
         }
 
         private boolean dropsADial() throws IOException {
@@ -596,6 +590,32 @@ class PassthroughRelayTest {
 
         private enum DialOutcome {
             CONNECTED, DROPPED, RESET
+        }
+
+        /**
+         * Closes a backend when its scope ends, unless {@link #handOver()} was called first — the
+         * conditional hand-over a try-with-resources block over the backend itself cannot express.
+         */
+        private static final class HandOverGuard implements AutoCloseable {
+
+            private final NeverAnsweringBackend backend;
+            private boolean handedOver;
+
+            private HandOverGuard(NeverAnsweringBackend backend) {
+                this.backend = backend;
+            }
+
+            NeverAnsweringBackend handOver() {
+                handedOver = true;
+                return backend;
+            }
+
+            @Override
+            public void close() throws IOException {
+                if (!handedOver) {
+                    backend.close();
+                }
+            }
         }
     }
 }
