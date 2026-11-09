@@ -202,6 +202,41 @@ class TlsEdgeProducerTest {
             assertTrue(set.compareTo(Duration.ofSeconds(Integer.MAX_VALUE).plus(TlsEdgeProducer.RELAY_IDLE_MARGIN)) >= 0,
                     "the timeout set is never shorter than the WebSocket bound plus the margin: " + set);
         }
+
+        /**
+         * The ten seconds are the documented contract, so they are written out here rather than read
+         * from {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}: a changed constant must turn this red.
+         */
+        @Test
+        @DisplayName("carry the fixed ten-second connect timeout next to the derived relay idle timeout")
+        void carryTheFixedConnectTimeoutNextToTheIdleTimeout() {
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, NO_ROUTES);
+
+            NetClientOptions options = TlsEdgeProducer.relayClientOptions(derived);
+
+            assertAll("the production dial client bounds the dial and the idle relay",
+                    () -> assertEquals(10_000, options.getConnectTimeout(),
+                            "the backend dial is bounded by ten seconds, not the Vert.x default of sixty"),
+                    () -> assertEquals(derived.toMillis(), options.getIdleTimeout(),
+                            "the derived idle timeout is kept next to the connect timeout"),
+                    () -> assertEquals(TimeUnit.MILLISECONDS, options.getIdleTimeoutUnit()));
+        }
+
+        @Test
+        @DisplayName("refuse a connect timeout of no whole millisecond or beyond Integer.MAX_VALUE milliseconds")
+        void refuseAConnectTimeoutOutsideTheVertxRange() {
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, NO_ROUTES);
+            Duration subMillisecond = Duration.ofNanos(999_999);
+            Duration beyondInt = Duration.ofMillis(Integer.MAX_VALUE + 1L);
+
+            assertAll("Vert.x takes whole int milliseconds, and zero would mean no bound",
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> TlsEdgeProducer.relayClientOptions(derived, subMillisecond)),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> TlsEdgeProducer.relayClientOptions(derived, beyondInt)),
+                    () -> assertEquals(1, TlsEdgeProducer.relayClientOptions(derived, Duration.ofMillis(1))
+                            .getConnectTimeout(), "one millisecond is the shortest bound accepted"));
+        }
     }
 
     @Nested

@@ -58,8 +58,11 @@ single-threaded and need no synchronization. Three states are shared across the 
 * *The time of the last refusal `WARN` per reason* is advanced with a compare-and-set, so of two
   concurrent refusals at most one logs at `WARN`.
 
-An admitted connection returns its two slots together, exactly once, through its `settled` latch --
-by whichever of the route decision, the connection closing or failing, and the deadline comes first.
+An admitted connection returns its two slots together, exactly once. Whichever comes first of the
+route decision, the connection closing or failing, and the deadline sets the `settled` latch. A close,
+a failure or the deadline returns the slots at once. The route decision does not: the connection keeps
+its slots until the relay's backend dial settles (see <<relay-dial-bound>>), and the listener returns
+them in the single completion handler of the dial-phase future `PassthroughRelay.relay(...)` returns.
 
 The front listener is *conditional*: `TlsEdgeProducer` constructs and starts it only when
 `tls.passthrough_sni` is non-empty. When passthrough is unconfigured the front is never created, the
@@ -79,7 +82,8 @@ indefinitely, or one source from holding the others off. None of them is configu
   connection. The close is logged at `DEBUG` with the disposition only, never the bytes received.
 
 * *Undecided-connection cap* -- `SniFrontListener.MAX_UNDECIDED_CONNECTIONS`, 1024 connections
-  accepted and not yet settled, across every event loop of the front. A connection accepted beyond the
+  accepted and not yet routed, or routed and still waiting for the relay's backend dial to settle,
+  across every event loop of the front. A connection accepted beyond the
   cap is closed at once, without reading from it. An undecided connection has received less than
   `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB) -- the parser reaches its verdict as soon as
   that much has arrived -- and between two reads holds those bytes in three copies: the listener's
@@ -89,7 +93,7 @@ indefinitely, or one source from holding the others off. None of them is configu
   deadline window per wave of such sockets -- the deadline frees every slot again -- and that bounded
   delay is preferred over unbounded pre-route memory.
 +
-*What the 96 MiB does not include.* Three amounts lie outside it. Each is stated for the transport's
+*What the 96 MiB does not include.* Two amounts lie outside it. Each is stated for the transport's
 default read sizing: Netty's adaptive receive allocator, whose largest single read is 64 KiB. The
 front sets no receive-buffer option.
 +
@@ -100,10 +104,13 @@ front sets no receive-buffer option.
    and as the copy offered to the parser. The extension walk of a complete ClientHello copies it once
    more. That is at most 64 + 64 + 32 KiB per event loop, since an event loop processes one read at a
    time.
-.. *The dialing window.* A decided connection returns its slot before the relay dials its backend. It
-   keeps its replay buffer, below 96 KiB, until that dial succeeds or fails. The dial client's connect
-   timeout bounds that window -- the Vert.x default of 60 s, since `TlsEdgeProducer` sets none -- and the
-   cap does not.
++
+*The dialing window is inside the cap.* A decided connection keeps its slot while the relay dials its
+backend, so a dialing connection counts against the cap and its source's share like an undecided one.
+At the route decision the listener drops the parser and its own reference to the replay buffer, so a
+dialing connection holds only the replay buffer, below 96 KiB, and the relay drops that too as soon as
+the client is known gone. The window is bounded by `TlsEdgeProducer.RELAY_CONNECT_TIMEOUT`, 10 s -- see
+<<relay-dial-bound>>.
 
 * *Per-source share* -- `SniFrontListener.MAX_UNDECIDED_PER_SOURCE`, a fixed quarter of the cap (256
   connections), held by one source at the same time. A connection accepted while its source already
@@ -130,6 +137,31 @@ front sets no receive-buffer option.
 
 The threat these bounds answer is recorded under
 link:../security-threat-model.adoc#gw-07-sni-front[GW-07 -- the SNI front listener].
+
+[#relay-dial-bound]
+=== The relay's backend dial
+
+*The dial is bounded.* `TlsEdgeProducer.relayClientOptions(...)` sets the fixed
+`TlsEdgeProducer.RELAY_CONNECT_TIMEOUT`, 10 s, as the connect timeout of the relay's dial `NetClient`,
+replacing the implicit Vert.x default of 60 s. A dial that has not connected by then fails, and the relay
+closes the accepted client connection. The value is not configurable; a package-private overload that
+takes the connect timeout exists only so a test can shorten it.
+
+*The slot is held until the dial settles.* `PassthroughRelay.relay(...)` returns a `Future<Void>` that
+completes once the dial phase is over. Three paths end that phase and race each other: the relay is
+established, the dial fails or times out, or the client closes during the dial. Each completes the same
+promise with `tryComplete`, so the future completes exactly once, with the first of them. All three run on
+the event loop of the accepted connection. `SniFrontListener` returns the connection's two slots -- of
+the cap and of its source's share, as one unit -- in that future's single completion handler. The
+ClientHello deadline is still cancelled at the route decision; from then on the connect timeout bounds
+the connection instead.
+
+*The ClientHello is released early.* At the route decision the listener's `Incoming` drops its parser
+and its reference to the replay buffer, so the parser's two copies of the ClientHello are released at
+once and the relay is the buffer's only owner. The relay keeps the buffer in a single-owner holder: the
+dial success takes it to replay it, and the client-gone close handler clears it, so a client that leaves
+during the dial frees the bytes at once rather than when the dial later completes. A dial that succeeds
+after the client left still gets no session -- its backend leg is closed at once.
 
 [#front-refusal-keying]
 === Refusals at accept: the source key, the WARN and the counter

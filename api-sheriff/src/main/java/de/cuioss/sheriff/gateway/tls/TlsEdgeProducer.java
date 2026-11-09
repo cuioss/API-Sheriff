@@ -79,6 +79,13 @@ import org.jspecify.annotations.Nullable;
  * (a WebSocket close frame, gRPC trailers, the HTTP idle close) traverse the relay first. No
  * configuration key reaches the value.
  * <p>
+ * <strong>The relay's backend dial is bounded.</strong> The relay's dial client carries the fixed
+ * {@link #RELAY_CONNECT_TIMEOUT} of ten seconds as its connect timeout, replacing the implicit Vert.x
+ * default of sixty seconds. A connection the front has routed keeps its undecided-connection slot until
+ * that dial settles, so the dial window counts against the front's cap and is bounded by this value. A
+ * dial that has not connected within it fails, and the relay closes the accepted client connection.
+ * Like the idle timeout, the connect timeout is not configurable.
+ * <p>
  * <strong>Front refusals are counted.</strong> The front listener reports every connection it closes
  * at accept — beyond its undecided-connection cap or beyond a source's share of it — to a recorder
  * this producer wires to {@link SheriffMetrics}, so the refusal rate is visible on
@@ -96,6 +103,13 @@ public class TlsEdgeProducer {
 
     /** How much longer than the longest inner idle bound a relayed leg may stay idle. */
     static final Duration RELAY_IDLE_MARGIN = Duration.ofSeconds(60);
+
+    /**
+     * How long the relay's dial client may take to connect to a backend before the dial fails. A
+     * routed connection keeps its undecided-connection slot until the dial settles, so this bounds how
+     * long the dial phase holds a slot of the front's cap.
+     */
+    static final Duration RELAY_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 
     private final Vertx vertx;
     private final GatewayConfig gatewayConfig;
@@ -232,14 +246,35 @@ public class TlsEdgeProducer {
     /**
      * The options of the relay's dial client: the relay idle timeout, set exactly as the front server
      * sets it ({@link SniFrontListener#applyIdleTimeout}), so both legs of a relayed connection carry
-     * the same bound.
+     * the same bound, and the fixed {@link #RELAY_CONNECT_TIMEOUT} as the connect timeout.
      *
      * @param relayIdleTimeout the derived relay idle timeout; positive
-     * @return the dial-client options carrying that idle timeout
+     * @return the dial-client options carrying that idle timeout and the fixed connect timeout
      */
     static NetClientOptions relayClientOptions(Duration relayIdleTimeout) {
+        return relayClientOptions(relayIdleTimeout, RELAY_CONNECT_TIMEOUT);
+    }
+
+    /**
+     * The options of the relay's dial client with an explicit connect timeout, so a test can shorten
+     * the dial bound instead of waiting for {@link #RELAY_CONNECT_TIMEOUT}. Production uses
+     * {@link #relayClientOptions(Duration)}.
+     *
+     * @param relayIdleTimeout the derived relay idle timeout; positive
+     * @param connectTimeout   how long a backend dial may take to connect; at least one millisecond
+     *                         and at most {@link Integer#MAX_VALUE} milliseconds
+     * @return the dial-client options carrying both timeouts
+     * @throws IllegalArgumentException when {@code connectTimeout} is outside that range — Vert.x takes
+     *                                  whole {@code int} milliseconds, and zero would mean no bound
+     */
+    static NetClientOptions relayClientOptions(Duration relayIdleTimeout, Duration connectTimeout) {
+        long connectTimeoutMillis = Objects.requireNonNull(connectTimeout, "connectTimeout").toMillis();
+        if (connectTimeoutMillis < 1 || connectTimeoutMillis > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("connect timeout out of range: " + connectTimeout);
+        }
         NetClientOptions clientOptions = new NetClientOptions();
         SniFrontListener.applyIdleTimeout(clientOptions, relayIdleTimeout);
+        clientOptions.setConnectTimeout((int) connectTimeoutMillis);
         return clientOptions;
     }
 

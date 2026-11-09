@@ -1662,17 +1662,23 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   accepted is closed, without an answer. A legitimate client sends its ClientHello in its first flight,
   so the deadline only ends a silent, stalled or dripping connection. The close is logged at `DEBUG`
   with the disposition only, never the bytes received.
-* *An undecided-connection cap.* At most 1024 accepted connections may wait for their ClientHello at
-  the same time, across every event loop of the front. A connection accepted beyond the cap is closed
-  at once, without being read. A waiting connection has received less than 32 KiB, the ClientHello
-  bound at which the parser decides, and between two reads holds those bytes in three copies -- the
-  replay buffer the relay sends on, and the parser's received and reassembled bytes. Between reads,
-  the cap therefore bounds the front's pre-route buffer memory at about 96 MiB (1024 x 3 x 32 KiB).
-  Three amounts lie outside that figure, each stated for the transport's default largest read of
-  64 KiB. The deciding read is kept whole in the replay buffer, which ends below 96 KiB. Each event
-  loop briefly holds up to 64 + 64 + 32 KiB of transient copies. And a decided connection keeps its
-  replay buffer after returning its slot, until the relay's backend dial succeeds or fails -- a window
-  bounded by the dial client's 60 s connect timeout, not by the cap.
+* *An undecided-connection cap.* At most 1024 accepted connections may wait for their ClientHello, or
+  for the relay's backend dial to settle, at the same time, across every event loop of the front. A
+  connection accepted beyond the cap is closed at once, without being read. A waiting connection has
+  received less than 32 KiB, the ClientHello bound at which the parser decides, and between two reads
+  holds those bytes in three copies -- the replay buffer the relay sends on, and the parser's received
+  and reassembled bytes. Between reads, the cap therefore bounds the front's pre-route buffer memory at
+  about 96 MiB (1024 x 3 x 32 KiB). Two amounts lie outside that figure, each stated for the
+  transport's default largest read of 64 KiB. The deciding read is kept whole in the replay buffer,
+  which ends below 96 KiB. And each event loop briefly holds up to 64 + 64 + 32 KiB of transient
+  copies.
+* *A bounded dial inside the cap.* A routed connection keeps its slot, of the cap and of its source's
+  share, until the relay's backend dial settles -- the relay is established, the dial fails, or the
+  client leaves -- and the relay's dial client carries a fixed 10 s connect timeout in place of the
+  Vert.x default of 60 s. The dial phase is therefore inside the cap and time-bounded: a backend that
+  never answers holds a slot for at most 10 s, and no dialing connection escapes the cap. During the
+  dial the connection holds only its replay buffer -- the parser is dropped at the route decision --
+  and the relay drops that buffer as soon as the client is known gone.
 * *A per-source share of the cap.* At most 256 of those 1024 -- a fixed quarter -- may belong to one
   source, the TCP peer address of the accepted connection, at the same time. A connection accepted
   while its source holds its full share is closed at once, without being read, so one source filling
@@ -1701,7 +1707,10 @@ held slots again within one 10 s window per wave of such sockets. That bounded d
 unbounded pre-route memory. The source is the TCP peer address, because nothing else exists before the
 ClientHello; behind an L4 load balancer or NAT that does not keep client addresses on the connection,
 every client shares one source and the share acts as a gateway-wide sub-cap of 256 undecided
-connections -- still tens of thousands of one-round-trip handshakes per second. A relayed connection
+connections -- still tens of thousands of one-round-trip handshakes per second. While a backend
+silently drops the relay's dial, every connection routed to it holds its slot for up to the 10 s
+connect timeout, so a burst of such connections can fill the cap for that window; counting the dial
+against the cap is preferred over letting dialing connections pile up outside it. A relayed connection
 that carries a byte at least once per relay idle timeout stays open: the relay bounds idleness, not
 duration, and a route that declares a long WebSocket idle timeout lengthens the relay idle timeout
 with it.

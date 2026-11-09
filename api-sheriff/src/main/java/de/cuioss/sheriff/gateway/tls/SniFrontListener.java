@@ -76,23 +76,26 @@ import org.jspecify.annotations.Nullable;
  * dripping connection. The close is logged at {@code DEBUG} with the disposition only, never the
  * bytes received.</li>
  * <li><em>Undecided-connection cap</em> — {@link #MAX_UNDECIDED_CONNECTIONS}, 1024 connections
- * accepted and not yet routed, across every event loop of the front. A connection accepted beyond
- * the cap is closed at once, without reading from it. An undecided connection has received less than
- * {@link ClientHelloSniParser#MAX_CLIENT_HELLO_BYTES} (32 KiB) — the parser reaches its verdict as soon
- * as that much has arrived — and between two reads holds those bytes in three copies: the replay
- * buffer and the parser's received and reassembled arrays. Between reads, the cap therefore bounds the
- * front's pre-route buffer memory at about 96 MiB. Three amounts lie outside that figure, each stated
- * for the transport's default read sizing — Netty's adaptive receive allocator, whose largest single
- * read is 64 KiB; the front sets no receive-buffer option:
+ * accepted and not yet routed or whose relay is still dialling its backend, across every event loop of
+ * the front. A connection accepted beyond the cap is closed at once, without reading from it. An
+ * undecided connection has received less than {@link ClientHelloSniParser#MAX_CLIENT_HELLO_BYTES}
+ * (32 KiB) — the parser reaches its verdict as soon as that much has arrived — and between two reads
+ * holds those bytes in three copies: the replay buffer and the parser's received and reassembled
+ * arrays. Between reads, the cap therefore bounds the front's pre-route buffer memory at about 96 MiB.
+ * A decided connection keeps its slot — of the cap and of its source's share — until the relay's
+ * backend dial settles: the relay is established, the dial fails or times out, or the client leaves.
+ * The dial window therefore counts against the cap and is bounded by the dial client's fixed connect
+ * timeout, {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT} (ten seconds). The listener drops its parser
+ * and its reference to the replay buffer at the route decision, so a dialling connection holds the
+ * replay buffer alone, and the relay drops that too as soon as the client is known gone. Two amounts
+ * lie outside the figure, each stated for the transport's default read sizing — Netty's adaptive
+ * receive allocator, whose largest single read is 64 KiB; the front sets no receive-buffer option:
  * <ol>
  * <li>the read that decides a connection is appended to the replay buffer whole, because the relay
  * replays the client's bytes exactly, so that buffer ends up to one read past 32 KiB — below 96 KiB;</li>
  * <li>while a read is processed its bytes exist twice more, as the transport's buffer and as the copy
  * offered to the parser, and the extension walk of a complete ClientHello copies it once more —
- * transient copies of at most 64 + 64 + 32 KiB per event loop, which processes one read at a time;</li>
- * <li>a decided connection returns its slot before the relay dials its backend, and keeps its replay
- * buffer, below 96 KiB, until that dial succeeds or fails. That window is bounded by the dial client's
- * connect timeout — the Vert.x default of 60 seconds — not by the cap.</li>
+ * transient copies of at most 64 + 64 + 32 KiB per event loop, which processes one read at a time.</li>
  * </ol>
  * The trade-off is deliberate: a client that holds
  * 1024 silent sockets makes new handshakes wait for at most one deadline window per wave of such
@@ -511,16 +514,20 @@ public final class SniFrontListener {
      * {@code buffer}, {@code parser} and {@code settled} are single-threaded.
      * <p>
      * {@code settled} is the per-connection latch: whichever comes first of the route decision, the
-     * connection closing or failing, and the deadline expiring sets it, cancels the deadline and
-     * returns the connection's slots — of the undecided-connection cap and of its source's share, as
-     * one unit. Every later path finds it set and does nothing, so the slots are returned exactly once.
+     * connection closing or failing, and the deadline expiring sets it and cancels the deadline. Every
+     * later path finds it set and does nothing. A close, failure or deadline returns the connection's
+     * slots — of the undecided-connection cap and of its source's share, as one unit — at once; the route
+     * decision instead hands the connection to the relay and returns the slots in the single completion
+     * handler of the relay's dial-phase future. Either way the slots are returned exactly once. At the
+     * route decision the connection also drops its parser and its reference to the replay buffer, whose
+     * only owner from then on is the relay.
      */
     private final class Incoming {
 
         private final NetSocket socket;
         private final String source;
-        private final Buffer buffer = Buffer.buffer();
-        private final ClientHelloSniParser parser = new ClientHelloSniParser();
+        private @Nullable Buffer buffer = Buffer.buffer();
+        private @Nullable ClientHelloSniParser parser = new ClientHelloSniParser();
         private boolean settled;
         private long deadlineTimer = NO_TIMER;
 
@@ -537,14 +544,18 @@ public final class SniFrontListener {
         }
 
         private void onData(Buffer chunk) {
-            if (settled) {
+            Buffer replay = buffer;
+            ClientHelloSniParser reader = parser;
+            if (settled || replay == null || reader == null) {
                 return;
             }
-            buffer.appendBuffer(chunk);
-            ClientHelloSniParser.Result result = parser.offer(chunk.getBytes());
-            if (result.complete() && settle()) {
+            replay.appendBuffer(chunk);
+            ClientHelloSniParser.Result result = reader.offer(chunk.getBytes());
+            if (result.complete() && decide()) {
+                buffer = null;
+                parser = null;
                 socket.pause();
-                route(result.serverName());
+                route(result.serverName(), replay).onComplete(dialPhaseOver -> releaseSlot(source));
             }
         }
 
@@ -564,12 +575,26 @@ public final class SniFrontListener {
         }
 
         /**
-         * Sets the latch, cancels the deadline and returns the connection's slots — once.
+         * Sets the latch, cancels the deadline and returns the connection's slots at once — for a close,
+         * a failure or the deadline, which end the connection before any route.
          *
          * @return {@code true} for the one call that settled the connection, {@code false} for every
          *         later call
          */
         private boolean settle() {
+            if (!decide()) {
+                return false;
+            }
+            releaseSlot(source);
+            return true;
+        }
+
+        /**
+         * Sets the latch and cancels the deadline — once — without returning the connection's slots.
+         *
+         * @return {@code true} for the one call that set the latch, {@code false} for every later call
+         */
+        private boolean decide() {
             if (settled) {
                 return false;
             }
@@ -577,22 +602,24 @@ public final class SniFrontListener {
             if (deadlineTimer != NO_TIMER) {
                 vertx.cancelTimer(deadlineTimer);
             }
-            releaseSlot(source);
             return true;
         }
 
-        private void route(@Nullable String serverName) {
+        /**
+         * Hands the connection, with its replay buffer, to the relay for the target its SNI selects.
+         *
+         * @return the relay's dial-phase future, completing once the backend dial has settled
+         */
+        private Future<Void> route(@Nullable String serverName, Buffer replay) {
             if (serverName == null) {
                 LOGGER.warn(ApiSheriffLogMessages.WARN.CLIENT_HELLO_FAIL_CLOSED, "no-usable-sni");
-                relay.relay(socket, buffer, terminatedTarget, RelayKind.TERMINATED, "");
-                return;
+                return relay.relay(socket, replay, terminatedTarget, RelayKind.TERMINATED, "");
             }
             RelayTarget target = passthroughTargets.get(normalizeSni(serverName));
             if (target != null) {
-                relay.relay(socket, buffer, target, RelayKind.PASSTHROUGH, serverName);
-            } else {
-                relay.relay(socket, buffer, terminatedTarget, RelayKind.TERMINATED, "");
+                return relay.relay(socket, replay, target, RelayKind.PASSTHROUGH, serverName);
             }
+            return relay.relay(socket, replay, terminatedTarget, RelayKind.TERMINATED, "");
         }
     }
 }

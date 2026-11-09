@@ -17,14 +17,18 @@ package de.cuioss.sheriff.gateway.tls;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
+import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The opaque L4 TCP pipe: a {@link NetSocket} ↔ {@link NetSocket} relay, backpressured in both
@@ -42,6 +46,13 @@ import io.vertx.core.net.SocketAddress;
  * carry the value {@link TlsEdgeProducer} derives at boot. When a leg carries no byte in either
  * direction for that long, Vert.x closes it, and the close handlers below propagate the close to the
  * other leg, so an abandoned pipe is released on both sides. The relay itself sets no timer.
+ * <p>
+ * <strong>The dial phase is bounded and reported.</strong> The backend dial is bounded by the dial
+ * client's connect timeout, {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}. {@link #relay} returns a
+ * future that completes exactly once, as soon as the dial phase is over — the relay is established,
+ * the dial failed or timed out, or the client left — so the {@link SniFrontListener} can hold the
+ * connection's undecided slot until then. The buffered ClientHello is held by the dial phase alone and
+ * dropped the moment the client is known gone, not when the dial later completes.
  * <p>
  * The same pipe backs both branches of the {@link SniFrontListener}: a {@code passthrough_sni} match
  * relays to the topology-resolved backend, and a terminated (non-passthrough) connection relays to
@@ -79,46 +90,68 @@ public final class PassthroughRelay {
 
     /**
      * Dials the target and, on success, replays the buffered ClientHello and establishes the opaque
-     * bidirectional pipe. On a dial failure the accepted client connection is closed (abort, never a
-     * hang).
+     * bidirectional pipe. On a dial failure — the connect timeout included — the accepted client
+     * connection is closed (abort, never a hang).
      * <p>
      * The client's close is observed from before the dial: a client that left while the dial was
-     * pending gets no session — the dialled backend leg is closed at once and, for a terminated relay,
-     * no relayed-peer entry is ever registered.
+     * pending gets no session — the buffered ClientHello is dropped at once, the dialled backend leg is
+     * closed as soon as the dial succeeds and, for a terminated relay, no relayed-peer entry is ever
+     * registered.
+     * <p>
+     * The three paths that end the dial phase — the relay established, the dial failed, the client
+     * gone — race; each completes the returned future with try-complete semantics, so it completes
+     * exactly once, with the first of them. All three run on the accepted connection's event loop.
      *
      * @param client      the accepted client connection, already paused by the caller
      * @param clientHello the bytes buffered while the SNI was being read, replayed to the backend
-     *                    first so the handshake is byte-identical
+     *                    first so the handshake is byte-identical; the caller hands them over and must
+     *                    not keep a reference
      * @param target      the resolved backend endpoint to relay to
      * @param kind        whether the connection is a passthrough match or a terminated hand-off,
      *                    controlling the lifecycle log level
      * @param sniLabel    the matched SNI hostname for a passthrough relay's audit log ({@code kind ==
      *                    PASSTHROUGH}); ignored for a terminated relay
+     * @return a future that completes once the dial phase is over; it never fails
      */
-    public void relay(NetSocket client, Buffer clientHello, RelayTarget target, RelayKind kind, String sniLabel) {
+    public Future<Void> relay(NetSocket client, Buffer clientHello, RelayTarget target, RelayKind kind,
+            String sniLabel) {
         Objects.requireNonNull(client, "client");
         Objects.requireNonNull(clientHello, "clientHello");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(sniLabel, "sniLabel");
+        Promise<Void> dialPhase = Promise.promise();
+        // The single owner of the buffered ClientHello during the dial: the dial success takes it, the
+        // client-gone close handler drops it, whichever comes first.
+        AtomicReference<@Nullable Buffer> pendingHello = new AtomicReference<>(clientHello);
         // Replaced by the session's own close handler once it starts; until then it records that the
         // client is gone. Both run on the accepted connection's event loop, as the dial callbacks do.
         AtomicBoolean clientGone = new AtomicBoolean();
-        client.closeHandler(v -> clientGone.set(true));
+        client.closeHandler(v -> {
+            clientGone.set(true);
+            pendingHello.set(null);
+            dialPhase.tryComplete();
+        });
         netClient.connect(target.port(), target.host())
                 .onSuccess(backend -> {
-                    if (clientGone.get()) {
+                    Buffer hello = pendingHello.getAndSet(null);
+                    if (clientGone.get() || hello == null) {
                         LOGGER.debug("Relay client left during the backend dial to %s — closing the backend leg",
                                 target);
                         closeQuietly(backend);
+                        dialPhase.tryComplete();
                         return;
                     }
-                    establish(client, backend, clientHello, target, kind, sniLabel);
+                    establish(client, backend, hello, target, kind, sniLabel);
+                    dialPhase.tryComplete();
                 })
                 .onFailure(failure -> {
                     LOGGER.debug(failure, "Relay backend dial to %s failed: %s", target, failure.getMessage());
+                    pendingHello.set(null);
                     closeQuietly(client);
+                    dialPhase.tryComplete();
                 });
+        return dialPhase.future();
     }
 
     private void establish(NetSocket client, NetSocket backend, Buffer clientHello, RelayTarget target,
