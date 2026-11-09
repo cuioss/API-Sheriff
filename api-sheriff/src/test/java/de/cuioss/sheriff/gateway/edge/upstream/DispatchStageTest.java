@@ -1023,8 +1023,8 @@ class DispatchStageTest {
                     () -> assertTrue(refused.getMessage().contains("firstMessageTimeoutMillis"),
                             "the refusal names the bound"),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
-                            DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE,
-                            DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, failureMapper),
+                                    DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE,
+                                    DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, failureMapper),
                             "the unarmed bound is a valid bound"));
         }
 
@@ -1109,11 +1109,11 @@ class DispatchStageTest {
                     ? OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis.getAsLong()))
                     : OptionalLong.empty();
             capped = new DispatchStage.ByteCappedBodyStream(inbound, BODY_CAP, declaredLength, () -> {
-                aborts.incrementAndGet();
-                sequence.add(ABORT);
-            }, _ -> {
-                // The forwarded count feeds the retry gate, which these cases do not exercise.
-            }, new DispatchStage.IdleClock(timeoutMillis, time, time::nanoTime), deadlineNanos,
+                        aborts.incrementAndGet();
+                        sequence.add(ABORT);
+                    }, _ -> {
+                        // The forwarded count feeds the retry gate, which these cases do not exercise.
+                    }, new DispatchStage.IdleClock(timeoutMillis, time, time::nanoTime), deadlineNanos,
                     new DispatchStage.IdleClock(firstMessageMillis, time, time::nanoTime));
             capped.handler(forwarded::add);
             capped.exceptionHandler(failure::set);

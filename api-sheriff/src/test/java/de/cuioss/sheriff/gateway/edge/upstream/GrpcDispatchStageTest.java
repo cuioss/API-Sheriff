@@ -161,7 +161,7 @@ class GrpcDispatchStageTest {
         @DisplayName("the production first-message bound is below the guard's timeout")
         void firstMessageBoundIsBelowTheGuardTimeout() {
             assertTrue(GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS
-                            < TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS),
+                    < TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS),
                     () -> "the first-message bound of " + GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS
                             + " ms must fire before the guard's " + UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS
                             + " s timeout");
