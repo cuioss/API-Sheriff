@@ -56,7 +56,9 @@ public final class UpstreamGuards {
      * counted from the start of the attempt like this timeout, so a body still arriving when this timeout
      * would end the attempt is ended as the request's first. So is the gRPC first-message bound
      * ({@link GrpcDispatchStage#GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS}), so a gRPC call whose client sends no
-     * request message is ended as the client's abort before this timeout could end it as the upstream's.
+     * request message is ended as the client's abort before this timeout could end it as the upstream's —
+     * unless waiting for an upstream connection, which this timeout counts and the bound does not, used up
+     * the difference.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -87,7 +89,8 @@ public final class UpstreamGuards {
      * retry, so a route that enables retry gives each of up to three attempts (two retries, 100 ms apart)
      * its own timeout, about 90 s for the whole dispatch. The request-body idle timeout, the request-body
      * deadline and the gRPC first-message bound are shorter, so a body the gateway is still waiting for
-     * ends as the request's, and the timeout ends an attempt the upstream holds up.
+     * ends as the request's (for the gRPC bound, unless an upstream connection wait used up the
+     * difference), and the timeout ends an attempt the upstream holds up.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard
