@@ -180,8 +180,9 @@ request (`INBOUND_BODY_ABORTED`). Requests without a declared length keep chunke
 *Aborted inbound body.* When the inbound body stream fails after dispatch began (client disconnect
 or broken chunk framing), the upstream request is reset and the gateway records
 `INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`). A body exceeding `max_body_bytes` remains
-`CONTENT_TOO_LARGE` (`413`). Client-ended dispatches are never retried and do not trip the upstream
-circuit breaker.
+`CONTENT_TOO_LARGE` (`413`). A gRPC call that sends no first request message within its bound is
+recorded the same way (<<_grpc_first_message_bound>>). Client-ended dispatches are never retried and
+do not trip the upstream circuit breaker.
 
 [[_request_body_idle_timeout]]
 *Request-body idle timeout (10 s).* Once a proxied dispatch holds an upstream connection and is
@@ -189,7 +190,8 @@ reading the body, 10 s without a forwarded body byte resets the upstream request
 (`REQUEST_BODY_TIMEOUT`;
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-idle-timeout[ADR-0060]).
 Waiting for a pooled upstream connection, upstream backpressure pauses, bodyless requests, and
-`protocol: grpc` routes do not arm or advance this clock.
+`protocol: grpc` routes do not arm or advance this clock; a gRPC call's wait for its first request
+message has its own bound (<<_grpc_first_message_bound>>).
 
 [[_request_body_deadline]]
 *Request-body deadline (25 s).* A slow sender that drips chunks faster than every 10 s is bounded by
@@ -198,11 +200,22 @@ link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_decla
 Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`); expiry after the
 response head preserves the upstream status and resets/closes the stream.
 
+[[_grpc_first_message_bound]]
+*gRPC first-message bound (10 s).* The forced-HTTP/2 upstream request head is written only with the
+first request body chunk. A `protocol: grpc` call whose client sends no request message within
+`GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS` (10 s) of the attempt handing its body to the
+upstream request is ended by the gateway: the upstream request is reset and the call ends as the
+client's abort, `DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`, disposition
+`no-first-message`), which the circuit breaker skips. The bound is fixed, below the 30 s upstream
+guard timeout, and never armed on an HTTP dispatch; a body that ends without a message is not ended
+by it
+(link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-first-message-bound[ADR-0060]).
+
 [[_grpc_stream_idle_bound]]
 *gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages,
-`protocol: grpc` routes use the upstream guard's fixed 30 s per-attempt head timeout until response
-headers arrive and then a
-5-minute bidirectional frame-idle timer (HTTP/2 `PING` excluded). Expiry resets the upstream request
+`protocol: grpc` routes use the upstream guard's fixed 30 s per-attempt head timeout once the first
+request message has gone and until response headers arrive, and then a 5-minute bidirectional
+frame-idle timer (HTTP/2 `PING` excluded). Expiry resets the upstream request
 and ends the client stream with trailers `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message:
 stream-idle-timeout`
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-stream-idle-bound[ADR-0060]).

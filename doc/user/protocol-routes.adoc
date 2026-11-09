@@ -26,8 +26,9 @@ gateway-owned never-forward set does not withhold* -- so a protocol route needs 
 its own mechanics to work, and the routes shown below deliberately declare none. Neither of the
 example routes on this page is thereby unguarded: the hop-by-hop, framing and provenance names of
 the link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set] are withheld under every mode.
-An inbound `Authorization` is the one re-admittable member, and only where a route declares a
-`headers_allow` naming it; the routes below declare no list at all, so it is withheld here. The
+The re-admittable members are an inbound `Authorization` and the provenance and URL-override class
+(`X-Forwarded-Server`, `X-Original-URL` and the rest), each re-admitted only where a route declares a
+`headers_allow` naming it; the routes below declare no list at all, so all of them are withheld here. The
 browser `Cookie` is decided by the route's link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`] block,
 not by `forward`; the routes below declare none, so they resolve `allow: none` and forward no
 cookie (see <<_cookies_on_protocol_routes>>).
@@ -229,15 +230,20 @@ service path.
 === What bounds a long-lived call
 
 A gRPC call is not held to the request-body idle timeout or the request-body deadline of an HTTP
-route, so a client-streaming or bidirectional call may pause between its messages. Until the
-upstream sends its response headers, the upstream guard's 30 s timeout bounds the call. After them,
+route, so a client-streaming or bidirectional call may pause between its messages. The wait for the
+*first* request message is bounded: a call whose client sends no request message within the fixed
+10 s first-message bound is ended by the gateway as a client abort (`INBOUND_BODY_ABORTED`, rendered
+`INVALID_ARGUMENT`) before the upstream request head is written, and the upstream's circuit breaker
+does not count it. Once the first message has gone, the upstream guard's 30 s timeout bounds the call
+until the upstream sends its response headers. After them,
 the call stays open while a frame travels in either direction, and a call that carries no frame for
 five minutes is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
 `grpc-message: stream-idle-timeout` in place of the upstream's trailers. HTTP/2 `PING` frames do not
 count, and the call's `grpc-timeout` is not honoured. A service whose calls stay silent for longer
-than five minutes has to send messages to keep them open; the bound is fixed and has no
+than five minutes has to send messages to keep them open; both bounds are fixed and have no
 configuration key. See
-link:edge-security.adoc#_edge_hardening_defaults[Edge Security -- edge hardening defaults] and
+link:edge-security.adoc#_edge_hardening_defaults[Edge Security -- edge hardening defaults],
+link:../architecture/tls-and-inbound-security.adoc#_grpc_first_message_bound[Architecture -- gRPC first-message bound] and
 link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 === gRPC rejections are trailers-only
