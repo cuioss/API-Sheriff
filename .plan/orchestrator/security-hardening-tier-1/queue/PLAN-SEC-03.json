@@ -2,10 +2,10 @@
   "id": "PLAN-SEC-03",
   "slug": "pending-authorization-store-fairness",
   "workstream": "WS-03",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-sec-03-pending-authorization-store-fairness",
+  "pr": "581",
+  "landing": "landings/PLAN-SEC-03.md",
   "seq": 2
 }

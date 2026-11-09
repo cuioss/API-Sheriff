@@ -44,9 +44,11 @@ Low finding.
 
 ## Queue annotations
 
-- PLAN-SEC-01 — edge transport. Holds `TerminalDispatch` for both the WebSocket gate and the relay-failure reset, which is why those two findings share a plan rather than serialising two plans on one class.
+- PLAN-SEC-01 — edge transport. Holds `TerminalDispatch` for both the WebSocket gate and the relay-failure reset, which is why those two findings share a plan rather than serialising two plans on one class. SHIPPED 2026-11-08 as PR #582 (c85817d9) — see `landings/PLAN-SEC-01.md`. The realized surface grew from 12 declared to 28 files (new `WebSocketUpgradeGate`, `ResponseEnds`, `TlsEdgeProducer`, ITs, tls/protocol docs); `doc/LogMessages.adoc` was NOT touched (no new INFO/WARN/ERROR record), so of the two files it shared with the others only `doc/security-threat-model.adoc` was actually written.
 - PLAN-SEC-02 — upstream dispatch + forward policy. Touches `DispatchStage` / `GrpcDispatchStage` and `ForwardPolicyStage` / `ConnectionHeaders`; disjoint from PLAN-SEC-01's production files by declaration (verify at outline: the gRPC attribution must not need `TerminalDispatch`).
-- PLAN-SEC-03 — BFF pending-authorization store. Disjoint from both other plans in production code.
+- PLAN-SEC-03 — BFF pending-authorization store. Declared disjoint from both other plans in production code, but the operator-authorised relayed-peer expansion wrote PLAN-SEC-01's `tls/` files; see the Watch below. SHIPPED 2026-11-09 as PR #581 (3eef748b) — see `landings/PLAN-SEC-03.md`.
+- PLAN-SEC-02 — held back on 2026-11-09 by the operator at the overlap prompt (2 shared doc files with the then-running PLAN-SEC-03). PLAN-SEC-03 has since merged, so nothing in flight overlaps it.
+- PLAN-SEC-04 — staged 2026-11-09 from the PLAN-SEC-01 landing analysis: follow-up hardening of the new transport bounds plus the PLAN-SEC-01 test-coverage advisories (folded here, so that Watch is retired). Mechanism-level spec by operator choice; details in the operator's git-ignored local notes. Same `tls/` + `edge/terminal/` surface as the shipped PLAN-SEC-01; shares only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` with PLAN-SEC-02 / PLAN-SEC-03.
 - All three plans share `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` (the latter declared as a HYPOTHESIS in PLAN-SEC-01 / PLAN-SEC-02, only if a new LogRecord is needed). Two shared files per pair means `next` puts the overlap to the operator. Both are append/row-local documentation edits in different sections, so a parallel launch risks at most a trivial doc rebase; no production file is shared.
 
 ## Decisions
@@ -55,6 +57,9 @@ Low finding.
 - 2026-11-07 — Plan cut: 3 plans, chosen by the operator over 5 and 6, to minimise PR count (CLAUDE.md "minimise the number of PRs"). Each plan is at most 5 deliverables, inside the 12-deliverable ceiling authorised for this project.
 - 2026-11-07 — Parallelization scope 2 (project default accepted by the operator).
 - 2026-11-07 — Sequencing: PLAN-SEC-01 and PLAN-SEC-03 first (highest priority, mutually disjoint); PLAN-SEC-02 fills the next free slot.
+- 2026-11-09 — PLAN-SEC-01 landing review: the operator chose to record the 5 layer-3 points in the git-ignored local security notes AND stage PLAN-SEC-04 (mechanism-level spec) for them; PLAN-SEC-01's test-coverage advisories are folded into PLAN-SEC-04.
+- 2026-11-09 — PLAN-SEC-03's 5 candidate lessons are plan-marshall tooling defects; routed to the sibling plan-marshall repo's `lessons-routing` epic inbox (`../plan-marshall`, `.plan/local/worktrees/_orchestrator/.plan/orchestrator/lessons-routing/inbox/`) as `api-sheriff-security-hardening-tier-1-001` (finding, recurrence of `api-sheriff-api-sheriff-0-2-0-079`) to `-004`. Local messages archived as discarded-by-routing.
+- 2026-11-09 — PLAN-SEC-03 landing review: its layer-3 points were recorded in the operator's local security notes and reported; none staged.
 
 ## Open Defects
 
@@ -62,4 +67,8 @@ Low finding.
 
 ## Watches
 
-- The ground-truth check was a code reading, not a reproduction. Each plan writes a failing regression test FIRST; a test that cannot be made to fail against the unfixed code refutes the finding and loops the plan back to re-scope — re-check at each landing.
+- The ground-truth check was a code reading, not a reproduction. Each plan writes a failing regression test FIRST; a test that cannot be made to fail against the unfixed code refutes the finding and loops the plan back to re-scope — re-check at each landing. PLAN-SEC-01 (2026-11-08): all three findings (M7, M2, C3) held, each with a test that fails without its fix; two spec premises were refuted and absorbed by the shipped code (claims 3 and 6 — the WebSocket GET-only gate and the "Vert.x answers every invalid HTTP/1.1 upgrade" premise). Outstanding: PLAN-SEC-02, PLAN-SEC-03.
+- 2026-11-08 — `main` push runs for c85817d9 (PLAN-SEC-01) and 3eef748b (PLAN-SEC-03) (Maven Build incl. `deploy-snapshot`) not verified at analyze time: the CI abstraction looks runs up by PR or head, not by merge commit. Retire once both are confirmed green.
+- 2026-11-09 — Gate blind spot observed: PLAN-SEC-03's operator-authorised scope expansion wrote `tls/PassthroughRelay`, `tls/TlsEdgeProducer`, `tls/SniFrontListener`, two `tls/` tests and `doc/development/tls-edge.adoc` while PLAN-SEC-01 held them; the gate could not see it because a mid-run scope expansion does not update the staged spec's declaration. Rebase conflict resolved by hand. PLAN-SEC-03's Expected Surface was corrected at landing. Lesson for pairing: a run-time scope expansion that crosses into another in-flight plan's package should be raised to the orchestrator (inbox finding) so the pairing is re-judged.
+- 2026-11-09 — PLAN-SEC-03 follow-ups not staged: per-source cap shipped as 256 (spec proposed 32) with no rationale in the diff; no ADR for the in-process peer-attribution mechanism or the per-source quota policy.
+- 2026-11-08 — Tooling skew reported by PLAN-SEC-01: executor 0.1.2036 vs installed plugin 0.1.2080, marshal.json provisioning stale (`/marshall-steward`). The 0.1.2036 pre-merge gate ignores refire waivers, which forced a direct merge-queue enqueue; re-check whether PLAN-SEC-03 / PLAN-SEC-02 hit the same refusal.
