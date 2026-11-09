@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -55,7 +56,9 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>The ClientHello deadline.</strong> The front holds a connection it has not routed yet for at
  * most its ClientHello deadline: a connection that sends nothing, and one whose ClientHello stops
- * halfway, are both closed within that deadline plus a stated margin, without an answer. The passthrough
+ * halfway, are both closed without an answer at that deadline — not before it, less a stated slack, and
+ * not after it plus a stated margin. The lower bound is what makes the close the deadline's: a connection
+ * closed at once would pass an upper bound alone. The passthrough
  * handshake above is the positive control — a client that sends its ClientHello at once is routed long
  * before the deadline could end it.
  * <p>
@@ -80,6 +83,15 @@ class TlsPassthroughIT extends BaseIntegrationTest {
      * the deadline's and not the idle timeout's.
      */
     private static final Duration CLOSE_MARGIN = Duration.ofSeconds(5);
+
+    /**
+     * How much earlier than {@link #CLIENT_HELLO_DEADLINE} a close may be observed and still be the
+     * deadline's. The front arms the deadline when it accepts the connection, which can precede the
+     * moment this client starts its clock — the end of its connect, or of its write — by the time a
+     * connect or a write takes to complete. A close earlier than the deadline by more than this is not the
+     * deadline's doing: a connection refused at accept, or closed for any other reason, is closed at once.
+     */
+    private static final Duration EARLY_CLOSE_SLACK = Duration.ofSeconds(1);
 
     private static final int CONNECT_TIMEOUT_MILLIS = 5_000;
 
@@ -139,9 +151,7 @@ class TlsPassthroughIT extends BaseIntegrationTest {
 
             long closedMillis = awaitClosedByTheGateway(socket);
 
-            assertTrue(closedMillis <= CLIENT_HELLO_DEADLINE.plus(CLOSE_MARGIN).toMillis(),
-                    "a silent connection must be closed by the ClientHello deadline, was closed after "
-                            + closedMillis + " ms");
+            assertClosedAtTheDeadline(closedMillis, "a silent connection");
         }
     }
 
@@ -156,10 +166,23 @@ class TlsPassthroughIT extends BaseIntegrationTest {
 
             long closedMillis = awaitClosedByTheGateway(socket);
 
-            assertTrue(closedMillis <= CLIENT_HELLO_DEADLINE.plus(CLOSE_MARGIN).toMillis(),
-                    "a stalled ClientHello must be closed by the ClientHello deadline, was closed after "
-                            + closedMillis + " ms");
+            assertClosedAtTheDeadline(closedMillis, "a stalled ClientHello");
         }
+    }
+
+    /**
+     * Asserts that a close observed after {@code closedMillis} is the ClientHello deadline's: not later
+     * than the deadline plus {@link #CLOSE_MARGIN}, and not earlier than the deadline minus
+     * {@link #EARLY_CLOSE_SLACK}. The lower bound is what tells the deadline from a connection closed at
+     * once — refused at accept, or ended for another reason — which the upper bound alone would accept.
+     */
+    private static void assertClosedAtTheDeadline(long closedMillis, String connection) {
+        long earliest = CLIENT_HELLO_DEADLINE.minus(EARLY_CLOSE_SLACK).toMillis();
+        long latest = CLIENT_HELLO_DEADLINE.plus(CLOSE_MARGIN).toMillis();
+        assertAll(connection + " must be closed by the ClientHello deadline, was closed after " + closedMillis + " ms",
+                () -> assertTrue(closedMillis >= earliest,
+                        "closed before the deadline could fire: not before " + earliest + " ms"),
+                () -> assertTrue(closedMillis <= latest, "closed too late for the deadline: not after " + latest + " ms"));
     }
 
     /**
