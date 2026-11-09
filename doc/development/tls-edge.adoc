@@ -212,7 +212,8 @@ share -- is:
   construction, and the metrics adapter needs no type from `tls`.
 * *logged* as `WARN ApiSheriff-146` (`ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED`), at most once
   per `SniFrontListener.SATURATION_WARN_INTERVAL` (60 s, measured on the monotonic `System.nanoTime()`
-  clock) per reason, with the reason token (`cap` / `source-share`), the bound that was full and the
+  clock) per reason, with the reason token (`cap` / `source_share` -- the same spelling as the metric
+  label), the bound that was full and the
   window. Every further refusal of that reason inside the window is logged at `DEBUG`. Neither line
   ever names the peer address or a received byte.
 

@@ -279,7 +279,7 @@ visible in two places:
   `source_share` (one source already held its 256).
 
 | `WARN ApiSheriff-146`
-| The first refusal of each reason in a 60 s window, naming the reason (`cap` / `source-share`), the
+| The first refusal of each reason in a 60 s window, naming the reason (`cap` / `source_share`), the
   bound and the window. Further refusals of that reason inside the window are logged at `DEBUG`, so a
   flood leaves one line per minute and reason, not one per connection.
 |===
@@ -287,16 +287,19 @@ visible in two places:
 Neither names the client's address or anything it sent. Read the counter for the rate and the log
 line as the sign that the front is saturated at all:
 
-* *A sustained `cap` rate* means many connections are holding their ClientHello back -- a slow or
-  silent handshake flood. Legitimate clients then wait up to one 10 s deadline window before they are
-  admitted.
+* *A sustained `cap` rate* has one of two causes. Either many connections are holding their
+  ClientHello back -- a slow or silent handshake flood -- or a passthrough backend does not answer the
+  dial, and each connection for its hostname holds a slot for up to the 10 s connect timeout (see
+  _An unreachable passthrough backend_ above). Either way, legitimate clients then wait up to one 10 s
+  window before they are admitted. Check whether the refusals coincide with a passthrough backend being
+  down before treating them as a flood.
 * *A `source_share` rate from one client* is that client being held to its share; the others are
   unaffected.
 
 *Behind an L4 load balancer.* The source is the TCP peer address of the connection the gateway
 accepts. A layer-4 load balancer or NAT in front of the gateway that does not keep the client's source
 address on the connection makes every client the same source, so the share becomes a gateway-wide
-limit of 256 connections waiting for their ClientHello. That still admits tens of thousands of
+limit of 256 connections waiting for their ClientHello or for their backend dial to settle. That still admits tens of thousands of
 handshakes per second, but every client is refused together once it is reached, and `source_share`
 refusals then appear for everyone. The front reads no PROXY protocol header -- it expects the
 ClientHello as the connection's first bytes -- so keep the share per client by having the load

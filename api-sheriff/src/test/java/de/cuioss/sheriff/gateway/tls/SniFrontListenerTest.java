@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Proxy;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.time.Duration;
@@ -51,6 +53,7 @@ import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.SocketAddress;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -456,7 +459,7 @@ class SniFrontListenerTest {
             assertAll("one refusal of each reason",
                     () -> assertEquals(List.of(Refusal.SOURCE_SHARE, Refusal.CAP), refusals),
                     () -> assertEquals(2, warnings.size(), "each reason opens its own warn window"),
-                    () -> assertTrue(warnings.get(0).getMessage().contains("(source-share)"),
+                    () -> assertTrue(warnings.get(0).getMessage().contains("(source_share)"),
                             "the share refusal names its reason: " + warnings.get(0).getMessage()),
                     () -> assertTrue(warnings.get(1).getMessage().contains("(cap)"),
                             "the cap refusal names its reason: " + warnings.get(1).getMessage()));
@@ -512,6 +515,59 @@ class SniFrontListenerTest {
         private static Function<NetSocket, String> sourcesInOrder(String... sources) {
             AtomicInteger accepted = new AtomicInteger();
             return socket -> sources[Math.min(accepted.getAndIncrement(), sources.length - 1)];
+        }
+    }
+
+    /**
+     * The production source key, {@link SniFrontListener#sourceOf}, read off a connection whose peer
+     * address the case chooses. A connection is a proxy answering only {@code remoteAddress()}, because
+     * a socket without a peer address cannot be produced over loopback; every other call fails the case.
+     */
+    @Nested
+    @DisplayName("production source key")
+    class ProductionSourceKey {
+
+        @Test
+        @DisplayName("counts a connection without a peer address under the shared fallback source")
+        void keysAMissingPeerToTheFallbackSource() {
+            assertEquals(SniFrontListener.UNKNOWN_SOURCE, SniFrontListener.sourceOf(withPeer(null)),
+                    "a connection whose peer address is unavailable is counted under the one fallback source");
+        }
+
+        @Test
+        @DisplayName("counts a peer without a host address, such as a domain socket, under the same fallback source")
+        void keysAPeerWithoutHostAddressToTheFallbackSource() {
+            SocketAddress domainSocket = SocketAddress.domainSocketAddress("/var/run/sheriff-front.sock");
+
+            assertEquals(SniFrontListener.UNKNOWN_SOURCE, SniFrontListener.sourceOf(withPeer(domainSocket)),
+                    "a peer that names no host address shares the fallback source with a missing one");
+        }
+
+        @Test
+        @DisplayName("control: keys a peer with a host address on that address alone, port excluded")
+        void keysAnAddressedPeerOnItsAddress() throws Exception {
+            InetAddress documentationAddress = InetAddress.getByAddress(new byte[]{(byte) 192, 0, 2, 7});
+            NetSocket onePort = withPeer(SocketAddress.inetSocketAddress(
+                    new InetSocketAddress(documentationAddress, 40001)));
+            NetSocket otherPort = withPeer(SocketAddress.inetSocketAddress(
+                    new InetSocketAddress(documentationAddress, 40002)));
+
+            assertAll("an addressed peer is never the fallback source",
+                    () -> assertEquals("192.0.2.7", SniFrontListener.sourceOf(onePort),
+                            "the source is the peer's host address"),
+                    () -> assertEquals(SniFrontListener.sourceOf(onePort), SniFrontListener.sourceOf(otherPort),
+                            "two ports of one address are one source"));
+        }
+
+        /** A connection that answers {@code remoteAddress()} with {@code peer} and fails every other call. */
+        private static NetSocket withPeer(@Nullable SocketAddress peer) {
+            return (NetSocket) Proxy.newProxyInstance(NetSocket.class.getClassLoader(), new Class<?>[]{NetSocket.class},
+                    (proxy, method, args) -> {
+                        if ("remoteAddress".equals(method.getName()) && (args == null || args.length == 0)) {
+                            return peer;
+                        }
+                        throw new UnsupportedOperationException("not part of the source key: " + method.getName());
+                    });
         }
     }
 

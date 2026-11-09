@@ -313,8 +313,11 @@ public final class ApiSheriffLogMessages {
         /**
          * The accept-time SNI front closed an accepted connection at once, without reading from it: the
          * undecided-connection cap was full ({@code cap}), or the connection's source already held its
-         * full share of that cap ({@code source-share}). Rate-limited: emitted at most once per fixed
-         * window per reason; every further refusal for that reason inside the window is a
+         * full share of that cap ({@code source_share}). The cap and the share count connections waiting
+         * for their ClientHello or for their relay's backend dial to settle, so they fill under a flood of
+         * slow or silent handshakes and equally behind a passthrough backend that does not answer the
+         * dial, whose connections each hold a slot for the full connect timeout. Rate-limited: emitted at
+         * most once per fixed window per reason; every further refusal for that reason inside the window is a
          * {@code DEBUG} diagnostic, and every refusal is counted on
          * {@code sheriff_front_connections_refused_total}. Records the reason token, the bound that was
          * full and the window in seconds only — never the peer address or any byte received.

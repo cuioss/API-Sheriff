@@ -157,12 +157,15 @@ public final class SniFrontListener {
     /** How long an accepted connection may take to complete its ClientHello before it is closed. */
     public static final Duration CLIENT_HELLO_DEADLINE = Duration.ofSeconds(10);
 
-    /** How many accepted connections may be waiting for their ClientHello at the same time. */
+    /**
+     * How many accepted connections may be waiting at the same time — for their ClientHello, or, once
+     * routed, for their relay's backend dial to settle.
+     */
     public static final int MAX_UNDECIDED_CONNECTIONS = 1024;
 
     /**
-     * How many accepted connections one source may hold waiting for their ClientHello at the same
-     * time: a fixed quarter of {@link #MAX_UNDECIDED_CONNECTIONS}.
+     * How many accepted connections one source may hold at the same time waiting for their ClientHello
+     * or for their relay's backend dial to settle: a fixed quarter of {@link #MAX_UNDECIDED_CONNECTIONS}.
      */
     public static final int MAX_UNDECIDED_PER_SOURCE = MAX_UNDECIDED_CONNECTIONS / 4;
 
@@ -180,7 +183,7 @@ public final class SniFrontListener {
         CAP("cap"),
 
         /** The connection's source already held its full share of the cap. */
-        SOURCE_SHARE("source-share");
+        SOURCE_SHARE("source_share");
 
         private final String token;
 
@@ -202,8 +205,11 @@ public final class SniFrontListener {
     /** The last-warn time meaning "this reason has never been logged at {@code WARN}". */
     private static final long NEVER_WARNED = Long.MIN_VALUE;
 
-    /** The one source every connection whose TCP peer address is unavailable is counted under. */
-    private static final String UNKNOWN_SOURCE = "<unknown-source>";
+    /**
+     * The one source every connection whose TCP peer address is unavailable is counted under.
+     * Package-private so a test can assert the key {@link #sourceOf} falls back to.
+     */
+    static final String UNKNOWN_SOURCE = "<unknown-source>";
 
     /** The units an idle timeout is set in, finest first; see {@link #applyIdleTimeout}. */
     private static final List<TimeUnit> IDLE_TIMEOUT_UNITS = List.of(TimeUnit.MILLISECONDS, TimeUnit.SECONDS,
@@ -273,8 +279,8 @@ public final class SniFrontListener {
      * @param host                    the host (address) the front server binds the public TLS port on
      * @param clientHelloDeadline     how long an accepted connection may take to complete its
      *                                ClientHello; positive
-     * @param maxUndecidedConnections how many accepted connections may wait for their ClientHello at
-     *                                the same time; positive
+     * @param maxUndecidedConnections how many accepted connections may wait at the same time for their
+     *                                ClientHello or for their relay's backend dial to settle; positive
      * @param maxUndecidedPerSource   how many of those one source may hold at the same time; positive
      * @param relayIdleTimeout        the idle timeout of the front server; positive
      * @param warnInterval            the window within which a refusal reason is logged at {@code WARN}

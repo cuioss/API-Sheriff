@@ -298,7 +298,8 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
 | `sheriff_front_connections_refused_total{reason}`
 | Counter of connections the accept-time SNI front (active with `tls.passthrough_sni`) closed at accept
   without reading from them, labelled by the bound that was full: `cap` (1024 connections waiting for
-  their ClientHello) or `source_share` (one TCP peer address already holding its 256). The peer address
+  their ClientHello or for their backend dial to settle) or `source_share` (one TCP peer address already
+  holding its 256). The peer address
   is never a label (`WARN ApiSheriff-146`; see
   link:../development/tls-edge.adoc[TLS Edge -- Contributor Guide]).
 
