@@ -195,17 +195,30 @@ gateway terminates or mediates, the hop the gateway terminates rather than the m
 alone), the framing the gateway re-establishes, and the names the gateway itself owns.
 
 The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
-vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and
-the underscore spellings of the regenerated forwarding names, `X_Forwarded_For`,
-`X_Forwarded_Host`, `X_Forwarded_Proto`, `X_Forwarded_Port` and `X_Forwarded_Prefix`. Every name in
-the set is matched on its *separator-folded* spelling -- lower-cased with each `_` mapped to `-` --
-so `X_Real_IP` and `X-Real_IP` are withheld exactly as `X-Real-IP` is.
+vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`; the
+underscore spellings of the regenerated forwarding names, `X_Forwarded_For`, `X_Forwarded_Host`,
+`X_Forwarded_Proto`, `X_Forwarded_Port` and `X_Forwarded_Prefix`; and the *provenance and
+URL-override class* `X-Forwarded-Server`, `X-Forwarded-Ssl`, `Front-End-Https`, `X-Url-Scheme`,
+`X-Forwarded-Scheme`, `X-Forwarded-Protocol`, `X-Forwarded-Uri`, `X-Forwarded-Path`,
+`X-Original-URL`, `X-Rewrite-URL`, `X-Original-Host`, `X-Host`, `X-Original-Forwarded-For`,
+`X-Cluster-Client-IP` and `Fastly-Client-IP` -- names a backend may read as the client's address, as
+the scheme, host or server it was reached through, or as the URL to serve in place of the request
+line. They are withheld for every peer, a trusted proxy included: the gateway is the only provenance
+authority an upstream hears. Every name in the set is matched on its *separator-folded* spelling --
+lower-cased with each `_` mapped to `-` -- so `X_Real_IP` and `X-Real_IP` are withheld exactly as
+`X-Real-IP` is.
 
-Two members carry value- or mode-dependent behaviour:
+Two behaviours depend on the value or the mode:
 
-* *`Authorization`* is the single re-admittable member, and only by a *positive*-list naming it
-  (e.g. a pure-proxy route). A negative-list or forward-all never passes an inbound credential. On a
-  `require: session` route the mediated bearer is merged last and overwrites it.
+* *Re-admission.* `Authorization` and the provenance and URL-override class are the re-admittable
+  members. A route re-admits one only by naming it in `headers_allow` -- a *positive*-list --
+  compared separator-folded, and only the named member crosses; every other withheld name stays
+  withheld on that route. There is no global switch, and a negative-list or forward-all never
+  re-admits a member, so a permissive baseline passes neither an inbound credential nor a client's
+  provenance claim. A typical use is `Authorization` on a pure-proxy route. The vendor client-IP
+  aliases, the underscore spellings of the regenerated forwarding names and every other member are
+  never re-admitted. On a `require: session` route the mediated bearer is merged last and
+  overwrites a re-admitted `Authorization`.
 * *`TE`* crosses only as the exact token `trailers` (required by gRPC over HTTP/2); any other value is
   withheld.
 
@@ -261,6 +274,11 @@ not consulted for the set.
 
 *The regenerated forwarding headers.* The client's `X-Forwarded-*` / `Forwarded` copies never cross
 under any mode; the gateway emits its own set per the link:#_forwarded_headers[`forwarded`] policy.
+The `X-ProxyScheme`, `X-ProxyHost`, `X-ProxyPort` and `X-ProxyContextPath` inputs the
+forwarded-header resolver also reads are treated the same way: they are never copied from the
+client, under any mode or `-`/`_` spelling (a `headers_allow` naming one included), and when the
+immediate peer is not a trusted proxy they are masked from the resolver together with the
+`X-Forwarded-*` / `Forwarded` names.
 
 === `set_headers`, and what wins
 

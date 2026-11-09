@@ -90,7 +90,7 @@ class ConnectionHeadersTest {
     }
 
     @Test
-    @DisplayName("Should carry exactly the 25 request-direction never-forward names")
+    @DisplayName("Should carry exactly the 40 request-direction never-forward names")
     void shouldCarryTheExactRequestSet() {
         assertEquals(
                 ConnectionHeaders.REQUEST_STRIP, Set.of(
@@ -113,7 +113,15 @@ class ConnectionHeadersTest {
                         // and the vendor client-IP aliases such a backend may trust directly.
                         "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto",
                         "x_forwarded_port", "x_forwarded_prefix",
-                        "x-real-ip", "x-client-ip", "true-client-ip", "cf-connecting-ip"),
+                        "x-real-ip", "x-client-ip", "true-client-ip", "cf-connecting-ip",
+                        // The provenance and URL-override class: names a backend may read as the
+                        // client's address, the scheme / host / server it was reached through, or
+                        // the URL to serve in place of the request line.
+                        "x-forwarded-server", "x-forwarded-ssl", "front-end-https", "x-url-scheme",
+                        "x-forwarded-scheme", "x-forwarded-protocol", "x-forwarded-uri",
+                        "x-forwarded-path", "x-original-url", "x-rewrite-url", "x-original-host",
+                        "x-host", "x-original-forwarded-for", "x-cluster-client-ip",
+                        "fastly-client-ip"),
                 "the request-direction set is what bounds the forward-all baseline — a name removed"
                         + " here silently starts relaying it to every upstream");
     }
@@ -125,7 +133,7 @@ class ConnectionHeadersTest {
                 "the response set stays at its 10 names; the provenance-variant widening is"
                         + " request-direction only and must not propagate here — a response"
                         + " carrying X-Real-IP is the source's business, not the gateway's");
-        assertEquals(25, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 25 names");
+        assertEquals(40, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 40 names");
         assertTrue(ConnectionHeaders.REQUEST_STRIP.containsAll(ConnectionHeaders.RESPONSE_STRIP),
                 "the request set currently contains every response name — asserted as the OBSERVATION"
                         + " it is, with both sets pinned exhaustively above, so a name added to one"
@@ -241,6 +249,73 @@ class ConnectionHeadersTest {
                         + " match across spellings of the owned names only — never across names");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X-Forwarded-Server", "X_Forwarded_Server", "X-Forwarded-Ssl", "X_Forwarded_Ssl",
+            "Front-End-Https", "Front_End_Https", "X-Url-Scheme", "X_Url_Scheme",
+            "X-Forwarded-Scheme", "X_Forwarded_Scheme", "X-Forwarded-Protocol", "X_Forwarded_Protocol",
+            "X-Forwarded-Uri", "X_Forwarded_Uri", "X-Forwarded-Path", "X_Forwarded_Path",
+            "X-Original-URL", "X_Original_URL", "X-Rewrite-URL", "X_Rewrite_URL",
+            "X-Original-Host", "X_Original_Host", "X-Host", "X_Host",
+            "X-Original-Forwarded-For", "X_Original_Forwarded_For",
+            "X-Cluster-Client-IP", "X_Cluster_Client_IP", "Fastly-Client-IP", "Fastly_Client_IP"})
+    @DisplayName("Should withhold every name of the provenance and URL-override class, canonical and underscore spelling")
+    void shouldWithholdTheProvenanceOverrideClass(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " lets a client forge the gateway's provenance or rewrite the upstream's"
+                        + " view of the URL; under forward-all it would otherwise cross from every peer,"
+                        + " and a CGI-folding backend reads the underscore spelling as the same variable");
+    }
+
+    @Test
+    @DisplayName("Should carry exactly Authorization and the provenance and URL-override class as re-admittable")
+    void shouldCarryTheExactReadmittableSet() {
+        assertEquals(
+                ConnectionHeaders.REQUEST_READMITTABLE, Set.of(
+                        "authorization",
+                        "x-forwarded-server", "x-forwarded-ssl", "front-end-https", "x-url-scheme",
+                        "x-forwarded-scheme", "x-forwarded-protocol", "x-forwarded-uri",
+                        "x-forwarded-path", "x-original-url", "x-rewrite-url", "x-original-host",
+                        "x-host", "x-original-forwarded-for", "x-cluster-client-ip",
+                        "fastly-client-ip"),
+                "the re-admittable subset decides which withheld names a headers_allow entry can bring"
+                        + " back — a name added here silently becomes forwardable on request");
+    }
+
+    @Test
+    @DisplayName("Should keep the re-admittable set a subset of the never-forward set")
+    void shouldKeepTheReadmittableSetInsideTheRequestSet() {
+        assertTrue(ConnectionHeaders.REQUEST_STRIP.containsAll(ConnectionHeaders.REQUEST_READMITTABLE),
+                "a re-admittable name must be withheld by default; a member outside REQUEST_STRIP would"
+                        + " already cross under forward-all and its re-admission would mean nothing");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "Authorization", "AUTHORIZATION", "X-Forwarded-Server", "x_forwarded_server",
+            "X-Forwarded_Server", "X-Original-URL", "x_original_url", "Fastly_Client-IP", "X-Host"})
+    @DisplayName("Should recognise every case and '-'/'_' spelling of a re-admittable member")
+    void shouldRecogniseEverySpellingOfAReadmittableMember(String name) {
+        assertTrue(ConnectionHeaders.isRequestReadmittable(name),
+                () -> name + " is a spelling of a re-admittable member, so a headers_allow entry and the"
+                        + " client's header are matched however either is spelled");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X-Real-IP", "X-Client-IP", "True-Client-IP", "CF-Connecting-IP",
+            "X_Forwarded_For", "X_Forwarded_Host",
+            "X-ProxyScheme", "X-ProxyHost", "X-ProxyPort", "X-ProxyContextPath",
+            "Host", "Connection", "Proxy-Authorization", "HTTP2-Settings", "Content-Type"})
+    @DisplayName("Should not offer re-admission for the vendor client-IP aliases, the X-Proxy names or any other name")
+    void shouldNotReadmitAnyOtherName(String name) {
+        assertFalse(ConnectionHeaders.isRequestReadmittable(name),
+                () -> name + " is not a re-admittable member: a vendor client-IP alias or an underscore"
+                        + " spelling of a regenerated name stays withheld under every mode, an X-Proxy"
+                        + " resolver input is never copied at all, and a hop or gateway-owned name has"
+                        + " no meaning to the upstream");
+    }
+
     @Test
     @DisplayName("Should fold a header name to lower case and '-' separators, through Locale.ROOT")
     void shouldFoldSeparatorsAndCase() {
@@ -255,5 +330,6 @@ class ConnectionHeadersTest {
     void shouldRejectNullRequestName() {
         assertThrows(NullPointerException.class, () -> ConnectionHeaders.isRequestStripped(null));
         assertThrows(NullPointerException.class, () -> ConnectionHeaders.separatorFolded(null));
+        assertThrows(NullPointerException.class, () -> ConnectionHeaders.isRequestReadmittable(null));
     }
 }

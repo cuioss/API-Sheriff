@@ -22,7 +22,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -75,10 +74,13 @@ import org.jspecify.annotations.Nullable;
  *       stays part of that pair here; the edge renders it as {@code %3B} on every route, so a
  *       {@code ;}-splitting upstream cannot read a second, unjudged parameter out of it.</li>
  *   <li><strong>The gateway-owned never-forward set.</strong> Whatever mode a route resolves, the
- *       {@link ConnectionHeaders#REQUEST_STRIP} names are withheld from the upstream — this is what
- *       makes the forward-all baseline safe. {@code Authorization} is the single re-admittable
- *       member and only under a positive-list naming it; {@code TE} crosses only as the
- *       {@code trailers} token.</li>
+ *       {@link ConnectionHeaders#REQUEST_STRIP} names are withheld from the upstream, for every
+ *       peer — this is what makes the forward-all baseline safe. The
+ *       {@link ConnectionHeaders#REQUEST_READMITTABLE} members — {@code Authorization} and the
+ *       provenance and URL-override class — are re-admitted only under a positive-list naming the
+ *       member, compared separator-folded, and only the named member crosses; forward-all and a
+ *       negative-list never re-admit one. {@code TE} crosses only as the {@code trailers}
+ *       token.</li>
  *   <li><strong>The {@code Cookie} header is rebuilt, never copied.</strong> No forward mode copies
  *       the client's {@code Cookie}: the header is governed by the route's {@code cookies} block
  *       alone, and {@link #admittedCookiePairs} decides which of its pairs cross. The gateway's own
@@ -102,7 +104,9 @@ import org.jspecify.annotations.Nullable;
  *       reads ({@code X-ProxyScheme}, {@code X-ProxyHost}, {@code X-ProxyPort},
  *       {@code X-ProxyContextPath}) are treated the same way — see {@link #RESOLVER_INPUT_HEADERS}:
  *       masked from the resolver for an untrusted peer and never copied from the client, under any
- *       mode.</li>
+ *       mode. The provenance names the resolver does <em>not</em> read — the vendor client-IP
+ *       aliases and the provenance and URL-override class — are withheld by the never-forward set
+ *       above instead, for trusted and untrusted peers alike.</li>
  *   <li><strong>Static set headers.</strong> {@code set_headers} are merged after the client copy
  *       and the protocol set, so an operator's explicit value is never silently overridden by the
  *       inbound request.</li>
@@ -161,7 +165,6 @@ public final class ForwardPolicyStage {
 
     static final String EMIT_BOTH = "both";
     private static final String FORWARDED_HEADER = "Forwarded";
-    private static final String AUTHORIZATION = "authorization";
     private static final String TE = "te";
     /** The one {@code TE} value RFC 9110 admits end-to-end; every other value is hop-scoped. */
     private static final String TRAILERS = "trailers";
@@ -201,7 +204,7 @@ public final class ForwardPolicyStage {
      * name to one variable, so a mixed spelling that crossed would let a client's claim land on the
      * same variable as the gateway's regenerated one. {@link ConnectionHeaders#REQUEST_STRIP} closes
      * the same class for the provenance names the resolver does <em>not</em> read; between the two,
-     * every spelling of every provenance name reaches one of the two sets.
+     * every spelling of every provenance name the gateway knows of reaches one of the two sets.
      */
     private static boolean isResolverInputName(String name) {
         return RESOLVER_INPUT_HEADERS.contains(ConnectionHeaders.separatorFolded(name));
@@ -505,21 +508,25 @@ public final class ForwardPolicyStage {
 
     /**
      * Withholds the gateway-owned {@link ConnectionHeaders#REQUEST_STRIP} names from the copied
-     * client headers. Applied on <em>every</em> mode, after the mode copy: no forward mode — not
-     * even a {@code headers_allow} naming one — re-admits these, with the two carve-outs below.
+     * client headers. Applied on <em>every</em> mode, after the mode copy, and for every peer:
+     * no forward mode re-admits a member, with the two carve-outs below.
      * <p>
      * The strip runs before {@code set_headers} is merged, so an operator's explicit static header
      * is never removed by it: this gate governs <em>client input</em>, and operator configuration is
      * not client input.
      * <p>
-     * Two members carry behaviour beyond membership, which is why they are decided here rather than
-     * in the set literal:
+     * Two behaviours ride on top of membership, which is why they are decided here rather than in
+     * the set literal:
      * <ul>
-     *   <li><strong>{@code authorization} is the single re-admittable member</strong>, and only when
-     *       the route declares a positive-list naming it. Under a negative-list or forward-all the
-     *       route declares no {@code headers_allow}, so it is never re-admitted there — a permissive
-     *       baseline must not leak an inbound credential. A re-admitted value is still overwritten
-     *       by {@link #applyMediatedBearer}, which runs last.</li>
+     *   <li><strong>A {@link ConnectionHeaders#REQUEST_READMITTABLE} member crosses only when the
+     *       route's positive-list names it</strong> — {@code Authorization} and the provenance and
+     *       URL-override class alike, compared
+     *       {@linkplain ConnectionHeaders#separatorFolded separator-folded}. Only the named member is
+     *       re-admitted; every other withheld name stays withheld on the same route. Under a
+     *       negative-list or forward-all the route declares no {@code headers_allow}, so nothing is
+     *       re-admitted there — a permissive baseline must leak neither an inbound credential nor a
+     *       client's provenance claim. A re-admitted {@code Authorization} is still overwritten by
+     *       {@link #applyMediatedBearer}, which runs last.</li>
      *   <li><strong>{@code te} crosses only when its value is exactly the {@code trailers} token.</strong>
      *       RFC 9110 admits that one value; any other ({@code gzip}, or {@code trailers} alongside
      *       another transfer coding) is a transfer-coding negotiation for the hop the gateway
@@ -527,17 +534,25 @@ public final class ForwardPolicyStage {
      * </ul>
      */
     private static void applyRequestStrip(ForwardConfig forwardConfig, Map<String, String> headers) {
-        boolean authorizationReadmitted = namesAuthorization(forwardConfig.headersAllow());
+        Set<String> readmitted = readmittedNames(forwardConfig.headersAllow());
         headers.entrySet().removeIf(entry -> isWithheldFromUpstream(entry.getKey(), entry.getValue(),
-                authorizationReadmitted));
+                readmitted));
     }
 
-    private static boolean isWithheldFromUpstream(String name, String value, boolean authorizationReadmitted) {
+    /**
+     * Whether a copied client header is withheld from the upstream.
+     *
+     * @param name       the copied header name
+     * @param value      the copied header value
+     * @param readmitted the {@linkplain #readmittedNames separator-folded re-admitted names} of the
+     *                   route's positive-list; empty under forward-all and a negative-list
+     */
+    private static boolean isWithheldFromUpstream(String name, String value, Set<String> readmitted) {
         if (!ConnectionHeaders.isRequestStripped(name)) {
             return false;
         }
-        if (AUTHORIZATION.equalsIgnoreCase(name)) {
-            return !authorizationReadmitted;
+        if (readmitted.contains(ConnectionHeaders.separatorFolded(name))) {
+            return false;
         }
         if (TE.equalsIgnoreCase(name)) {
             return !TRAILERS.equalsIgnoreCase(value.strip());
@@ -566,20 +581,23 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * Whether the route's positive-list names {@code Authorization}. A {@code null} list means the
-     * route declares no positive-list at all (negative-list or forward-all), where the re-admission
-     * never applies.
+     * The {@link ConnectionHeaders#REQUEST_READMITTABLE} members the route's positive-list names, in
+     * their {@linkplain ConnectionHeaders#separatorFolded separator-folded} spelling. A {@code null}
+     * list means the route declares no positive-list at all (negative-list or forward-all), where
+     * the re-admission never applies, so the result is empty; an entry that is not a re-admittable
+     * member re-admits nothing.
      */
-    private static boolean namesAuthorization(@Nullable List<String> headersAllow) {
-        if (headersAllow == null) {
-            return false;
+    private static Set<String> readmittedNames(@Nullable List<String> headersAllow) {
+        if (headersAllow == null || headersAllow.isEmpty()) {
+            return Set.of();
         }
+        Set<String> readmitted = new LinkedHashSet<>();
         for (String name : headersAllow) {
-            if (AUTHORIZATION.equals(name.toLowerCase(Locale.ROOT))) {
-                return true;
+            if (ConnectionHeaders.isRequestReadmittable(name)) {
+                readmitted.add(ConnectionHeaders.separatorFolded(name));
             }
         }
-        return false;
+        return readmitted;
     }
 
     /**

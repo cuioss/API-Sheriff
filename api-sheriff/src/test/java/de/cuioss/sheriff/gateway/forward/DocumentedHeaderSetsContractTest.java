@@ -38,7 +38,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Binds the header inventories {@code doc/configuration/routing-and-forwarding.adoc} enumerates by hand
  * to the Java sets that enforce them: the request-direction never-forward set to
- * {@link ConnectionHeaders#REQUEST_STRIP}, the response-direction connection set to
+ * {@link ConnectionHeaders#REQUEST_STRIP}, its re-admittable members to
+ * {@link ConnectionHeaders#REQUEST_READMITTABLE}, the response-direction connection set to
  * {@link ConnectionHeaders#RESPONSE_STRIP}, the response-direction identity set to {@link UpstreamIdentityHeaders#NAMES}, and the two tiers of the gateway-understood
  * protocol set to {@link ForwardPolicyStage#UNCONDITIONAL_PROTOCOL_HEADERS} and
  * {@link ForwardPolicyStage#CONDITIONAL_HEADERS}. A header added to or removed from one of those
@@ -51,8 +52,9 @@ import org.junit.jupiter.api.Test;
  * a backticked name of letters and digits joined by {@code -} or {@code _}, kept only when it carries a
  * separator or starts upper case, so a key path such as {@code not_modified} or a word such as
  * {@code h2c} is skipped while {@code TE}, {@code HTTP2-Settings} and {@code X_Forwarded_For} are read.
- * Two negative controls feed copies of the reference whose never-forward and response-direction spans
- * gained or lost one name back through the same extraction and assert the comparison fails.
+ * Three negative controls feed copies of the reference whose never-forward, provenance-class and
+ * response-direction spans gained or lost one name back through the same extraction and assert the
+ * comparison fails.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -93,6 +95,21 @@ class DocumentedHeaderSetsContractTest {
 
     /** Closes the response-direction connection set's header list. */
     private static final String RESPONSE_STRIP_END = "and any HTTP/2 pseudo-header";
+
+    /** Opens the re-admission bullet, which names the re-admittable members outside the class. */
+    private static final String READMISSION_START = "* *Re-admission.*";
+
+    /** Closes the re-admission bullet's member list. */
+    private static final String READMISSION_END = "are the re-admittable";
+
+    /** Opens the enumeration of the provenance and URL-override class the re-admission bullet names. */
+    private static final String PROVENANCE_CLASS_START = "URL-override class*";
+
+    /** Closes the provenance and URL-override class enumeration. */
+    private static final String PROVENANCE_CLASS_END = "-- names a backend";
+
+    /** A provenance-class member the third negative control removes from the class span. */
+    private static final String REMOVED_PROVENANCE_MEMBER = "`X-Host`, ";
 
     /** A never-forward member the first negative control removes from its span. */
     private static final String REMOVED_NEVER_FORWARD = "`Host`, ";
@@ -168,6 +185,38 @@ class DocumentedHeaderSetsContractTest {
     }
 
     @Test
+    @DisplayName("the re-admittable members in routing-and-forwarding.adoc name exactly ConnectionHeaders.REQUEST_READMITTABLE")
+    void readmittableMembersMatchTheReadmittableSet() throws Exception {
+        // Arrange
+        String document = configurationAdoc();
+
+        // Act
+        Set<String> documented = documentedReadmittable(document);
+
+        // Assert
+        assertEquals(new TreeSet<>(ConnectionHeaders.REQUEST_READMITTABLE), documented,
+                "the re-admittable members documented in " + CONFIGURATION_ADOC
+                        + " (the re-admission bullet plus the provenance and URL-override class it names)"
+                        + " must match ConnectionHeaders.REQUEST_READMITTABLE");
+    }
+
+    @Test
+    @DisplayName("negative control: a provenance class span that lost a member no longer matches REQUEST_READMITTABLE")
+    void provenanceClassSpanMissingAMemberIsUnequal() throws Exception {
+        // Arrange
+        String diverged = withinSpan(configurationAdoc(), PROVENANCE_CLASS_START, PROVENANCE_CLASS_END,
+                span -> removedOnce(span, REMOVED_PROVENANCE_MEMBER));
+
+        // Act
+        Set<String> documented = documentedReadmittable(diverged);
+
+        // Assert
+        assertNotEquals(new TreeSet<>(ConnectionHeaders.REQUEST_READMITTABLE), documented,
+                "a member removed from the documented provenance class must make the comparison unequal");
+        assertFalse(documented.contains("x-host"), "precondition: the diverged span no longer names X-Host");
+    }
+
+    @Test
     @DisplayName("negative control: a response-direction span that gained a name no longer matches RESPONSE_STRIP")
     void responseDirectionSpanWithAnExtraNameIsUnequal() throws Exception {
         // Arrange
@@ -228,6 +277,17 @@ class DocumentedHeaderSetsContractTest {
                 "only the two header-shaped tokens are extracted");
         assertNotEquals(lowerCased(Set.copyOf(ForwardPolicyStage.CONDITIONAL_HEADERS)), documented,
                 "a header the constant lacks must make the comparison unequal");
+    }
+
+    /**
+     * The re-admittable members as the reference documents them: the names the re-admission bullet
+     * lists by name, plus the provenance and URL-override class it names as a whole, read from the
+     * class enumeration in the never-forward section.
+     */
+    private static Set<String> documentedReadmittable(String document) {
+        Set<String> documented = new TreeSet<>(lowerCased(headersBetween(document, READMISSION_START, READMISSION_END)));
+        documented.addAll(lowerCased(headersBetween(document, PROVENANCE_CLASS_START, PROVENANCE_CLASS_END)));
+        return documented;
     }
 
     private static Set<String> headersBetween(String document, String start, String end) {

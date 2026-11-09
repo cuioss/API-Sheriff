@@ -27,11 +27,16 @@
  * <p>
  * <strong>Deny-by-default lives at the URL layer, not here.</strong> A request matching no route is
  * stamped {@code NO_ROUTE} and reaches no upstream at all; that is where the posture holds. Two
- * gateway-owned sets bound this stage instead, and neither is operator-overridable in the permissive
- * direction: {@link de.cuioss.sheriff.gateway.http.ConnectionHeaders#REQUEST_STRIP} names are
- * withheld on every mode — which is what makes the forward-all baseline safe — while the
- * gateway-understood protocol set crosses on its own, so content negotiation, ranges and the
- * conditional validators work without being enumerated.
+ * gateway-owned sets bound this stage instead. The
+ * {@link de.cuioss.sheriff.gateway.http.ConnectionHeaders#REQUEST_STRIP} names are withheld on every
+ * mode and for every peer — which is what makes the forward-all baseline safe. The one permissive
+ * override is narrow: a member of the re-admittable subset
+ * {@link de.cuioss.sheriff.gateway.http.ConnectionHeaders#REQUEST_READMITTABLE} — {@code Authorization}
+ * and the provenance and URL-override class — crosses only on a route whose positive-list names that
+ * member in {@code headers_allow}; forward-all and a negative-list never re-admit one, and no other
+ * member is re-admittable at all. The gateway-understood protocol set, by contrast, crosses on its
+ * own, so content negotiation, ranges and the conditional validators work without being
+ * enumerated.
  * <p>
  * {@link de.cuioss.sheriff.gateway.forward.TcpPeerGate} is the gateway-side immediate-TCP-peer trust
  * gate (ADR-0003) over the boot-parsed {@code trusted_proxies} CIDR set.
