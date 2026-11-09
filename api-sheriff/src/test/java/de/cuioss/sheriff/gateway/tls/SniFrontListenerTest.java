@@ -76,7 +76,7 @@ import org.junit.jupiter.api.Test;
  */
 @DisplayName("SniFrontListener")
 @Tag("isolated-fork")
-@EnableTestLogger(debug = SniFrontListener.class)
+@EnableTestLogger(debug = {SniFrontListener.class, PassthroughRelay.class})
 class SniFrontListenerTest {
 
     private static final String HOST = LoopbackHost.ADDRESS;
@@ -517,11 +517,11 @@ class SniFrontListenerTest {
 
     /**
      * The dial phase inside the cap: a routed connection keeps its slot — of the cap and of its
-     * source's share — while the relay dials its backend, and returns it once the dial settles or the
-     * client leaves. The relay's dial is held by the case, so "pending" is a state the case controls
-     * rather than a race it hopes to win. Each case first shows the slot still held during the dial,
-     * which is what tells this front from one that returned the slot at the route decision, and then
-     * shows it returned.
+     * source's share — while the relay dials its backend, and returns it once the dial settles, whether
+     * or not its client is still connected. The relay's dial is held by the case, so "pending" is a
+     * state the case controls rather than a race it hopes to win. Each case first shows the slot still
+     * held during the dial, which is what tells this front from one that returned the slot at the route
+     * decision or when the client left, and then shows it returned.
      */
     @Nested
     @DisplayName("dial phase")
@@ -530,6 +530,8 @@ class SniFrontListenerTest {
         private static final int CAP = 1;
         /** Long enough that a close well inside it cannot be the deadline's doing. */
         private static final Duration DEADLINE = Duration.ofSeconds(6);
+        /** The relay's diagnostic for a client that left during the dial, written while handling the close. */
+        private static final String HELLO_DROPPED_LINE = "ClientHello dropped";
 
         private final byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
         private final CompletableFuture<Void> releaseDials = new CompletableFuture<>();
@@ -567,33 +569,40 @@ class SniFrontListenerTest {
         }
 
         /**
-         * The held dial is never released here, so the dial cannot have settled: only the client
-         * leaving can return the slot.
+         * A client that leaves while its backend dial is held does not return the slot: its connection
+         * keeps it until the dial settles. The case waits until the relay has handled the close — it
+         * records dropping the departed client's ClientHello while doing so — and shows the slot still
+         * held; only then does it release the dial and show the slot returned.
          */
         @Test
-        @DisplayName("a routed connection returns its slot when its client leaves during the backend dial")
-        void returnsItsSlotWhenTheClientLeavesDuringTheDial() throws Exception {
+        @DisplayName("a routed connection whose client leaves during the backend dial keeps its slot until the dial settles")
+        void holdsItsSlotWhenTheClientLeavesDuringTheDial() throws Exception {
             Backend passthrough = startBackend(hello.length);
             SniFrontListener front = startHeldDialFront(passthrough.target());
             ClientLeg dialling = holdTheOnlySlotWithAPendingDial(front);
 
             Awaits.teardown(dialling.socket().close(), "the dialling client to leave");
-
-            Awaits.until(() -> admitsAConnection(front),
-                    "the slot of the client that left during the dial to be returned", Awaits.CONNECT_CEILING_SECONDS);
-
-            // Re-assert the awaited state: the returned slot admitted a probe whose own dial is now held,
-            // so that probe holds the cap's only slot again and the next connection is refused — the slot
-            // was returned once, not leaked twice
-            int refusalsBefore = refusals.size();
+            Awaits.until(() -> !debugLines(HELLO_DROPPED_LINE).isEmpty(),
+                    "the relay to handle the close of the client that left during the dial",
+                    Awaits.CONNECT_CEILING_SECONDS);
             refuseNext(front);
-            assertAll("the slot of the client that left during the dial was returned exactly once",
+            List<Refusal> whileTheDialWasHeld = List.copyOf(refusals);
+
+            releaseDials.complete(null);
+            Awaits.connect(passthrough.firstClosed(), "the backend leg dialled for the departed client to be closed");
+            Awaits.until(() -> admitsAConnection(front),
+                    "the slot of the settled dial to be returned", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Re-assert the awaited state: the slot stayed held after the client left, while the dial was
+            // pending, and came back only once the dial settled — the returned slot admitted a probe,
+            // which the front routed and did not close
+            assertAll("the slot of the client that left during the dial was held until the dial settled",
+                    () -> assertEquals(List.of(Refusal.CAP, Refusal.CAP), whileTheDialWasHeld,
+                            "the connection still held the cap's only slot after its client left, while its dial was pending"),
                     () -> assertEquals(1, admittedProbes.size(),
                             "exactly one probe was admitted, the one the wait stopped on"),
                     () -> assertFalse(admittedProbes.getFirst().closedNanos().isDone(),
                             "the admitted probe was routed, not closed at accept"),
-                    () -> assertEquals(Refusal.CAP, refusals.get(refusalsBefore),
-                            "the admitted probe holds the returned slot, so the next connection is a cap refusal"),
                     () -> assertTrue(refusals.stream().allMatch(Refusal.CAP::equals),
                             "every refusal while the slot was held was a cap refusal: " + refusals));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");

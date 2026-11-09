@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.gateway.tls;
 
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 
@@ -49,10 +48,13 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The dial phase is bounded and reported.</strong> The backend dial is bounded by the dial
  * client's connect timeout, {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}. {@link #relay} returns a
- * future that completes exactly once, as soon as the dial phase is over — the relay is established,
- * the dial failed or timed out, or the client left — so the {@link SniFrontListener} can hold the
- * connection's undecided slot until then. The buffered ClientHello is held by the dial phase alone and
- * dropped the moment the client is known gone, not when the dial later completes.
+ * future that completes exactly once, when the dial settles — the relay is established, or the dial
+ * failed or timed out — so the {@link SniFrontListener} can hold the connection's undecided slot until
+ * then. A client that leaves during the dial does not end the dial phase: the dial keeps running and
+ * the connection keeps its slot until the dial settles, so every dialling connection is bounded by the
+ * connect timeout whether or not its client is still connected. The client leaving releases only the
+ * buffered ClientHello, which the dial phase holds alone and drops the moment the client is known
+ * gone, not when the dial later settles.
  * <p>
  * The same pipe backs both branches of the {@link SniFrontListener}: a {@code passthrough_sni} match
  * relays to the topology-resolved backend, and a terminated (non-passthrough) connection relays to
@@ -98,9 +100,11 @@ public final class PassthroughRelay {
      * closed as soon as the dial succeeds and, for a terminated relay, no relayed-peer entry is ever
      * registered.
      * <p>
-     * The three paths that end the dial phase — the relay established, the dial failed, the client
-     * gone — race; each completes the returned future with try-complete semantics, so it completes
-     * exactly once, with the first of them. All three run on the accepted connection's event loop.
+     * The returned future completes exactly once, when the dial settles: it succeeded — the relay is
+     * established, or, for a client already gone, the backend leg closed — or it failed or timed out.
+     * The client leaving does not complete it, so the caller's hold on the connection spans the whole
+     * dial, bounded by the dial client's connect timeout. The client's close and the dial callbacks all
+     * run on the accepted connection's event loop.
      *
      * @param client      the accepted client connection, already paused by the caller
      * @param clientHello the bytes buffered while the SNI was being read, replayed to the backend
@@ -111,7 +115,7 @@ public final class PassthroughRelay {
      *                    controlling the lifecycle log level
      * @param sniLabel    the matched SNI hostname for a passthrough relay's audit log ({@code kind ==
      *                    PASSTHROUGH}); ignored for a terminated relay
-     * @return a future that completes once the dial phase is over; it never fails
+     * @return a future that completes once the backend dial has settled; it never fails
      */
     public Future<Void> relay(NetSocket client, Buffer clientHello, RelayTarget target, RelayKind kind,
             String sniLabel) {
@@ -121,35 +125,34 @@ public final class PassthroughRelay {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(sniLabel, "sniLabel");
         Promise<Void> dialPhase = Promise.promise();
-        // The single owner of the buffered ClientHello during the dial: the dial success takes it, the
-        // client-gone close handler drops it, whichever comes first.
+        // The single owner of the buffered ClientHello during the dial: the dial success takes it, a
+        // client that leaves first drops it. The close handler is replaced by the session's own once the
+        // session starts; both run on the accepted connection's event loop, as the dial callbacks do, so
+        // an empty owner at the dial success means the client is gone.
         AtomicReference<@Nullable Buffer> pendingHello = new AtomicReference<>(clientHello);
-        // Replaced by the session's own close handler once it starts; until then it records that the
-        // client is gone. Both run on the accepted connection's event loop, as the dial callbacks do.
-        AtomicBoolean clientGone = new AtomicBoolean();
         client.closeHandler(v -> {
-            clientGone.set(true);
-            pendingHello.set(null);
-            dialPhase.tryComplete();
+            if (pendingHello.getAndSet(null) != null) {
+                LOGGER.debug("Relay client left during the backend dial to %s — ClientHello dropped, "
+                        + "the dial is held until it settles", target);
+            }
         });
         netClient.connect(target.port(), target.host())
                 .onSuccess(backend -> {
                     Buffer hello = pendingHello.getAndSet(null);
-                    if (clientGone.get() || hello == null) {
+                    if (hello == null) {
                         LOGGER.debug("Relay client left during the backend dial to %s — closing the backend leg",
                                 target);
                         closeQuietly(backend);
-                        dialPhase.tryComplete();
-                        return;
+                    } else {
+                        establish(client, backend, hello, target, kind, sniLabel);
                     }
-                    establish(client, backend, hello, target, kind, sniLabel);
-                    dialPhase.tryComplete();
+                    dialPhase.complete();
                 })
                 .onFailure(failure -> {
                     LOGGER.debug(failure, "Relay backend dial to %s failed: %s", target, failure.getMessage());
                     pendingHello.set(null);
                     closeQuietly(client);
-                    dialPhase.tryComplete();
+                    dialPhase.complete();
                 });
         return dialPhase.future();
     }

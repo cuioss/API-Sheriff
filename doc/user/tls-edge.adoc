@@ -227,8 +227,9 @@ the others off:
 | 10 s
 | Once the front has routed a connection, it connects to the backend -- the passthrough backend or the
   terminated listener. A backend that has not accepted that connection within 10 s is given up on, and
-  the client's connection is closed without an answer. Until then the connection still counts against
-  the 1024 and its source's 256.
+  the client's connection is closed without an answer. Until the backend has accepted or been given up
+  on, the connection still counts against the 1024 and its source's 256 -- also when the client
+  disconnects in the meantime.
 
 | Relay idle timeout
 | derived
@@ -258,9 +259,10 @@ want instead of zero.
 hostname see their connection closed after at most 10 s, during the TLS handshake and without a TLS
 alert -- the gateway never terminates a passthrough connection, so it has no certificate to answer
 with. When the backend actively refuses the connection, the client's connection is closed as soon as
-the refusal arrives. While the backend is unreachable, each waiting connection holds one of the 1024 slots for up
-to those 10 s, so a burst of clients for that hostname can briefly fill the bound and show up as `cap`
-refusals (see <<_front_listener_refusals>>).
+the refusal arrives. While the backend is unreachable, each waiting connection holds one of the 1024
+slots for up to those 10 s -- whether or not its client is still connected, so a client that gives up
+and reconnects does not free its earlier slot -- and a burst of clients for that hostname can briefly
+fill the bound and show up as `cap` refusals (see <<_front_listener_refusals>>).
 
 [[_front_listener_refusals]]
 ==== Reading the front's refusals

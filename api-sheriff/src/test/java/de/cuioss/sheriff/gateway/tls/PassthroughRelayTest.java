@@ -37,8 +37,12 @@ import java.util.function.Consumer;
 
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -60,9 +64,12 @@ import org.junit.jupiter.api.Test;
  */
 @DisplayName("PassthroughRelay")
 @Tag("isolated-fork")
+@EnableTestLogger(debug = PassthroughRelay.class)
 class PassthroughRelayTest {
 
     private static final String HOST = LoopbackHost.ADDRESS;
+    /** The relay's diagnostic for a client that left during the dial, written while handling the close. */
+    private static final String HELLO_DROPPED_LINE = "ClientHello dropped";
     /** An idle timeout no case here can reach. */
     private static final Duration LONG_IDLE = Duration.ofMinutes(31);
     /** The shortened connect timeout standing in for {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}. */
@@ -324,20 +331,40 @@ class PassthroughRelayTest {
     }
 
     /**
-     * The dial-phase future reports the client leaving at once: it is complete as soon as the relay's
-     * side of the client connection has seen the close, while the backend dial is still held. The
-     * matched control reads it incomplete while the client is connected and the dial pending.
+     * A client that leaves while the backend dial is held does not end the dial phase: the dial keeps
+     * its connection's slot at the front until it settles. The dial here succeeds once released.
      */
     @Test
-    @DisplayName("ends the dial phase as soon as the client leaves, before the backend dial completes")
-    void dialPhaseEndsAsSoonAsTheClientLeaves() throws Exception {
-        RelayTarget backend = startSignalBackend(socket -> {
-        });
+    @DisplayName("keeps the dial phase open when the client leaves, until the held dial succeeds")
+    void dialPhaseOutlastsTheClientUntilTheDialSucceeds() throws Exception {
+        assertDialPhaseOutlastsTheClient(startSignalBackend(socket -> {
+        }));
+    }
+
+    /**
+     * As {@link #dialPhaseOutlastsTheClientUntilTheDialSucceeds()}, with a dial that fails once released:
+     * the target refuses the connection, so the dial settles by failing.
+     */
+    @Test
+    @DisplayName("keeps the dial phase open when the client leaves, until the held dial fails")
+    void dialPhaseOutlastsTheClientUntilTheDialFails() throws Exception {
+        assertDialPhaseOutlastsTheClient(new RelayTarget(HOST, UnreachablePort.pick()));
+    }
+
+    /**
+     * Holds the relay's dial to {@code backend}, lets the client leave, and only then releases the dial.
+     * The dial-phase future must still be incomplete once the relay's side of the client connection has
+     * seen the close — the close handler has run by then — and complete once the released dial settles.
+     * The buffered ClientHello, in contrast, is dropped at the close, which the relay records while
+     * handling it. The matched control reads the future incomplete while the client is connected and
+     * the dial pending.
+     */
+    private void assertDialPhaseOutlastsTheClient(RelayTarget backend) throws Exception {
         CompletableFuture<Void> dialRequested = new CompletableFuture<>();
-        CompletableFuture<Void> neverReleased = new CompletableFuture<>();
+        CompletableFuture<Void> releaseDial = new CompletableFuture<>();
         CompletableFuture<Void> relaySawClose = new CompletableFuture<>();
         PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.heldDialClient(vertx.createNetClient(),
-                () -> dialRequested.complete(null), neverReleased), relayedPeers);
+                () -> dialRequested.complete(null), releaseDial), relayedPeers);
         CompletableFuture<Future<Void>> dialPhase = new CompletableFuture<>();
         int frontPort = startHarness(accepted -> dialPhase.complete(relay.relay(
                 RelayTestProxies.closeObserved(accepted, relaySawClose), Buffer.buffer("PREFIX"), backend,
@@ -351,13 +378,20 @@ class PassthroughRelayTest {
         Awaits.teardown(client.close(), "the client leg to close");
         Awaits.connect(relaySawClose, "the relay's side of the client connection to see the close");
         boolean overOnceTheClientLeft = phase.isComplete();
+        boolean helloDroppedAtTheClose = !TestLoggerFactory.getTestHandler()
+                .resolveLogMessagesContaining(TestLogLevel.DEBUG, HELLO_DROPPED_LINE).isEmpty();
+        releaseDial.complete(null);
+        Awaits.connect(phase, "the dial phase to be over once the held dial settled");
 
-        assertAll("the dial phase ends with the client, not with the dial",
+        assertAll("the dial phase ends with the dial, not with the client",
                 () -> assertFalse(overWhileDialling,
                         "the dial phase is not over while the client is connected and the dial pending"),
-                () -> assertTrue(overOnceTheClientLeft,
-                        "the dial phase is over as soon as the relay has seen the client leave"),
-                () -> assertTrue(phase.succeeded(), "the dial-phase future never fails"));
+                () -> assertFalse(overOnceTheClientLeft,
+                        "the dial phase is not over when the client leaves while the dial is held"),
+                () -> assertTrue(helloDroppedAtTheClose,
+                        "the departed client's ClientHello is dropped at the close, not when the dial settles"),
+                () -> assertTrue(phase.succeeded(), "the dial phase ends once the dial settled, and never fails"),
+                () -> assertEquals(0, relayedPeers.size(), "a client that left during the dial registers nothing"));
     }
 
     /**
