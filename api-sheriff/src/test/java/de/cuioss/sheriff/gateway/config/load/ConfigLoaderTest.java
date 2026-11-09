@@ -784,31 +784,22 @@ class ConfigLoaderTest {
                                           reset_ms: 30000
                                 """,
                         "/endpoint/routes/0/upstream"),
-                // upstream.connect_timeout_ms is removed, not renamed: no code ever read it, and each
-                // attempt runs under the gateway's fixed upstream timeout (ADR-0064). A lingering
-                // declaration must fail the boot rather than parse and act nowhere — this row is what
-                // keeps the key from coming back inert.
+                // upstream.connect_timeout_ms and read_timeout_ms are removed, not renamed: no code ever
+                // read them, and each attempt runs under the gateway's fixed upstream timeout
+                // (ADR-0064). A lingering declaration must fail the boot rather than parse and act
+                // nowhere — these rows are what keep the keys from coming back inert.
                 Arguments.of("a removed connect_timeout_ms in a route's upstream block",
                         endpointWithUpstreamMembers("connect_timeout_ms: 2000"), "/endpoint/routes/0/upstream"),
-                // upstream.read_timeout_ms is removed, not renamed: no code ever read it, and each
-                // attempt runs under the gateway's fixed upstream timeout (ADR-0064). A lingering
-                // declaration must fail the boot rather than parse and act nowhere — this row is what
-                // keeps the key from coming back inert.
                 Arguments.of("a removed read_timeout_ms in a route's upstream block",
                         endpointWithUpstreamMembers("read_timeout_ms: 5000"), "/endpoint/routes/0/upstream"),
-                // upstream.retry.max_attempts is removed, not renamed: no code ever read it, and a route
-                // that enables retry gets the gateway's fixed retry policy (ADR-0064). A lingering
-                // declaration must fail the boot rather than parse and act nowhere — this row is what
-                // keeps the key from coming back inert. The still-valid enabled: true beside it keeps
-                // the removed key the only possible cause of the refusal.
+                // upstream.retry.max_attempts and idempotent_only are removed, not renamed: no code ever
+                // read them, and a route that enables retry gets the gateway's fixed retry policy
+                // (ADR-0064). A lingering declaration must fail the boot rather than parse and act
+                // nowhere — these rows are what keep the keys from coming back inert. The still-valid
+                // enabled: true beside each keeps the removed key the only possible cause of the refusal.
                 Arguments.of("a removed max_attempts in a route's upstream retry block",
                         endpointWithUpstreamMembers("retry:\n  enabled: true\n  max_attempts: 3"),
                         "/endpoint/routes/0/upstream/retry"),
-                // upstream.retry.idempotent_only is removed, not renamed: no code ever read it, and a
-                // route that enables retry gets the gateway's fixed retry policy (ADR-0064). A lingering
-                // declaration must fail the boot rather than parse and act nowhere — this row is what
-                // keeps the key from coming back inert. The still-valid enabled: true beside it keeps
-                // the removed key the only possible cause of the refusal.
                 Arguments.of("a removed idempotent_only in a route's upstream retry block",
                         endpointWithUpstreamMembers("retry:\n  enabled: true\n  idempotent_only: true"),
                         "/endpoint/routes/0/upstream/retry"),
