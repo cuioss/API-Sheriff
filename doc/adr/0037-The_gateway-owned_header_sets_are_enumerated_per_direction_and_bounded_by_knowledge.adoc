@@ -87,7 +87,8 @@ the members once. This record states the rule that admits a name. Membership ans
   the vendor client-IP aliases, and the provenance and URL-override class (<<_amendment_readmittable_subset>>).
 
 *Two sets split the forwarding names, by the question each name answers.* The canonical forwarding names stay in
-the regeneration skip. That set enumerates what the gateway emits. The gateway reads it twice: as the client-copy
+the regeneration skip. That set (`ForwardPolicyStage.RESOLVER_INPUT_HEADERS`) enumerates what the gateway emits plus
+the four `X-Proxy*` names the resolver reads as inputs (ADR-0003 amendment). The gateway reads it twice: as the client-copy
 skip, and as the mask that hides inbound forwarding headers from the resolver when the immediate peer is
 untrusted. The gateway does not regenerate `X_Forwarded_For` or `X-Real-IP`, and the resolver never queries
 either. Filing them there would assert a false regeneration relationship and widen a mask with names nothing asks

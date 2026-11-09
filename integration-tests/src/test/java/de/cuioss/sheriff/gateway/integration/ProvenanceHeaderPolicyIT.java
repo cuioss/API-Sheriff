@@ -57,7 +57,10 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       {@code X-ProxyHost} or {@code X-ProxyContextPath} does not reach the upstream and leaves the
  *       regenerated {@code X-Forwarded-Host} and {@code X-Forwarded-Prefix} exactly as a request
  *       without them leaves them. The shared stack declares no {@code forwarded.trusted_proxies}, so the
- *       IT client is an untrusted peer and the resolver-input mask is the code path under test.</li>
+ *       IT client is an untrusted peer. Only the "does not reach the upstream" half depends on the
+ *       resolver-input set (the mode copy skips it); the regenerated-header equality would hold even
+ *       without the mask, because the gateway trusts no derived scheme, host or context path. The mask
+ *       itself is proven at unit level by {@code ForwardPolicyStageTest} with an honouring resolver.</li>
  * </ul>
  * <p>
  * <strong>Every key of the descriptor has a leg that goes red when the key is deleted</strong> — the
