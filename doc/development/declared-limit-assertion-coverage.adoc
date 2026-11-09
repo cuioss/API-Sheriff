@@ -42,7 +42,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *thirty-four files* under `integration-tests/src/main/docker/`.
+The declared surface is *thirty-five files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -70,7 +70,7 @@ disk without touching this table and the guard fails.
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 17
+| 18
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-scoped.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`,
@@ -80,6 +80,7 @@ disk without touching this table and the guard fails.
   `sheriff-config/endpoints/early-answer.yaml`, `sheriff-config/endpoints/grpc.yaml`,
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
   `sheriff-config/endpoints/portal-hidden.yaml`,
+  `sheriff-config/endpoints/provenance-headers.yaml`,
   `sheriff-config/endpoints/secure.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
   `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/upstream-fault.yaml`,
   `sheriff-config/endpoints/websocket.yaml`
@@ -123,7 +124,7 @@ a shared endpoint on its new anchor would force that anchor into every committed
 gateway document derived from `sheriff-config-passthrough-empty/gateway.yaml` with that one anchor
 added. It is part of the surface all the same: `DescriptorInventoryWiringTest` sweeps the
 `reserved-path-overlap` directory by name beside the `sheriff-config*` directories, so the file is
-counted in the thirty-four and held to the same exact-set rule as every other descriptor. It declares
+counted in the thirty-five and held to the same exact-set rule as every other descriptor. It declares
 `allowed_methods`, which the sweep below matches, so it is limit-bearing; that list is asserted on
 the wire under the `allowed_methods` row of the Coverage Matrix -- a `GET` on the routed path is
 refused, answered as the unrouted `404` and metered `METHOD_NOT_ALLOWED`.
@@ -136,7 +137,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all thirty-four files it returns hits in exactly twenty-two of them:
+Over all thirty-five files it returns hits in exactly twenty-three of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -158,6 +159,7 @@ Over all thirty-four files it returns hits in exactly twenty-two of them:
 * `sheriff-config/endpoints/cookie-policy.yaml`
 * `sheriff-config/endpoints/grpc.yaml`
 * `sheriff-config/endpoints/httpbin.yaml`
+* `sheriff-config/endpoints/provenance-headers.yaml`
 * `sheriff-config/endpoints/secure.yaml`
 * `sheriff-config/endpoints/websocket.yaml`
 * `reserved-path-overlap/bff-overlap.yaml`
@@ -170,8 +172,8 @@ The remaining twelve -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
 `sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` and `sheriff-config/topology.properties` -- declare none.
-That complement is the other half of the same claim, so asserting the twenty-two exactly asserts both
-halves at once.
+That complement is the other half of the same claim, so asserting the twenty-three exactly asserts
+both halves at once.
 
 `sheriff-config/endpoints/bff-unassigned-scope.yaml` is limit-free for the same reason as
 `sheriff-config/endpoints/bff-scoped.yaml`, whose key set it shares: `endpoint`, `id`, `enabled`,
@@ -226,16 +228,23 @@ alternative of the sweep. The file therefore stands in the limit-bearing list ab
 -- `allow` in each of its modes, `same_origin_check` and `additional_origins` -- have the
 Coverage Matrix row "`cookies` -- the per-route cookie policy" below.
 
+`sheriff-config/endpoints/provenance-headers.yaml` is limit-bearing for the same reason. It exists to
+hold one route per forward mode, and two of the three modes are named by `forward.headers_deny` and
+`forward.headers_allow`, which the sweep's `deny` and `allow` alternatives match. Its route ids, its
+`HTTPBIN_ROOT` alias and its `upstream.path` match nothing. Its keys -- the omitted block of the
+forward-all route, `headers_deny` and `headers_allow` -- have the Coverage Matrix row "the provenance
+and URL-override class" below.
+
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the twenty-two limit-bearing paths -- and uses them
-as its expected values. It hardcodes none of them, so editing the test's expectations without
+runtime -- the inventory table, the sweep pattern and the twenty-three limit-bearing paths -- and uses
+them as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-twenty-two. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+twenty-three. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -963,6 +972,25 @@ declaration's *existence* is proven while its *boundary* is not.
   (`switchedOffCheckForwardsACrossSiteRequest`). `BffSessionCookieControlsIT` adds the `all`
   route's refusal to relay an upstream line naming the session cookie.
 
+| The provenance and URL-override class and the `X-Proxy*` resolver inputs under each forward mode:
+  forward-all (no block), `forward.headers_deny`, `forward.headers_allow` naming `X-Forwarded-Server`
+  `sheriff-config/endpoints/provenance-headers.yaml:32` (no block), `:45` (`headers_deny`), `:56`
+  (`headers_allow`)
+| Forward stage 5 -- the never-forward strip with its re-admittable subset
+  (`ConnectionHeaders.REQUEST_READMITTABLE`) and the resolver-input skip and mask
+  (`ForwardPolicyStage.RESOLVER_INPUT_HEADERS`)
+| COVERED
+| `ProvenanceHeaderPolicyIT` against go-httpbin's `/anything` echo, each key with a leg that goes red
+  if the key is deleted. *Forward-all and negative-list*: every name of the provenance and URL-override
+  class, in canonical and `_` spelling, is absent from the echo while an unrelated header crosses as
+  the matched control; on the negative-list route the denied `X-Sheriff-Provenance-Denied` is absent
+  too, so deleting `headers_deny` turns that leg red. *Positive-list*: `X-Forwarded-Server` crosses
+  and no other withheld name does, so deleting `headers_allow` leaves it withheld and the leg red.
+  *Resolver inputs*: a client-sent `X-ProxyHost` or `X-ProxyContextPath` neither reaches the upstream
+  nor changes the regenerated `X-Forwarded-Host` / `X-Forwarded-Prefix`. The membership of both sets
+  and the re-admission rule are pinned at unit level (`ConnectionHeadersTest`,
+  `ForwardPolicyStageTest`); this row asserts the wiring through the native image.
+
 | *G6* Strict preset parameter-*value* length cap (1024)
   Layer 2 -- resolved, in no yaml
 | `ThoroughChecksStage` (relocated url-parameter validation)
@@ -1090,11 +1118,11 @@ this note reports.
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
 paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
-twenty-two paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+twenty-three paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
 *boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
 so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *twenty-two already limit-bearing* files
+The consequence: adding a limit-shaped key to one of the *twenty-three already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
 row is forced. Only a key that makes one of the remaining twelve --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
@@ -1104,8 +1132,8 @@ row is forced. Only a key that makes one of the remaining twelve --
 `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Twenty-two of thirty-four is the *majority* of the surface,
-so this is the ordinary case rather than an edge one: for those twenty-two files the "add its row here
+Twenty-three of thirty-five is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those twenty-three files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
 `hsts.max_age` and the CORS allow lists are limit-shaped, the base file was already limit-bearing, and
@@ -1138,16 +1166,16 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   are read from; they are indexed because the shared stack's behaviour rests on values no descriptor
   states. A row carrying neither a citation nor one of those two markers is the drift this property
   exists to catch.
-. *The enumerated surface is stated explicitly* (thirty-four files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (thirty-five files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the twenty-two limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the twenty-three limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new `sheriff-config*` directory, a new file under
   an enumerated root (`sheriff-config*`, `reserved-path-overlap`) or a new `endpoints/*.yaml` breaks
   the exact-inventory equality and fails the build until this note is updated -- a descriptor
   committed under any other directory is outside both assertions until that directory is added to
   the test's `INVENTORY_ROOTS` -- and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the twenty-two/twelve partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the twenty-three/twelve partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -1156,7 +1184,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the thirty-four files, add its row here in the same change --
+When you add a limit-shaped key to any of the thirty-five files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
