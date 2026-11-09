@@ -98,7 +98,11 @@ import org.jspecify.annotations.Nullable;
  *       {@linkplain TcpPeerGate#isTrustedPeer(String) trusted proxy}, inbound forwarding headers are
  *       ignored (a spoofed chain from an untrusted peer never influences the regenerated set). The
  *       client copy skips this set on <em>every</em> mode, forward-all included — a regenerated
- *       header is never copied from the client.</li>
+ *       header is never copied from the client. The four {@code X-Proxy*} headers the resolver also
+ *       reads ({@code X-ProxyScheme}, {@code X-ProxyHost}, {@code X-ProxyPort},
+ *       {@code X-ProxyContextPath}) are treated the same way — see {@link #RESOLVER_INPUT_HEADERS}:
+ *       masked from the resolver for an untrusted peer and never copied from the client, under any
+ *       mode.</li>
  *   <li><strong>Static set headers.</strong> {@code set_headers} are merged after the client copy
  *       and the protocol set, so an operator's explicit value is never silently overridden by the
  *       inbound request.</li>
@@ -166,25 +170,41 @@ public final class ForwardPolicyStage {
     /** The separator the rebuilt {@code Cookie} header joins its kept pairs with (RFC 6265 §5.4). */
     private static final String COOKIE_PAIR_SEPARATOR = "; ";
 
-    private static final Set<String> FORWARDING_HEADERS = Set.of(
+    /**
+     * Every header the {@link ForwardedHeaderResolver} reads, in its
+     * {@linkplain ConnectionHeaders#separatorFolded separator-folded} spelling: the six names the
+     * gateway regenerates — {@code X-Forwarded-For}, {@code -Host}, {@code -Proto}, {@code -Port},
+     * {@code -Prefix} and RFC 7239 {@code Forwarded} — and the four {@code X-Proxy*} names the
+     * resolver also takes the scheme, host, port and context path from: {@code X-ProxyScheme},
+     * {@code X-ProxyHost}, {@code X-ProxyPort} and {@code X-ProxyContextPath}.
+     * <p>
+     * The gateway emits no {@code X-Proxy*} header, but the resolver reads them, so a client that
+     * could reach the resolver with one could steer the regenerated {@code X-Forwarded-*} set. They
+     * are therefore treated exactly like the six regenerated names: never copied from the client by
+     * any forward mode, and masked from the resolver for a peer that is not a trusted proxy.
+     */
+    private static final Set<String> RESOLVER_INPUT_HEADERS = Set.of(
             "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port",
-            "x-forwarded-prefix", "forwarded");
+            "x-forwarded-prefix", "forwarded",
+            "x-proxyscheme", "x-proxyhost", "x-proxyport", "x-proxycontextpath");
 
     /**
-     * Whether {@code name} is a spelling of a header the gateway <em>regenerates</em> — tested on
-     * the {@linkplain ConnectionHeaders#separatorFolded separator-folded} name, so the client copy
-     * skips {@code X-Forwarded_For} and {@code X_Forwarded-For} exactly as it skips the canonical
-     * {@code X-Forwarded-For}.
+     * Whether {@code name} is a spelling of a header the {@link ForwardedHeaderResolver} reads — one
+     * of the {@link #RESOLVER_INPUT_HEADERS}, the regenerated {@code X-Forwarded-*} / {@code Forwarded}
+     * names and the {@code X-Proxy*} inputs. Tested on the
+     * {@linkplain ConnectionHeaders#separatorFolded separator-folded} name, so the client copy skips
+     * {@code X-Forwarded_For}, {@code X_Forwarded-For} and {@code X_ProxyHost} exactly as it skips the
+     * canonical {@code X-Forwarded-For} and {@code X-ProxyHost}.
      * <p>
      * The folding is what closes the {@code -}/{@code _} equivalence class here rather than
      * enumerating its members: a CGI-folding backend resolves all four spellings of a two-separator
      * name to one variable, so a mixed spelling that crossed would let a client's claim land on the
      * same variable as the gateway's regenerated one. {@link ConnectionHeaders#REQUEST_STRIP} closes
-     * the same class for the names the gateway does <em>not</em> regenerate; between the two, every
-     * spelling of every provenance name reaches one of the two sets.
+     * the same class for the provenance names the resolver does <em>not</em> read; between the two,
+     * every spelling of every provenance name reaches one of the two sets.
      */
-    private static boolean isRegeneratedForwardingName(String name) {
-        return FORWARDING_HEADERS.contains(ConnectionHeaders.separatorFolded(name));
+    private static boolean isResolverInputName(String name) {
+        return RESOLVER_INPUT_HEADERS.contains(ConnectionHeaders.separatorFolded(name));
     }
 
     /**
@@ -342,10 +362,11 @@ public final class ForwardPolicyStage {
      * headers and withholds the {@code headers_deny} names (an absent deny list denying nothing —
      * the forward-all baseline).
      * <p>
-     * The {@link #FORWARDING_HEADERS} skip is applied on every mode, and on the
-     * {@linkplain #isRegeneratedForwardingName separator-folded} name: a regenerated header must
-     * never be copied from the client under any spelling, so neither forward-all nor an
-     * {@code X-Forwarded_For} is a way to smuggle one in. {@code Cookie} is skipped on every mode as
+     * The {@link #RESOLVER_INPUT_HEADERS} skip is applied on every mode, positive-list included, and
+     * on the {@linkplain #isResolverInputName separator-folded} name: neither a regenerated header nor
+     * an {@code X-Proxy*} input of the resolver may ever be copied from the client under any spelling,
+     * so neither forward-all, a {@code headers_allow} naming one, nor an {@code X-Forwarded_For} is a
+     * way to smuggle one in. {@code Cookie} is skipped on every mode as
      * well: {@link #applyCookiePolicy} rebuilds it from the route's {@code cookies} block, so a mode
      * copy of the client's header would bypass that block.
      */
@@ -389,11 +410,13 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * Whether the mode copy skips {@code name} whatever the route's header mode: a regenerated
-     * forwarding name under any spelling, or the {@code Cookie} header the cookie policy rebuilds.
+     * Whether the mode copy skips {@code name} whatever the route's header mode, positive-list
+     * included: a {@linkplain #isResolverInputName resolver input} — a regenerated forwarding name or
+     * an {@code X-Proxy*} input — under any spelling, or the {@code Cookie} header the cookie policy
+     * rebuilds.
      */
     private static boolean isSkippedByModeCopy(String name) {
-        return isRegeneratedForwardingName(name) || COOKIE.equalsIgnoreCase(name);
+        return isResolverInputName(name) || COOKIE.equalsIgnoreCase(name);
     }
 
     /**
@@ -634,14 +657,20 @@ public final class ForwardPolicyStage {
      * as legitimately as by extending the comma-separated value, so a single-valued view would hide
      * the appended hops and let the resolver walk a truncated chain.
      * <p>
-     * An untrusted TCP peer sees the empty list for every regenerated name — the absent-header
-     * signal — so a client that reaches the gateway directly cannot seed the chain it is about to
-     * be attributed by.
+     * An untrusted TCP peer sees the empty list for every {@linkplain #RESOLVER_INPUT_HEADERS resolver
+     * input} — the regenerated names and the {@code X-ProxyScheme}, {@code X-ProxyHost},
+     * {@code X-ProxyPort} and {@code X-ProxyContextPath} inputs alike, under any spelling — the
+     * absent-header signal, so a client that reaches the gateway directly cannot seed the chain it is
+     * about to be attributed by, nor the scheme, host, port or prefix the resolver derives.
+     * <p>
+     * The trust decision is {@link TcpPeerGate}'s alone: the resolver is handed the masked lookup
+     * through {@code resolve(lookup)} and never the peer address, so it applies no trusted-proxy
+     * judgement of its own.
      */
     private void applyRegeneratedForwarding(PipelineRequest request, Map<String, String> headers) {
         boolean peerTrusted = peerGate.isTrustedPeer(request.peerAddress());
         Function<String, List<String>> lookup = name -> {
-            if (!peerTrusted && isRegeneratedForwardingName(name)) {
+            if (!peerTrusted && isResolverInputName(name)) {
                 return List.of();
             }
             return request.headerValues(name);
