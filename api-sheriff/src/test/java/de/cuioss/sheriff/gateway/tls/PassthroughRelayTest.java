@@ -540,8 +540,8 @@ class PassthroughRelayTest {
             NeverAnsweringBackend backend = new NeverAnsweringBackend(listener.getLocalPort(),
                     new ArrayList<>(List.of(listener)));
             // Only the DROPPED path hands the backend over open; every other exit, including an exception
-            // from a dial, closes the listener and every queued socket.
-            boolean handedOver = false;
+            // from a dial, closes the listener and every queued socket. Try-with-resources cannot express
+            // that conditional hand-over, so each closing exit closes the backend explicitly.
             try {
                 for (int attempt = 0; attempt < MAX_QUEUED; attempt++) {
                     Socket queued = new Socket();
@@ -551,19 +551,19 @@ class PassthroughRelayTest {
                             // queued and never accepted: the queue is one connection fuller
                         }
                         case DROPPED -> {
-                            handedOver = true;
                             return Optional.of(backend);
                         }
                         case RESET -> {
+                            backend.close();
                             return Optional.empty();
                         }
                     }
                 }
-            } finally {
-                if (!handedOver) {
-                    backend.close();
-                }
+            } catch (IOException | RuntimeException e) {
+                backend.close();
+                throw e;
             }
+            backend.close();
             throw new IllegalStateException("The accept queue of a listener with backlog " + BACKLOG
                     + " still accepted after " + MAX_QUEUED + " connections");
         }
@@ -578,10 +578,10 @@ class PassthroughRelayTest {
             try {
                 socket.connect(new InetSocketAddress(HOST, port), PROBE_TIMEOUT_MILLIS);
                 return DialOutcome.CONNECTED;
-            } catch (SocketTimeoutException dropped) {
+            } catch (SocketTimeoutException _) {
                 socket.close();
                 return DialOutcome.DROPPED;
-            } catch (IOException reset) {
+            } catch (IOException _) {
                 socket.close();
                 return DialOutcome.RESET;
             }

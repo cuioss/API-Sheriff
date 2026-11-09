@@ -447,17 +447,6 @@ public final class SniFrontListener {
     }
 
     /**
-     * Returns both slots an admitted connection holds. The source's count is decremented inside
-     * {@link ConcurrentHashMap#computeIfPresent}, which removes the source once it holds no slot.
-     *
-     * @param source the source the connection was counted under
-     */
-    private void releaseSlot(String source) {
-        undecidedPerSource.computeIfPresent(source, (key, held) -> held <= 1 ? null : held - 1);
-        undecidedConnections.decrementAndGet();
-    }
-
-    /**
      * Refuses a connection: logs the refusal — at {@code WARN} for the first refusal of its reason in a
      * warn window, at {@code DEBUG} for every further one, neither line naming the peer address or any
      * byte received — reports it to the recorder, and only then closes the connection without reading
@@ -585,7 +574,7 @@ public final class SniFrontListener {
                 buffer = null;
                 parser = null;
                 socket.pause();
-                route(result.serverName(), replay).onComplete(dialPhaseOver -> releaseSlot(source));
+                route(result.serverName(), replay).onComplete(dialPhaseOver -> releaseSlot());
             }
         }
 
@@ -615,8 +604,18 @@ public final class SniFrontListener {
             if (!decide()) {
                 return false;
             }
-            releaseSlot(source);
+            releaseSlot();
             return true;
+        }
+
+        /**
+         * Returns both slots this connection holds, the cap's and its source's share. The source's count
+         * is decremented inside {@link ConcurrentHashMap#computeIfPresent}, which removes the source once
+         * it holds no slot.
+         */
+        private void releaseSlot() {
+            undecidedPerSource.computeIfPresent(source, (key, held) -> held <= 1 ? null : held - 1);
+            undecidedConnections.decrementAndGet();
         }
 
         /**

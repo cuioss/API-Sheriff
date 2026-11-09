@@ -284,7 +284,8 @@ class WebSocketUpgradeGateTest {
         void refusesDeclaredLengthAboveTheBound(String contentLength) {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, contentLength);
 
-            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers),
+                    "a declared length above 8192 is refused 413 and retires the connection");
         }
 
         @Test
@@ -303,7 +304,8 @@ class WebSocketUpgradeGateTest {
         void refusesNonDecimalDeclaredLength(String contentLength) {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, contentLength);
 
-            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(CONTENT_TOO_LARGE, judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers),
+                    "a declared length that is no decimal number within a long is refused like an over-bound one");
         }
 
         @ParameterizedTest(name = "Content-Length: {0}")

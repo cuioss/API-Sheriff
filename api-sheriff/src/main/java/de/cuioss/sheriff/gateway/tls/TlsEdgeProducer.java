@@ -239,15 +239,18 @@ public class TlsEdgeProducer {
     /**
      * Counts one connection the front listener refused at accept on the metric for its reason. This is
      * the refusal recorder {@link #onStartup} hands the front listener; it is package-private so a test
-     * can pin the reason-to-label mapping without saturating a front of the production cap.
+     * can pin the reason-to-label mapping without saturating a front of the production cap. The mapping
+     * is a switch expression, which the compiler checks for exhaustiveness: a new
+     * {@link SniFrontListener.Refusal} constant does not compile until it is given a counter.
      *
      * @param refusal why the front closed the connection
      */
     void recordRefusal(SniFrontListener.Refusal refusal) {
-        switch (refusal) {
-            case CAP -> metrics.recordFrontConnectionRefusedAtCap();
-            case SOURCE_SHARE -> metrics.recordFrontConnectionRefusedAtSourceShare();
-        }
+        Runnable counter = switch (refusal) {
+            case CAP -> metrics::recordFrontConnectionRefusedAtCap;
+            case SOURCE_SHARE -> metrics::recordFrontConnectionRefusedAtSourceShare;
+        };
+        counter.run();
     }
 
     /**

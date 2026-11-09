@@ -565,6 +565,28 @@ class TlsEdgeProducerTest {
                             "the refusal counter carries exactly the two reason series"));
         }
 
+        /**
+         * The listener logs a refusal with {@link SniFrontListener.Refusal#token()} and the counter tags it
+         * with {@code reason}; the two are documented as one spelling, so an operator can match a log
+         * line to its series. This binds them for every constant: a token renamed on one side only, or a
+         * reason that reaches no series, leaves its series at zero.
+         */
+        @Test
+        @DisplayName("counts every refusal reason under the label that equals its log token")
+        void countsEveryRefusalReasonUnderItsLogToken() {
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, GatewayConfig.builder().version(1).build(),
+                    new ResolvedTopology(Map.of()), NO_ROUTES, new SheriffMetrics(registry), HTTP_IDLE_TIMEOUT, 8443,
+                    INTERNAL_HTTPS_PORT);
+
+            for (SniFrontListener.Refusal refusal : SniFrontListener.Refusal.values()) {
+                producer.recordRefusal(refusal);
+            }
+
+            assertAll("each refusal reason is counted under reason=<its log token>",
+                    Stream.of(SniFrontListener.Refusal.values()).<Executable>map(refusal -> () -> assertEquals(1.0,
+                            refusedCount(refusal.token()), "one refusal counted under reason=" + refusal.token())));
+        }
+
         private double refusedCount(String reason) {
             var counter = registry.find("sheriff_front_connections_refused_total").tag("reason", reason).counter();
             return counter == null ? 0.0 : counter.count();
