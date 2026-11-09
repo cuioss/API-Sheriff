@@ -505,6 +505,9 @@ class PassthroughRelayTest {
             ServerSocket listener = new ServerSocket(0, BACKLOG, loopback);
             NeverAnsweringBackend backend = new NeverAnsweringBackend(listener.getLocalPort(),
                     new ArrayList<>(List.of(listener)));
+            // Only the DROPPED path hands the backend over open; every other exit, including an exception
+            // from a dial, closes the listener and every queued socket.
+            boolean handedOver = false;
             try {
                 for (int attempt = 0; attempt < MAX_QUEUED; attempt++) {
                     Socket queued = new Socket();
@@ -514,19 +517,19 @@ class PassthroughRelayTest {
                             // queued and never accepted: the queue is one connection fuller
                         }
                         case DROPPED -> {
+                            handedOver = true;
                             return Optional.of(backend);
                         }
                         case RESET -> {
-                            backend.close();
                             return Optional.empty();
                         }
                     }
                 }
-            } catch (IOException | RuntimeException e) {
-                backend.close();
-                throw e;
+            } finally {
+                if (!handedOver) {
+                    backend.close();
+                }
             }
-            backend.close();
             throw new IllegalStateException("The accept queue of a listener with backlog " + BACKLOG
                     + " still accepted after " + MAX_QUEUED + " connections");
         }
