@@ -64,6 +64,7 @@ import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServerRequest;
@@ -601,6 +602,18 @@ public final class TerminalDispatch {
      * resets the upstream request before the relay fails, a gRPC call's stream-idle expiry resets it and
      * then completes the relay rather than failing it — the reset is a no-op.
      * <p>
+     * <strong>A client that leaves fails the relay even while the upstream is quiet.</strong> A relay
+     * notices a client that left mid-body only when its next write fails, and an upstream that sent its
+     * head and then went quiet gives it nothing to write: the relay would wait on the upstream for as long
+     * as the upstream stays quiet, holding its pooled connection all along. The client response closing
+     * before it ended — an HTTP/1.x client closing its connection, an HTTP/2 client resetting its stream —
+     * is therefore observed on its own, through the request's end handlers, and fails the relay outcome at
+     * once; so does a response already closed when the relay starts. The relay outcome settles exactly
+     * once, from whichever comes first — the relay's own result or the client leaving — so a client that
+     * leaves still reaches the one reset site above and {@code failRelay} once: the relay failure that the
+     * reset causes afterwards arrives on an outcome already settled and is ignored. A client that leaves
+     * after the relay finished changes nothing.
+     * <p>
      * <strong>A relay ends its response through the one end rule.</strong> The relay is handed a
      * {@link ResponseEnd} that routes the end of the client response through
      * {@link ResponseEnds#endResponse}: once the upstream response has been streamed, an HTTP/2 stream
@@ -617,14 +630,34 @@ public final class TerminalDispatch {
      */
     public static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, HttpClientResponse upstream,
             Function<ResponseEnd, Future<Void>> relay) {
-        ctx.vertx().runOnContext(v -> startRelay(ctx, stageSetCookies, relay)
-                .onFailure(failure -> {
-                    // The one reset site for a relay that failed to start or failed after the hand-over:
-                    // nothing reads the upstream body any more, so release the exchange instead of letting
-                    // it drain.
-                    upstream.request().reset();
-                    failRelay(ctx, failure, upstream.statusCode());
-                }));
+        ctx.vertx().runOnContext(v -> {
+            Promise<Void> outcome = Promise.promise();
+            // A quiet upstream gives the relay no write that could fail, so the client leaving is
+            // observed on its own: a response that closes before it ended fails the outcome at once.
+            ctx.addEndHandler(ended -> {
+                if (ended.failed()) {
+                    outcome.tryFail(ended.cause());
+                }
+            });
+            HttpServerResponse response = ctx.response();
+            if (response.closed() && !response.ended()) {
+                outcome.tryFail(new IllegalStateException("the client response closed before the relay started"));
+            }
+            startRelay(ctx, stageSetCookies, relay).onComplete(relayed -> {
+                if (relayed.succeeded()) {
+                    outcome.tryComplete();
+                } else {
+                    outcome.tryFail(relayed.cause());
+                }
+            });
+            outcome.future().onFailure(failure -> {
+                // The one reset site for a relay that failed to start, failed after the hand-over, or
+                // lost its client: nothing reads the upstream body any more, so release the exchange
+                // instead of letting it drain or idle.
+                upstream.request().reset();
+                failRelay(ctx, failure, upstream.statusCode());
+            });
+        });
     }
 
     /**

@@ -238,6 +238,12 @@ class TerminalDispatchLateBodyTimeoutTest {
         private static final String CONNECTION_CLOSE = CRLF + "connection: close";
         /** The timeout of the stand-in guard: longer than any case, so no case is ended by the guard. */
         private static final long GUARD_SECONDS = 30L;
+        /**
+         * The end handlers every relay registers on its own: the watch through which a client that leaves
+         * fails the relay (see {@link TerminalDispatch#relayOnEventLoop}). A close tied to the end of the
+         * response is one more.
+         */
+        private static final int RELAY_END_HANDLERS = 1;
 
         private final AtomicReference<HttpConnection> clientConnection = new AtomicReference<>();
         private final AtomicReference<ObservedContext> observed = new AtomicReference<>();
@@ -312,7 +318,8 @@ class TerminalDispatchLateBodyTimeoutTest {
                             () -> "the unwritten head advertises Connection: close once: " + exchange),
                     () -> assertTrue(exchange.endsWith("0" + CRLF + CRLF),
                             () -> "the answer is written whole before the connection closes: " + exchange),
-                    () -> assertEquals(1, context.endHandlers.get(), "the close is tied to the end of the response"),
+                    () -> assertEquals(RELAY_END_HANDLERS + 1, context.endHandlers.get(),
+                            "besides the relay's own client-gone watch, the close is tied to the end of the response"),
                     () -> assertEquals(0, context.absentLookups.get(),
                             "the late timeout is told by its event, not by a mark in the context data"));
         }
@@ -364,7 +371,8 @@ class TerminalDispatchLateBodyTimeoutTest {
                     () -> assertEquals(200, answer.status(),
                             "the status the upstream sent stands, as only after a late request-body timeout"),
                     () -> assertNull(answer.connectionHeader(), "no Connection header on HTTP/2"),
-                    () -> assertEquals(0, context.endHandlers.get(), "no close is tied to the end of the stream"),
+                    () -> assertEquals(RELAY_END_HANDLERS, context.endHandlers.get(),
+                            "only the relay's own client-gone watch: no close is tied to the end of the stream"),
                     () -> assertEquals(200, nextStatus, "the next stream is answered"),
                     () -> assertSame(connection, clientConnection.get(), "and on the same connection"));
         }
