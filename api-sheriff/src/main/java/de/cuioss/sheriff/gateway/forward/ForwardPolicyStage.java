@@ -185,8 +185,12 @@ public final class ForwardPolicyStage {
      * could reach the resolver with one could steer the regenerated {@code X-Forwarded-*} set. They
      * are therefore treated exactly like the six regenerated names: never copied from the client by
      * any forward mode, and masked from the resolver for a peer that is not a trusted proxy.
+     * <p>
+     * The list is written out because cui-http keeps the names in a package-private type, but it is
+     * not trusted by hand: {@code ForwardPolicyStageTest.ResolverInputDrift} asks the resolver which
+     * names it reads and fails when this set and those reads differ in either direction.
      */
-    private static final Set<String> RESOLVER_INPUT_HEADERS = Set.of(
+    static final Set<String> RESOLVER_INPUT_HEADERS = Set.of(
             "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port",
             "x-forwarded-prefix", "forwarded",
             "x-proxyscheme", "x-proxyhost", "x-proxyport", "x-proxycontextpath");

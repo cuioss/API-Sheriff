@@ -19,10 +19,14 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -343,18 +347,107 @@ class ForwardPolicyStageTest {
          * unmasked, and the resolver-side assertions would pass with the mask removed.
          */
         private static ForwardPolicyStage honouringStage(String emitMode) {
-            ForwardedResolverConfig config = ForwardedResolverConfig.builder()
-                    .trustAll(true)
-                    .trustedProxies(Set.of(TRUSTED_CIDR))
-                    .build();
-            ForwardedHeaderResolver resolver = new ForwardedHeaderResolver(config, new SecurityEventCounter());
-            return new ForwardPolicyStage(resolver, new TcpPeerGate(List.of(TRUSTED_CIDR)), emitMode,
+            return new ForwardPolicyStage(honouringResolver(), new TcpPeerGate(List.of(TRUSTED_CIDR)), emitMode,
                     GATEWAY_COOKIES);
         }
 
         private static boolean noValueContains(Map<String, String> headers, String claimed) {
             return headers.values().stream().noneMatch(value -> value.contains(claimed));
         }
+    }
+
+    /**
+     * {@link ForwardPolicyStage#RESOLVER_INPUT_HEADERS} is written out by hand because cui-http keeps
+     * the names its {@link ForwardedHeaderResolver} reads in a package-private type. This guard asks the
+     * resolver itself which names it reads, through a recording lookup, so a cui-http upgrade that adds
+     * an input fails here instead of leaving that input unmasked for an untrusted peer and copyable by
+     * the client, and one that drops an input fails as a stale mask entry.
+     * <p>
+     * The probe runs against {@link #honouringResolver}, the configuration under which the resolver
+     * reads its full input surface. The production configuration ({@code ForwardedTrust}) reads a
+     * subset, and the set has to cover every name the resolver <em>can</em> read, not only the names
+     * one configuration happens to read today.
+     */
+    @Nested
+    @DisplayName("RESOLVER_INPUT_HEADERS equals the names the cui-http resolver reads")
+    class ResolverInputDrift {
+
+        @Test
+        @DisplayName("every name the resolver reads is masked, and every masked name is one it reads")
+        void resolverInputSetEqualsTheResolversOwnReads() {
+            // Arrange — the second probe answers every name with a well-formed value, so a resolver that
+            // stops reading once an absent input has decided the outcome still reaches every input
+            ForwardedHeaderResolver resolver = honouringResolver();
+            Set<String> requested = new LinkedHashSet<>();
+
+            // Act
+            resolver.resolve(recordingLookup(requested, name -> null));
+            resolver.resolve(recordingLookup(requested, ResolverInputDrift::wellFormedValue));
+            Set<String> read = requested.stream()
+                    .map(ConnectionHeaders::separatorFolded)
+                    .collect(Collectors.toCollection(TreeSet::new));
+
+            // Assert
+            Set<String> unmasked = new TreeSet<>(read);
+            unmasked.removeAll(ForwardPolicyStage.RESOLVER_INPUT_HEADERS);
+            Set<String> stale = new TreeSet<>(ForwardPolicyStage.RESOLVER_INPUT_HEADERS);
+            stale.removeAll(read);
+            assertAll("RESOLVER_INPUT_HEADERS mirrors the resolver's reads exactly",
+                    () -> assertFalse(read.isEmpty(), "non-vacuity: the probe recorded no read at all"),
+                    () -> assertTrue(read.containsAll(Set.of("x-forwarded-for", "x-proxyscheme",
+                                    "x-proxyhost", "x-proxyport", "x-proxycontextpath")),
+                            () -> "non-vacuity: the probe never reached the resolver's read path: " + read),
+                    () -> assertEquals(Set.of(), unmasked,
+                            "read by the resolver but not masked — add it to RESOLVER_INPUT_HEADERS"),
+                    () -> assertEquals(Set.of(), stale,
+                            "stale mask entry — the resolver no longer reads it"));
+        }
+
+        /**
+         * A lookup that records every name it is asked for and answers with {@code value}'s result,
+         * or with no value when that is {@code null}.
+         */
+        private static Function<String, List<String>> recordingLookup(Set<String> sink,
+                Function<String, @Nullable String> value) {
+            return name -> {
+                sink.add(name);
+                String answer = value.apply(name);
+                return answer == null ? List.of() : List.of(answer);
+            };
+        }
+
+        /** A value the resolver accepts for the input {@code name}, chosen by the kind of input. */
+        private static String wellFormedValue(String name) {
+            String folded = ConnectionHeaders.separatorFolded(name);
+            if ("forwarded".equals(folded)) {
+                return "for=" + CLIENT_IP + ";proto=https;host=edge.example.com";
+            }
+            if (folded.endsWith("-for")) {
+                return CLIENT_IP;
+            }
+            if (folded.endsWith("proto") || folded.endsWith("scheme")) {
+                return "https";
+            }
+            if (folded.endsWith("host")) {
+                return "edge.example.com";
+            }
+            if (folded.endsWith("port")) {
+                return "443";
+            }
+            return "/edge";
+        }
+    }
+
+    /**
+     * A resolver that honours the scheme, host, port and context path it reads ({@code trustAll}) on
+     * top of the trusted proxies — the configuration under which it reads every input it has.
+     */
+    private static ForwardedHeaderResolver honouringResolver() {
+        ForwardedResolverConfig config = ForwardedResolverConfig.builder()
+                .trustAll(true)
+                .trustedProxies(Set.of(TRUSTED_CIDR))
+                .build();
+        return new ForwardedHeaderResolver(config, new SecurityEventCounter());
     }
 
     /** Whether any outbound name is a {@code -}/{@code _} or case spelling of {@code name}. */
