@@ -140,7 +140,9 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
 
 | `504`
 | Upstream dispatch timeout (the upstream guard's fixed 30 s per-attempt head timeout, about 90 s
-  across three attempts on a retry-enabled route; `UPSTREAM_TIMEOUT`).
+  across three attempts when the route enables retry and the request is eligible for it; a `POST`,
+  a `PATCH` and a request whose body an attempt has taken up end after one attempt;
+  `UPSTREAM_TIMEOUT`).
 | `UPSTREAM`
 |===
 
