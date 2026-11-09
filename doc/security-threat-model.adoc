@@ -1540,7 +1540,8 @@ stream-idle bound]):
   gRPC call that forwards no request byte within the fixed 10 s first-message bound
   (`GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS`) has its upstream request reset and ends as
   the client's own abort, `DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`), which the
-  breaker skips; the bound is below the guard's timeout, so it always fires first. An upstream that
+  breaker skips; the bound is below the guard's timeout, so it fires first unless waiting for an upstream
+  connection (counted by the guard, not by the bound) consumed the difference. An upstream that
   received the first message and never answers is still ended by the guard and counted as an
   upstream failure
   (link:architecture/tls-and-inbound-security.adoc#_grpc_first_message_bound[Architecture -- gRPC first-message bound]).

@@ -887,7 +887,8 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | The endpoint's `forward` block when the endpoint declares one, taken whole. With none at either
   scope: *forward-all* on both dimensions: every client request header and query parameter crosses,
   minus the gateway-owned link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set], which
-  no configuration can re-admit apart from the single `Authorization` carve-out. The `Cookie`
+  no configuration can re-admit apart from `Authorization` and the provenance and URL-override class, each
+  only by a positive-list (`headers_allow`) naming it. The `Cookie`
   header is not decided here at all: it crosses only as the route's `cookies` block admits it (see
   the `cookies` row below). The *automatic* injections apply as always. The regenerated forwarding-header set is always
   injected. The mediated `Authorization: Bearer` is injected on a session route and on the

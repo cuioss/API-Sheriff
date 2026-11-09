@@ -301,10 +301,11 @@ public class ConnectionHeaders {
      * withheld name a route's positive-list may re-admit by naming it.
      * <p>
      * Membership is tested on the {@linkplain #separatorFolded separator-folded} name, so every case
-     * and every {@code -}/{@code _} spelling of a member answers {@code true}; a
-     * {@code headers_allow} entry and the client's header are therefore matched however either is
-     * spelled. The answer says nothing about whether the name crosses: that also needs a route whose
-     * positive-list names it, which the caller decides.
+     * and every {@code -}/{@code _} spelling of a member answers {@code true}. The answer says nothing
+     * about whether the name crosses: that also needs a route whose positive-list names it, which the
+     * caller decides — and the positive-list copy looks the client's header up under the
+     * {@code headers_allow} entry's own spelling (case-insensitively), so a client header in a
+     * different {@code -}/{@code _} spelling than the entry is still withheld.
      *
      * @param headerName a header name, as a client or a route's {@code headers_allow} spells it; never
      *                   {@code null}

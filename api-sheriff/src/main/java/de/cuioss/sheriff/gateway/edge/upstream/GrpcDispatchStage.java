@@ -67,7 +67,8 @@ import io.vertx.core.streams.ReadStream;
  * the upstream request. When no request byte has been forwarded by then, the gateway resets the upstream
  * request and ends the call as the client's own abort, a {@link DispatchStage.FirstMessageTimeout}
  * ({@link EventType#INBOUND_BODY_ABORTED}), which the breaker skips. The bound is shorter than the guard's
- * timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds), so it always fires first. A body that
+ * timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds), so it fires first unless waiting for an
+ * upstream connection — which the guard counts and the bound does not — consumed the difference. A body that
  * ends without any message is not ended by it, and the bound no longer applies once the upstream has
  * answered.
  * <p>

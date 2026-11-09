@@ -297,8 +297,8 @@ class ConnectionHeadersTest {
     @DisplayName("Should recognise every case and '-'/'_' spelling of a re-admittable member")
     void shouldRecogniseEverySpellingOfAReadmittableMember(String name) {
         assertTrue(ConnectionHeaders.isRequestReadmittable(name),
-                () -> name + " is a spelling of a re-admittable member, so a headers_allow entry and the"
-                        + " client's header are matched however either is spelled");
+                () -> name + " is a spelling of a re-admittable member, so a headers_allow entry naming it"
+                        + " in any spelling is accepted as re-admitting that member");
     }
 
     @ParameterizedTest

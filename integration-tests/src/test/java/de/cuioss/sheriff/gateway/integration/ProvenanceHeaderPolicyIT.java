@@ -46,7 +46,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * {@code /anything} echo, which answers the request headers it received.
  * <ul>
  *   <li><strong>The provenance and URL-override class is withheld under forward-all and under a
- *       negative-list.</strong> Every one of its fifteen names, in its canonical spelling and in its
+ *       negative-list.</strong> Every one of its names, in its canonical spelling and in its
  *       {@code _} spelling, is absent from the echo, while an unrelated header in either spelling
  *       crosses as the matched control — so the absence is the gateway's decision, not a route that
  *       answered nothing or an upstream that drops underscore names.</li>
@@ -147,7 +147,7 @@ class ProvenanceHeaderPolicyIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("the fifteen names driven here are exactly the re-admittable class beside Authorization")
+    @DisplayName("the names driven here are exactly the re-admittable class beside Authorization")
     void listedNamesAreTheWithheldReadmittableClass() {
         Set<String> listed = PROVENANCE_OVERRIDE_CLASS.stream()
                 .map(ConnectionHeaders::separatorFolded)

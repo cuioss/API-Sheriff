@@ -179,7 +179,8 @@ the attempt stop it. When it expires, it takes the body stream's single abort cl
 `DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`) and resets the upstream request. The
 breaker skips that rejection. `INFO` `ApiSheriff-22` records it under the disposition `no-first-message`.
 
-The bound is below `UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS`, so it always fires first. A body that
+The bound is below `UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS`, so it fires first unless waiting for an upstream
+connection — which the guard counts and the bound does not — consumed the difference. A body that
 ends without a message is not ended by it. Every HTTP dispatch is built with
 `DispatchStage.NO_FIRST_MESSAGE_TIMEOUT` and never arms it. An upstream that received the first
 message and never answers is still ended by the guard and counted as an upstream failure.
