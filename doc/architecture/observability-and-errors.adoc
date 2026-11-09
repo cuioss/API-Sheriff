@@ -295,6 +295,13 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
 | Counter of uniform `404` answers whose processing ran past the first step of the response-timing
   floor (<<_trust_boundary_rejections>>).
 
+| `sheriff_front_connections_refused_total{reason}`
+| Counter of connections the accept-time SNI front (active with `tls.passthrough_sni`) closed at accept
+  without reading from them, labelled by the bound that was full: `cap` (1024 connections waiting for
+  their ClientHello) or `source_share` (one TCP peer address already holding its 256). The peer address
+  is never a label (`WARN ApiSheriff-146`; see
+  link:../development/tls-edge.adoc[TLS Edge -- Contributor Guide]).
+
 | `sheriff_security_events_total{failure_type}`
 | `cui-http` `SecurityEventCounter` counts per `UrlSecurityFailureType`.
 

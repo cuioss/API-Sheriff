@@ -30,6 +30,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound;
+import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
@@ -77,6 +78,11 @@ import org.jspecify.annotations.Nullable;
  * off a WebSocket or gRPC stream the route still allows to be idle. The margin lets the inner close
  * (a WebSocket close frame, gRPC trailers, the HTTP idle close) traverse the relay first. No
  * configuration key reaches the value.
+ * <p>
+ * <strong>Front refusals are counted.</strong> The front listener reports every connection it closes
+ * at accept — beyond its undecided-connection cap or beyond a source's share of it — to a recorder
+ * this producer wires to {@link SheriffMetrics}, so the refusal rate is visible on
+ * {@value SheriffMetrics#FRONT_CONNECTIONS_REFUSED_TOTAL}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -95,6 +101,7 @@ public class TlsEdgeProducer {
     private final GatewayConfig gatewayConfig;
     private final ResolvedTopology topology;
     private final RouteTable routeTable;
+    private final SheriffMetrics metrics;
     private final Duration httpIdleTimeout;
     private final int publicPort;
     private final int internalHttpsPort;
@@ -109,6 +116,7 @@ public class TlsEdgeProducer {
      * @param topology          the resolved topology the passthrough aliases are looked up against
      * @param routeTable        the route table whose WebSocket idle timeouts the relay idle timeout must
      *                          not undercut
+     * @param metrics           the metrics adapter the front listener's refusals are counted on
      * @param httpIdleTimeout   the idle timeout of the terminated Quarkus HTTPS listener
      *                          ({@code quarkus.http.idle-timeout}), which the relay idle timeout must
      *                          not undercut
@@ -116,7 +124,9 @@ public class TlsEdgeProducer {
      * @param internalHttpsPort the internal loopback port the terminated Quarkus HTTPS listener owns
      */
     @Inject
+    @SuppressWarnings("java:S107") // CDI constructor injection: each parameter is one injected collaborator or key
     public TlsEdgeProducer(Vertx vertx, GatewayConfig gatewayConfig, ResolvedTopology topology, RouteTable routeTable,
+            SheriffMetrics metrics,
             @ConfigProperty(name = "quarkus.http.idle-timeout", defaultValue = "30M") Duration httpIdleTimeout,
             @ConfigProperty(name = "sheriff.tls.public-port", defaultValue = "8443") int publicPort,
             @ConfigProperty(name = "sheriff.tls.internal-https-port", defaultValue = "8444") int internalHttpsPort) {
@@ -124,6 +134,7 @@ public class TlsEdgeProducer {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.topology = Objects.requireNonNull(topology, "topology");
         this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
+        this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.httpIdleTimeout = Objects.requireNonNull(httpIdleTimeout, "httpIdleTimeout");
         this.publicPort = publicPort;
         this.internalHttpsPort = internalHttpsPort;
@@ -169,9 +180,21 @@ public class TlsEdgeProducer {
         PassthroughRelay relay = new PassthroughRelay(netClient, relayedPeers);
         RelayTarget terminatedTarget = new RelayTarget(TERMINATED_HOST, internalHttpsPort);
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, publicPort,
-                relayIdleTimeout);
+                relayIdleTimeout, this::recordRefusal);
         this.listener = front;
         awaitBind(front);
+    }
+
+    /**
+     * Counts one connection the front listener refused at accept on the metric for its reason.
+     *
+     * @param refusal why the front closed the connection
+     */
+    private void recordRefusal(SniFrontListener.Refusal refusal) {
+        switch (refusal) {
+            case CAP -> metrics.recordFrontConnectionRefusedAtCap();
+            case SOURCE_SHARE -> metrics.recordFrontConnectionRefusedAtSourceShare();
+        }
     }
 
     /**

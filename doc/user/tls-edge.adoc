@@ -196,8 +196,8 @@ Operating rules:
 
 With passthrough configured, an accept-time front listener owns the public TLS port and reads the SNI
 out of each connection's ClientHello before it relays the connection -- to the passthrough backend or
-to the terminated listener. Three bounds keep a connection it has not routed yet, or a relay nobody
-uses, from being held indefinitely:
+to the terminated listener. Four bounds keep a connection it has not routed yet, or a relay nobody
+uses, from being held indefinitely, or one client from holding the others off:
 
 [cols="1,1,3", options="header"]
 |===
@@ -216,6 +216,12 @@ uses, from being held indefinitely:
   sockets therefore delays new handshakes by at most one deadline window per wave of held sockets,
   until the deadline frees the held slots.
 
+| Undecided connections per source
+| 256
+| At most 256 of those 1024 may come from one source -- one TCP peer address -- at the same time. A
+  further connection from that source is closed at once, without being read, while every other source
+  still finds three quarters of the bound free.
+
 | Relay idle timeout
 | derived
 | Both legs of a relayed connection -- passthrough and terminated alike -- are closed when no byte
@@ -226,10 +232,48 @@ uses, from being held indefinitely:
   never cuts off a connection the gateway behind it still allows to be idle.
 |===
 
-None of the three is configurable. The relay idle timeout moves only with the values it is derived
+None of the four is configurable. The relay idle timeout moves only with the values it is derived
 from: a route that declares a long WebSocket idle timeout, or a longer `quarkus.http.idle-timeout`,
-keeps idle relayed connections open longer. The front closes a connection without logging its bytes;
-the close is recorded at `DEBUG` only.
+keeps idle relayed connections open longer. The front never logs a connection's bytes; a connection
+the deadline closes is recorded at `DEBUG` only.
+
+[[_front_listener_refusals]]
+==== Reading the front's refusals
+
+A connection the front closes at accept -- because the 1024 bound or its source's 256 is full -- is
+visible in two places:
+
+[cols="1,3", options="header"]
+|===
+| Where | What you see
+
+| `sheriff_front_connections_refused_total{reason}`
+| Every refusal, on the management port's metrics. `reason` is `cap` (the 1024 bound was full) or
+  `source_share` (one source already held its 256).
+
+| `WARN ApiSheriff-146`
+| The first refusal of each reason in a 60 s window, naming the reason (`cap` / `source-share`), the
+  bound and the window. Further refusals of that reason inside the window are logged at `DEBUG`, so a
+  flood leaves one line per minute and reason, not one per connection.
+|===
+
+Neither names the client's address or anything it sent. Read the counter for the rate and the log
+line as the sign that the front is saturated at all:
+
+* *A sustained `cap` rate* means many connections are holding their ClientHello back -- a slow or
+  silent handshake flood. Legitimate clients then wait up to one 10 s deadline window before they are
+  admitted.
+* *A `source_share` rate from one client* is that client being held to its share; the others are
+  unaffected.
+
+*Behind an L4 load balancer.* The source is the TCP peer address of the connection the gateway
+accepts. A layer-4 load balancer or NAT in front of the gateway that does not keep the client's source
+address on the connection makes every client the same source, so the share becomes a gateway-wide
+limit of 256 connections waiting for their ClientHello. That still admits tens of thousands of
+handshakes per second, but every client is refused together once it is reached, and `source_share`
+refusals then appear for everyone. The front reads no PROXY protocol header -- it expects the
+ClientHello as the connection's first bytes -- so keep the share per client by having the load
+balancer preserve the client's source address (transparent or client-IP-preserving mode).
 
 == mTLS (client-certificate verification)
 

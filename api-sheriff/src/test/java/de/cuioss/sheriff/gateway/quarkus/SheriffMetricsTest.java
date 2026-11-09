@@ -99,6 +99,43 @@ class SheriffMetricsTest {
             assertEquals("sheriff_threat_alerts_total", SheriffMetrics.THREAT_ALERTS_TOTAL);
             assertEquals("sheriff_threat_untracked_total", SheriffMetrics.THREAT_UNTRACKED_TOTAL);
             assertEquals("sheriff_uniform_not_found_overruns_total", SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL);
+            assertEquals("sheriff_front_connections_refused_total", SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL);
+        }
+
+        @Test
+        @DisplayName("the front refusal counter increments per reason under sheriff_front_connections_refused_total{reason}")
+        void recordFrontConnectionRefusedCountsPerReason() {
+            metrics.recordFrontConnectionRefusedAtCap();
+            metrics.recordFrontConnectionRefusedAtCap();
+            metrics.recordFrontConnectionRefusedAtSourceShare();
+
+            assertAll("sheriff_front_connections_refused_total",
+                    () -> assertEquals(2.0, registry.get(SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL)
+                            .tag("reason", "cap").counter().count(), 0.0),
+                    () -> assertEquals(1.0, registry.get(SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL)
+                            .tag("reason", "source_share").counter().count(), 0.0));
+        }
+
+        @Test
+        @DisplayName("the front refusal counter carries only the reason label, valued cap or source_share")
+        void frontConnectionRefusedLabelIsBounded() {
+            metrics.recordFrontConnectionRefusedAtCap();
+            metrics.recordFrontConnectionRefusedAtSourceShare();
+
+            var counters = registry.find(SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL).counters();
+            Set<String> tagKeys = counters.stream()
+                    .flatMap(counter -> counter.getId().getTags().stream())
+                    .map(Tag::getKey)
+                    .collect(Collectors.toSet());
+            Set<String> reasons = counters.stream()
+                    .map(counter -> counter.getId().getTag("reason"))
+                    .collect(Collectors.toSet());
+            assertAll("the label set is closed",
+                    () -> assertEquals(Set.of("reason"), tagKeys, "no peer address or other label is attached"),
+                    () -> assertEquals(Set.of(SheriffMetrics.REFUSAL_REASON_CAP,
+                            SheriffMetrics.REFUSAL_REASON_SOURCE_SHARE), reasons),
+                    () -> assertEquals(Set.of("cap", "source_share"), reasons,
+                            "the documented label values are exactly cap and source_share"));
         }
 
         @Test

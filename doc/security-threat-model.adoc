@@ -1673,6 +1673,15 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   loop briefly holds up to 64 + 64 + 32 KiB of transient copies. And a decided connection keeps its
   replay buffer after returning its slot, until the relay's backend dial succeeds or fails -- a window
   bounded by the dial client's 60 s connect timeout, not by the cap.
+* *A per-source share of the cap.* At most 256 of those 1024 -- a fixed quarter -- may belong to one
+  source, the TCP peer address of the accepted connection, at the same time. A connection accepted
+  while its source holds its full share is closed at once, without being read, so one source filling
+  its share leaves three quarters of the cap to every other source instead of starving them all.
+* *A visible refusal.* Every connection closed at accept, beyond the cap or beyond its source's share,
+  is counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share`) and logged
+  as `WARN ApiSheriff-146` at most once per 60 s per reason, every repeat inside the window at `DEBUG`
+  (CWE-779). Neither carries the peer address or a received byte. A saturated front is therefore
+  reported rather than visible only as handshakes that wait.
 * *An incremental parse.* Each connection owns its own parser and offers it every received chunk
   exactly once; the parser consumes only the TLS records a chunk completes. A ClientHello split into
   many one-byte records therefore costs work linear in its length, where re-parsing the whole buffer
@@ -1685,18 +1694,31 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   a connection that an idle bound behind the terminated branch still allows to be idle. No key sets it
   directly; it moves only with the values it is derived from.
 
-*Residual (accepted).* A client that holds 1024 silent sockets makes new handshakes wait: a connection
-accepted while the cap is full is closed, and the deadline frees the held slots again within one
-10 s window per wave of such sockets. That bounded delay is preferred over unbounded pre-route memory.
-The cap counts connections per gateway instance, not per source. A relayed connection that carries a
-byte at least once per relay idle timeout stays open: the relay bounds idleness, not duration, and a
-route that declares a long WebSocket idle timeout lengthens the relay idle timeout with it.
+*Residual (accepted).* A single source can hold only its 256-connection share, so holding the whole
+cap of 1024 takes at least four source addresses. Clients that do hold 1024 silent sockets make new
+handshakes wait: a connection accepted while the cap is full is closed, and the deadline frees the
+held slots again within one 10 s window per wave of such sockets. That bounded delay is preferred over
+unbounded pre-route memory. The source is the TCP peer address, because nothing else exists before the
+ClientHello; behind an L4 load balancer or NAT that does not keep client addresses on the connection,
+every client shares one source and the share acts as a gateway-wide sub-cap of 256 undecided
+connections -- still tens of thousands of one-round-trip handshakes per second. A relayed connection
+that carries a byte at least once per relay idle timeout stays open: the relay bounds idleness, not
+duration, and a route that declares a long WebSocket idle timeout lengthens the relay idle timeout
+with it.
 
 *Status of this control:* COVERED. `SniFrontListenerTest` drives a live front listener with shortened
 bounds: a connection that sends nothing and one whose ClientHello stops halfway are closed at the
 deadline and never relayed (`closesSilentConnection`, `closesHalfSentClientHello`), a connection
 accepted beyond the cap is closed at once while the admitted ones stay open, and a slot freed by a
-routed connection admits a new one (`closesConnectionBeyondCapAndReleasesSlot`), and a relay that
+routed connection admits a new one (`closesConnectionBeyondCapAndReleasesSlot`). One source holding
+its full share is refused at accept while a second source is admitted and routed
+(`oneSourceFillingItsShareDoesNotBlockAnother`), two connections from one peer address share one share
+and a decided connection returns it (`keysTheShareOnThePeerAddress`), every refusal reaches the
+recorder with its reason (`recordsEveryRefusalWithItsReason`), and the refusal `WARN` is logged once
+per window and reason, never naming the peer, and again after the window
+(`warnsOncePerWindowPerReason`); each of these was red with the share and the rate limit switched off.
+`SheriffMetricsTest` pins the two `reason` values of `sheriff_front_connections_refused_total`. And a
+relay that
 carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`), also when
 only the front server or only the relay's dial client carries that timeout
 (`closesSilentRelayWithTheFrontTimeoutAlone`, `closesSilentRelayWithTheDialClientTimeoutAlone`).

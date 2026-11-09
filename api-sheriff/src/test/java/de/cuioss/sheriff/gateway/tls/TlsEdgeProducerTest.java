@@ -34,11 +34,13 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
@@ -94,6 +96,8 @@ class TlsEdgeProducerTest {
     private static final Duration HTTP_IDLE_TIMEOUT = Duration.ofMinutes(30);
     private static final RouteTable NO_ROUTES = new RouteTable(List.of());
     private static final ResolvedUpstream WS_UPSTREAM = new ResolvedUpstream("http", "ws.backend.local", 8080, "");
+
+    private final SheriffMetrics metrics = new SheriffMetrics(new SimpleMeterRegistry());
 
     private Vertx vertx;
 
@@ -221,8 +225,8 @@ class TlsEdgeProducerTest {
                     .tls(tls).build();
             ResolvedTopology topology = new ResolvedTopology(Map.of(
                     RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
-            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, HTTP_IDLE_TIMEOUT,
-                    port, INTERNAL_HTTPS_PORT);
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
+                    HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
             assertFalse(isListening(port), "control precondition: nothing owns the port before startup");
 
             // Act
@@ -274,7 +278,7 @@ class TlsEdgeProducerTest {
                         .tls(tls).build();
                 ResolvedTopology topology = new ResolvedTopology(Map.of(
                         RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
-                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES,
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
                         HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
 
                 // Act + Assert — the bind cannot succeed against a held port, and the producer refuses
@@ -312,7 +316,7 @@ class TlsEdgeProducerTest {
                 int port = held.getLocalPort();
                 GatewayConfig config = GatewayConfig.builder().version(1).build();
                 ResolvedTopology topology = new ResolvedTopology(Map.of());
-                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES,
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
                         HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
 
                 // Act + Assert
@@ -344,7 +348,7 @@ class TlsEdgeProducerTest {
                 GatewayConfig config = GatewayConfig.builder().version(1)
                         .tls(tls).build();
                 ResolvedTopology topology = new ResolvedTopology(Map.of());
-                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES,
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
                         HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
 
                 // Act + Assert — the declared-but-unresolvable entry contributed no relay target, so
@@ -380,7 +384,7 @@ class TlsEdgeProducerTest {
                     .tls(TlsConfig.builder().passthroughSni(Map.of("sni.resolved.example", RESOLVED_ALIAS)).build())
                     .build();
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, new ResolvedTopology(Map.of()), NO_ROUTES,
-                    HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
+                    metrics, HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
 
             assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED_CONNECTION,
                     producer.relayedPeerRegistry().attribute(onTerminated, unregisteredLeg));
@@ -390,7 +394,7 @@ class TlsEdgeProducerTest {
         @DisplayName("control: leaves every connection neutral when passthrough_sni is empty")
         void neutralWhenPassthroughUnconfigured() {
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, GatewayConfig.builder().version(1).build(),
-                    new ResolvedTopology(Map.of()), NO_ROUTES, HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
+                    new ResolvedTopology(Map.of()), NO_ROUTES, metrics, HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
 
             assertEquals(RelayedPeerRegistry.Attribution.NONE,
                     producer.relayedPeerRegistry().attribute(onTerminated, unregisteredLeg));

@@ -16,12 +16,19 @@
 package de.cuioss.sheriff.gateway.tls;
 
 import java.time.Duration;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.LongSupplier;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -34,6 +41,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.TCPSSLOptions;
 import org.jspecify.annotations.Nullable;
 
@@ -57,8 +65,9 @@ import org.jspecify.annotations.Nullable;
  * <li>a missing / malformed SNI fails closed (GW-06): it takes the same terminated-strict path and
  * an audited {@code WARN} records the disposition only, never raw bytes.</li>
  * </ul>
- * <strong>Three bounds keep a connection the front has not routed yet, or a relay nobody uses, from
- * being held indefinitely.</strong> None of them is configurable.
+ * <strong>Four bounds keep a connection the front has not routed yet, or a relay nobody uses, from
+ * being held indefinitely, or one source from holding the others off.</strong> None of them is
+ * configurable.
  * <ul>
  * <li><em>ClientHello deadline</em> — {@link #CLIENT_HELLO_DEADLINE}, ten seconds. The timer is
  * armed when the connection is accepted and cancelled when the route is decided; a connection that
@@ -90,20 +99,46 @@ import org.jspecify.annotations.Nullable;
  * sockets — the deadline frees every slot again — and that bounded delay is preferred over unbounded
  * pre-route memory. Since a legitimate client completes its ClientHello within one round trip, 1024
  * concurrent undecided connections still admit tens of thousands of handshakes per second.</li>
+ * <li><em>Per-source share</em> — {@link #MAX_UNDECIDED_PER_SOURCE}, a fixed quarter of the cap (256
+ * connections), held by one source at the same time. A connection accepted while its source already
+ * holds its full share is closed at once, like one beyond the cap, so a single source filling its
+ * share leaves three quarters of the cap to everybody else. The source is the TCP peer address of the
+ * accepted socket; every connection whose peer address is unavailable shares one fallback source.</li>
  * <li><em>Relay idle timeout</em> — the Vert.x idle timeout of the front server, the same value
  * {@link TlsEdgeProducer} also sets on the relay's dial client. It closes a relayed leg that carried
  * no byte in either direction for the timeout, which the relay's close handlers then propagate to the
  * other leg. {@link TlsEdgeProducer} derives the value at boot so that it never undercuts an idle
  * bound inside the gateway behind the terminated branch.</li>
  * </ul>
+ * <strong>A refusal is visible.</strong> Every connection closed at accept — beyond the cap, or beyond
+ * its source's share — is reported to the refusal recorder the listener was built with, which
+ * {@link TlsEdgeProducer} wires to the {@code sheriff_front_connections_refused_total{reason}} counter,
+ * and is logged as {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} at most once per
+ * {@link #SATURATION_WARN_INTERVAL} per {@link Refusal reason}; every further refusal inside that
+ * window is a {@code DEBUG} diagnostic. Neither names the peer address or any byte received.
+ * <p>
+ * <strong>Why the share keys on the TCP peer address.</strong> The edge's {@code SourceKeys} resolves a
+ * source from an HTTP request — a trusted forwarder's report and the {@code Host} header — and neither
+ * exists before the ClientHello at L4; it also sits in a package whose dependencies lead back into this
+ * one, so importing it here would close a package cycle. The peer address is the only source the front
+ * has. Behind an L4 load balancer that does not propagate client addresses, every client therefore
+ * shares one source and the share acts as a global sub-cap of 256 undecided connections — still tens of
+ * thousands of one-round-trip handshakes per second. That is an accepted trade-off; like every front
+ * bound, the share is not configurable.
+ * <p>
  * The listener is constructed and started only when {@code tls.passthrough_sni} is non-empty (see
  * {@link TlsEdgeProducer}); when passthrough is unconfigured the front is never created, so the
  * default single-listener topology is unchanged.
  * <p>
- * <strong>Thread safety.</strong> The undecided-connection count is the one state shared across the
- * front's event loops: it is claimed with an atomic increment, rolled back with an atomic decrement
- * when the claim overshoots the cap, and returned with an atomic decrement exactly once per admitted
- * connection. Everything else about a connection is confined to that connection's event loop.
+ * <strong>Thread safety.</strong> Three states are shared across the front's event loops. The
+ * undecided-connection count is claimed with an atomic increment, rolled back with an atomic decrement
+ * when the claim overshoots the cap, and returned with an atomic decrement. The per-source counts are
+ * claimed and returned inside {@link ConcurrentHashMap#compute} on the source key, which is atomic per
+ * key and removes a source whose count reaches zero, so the map never holds more entries than there
+ * are held slots; a share refusal rolls the already-claimed global slot back. Both slots of an admitted
+ * connection are returned together, exactly once. The time of the last {@code WARN} per reason is
+ * advanced with a compare-and-set, so two concurrent refusals never both log it. Everything else about
+ * a connection is confined to that connection's event loop.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -118,8 +153,50 @@ public final class SniFrontListener {
     /** How many accepted connections may be waiting for their ClientHello at the same time. */
     public static final int MAX_UNDECIDED_CONNECTIONS = 1024;
 
+    /**
+     * How many accepted connections one source may hold waiting for their ClientHello at the same
+     * time: a fixed quarter of {@link #MAX_UNDECIDED_CONNECTIONS}.
+     */
+    public static final int MAX_UNDECIDED_PER_SOURCE = MAX_UNDECIDED_CONNECTIONS / 4;
+
+    /**
+     * The window within which {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} is logged at
+     * most once per {@link Refusal reason}; every further refusal for that reason inside the window is
+     * a {@code DEBUG} diagnostic.
+     */
+    public static final Duration SATURATION_WARN_INTERVAL = Duration.ofSeconds(60);
+
+    /** Why the front closed an accepted connection at once, without reading from it. */
+    public enum Refusal {
+
+        /** The undecided-connection cap was full. */
+        CAP("cap"),
+
+        /** The connection's source already held its full share of the cap. */
+        SOURCE_SHARE("source-share");
+
+        private final String token;
+
+        Refusal(String token) {
+            this.token = token;
+        }
+
+        /**
+         * @return the fixed token the refusal is logged with
+         */
+        public String token() {
+            return token;
+        }
+    }
+
     /** The Vert.x timer id meaning "no deadline timer was armed". */
     private static final long NO_TIMER = -1L;
+
+    /** The last-warn time meaning "this reason has never been logged at {@code WARN}". */
+    private static final long NEVER_WARNED = Long.MIN_VALUE;
+
+    /** The one source every connection whose TCP peer address is unavailable is counted under. */
+    private static final String UNKNOWN_SOURCE = "<unknown-source>";
 
     /** The units an idle timeout is set in, finest first; see {@link #applyIdleTimeout}. */
     private static final List<TimeUnit> IDLE_TIMEOUT_UNITS = List.of(TimeUnit.MILLISECONDS, TimeUnit.SECONDS,
@@ -133,15 +210,24 @@ public final class SniFrontListener {
     private final String host;
     private final long clientHelloDeadlineMillis;
     private final int maxUndecidedConnections;
+    private final int maxUndecidedPerSource;
     private final Duration relayIdleTimeout;
+    private final Duration warnInterval;
+    private final LongSupplier nanoClock;
+    private final Function<NetSocket, String> sourceKey;
+    private final Consumer<Refusal> refusalRecorder;
     private final AtomicInteger undecidedConnections = new AtomicInteger();
+    private final ConcurrentHashMap<String, Integer> undecidedPerSource = new ConcurrentHashMap<>();
+    private final Map<Refusal, AtomicLong> lastWarnNanos = new EnumMap<>(Refusal.class);
 
     private @Nullable NetServer server;
 
     /**
      * Creates a front listener bound on the Vert.x default host ({@link NetServerOptions#DEFAULT_HOST},
      * the wildcard address), which is the production bind scope {@link TlsEdgeProducer} relies on,
-     * with the fixed {@link #CLIENT_HELLO_DEADLINE} and {@link #MAX_UNDECIDED_CONNECTIONS}.
+     * with the fixed {@link #CLIENT_HELLO_DEADLINE}, {@link #MAX_UNDECIDED_CONNECTIONS},
+     * {@link #MAX_UNDECIDED_PER_SOURCE} and {@link #SATURATION_WARN_INTERVAL} on the monotonic
+     * {@link System#nanoTime()} clock.
      *
      * @param vertx              the managed Vert.x instance the front server is created on
      * @param relay              the opaque L4 relay both routing branches hand connections to
@@ -152,18 +238,24 @@ public final class SniFrontListener {
      * @param publicPort         the public TLS port the front server binds
      * @param relayIdleTimeout   the idle timeout of the front server, derived by
      *                           {@link TlsEdgeProducer}; positive
+     * @param refusalRecorder    called once per connection closed at accept, with the reason; it runs
+     *                           on the accepting event loop and must not block
      * @throws IllegalArgumentException when {@code relayIdleTimeout} is not positive
      */
     public SniFrontListener(Vertx vertx, PassthroughRelay relay, Map<String, RelayTarget> passthroughTargets,
-            RelayTarget terminatedTarget, int publicPort, Duration relayIdleTimeout) {
+            RelayTarget terminatedTarget, int publicPort, Duration relayIdleTimeout,
+            Consumer<Refusal> refusalRecorder) {
         this(vertx, relay, passthroughTargets, terminatedTarget, publicPort, NetServerOptions.DEFAULT_HOST,
-                CLIENT_HELLO_DEADLINE, MAX_UNDECIDED_CONNECTIONS, relayIdleTimeout);
+                CLIENT_HELLO_DEADLINE, MAX_UNDECIDED_CONNECTIONS, MAX_UNDECIDED_PER_SOURCE, relayIdleTimeout,
+                SATURATION_WARN_INTERVAL, System::nanoTime, SniFrontListener::sourceOf, refusalRecorder);
     }
 
     /**
-     * Creates a front listener with every bound explicit, so a test can bind a specific host and
-     * shorten the bounds instead of waiting for them. Production uses the public constructor, which
-     * fixes the host, the deadline and the cap.
+     * Creates a front listener with every bound explicit, so a test can bind a specific host, shorten
+     * the bounds instead of waiting for them, drive the warn window with its own clock and assign
+     * connections to sources without a second network address. Production uses the public
+     * constructor, which fixes the host, the deadline, the cap, the share, the warn window, the clock
+     * and the TCP-peer-address source key ({@link #sourceOf}).
      *
      * @param vertx                   the managed Vert.x instance the front server is created on
      * @param relay                   the opaque L4 relay both routing branches hand connections to
@@ -175,13 +267,21 @@ public final class SniFrontListener {
      *                                ClientHello; positive
      * @param maxUndecidedConnections how many accepted connections may wait for their ClientHello at
      *                                the same time; positive
+     * @param maxUndecidedPerSource   how many of those one source may hold at the same time; positive
      * @param relayIdleTimeout        the idle timeout of the front server; positive
+     * @param warnInterval            the window within which a refusal reason is logged at {@code WARN}
+     *                                at most once; positive
+     * @param nanoClock               the monotonic clock, in nanoseconds, the warn window is measured on
+     * @param sourceKey               the source an accepted connection is counted under
+     * @param refusalRecorder         called once per connection closed at accept, with the reason
      * @throws IllegalArgumentException when a bound is not positive
      */
     @SuppressWarnings("java:S107") // every bound is explicit by design: this is the test seam
     SniFrontListener(Vertx vertx, PassthroughRelay relay, Map<String, RelayTarget> passthroughTargets,
             RelayTarget terminatedTarget, int publicPort, String host, Duration clientHelloDeadline,
-            int maxUndecidedConnections, Duration relayIdleTimeout) {
+            int maxUndecidedConnections, int maxUndecidedPerSource, Duration relayIdleTimeout,
+            Duration warnInterval, LongSupplier nanoClock, Function<NetSocket, String> sourceKey,
+            Consumer<Refusal> refusalRecorder) {
         this.vertx = Objects.requireNonNull(vertx, "vertx");
         this.relay = Objects.requireNonNull(relay, "relay");
         this.passthroughTargets = Map.copyOf(Objects.requireNonNull(passthroughTargets, "passthroughTargets"));
@@ -189,11 +289,16 @@ public final class SniFrontListener {
         this.publicPort = publicPort;
         this.host = Objects.requireNonNull(host, "host");
         this.clientHelloDeadlineMillis = requirePositive(clientHelloDeadline, "clientHelloDeadline").toMillis();
-        if (maxUndecidedConnections <= 0) {
-            throw new IllegalArgumentException("maxUndecidedConnections must be positive: " + maxUndecidedConnections);
-        }
-        this.maxUndecidedConnections = maxUndecidedConnections;
+        this.maxUndecidedConnections = requirePositive(maxUndecidedConnections, "maxUndecidedConnections");
+        this.maxUndecidedPerSource = requirePositive(maxUndecidedPerSource, "maxUndecidedPerSource");
         this.relayIdleTimeout = requirePositive(relayIdleTimeout, "relayIdleTimeout");
+        this.warnInterval = requirePositive(warnInterval, "warnInterval");
+        this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+        this.sourceKey = Objects.requireNonNull(sourceKey, "sourceKey");
+        this.refusalRecorder = Objects.requireNonNull(refusalRecorder, "refusalRecorder");
+        for (Refusal refusal : Refusal.values()) {
+            lastWarnNanos.put(refusal, new AtomicLong(NEVER_WARNED));
+        }
     }
 
     /**
@@ -265,21 +370,105 @@ public final class SniFrontListener {
     }
 
     /**
-     * Admits an accepted connection when the undecided-connection cap has a free slot, and closes it
-     * at once, without reading from it, when it has none. The slot is claimed with one atomic
-     * increment and rolled back with one atomic decrement on overshoot, so concurrent accepts on
-     * different event loops can never push the count past the cap.
+     * Admits an accepted connection when both the undecided-connection cap and its source's share have
+     * a free slot, and refuses it — closes it at once, without reading from it — when either has none.
      */
     private void onConnect(NetSocket socket) {
-        if (undecidedConnections.incrementAndGet() > maxUndecidedConnections) {
-            undecidedConnections.decrementAndGet();
-            LOGGER.debug("Front connection closed at accept: %s connections are already waiting for their ClientHello",
-                    Integer.toString(maxUndecidedConnections));
-            socket.pause();
-            closeQuietly(socket);
+        String source = sourceKey.apply(socket);
+        Refusal refusal = claimSlot(source);
+        if (refusal != null) {
+            refuse(socket, refusal);
             return;
         }
-        new Incoming(socket).begin();
+        new Incoming(socket, source).begin();
+    }
+
+    /**
+     * Claims one slot of the cap and one of {@code source}'s share. The global slot is claimed with one
+     * atomic increment and rolled back with one atomic decrement on overshoot, so concurrent accepts on
+     * different event loops can never push the count past the cap. The source's slot is claimed inside
+     * {@link ConcurrentHashMap#compute}, atomic per key; when the share is full, the global slot already
+     * claimed is rolled back, so a refused connection holds neither.
+     *
+     * @param source the source the connection is counted under
+     * @return {@code null} when both slots were claimed, otherwise the reason neither is held
+     */
+    private @Nullable Refusal claimSlot(String source) {
+        if (undecidedConnections.incrementAndGet() > maxUndecidedConnections) {
+            undecidedConnections.decrementAndGet();
+            return Refusal.CAP;
+        }
+        AtomicBoolean claimed = new AtomicBoolean();
+        undecidedPerSource.compute(source, (key, held) -> {
+            int count = held == null ? 0 : held;
+            if (count >= maxUndecidedPerSource) {
+                return held;
+            }
+            claimed.set(true);
+            return count + 1;
+        });
+        if (!claimed.get()) {
+            undecidedConnections.decrementAndGet();
+            return Refusal.SOURCE_SHARE;
+        }
+        return null;
+    }
+
+    /**
+     * Returns both slots an admitted connection holds. The source's count is decremented inside
+     * {@link ConcurrentHashMap#computeIfPresent}, which removes the source once it holds no slot.
+     *
+     * @param source the source the connection was counted under
+     */
+    private void releaseSlot(String source) {
+        undecidedPerSource.computeIfPresent(source, (key, held) -> held <= 1 ? null : held - 1);
+        undecidedConnections.decrementAndGet();
+    }
+
+    /**
+     * Refuses a connection: logs the refusal — at {@code WARN} for the first refusal of its reason in a
+     * warn window, at {@code DEBUG} for every further one, neither line naming the peer address or any
+     * byte received — reports it to the recorder, and only then closes the connection without reading
+     * from it, so the close a client observes always follows the refusal's record.
+     */
+    private void refuse(NetSocket socket, Refusal refusal) {
+        socket.pause();
+        String bound = Integer.toString(refusal == Refusal.CAP ? maxUndecidedConnections : maxUndecidedPerSource);
+        if (warnDue(refusal)) {
+            LOGGER.warn(ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED, refusal.token(), bound,
+                    Long.toString(warnInterval.toSeconds()));
+        } else {
+            LOGGER.debug("Front connection refused at accept (%s): the bound of %s undecided connections is full",
+                    refusal.token(), bound);
+        }
+        refusalRecorder.accept(refusal);
+        closeQuietly(socket);
+    }
+
+    /**
+     * Whether this refusal is the one logged at {@code WARN} for its reason in the current warn window.
+     * The last-warn time is advanced with a compare-and-set, so of two concurrent refusals at most one
+     * wins the window.
+     */
+    private boolean warnDue(Refusal refusal) {
+        AtomicLong lastWarn = lastWarnNanos.get(refusal);
+        long now = nanoClock.getAsLong();
+        long last = lastWarn.get();
+        boolean windowOpen = last == NEVER_WARNED || now - last >= warnInterval.toNanos();
+        return windowOpen && lastWarn.compareAndSet(last, now);
+    }
+
+    /**
+     * The source a connection is counted under in production: its TCP peer address — the port is not
+     * part of it — or the shared fallback source when the address is unavailable.
+     *
+     * @param socket the accepted connection
+     * @return the connection's source key
+     */
+    static String sourceOf(NetSocket socket) {
+        SocketAddress peer = socket.remoteAddress();
+        String address = peer == null ? null : peer.hostAddress();
+        return address == null || address.isEmpty() ? UNKNOWN_SOURCE : address;
     }
 
     private static void closeQuietly(NetSocket socket) {
@@ -290,6 +479,13 @@ public final class SniFrontListener {
     private static Duration requirePositive(Duration value, String name) {
         Objects.requireNonNull(value, name);
         if (value.isZero() || value.isNegative()) {
+            throw new IllegalArgumentException(name + " must be positive: " + value);
+        }
+        return value;
+    }
+
+    private static int requirePositive(int value, String name) {
+        if (value <= 0) {
             throw new IllegalArgumentException(name + " must be positive: " + value);
         }
         return value;
@@ -316,19 +512,21 @@ public final class SniFrontListener {
      * <p>
      * {@code settled} is the per-connection latch: whichever comes first of the route decision, the
      * connection closing or failing, and the deadline expiring sets it, cancels the deadline and
-     * returns the connection's slot of the undecided-connection cap. Every later path finds it set and
-     * does nothing, so the slot is returned exactly once.
+     * returns the connection's slots — of the undecided-connection cap and of its source's share, as
+     * one unit. Every later path finds it set and does nothing, so the slots are returned exactly once.
      */
     private final class Incoming {
 
         private final NetSocket socket;
+        private final String source;
         private final Buffer buffer = Buffer.buffer();
         private final ClientHelloSniParser parser = new ClientHelloSniParser();
         private boolean settled;
         private long deadlineTimer = NO_TIMER;
 
-        Incoming(NetSocket socket) {
+        Incoming(NetSocket socket, String source) {
             this.socket = socket;
+            this.source = source;
         }
 
         void begin() {
@@ -366,7 +564,7 @@ public final class SniFrontListener {
         }
 
         /**
-         * Sets the latch, cancels the deadline and returns the connection's slot — once.
+         * Sets the latch, cancels the deadline and returns the connection's slots — once.
          *
          * @return {@code true} for the one call that settled the connection, {@code false} for every
          *         later call
@@ -379,7 +577,7 @@ public final class SniFrontListener {
             if (deadlineTimer != NO_TIMER) {
                 vertx.cancelTimer(deadlineTimer);
             }
-            undecidedConnections.decrementAndGet();
+            releaseSlot(source);
             return true;
         }
 

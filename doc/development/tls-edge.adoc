@@ -47,11 +47,19 @@ On each accepted connection an `Incoming` reassembles the ClientHello:
 
 The data, exception and close handlers and the deadline timer of a connection all run on that
 connection's Vert.x event loop, so the reassembly buffer, the parser and the `settled` latch are
-single-threaded and need no synchronization. The one state shared across the front's event loops is
-the counter of the undecided-connection cap below: it is claimed with an atomic increment, rolled back
-with an atomic decrement when the claim overshoots the cap, and returned with an atomic decrement
-exactly once per admitted connection, by whichever of the route decision, the connection closing or
-failing, and the deadline comes first.
+single-threaded and need no synchronization. Three states are shared across the front's event loops:
+
+* *The counter of the undecided-connection cap* is claimed with an atomic increment and rolled back
+  with an atomic decrement when the claim overshoots the cap.
+* *The per-source counts of the share* are claimed and returned inside `ConcurrentHashMap.compute` on
+  the source key, which is atomic per key. A source is removed when its count reaches zero, so the map
+  never holds more entries than there are held slots. A share refusal rolls back the global slot the
+  connection had already claimed, so a refused connection holds neither.
+* *The time of the last refusal `WARN` per reason* is advanced with a compare-and-set, so of two
+  concurrent refusals at most one logs at `WARN`.
+
+An admitted connection returns its two slots together, exactly once, through its `settled` latch --
+by whichever of the route decision, the connection closing or failing, and the deadline comes first.
 
 The front listener is *conditional*: `TlsEdgeProducer` constructs and starts it only when
 `tls.passthrough_sni` is non-empty. When passthrough is unconfigured the front is never created, the
@@ -61,8 +69,8 @@ overhead -- the default single-listener topology is unchanged.
 [#front-listener-bounds]
 === The bounds of the front
 
-Three bounds keep a connection the front has not routed yet, or a relay nobody uses, from being held
-indefinitely. None of them is configurable.
+Four bounds keep a connection the front has not routed yet, or a relay nobody uses, from being held
+indefinitely, or one source from holding the others off. None of them is configurable.
 
 * *ClientHello deadline* -- `SniFrontListener.CLIENT_HELLO_DEADLINE`, 10 s. The timer is armed when the
   connection is accepted and cancelled when the connection settles; a connection that has not
@@ -97,6 +105,14 @@ front sets no receive-buffer option.
    timeout bounds that window -- the Vert.x default of 60 s, since `TlsEdgeProducer` sets none -- and the
    cap does not.
 
+* *Per-source share* -- `SniFrontListener.MAX_UNDECIDED_PER_SOURCE`, a fixed quarter of the cap (256
+  connections), held by one source at the same time. A connection accepted while its source already
+  holds its full share is closed at once, without reading from it, exactly like one beyond the cap. One
+  source filling its share therefore leaves three quarters of the cap to every other source, instead of
+  starving them all. The quarter mirrors the quarter derivation of
+  link:../adr/0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020].
+  See <<front-refusal-keying>> for what a source is.
+
 * *Relay idle timeout* -- the Vert.x idle timeout of the front's `NetServer`, which `TlsEdgeProducer`
   also sets on the relay's dial `NetClient`, so both legs of every relayed connection -- passthrough
   and terminated alike -- carry it. A leg that carries no byte in either direction for that long is
@@ -114,6 +130,46 @@ front sets no receive-buffer option.
 
 The threat these bounds answer is recorded under
 link:../security-threat-model.adoc#gw-07-sni-front[GW-07 -- the SNI front listener].
+
+[#front-refusal-keying]
+=== Refusals at accept: the source key, the WARN and the counter
+
+*The source is the TCP peer address.* `SniFrontListener` keys the share on the accepted socket's
+`remoteAddress().hostAddress()`; every connection whose peer address is unavailable shares one fallback
+source. The edge's `SourceKeys` (`edge/admission`) is deliberately *not* reused, for two reasons:
+
+* it resolves a source from an `HttpServerRequest` -- the address a trusted forwarder reported and the
+  `Host` header -- and neither exists before the ClientHello at L4;
+* importing it from `tls` would close a package cycle: `edge.admission.SourceKeys` ->
+  `edge.request.EdgeRequests` -> `tls.RelayedPeerRegistry`. The `EdgeSubPackageArchTest` guard
+  (ADR-0068) judges only the sub-packages of `edge`, so nothing would fail; the cycle is avoided by
+  design, not by a test.
+
+Behind an L4 load balancer that does not propagate client addresses, every client shares one source,
+and the share then acts as a global sub-cap of 256 concurrent undecided connections. That still admits
+tens of thousands of one-round-trip handshakes per second, and is an accepted trade-off. Like every
+front bound, the share is not configurable.
+
+*Every refusal is visible.* A connection closed at accept -- beyond the cap or beyond its source's
+share -- is:
+
+* *counted* on `sheriff_front_connections_refused_total{reason}`, with `reason` `cap` or
+  `source_share`. The listener stays free of Micrometer: it reports each refusal to a plain
+  `Consumer<SniFrontListener.Refusal>` callback, which `TlsEdgeProducer` wires to the two record methods
+  of `SheriffMetrics`. Each of those fixes its own label value, so the label set is closed by
+  construction, and the metrics adapter needs no type from `tls`.
+* *logged* as `WARN ApiSheriff-146` (`ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED`), at most once
+  per `SniFrontListener.SATURATION_WARN_INTERVAL` (60 s, measured on the monotonic `System.nanoTime()`
+  clock) per reason, with the reason token (`cap` / `source-share`), the bound that was full and the
+  window. Every further refusal of that reason inside the window is logged at `DEBUG`. Neither line
+  ever names the peer address or a received byte.
+
+The package-private constructor of `SniFrontListener` takes the share, the warn window, the clock, the
+source key and the recorder explicitly. A test drives a second warn window by advancing its own clock
+instead of waiting a minute, and assigns connections to sources through the source key, because a
+second loopback address is not available on every platform; the production key itself,
+`SniFrontListener.sourceOf`, is pinned by a case in which two connections from one address share one
+share.
 
 == The Accept-Time L4/L7 Split
 

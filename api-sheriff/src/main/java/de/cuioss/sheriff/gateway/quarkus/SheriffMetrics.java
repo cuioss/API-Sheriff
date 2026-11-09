@@ -64,7 +64,11 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@value #THREAT_UNTRACKED_TOTAL} — the rejections the threat classification could not score
  *       because its ledger was at the bound on tracked sources (cardinality overflow);</li>
  *   <li>{@value #UNIFORM_NOT_FOUND_OVERRUNS_TOTAL} — the uniform {@code 404} answers whose processing
- *       ran past the first step of the response-timing floor and were released on a later step.</li>
+ *       ran past the first step of the response-timing floor and were released on a later step;</li>
+ *   <li>{@value #FRONT_CONNECTIONS_REFUSED_TOTAL}{@code {reason}} — the connections the accept-time
+ *       SNI front closed at accept, keyed by the bound that was full: {@value #REFUSAL_REASON_CAP} for
+ *       the undecided-connection cap, {@value #REFUSAL_REASON_SOURCE_SHARE} for a source's share of
+ *       it.</li>
  * </ul>
  * A request refused because its source is blocked is recorded on {@value #ERRORS_TOTAL} under
  * {@link EventType#SOURCE_BLOCKED}, like every other categorized rejection, with the
@@ -77,7 +81,8 @@ import org.jspecify.annotations.Nullable;
  * {@value #STATUS_FAMILY_OTHER} placeholder for a status outside {@code 100..599}, the
  * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, the {@code action}
  * label of {@value #SOURCE_TRIPS_TOTAL} has exactly three, the source address a trip concerns is never
- * a label, and the {@code event}
+ * a label, the {@code reason} label of {@value #FRONT_CONNECTIONS_REFUSED_TOTAL} has exactly two values
+ * fixed by its two record methods, and the {@code event}
  * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries
  * request-derived input — so every meter is safe to keep always on. Each record call
  * resolves its meter through the {@link MeterRegistry}, which caches meters by name and tag set,
@@ -136,6 +141,24 @@ public class SheriffMetrics {
      * absent address's.
      */
     public static final String UNIFORM_NOT_FOUND_OVERRUNS_TOTAL = "sheriff_uniform_not_found_overruns_total";
+    /**
+     * Counter of connections the accept-time SNI front closed at accept, without reading from them,
+     * keyed by the bound that was full ({@code reason} label {@value #REFUSAL_REASON_CAP} or
+     * {@value #REFUSAL_REASON_SOURCE_SHARE}).
+     */
+    public static final String FRONT_CONNECTIONS_REFUSED_TOTAL = "sheriff_front_connections_refused_total";
+
+    /**
+     * The {@code reason} label value of {@link #FRONT_CONNECTIONS_REFUSED_TOTAL} for a connection
+     * refused because the front's undecided-connection cap was full.
+     */
+    public static final String REFUSAL_REASON_CAP = "cap";
+
+    /**
+     * The {@code reason} label value of {@link #FRONT_CONNECTIONS_REFUSED_TOTAL} for a connection
+     * refused because its source already held its full share of the undecided-connection cap.
+     */
+    public static final String REFUSAL_REASON_SOURCE_SHARE = "source_share";
 
     /** The bounded label value shared by requests that matched no route. */
     public static final String NO_ROUTE = "<no-route>";
@@ -164,6 +187,7 @@ public class SheriffMetrics {
     private static final String TAG_EVENT = "event";
     private static final String TAG_BRANCH = "branch";
     private static final String TAG_ACTION = "action";
+    private static final String TAG_REASON = "reason";
 
     private final MeterRegistry registry;
 
@@ -318,6 +342,25 @@ public class SheriffMetrics {
      */
     public void recordUniformNotFoundOverrun() {
         registry.counter(UNIFORM_NOT_FOUND_OVERRUNS_TOTAL).increment();
+    }
+
+    /**
+     * Counts one connection the accept-time SNI front refused because its undecided-connection cap was
+     * full against {@link #FRONT_CONNECTIONS_REFUSED_TOTAL}, with the {@code reason} label
+     * {@value #REFUSAL_REASON_CAP}. The peer address is never a label value.
+     */
+    public void recordFrontConnectionRefusedAtCap() {
+        registry.counter(FRONT_CONNECTIONS_REFUSED_TOTAL, TAG_REASON, REFUSAL_REASON_CAP).increment();
+    }
+
+    /**
+     * Counts one connection the accept-time SNI front refused because its source already held its full
+     * share of the undecided-connection cap against {@link #FRONT_CONNECTIONS_REFUSED_TOTAL}, with the
+     * {@code reason} label {@value #REFUSAL_REASON_SOURCE_SHARE}. The source address is never a label
+     * value.
+     */
+    public void recordFrontConnectionRefusedAtSourceShare() {
+        registry.counter(FRONT_CONNECTIONS_REFUSED_TOTAL, TAG_REASON, REFUSAL_REASON_SOURCE_SHARE).increment();
     }
 
     /**
