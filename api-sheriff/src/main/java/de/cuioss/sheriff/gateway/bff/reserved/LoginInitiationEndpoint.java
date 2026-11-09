@@ -65,6 +65,13 @@ import org.jspecify.annotations.Nullable;
  * {@link UserInfoEndpoint} and {@link LogoutEndpoint} do). No pending record is created and no
  * binding cookie is set on this path — there is no new login transaction to bind.
  * <p>
+ * <strong>Refused when the pending store is full.</strong> A fresh login's pending record is counted
+ * under the request's quota key. When the pending store already holds its capacity of live records,
+ * {@link LoginFlow#initiate} raises
+ * {@link de.cuioss.sheriff.gateway.events.EventType#PENDING_AUTHORIZATION_SATURATED}; it propagates out
+ * of {@link #initiate}, no binding cookie is minted, and the edge answers {@code 503} with
+ * {@code Retry-After: 30}.
+ * <p>
  * The endpoint is framework-agnostic (a raw {@code returnUrl} parameter and a raw {@code Cookie}
  * header in, a {@link LoginInitiationOutcome} the edge renders out — no JAX-RS/Vert.x coupling), so
  * it is unit-testable without a container; the session runtime wires it to the request/response edge.
@@ -108,14 +115,21 @@ public final class LoginInitiationEndpoint {
      *
      * @param requestedReturnUrl the post-login return target the browser asked for, may be absent
      * @param cookieHeader       the raw request {@code Cookie} header value, may be absent
+     * @param quotaKey           the request's quota key, the key a fresh login's pending record is
+     *                           counted under
      * @param now                the reference instant (session-resolution TTL anchor and, on the
      *                           unauthenticated path, the pending record's TTL anchor)
      * @return a {@code 302} redirect — straight to the validated return URL (no cookies) for a live
      *         session, or to the IdP authorization URL carrying the binding {@code Set-Cookie} for a
      *         fresh login
+     * @throws de.cuioss.sheriff.gateway.events.GatewayException with
+     *                                                           {@code PENDING_AUTHORIZATION_SATURATED}
+     *                                                           when a fresh login finds the pending
+     *                                                           store full of live records
      */
     public LoginInitiationOutcome initiate(@Nullable String requestedReturnUrl, @Nullable String cookieHeader,
-            Instant now) {
+            String quotaKey, Instant now) {
+        Objects.requireNonNull(quotaKey, "quotaKey");
         Objects.requireNonNull(now, "now");
 
         Optional<SessionRecord> session = sessionBinding.resolve(cookieHeader, now);
@@ -129,7 +143,7 @@ public final class LoginInitiationEndpoint {
         }
 
         LoginFlow.LoginRedirect redirect = loginFlow.initiate(requestedReturnUrl,
-                returnTargetScopes.resolve(requestedReturnUrl), now);
+                returnTargetScopes.resolve(requestedReturnUrl), quotaKey, now);
         LOGGER.debug("Login initiation without a live session — starting the OIDC auth-code flow");
         return LoginInitiationOutcome.redirect(redirect.authorizationUrl(), redirect.setCookieHeaders());
     }

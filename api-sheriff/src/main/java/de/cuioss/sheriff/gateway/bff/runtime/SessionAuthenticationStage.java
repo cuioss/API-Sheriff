@@ -122,6 +122,16 @@ import org.jspecify.annotations.Nullable;
  * {@link Route#neededScopes() neededScopes}; anything else (an XHR / API call)
  * gets {@code 401} {@code application/problem+json} via {@link EventType#TOKEN_MISSING}.
  * <p>
+ * <strong>A refused login or widening start.</strong> Both navigation redirects store a pending
+ * record counted under the request's quota key, which the stage derives through
+ * {@link PendingQuotaKeys} and hands to the seam. When the pending store is full of live records the
+ * seam raises {@link EventType#PENDING_AUTHORIZATION_SATURATED}; the stage lets it propagate, so the
+ * navigation is answered {@code 503} with {@code Retry-After} instead of the {@code 302}, and no
+ * binding cookie is set. The refusal deliberately stays outside the pre-trust uniform-{@code 404}
+ * closed set: the session branch already discloses the route by the {@code 302} into the identity
+ * provider it answers any other unauthenticated navigation with, so an honest {@code 503} reveals
+ * nothing new.
+ * <p>
  * <strong>Scope enforcement.</strong> A session route never reaches its upstream with a session
  * that lacks a scope the route needs. On every request — whatever {@code auth.token_relay} says,
  * and before any bearer is recorded — the stage computes {@code missing = neededScopes − A}:
@@ -192,6 +202,7 @@ public final class SessionAuthenticationStage {
     private final ScopeRefresh scopeRefresh;
     private final LoginInitiation loginInitiation;
     private final WideningInitiation wideningInitiation;
+    private final PendingQuotaKeys pendingQuotaKeys;
     private final OnFailure onFailure;
     private final @Nullable String stepUpPath;
     private final Clock clock;
@@ -207,6 +218,8 @@ public final class SessionAuthenticationStage {
      * @param loginInitiation    the auth-code-flow initiation seam for a navigation redirect
      * @param wideningInitiation the session-widening seam a navigation is redirected through when a
      *                           needed scope is not obtained by a refresh
+     * @param pendingQuotaKeys   the derivation of the quota key a navigation's pending record is counted
+     *                           under, handed to both initiation seams
      * @param onFailure          the resolved {@code oidc.session.refresh.on_failure} policy applied when
      *                           a refresh leaves the request without a token to mediate
      * @param stepUpPath         the configured {@code oidc.step_up.path} named as
@@ -219,12 +232,13 @@ public final class SessionAuthenticationStage {
     @SuppressWarnings("java:S107")
     public SessionAuthenticationStage(SessionBinding sessionBinding, TokenRefresh tokenRefresh,
             ScopeRefresh scopeRefresh, LoginInitiation loginInitiation, WideningInitiation wideningInitiation,
-            OnFailure onFailure, @Nullable String stepUpPath, Clock clock) {
+            PendingQuotaKeys pendingQuotaKeys, OnFailure onFailure, @Nullable String stepUpPath, Clock clock) {
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.tokenRefresh = Objects.requireNonNull(tokenRefresh, "tokenRefresh");
         this.scopeRefresh = Objects.requireNonNull(scopeRefresh, "scopeRefresh");
         this.loginInitiation = Objects.requireNonNull(loginInitiation, "loginInitiation");
         this.wideningInitiation = Objects.requireNonNull(wideningInitiation, "wideningInitiation");
+        this.pendingQuotaKeys = Objects.requireNonNull(pendingQuotaKeys, "pendingQuotaKeys");
         this.onFailure = Objects.requireNonNull(onFailure, "onFailure");
         this.stepUpPath = stepUpPath;
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -237,7 +251,10 @@ public final class SessionAuthenticationStage {
      * @throws GatewayException {@code 401} when an unauthenticated non-navigation request is
      *                          challenged or a refresh failure is rejected under
      *                          {@link OnFailure#REJECT}; {@code 403} when a non-navigation request's
-     *                          session lacks a needed scope it did not obtain by a refresh
+     *                          session lacks a needed scope it did not obtain by a refresh;
+     *                          {@code 503} ({@link EventType#PENDING_AUTHORIZATION_SATURATED}) when a
+     *                          navigation's login or widening start finds the pending store full of
+     *                          live records
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
@@ -349,7 +366,7 @@ public final class SessionAuthenticationStage {
             Set<String> missing, Instant now) {
         if (acceptsHtml(request)) {
             LoginChallenge challenge = wideningInitiation.initiate(session, returnUrl(request),
-                    route.neededScopes(), now);
+                    route.neededScopes(), pendingQuotaKeys.quotaKeyOf(request), now);
             request.responseHeaders().put(LOCATION_HEADER, challenge.location());
             emitSetCookies(request, challenge.setCookieHeaders());
             request.shortCircuit(FOUND);
@@ -427,7 +444,8 @@ public final class SessionAuthenticationStage {
         if (acceptsHtml(request)) {
             // The login requests exactly what this route needs — the one boot-derived neededScopes the
             // bearer check also reads — so requesting and checking can never drift apart.
-            LoginChallenge challenge = loginInitiation.initiate(returnUrl(request), route.neededScopes(), now);
+            LoginChallenge challenge = loginInitiation.initiate(returnUrl(request), route.neededScopes(),
+                    pendingQuotaKeys.quotaKeyOf(request), now);
             request.responseHeaders().put(LOCATION_HEADER, challenge.location());
             emitSetCookies(request, challenge.setCookieHeaders());
             request.shortCircuit(FOUND);
@@ -676,10 +694,14 @@ public final class SessionAuthenticationStage {
          *                  its raw query verbatim when it carried one)
          * @param scopes    the scope set the login requests — the selected route's
          *                  {@link Route#neededScopes() neededScopes}
+         * @param quotaKey  the request's quota key ({@link PendingQuotaKeys}), the key the pending
+         *                  record is counted under
          * @param now       the reference instant (the pending record's TTL anchor)
          * @return the redirect target and the browser-binding {@code Set-Cookie}
+         * @throws GatewayException with {@link EventType#PENDING_AUTHORIZATION_SATURATED} when the
+         *                          pending store is full of live records
          */
-        LoginChallenge initiate(String returnUrl, Collection<String> scopes, Instant now);
+        LoginChallenge initiate(String returnUrl, Collection<String> scopes, String quotaKey, Instant now);
     }
 
     /**
@@ -702,10 +724,15 @@ public final class SessionAuthenticationStage {
          * @param returnUrl    the target the browser returns to after the widening (the path it was
          *                     navigating to, plus its raw query verbatim when it carried one)
          * @param neededScopes the selected route's {@link Route#neededScopes() neededScopes}
+         * @param quotaKey     the request's quota key ({@link PendingQuotaKeys}), the key the pending
+         *                     record is counted under
          * @param now          the reference instant (the pending record's TTL anchor)
          * @return the redirect target and the browser-binding {@code Set-Cookie}
+         * @throws GatewayException with {@link EventType#PENDING_AUTHORIZATION_SATURATED} when the
+         *                          pending store is full of live records
          */
-        LoginChallenge initiate(SessionRecord live, String returnUrl, Set<String> neededScopes, Instant now);
+        LoginChallenge initiate(SessionRecord live, String returnUrl, Set<String> neededScopes, String quotaKey,
+                Instant now);
     }
 
     /**

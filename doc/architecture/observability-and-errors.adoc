@@ -128,9 +128,15 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
 | `503`
 | Circuit breaker open (`UPSTREAM_CIRCUIT_OPEN`, carrying `Retry-After: 5`; see
   link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
+  A BFF login, step-up or session-widening start refused because the pending-authorization store
+  holds its capacity of live records (`PENDING_AUTHORIZATION_SATURATED`, carrying `Retry-After: 30`;
+  raised after the pushed authorization request, with no pending record stored, no binding cookie set
+  and no other source's live login evicted -- see
+  link:../user/bff-session.adoc[BFF Session]); it is kept honest before the trust boundary, because
+  the session branch already discloses the route by its `302` into the identity provider.
   Edge admission cap, virtual-thread executor rejection, and WebSocket session-relay tracking-cap
   exhaustion write a bare `503` directly with no `EventType`.
-| `UPSTREAM` (`--` for bare `503`)
+| `UPSTREAM`; `RATE_LIMITING` for `PENDING_AUTHORIZATION_SATURATED` (`--` for bare `503`)
 
 | `504`
 | Upstream dispatch timeout (the upstream guard's fixed 30 s head timeout, `UPSTREAM_TIMEOUT`).
@@ -171,9 +177,10 @@ Rejections Before the Trust Boundary]):
   `PARAMETER_LIMIT_EXCEEDED`, declared-`Content-Length` `CONTENT_TOO_LARGE`, `CSRF_REJECTED`,
   `TOKEN_MISSING` / `TOKEN_INVALID` on the bearer branch, and an unexpected internal failure
   (`PRE_TRUST_INTERNAL_FAILURE`)
-| Session branch `302` / `401`; `SCOPE_MISSING`; every rejection after stage 4 completed (dispatch `400`
-  / `408` / `413`, WebSocket origin `403`, upstream `5xx`); reserved paths; every stage-1 rejection
-  (including framing gate); unparseable-method `405`
+| Session branch `302` / `401`; a refused login or widening start on the session branch
+  (`PENDING_AUTHORIZATION_SATURATED`, `503`); `SCOPE_MISSING`; every rejection after stage 4 completed
+  (dispatch `400` / `408` / `413`, WebSocket origin `403`, upstream `5xx`); reserved paths; every
+  stage-1 rejection (including framing gate); unparseable-method `405`
 |===
 
 * *Response-timing floor.* Every answer rendered as the unrouted `404` (including genuine
@@ -195,8 +202,9 @@ never qualify, so `fetch()`, XHR and REST clients keep the problem body):
 
 * *`HTML_ELIGIBLE`.* Browser-facing authorization (`403` scope/CSRF), routing (`404` including
   pre-trust rejections rewritten to the unrouted `404`, and routed `405`), payload-size (`413` route
-  body cap), and upstream (`502`/`503`/`504`) rejections, plus failed OIDC callbacks and `source:
-  directory` asset misses (`404`).
+  body cap), and upstream (`502`/`503`/`504`) rejections, a login start refused by a saturated
+  pending-authorization store (`503`, `PENDING_AUTHORIZATION_SATURATED`), plus failed OIDC callbacks
+  and `source: directory` asset misses (`404`).
 
 * *`KEEP_SHAPE`.* Machine-facing input-validation (`400`), bearer/session token (`401`), reserved
   body-cap, WebSocket, and unparseable-method (`405`) rejections, origin-relayed responses, post-head

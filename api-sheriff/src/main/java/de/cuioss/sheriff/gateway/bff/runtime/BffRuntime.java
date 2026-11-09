@@ -36,6 +36,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpo
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
+import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -50,7 +51,7 @@ import org.jspecify.annotations.Nullable;
  * {@code false} and dispatches nothing (the bearer-only proxy path is unchanged, and the
  * {@code ReservedPathRegistry} carries no reserved paths to dispatch anyway).
  * <p>
- * It carries three edge-facing capabilities:
+ * It carries four edge-facing capabilities:
  * <ol>
  *   <li>the {@link SessionAuthenticationStage} the edge injects into the session-aware
  *       {@code AuthenticationStage} constructor so a {@code require: session} route is served rather
@@ -67,7 +68,11 @@ import org.jspecify.annotations.Nullable;
  *       endpoint yields {@code 404} itself. That outcome the edge does not render verbatim: it
  *       answers it with the response of an unrouted path.</li>
  *   <li>{@link #sessionIdentity(String, Instant)} — the display identity (signed in or not, and the
- *       {@code preferred_username}) the application portal renders for the request's session.</li>
+ *       {@code preferred_username}) the application portal renders for the request's session;</li>
+ *   <li>{@link #pendingQuotaKey(PipelineRequest)} — the quota key the edge puts on the
+ *       {@link ReservedHttpRequest}, so a pending record the login, step-up or callback re-drive arm
+ *       stores is counted under the requester's source, exactly as the session stage counts its
+ *       own.</li>
  * </ol>
  * The runtime is framework-agnostic (raw request pieces in, a {@link ReservedHttpResponse} out — no
  * JAX-RS / Vert.x coupling), so it is unit-testable without a container. The engine-dependent
@@ -101,6 +106,7 @@ public final class BffRuntime {
     private final @Nullable GatewayJson gatewayJson;
     private final @Nullable SessionRelayRegistry sessionRelays;
     private final @Nullable Predicate<String> sessionHeld;
+    private final @Nullable PendingQuotaKeys pendingQuotaKeys;
 
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     private BffRuntime(boolean active, @Nullable SessionAuthenticationStage sessionStage,
@@ -111,9 +117,10 @@ public final class BffRuntime {
             @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint,
             @Nullable StepUpEndpoint stepUpEndpoint, @Nullable ClientJwksEndpoint clientJwksEndpoint,
             @Nullable GatewayJson gatewayJson, @Nullable SessionRelayRegistry sessionRelays,
-            @Nullable Predicate<String> sessionHeld) {
+            @Nullable Predicate<String> sessionHeld, @Nullable PendingQuotaKeys pendingQuotaKeys) {
         this.sessionRelays = sessionRelays;
         this.sessionHeld = sessionHeld;
+        this.pendingQuotaKeys = pendingQuotaKeys;
         this.active = active;
         this.sessionStage = sessionStage;
         this.csrfDefence = csrfDefence;
@@ -153,6 +160,8 @@ public final class BffRuntime {
      * @param sessionHeld               whether the session binding still holds the session of a given
      *                                  identity server-side; always {@code true} for a binding that
      *                                  holds none and so cannot observe an end
+     * @param pendingQuotaKeys          the derivation of the quota key a reserved path's pending record
+     *                                  is counted under (the same instance the session stage uses)
      */
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     public BffRuntime(SessionAuthenticationStage sessionStage, CsrfDefence csrfDefence,
@@ -160,7 +169,7 @@ public final class BffRuntime {
             Supplier<LogoutEndpoint> logoutEndpoint, BackchannelLogoutEndpoint backchannelLogoutEndpoint,
             UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint,
             StepUpEndpoint stepUpEndpoint, ClientJwksEndpoint clientJwksEndpoint, GatewayJson gatewayJson,
-            SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
+            SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld, PendingQuotaKeys pendingQuotaKeys) {
         this(true,
                 Objects.requireNonNull(sessionStage, "sessionStage"),
                 Objects.requireNonNull(csrfDefence, "csrfDefence"),
@@ -174,7 +183,23 @@ public final class BffRuntime {
                 Objects.requireNonNull(clientJwksEndpoint, "clientJwksEndpoint"),
                 Objects.requireNonNull(gatewayJson, "gatewayJson"),
                 Objects.requireNonNull(sessionRelays, "sessionRelays"),
-                Objects.requireNonNull(sessionHeld, "sessionHeld"));
+                Objects.requireNonNull(sessionHeld, "sessionHeld"),
+                Objects.requireNonNull(pendingQuotaKeys, "pendingQuotaKeys"));
+    }
+
+    /**
+     * The quota key a pending record started on a reserved path is counted under — the requester's
+     * canonical source, derived exactly as the session stage derives it ({@link PendingQuotaKeys}).
+     *
+     * @param request the in-flight request
+     * @return the canonical source text of the requester
+     * @throws IllegalStateException when this runtime is inert (no BFF variant is configured)
+     */
+    public String pendingQuotaKey(PipelineRequest request) {
+        if (pendingQuotaKeys == null) {
+            throw new IllegalStateException("inert BFF runtime derives no pending quota key");
+        }
+        return pendingQuotaKeys.quotaKeyOf(request);
     }
 
     /**
@@ -210,7 +235,8 @@ public final class BffRuntime {
      *         {@link #isActive()} {@code false}, exposes no session stage, and dispatches nothing.
      */
     public static BffRuntime inert() {
-        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                null);
     }
 
     /**
@@ -319,17 +345,18 @@ public final class BffRuntime {
 
     private ReservedHttpResponse dispatchToHandler(ReservedEndpoint kind, ReservedHttpRequest req, Instant now) {
         return switch (kind) {
-            case CALLBACK ->
-                render(requireNonNull(callbackEndpoint).handle(callbackParameters(req), req.cookieHeader(), now));
+            case CALLBACK -> render(requireNonNull(callbackEndpoint).handle(callbackParameters(req), req.cookieHeader(),
+                    req.quotaKey(), now));
             case LOGOUT -> render(requireNonNull(logoutEndpoint).get().logout(req.cookieHeader(), now));
             case LOGOUT_RETURN ->
                 render(requireNonNull(logoutEndpoint).get().completeReturn(req.stateParam(), req.cookieHeader()));
             case BACKCHANNEL_LOGOUT ->
                 render(requireNonNull(backchannelLogoutEndpoint).receive(req.rawFormBody(), now));
             case USER_INFO -> render(requireNonNull(userInfoEndpoint).handle(req.cookieHeader(), req.claimsParam(), now));
-            case LOGIN ->
-                render(requireNonNull(loginInitiationEndpoint).initiate(req.returnUrlParam(), req.cookieHeader(), now));
-            case STEP_UP -> render(requireNonNull(stepUpEndpoint).handle(req.returnUrlParam(), req.cookieHeader(), now));
+            case LOGIN -> render(requireNonNull(loginInitiationEndpoint).initiate(req.returnUrlParam(),
+                    req.cookieHeader(), req.quotaKey(), now));
+            case STEP_UP -> render(requireNonNull(stepUpEndpoint).handle(req.returnUrlParam(), req.cookieHeader(),
+                    req.quotaKey(), now));
             case CLIENT_JWKS -> render(requireNonNull(clientJwksEndpoint).handle(req.httpMethod()));
         };
     }
@@ -428,6 +455,9 @@ public final class BffRuntime {
      *                       in {@link #rawQuery} and no body is read for it, so this is absent there
      * @param httpMethod     the request HTTP method. Absent normalizes to {@code GET} (the CSRF-safe
      *                       default), which is also the method of the live query-mode callback
+     * @param quotaKey       the request's quota key ({@link #pendingQuotaKey(PipelineRequest)}), the
+     *                       key a pending record the login, step-up or callback re-drive stores is
+     *                       counted under
      * @author API Sheriff Team
      * @since 1.0
      */
@@ -447,15 +477,19 @@ public final class BffRuntime {
     @Nullable String returnUrlParam,
     @Nullable String stateParam,
     @Nullable String rawFormBody,
-    String httpMethod) {
+    String httpMethod,
+    String quotaKey) {
 
         /**
          * Canonical constructor normalizing an absent raw query to the empty string and an absent HTTP
-         * method to {@code GET} (the CSRF-safe default).
+         * method to {@code GET} (the CSRF-safe default), and rejecting an absent quota key.
+         *
+         * @throws NullPointerException when {@code quotaKey} is {@code null}
          */
         public ReservedHttpRequest {
             rawQuery = Objects.requireNonNullElse(rawQuery, "");
             httpMethod = Objects.requireNonNullElse(httpMethod, "GET");
+            Objects.requireNonNull(quotaKey, "quotaKey");
         }
 
         /**

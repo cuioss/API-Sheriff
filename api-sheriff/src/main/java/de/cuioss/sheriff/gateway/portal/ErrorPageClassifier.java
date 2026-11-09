@@ -33,8 +33,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@link Classification#HTML_ELIGIBLE} — a gateway-originated rejection a browser navigation
  *       can meaningfully land on: an unrouted address, a smuggled passthrough host, a method outside
  *       the route's allowlist, a missing scope, a CSRF rejection, a body over the route cap, an
- *       upstream failure, an open circuit or an upstream timeout, a failed OIDC callback, and a
- *       directory-asset miss. {@link EventType#PASSTHROUGH_HOST_SMUGGLED} is eligible because, on an
+ *       upstream failure, an open circuit or an upstream timeout, a login start refused by a saturated
+ *       pending-authorization store, a failed OIDC callback, and a directory-asset miss.
+ *       {@link EventType#PENDING_AUTHORIZATION_SATURATED} is eligible because it answers the browser
+ *       navigation that starts a login. {@link EventType#PASSTHROUGH_HOST_SMUGGLED} is eligible because, on an
  *       address no route serves, it answers in place of {@link EventType#NO_ROUTE_MATCHED}, which
  *       answers a navigation with the HTML page; a smuggled host answering the same navigation there
  *       with {@code problem+json} would make the two {@code 404}s on that address distinguishable by
@@ -136,8 +138,8 @@ public class ErrorPageClassifier {
     public static Classification classify(EventType event) {
         return switch (event) {
             case NO_ROUTE_MATCHED, PASSTHROUGH_HOST_SMUGGLED, METHOD_NOT_ALLOWED, SCOPE_MISSING, CSRF_REJECTED,
-                CONTENT_TOO_LARGE, UPSTREAM_ERROR, UPSTREAM_CIRCUIT_OPEN, UPSTREAM_TIMEOUT ->
-                Classification.HTML_ELIGIBLE;
+                CONTENT_TOO_LARGE, UPSTREAM_ERROR, UPSTREAM_CIRCUIT_OPEN, UPSTREAM_TIMEOUT,
+                PENDING_AUTHORIZATION_SATURATED -> Classification.HTML_ELIGIBLE;
             case REQUEST_FORWARDED, TOKEN_REFRESHED, CONFIG_LOADED, CONFIG_INVALID, AUTH_WEAKENED,
                 SECURITY_FILTER_VIOLATION, PATH_NOT_ALLOWED, PARAMETER_LIMIT_EXCEEDED,
                 RESERVED_BODY_TOO_LARGE, INBOUND_BODY_ABORTED, REQUEST_BODY_TIMEOUT, TOKEN_MISSING, TOKEN_INVALID,

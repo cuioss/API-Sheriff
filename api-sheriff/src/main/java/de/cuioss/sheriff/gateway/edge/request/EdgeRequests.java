@@ -27,6 +27,7 @@ import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.tls.RelayedPeerRegistry;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpServerRequest;
 import org.jspecify.annotations.Nullable;
@@ -54,18 +55,30 @@ public final class EdgeRequests {
      * Builds the pipeline request from the Vert.x request: the raw path, the raw query pairs in wire
      * order (see {@link #rawQueryPairs}), every header, the scheme, the authority host and port, the
      * peer address, the declared body length and whether a body is present at all.
+     * <p>
+     * The connection's attribution is whatever {@link RelayedPeerRegistry#attribute} returns for its
+     * local and remote address; that method states the rule once — including when an exact registry
+     * hit is honoured behind the SNI front and when it is not. When the verdict names a relayed client,
+     * that client's address is recorded as the
+     * {@linkplain PipelineRequest#relayedPeerAddress() relayed peer address}; the peer address stays the
+     * TCP peer. No header is consulted for it. When the verdict carries the unattributed mark, the
+     * request is marked {@linkplain PipelineRequest#unattributedTerminatedLeg() unattributed} instead;
+     * a neutral verdict sets neither.
      *
-     * @param raw    the Vert.x request
-     * @param method the parsed request method
+     * @param raw          the Vert.x request
+     * @param method       the parsed request method
+     * @param relayedPeers the in-process hand-off of relayed clients' addresses
      * @return the pipeline request
      */
-    public static PipelineRequest buildPipelineRequest(HttpServerRequest raw, HttpMethod method) {
+    public static PipelineRequest buildPipelineRequest(HttpServerRequest raw, HttpMethod method,
+            RelayedPeerRegistry relayedPeers) {
         String rawUri = raw.uri();
         int queryStart = rawUri.indexOf('?');
         String rawPath = queryStart < 0 ? rawUri : rawUri.substring(0, queryStart);
         long contentLength = parseContentLength(raw);
         boolean bodyPresent = contentLength > 0 || raw.headers().contains("Transfer-Encoding");
         var authority = raw.authority();
+        RelayedPeerRegistry.Attribution attribution = relayedPeers.attribute(raw.localAddress(), raw.remoteAddress());
         return PipelineRequest.builder()
                 .method(method)
                 .requestPath(rawPath)
@@ -75,6 +88,8 @@ public final class EdgeRequests {
                 .host(authorityHost(raw))
                 .authorityPort(authority == null ? -1 : authority.port())
                 .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
+                .relayedPeerAddress(attribution.clientAddress())
+                .unattributedTerminatedLeg(attribution.unattributed())
                 .declaredContentLength(contentLength)
                 .bodyPresent(bodyPresent)
                 .build();

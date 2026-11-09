@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -39,6 +40,10 @@ import javax.crypto.spec.SecretKeySpec;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
@@ -69,6 +74,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
+import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -87,12 +93,14 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.tls.RelayedPeerRegistry;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
@@ -120,6 +128,8 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -161,6 +171,8 @@ public class GatewayEdgeRouteBffWiringTest {
     private static final String STEP_UP_PATH = "/auth/step-up";
     /** The id of {@link #sessionRoute()}, the {@code route} tag its metered failures carry. */
     private static final String SESSION_ROUTE_ID = "s";
+    /** The quota key a directly-dispatched reserved request carries (the edge derives it from the peer). */
+    private static final String QUOTA_KEY = "192.0.2.10";
     /** Where the engine-free session stage redirects an unauthenticated navigation. */
     private static final String LOGIN_CHALLENGE_LOCATION = "/login";
     /** Where the engine-free session stage redirects a navigation whose session needs widening. */
@@ -629,7 +641,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("CALLBACK with a stateless query yields 400 from the callback handler")
         void shouldDispatchCallback() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET", QUOTA_KEY), now);
             assertEquals(400, response.status());
         }
 
@@ -653,7 +665,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("BACKCHANNEL_LOGOUT with no form body yields 400 and is uncacheable")
         void shouldDispatchBackchannel() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "POST"), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "POST", QUOTA_KEY), now);
             assertEquals(400, response.status());
             assertEquals("no-store", response.headers().get("Cache-Control"));
         }
@@ -667,10 +679,10 @@ public class GatewayEdgeRouteBffWiringTest {
                     .expiresAt(now.plus(Duration.ofHours(1))).build(), cookieHandle, now);
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET", QUOTA_KEY), now);
             BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.LOGIN,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
-                            null, null, "GET"), now);
+                            null, null, "GET", QUOTA_KEY), now);
 
             assertEquals(302, response.status());
             // "The validated return URL" is a value, not a presence: asserting only that SOME Location
@@ -702,7 +714,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("STEP_UP without a session yields 401 problem+json and no redirect")
         void shouldDispatchStepUpWithoutSession() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "/home", null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, "/home", null, null, "GET", QUOTA_KEY), now);
 
             assertAll(
                     () -> assertEquals(401, response.status()),
@@ -721,10 +733,10 @@ public class GatewayEdgeRouteBffWiringTest {
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET", QUOTA_KEY), now);
             BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.STEP_UP,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
-                            null, null, "GET"), now);
+                            null, null, "GET", QUOTA_KEY), now);
 
             assertEquals(302, response.status());
             assertEquals(Optional.of("/home"), response.locationOptional(),
@@ -734,7 +746,7 @@ public class GatewayEdgeRouteBffWiringTest {
         }
 
         private BffRuntime.ReservedHttpRequest request(String cookie, String claims) {
-            return new BffRuntime.ReservedHttpRequest("", cookie, claims, null, null, null, "GET");
+            return new BffRuntime.ReservedHttpRequest("", cookie, claims, null, null, null, "GET", QUOTA_KEY);
         }
     }
 
@@ -777,8 +789,8 @@ public class GatewayEdgeRouteBffWiringTest {
             FlowContext flow = FlowContext.create(ORIGIN + CALLBACK_PATH);
             state = flow.state();
             PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, List.of("openid"),
-                    now);
-            pendingStore.store(pending);
+                    QUOTA_KEY, now);
+            pendingStore.store(pending, now);
             bindingCookieHeader = bindingCodec.toSetCookieHeader(pending.id()).split(";", 2)[0];
 
             runtime = callbackRuntime();
@@ -786,7 +798,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** A {@code response_mode=query} callback: GET, {@code code}/{@code state} in the raw query, no body. */
         private BffRuntime.ReservedHttpRequest queryCallback(String rawQuery) {
-            return new BffRuntime.ReservedHttpRequest(rawQuery, bindingCookieHeader, null, null, null, null, "GET");
+            return new BffRuntime.ReservedHttpRequest(rawQuery, bindingCookieHeader, null, null, null, null, "GET", QUOTA_KEY);
         }
 
         @Test
@@ -852,7 +864,7 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("A stray POST to the callback arrives bodyless and is rejected 400, never 500")
         void shouldRejectStrayPostBodyless() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null, null, "POST"), now);
+                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null, null, "POST", QUOTA_KEY), now);
 
             assertEquals(400, response.status(),
                     "an absent form body normalizes to the empty string and fails for a missing state");
@@ -879,10 +891,10 @@ public class GatewayEdgeRouteBffWiringTest {
                     challenge -> {
                         throw new AssertionError("engine step-up must not be reached");
                     },
-                    pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
+                    pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of(), Clock.systemUTC());
             LoginFlow loginFlow = new LoginFlow(scopes -> {
                 throw new AssertionError("engine authorize must not be reached");
-            }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+            }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, Clock.systemUTC());
             BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
                             rawToken -> {
                                 throw new AssertionError("engine verify must not be reached");
@@ -899,7 +911,8 @@ public class GatewayEdgeRouteBffWiringTest {
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
                     () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
                     engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld(),
-                    gatewayJson(), new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true);
+                    gatewayJson(), new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true,
+                    untrustingQuotaKeys());
         }
     }
 
@@ -1867,6 +1880,406 @@ public class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * A login start refused by a saturated pending-authorization store, observed through a live edge: the
+     * store's {@link EventType#PENDING_AUTHORIZATION_SATURATED} propagates out of the reserved login path
+     * and out of the session stage's navigation login to the edge's rejection path, which answers
+     * {@code 503} with {@code Retry-After: 30} and the {@code rate-limiting} problem type — never the
+     * {@code 302} into the identity provider, and never a binding cookie.
+     */
+    @Nested
+    @DisplayName("a saturated pending store answers a login start 503 with Retry-After through the edge")
+    class SaturatedPendingStoreOverEdge {
+
+        private static final String RATE_LIMITING_TYPE = "urn:api-sheriff:problem:rate-limiting";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private HttpClient client;
+
+        /** The edge's answer as the client saw it. */
+        private record Answer(int status, @Nullable String retryAfter, @Nullable String location,
+        List<String> setCookies, JsonObject body) {
+        }
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .routes(new RouteTable(List.of(sessionRoute())))
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(saturatedStoreRuntime(serverBinding(newStore()))).serve();
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("the reserved login path answers 503, Retry-After: 30 and the rate-limiting problem type")
+        void reservedLoginPathIsRefused() throws Exception {
+            Answer answer = get(LOGIN_PATH + "?returnUrl=%2Fs%2Fpage", "application/json");
+
+            assertRefused(answer);
+        }
+
+        @Test
+        @DisplayName("a session-route navigation answers 503, Retry-After: 30 and the rate-limiting problem type")
+        void sessionRouteNavigationIsRefused() throws Exception {
+            Answer answer = get("/s/page", "text/html");
+
+            assertRefused(answer);
+        }
+
+        private void assertRefused(Answer answer) {
+            assertAll("a refused login start, never a redirect into the identity provider",
+                    () -> assertEquals(503, answer.status()),
+                    () -> assertEquals("30", answer.retryAfter(), "the client is told when to retry"),
+                    () -> assertEquals(RATE_LIMITING_TYPE, answer.body().getString("type")),
+                    () -> assertEquals(503, answer.body().getInteger("status")),
+                    () -> assertNull(answer.location(), "no 302 into the identity provider"),
+                    () -> assertTrue(answer.setCookies().stream()
+                                    .noneMatch(cookie -> cookie.startsWith(BindingCookieCodec.COOKIE_NAME + "=")),
+                            "no binding cookie is minted: " + answer.setCookies()));
+        }
+
+        private Answer get(String uri, String accept) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+            return Awaits.connect(client.request(options)
+                            .compose(request -> request.putHeader("Accept", accept).send())
+                            .compose(response -> response.body().map(body -> new Answer(response.statusCode(),
+                                    response.getHeader("Retry-After"), response.getHeader("Location"),
+                                    List.copyOf(response.headers().getAll("Set-Cookie")), body.toJsonObject()))),
+                    "the edge response to GET " + uri);
+        }
+    }
+
+    /**
+     * The reserved login path, driven over a live edge, counts each pending record under the quota key
+     * the edge derives from that request — not under a key shared by every requester. The runtime trusts
+     * the loopback peer as a forwarder, so two requests over the same loopback connection that forward
+     * two different clients must reach the store under two different keys; a dispatch that handed the
+     * store one fixed key would count both under it. The untrusting runtime is the matched control: the
+     * same two requests are counted under the loopback peer itself, so the distinct keys above come from
+     * the forwarded clients and not from anything else that differs between the two requests.
+     */
+    @Nested
+    @DisplayName("reserved login counts its pending record under the requester's own quota key")
+    class ReservedLoginQuotaKey {
+
+        private static final String CLIENT_A = "198.51.100.1";
+        private static final String CLIENT_B = "198.51.100.2";
+
+        private final List<String> trustingKeys = new CopyOnWriteArrayList<>();
+        private final List<String> untrustingKeys = new CopyOnWriteArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer trustingFront;
+        private HttpServer untrustingFront;
+        private HttpClient client;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            trustingFront = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(trustingKeys),
+                            quotaKeysTrusting(List.of(LoopbackHost.ADDRESS + "/32"))))
+                    .serve();
+            untrustingFront = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(untrustingKeys),
+                            untrustingQuotaKeys()))
+                    .serve();
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(trustingFront.close(), "the trusting edge front server to close");
+            Awaits.teardown(untrustingFront.close(), "the untrusting edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("two forwarded clients reach the store under two different quota keys")
+        void distinctClientsAreCountedApart() throws Exception {
+            int first = login(trustingFront, CLIENT_A);
+            int second = login(trustingFront, CLIENT_B);
+            int controlFirst = login(untrustingFront, CLIENT_A);
+            int controlSecond = login(untrustingFront, CLIENT_B);
+
+            assertAll("each login is counted under the source the edge derived for it",
+                    () -> assertEquals(List.of(302, 302, 302, 302),
+                            List.of(first, second, controlFirst, controlSecond),
+                            "precondition: every login stored its record and redirected"),
+                    () -> assertEquals(List.of(CLIENT_A, CLIENT_B), trustingKeys,
+                            "a trusted forwarder's two clients are counted apart, so one client's records "
+                                    + "never share a quota with the other's"),
+                    () -> assertEquals(List.of(LoopbackHost.ADDRESS, LoopbackHost.ADDRESS), untrustingKeys,
+                            "control: without the trust both requests are counted under their own TCP peer"));
+        }
+
+        private int login(HttpServer front, String forwardedClient) throws Exception {
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGIN_PATH);
+            return Awaits.connect(client.request(options)
+                            .compose(request -> request.putHeader("X-Forwarded-For", forwardedClient).send()),
+                    "the login response forwarding " + forwardedClient).statusCode();
+        }
+    }
+
+    /**
+     * The SNI front listener's in-process hand-off, observed where it takes effect: the reserved login
+     * path's pending record. The test stands in for the front's terminated relay by registering the
+     * local address of its own connection to the edge — exactly the address the relay registers for its
+     * loopback leg — and the gateway trusts no forwarder, so without the hand-off every request is keyed
+     * on the loopback peer.
+     */
+    @Nested
+    @DisplayName("the SNI front's client hand-off keys a pending login, and only over a registered relay leg")
+    class RelayedClientHandOff {
+
+        private static final String CLIENT_A = "198.51.100.1";
+        private static final String CLIENT_B = "198.51.100.2";
+
+        private final RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
+        private final List<String> storedKeys = new CopyOnWriteArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private NetClient client;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(storedKeys),
+                            untrustingQuotaKeys()))
+                    .relayedPeers(relayedPeers)
+                    .serve();
+            client = vertx.createNetClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the TCP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("two relayed clients are counted apart, where unrelayed they share the loopback key")
+        void relayedClientsGetDistinctQuotaKeys() throws Exception {
+            List<Integer> statuses = List.of(
+                    login(CLIENT_A, Map.of()), login(CLIENT_B, Map.of()),
+                    login(null, Map.of()), login(null, Map.of()));
+
+            assertAll("each relay leg's login is counted under the client the relay handed over",
+                    () -> assertEquals(List.of(302, 302, 302, 302), statuses,
+                            "precondition: every login stored its record and redirected"),
+                    () -> assertEquals(List.of(CLIENT_A, CLIENT_B, LoopbackHost.ADDRESS, LoopbackHost.ADDRESS),
+                            storedKeys, "the two relayed clients are keyed apart; without the hand-off "
+                            + "the same requests share the loopback key"));
+        }
+
+        /**
+         * The hand-off is an exact hit on a connection the relay registered, and nothing a client sends
+         * can produce one. Another connection is registered while the request runs, so the registry is
+         * not empty — the request's own connection is simply not in it.
+         */
+        @Test
+        @DisplayName("a connection the relay did not register gets no hand-off, whatever headers it sends")
+        void unregisteredConnectionCannotInjectAHandOff() throws Exception {
+            NetSocket registeredElsewhere = Awaits.connect(client.connect(front.actualPort(), LoopbackHost.ADDRESS),
+                    "a relay leg to connect to the edge");
+            relayedPeers.register(registeredElsewhere.localAddress(), CLIENT_B);
+            Map<String, String> forged = Map.of(
+                    "X-Forwarded-For", CLIENT_A,
+                    "Forwarded", "for=" + CLIENT_A,
+                    "X-Real-IP", CLIENT_A,
+                    "X-Relayed-Peer", CLIENT_A,
+                    "X-Sheriff-Relayed-Peer", CLIENT_A);
+
+            int status = login(null, forged);
+
+            assertAll("the request is keyed on its own TCP peer",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(LoopbackHost.ADDRESS), storedKeys,
+                            "no header names a client, and another connection's entry is not this one's"));
+        }
+
+        private int login(@Nullable String relayedClient, Map<String, String> headers) throws Exception {
+            return rawLogin(client, front, relayedPeers, relayedClient, headers);
+        }
+    }
+
+    /**
+     * The fail-closed rule behind the SNI front, observed where it takes effect: the reserved login
+     * path's pending record. Here the loopback peer IS a trusted forwarder, so a request whose
+     * forwarding header the quota key reads is counted under the client that header names. Behind the
+     * front, a connection on the internal terminated listener that the relay holds no hand-off for must
+     * not be: it is counted under its own TCP peer, whatever it forwards. The test stands in for the
+     * front by recording its edge's own port as the terminated listener, and for the relay by
+     * registering a connection's local address.
+     * <p>
+     * The unfronted edge is the matched control: the identical request is counted under the client its
+     * header names. Before the rule existed no code distinguished the two edges, so the fronted case
+     * received exactly that key too.
+     */
+    @Nested
+    @DisplayName("behind the SNI front, a terminated-listener connection without a hand-off is keyed on its TCP peer")
+    class FrontedTerminatedListenerQuotaKey {
+
+        private static final String FORGED_CLIENT = "198.51.100.1";
+        private static final String RELAYED_CLIENT = "198.51.100.2";
+
+        private final RelayedPeerRegistry frontedPeers = new RelayedPeerRegistry();
+        private final RelayedPeerRegistry unfrontedPeers = new RelayedPeerRegistry();
+        private final List<String> frontedKeys = new CopyOnWriteArrayList<>();
+        private final List<String> unfrontedKeys = new CopyOnWriteArrayList<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer frontedFront;
+        private HttpServer unfrontedFront;
+        private NetClient client;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            frontedFront = trustingLoopbackEdge(frontedPeers, frontedKeys);
+            frontedPeers.frontTerminatedListener(frontedFront.actualPort());
+            unfrontedFront = trustingLoopbackEdge(unfrontedPeers, unfrontedKeys);
+            client = vertx.createNetClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the TCP client to close");
+            Awaits.teardown(frontedFront.close(), "the fronted edge front server to close");
+            Awaits.teardown(unfrontedFront.close(), "the unfronted edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("(a) an unregistered connection with a forged X-Forwarded-For is keyed on its TCP peer")
+        void unregisteredConnectionIsKeyedOnItsTcpPeer() throws Exception {
+            int status = rawLogin(client, frontedFront, frontedPeers, null, Map.of("X-Forwarded-For", FORGED_CLIENT));
+
+            assertAll("the forwarding header does not stand in for the missing hand-off",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(LoopbackHost.ADDRESS), frontedKeys,
+                            "the request is counted under its own TCP peer, not the client its header names"));
+        }
+
+        @Test
+        @DisplayName("(b) a registered relay leg is still keyed on the relayed client")
+        void registeredConnectionKeepsTheRelayedClient() throws Exception {
+            int status = rawLogin(client, frontedFront, frontedPeers, RELAYED_CLIENT,
+                    Map.of("X-Forwarded-For", FORGED_CLIENT));
+
+            assertAll("the hand-off still names the client",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(RELAYED_CLIENT), frontedKeys,
+                            "an exact registry hit keys the login on the client the relay handed over"));
+        }
+
+        @Test
+        @DisplayName("(c) without a front listener the trusted peer's forwarding header is honoured as before")
+        void withoutAFrontTheForwardingHeaderIsHonoured() throws Exception {
+            int status = rawLogin(client, unfrontedFront, unfrontedPeers, null,
+                    Map.of("X-Forwarded-For", FORGED_CLIENT));
+
+            assertAll("the unfronted edge reads the trusted forwarder's header",
+                    () -> assertEquals(302, status, "precondition: the login stored its record"),
+                    () -> assertEquals(List.of(FORGED_CLIENT), unfrontedKeys,
+                            "control: with no front the identical request is counted under its forwarded client"));
+        }
+
+        private HttpServer trustingLoopbackEdge(RelayedPeerRegistry registry, List<String> storedKeys)
+                throws Exception {
+            return EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(loginStoringRuntime(serverBinding(newStore()), recordingStore(storedKeys),
+                            quotaKeysTrusting(List.of(LoopbackHost.ADDRESS + "/32"))))
+                    .relayedPeers(registry)
+                    .serve();
+        }
+    }
+
+    /**
+     * Drives one login over a raw connection, so the connection's local address is known before the
+     * request is sent and can be registered as a relay leg would be.
+     *
+     * @param client        the TCP client to connect with
+     * @param front         the edge to send the login to
+     * @param relayedPeers  the registry the edge looks the connection up in
+     * @param relayedClient the client the stand-in relay hands over for the connection, or
+     *                      {@code null} to send the request over an unregistered connection
+     * @param headers       extra request headers
+     * @return the response status
+     */
+    private static int rawLogin(NetClient client, HttpServer front, RelayedPeerRegistry relayedPeers,
+            @Nullable String relayedClient, Map<String, String> headers) throws Exception {
+        NetSocket socket = Awaits.connect(client.connect(front.actualPort(), LoopbackHost.ADDRESS),
+                "the connection to the edge");
+        RelayedPeerRegistry.Registration registration = relayedClient == null ? null
+                : relayedPeers.register(socket.localAddress(), relayedClient);
+        Buffer response = Buffer.buffer();
+        CompletableFuture<Buffer> closed = new CompletableFuture<>();
+        socket.handler(response::appendBuffer);
+        socket.closeHandler(v -> closed.complete(response));
+        StringBuilder request = new StringBuilder("GET " + LOGIN_PATH + " HTTP/1.1\r\nHost: " + OIDC_HOST
+                + "\r\nConnection: close\r\n");
+        headers.forEach((name, value) -> request.append(name).append(": ").append(value).append("\r\n"));
+        Awaits.connect(socket.write(request.append("\r\n").toString()), "the login request to be written");
+        String answer = Awaits.connect(closed, "the edge to answer and close").toString(StandardCharsets.US_ASCII);
+        if (registration != null) {
+            registration.release();
+        }
+        return Integer.parseInt(answer.substring("HTTP/1.1 ".length(), "HTTP/1.1 ".length() + 3));
+    }
+
+    /** An in-memory pending store that records the quota key of every record offered to it. */
+    private static PendingAuthorizationStore recordingStore(List<String> quotaKeys) {
+        InMemoryPendingAuthorizationStore delegate = new InMemoryPendingAuthorizationStore(16);
+        return new PendingAuthorizationStore() {
+            @Override
+            public void store(PendingAuthorizationRecord pending, Instant now) {
+                quotaKeys.add(pending.quotaKey());
+                delegate.store(pending, now);
+            }
+
+            @Override
+            public Optional<PendingAuthorizationRecord> consume(String recordId, Instant now) {
+                return delegate.consume(recordId, now);
+            }
+        };
+    }
+
     private static OidcConfig fullOidc() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
                 .path(LOGOUT_PATH)
@@ -1923,15 +2336,66 @@ public class GatewayEdgeRouteBffWiringTest {
      */
     static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
             SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
+        return assembleRuntime(binding, clientJwksEndpoint, sessionRelays, sessionHeld,
+                new InMemoryPendingAuthorizationStore(16), scopes -> {
+                    throw new AssertionError("engine authorize must not be reached");
+                }, false, untrustingQuotaKeys());
+    }
+
+    /**
+     * An engine-free active runtime whose pending store already holds its full capacity of live records
+     * of another source. Its login seam yields a redirect instead of throwing, and its session stage
+     * starts a navigation login through the runtime's real {@link LoginFlow}, so both the reserved login
+     * path and a session-route navigation reach the store — which refuses them.
+     */
+    private static BffRuntime saturatedStoreRuntime(SessionBinding binding) {
+        InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1);
+        Instant now = Instant.now();
+        saturated.store(PendingAuthorizationRecord.create(FlowContext.create(ORIGIN + CALLBACK_PATH),
+                ROOT_RETURN_TARGET, List.of("openid"), "203.0.113.99", now), now);
+        return assembleRuntime(binding, ClientJwksEndpoint.withheld(), new SessionRelayRegistry(16, Clock.systemUTC()),
+                sessionId -> true, saturated, scopes -> new AuthorizationCodeFlow.AuthorizationRedirect(
+                        "https://idp.example.com/authorize", FlowContext.create(ORIGIN + CALLBACK_PATH)),
+                true, untrustingQuotaKeys());
+    }
+
+    /**
+     * An engine-free active runtime whose login seam yields a redirect, so the reserved login path stores
+     * a pending record in {@code pendingStore}, and whose quota-key derivation is {@code quotaKeys}.
+     */
+    private static BffRuntime loginStoringRuntime(SessionBinding binding, PendingAuthorizationStore pendingStore,
+            PendingQuotaKeys quotaKeys) {
+        return assembleRuntime(binding, ClientJwksEndpoint.withheld(), new SessionRelayRegistry(16, Clock.systemUTC()),
+                sessionId -> true, pendingStore, scopes -> new AuthorizationCodeFlow.AuthorizationRedirect(
+                        "https://idp.example.com/authorize", FlowContext.create(ORIGIN + CALLBACK_PATH)),
+                false, quotaKeys);
+    }
+
+    /**
+     * Assembles the engine-free active runtime over {@code pendingStore}, with {@code authorization} as
+     * the login flow's push seam and {@code quotaKeys} as the runtime's quota-key derivation. When
+     * {@code stageLoginThroughFlow} is set, the session stage's navigation login goes through that login
+     * flow as production wires it; otherwise it answers the fixed {@link #LOGIN_CHALLENGE_LOCATION}
+     * without storing anything.
+     */
+    @SuppressWarnings("java:S107") // fixture assembly, one call site per runtime shape
+    private static BffRuntime assembleRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
+            SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld, PendingAuthorizationStore pendingStore,
+            LoginFlow.AuthorizationInitiation authorization, boolean stageLoginThroughFlow,
+            PendingQuotaKeys quotaKeys) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-        PendingAuthorizationStore pendingStore = new InMemoryPendingAuthorizationStore(16);
         Duration ttl = Duration.ofHours(1);
 
-        LoginFlow loginFlow = new LoginFlow(scopes -> {
-            throw new AssertionError("engine authorize must not be reached");
-        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+        LoginFlow loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET,
+                Clock.systemUTC());
 
-        SessionAuthenticationStage sessionStage = engineFreeSessionStage(binding);
+        SessionAuthenticationStage sessionStage = stageLoginThroughFlow
+                ? engineFreeSessionStage(binding, (returnUrl, scopes, quotaKey, instant) -> {
+            LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, quotaKey, instant);
+            return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
+                    redirect.setCookieHeaders());
+        })
+                : engineFreeSessionStage(binding);
 
         CsrfDefence csrf = new CsrfDefence(Set.of(ORIGIN));
 
@@ -1940,7 +2404,7 @@ public class GatewayEdgeRouteBffWiringTest {
                 challenge -> {
                     throw new AssertionError("engine step-up must not be reached");
                 },
-                pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of());
+                pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, List.of(), Clock.systemUTC());
 
         SessionWidening widening = engineFreeSessionWidening(pendingStore, bindingCodec);
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
@@ -1963,7 +2427,28 @@ public class GatewayEdgeRouteBffWiringTest {
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
                 userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson(),
-                sessionRelays, sessionHeld);
+                sessionRelays, sessionHeld, quotaKeys);
+    }
+
+    /**
+     * A quota-key derivation that trusts no proxy: {@link #quotaKeysTrusting} over an empty
+     * trusted-proxy list, so every request is keyed on its TCP peer.
+     */
+    private static PendingQuotaKeys untrustingQuotaKeys() {
+        return quotaKeysTrusting(List.of());
+    }
+
+    /**
+     * A quota-key derivation over {@code trustedProxies}: a {@link TcpPeerGate} and a
+     * {@link ForwardedHeaderResolver} built from that list and {@link SecurityConfiguration#defaults()}.
+     * It is not the producer's derivation: only the trusted-proxy list is the fixture's input, and the
+     * security configuration is always the defaults.
+     */
+    private static PendingQuotaKeys quotaKeysTrusting(List<String> trustedProxies) {
+        return new PendingQuotaKeys(new TcpPeerGate(trustedProxies), new ForwardedHeaderResolver(
+                ForwardedResolverConfig.builder().trustedProxies(Set.copyOf(trustedProxies))
+                        .securityConfig(SecurityConfiguration.defaults()).build(),
+                new SecurityEventCounter()));
     }
 
     /**
@@ -1983,15 +2468,22 @@ public class GatewayEdgeRouteBffWiringTest {
      * reserves.
      */
     private static SessionAuthenticationStage engineFreeSessionStage(SessionBinding binding) {
+        return engineFreeSessionStage(binding, (returnUrl, scopes, quotaKey, instant) ->
+                new SessionAuthenticationStage.LoginChallenge(LOGIN_CHALLENGE_LOCATION, List.of()));
+    }
+
+    /** As {@link #engineFreeSessionStage(SessionBinding)}, with the navigation-login seam the caller supplies. */
+    private static SessionAuthenticationStage engineFreeSessionStage(SessionBinding binding,
+            SessionAuthenticationStage.LoginInitiation login) {
         return new SessionAuthenticationStage(binding,
                 (session, cookieHeader, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
                 (session, cookieHeader, requestedScopes, instant) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
-                (returnUrl, scopes, instant) ->
-                        new SessionAuthenticationStage.LoginChallenge(LOGIN_CHALLENGE_LOCATION, List.of()),
-                (live, returnUrl, neededScopes, instant) ->
+                login,
+                (live, returnUrl, neededScopes, quotaKey, instant) ->
                         new SessionAuthenticationStage.LoginChallenge(WIDENING_CHALLENGE_LOCATION, List.of()),
+                untrustingQuotaKeys(),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 STEP_UP_PATH,
                 Clock.systemUTC());
@@ -2025,7 +2517,7 @@ public class GatewayEdgeRouteBffWiringTest {
             BindingCookieCodec bindingCodec) {
         return new SessionWidening((scopes, silent) -> {
             throw new AssertionError("engine widening authorize must not be reached");
-        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET);
+        }, pendingStore, bindingCodec, ORIGIN, ROOT_RETURN_TARGET, Clock.systemUTC());
     }
 
     private static LogoutEndpoint logoutEndpoint(SessionBinding binding) {

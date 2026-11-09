@@ -30,6 +30,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
@@ -68,7 +69,9 @@ import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
+import de.cuioss.sheriff.gateway.bff.runtime.ForwardedTrust;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
+import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -200,6 +203,13 @@ import org.jspecify.annotations.Nullable;
  * widening seam to the runtime's one {@link SessionWidening}, always starting with a silent attempt.
  * {@code oidc.step_up.path} is handed to the stage as the path its {@code 403} answer names; when the
  * key is absent the answer names no step-up URL.
+ * <p>
+ * <strong>A fair pending-authorization store.</strong> The runtime's one
+ * {@link InMemoryPendingAuthorizationStore} keeps its global bound and caps the live records per
+ * requester source, so one source's login flood cannot evict another user's live login. The source a
+ * pending record is counted under is derived by one {@link PendingQuotaKeys}, built from the global
+ * {@code forwarded.trusted_proxies} exactly as the edge's forward stage reads them, and handed to the
+ * session stage and to the runtime, which puts it on every reserved-path request.
  * <p>
  * <strong>Response mode.</strong> The authorization-URL seams are wired with the gateway-owned
  * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
@@ -598,7 +608,7 @@ public class BffRuntimeProducer {
         LoginFlow loginFlow = new LoginFlow(
                 scopes -> pushed(pushedRequests, metadata.get(), clientId,
                         scopedFlows.authorize(metadata.get(), scopes)),
-                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, clock);
 
         // Session widening — the live-session sibling of the login flow, on the same pending store,
         // binding cookie and callback landing. Its authorization leg is built per call on
@@ -612,7 +622,7 @@ public class BffRuntimeProducer {
         SessionWidening sessionWidening = new SessionWidening(
                 (scopes, silent) -> pushed(pushedRequests, metadata.get(), clientId,
                         scopedFlows.widen(metadata.get(), scopes, silent)),
-                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl);
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, clock);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
         // then hands the result to the refresh policy, which is where the exchange's refresh token is
@@ -660,21 +670,25 @@ public class BffRuntimeProducer {
         // widening seam. A session route enforces its needed scopes on every request: missing scopes
         // inside the granted set are refreshed, anything else is widened through the runtime's ONE
         // SessionWidening (silent attempt first) or refused 403 naming oidc.step_up.path.
+        // One quota-key derivation for every producer of a pending record: the session stage hands it to
+        // both navigation seams, and the runtime exposes it to the edge for the reserved paths.
+        PendingQuotaKeys pendingQuotaKeys = pendingQuotaKeys();
         OidcConfig.StepUp stepUp = oidc.stepUp();
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
                 tokenRefresh,
                 scopeRefresh,
-                (returnUrl, scopes, now) -> {
-                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, now);
+                (returnUrl, scopes, quotaKey, now) -> {
+                    LoginFlow.LoginRedirect redirect = loginFlow.initiate(returnUrl, scopes, quotaKey, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
-                (live, returnUrl, neededScopes, now) -> {
+                (live, returnUrl, neededScopes, quotaKey, now) -> {
                     LoginFlow.LoginRedirect redirect = sessionWidening.initiate(live, returnUrl, neededScopes,
-                            PendingAuthorizationRecord.Widening.Attempt.SILENT, now);
+                            PendingAuthorizationRecord.Widening.Attempt.SILENT, quotaKey, now);
                     return new SessionAuthenticationStage.LoginChallenge(redirect.authorizationUrl(),
                             redirect.setCookieHeaders());
                 },
+                pendingQuotaKeys,
                 onFailure,
                 stepUp == null ? null : stepUp.path(),
                 clock);
@@ -694,7 +708,7 @@ public class BffRuntimeProducer {
                 (sessionRecord, challenge, now) -> Optional.empty(),
                 challenge -> pushed(pushedRequests, metadata.get(), clientId,
                         stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge)),
-                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes());
+                pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes(), clock);
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
         // JSON types, capped by the allowlist.
@@ -761,7 +775,25 @@ public class BffRuntimeProducer {
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint, stepUpEndpoint,
-                clientCredential.jwksEndpoint(), gatewayJson, sessionRelays, sessionHeld);
+                clientCredential.jwksEndpoint(), gatewayJson, sessionRelays, sessionHeld, pendingQuotaKeys);
+    }
+
+    /**
+     * Builds the derivation of the quota key a pending-authorization record is counted under, from the
+     * global {@code forwarded.trusted_proxies}: the peer gate and the forwarded-header resolver come from
+     * {@link ForwardedTrust}, the one derivation the edge builds its forward stage from as well
+     * ({@code GatewayEdgeRoute}), so both judge forwarding headers under the same trusted-proxy set and
+     * resolver configuration. They share the trust, not the peer: behind the gateway's own SNI front
+     * listener the quota key judges the relayed client address while the forward stage judges the TCP
+     * peer, the relay's loopback leg, so the two can name different clients for one request (see
+     * {@link ForwardedTrust}). The resolver has a security-event counter of its own, so a malformed
+     * forwarding header of a trusted proxy is not counted twice.
+     *
+     * @return the quota-key derivation the session stage and the reserved paths share
+     */
+    private PendingQuotaKeys pendingQuotaKeys() {
+        ForwardedTrust forwardedTrust = ForwardedTrust.of(gatewayConfig);
+        return new PendingQuotaKeys(forwardedTrust.peerGate(), forwardedTrust.resolver(new SecurityEventCounter()));
     }
 
     /**

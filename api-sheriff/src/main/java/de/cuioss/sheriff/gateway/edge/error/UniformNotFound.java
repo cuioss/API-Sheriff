@@ -94,6 +94,11 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@link EventType#SOURCE_BLOCKED} — raised before route selection, on the event loop before
  *       admission, and keyed by the caller's source address rather than by the address it requested:
  *       address-independent, identical whether a route exists or not;</li>
+ *   <li>{@link EventType#PENDING_AUTHORIZATION_SATURATED} — a login start refused because the
+ *       pending-authorization store is full of live records. On a reserved path there is no selected
+ *       route; on the session branch the route is already disclosed by the {@code 302} into the
+ *       identity provider any other unauthenticated navigation receives (the verify-first clause,
+ *       ADR-0055), so the honest {@code 503} reveals nothing new;</li>
  *   <li>the boot and informational events, {@link EventType#SOURCE_TRIPPED} among them — they have no
  *       HTTP mapping.</li>
  * </ul>

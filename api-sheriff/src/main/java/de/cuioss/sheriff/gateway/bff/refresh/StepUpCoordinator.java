@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.refresh;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -69,6 +70,14 @@ import org.jspecify.annotations.Nullable;
  * a {@code 502} refusal: {@link #coordinate} calls the seam before it stores the pending record, so
  * nothing is stored and no cookie is minted for a request that was never pushed.
  * <p>
+ * <strong>A saturated pending store refuses the re-drive.</strong> The re-drive pending record carries
+ * the requester's quota key; when the store is full of live records it refuses the record with
+ * {@link de.cuioss.sheriff.gateway.events.EventType#PENDING_AUTHORIZATION_SATURATED}, which propagates
+ * out of {@link #coordinate} after the push and before any cookie is minted, and the edge answers it
+ * {@code 503} with {@code Retry-After}. The store judges "live" at a clock reading taken after the push
+ * returned, so records that expired during the push's round trip free their places first; the new
+ * record's own lifetime still runs from the caller's {@code now}.
+ * <p>
  * The class is framework-agnostic — it consumes a raw {@code WWW-Authenticate} header value and
  * returns a {@link StepUpOutcome} the edge renders, so it is unit-testable without a container or a
  * live IdP. It is exercised only when {@code session.step_up.honor_upstream_challenge} is enabled;
@@ -89,6 +98,7 @@ public final class StepUpCoordinator {
     private final String gatewayOrigin;
     private final String defaultReturnUrl;
     private final Set<String> stepUpScopes;
+    private final Clock clock;
 
     /**
      * Assembles the coordinator with the engine step-up seams and the gateway-side stores.
@@ -115,10 +125,13 @@ public final class StepUpCoordinator {
      *                           supplied
      * @param stepUpScopes       the scope set the step-up authorization request is built with (the
      *                           static {@code oidc.scopes}), recorded on every re-drive pending record
+     * @param clock              the clock read once the step-up push returned, for the instant the
+     *                           pending store purges expired records at
      */
+    @SuppressWarnings("java:S107") // the coordinator's collaborators; each is a distinct seam or setting
     public StepUpCoordinator(SilentSatisfaction silentSatisfaction, StepUpInitiation stepUpInitiation,
             PendingAuthorizationStore pendingStore, BindingCookieCodec bindingCookieCodec, String gatewayOrigin,
-            String defaultReturnUrl, Collection<String> stepUpScopes) {
+            String defaultReturnUrl, Collection<String> stepUpScopes, Clock clock) {
         this.challengeParser = new StepUpChallengeParser();
         this.silentSatisfaction = Objects.requireNonNull(silentSatisfaction, "silentSatisfaction");
         this.stepUpInitiation = Objects.requireNonNull(stepUpInitiation, "stepUpInitiation");
@@ -127,6 +140,7 @@ public final class StepUpCoordinator {
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
         this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
         this.stepUpScopes = Set.copyOf(Objects.requireNonNull(stepUpScopes, "stepUpScopes"));
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -150,15 +164,24 @@ public final class StepUpCoordinator {
      * @param session   the live session whose upstream call was challenged
      * @param challenge the parsed RFC 9470 challenge (from {@link #detectChallenge})
      * @param replayUrl the URL of the request to replay after step-up (same-origin-validated)
-     * @param now       the reference instant (the re-drive pending record's TTL anchor)
+     * @param quotaKey  the requester's canonical source, recorded on the re-drive pending record for the
+     *                  store's per-source cap
+     * @param now       the reference instant: the re-drive pending record's TTL anchor and the instant
+     *                  of the silent attempt. The store's purge uses the admission-time clock reading
+     *                  taken after the step-up push returned
      * @return {@link StepUpOutcome#satisfied(SessionRecord) satisfied} when silent elevation worked,
      *         otherwise {@link StepUpOutcome#reDrive(String, List) reDrive} carrying the redirect and
      *         the browser-binding {@code Set-Cookie}
+     * @throws de.cuioss.sheriff.gateway.events.GatewayException with
+     *                                                           {@code PENDING_AUTHORIZATION_SATURATED}
+     *                                                           when a re-drive finds the pending store
+     *                                                           full of live records
      */
     public StepUpOutcome coordinate(SessionRecord session, StepUpChallenge challenge, @Nullable String replayUrl,
-            Instant now) {
+            String quotaKey, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(challenge, "challenge");
+        Objects.requireNonNull(quotaKey, "quotaKey");
         Objects.requireNonNull(now, "now");
 
         Optional<SessionRecord> elevated = silentSatisfaction.attempt(session, challenge, now);
@@ -174,8 +197,10 @@ public final class StepUpCoordinator {
         // The step-up request is built from the static base configuration, so the scope set it asked
         // for is stepUpScopes (the PLAN-20 residual), never the session's active set.
         PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(request.context(), returnUrl,
-                stepUpScopes, now);
-        pendingStore.store(pending);
+                stepUpScopes, quotaKey, now);
+        // The record's TTL runs from now; the store purges at a reading taken after the push returned, so
+        // records that expired during the push do not count against the capacity.
+        pendingStore.store(pending, clock.instant());
         LOGGER.debug("Step-up challenge requires re-authentication — re-driving the auth-code flow");
         List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));
         return StepUpOutcome.reDrive(request.authorizationUrl(), setCookies);

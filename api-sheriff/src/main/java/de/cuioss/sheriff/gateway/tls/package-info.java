@@ -40,6 +40,12 @@
  * {@link TlsEdgeProducer} creates the listener and the relay, and the listener creates the parser. As
  * beans they would exist in every deployment, including the default one that starts no front
  * listener.
+ * <p>
+ * {@link RelayedPeerRegistry} carries no class annotation, yet it is a bean: {@link TlsEdgeProducer}
+ * produces the one instance it owns as a {@code @Singleton}, in every deployment, so the terminated
+ * relay and the edge share it. For this one class the producer method, not a class annotation, is the
+ * record. The scope is {@code @Singleton} rather than {@code @ApplicationScoped} because the class is
+ * {@code final} and so takes no client proxy.
  *
  * <h2>Why {@code ClientHelloSniParser} is hand-written</h2>
  *

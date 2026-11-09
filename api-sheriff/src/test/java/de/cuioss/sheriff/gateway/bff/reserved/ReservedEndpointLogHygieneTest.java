@@ -17,8 +17,10 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +30,7 @@ import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -40,6 +43,7 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -81,6 +85,9 @@ class ReservedEndpointLogHygieneTest {
     private static final String ORIGIN = "https://gw.example.com";
     private static final String CALLBACK_URI = ORIGIN + "/auth/callback";
     private static final String SUBJECT = "user-sub-1";
+    private static final String QUOTA_KEY = "192.0.2.10";
+    private static final String REFUSED_QUOTA_KEY = "203.0.113.77";
+    private static final int PENDING_CAPACITY = 8;
 
     private final String accessToken = secret();
     private final String idToken = secret();
@@ -100,7 +107,7 @@ class ReservedEndpointLogHygieneTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         sessionBinding = new ServerSessionBinding(
                 new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
@@ -109,8 +116,8 @@ class ReservedEndpointLogHygieneTest {
         FlowContext flow = FlowContext.create(CALLBACK_URI);
         state = flow.state();
         PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, "/dashboard", List.of("openid"),
-                NOW);
-        pendingStore.store(pending);
+                QUOTA_KEY, NOW);
+        pendingStore.store(pending, NOW);
         recordId = pending.id();
         bindingCookie = pair(bindingCodec.toSetCookieHeader(recordId));
     }
@@ -118,7 +125,7 @@ class ReservedEndpointLogHygieneTest {
     private CallbackEndpoint callback(CodeExchange exchange) {
         SessionWidening widening = new SessionWidening((scopes, silent) -> {
             throw new AssertionError("no widening is driven here");
-        }, pendingStore, bindingCodec, ORIGIN, "/dashboard");
+        }, pendingStore, bindingCodec, ORIGIN, "/dashboard", Clock.fixed(NOW, ZoneOffset.UTC));
         return new CallbackEndpoint(exchange, pendingStore, bindingCodec, sessionBinding, SESSION_TTL, widening);
     }
 
@@ -174,7 +181,7 @@ class ReservedEndpointLogHygieneTest {
         String earlier = earlierSession();
 
         CallbackOutcome outcome = callback(successfulExchange())
-                .handle("code=" + code + "&state=" + state, bindingCookie + "; " + earlier, NOW);
+                .handle("code=" + code + "&state=" + state, bindingCookie + "; " + earlier, QUOTA_KEY, NOW);
 
         assertEquals(302, outcome.status(), "precondition: the login completed");
         String newCookie = pair(outcome.setCookieHeaders().getFirst());
@@ -211,7 +218,7 @@ class ReservedEndpointLogHygieneTest {
         String cookies = withBindingCookie ? bindingCookie + "; " + earlier : earlier;
 
         CallbackOutcome outcome = callback(successfulExchange()).handle(query.formatted(code, state, foreign), cookies,
-                NOW);
+                QUOTA_KEY, NOW);
 
         assertEquals(4, outcome.status() / 100, "precondition: the callback is refused for " + what);
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG, "OIDC callback");
@@ -232,7 +239,7 @@ class ReservedEndpointLogHygieneTest {
         };
 
         CallbackOutcome outcome = callback(failing).handle("code=" + code + "&state=" + state,
-                bindingCookie + "; " + earlier, NOW);
+                bindingCookie + "; " + earlier, QUOTA_KEY, NOW);
 
         assertEquals(400, outcome.status(), "precondition: the exchange failure is answered 400");
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG, "OIDC callback code exchange");
@@ -241,6 +248,33 @@ class ReservedEndpointLogHygieneTest {
                 "state", state,
                 "login-binding record id", recordId,
                 "session cookie value", valueOf(earlier)));
+    }
+
+    @Test
+    @DisplayName("a saturated pending store logs neither a source address, a state, a nonce nor a record id")
+    void saturatedPendingStoreLogsNoRequestData() {
+        for (int i = 1; i < PENDING_CAPACITY; i++) {
+            pendingStore.store(PendingAuthorizationRecord.create(FlowContext.create(CALLBACK_URI), "/dashboard",
+                    List.of("openid"), "198.51.100." + i, NOW), NOW);
+        }
+        PendingAuthorizationRecord refused = PendingAuthorizationRecord.create(FlowContext.create(CALLBACK_URI),
+                "/dashboard", List.of("openid"), REFUSED_QUOTA_KEY, NOW);
+
+        assertThrows(GatewayException.class, () -> pendingStore.store(refused, NOW),
+                "precondition: the full store refuses the record");
+        assertThrows(GatewayException.class, () -> pendingStore.store(refused, NOW),
+                "the second refusal of the episode is logged at DEBUG");
+
+        LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                BffLogMessages.WARN.PENDING_AUTHORIZATION_STORE_SATURATED.resolveIdentifierString());
+        assertNowhereInTheLog(InMemoryPendingAuthorizationStore.class, Map.of(
+                "refused source address", REFUSED_QUOTA_KEY,
+                "stored source address", QUOTA_KEY,
+                "refused state", refused.flowContext().state(),
+                "refused nonce", refused.flowContext().nonce(),
+                "refused record id", refused.id(),
+                "stored state", state,
+                "stored record id", recordId));
     }
 
     @Test

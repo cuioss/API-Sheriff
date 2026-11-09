@@ -262,7 +262,13 @@ Two precedents show the conversion:
 * *The pending-login flood.* The bound of the pending-login store was carried by a `-Pbenchmark` goal
   that failed on every run without blocking anything. It now lives in the gating suite as
   `BffPendingLoginBoundIT`, because a capacity bound is a security property and a security
-  property gates the merge.
+  property gates the merge. The test proves the store's per-source cap of 256 live records through
+  the gateway's own login path, with every login sent from the test client's one source: the first
+  of 256 same-source logins is kept and completes into a session, and once 256 further same-source
+  logins have followed it, that first login is its source's oldest record beyond the cap -- it is
+  evicted, its callback is refused, and the newest login still completes. Eviction is
+  own-oldest only: a flood from one source displaces that source's own records, never another
+  source's live login.
 
 [[_adding_a_resource_bound]]
 === Adding a test for a new resource bound

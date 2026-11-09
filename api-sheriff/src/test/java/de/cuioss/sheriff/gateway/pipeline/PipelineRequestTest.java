@@ -266,4 +266,39 @@ class PipelineRequestTest {
                     () -> assertEquals(-1, request.authorityPort()));
         }
     }
+
+    /**
+     * A request carries at most one of the relayed peer address and the unattributed mark: a hand-off
+     * the relay made and the mark of a missing one cannot both describe one connection.
+     */
+    @Nested
+    @DisplayName("the relayed peer address and the unattributed mark exclude each other")
+    class PeerAttribution {
+
+        private static final String RELAYED_PEER = "198.51.100.1";
+
+        @Test
+        @DisplayName("a request with both a relayed peer address and the unattributed mark is refused")
+        void relayedAndUnattributedIsRefused() {
+            PipelineRequest.Builder builder = PipelineRequest.builder().method(HttpMethod.GET)
+                    .requestPath("/app/orders").relayedPeerAddress(RELAYED_PEER).unattributedTerminatedLeg(true);
+
+            assertThrows(IllegalStateException.class, builder::build);
+        }
+
+        @Test
+        @DisplayName("control: either one alone builds and reads back")
+        void eitherAloneBuilds() {
+            PipelineRequest relayed = PipelineRequest.builder().method(HttpMethod.GET).requestPath("/app/orders")
+                    .relayedPeerAddress(RELAYED_PEER).build();
+            PipelineRequest unattributed = PipelineRequest.builder().method(HttpMethod.GET)
+                    .requestPath("/app/orders").unattributedTerminatedLeg(true).build();
+
+            assertAll("one component each",
+                    () -> assertEquals(RELAYED_PEER, relayed.relayedPeerAddress()),
+                    () -> assertFalse(relayed.unattributedTerminatedLeg()),
+                    () -> assertNull(unattributed.relayedPeerAddress()),
+                    () -> assertTrue(unattributed.unattributedTerminatedLeg()));
+        }
+    }
 }

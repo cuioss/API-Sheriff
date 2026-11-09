@@ -17,8 +17,10 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -43,6 +45,8 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
@@ -85,6 +89,9 @@ class LoginInitiationEndpointTest {
     private static final Set<String> OIDC_SCOPES = Set.of("openid", "profile");
     /** The {@code neededScopes} of the session route under {@code /dashboard}. */
     private static final Set<String> DASHBOARD_SCOPES = Set.of("openid", "profile", "dashboard:read");
+    /** The request's quota key, the source a fresh login's pending record is counted under. */
+    private static final String QUOTA_KEY = "192.0.2.10";
+    private static final int PENDING_CAPACITY = 8;
 
     private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -97,7 +104,7 @@ class LoginInitiationEndpointTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         FlowContext flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =
@@ -109,7 +116,8 @@ class LoginInitiationEndpointTest {
             requestedScopes.set(scopes);
             return redirect;
         };
-        loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+        loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT,
+                Clock.fixed(T0, ZoneOffset.UTC));
 
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
         sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
@@ -147,6 +155,14 @@ class LoginInitiationEndpointTest {
         return sessionCodec.toSetCookieHeader(COOKIE_HANDLE).split(";", 2)[0];
     }
 
+    /** Fills the pending store to its capacity with live records of other sources. */
+    private void fillPendingStore() {
+        for (int i = 0; i < PENDING_CAPACITY; i++) {
+            pendingStore.store(PendingAuthorizationRecord.create(FlowContext.create(GATEWAY_ORIGIN + "/auth/callback"),
+                    "/held", OIDC_SCOPES, "203.0.113." + i, T0), T0);
+        }
+    }
+
     /** Consumes the pending record bound by the binding cookie the fresh flow set. */
     private PendingAuthorizationRecord consumeBoundRecord(LoginInitiationOutcome outcome) {
         String cookie = outcome.setCookieHeaders().getFirst().split(";", 2)[0];
@@ -162,7 +178,7 @@ class LoginInitiationEndpointTest {
         @Test
         @DisplayName("Should redirect to the engine authorization URL and set the binding cookie")
         void shouldDriveAuthCodeFlow() {
-            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", null, T0);
+            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", null, QUOTA_KEY, T0);
 
             assertEquals(302, outcome.status());
             assertTrue(outcome.isRedirect());
@@ -175,7 +191,7 @@ class LoginInitiationEndpointTest {
         @Test
         @DisplayName("Should return to the same-origin-validated return URL after the callback")
         void shouldRecordSameOriginReturnUrl() {
-            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", null, T0);
+            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", null, QUOTA_KEY, T0);
 
             assertEquals("/dashboard", consumeBoundRecord(outcome).returnUrl());
         }
@@ -184,7 +200,7 @@ class LoginInitiationEndpointTest {
         @ValueSource(strings = {"https://evil.example.com/app", "//evil.example.com", "javascript:alert(1)"})
         @DisplayName("Should fall back to the configured default for an off-origin return URL (never an open redirect)")
         void shouldRejectOffOriginReturnUrl(String returnUrl) {
-            LoginInitiationOutcome outcome = endpoint.initiate(returnUrl, null, T0);
+            LoginInitiationOutcome outcome = endpoint.initiate(returnUrl, null, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(outcome).returnUrl());
         }
@@ -192,7 +208,7 @@ class LoginInitiationEndpointTest {
         @Test
         @DisplayName("Should fall back to the configured default when no return URL is supplied")
         void shouldFallBackForNullReturnUrl() {
-            LoginInitiationOutcome outcome = endpoint.initiate(null, null, T0);
+            LoginInitiationOutcome outcome = endpoint.initiate(null, null, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(outcome).returnUrl());
         }
@@ -200,7 +216,7 @@ class LoginInitiationEndpointTest {
         @Test
         @DisplayName("Should request the needed scopes of the authenticated route the return target lands on")
         void shouldRequestTargetRouteScopes() {
-            endpoint.initiate("/dashboard/reports?range=week", null, T0);
+            endpoint.initiate("/dashboard/reports?range=week", null, QUOTA_KEY, T0);
 
             assertEquals(DASHBOARD_SCOPES, Set.copyOf(requestedScopes.get()),
                     "the fresh login requests what the landing route needs");
@@ -210,7 +226,7 @@ class LoginInitiationEndpointTest {
         @ValueSource(strings = {"/unrouted", "https://evil.example.com/dashboard"})
         @DisplayName("Should request oidc.scopes only for a target that lands on no authenticated route")
         void shouldRequestOidcScopesForUnauthenticatedTarget(String returnUrl) {
-            endpoint.initiate(returnUrl, null, T0);
+            endpoint.initiate(returnUrl, null, QUOTA_KEY, T0);
 
             assertEquals(OIDC_SCOPES, Set.copyOf(requestedScopes.get()));
         }
@@ -218,7 +234,7 @@ class LoginInitiationEndpointTest {
         @Test
         @DisplayName("Should request oidc.scopes only when no return URL is supplied")
         void shouldRequestOidcScopesForAbsentTarget() {
-            endpoint.initiate(null, null, T0);
+            endpoint.initiate(null, null, QUOTA_KEY, T0);
 
             assertEquals(OIDC_SCOPES, Set.copyOf(requestedScopes.get()));
         }
@@ -228,10 +244,51 @@ class LoginInitiationEndpointTest {
         void shouldTreatExpiredSessionAsUnauthenticated() {
             String cookie = liveSessionCookie();
 
-            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", cookie, T0.plus(SESSION_TTL).plusSeconds(1));
+            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", cookie, QUOTA_KEY,
+                    T0.plus(SESSION_TTL).plusSeconds(1));
 
             assertEquals(AUTHORIZATION_URL, outcome.location(), "an expired session cannot short-circuit");
             assertEquals(1, authorizeCalls.get());
+        }
+
+        @Test
+        @DisplayName("Should count the fresh login's pending record under the request's quota key")
+        void shouldRecordQuotaKey() {
+            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", null, QUOTA_KEY, T0);
+
+            assertEquals(QUOTA_KEY, consumeBoundRecord(outcome).quotaKey());
+        }
+    }
+
+    @Nested
+    @DisplayName("Saturated pending store (refused with 503)")
+    class SaturatedStore {
+
+        @Test
+        @DisplayName("Should raise PENDING_AUTHORIZATION_SATURATED, store no pending record and mint no binding cookie")
+        void shouldRefuseFreshLoginWhenSaturated() {
+            fillPendingStore();
+
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> endpoint.initiate("/dashboard", null, QUOTA_KEY, T0),
+                    "the refusal replaces the redirect, so no binding cookie is minted");
+
+            assertEquals(EventType.PENDING_AUTHORIZATION_SATURATED, thrown.getEventType());
+            assertEquals(503, thrown.getEventType().httpStatus(), "the edge answers the refusal 503");
+            assertEquals(PENDING_CAPACITY, pendingStore.size(), "no pending record was stored for the refused login");
+            assertEquals(1, authorizeCalls.get(), "the refusal follows the pushed authorization request");
+        }
+
+        @Test
+        @DisplayName("Should still short-circuit a live session while the store is saturated (matched control)")
+        void shouldShortCircuitLiveSessionWhenSaturated() {
+            fillPendingStore();
+            String cookie = liveSessionCookie();
+
+            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", cookie, QUOTA_KEY, T0);
+
+            assertEquals("/dashboard", outcome.location(), "a live session stores no record, so it is never refused");
+            assertTrue(outcome.setCookieHeaders().isEmpty());
         }
     }
 
@@ -244,7 +301,7 @@ class LoginInitiationEndpointTest {
         void shouldShortCircuitToReturnUrl() {
             String cookie = liveSessionCookie();
 
-            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", cookie, T0);
+            LoginInitiationOutcome outcome = endpoint.initiate("/dashboard", cookie, QUOTA_KEY, T0);
 
             assertEquals(302, outcome.status());
             assertEquals("/dashboard", outcome.location(), "a live session lands straight on the return URL");
@@ -258,7 +315,7 @@ class LoginInitiationEndpointTest {
         void shouldRejectOffOriginReturnUrlOnShortCircuit(String returnUrl) {
             String cookie = liveSessionCookie();
 
-            LoginInitiationOutcome outcome = endpoint.initiate(returnUrl, cookie, T0);
+            LoginInitiationOutcome outcome = endpoint.initiate(returnUrl, cookie, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, outcome.location(), "an off-origin target can never be the location");
             assertEquals(0, authorizeCalls.get());
@@ -269,7 +326,7 @@ class LoginInitiationEndpointTest {
         void shouldFallBackForNullReturnUrl() {
             String cookie = liveSessionCookie();
 
-            LoginInitiationOutcome outcome = endpoint.initiate(null, cookie, T0);
+            LoginInitiationOutcome outcome = endpoint.initiate(null, cookie, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, outcome.location());
         }
@@ -282,7 +339,14 @@ class LoginInitiationEndpointTest {
         @Test
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
-            assertThrows(NullPointerException.class, () -> endpoint.initiate("/dashboard", null, null));
+            assertThrows(NullPointerException.class, () -> endpoint.initiate("/dashboard", null, QUOTA_KEY, null));
+        }
+
+        @Test
+        @DisplayName("Should reject a null quota key before any flow is driven")
+        void shouldRejectNullQuotaKey() {
+            assertThrows(NullPointerException.class, () -> endpoint.initiate("/dashboard", null, null, T0));
+            assertEquals(0, authorizeCalls.get(), "no authorization request is pushed without a quota key");
         }
 
         @Test

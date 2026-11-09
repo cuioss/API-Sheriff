@@ -469,12 +469,14 @@ The first two are logged as `ApiSheriff-131` with a bounded reason, the identity
 scope the IdP will not grant cannot loop the browser. The gateway keeps no record of a refusal: a
 later navigation to the route starts a new attempt.
 
-Two refusals are not answered by that `403`. An IdP that refuses the *pushed* request -- some refuse
+Three refusals are not answered by that `403`. An IdP that refuses the *pushed* request -- some refuse
 a scope there that the client may not request -- never sees the browser: the navigation, or the
 request to the step-up path, is answered `502` and `ApiSheriff-132` is logged (see
 link:bff-oidc-common.adoc#_what_the_browser_sees_at_login[Shared Setup -- What the browser sees at login]).
-A grant whose token is not bound to the proof key is answered `400` on the callback and logged as
-`ApiSheriff-134`. In both cases the session is left as it was.
+A widening started while the gateway holds its maximum of unfinished logins is answered `503` with
+`Retry-After: 30` (see <<pending-logins>>). A grant whose token is not bound to the proof key is
+answered `400` on the callback and logged as `ApiSheriff-134`. In all three cases the session is left
+as it was.
 
 *A logout during a widening wins.* If the user logs out, or the IdP delivers a back-channel logout,
 after the callback has found the live session and before it stores the merged one, the grant is not
@@ -699,6 +701,57 @@ browsers use at once. The range is `1` to `max_sessions`, and a value outside it
 
 Neither event revokes tokens at the IdP, and neither is logged above `DEBUG`.
 
+[[pending-logins]]
+== When too many logins are unfinished
+
+Every login the gateway starts leaves a *pending login* in its memory until the browser comes back
+to the callback or five minutes pass: a navigation to a session route without a session, a request
+to `oidc.login.path`, a widening started by a navigation or by the step-up path, and the interactive
+second attempt of a widening. Starting a login needs no credential, so the gateway limits how many
+it holds and how the room is shared. A gateway instance holds at most 10,000 pending logins, and
+neither number is configurable.
+
+*Each source holds at most 256.* A pending login is counted under the address it came from: the
+client address the forwarding headers name when the request arrives through a proxy listed in
+`forwarded.trusted_proxies`, otherwise the address of the TCP connection. Behind the gateway's own
+SNI front listener (`tls.passthrough_sni` set), that connection is the client's connection to the
+front listener, not the internal hop the gateway relays it over. An IPv6 address counts by
+its `/64`. Requests through a trusted proxy whose forwarding headers name no client, and requests
+without a usable address, are all counted as one source, `unknown`. When a source starts its 257th
+pending login, its oldest one is dropped; that user's callback is refused `403` and the login has to
+be started again. Other sources are not touched.
+
+*A full gateway refuses new logins and keeps the started ones.* When all 10,000 places hold logins
+that have not expired, a further login, widening or step-up start is answered `503` with
+`Retry-After: 30`, unless its source already holds 256 -- that one replaces its own oldest as above.
+The body is `application/problem+json` of type `urn:api-sheriff:problem:rate-limiting`; a browser
+navigation gets the HTML error page instead when `portal.error_pages` is on (see
+link:portal.adoc[Portal]). The browser is not redirected and gets no cookie, and a live session that
+was to be widened stays as it was. No login already started is dropped to make room, so users who
+are on the IdP's login page can still complete it. The `503` ends once logins are completed or
+expire, at most five minutes after the logins that filled the gateway were started.
+
+The gateway has already pushed the refused login's authorization request to the IdP when it finds
+no room, so a refused login still costs the IdP one request.
+
+*What you see.* The first refusal logs `WARN` `ApiSheriff-145` once; every further refusal stays at
+`DEBUG` until fewer than half of the places -- fewer than 5,000 -- hold pending logins. The next full
+period after that logs it once more. A gateway that frees a few places and fills them again is still
+in the same period and logs nothing new. The record names no address and no login. Every refusal is
+counted on `sheriff_errors_total{event="PENDING_AUTHORIZATION_SATURATED"}` (see
+link:../LogMessages.adoc[Log Messages] and
+link:../architecture/observability-and-errors.adoc[Observability and error handling]).
+
+*What it means.* A sustained count means many sources are starting logins they do not finish -- a
+login flood. No setting raises the limits: the gateway does not enforce `rate_limit`, so place a
+rate limit on the login and session paths in front of the gateway. If many real users share one
+address -- a corporate NAT, or a proxy you have not listed in `forwarded.trusted_proxies` -- more than
+256 of them logging in within the same five minutes drop each other's logins; list the proxy so
+each user's own address counts. The threat analysis is in
+link:../security-threat-model.adoc#bff-20[Threat model -- BFF-20].
+
+Each replica counts its own pending logins (see <<multi-replica>>).
+
 [[logout]]
 == Logout
 
@@ -812,6 +865,8 @@ and the two signing keys, any replica serves any session.
 * *Sessions are in-memory.* A gateway restart drops all sessions and users re-authenticate. Size
   `max_sessions` for expected concurrency; it caps memory against a login flood. Expired sessions
   are removed within a minute, so only live sessions hold the ceiling.
+* *Unfinished logins are bounded separately.* At most 10,000 per instance and 256 per source; a full
+  gateway answers new logins `503` and logs `ApiSheriff-145`. See <<pending-logins>>.
 * *Two deadlines.* `ttl_seconds` is counted from login and is not extended by refresh or by use;
   `idle_timeout_seconds` ends a session nobody uses. On either the user re-authenticates. See
   <<session-lifetime>>.

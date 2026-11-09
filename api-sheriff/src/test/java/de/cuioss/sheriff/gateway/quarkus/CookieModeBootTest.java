@@ -102,7 +102,8 @@ class CookieModeBootTest {
         // The observable consequence of that capability at the runtime's own surface is the
         // back-channel logout gate: the reserved path stays registered and answers a deliberate 404.
         BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
-                new BffRuntime.ReservedHttpRequest("", null, null, null, null, "logout_token=abc.def.ghi", "POST"),
+                new BffRuntime.ReservedHttpRequest("", null, null, null, null, "logout_token=abc.def.ghi", "POST",
+                        "192.0.2.10"),
                 Instant.parse("2026-07-27T10:00:00Z"));
 
         assertEquals(404, response.status(),

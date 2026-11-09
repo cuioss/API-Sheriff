@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -68,6 +69,7 @@ class SniFrontListenerTest {
     /** An idle timeout long enough that no case outside {@link IdleTimeout} can ever reach it. */
     private static final Duration LONG_IDLE = Duration.ofMinutes(31);
 
+    private final RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
     private Vertx vertx;
     private NetClient dialClient;
 
@@ -161,6 +163,34 @@ class SniFrontListenerTest {
             Buffer received = Awaits.connect(terminated.firstBytes(),
                     "the terminated backend to receive the relayed bytes");
             assertEquals(Buffer.buffer(hello), received, "an empty passthrough map relays everything terminated");
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * The address hand-off is decided by the routing branch: the terminated relay names the client
+         * of its loopback leg to the edge, and a passthrough relay — whose connection the gateway never
+         * terminates — names nothing. Each is observed at the moment the backend reads the ClientHello,
+         * the first byte any listener could act on.
+         */
+        @Test
+        @DisplayName("hands the client's address over for a terminated connection, and for a passthrough one never")
+        void handsTheClientOverOnlyOnTheTerminatedPath() throws Exception {
+            byte[] mapped = ClientHelloFixture.withSni(MAPPED_SNI);
+            byte[] unmapped = ClientHelloFixture.withSni("unmapped.example.net");
+            Backend passthrough = startBackend(mapped.length);
+            Backend terminated = startBackend(unmapped.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), terminated.target());
+
+            sendToFront(front, mapped);
+            sendToFront(front, unmapped);
+
+            assertAll("the hand-off as each backend reads its first bytes",
+                    () -> assertEquals(Optional.of(HOST), Awaits.connect(terminated.handOverAtFirstBytes(),
+                                    "the terminated backend to read the ClientHello"),
+                            "the terminated relay leg already names the client when its first byte arrives"),
+                    () -> assertEquals(Optional.empty(), Awaits.connect(passthrough.handOverAtFirstBytes(),
+                                    "the passthrough backend to read the ClientHello"),
+                            "a passthrough relay leg names no client"));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
     }
@@ -441,7 +471,7 @@ class SniFrontListenerTest {
         if (relayIdle != null) {
             SniFrontListener.applyIdleTimeout(relayOptions, relayIdle);
         }
-        PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient(relayOptions));
+        PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient(relayOptions), relayedPeers);
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, 0, HOST, deadline,
                 cap, frontIdle);
         Awaits.connect(front.start(), "the SNI front listener to start");
@@ -494,11 +524,15 @@ class SniFrontListenerTest {
     private Backend startBackend(int expectedBytes) throws Exception {
         CompletableFuture<Buffer> firstBytes = new CompletableFuture<>();
         CompletableFuture<Void> firstClosed = new CompletableFuture<>();
+        CompletableFuture<Optional<String>> handOver = new CompletableFuture<>();
         Buffer accumulator = Buffer.buffer();
         NetServer server = vertx.createNetServer();
         server.connectHandler(socket -> {
             socket.closeHandler(closed -> firstClosed.complete(null));
             socket.handler(chunk -> {
+                if (!handOver.isDone()) {
+                    handOver.complete(relayedPeers.clientOf(socket.remoteAddress()));
+                }
                 accumulator.appendBuffer(chunk);
                 if (accumulator.length() >= expectedBytes && !firstBytes.isDone()) {
                     firstBytes.complete(accumulator.copy());
@@ -507,15 +541,16 @@ class SniFrontListenerTest {
         });
         int port = Awaits.connect(server.listen(0, LoopbackHost.ADDRESS),
                 "the capturing backend to start listening").actualPort();
-        return new Backend(new RelayTarget(HOST, port), firstBytes, firstClosed);
+        return new Backend(new RelayTarget(HOST, port), firstBytes, firstClosed, handOver);
     }
 
     /**
-     * A capturing backend server: its endpoint, the future completed with its first bytes, and the
-     * future completed when its first accepted connection closes.
+     * A capturing backend server: its endpoint, the future completed with its first bytes, the future
+     * completed when its first accepted connection closes, and the future completed with the client the
+     * relayed-peer registry named for the relay leg when the first byte arrived.
      */
     private record Backend(RelayTarget target, CompletableFuture<Buffer> firstBytes,
-    CompletableFuture<Void> firstClosed) {
+    CompletableFuture<Void> firstClosed, CompletableFuture<Optional<String>> handOverAtFirstBytes) {
     }
 
     /**

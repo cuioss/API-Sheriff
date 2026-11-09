@@ -17,7 +17,9 @@ package de.cuioss.sheriff.gateway.bff.login;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -31,6 +33,7 @@ import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord.Widening;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.testsupport.SettableClock;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.test.generator.Generators;
@@ -57,12 +60,18 @@ import org.junit.jupiter.params.provider.ValueSource;
 class SessionWideningTest {
 
     private static final Instant T0 = Instant.parse("2026-09-25T10:00:00Z");
+    /** No time passes during a push unless a case moves it. */
+    private static final Clock CLOCK = Clock.fixed(T0, ZoneOffset.UTC);
     private static final String GATEWAY_ORIGIN = "https://gw.example.com";
     private static final String AUTHORIZATION_URL = "https://idp.example.com/authorize?client_id=api-sheriff";
     /** A configured {@code oidc.login.default_return_url} distinct from {@code /}. */
     private static final String CONFIGURED_DEFAULT = "/home";
     private static final Set<String> GRANTED = Set.of("openid", "profile");
     private static final Set<String> NEEDED = Set.of("openid", "orders:read");
+    /** The requester source a widening is counted under. */
+    private static final String QUOTA_KEY = "192.0.2.10";
+    /** The source of the callback request that re-drives a silent widening. */
+    private static final String REDRIVE_QUOTA_KEY = "198.51.100.20";
 
     /** One widening-seam call: the scope set it was asked for and whether it was silent. */
     private record SeamCall(Collection<String> scopes, boolean silent) {
@@ -88,7 +97,8 @@ class SessionWideningTest {
             seamCalls.add(new SeamCall(scopes, silent));
             return redirect;
         };
-        widening = new SessionWidening(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+        widening = new SessionWidening(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT,
+                CLOCK);
         live = liveSession(GRANTED);
     }
 
@@ -118,7 +128,7 @@ class SessionWideningTest {
         @Test
         @DisplayName("Should request the granted set united with the needed scopes, never the needed scopes alone")
         void shouldRequestGrantedUnionNeeded() {
-            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, T0);
+            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0);
 
             Set<String> expected = Set.of("openid", "profile", "orders:read");
             assertEquals(1, seamCalls.size(), "exactly one authorization request is built");
@@ -131,7 +141,7 @@ class SessionWideningTest {
         @Test
         @DisplayName("Should request the granted set unchanged when every needed scope is already granted")
         void shouldRequestGrantedWhenNeededIsCovered() {
-            widening.initiate(live, "/orders", Set.of("profile"), Widening.Attempt.SILENT, T0);
+            widening.initiate(live, "/orders", Set.of("profile"), Widening.Attempt.SILENT, QUOTA_KEY, T0);
 
             assertEquals(GRANTED, Set.copyOf(seamCalls.getFirst().scopes()));
         }
@@ -144,7 +154,7 @@ class SessionWideningTest {
         @Test
         @DisplayName("Should issue the silent attempt with prompt=none and record it with the live subject")
         void shouldRecordSilentAttempt() {
-            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, T0);
+            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0);
 
             PendingAuthorizationRecord pending = consumeBoundRecord(result);
             assertTrue(seamCalls.getFirst().silent(), "a silent attempt asks the seam for prompt=none");
@@ -153,12 +163,13 @@ class SessionWideningTest {
             assertEquals(live.sub(), pending.widening().sub(), "the callback must land on the live identity");
             assertSame(flowContext, pending.flowContext(), "the record wraps the engine context");
             assertEquals(T0, pending.createdAt());
+            assertEquals(QUOTA_KEY, pending.quotaKey(), "the widening record is counted under its requester");
         }
 
         @Test
         @DisplayName("Should issue the interactive attempt without prompt=none and record it as interactive")
         void shouldRecordInteractiveAttempt() {
-            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.INTERACTIVE, T0);
+            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.INTERACTIVE, QUOTA_KEY, T0);
 
             PendingAuthorizationRecord pending = consumeBoundRecord(result);
             assertFalse(seamCalls.getFirst().silent(), "the interactive attempt lets the IdP interact");
@@ -174,9 +185,9 @@ class SessionWideningTest {
         @DisplayName("Should re-drive a silent record as one interactive attempt with the same URL, scopes and subject")
         void shouldRedriveSilentAsInteractive() {
             PendingAuthorizationRecord silent = consumeBoundRecord(
-                    widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, T0));
+                    widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0));
 
-            LoginRedirect redrive = widening.redriveInteractive(silent, T0.plusSeconds(5));
+            LoginRedirect redrive = widening.redriveInteractive(silent, REDRIVE_QUOTA_KEY, T0.plusSeconds(5));
 
             PendingAuthorizationRecord interactive = consumeBoundRecord(redrive);
             assertEquals(AUTHORIZATION_URL, redrive.authorizationUrl());
@@ -189,24 +200,28 @@ class SessionWideningTest {
             assertEquals(silent.returnUrl(), interactive.returnUrl());
             assertEquals(silent.requestedScopes(), interactive.requestedScopes());
             assertNotEquals(silent.id(), interactive.id(), "the re-drive persists a fresh single-use record");
+            assertEquals(REDRIVE_QUOTA_KEY, interactive.quotaKey(),
+                    "the re-drive record is counted under the source of the request that re-drives it");
         }
 
         @Test
         @DisplayName("Should refuse to re-drive an interactive record — the interactive attempt is the last")
         void shouldRefuseToRedriveInteractive() {
             PendingAuthorizationRecord interactive = consumeBoundRecord(
-                    widening.initiate(live, "/orders", NEEDED, Widening.Attempt.INTERACTIVE, T0));
+                    widening.initiate(live, "/orders", NEEDED, Widening.Attempt.INTERACTIVE, QUOTA_KEY, T0));
 
-            assertThrows(IllegalArgumentException.class, () -> widening.redriveInteractive(interactive, T0));
+            assertThrows(IllegalArgumentException.class,
+                    () -> widening.redriveInteractive(interactive, QUOTA_KEY, T0));
             assertEquals(1, seamCalls.size(), "no second authorization request is built");
         }
 
         @Test
         @DisplayName("Should refuse to re-drive a plain login record")
         void shouldRefuseToRedriveLogin() {
-            PendingAuthorizationRecord login = PendingAuthorizationRecord.create(flowContext, "/", NEEDED, T0);
+            PendingAuthorizationRecord login = PendingAuthorizationRecord.create(flowContext, "/", NEEDED, QUOTA_KEY,
+                    T0);
 
-            assertThrows(IllegalArgumentException.class, () -> widening.redriveInteractive(login, T0));
+            assertThrows(IllegalArgumentException.class, () -> widening.redriveInteractive(login, QUOTA_KEY, T0));
             assertTrue(seamCalls.isEmpty(), "the seam is never reached for a login record");
         }
     }
@@ -219,7 +234,7 @@ class SessionWideningTest {
         @ValueSource(strings = {"/orders", "/app/page?x=1&y=2", "https://gw.example.com/app"})
         @DisplayName("Should record a same-origin return URL verbatim")
         void shouldRecordSameOriginReturnUrl(String returnUrl) {
-            LoginRedirect result = widening.initiate(live, returnUrl, NEEDED, Widening.Attempt.SILENT, T0);
+            LoginRedirect result = widening.initiate(live, returnUrl, NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0);
 
             assertEquals(returnUrl, consumeBoundRecord(result).returnUrl());
         }
@@ -229,7 +244,7 @@ class SessionWideningTest {
                 "/\t/evil.example.com", "javascript:alert(1)", " "})
         @DisplayName("Should fall back to the configured default for a cross-origin, smuggled or blank return URL")
         void shouldFallBackForOffOrigin(String returnUrl) {
-            LoginRedirect result = widening.initiate(live, returnUrl, NEEDED, Widening.Attempt.SILENT, T0);
+            LoginRedirect result = widening.initiate(live, returnUrl, NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
         }
@@ -237,7 +252,7 @@ class SessionWideningTest {
         @Test
         @DisplayName("Should fall back to the configured default when no return URL is supplied")
         void shouldFallBackForNull() {
-            LoginRedirect result = widening.initiate(live, null, NEEDED, Widening.Attempt.SILENT, T0);
+            LoginRedirect result = widening.initiate(live, null, NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, consumeBoundRecord(result).returnUrl());
         }
@@ -250,7 +265,7 @@ class SessionWideningTest {
         @Test
         @DisplayName("Should redirect to the engine authorization URL and set exactly the binding cookie")
         void shouldRedirectWithBindingCookie() {
-            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, T0);
+            LoginRedirect result = widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0);
 
             assertEquals(AUTHORIZATION_URL, result.authorizationUrl(), "the URL comes from the seam, unchanged");
             assertEquals(1, result.setCookieHeaders().size(), "no session cookie is touched by the initiation");
@@ -266,22 +281,100 @@ class SessionWideningTest {
         @DisplayName("Should reject absent arguments before reaching the seam")
         void shouldRejectNullArguments() {
             assertThrows(NullPointerException.class,
-                    () -> widening.initiate(null, "/orders", NEEDED, Widening.Attempt.SILENT, T0));
+                    () -> widening.initiate(null, "/orders", NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, T0));
             assertThrows(NullPointerException.class,
-                    () -> widening.initiate(live, "/orders", null, Widening.Attempt.SILENT, T0));
-            assertThrows(NullPointerException.class, () -> widening.initiate(live, "/orders", NEEDED, null, T0));
+                    () -> widening.initiate(live, "/orders", null, Widening.Attempt.SILENT, QUOTA_KEY, T0));
             assertThrows(NullPointerException.class,
-                    () -> widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, null));
+                    () -> widening.initiate(live, "/orders", NEEDED, null, QUOTA_KEY, T0));
+            assertThrows(NullPointerException.class,
+                    () -> widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, null, T0));
+            assertThrows(NullPointerException.class,
+                    () -> widening.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT, QUOTA_KEY, null));
             assertTrue(seamCalls.isEmpty(), "the seam is never reached with an absent argument");
+        }
+
+        @Test
+        @DisplayName("Should reject an absent quota key on the re-drive before reaching the seam")
+        void shouldRejectNullRedriveQuotaKey() {
+            PendingAuthorizationRecord silent = PendingAuthorizationRecord.createWidening(flowContext, "/orders",
+                    NEEDED, live.sub(), Widening.Attempt.SILENT, QUOTA_KEY, T0);
+
+            assertThrows(NullPointerException.class, () -> widening.redriveInteractive(silent, null, T0));
+            assertTrue(seamCalls.isEmpty(), "the seam is never reached without a quota key");
         }
 
         @Test
         @DisplayName("Should reject an absent collaborator")
         void shouldRejectNullCollaborators() {
             assertThrows(NullPointerException.class,
-                    () -> new SessionWidening(null, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT));
+                    () -> new SessionWidening(null, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT,
+                            CLOCK));
             assertThrows(NullPointerException.class,
-                    () -> new SessionWidening(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, null));
+                    () -> new SessionWidening(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, null, CLOCK));
+            assertThrows(NullPointerException.class,
+                    () -> new SessionWidening(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN,
+                            CONFIGURED_DEFAULT, null));
+        }
+    }
+
+    /**
+     * A store full at the caller's {@code now} whose one record expires while the push is in flight —
+     * the clock is moved past that expiry inside the authorization seam. The widening must let the store
+     * purge at the reading taken after the push, so it is admitted, while the new record's lifetime
+     * still runs from the caller's {@code now}.
+     */
+    @Nested
+    @DisplayName("A store whose records expired during the push")
+    class ExpiredDuringThePush {
+
+        private InMemoryPendingAuthorizationStore full;
+        private SessionWidening pushingPastExpiry;
+
+        @BeforeEach
+        void fillTheStore() {
+            full = new InMemoryPendingAuthorizationStore(1);
+            Instant heldCreatedAt = T0.minus(PendingAuthorizationRecord.FIXED_TTL).plusSeconds(1);
+            full.store(PendingAuthorizationRecord.create(flowContext, "/held", NEEDED, REDRIVE_QUOTA_KEY,
+                    heldCreatedAt), heldCreatedAt);
+            SettableClock clock = new SettableClock(T0);
+            AuthorizationCodeFlow.AuthorizationRedirect redirect =
+                    new AuthorizationCodeFlow.AuthorizationRedirect(AUTHORIZATION_URL, flowContext);
+            pushingPastExpiry = new SessionWidening((scopes, silent) -> {
+                clock.set(T0.plusSeconds(2));
+                return redirect;
+            }, full, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, clock);
+        }
+
+        @Test
+        @DisplayName("Should admit a silent widening, its TTL anchored at now")
+        void shouldAdmitSilentWidening() {
+            LoginRedirect result = pushingPastExpiry.initiate(live, "/orders", NEEDED, Widening.Attempt.SILENT,
+                    QUOTA_KEY, T0);
+
+            assertAnchoredAtT0(storedIn(result));
+        }
+
+        @Test
+        @DisplayName("Should admit the interactive re-drive, its TTL anchored at now")
+        void shouldAdmitInteractiveRedrive() {
+            PendingAuthorizationRecord silent = PendingAuthorizationRecord.createWidening(flowContext, "/orders",
+                    NEEDED, live.sub(), Widening.Attempt.SILENT, QUOTA_KEY, T0);
+
+            LoginRedirect result = pushingPastExpiry.redriveInteractive(silent, QUOTA_KEY, T0);
+
+            assertAnchoredAtT0(storedIn(result));
+        }
+
+        private PendingAuthorizationRecord storedIn(LoginRedirect result) {
+            String recordId = bindingCodec.readRecordId(result.setCookieHeaders().getFirst().split(";", 2)[0])
+                    .orElseThrow();
+            return full.consume(recordId, T0).orElseThrow();
+        }
+
+        private void assertAnchoredAtT0(PendingAuthorizationRecord stored) {
+            assertAll("admitted at the post-push reading, anchored at the caller's now",
+                    () -> assertEquals(T0, stored.createdAt(), "the push latency does not move the TTL anchor"),
+                    () -> assertEquals(T0.plus(PendingAuthorizationRecord.FIXED_TTL), stored.expiresAt()));
         }
     }
 }

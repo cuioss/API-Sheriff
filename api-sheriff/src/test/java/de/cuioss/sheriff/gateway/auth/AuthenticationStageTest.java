@@ -28,6 +28,11 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -42,6 +47,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.token.validation.TokenValidator;
@@ -575,8 +581,13 @@ class AuthenticationStageTest {
                         new SessionBinding.BoundSession(session, List.of())),
                 (session, cookieHeader, requestedScopes, now) -> SessionAuthenticationStage.RefreshResult.mediate(
                         new SessionBinding.BoundSession(session, List.of())),
-                (returnUrl, scopes, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
-                (live, returnUrl, neededScopes, now) -> new LoginChallenge("https://idp.example/widen", List.of()),
+                (returnUrl, scopes, quotaKey, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
+                (live, returnUrl, neededScopes, quotaKey, now) -> new LoginChallenge("https://idp.example/widen",
+                        List.of()),
+                new PendingQuotaKeys(new TcpPeerGate(List.of()), new ForwardedHeaderResolver(
+                        ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                                .securityConfig(SecurityConfiguration.defaults()).build(),
+                        new SecurityEventCounter())),
                 SessionAuthenticationStage.OnFailure.REAUTHENTICATE,
                 STEP_UP_PATH,
                 CLOCK);

@@ -631,7 +631,7 @@ class GatewayEdgeGatewayCookieTest {
         private BffRuntime.ReservedHttpResponse dispatch(ReservedEndpoint kind, @Nullable String cookie,
                 String method) {
             return runtime.dispatch(kind, new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null,
-                    method), now);
+                    method, "192.0.2.10"), now);
         }
 
         @ParameterizedTest(name = "{0} without a session")

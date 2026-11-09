@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.login;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -66,6 +67,15 @@ import org.jspecify.annotations.Nullable;
  * so the failure is raised before the pending record is stored and before the binding cookie is set,
  * and no login is left half-started.
  * <p>
+ * <strong>A saturated pending store refuses the login.</strong> The pending record carries the
+ * requester's quota key, and {@link PendingAuthorizationStore#store} refuses a net-new record with
+ * {@link de.cuioss.sheriff.gateway.events.EventType#PENDING_AUTHORIZATION_SATURATED} when the store is
+ * full of live records. That refusal propagates out of {@link #initiate} like the {@code 502} path —
+ * after the push, before the binding cookie is set — and the edge answers it {@code 503} with
+ * {@code Retry-After}. The store judges "live" at a clock reading taken after the push returned, not
+ * at the caller's {@code now}, so records that expired during the push's round trip free their places
+ * first; the new record's own lifetime still runs from {@code now}.
+ * <p>
  * <strong>Response mode.</strong> The pushed request carries {@code response_mode=query} — see
  * {@link QueryResponseModeAuthorizationRequestBuilder}, which the runtime wires into the engine.
  * That is what makes the later callback a top-level GET navigation, the only shape on which the
@@ -84,6 +94,7 @@ public final class LoginFlow {
     private final BindingCookieCodec bindingCookieCodec;
     private final String gatewayOrigin;
     private final String defaultReturnUrl;
+    private final Clock clock;
 
     /**
      * Assembles the login flow with the engine authorization seam and the gateway-side stores.
@@ -97,14 +108,17 @@ public final class LoginFlow {
      * @param defaultReturnUrl   the resolved {@code oidc.login.default_return_url} ({@code /} when
      *                           unset): the post-login landing when no valid same-origin return URL
      *                           is supplied
+     * @param clock              the clock read once the authorization push returned, for the instant
+     *                           the pending store purges expired records at
      */
     public LoginFlow(AuthorizationInitiation authorization, PendingAuthorizationStore pendingStore,
-            BindingCookieCodec bindingCookieCodec, String gatewayOrigin, String defaultReturnUrl) {
+            BindingCookieCodec bindingCookieCodec, String gatewayOrigin, String defaultReturnUrl, Clock clock) {
         this.authorization = Objects.requireNonNull(authorization, "authorization");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
         this.defaultReturnUrl = Objects.requireNonNull(defaultReturnUrl, "defaultReturnUrl");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -123,11 +137,22 @@ public final class LoginFlow {
      * @param scopes             the scope set the login requests — the selected route's
      *                           {@code neededScopes}, or {@code oidc.scopes} when no route applies;
      *                           forwarded to the {@link AuthorizationInitiation} seam verbatim
-     * @param now                the reference instant (the pending record's TTL anchor)
+     * @param quotaKey           the requester's canonical source, recorded on the pending record for
+     *                           the store's per-source cap
+     * @param now                the reference instant: the pending record's TTL anchor, so the push's
+     *                           latency never extends the record's lifetime. The store purges expired
+     *                           records at the admission-time clock reading taken after the push
+     *                           returned, so a record that expired during the push frees its place
      * @return the redirect to the IdP authorization URL carrying the binding {@code Set-Cookie}
+     * @throws de.cuioss.sheriff.gateway.events.GatewayException with
+     *                                                           {@code PENDING_AUTHORIZATION_SATURATED}
+     *                                                           when the pending store is full of live
+     *                                                           records; no binding cookie is set
      */
-    public LoginRedirect initiate(@Nullable String requestedReturnUrl, Collection<String> scopes, Instant now) {
+    public LoginRedirect initiate(@Nullable String requestedReturnUrl, Collection<String> scopes, String quotaKey,
+            Instant now) {
         Objects.requireNonNull(scopes, "scopes");
+        Objects.requireNonNull(quotaKey, "quotaKey");
         Objects.requireNonNull(now, "now");
         AuthorizationCodeFlow.AuthorizationRedirect redirect = authorization.authorize(scopes);
         String returnUrl = requestedReturnUrl != null
@@ -136,8 +161,10 @@ public final class LoginFlow {
         // The requested set rides the pending record so the callback can fall back to it when the
         // issued access token carries no scope claim.
         PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(redirect.context(), returnUrl, scopes,
-                now);
-        pendingStore.store(pending);
+                quotaKey, now);
+        // The record's TTL runs from now; the store purges at a reading taken after the push returned, so
+        // records that expired during the push do not count against the capacity.
+        pendingStore.store(pending, clock.instant());
         LOGGER.debug("Initiated OIDC login; pending record persisted, redirecting to the IdP");
         List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));
         return new LoginRedirect(redirect.authorizationUrl(), setCookies);

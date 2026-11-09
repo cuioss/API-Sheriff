@@ -46,33 +46,45 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * Proves the bound of the gateway's store of started, not yet completed logins against the running
- * primary instance and the real identity provider.
+ * Proves the per-source cap of the gateway's store of started, not yet completed logins against the
+ * running primary instance and the real identity provider.
  * <p>
- * <strong>The bound.</strong> Every login a browser starts leaves a pending record in the gateway
- * until its callback consumes it. Unauthenticated callers create these records, so the store is
- * bounded: it holds {@value #PENDING_LOGIN_CAPACITY} records and, beyond that, drops the oldest one
- * for every new one. {@code PendingAuthorizationStoreTest} proves the eviction on the store itself;
- * this suite proves it from both sides through the gateway's own login path:
+ * <strong>The cap.</strong> Every login a browser starts leaves a pending record in the gateway until
+ * its callback consumes it. Unauthenticated callers create these records, so the store is bounded per
+ * requester source: one source holds at most {@value #PER_SOURCE_CAP} live records and, beyond that,
+ * every new login of that source drops the source's own oldest record. A flood therefore costs only
+ * the flooding source its own logins and never evicts another source's live login.
+ * {@code PendingAuthorizationStoreTest} proves the cross-source fairness, the expired-first purge and
+ * the refusal of a store full of live records on the store itself; this suite proves the per-source
+ * cap from both sides through the gateway's own login path, with every login sent from the test
+ * client's one source:
  * <ul>
- * <li>{@link #firstOfCapacityLoginsIsKept()} — one login is opened up to the identity provider's login
- * form, then {@value #FLOOD_KEEPING_THE_FIRST} further logins are started and left unfinished. The
- * store now holds {@value #PENDING_LOGIN_CAPACITY} records, the first among them. The first login is
- * completed and must yield a session.</li>
- * <li>{@link #firstLoginIsDroppedOnceCapacityLoginsFollowIt()} — one login is opened, then
- * {@value #FLOOD_DROPPING_THE_FIRST} further logins are started, the newest of them opened up to the
- * login form. The first login is now the 10 001st-newest record and has been dropped. It is completed at the identity provider, and the gateway's callback must refuse
- * it: no session cookie, and the session route answers {@code 401}. The newest login is completed as
- * well and must yield a session, so the refusal is the first login's alone and not a gateway that
- * refuses every login under load.</li>
+ * <li>{@link #firstOfCapSameSourceLoginsIsKept()} — one login is opened up to the identity provider's
+ * login form, then {@value #FLOOD_KEEPING_THE_FIRST} further same-source logins are started and left
+ * unfinished. The source now holds {@value #PER_SOURCE_CAP} logins started in this phase, the first
+ * among them. The first login is completed and must yield a session.</li>
+ * <li>{@link #firstLoginIsDroppedOnceCapSameSourceLoginsFollowIt()} — one login is opened, then
+ * {@value #FLOOD_DROPPING_THE_FIRST} further same-source logins are started, the newest of them opened
+ * up to the login form. The first login is now its source's 257th-newest record and has been dropped.
+ * It is completed at the identity provider, and the gateway's callback must refuse it: no session
+ * cookie, and the session route answers {@code 401}. The newest login is completed as well and must
+ * yield a session, so the refusal is the first login's alone and not a gateway that refuses every
+ * login under load.</li>
  * </ul>
  * Both phases end with the gateway still answering its readiness probe.
  * <p>
+ * <strong>What the second phase catches.</strong> A store bounded only globally — which drops the
+ * oldest record of all sources once its global capacity is reached — still holds the first login
+ * after {@value #FLOOD_DROPPING_THE_FIRST} further logins, because the phase stores far fewer records
+ * than that capacity. Its callback then completes into a session and the second phase fails.
+ * <p>
  * <strong>Why the phases are exact.</strong> Whether a login is dropped depends only on how many
- * logins were started after it, not on what the store held before. So each phase is exact whatever an
- * earlier class of the run left behind, and the two test methods do not depend on their order: the
- * second phase is exact with the {@value #FLOOD_KEEPING_THE_FIRST} records the first one leaves, and
- * the first is exact after the second.
+ * same-source logins were started after it, not on what the store held before: every record the
+ * source holds from an earlier class of the run, or from the other phase, is older than the phase's
+ * first login and is dropped before it. So each phase is exact whatever an earlier class of the run
+ * left behind, and the two test methods do not depend on their order: the second phase is exact with
+ * the {@value #FLOOD_KEEPING_THE_FIRST} records the first one leaves, and the first is exact after the
+ * second.
  * <p>
  * <strong>Why each phase has to finish inside five minutes.</strong> A pending record lives five
  * minutes. A phase that takes longer lets its first login expire instead of being kept or dropped.
@@ -83,10 +95,11 @@ import org.junit.jupiter.api.Timeout;
  * up to the callback that reads it. Each test method carries a JUnit timeout of six minutes.
  * <p>
  * <strong>Why the suite runs alone.</strong> Both counts are exact only while no other class starts a
- * login on the primary instance at the same time: a login started beside a phase would push its first
- * login out early, or make the second phase drop a login that is not its own. The class therefore
- * carries no tag and runs in the sequential failsafe execution, one class at a time. It must never be
- * moved into the concurrent one.
+ * login from the same source on the primary instance at the same time: a login started beside a phase
+ * would push its first login out early, or make the second phase drop a login that is not its own.
+ * Every class of the run reaches the gateway from the same host and so shares this source. The class
+ * therefore carries no tag and runs in the sequential failsafe execution, one class at a time. It must
+ * never be moved into the concurrent one.
  * <p>
  * <strong>How the flood is sent.</strong> A login of a flood is one {@code GET} on the login path
  * with no cookies, not followed. It counts as started only when the gateway answers {@code 302} into
@@ -94,22 +107,25 @@ import org.junit.jupiter.api.Timeout;
  * status and never the query of the redirect, which identifies a pending login.
  * {@value #FLOOD_BATCH} logins of a flood are started at a time.
  * <p>
- * The capacity, the counts, the batch and the age limit are this test's own constants, not values
- * read from the product: a bound read from the configuration under test would hold by construction.
+ * The cap, the counts, the batch and the age limit are this test's own constants, not values read
+ * from the product: a bound read from the product under test would hold by construction.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 class BffPendingLoginBoundIT extends BaseIntegrationTest {
 
-    /** The capacity of the gateway's pending-login store. Stated here: it is the bound under proof. */
-    private static final int PENDING_LOGIN_CAPACITY = 10_000;
+    /**
+     * The most live pending logins one source may hold in the gateway's store. Stated here: it is the
+     * bound under proof.
+     */
+    private static final int PER_SOURCE_CAP = 256;
 
-    /** With this many logins started after it, the first login is still stored. */
-    private static final int FLOOD_KEEPING_THE_FIRST = PENDING_LOGIN_CAPACITY - 1;
+    /** With this many same-source logins started after it, the first login is still stored. */
+    private static final int FLOOD_KEEPING_THE_FIRST = PER_SOURCE_CAP - 1;
 
-    /** With this many logins started after it, the first login has been dropped. */
-    private static final int FLOOD_DROPPING_THE_FIRST = PENDING_LOGIN_CAPACITY;
+    /** With this many same-source logins started after it, the first login has been dropped. */
+    private static final int FLOOD_DROPPING_THE_FIRST = PER_SOURCE_CAP;
 
     /** How many logins of a flood are started at a time. */
     private static final int FLOOD_BATCH = 25;
@@ -140,9 +156,9 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
     private static final String READINESS_PATH = "/health/ready";
 
     /**
-     * Opens one login, leaves it pending while {@value #FLOOD_KEEPING_THE_FIRST} further logins are
-     * started, and completes it: with exactly as many records stored as the store holds, the first
-     * one is still there and yields a session.
+     * Opens one login, leaves it pending while {@value #FLOOD_KEEPING_THE_FIRST} further same-source
+     * logins are started, and completes it: with exactly as many logins of its source started as the
+     * source may hold, the first one is still there and yields a session.
      *
      * @throws InterruptedException when the flood is interrupted
      * @throws ExecutionException   when a request of the flood fails
@@ -150,24 +166,25 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
      */
     @Test
     @Timeout(value = 6, unit = TimeUnit.MINUTES)
-    @DisplayName("the first of 10 000 started logins is still pending and completes into a session")
-    void firstOfCapacityLoginsIsKept() throws Exception {
+    @DisplayName("the first of 256 same-source logins is still pending and completes into a session")
+    void firstOfCapSameSourceLoginsIsKept() throws Exception {
         OpenedLogin first = BffKeycloakLoginFlow.open(LOGIN_PATH, GATEWAY_ORIGIN);
         int started = flood(FLOOD_KEEPING_THE_FIRST);
         assertEquals(FLOOD_KEEPING_THE_FIRST, started, "the flood must start exactly the logins it counts");
 
         BffKeycloakLoginFlow.complete(first, USERNAME, PASSWORD);
 
-        assertAll("the first of " + PENDING_LOGIN_CAPACITY + " started logins",
+        assertAll("the first of " + PER_SOURCE_CAP + " same-source logins",
                 () -> assertTrue(holdsSessionCookie(first), "the gateway must set the session cookie"),
                 () -> assertEquals(200, sessionRouteStatus(first), "the session route must serve the session"),
                 () -> assertEquals(200, readinessStatus(), "the gateway must still answer its readiness probe"));
     }
 
     /**
-     * Opens one login, starts {@value #FLOOD_DROPPING_THE_FIRST} further logins — the newest of them
-     * opened up to the login form — and completes the first one: it has been dropped, so the gateway
-     * refuses its callback. The newest login still completes into a session.
+     * Opens one login, starts {@value #FLOOD_DROPPING_THE_FIRST} further same-source logins — the newest
+     * of them opened up to the login form — and completes the first one: its source's own newer logins
+     * have dropped it, so the gateway refuses its callback. The newest login still completes into a
+     * session.
      *
      * @throws InterruptedException when the flood is interrupted
      * @throws ExecutionException   when a request of the flood fails
@@ -175,8 +192,8 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
      */
     @Test
     @Timeout(value = 6, unit = TimeUnit.MINUTES)
-    @DisplayName("the first login is dropped once 10 000 logins were started after it, the newest one is kept")
-    void firstLoginIsDroppedOnceCapacityLoginsFollowIt() throws Exception {
+    @DisplayName("the first login is dropped once 256 same-source logins were started after it, the newest one is kept")
+    void firstLoginIsDroppedOnceCapSameSourceLoginsFollowIt() throws Exception {
         OpenedLogin first = BffKeycloakLoginFlow.open(LOGIN_PATH, GATEWAY_ORIGIN);
         int started = flood(FLOOD_DROPPING_THE_FIRST - 1);
         OpenedLogin newest = BffKeycloakLoginFlow.open(LOGIN_PATH, GATEWAY_ORIGIN);
@@ -187,7 +204,7 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
         long ageMillis = Duration.between(first.startedAt(), Instant.now()).toMillis();
 
         int refusedStatus = refused.callback().statusCode();
-        assertAll("the first login, with " + FLOOD_DROPPING_THE_FIRST + " logins started after it",
+        assertAll("the first login, with " + FLOOD_DROPPING_THE_FIRST + " same-source logins started after it",
                 () -> assertTrue(ageMillis < MAX_FIRST_LOGIN_AGE_MS, () -> "the login was completed " + ageMillis
                         + " ms after it was started, not inside the lifetime of a pending record, so its refusal"
                         + " could be an expiry"),
@@ -200,7 +217,7 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
 
         BffKeycloakLoginFlow.complete(newest, USERNAME, PASSWORD);
 
-        assertAll("the newest of " + (PENDING_LOGIN_CAPACITY + 1) + " started logins",
+        assertAll("the newest of " + (PER_SOURCE_CAP + 1) + " same-source logins",
                 () -> assertTrue(holdsSessionCookie(newest), "the gateway must set the session cookie"),
                 () -> assertEquals(200, sessionRouteStatus(newest), "the session route must serve the session"),
                 () -> assertEquals(200, readinessStatus(), "the gateway must still answer its readiness probe"));

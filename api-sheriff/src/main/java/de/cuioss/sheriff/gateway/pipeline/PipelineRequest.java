@@ -70,6 +70,8 @@ public final class PipelineRequest {
     private final @Nullable String host;
     private final int authorityPort;
     private final @Nullable String peerAddress;
+    private final @Nullable String relayedPeerAddress;
+    private final boolean unattributedTerminatedLeg;
     private final long declaredContentLength;
     private final boolean bodyPresent;
 
@@ -97,6 +99,11 @@ public final class PipelineRequest {
         this.host = builder.host;
         this.authorityPort = builder.authorityPort;
         this.peerAddress = builder.peerAddress;
+        this.relayedPeerAddress = builder.relayedPeerAddress;
+        if (builder.relayedPeerAddress != null && builder.unattributedTerminatedLeg) {
+            throw new IllegalStateException("A request with a relayed peer address cannot be unattributed");
+        }
+        this.unattributedTerminatedLeg = builder.unattributedTerminatedLeg;
         this.declaredContentLength = builder.declaredContentLength;
         this.bodyPresent = builder.bodyPresent;
     }
@@ -235,6 +242,35 @@ public final class PipelineRequest {
      */
     public @Nullable String peerAddress() {
         return peerAddress;
+    }
+
+    /**
+     * The address of the client whose connection the gateway's own SNI front listener relayed to the
+     * internal terminated listener. The edge sets it only when the request's connection is a relay leg
+     * this process dialled itself, from an in-process hand-off — never from a header — so a client
+     * cannot supply it. {@link #peerAddress()} stays the TCP peer, the relay leg.
+     *
+     * @return the relayed client's address, or {@code null} when the request did not arrive over the
+     *         gateway's own relay
+     */
+    public @Nullable String relayedPeerAddress() {
+        return relayedPeerAddress;
+    }
+
+    /**
+     * Whether the request arrived behind the gateway's own SNI front listener on the internal
+     * terminated listener, or on a local address the transport did not supply, over a connection the
+     * relay holds no hand-off for — one it never dialled, or one whose relay session already ended.
+     * Such a request has no {@link #relayedPeerAddress()}; it is counted under its own TCP peer and its
+     * forwarding headers are never read for it. For a stale relay leg that peer is the relay's loopback
+     * address, while a host that reaches the internal listener directly is its own address. Never set
+     * without a front listener.
+     *
+     * @return {@code true} for a request behind the front, on the terminated listener or an unknown
+     *         local address, without a hand-off
+     */
+    public boolean unattributedTerminatedLeg() {
+        return unattributedTerminatedLeg;
     }
 
     /**
@@ -520,6 +556,8 @@ public final class PipelineRequest {
         private @Nullable String host;
         private int authorityPort = -1;
         private @Nullable String peerAddress;
+        private @Nullable String relayedPeerAddress;
+        private boolean unattributedTerminatedLeg;
         private long declaredContentLength = -1L;
         private boolean bodyPresent;
 
@@ -605,6 +643,28 @@ public final class PipelineRequest {
         }
 
         /**
+         * @param relayedPeerAddress the client address the gateway's own relay handed over for the
+         *                           request's connection; {@code null} when there is none
+         * @return this builder
+         */
+        public Builder relayedPeerAddress(@Nullable String relayedPeerAddress) {
+            this.relayedPeerAddress = relayedPeerAddress;
+            return this;
+        }
+
+        /**
+         * @param unattributedTerminatedLeg whether the request arrived behind the front, on the
+         *                                  terminated listener's port or on an unknown local address,
+         *                                  without a relay hand-off; never set together with a
+         *                                  relayed peer address
+         * @return this builder
+         */
+        public Builder unattributedTerminatedLeg(boolean unattributedTerminatedLeg) {
+            this.unattributedTerminatedLeg = unattributedTerminatedLeg;
+            return this;
+        }
+
+        /**
          * @param declaredContentLength the declared {@code Content-Length}, or {@code -1} when absent
          * @return this builder
          */
@@ -624,6 +684,8 @@ public final class PipelineRequest {
 
         /**
          * @return the assembled immutable-inbound {@link PipelineRequest}
+         * @throws IllegalStateException when a relayed peer address is set together with the
+         *                               unattributed mark
          */
         public PipelineRequest build() {
             return new PipelineRequest(this);

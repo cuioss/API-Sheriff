@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.ForwardedTrust;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -46,7 +47,6 @@ import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
-import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.ThreatClassificationConfig;
@@ -105,6 +105,7 @@ import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
+import de.cuioss.sheriff.gateway.tls.RelayedPeerRegistry;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
@@ -295,6 +296,8 @@ public class GatewayEdgeRoute {
     private final ReservedBodyReader reservedBodyReader;
     private final ReservedPathHandler reservedPathHandler;
     private final TerminalDispatch terminalDispatch;
+    /** The SNI front listener's hand-off of each terminated relay leg's client address. */
+    private final RelayedPeerRegistry relayedPeers;
 
     /**
      * Assembles the routes and every stage once, at boot.
@@ -328,6 +331,9 @@ public class GatewayEdgeRoute {
      *                              {@linkplain PortalEndpoint#inert() inert} endpoint (no
      *                              {@code portal} block) never matches and leaves the edge unchanged
      * @param gatewayJson           the serializer the RFC 9457 problem body is rendered through
+     * @param relayedPeers          the in-process hand-off through which the SNI front listener's
+     *                              terminated relay names the client of each relay leg; empty when the
+     *                              front listener is not running
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
@@ -335,10 +341,10 @@ public class GatewayEdgeRoute {
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
-            GatewayJson gatewayJson) {
+            GatewayJson gatewayJson, RelayedPeerRegistry relayedPeers) {
         this(routeTable, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening, sheriffMetrics,
                 bffRuntime, egressTrustProfileResolver, portalEndpoint, gatewayJson,
-                WebSocketRelayStage.RelayObserver.NO_OP);
+                WebSocketRelayStage.RelayObserver.NO_OP, relayedPeers);
     }
 
     /**
@@ -374,6 +380,39 @@ public class GatewayEdgeRoute {
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
             GatewayJson gatewayJson, WebSocketRelayStage.RelayObserver relayObserver) {
+        this(routeTable, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening, sheriffMetrics,
+                bffRuntime, egressTrustProfileResolver, portalEndpoint, gatewayJson, relayObserver,
+                new RelayedPeerRegistry());
+    }
+
+    /**
+     * <strong>Test-only.</strong> Assembles the edge exactly as the CDI constructor does, with the
+     * given WebSocket relay observer and relayed-peer registry, so a test can stand in for the SNI
+     * front listener's terminated relay by registering a connection's address itself. Not a CDI entry
+     * point, for the same reasons as the observer overload above.
+     *
+     * @param routeTable                 as for the CDI constructor
+     * @param gatewayConfig             as for the CDI constructor
+     * @param tokenValidator             as for the CDI constructor
+     * @param vertx                      as for the CDI constructor
+     * @param virtualThreadExecutor      as for the CDI constructor
+     * @param hardening                  as for the CDI constructor
+     * @param sheriffMetrics             as for the CDI constructor
+     * @param bffRuntime                 as for the CDI constructor
+     * @param egressTrustProfileResolver as for the CDI constructor
+     * @param portalEndpoint             as for the CDI constructor
+     * @param gatewayJson                as for the CDI constructor
+     * @param relayObserver              the observer every WebSocket relay this edge builds reports to
+     * @param relayedPeers               as for the CDI constructor
+     */
+    @SuppressWarnings("java:S107") // test-only overload of the @Inject constructor
+    public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig, Instance<TokenValidator> tokenValidator,
+            Vertx vertx, ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
+            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
+            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
+            GatewayJson gatewayJson, WebSocketRelayStage.RelayObserver relayObserver,
+            RelayedPeerRegistry relayedPeers) {
+        this.relayedPeers = Objects.requireNonNull(relayedPeers, "relayedPeers");
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.sheriffMetrics = sheriffMetrics;
         this.bffRuntime = bffRuntime;
@@ -388,25 +427,25 @@ public class GatewayEdgeRoute {
         // ForwardedResolverConfig.securityConfig and defaultMaxBodySize — so seeding it here is
         // what makes an omitted security_defaults block genuinely mean 'strict' for every route. The
         // declared allow_extended_ascii override lands on it here, and on every route's preset below.
+        // ForwardedTrust is the one derivation of the baseline and the forwarded-header trust, shared
+        // with the pending-authorization quota key, so both judge forwarding headers under the same
+        // trusted-proxy set and resolver configuration. They do not judge the same peer behind the SNI
+        // front: the quota key reads the relayed client, the forward stage the relay's loopback leg.
         SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
         SecurityDefaultsConfig securityDefaultsConfig = gatewayConfig.securityDefaults();
         Boolean allowExtendedAscii = securityDefaultsConfig == null ? null : securityDefaultsConfig.allowExtendedAscii();
-        SecurityConfiguration defaultConfiguration = SecurityConfigurations.withDeclaredCharacterPolicy(
-                SecurityProfile.limitsProfile(globalProfile, globalProfile).preset(), allowExtendedAscii);
+        ForwardedTrust forwardedTrust = ForwardedTrust.of(gatewayConfig);
+        SecurityConfiguration defaultConfiguration = forwardedTrust.baseline();
         long defaultMaxBodySize = defaultConfiguration.maxBodySize();
         GatewayEventCounter gatewayEventCounter = new GatewayEventCounter();
         UpstreamFailureMapper upstreamFailureMapper = new UpstreamFailureMapper(gatewayEventCounter);
 
         ForwardedConfig forwardedConfig = gatewayConfig.forwarded();
-        List<String> trustedProxies = forwardedConfig == null ? List.of() : forwardedConfig.trustedProxies();
         String declaredEmitMode = forwardedConfig == null ? null : forwardedConfig.emit();
         String emitMode = declaredEmitMode != null ? declaredEmitMode : DEFAULT_EMIT_MODE;
-        ForwardedResolverConfig resolverConfig = ForwardedResolverConfig.builder()
-                .trustedProxies(Set.copyOf(trustedProxies))
-                .securityConfig(defaultConfiguration)
-                .build();
-        ForwardedHeaderResolver resolver = new ForwardedHeaderResolver(resolverConfig, securityEventCounter);
-        TcpPeerGate peerGate = new TcpPeerGate(trustedProxies);
+        ForwardedResolverConfig resolverConfig = forwardedTrust.resolverConfig();
+        ForwardedHeaderResolver resolver = forwardedTrust.resolver(securityEventCounter);
+        TcpPeerGate peerGate = forwardedTrust.peerGate();
 
         // The add-only asset content-type additions are resolved ONCE here, at boot, and handed to
         // every asset source the assembler builds — so the request path performs no config lookup
@@ -669,7 +708,7 @@ public class GatewayEdgeRoute {
                 return;
             }
             HttpMethod method = parsedMethod.get();
-            request = EdgeRequests.buildPipelineRequest(raw, method);
+            request = EdgeRequests.buildPipelineRequest(raw, method, relayedPeers);
 
             securityHeadersStage.process(request);
             basicChecksStage.process(request);

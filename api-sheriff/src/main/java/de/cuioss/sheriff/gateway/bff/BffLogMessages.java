@@ -151,7 +151,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 134 and 135).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 134, 135 and 145).
      */
     @UtilityClass
     public static final class WARN {
@@ -342,6 +342,29 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(135)
                 .template("The identity provider publishes no usable end_session_endpoint — logout ends the gateway session only and the session at the identity provider stays open; further occurrences stay at DEBUG")
+                .build();
+
+        /**
+         * The pending-authorization store holds its full capacity of live records, so a login, step-up
+         * or widening start was refused with {@code 503} and {@code Retry-After} instead of evicting
+         * another user's live login record. The template takes no substitution and therefore carries
+         * no request data — never a source address, quota key, {@code state}, nonce or record id.
+         * <p>
+         * <strong>Latched per saturation episode.</strong> The login-initiation path is reachable
+         * without a credential, and a caller who can reach a path must not be able to set the volume
+         * of {@code WARN} lines it produces — the principle ADR-0051 states for rejections on
+         * unauthenticated reserved endpoints. The record is therefore emitted once when the store
+         * becomes saturated, and every further refusal of the same episode drops to {@code DEBUG}.
+         * The episode is the store's own hysteresis, not part of ADR-0051: the latch is released only
+         * once the store has drained below half its capacity, so freeing one place and filling it
+         * again does not end the episode — see
+         * {@code de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore}. The refusal
+         * rate is {@code sheriff_errors_total} under {@code PENDING_AUTHORIZATION_SATURATED}.
+         */
+        public static final LogRecord PENDING_AUTHORIZATION_STORE_SATURATED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(145)
+                .template("Pending-authorization store is full of live login records — new logins are refused with 503 until records are consumed or expire; further refusals in this episode stay at DEBUG")
                 .build();
     }
 }

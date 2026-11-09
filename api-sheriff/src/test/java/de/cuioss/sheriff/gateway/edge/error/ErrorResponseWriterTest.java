@@ -38,6 +38,7 @@ import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -92,10 +93,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * The rejection renderer. The {@code Retry-After} header of an open circuit's {@code 503}:
- * {@link ErrorResponseWriter#seedRetryAfter} seeds it onto the response-header map every
- * gateway-authored answer is written from, for that one event and no other, with the window the breaker
- * itself applies ({@link UpstreamGuards#BREAKER_RESET_SECONDS}). And the trust-boundary branch: a
+ * The rejection renderer. The {@code Retry-After} header of an open circuit's {@code 503} and of a
+ * saturated pending-authorization store's {@code 503}: {@link ErrorResponseWriter#seedRetryAfter} seeds
+ * it onto the response-header map every gateway-authored answer is written from, for those two events and
+ * no other, with the window the breaker itself applies ({@link UpstreamGuards#BREAKER_RESET_SECONDS}) or
+ * the store's retry delay ({@link PendingAuthorizationStore#SATURATED_RETRY_AFTER_SECONDS}). And the
+ * trust-boundary branch: a
  * pre-trust rejection on a selected route is rendered as the unrouted {@code 404} — its response headers
  * restored to the set taken at route selection, its stage cookies dropped, a gRPC route answered as an
  * HTTP {@code 404}, the HTML page negotiated under the {@code NO_ROUTE_MATCHED} classification — while it
@@ -152,8 +155,25 @@ class ErrorResponseWriterTest {
                         "the hint is the window the breaker's own delay is built from"));
     }
 
+    @Test
+    @DisplayName("a saturated pending-authorization store is given Retry-After: 30")
+    void saturatedPendingStoreCarriesItsRetryDelay() {
+        PipelineRequest request = anyRequest();
+
+        ErrorResponseWriter.seedRetryAfter(request, EventType.PENDING_AUTHORIZATION_SATURATED);
+
+        Map<String, String> authored = request.gatewayAuthoredResponseHeaders();
+        assertAll("Retry-After of a saturated pending store",
+                () -> assertEquals("30", authored.get("Retry-After"),
+                        "the header is a delay in whole seconds on the map every gateway-authored answer carries"),
+                () -> assertEquals(Integer.toString(PendingAuthorizationStore.SATURATED_RETRY_AFTER_SECONDS),
+                        authored.get(ErrorResponseWriter.RETRY_AFTER_HEADER),
+                        "the hint is the store's documented retry delay"));
+    }
+
     @ParameterizedTest(name = "{0} gets no Retry-After")
-    @EnumSource(value = EventType.class, mode = EnumSource.Mode.EXCLUDE, names = "UPSTREAM_CIRCUIT_OPEN")
+    @EnumSource(value = EventType.class, mode = EnumSource.Mode.EXCLUDE,
+            names = {"UPSTREAM_CIRCUIT_OPEN", "PENDING_AUTHORIZATION_SATURATED"})
     @DisplayName("control: no other event is given the header")
     void everyOtherEventIsLeftAlone(EventType eventType) {
         PipelineRequest request = anyRequest();
@@ -161,13 +181,15 @@ class ErrorResponseWriterTest {
         ErrorResponseWriter.seedRetryAfter(request, eventType);
 
         assertFalse(request.gatewayAuthoredResponseHeaders().containsKey("Retry-After"),
-                "only the open circuit's 503 names a time to retry at");
+                "only the open circuit's and the saturated pending store's 503 name a time to retry at");
     }
 
     @Test
     @DisplayName("a rejection answered before a request was built is left without the header")
     void absentRequestIsTolerated() {
         assertDoesNotThrow(() -> ErrorResponseWriter.seedRetryAfter(null, EventType.UPSTREAM_CIRCUIT_OPEN));
+        assertDoesNotThrow(() -> ErrorResponseWriter.seedRetryAfter(null,
+                EventType.PENDING_AUTHORIZATION_SATURATED));
     }
 
     private static PipelineRequest anyRequest() {
@@ -266,6 +288,29 @@ class ErrorResponseWriterTest {
                             String.valueOf(response.headers())),
                     () -> assertTrue(response.body().startsWith("<!DOCTYPE html>"), response.body()),
                     () -> assertNull(response.headers().get(WWW_AUTHENTICATE)));
+        }
+
+        /**
+         * The saturated-login refusal on the HTML path. {@link #saturatedPendingStoreCarriesItsRetryDelay}
+         * proves the header is seeded on the gateway-authored map; this proves the portal's HTML page — a
+         * writer of its own, with its own envelope headers — still carries it to a browser navigation.
+         */
+        @Test
+        @DisplayName("a saturated login refused to a browser navigation is an HTML 503 carrying Retry-After: 30")
+        void saturatedLoginHtmlPageCarriesRetryAfter() throws Exception {
+            Response response = reject(writer(true, errorPagesPortal()), Protocol.HTTP, List.of("text/html"),
+                    EventType.PENDING_AUTHORIZATION_SATURATED);
+
+            assertAll("the HTML refusal tells the browser when to retry",
+                    () -> assertEquals(ErrorPageClassifier.Classification.HTML_ELIGIBLE,
+                            ErrorPageClassifier.classify(EventType.PENDING_AUTHORIZATION_SATURATED),
+                            "precondition: the saturated refusal is HTML-eligible"),
+                    () -> assertEquals(503, response.status()),
+                    () -> assertTrue(response.headers().getOrDefault(CONTENT_TYPE, "").startsWith("text/html"),
+                            String.valueOf(response.headers())),
+                    () -> assertTrue(response.body().startsWith("<!DOCTYPE html>"), response.body()),
+                    () -> assertEquals("30", response.headers().get(ErrorResponseWriter.RETRY_AFTER_HEADER),
+                            String.valueOf(response.headers())));
         }
 
         @Test

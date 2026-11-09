@@ -323,7 +323,11 @@ the same way, so the gateway adds `client_id` and `request_uri` only to its redi
 *If the redirect does not come.* If the identity provider offers no pushed-authorization-request
 endpoint, or the push fails, the login -- or the widening, which then leaves the session as it was --
 is refused with `502`. The gateway logs `WARN` `ApiSheriff-132` with the reason, once per reason;
-repeats stay at `DEBUG`.
+repeats stay at `DEBUG`. If the push succeeds but the gateway already holds its maximum of unexpired
+unfinished logins, a new login or widening is refused with `503` and `Retry-After: 30` in both
+session modes, unless its source already holds 256 pending logins, in which case the gateway replaces
+that source's oldest pending login; see
+link:bff-session.adoc#pending-logins[Server-Session BFF -- When too many logins are unfinished].
 
 == When the identity provider does not bind the token
 

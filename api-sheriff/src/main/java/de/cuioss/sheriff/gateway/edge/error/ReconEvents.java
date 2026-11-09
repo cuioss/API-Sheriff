@@ -79,6 +79,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@link EventType#SOURCE_BLOCKED} — the refusal of a source already blocked, answered before
  *       admission and never reported to this predicate; counting it would extend a block by the very
  *       requests it refuses;</li>
+ *   <li>{@link EventType#PENDING_AUTHORIZATION_SATURATED} — a capacity refusal of the BFF's
+ *       pending-authorization store, not caller probing: it describes how many logins are in flight,
+ *       not which addresses exist, and counting it would charge every user who retries a login while
+ *       the store is full;</li>
  *   <li>{@link EventType#PRE_TRUST_INTERNAL_FAILURE} — an operator-side failure is not caller behaviour
  *       and carries no detection weight. It is still answered as the uniform {@code 404} and counted
  *       under its own event, but an outage behind the edge (a failed identity-provider back-channel

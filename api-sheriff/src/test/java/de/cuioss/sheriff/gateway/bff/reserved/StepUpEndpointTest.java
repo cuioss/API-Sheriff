@@ -17,8 +17,10 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -42,6 +44,8 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
@@ -82,6 +86,9 @@ class StepUpEndpointTest {
     private static final Set<String> OIDC_SCOPES = Set.of("openid", "profile");
     /** The {@code neededScopes} of the session route under {@code /dashboard}. */
     private static final Set<String> DASHBOARD_SCOPES = Set.of("openid", "profile", "dashboard:read");
+    /** The request's quota key, the source a widening's pending record is counted under. */
+    private static final String QUOTA_KEY = "192.0.2.10";
+    private static final int PENDING_CAPACITY = 8;
 
     /** One widening-seam call: the scope set it was asked for and whether it was silent. */
     private record SeamCall(Collection<String> scopes, boolean silent) {
@@ -98,7 +105,7 @@ class StepUpEndpointTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         FlowContext flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =
@@ -107,7 +114,7 @@ class StepUpEndpointTest {
         sessionWidening = new SessionWidening((scopes, silent) -> {
             seamCalls.add(new SeamCall(scopes, silent));
             return redirect;
-        }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
+        }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, Clock.fixed(T0, ZoneOffset.UTC));
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
         sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
         });
@@ -170,7 +177,7 @@ class StepUpEndpointTest {
         @Test
         @DisplayName("Should answer 401 problem+json without an IdP redirect when no session cookie is sent")
         void shouldAnswer401WithoutSession() {
-            StepUpOutcome outcome = endpoint.handle("/dashboard", null, T0);
+            StepUpOutcome outcome = endpoint.handle("/dashboard", null, QUOTA_KEY, T0);
 
             assertAll("the no-session answer",
                     () -> assertEquals(401, outcome.status()),
@@ -189,7 +196,7 @@ class StepUpEndpointTest {
         void shouldAnswer401ForUnknownSession() {
             String unknown = sessionCodec.toSetCookieHeader(SessionRecord.newSessionId()).split(";", 2)[0];
 
-            StepUpOutcome outcome = endpoint.handle("/dashboard", unknown, T0);
+            StepUpOutcome outcome = endpoint.handle("/dashboard", unknown, QUOTA_KEY, T0);
 
             assertEquals(401, outcome.status());
             assertTrue(seamCalls.isEmpty());
@@ -200,7 +207,8 @@ class StepUpEndpointTest {
         void shouldAnswer401ForExpiredSession() {
             String cookie = liveSessionCookie(OIDC_SCOPES);
 
-            StepUpOutcome outcome = endpoint.handle("/dashboard", cookie, T0.plus(SESSION_TTL).plusSeconds(1));
+            StepUpOutcome outcome = endpoint.handle("/dashboard", cookie, QUOTA_KEY,
+                    T0.plus(SESSION_TTL).plusSeconds(1));
 
             assertEquals(401, outcome.status(), "an expired session cannot be widened");
             assertTrue(seamCalls.isEmpty());
@@ -218,7 +226,7 @@ class StepUpEndpointTest {
         void shouldFallBackForOffOrigin(String returnUrl) {
             String cookie = liveSessionCookie(OIDC_SCOPES);
 
-            StepUpOutcome outcome = endpoint.handle(returnUrl, cookie, T0);
+            StepUpOutcome outcome = endpoint.handle(returnUrl, cookie, QUOTA_KEY, T0);
 
             assertEquals(302, outcome.status());
             assertEquals(CONFIGURED_DEFAULT, outcome.location(),
@@ -231,7 +239,7 @@ class StepUpEndpointTest {
         void shouldFallBackForNull() {
             String cookie = liveSessionCookie(OIDC_SCOPES);
 
-            StepUpOutcome outcome = endpoint.handle(null, cookie, T0);
+            StepUpOutcome outcome = endpoint.handle(null, cookie, QUOTA_KEY, T0);
 
             assertEquals(CONFIGURED_DEFAULT, outcome.location());
         }
@@ -241,7 +249,7 @@ class StepUpEndpointTest {
         void shouldRecordSameOriginTargetOnWidening() {
             String cookie = liveSessionCookie(OIDC_SCOPES);
 
-            StepUpOutcome outcome = endpoint.handle("https://gw.example.com/dashboard?tab=a", cookie, T0);
+            StepUpOutcome outcome = endpoint.handle("https://gw.example.com/dashboard?tab=a", cookie, QUOTA_KEY, T0);
 
             assertEquals("https://gw.example.com/dashboard?tab=a", consumeBoundRecord(outcome).returnUrl());
         }
@@ -256,7 +264,7 @@ class StepUpEndpointTest {
         void shouldRedirectStraightBack() {
             String cookie = liveSessionCookie(DASHBOARD_SCOPES);
 
-            StepUpOutcome outcome = endpoint.handle("/dashboard/reports", cookie, T0);
+            StepUpOutcome outcome = endpoint.handle("/dashboard/reports", cookie, QUOTA_KEY, T0);
 
             assertAll("a direct 302, no widening",
                     () -> assertEquals(302, outcome.status()),
@@ -271,7 +279,7 @@ class StepUpEndpointTest {
         void shouldDecideOnGrantedNotActive() {
             String cookie = liveSessionCookie(OIDC_SCOPES, DASHBOARD_SCOPES);
 
-            StepUpOutcome outcome = endpoint.handle("/dashboard", cookie, T0);
+            StepUpOutcome outcome = endpoint.handle("/dashboard", cookie, QUOTA_KEY, T0);
 
             assertEquals("/dashboard", outcome.location(),
                     "a scope inside S but outside A is obtained by the route's own refresh, never by a widening");
@@ -288,7 +296,7 @@ class StepUpEndpointTest {
         void shouldStartSilentWidening() {
             String cookie = liveSessionCookie(OIDC_SCOPES);
 
-            StepUpOutcome outcome = endpoint.handle("/dashboard", cookie, T0);
+            StepUpOutcome outcome = endpoint.handle("/dashboard", cookie, QUOTA_KEY, T0);
 
             PendingAuthorizationRecord pending = consumeBoundRecord(outcome);
             Widening widening = pending.widening();
@@ -304,7 +312,8 @@ class StepUpEndpointTest {
                             "S ∪ needed"),
                     () -> assertNotNull(widening, "a widening record, never a login record"),
                     () -> assertEquals(Widening.Attempt.SILENT, widening.attempt()),
-                    () -> assertEquals("/dashboard", pending.returnUrl()));
+                    () -> assertEquals("/dashboard", pending.returnUrl()),
+                    () -> assertEquals(QUOTA_KEY, pending.quotaKey(), "counted under the request's quota key"));
         }
 
         @Test
@@ -313,11 +322,36 @@ class StepUpEndpointTest {
             Set<String> granted = Set.of("openid", "profile", "email");
             String cookie = liveSessionCookie(granted);
 
-            endpoint.handle("/dashboard", cookie, T0);
+            endpoint.handle("/dashboard", cookie, QUOTA_KEY, T0);
 
             assertEquals(Set.of("openid", "profile", "email", "dashboard:read"),
                     Set.copyOf(seamCalls.getFirst().scopes()),
                     "a request for less than S would narrow the live session on the callback");
+        }
+    }
+
+    @Nested
+    @DisplayName("Saturated pending store (refused with 503)")
+    class SaturatedStore {
+
+        @Test
+        @DisplayName("Should raise PENDING_AUTHORIZATION_SATURATED after the push, store no record and set no cookie")
+        void shouldRefuseWideningWhenSaturated() {
+            String cookie = liveSessionCookie(OIDC_SCOPES);
+            for (int i = 0; i < PENDING_CAPACITY; i++) {
+                pendingStore.store(PendingAuthorizationRecord.create(FlowContext.create(GATEWAY_ORIGIN + "/auth/callback"),
+                        "/held", OIDC_SCOPES, "203.0.113." + i, T0), T0);
+            }
+
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> endpoint.handle("/dashboard", cookie, QUOTA_KEY, T0),
+                    "the refusal replaces the redirect, so no binding cookie is set");
+
+            assertEquals(EventType.PENDING_AUTHORIZATION_SATURATED, thrown.getEventType());
+            assertEquals(503, thrown.getEventType().httpStatus());
+            assertEquals(PENDING_CAPACITY, pendingStore.size(), "no widening record was stored");
+            assertEquals(1, seamCalls.size(), "the refusal follows the pushed authorization request");
+            assertTrue(sessionBinding.resolve(cookie, T0).isPresent(), "the live session is left as it was");
         }
     }
 
@@ -328,7 +362,13 @@ class StepUpEndpointTest {
         @Test
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
-            assertThrows(NullPointerException.class, () -> endpoint.handle("/dashboard", null, null));
+            assertThrows(NullPointerException.class, () -> endpoint.handle("/dashboard", null, QUOTA_KEY, null));
+        }
+
+        @Test
+        @DisplayName("Should reject a null quota key")
+        void shouldRejectNullQuotaKey() {
+            assertThrows(NullPointerException.class, () -> endpoint.handle("/dashboard", null, null, T0));
         }
 
         @Test

@@ -194,6 +194,21 @@ public enum EventType {
      */
     SOURCE_BLOCKED(EventCategory.RATE_LIMITING, 429),
 
+    // --- BFF pending-authorization store capacity (503) ---
+
+    /**
+     * A login, step-up or session-widening start was refused because the BFF's pending-authorization
+     * store already holds its full capacity of live records. Raised by
+     * {@code InMemoryPendingAuthorizationStore.store} after the pushed authorization request, so no
+     * pending record is stored and no binding cookie is minted; no other source's live record is
+     * evicted to make room. The edge answers {@code 503} with
+     * {@code Retry-After: 30} ({@code PendingAuthorizationStore.SATURATED_RETRY_AFTER_SECONDS}). A
+     * capacity refusal, not caller probing: it is not a reconnaissance signal, stays outside the
+     * pre-trust uniform-{@code 404} closed set, and its {@link EventCategory#RATE_LIMITING} category
+     * carries threat weight {@code 0}.
+     */
+    PENDING_AUTHORIZATION_SATURATED(EventCategory.RATE_LIMITING, 503),
+
     // --- BFF server-session lifecycle (informational; no category, no HTTP mapping) ---
 
     /** A server-side session was established after a successful IdP login ({@code require: session}). */
