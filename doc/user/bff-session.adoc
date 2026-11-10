@@ -772,8 +772,33 @@ IdP.
 * *Discovery fails at that moment*, or the session holds no ID token. The browser lands on
   `oidc.logout.final_redirect` as well, and the IdP is asked again at the next logout.
 
+*What the logout revokes.* In every one of these cases, after the session is destroyed and before
+the browser is redirected, the gateway revokes the session's refresh token at the IdP's
+`revocation_endpoint` (RFC 7009). A refresh token stolen from the session can then no longer mint
+access tokens. What it does not revoke:
+
+* *The access token.* It stays valid at a resource server until it expires. Keep access-token
+  lifetimes short.
+* *Other tokens of the same grant*, unless the IdP invalidates them on its own when the refresh token
+  is revoked.
+* *Anything, when there is nothing to revoke with.* A session without a refresh token
+  (`oidc.session.refresh.enabled: false`, or the IdP granted none) sends no request. Neither does an
+  IdP whose discovery document names no `revocation_endpoint`; that is logged at `DEBUG` only, so
+  check the discovery document if you rely on the revocation.
+
+The revocation waits for the IdP, so a slow IdP delays the logout answer. Each request to the IdP is
+bounded by the back channel's 5-second connect and 10-second read timeouts, and the revocation needs
+at most two: a discovery request when the IdP's metadata is not yet known, and the revocation itself
+(see
+link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
+The session is already gone during that wait. A failed
+revocation never changes the answer the browser gets. The first failure logs `WARN` `ApiSheriff-146`
+once; repeats stay at `DEBUG`. If you see `ApiSheriff-146`, check that the gateway can reach the
+IdP's revocation endpoint over its back channel and that the IdP accepts the gateway's client
+authentication there -- until then, logouts leave refresh tokens valid until they expire.
+
 A logout without a live session answers the same redirect to `oidc.logout.final_redirect` and
-clears the cookie.
+clears the cookie. There is no session token to revoke, so no revocation request is sent.
 
 [[backchannel-logout]]
 === Back-channel logout: what the identity provider must send
@@ -800,6 +825,9 @@ gateway acts on a token only when all of this holds:
 
 *A token acts once.* The gateway remembers the `jti` of every token it acted on until the token's
 two-minute window has passed, and refuses a second delivery of the same token.
+
+*A back-channel logout revokes no token.* It destroys the matching sessions only; the IdP that sent
+the logout token has already ended its own session.
 
 *That memory is per gateway instance.* It is held in memory, is not shared between instances and
 does not survive a restart. It holds 10 000 tokens; when it is full of tokens still inside their

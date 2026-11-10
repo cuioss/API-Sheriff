@@ -495,16 +495,27 @@ IdP-driven destruction is *unsupported*:
 
 RP-initiated logout (the user logging themselves out) works normally: the browser's cookie is
 cleared, and an expired cookie the browser keeps anyway is still refused server-side by the absolute
-TTL check. Where instant central revocation is a hard requirement, use the server-session variant.
-Mitigate in this variant with a short `ttl_seconds` and short access-token lifetimes.
+TTL check. Before the redirect to the IdP, the gateway also revokes at the IdP the refresh token
+sealed in the cookie the logout request presents (RFC 7009), as described for the server-session
+variant in link:bff-session.adoc#logout[Logout]. Once that revocation succeeded, a copy of the
+logged-out cookie stops working at its next transparent refresh, which the revoked refresh token fails -- until then it still
+carries an access token the gateway relays, and that access token is never revoked. With
+`session.refresh` disabled the cookie holds no refresh token, nothing is revoked, and a copy keeps
+working until `ttl_seconds` expires. Where instant central revocation is a hard requirement, use the
+server-session variant. Mitigate in this variant with a short `ttl_seconds` and short access-token
+lifetimes.
 
 *A logout does not stop a response that is already in flight.* The gateway keeps nothing a logout
 could mark, so a token refresh or a session widening that was already running for the same browser
 when it logged out still answers with a re-sealed session cookie. If that response reaches the
 browser after the logout response, the browser holds a session cookie again. It lasts until
-`ttl_seconds` at the latest; where the logout ended the session at the IdP as well, it ends earlier,
-when the session's next refresh is refused there. The window needs a request of the same browser in
-flight at the moment of the logout, and the mitigations are the two above. The server-session
+`ttl_seconds` at the latest. The logout's revocation shortens the window but does not close it: a
+re-sealed cookie that still carries the revoked refresh token ends at its next refresh, but a refresh
+whose rotation had already run, or a widening, seals a refresh token the logout never saw. That one
+ends earlier only where the IdP invalidates the grant's other tokens with the revoked one, or ended
+its own session on the logout, so that the session's next refresh is refused there. The window needs
+a request of the same browser in flight at the moment of the logout, and the mitigations are the two
+above. The server-session
 variant does not have this window: there a logout wins over a refresh or a widening that was in
 flight, and the session stays ended.
 

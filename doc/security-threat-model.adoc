@@ -2930,8 +2930,10 @@ back-channel member) and `sub`/`sid`, and MUST NOT carry `nonce`; validate sig/`
 *Control.* Validate logout tokens strictly: signature+`iss`+`aud`, require `events`, require
 `sub`/`sid`, *reject any token containing `nonce`*, short `iat` window; destroy via the
 `sid`/`sub` secondary index. Exact-match `post_logout_redirect_uri`. Destroy the
-server session and rotate/clear the cookie on any logout; revoke the RT family. Cookie-mode
-disables the back-channel endpoint (`404`) -- no session to destroy.
+server session and rotate/clear the cookie on any logout. On an RP-initiated logout, revoke the
+session's refresh token at the identity provider -- not the access token, and not the rest of the
+refresh-token family unless the provider revokes it on its own. Cookie-mode disables the
+back-channel endpoint (`404`) -- no session to destroy.
 
 *The `sid` index names the identity-provider session the tokens belong to.* A session is indexed
 under the `sid` of its login's ID token. A widening (<<bff-17>>) merges tokens that a different
@@ -2980,33 +2982,55 @@ obtained, or the session holds no ID token -- the browser is sent to `oidc.logou
 No such condition answers a logout with an error, and none leaves the session in place.
 `ApiSheriff-135` records once per process that the provider offers no usable endpoint.
 
+*An RP-initiated logout revokes the session's refresh token.* After the local destruction and
+before the end-session redirect is built, the logout sends one RFC 7009 request for the session's
+refresh token (`token_type_hint=refresh_token`) to the provider's `revocation_endpoint`, over the
+back-channel with the runtime's one client authentication
+(link:adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
+The request runs synchronously, so a slow provider delays the logout answer, bounded by the engine's
+connect and read timeouts; the session is already gone during that wait. A failed revocation never
+turns the logout into an error: the first failure per runtime is the `WARN`
+link:LogMessages.adoc#apisheriff-146[`ApiSheriff-146`], every later one a `DEBUG` line.
+
 *Status:* COVERED in server mode. Both channels, the logout-token checks -- `typ`, `iss`, `aud`,
 `iat`, `exp`, `events`, `nonce`, `sub`/`sid`, `jti` and the single use of a token -- and the
 logout-`state` cookie are delivered, cookie mode disables the back-channel receiver, an RP-initiated
-logout ends the gateway session with or without the provider's endpoint, and a server-mode
-termination is not undone by a refresh or a widening that was in flight. Cookie mode carries one
+logout ends the gateway session with or without the provider's endpoint and revokes the session's
+refresh token at the provider, and a server-mode termination is not undone by a refresh or a
+widening that was in flight. The tokens named below stay unrevoked, and cookie mode carries one
 accepted residual.
 
-*Not delivered: token revocation at logout.* The control names revoking the refresh-token family.
-RP-initiated logout hands the session to a token-revocation seam that the shipped runtime binds to a
-no-op, and the back-channel receiver calls no revocation at all, so in both session modes the
-gateway sends no RFC 7009 request on a logout. Whether the session's tokens stop being valid at the
-identity provider is decided by the provider -- by how it handles the `end_session_endpoint`
-redirect, or by the termination it announces over the back-channel -- not by the gateway. The
-refresh path is separate and does send a best-effort revocation request (<<bff-08>>).
+*Not revoked by a logout.* The gateway's revocation covers the session's refresh token on an
+RP-initiated logout and nothing else:
+
+* *The access token.* No logout revokes it. It stays valid at a resource server until it expires.
+* *The rest of the refresh-token family.* Whether revoking one refresh token also invalidates the
+  grant's other tokens is the identity provider's decision, not the gateway's.
+* *Anything on the back-channel path.* The receiver destroys the sessions a logout token names and
+  revokes nothing: the identity provider initiated that logout and has already ended its own session.
+* *Nothing at all, where no request can be sent.* A session that holds no refresh token -- with
+  `oidc.session.refresh.enabled=false`, or when the provider granted none -- and a provider that
+  publishes no `revocation_endpoint` get no revocation request. The missing endpoint is recorded at
+  `DEBUG` only, so the operator reads that capability from the provider's discovery document.
+
+The mitigations are short access-token lifetimes and the identity provider's own revocation on
+logout where it supports it. The refresh path's revocation is separate (<<bff-08>>).
 
 *Residual risk (accepted) -- cookie mode: a response in flight can outlast the logout.* The stateless
 binding holds no session state, so its `destroy` removes nothing and its updating write cannot
 observe a logout: it always re-seals. What the logout endpoint does is resolve the session from the
-request, hand it to a token-revocation seam, answer with the clearing `Set-Cookie`, and redirect to
-the identity provider's `end_session_endpoint`. The shipped runtime binds that seam to a no-op, so
-the gateway itself revokes nothing at the identity provider on logout. A near-expiry refresh, a
-scope-driven refresh or a widening callback that was already running for the same browser still
-answers with a re-sealed session cookie. If that response reaches the browser after the logout response, the
-browser again holds a cookie the gateway resolves as a session, until the session's absolute
-lifetime. The exposure needs a request of the same browser in flight at the moment of the logout.
-Beyond that it is bounded by the identity provider, not by the gateway: where the provider ends its
-own session on the logout, the refresh token in the re-sealed cookie is refused at that session's
+request, revoke the refresh token sealed in the cookie that request presents, answer with the
+clearing `Set-Cookie`, and redirect to the identity provider's `end_session_endpoint`. A near-expiry
+refresh, a scope-driven refresh or a widening callback that was already running for the same browser
+still answers with a re-sealed session cookie. If that response reaches the browser after the logout
+response, the browser again holds a cookie the gateway resolves as a session, until the session's
+absolute lifetime. The exposure needs a request of the same browser in flight at the moment of the
+logout. The revocation shrinks it but does not close it: a re-sealed cookie that still carries the
+presented refresh token is refused at its next transparent refresh once the revocation succeeded,
+but a refresh whose rotation already ran, or a widening, re-seals a refresh token the logout never
+saw. Beyond that the exposure is bounded by the identity provider, not by the gateway: where the
+provider also invalidates the grant's
+other tokens, or ends its own session on the logout, that refresh token is refused at the session's
 next transparent refresh and the session ends there, as for any IdP-side termination in this
 variant; until then the gateway mediates the access token the cookie carries. The mitigations are the ones
 link:variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout] names for a termination the stateless
@@ -3038,7 +3062,20 @@ without an ID token ends the session, clears the cookies and lands on `final_red
 `ApiSheriff-135` is recorded once (`RpInitiatedLogoutTest`, `NoUsableEndSessionEndpoint`;
 `LogoutEndpointTest`). The redirect that carries the ID token is answered with
 `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and a refused back-channel delivery
-with `no-store` (`GatewayEdgeGatewayCookieTest`, `ServerMode`).
+with `no-store` (`GatewayEdgeGatewayCookieTest`, `ServerMode`). The revocation seam receives the
+logged-out session once, after the binding destroyed it, and a seam that throws leaves the `302`, the
+ended session and the cleared cookie unchanged (`LogoutEndpointTest`); the seam runs before the
+end-session redirect is built and also when none can be built, and a failing revocation is recorded
+as `ApiSheriff-146` once over repeated logouts and at `DEBUG` afterwards, with no record carrying the
+refresh token (`RpInitiatedLogoutTest`).
+The produced runtime's logout revokes the ended session's refresh token in one RFC 7009 request with
+`token_type_hint=refresh_token`, authenticated with the runtime's one client authentication and never
+naming the access token; a session without a refresh token and a provider without a
+`revocation_endpoint` send no request and raise nothing, and a server-error answer reaches the caller
+(`BffRuntimeProducerTest`). Against the native image and the integration stack's Keycloak, a logout
+whose end-session redirect is not followed leaves no identity-provider session with the logged-out
+session's `sid` naming the gateway's client, so only the revocation can have ended it
+(`BffLogoutIT`).
 
 [#bff-10]
 === BFF-10 -- Cookie hardening & token-leakage-to-browser
@@ -4427,7 +4464,7 @@ outstanding hardening work (next section).
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
-| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); the gateway session ended before the provider redirect is built, and without it where none can be built; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018 | COVERED (server) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-146`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED

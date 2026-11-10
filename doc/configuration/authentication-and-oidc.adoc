@@ -581,14 +581,24 @@ link:#_oidc_client_authentication[Client authentication].
   session-binding cookie *first*, then redirects to the IdP `end_session_endpoint` with
   `id_token_hint`, `post_logout_redirect_uri` and a session-bound `state` (per `CLIENT-13`), sealed
   into a 60-second, single-use `+__Host-sheriff-logout+` cookie that the return leg verifies and
-  clears (identical in both modes). The token-revocation seam is a no-op in the shipped runtime: no
-  token is revoked at the IdP on logout.
+  clears (identical in both modes).
+
+  Between the local destruction and the redirect, the logout revokes the session's refresh token at
+  the IdP's `revocation_endpoint` (RFC 7009, `token_type_hint=refresh_token`), synchronously, over
+  the back channel and with the gateway's client authentication -- in server mode the stored token,
+  in cookie mode the one sealed in the presented cookie. The access token is never revoked; it stays
+  valid at a resource server until it expires. No request is sent when the session holds no refresh
+  token (`session.refresh.enabled: false`, or the IdP granted none) or when the IdP publishes no
+  `revocation_endpoint`; the latter is logged at `DEBUG` only. A failed revocation never changes the
+  logout's answer: the first failure is `WARN` `ApiSheriff-146`, once per runtime, and every failure
+  is a `DEBUG` line. See
+  link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080].
 
   Without a usable `end_session_endpoint` (none, blank, or not an absolute `http`/`https` URI with a
   host) the answer is a `302` to `logout.final_redirect` and `WARN` `ApiSheriff-135` is logged once
   per process (repeats at `DEBUG`). A discovery failure, a session without an ID token or any failure
   building the redirect lands there too, logged at `DEBUG`; discovery is retried at the next logout.
-  In these cases the IdP session is not ended.
+  In these cases the IdP session is not ended, but the refresh-token revocation is still attempted.
 
   The IdP redirect carries `Referrer-Policy: no-referrer`, whatever `security_headers` sets; every
   logout answer is `Cache-Control: no-store`.
