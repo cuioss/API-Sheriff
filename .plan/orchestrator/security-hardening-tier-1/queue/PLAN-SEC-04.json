@@ -2,10 +2,10 @@
   "id": "PLAN-SEC-04",
   "slug": "edge-transport-bounds-follow-up",
   "workstream": "WS-01",
-  "status": "staged",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-sec-04-edge-transport-bounds-follow-up",
+  "pr": "589",
+  "landing": "landings/PLAN-SEC-04.md",
   "seq": 4
 }
