@@ -23,7 +23,7 @@ severity, an effort/risk size (S/M/L/XL) and an absolute priority (severity valu
 effort/risk cost). Tier 1 is every fix part scoring at least 100: the best security effect per
 unit of effort and change risk. Five of the six are Medium; the sixth (relay-failure upstream
 reset) is Medium in deployments that proxy unbounded streaming responses. The epic is done when
-all three plans have shipped, each with regression tests that fail before the fix, and the
+all planned work has shipped, each with regression tests that fail before the fix, and the
 tracked documentation that overclaimed for these surfaces has been corrected.
 
 The six findings, by priority rank:
@@ -49,6 +49,7 @@ Low finding.
 - PLAN-SEC-03 — BFF pending-authorization store. Declared disjoint from both other plans in production code, but the operator-authorised relayed-peer expansion wrote PLAN-SEC-01's `tls/` files; see the Watch below. SHIPPED 2026-11-09 as PR #581 (3eef748b) — see `landings/PLAN-SEC-03.md`.
 - PLAN-SEC-02 — held back on 2026-11-09 by the operator at the overlap prompt (2 shared doc files with the then-running PLAN-SEC-03), emitted after PLAN-SEC-03 merged. SHIPPED 2026-11-10 as PR #590 (81b46785) — see `landings/PLAN-SEC-02.md`. M5 closed; M6 closed for the client that sends no request byte (the threat model keeps GW-07 PARTIAL). Realized surface 34 files vs 13 declared, all doc/test propagation; only predicted doc files shared with the other plans.
 - PLAN-SEC-04 — staged 2026-11-09 from the PLAN-SEC-01 landing analysis: follow-up hardening of the new transport bounds plus the PLAN-SEC-01 test-coverage advisories (folded here, so that Watch is retired). Mechanism-level spec by operator choice; details in the operator's git-ignored local notes. Same `tls/` + `edge/terminal/` surface as the shipped PLAN-SEC-01; shares only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` with PLAN-SEC-02 / PLAN-SEC-03.
+- PLAN-SEC-05 — staged 2026-11-10 on the operator's word from the PLAN-SEC-02 landing analysis (L3-A): finish M6 — the first-message bound covers a complete gRPC message, and a request stream the client holds open is not charged to the upstream. Mechanism-level spec; details in the operator's git-ignored local notes. Production surface `edge/upstream/**` + `edge/error/RejectionReporter`; shares only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` with PLAN-SEC-04. HELD by the operator until PLAN-SEC-04 lands, so that PLAN-SEC-04's leftovers can be folded into it at that landing's analysis.
 - All three plans share `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` (the latter declared as a HYPOTHESIS in PLAN-SEC-01 / PLAN-SEC-02, only if a new LogRecord is needed). Two shared files per pair means `next` puts the overlap to the operator. Both are append/row-local documentation edits in different sections, so a parallel launch risks at most a trivial doc rebase; no production file is shared.
 
 ## Decisions
@@ -62,6 +63,7 @@ Low finding.
 - 2026-11-09 — PLAN-SEC-03 landing review: its layer-3 points were recorded in the operator's local security notes and reported; none staged.
 - 2026-11-10 — PLAN-SEC-02 landing review: its layer-3 points (one major residual of M6, two minor) were recorded in the operator's local security notes and reported; staging a fix plan awaits the operator's word. Its candidate lesson (`-001`, a Sonar `java:S2386` architecture hint for the api-sheriff module) was discarded from this epic: applying it writes the tracked `.plan/project-architecture/`, outside the ledger, so the `architecture enrich insight --module api-sheriff` call was handed to the operator. The 2026-11-08 tooling-skew Watch is retired: PLAN-SEC-02 ran plugin and executor 0.1.2090 (aligned) and merged through the queue with no gate refusal.
 - 2026-11-10 — PLAN-SEC-02's landing reported review-body and Sonar counts that the provider re-read does not reproduce (2 vs 13; 0 vs 6). Both are classification/staleness artifacts (all findings were handled; the code addresses all six Sonar issues), recorded in the landing report as the analyze contract requires; the tooling side is routed to plan-marshall's `lessons-routing` inbox as `api-sheriff-security-hardening-tier-1-005`.
+- 2026-11-10 — PLAN-SEC-02 L3-A (M6 residual): the operator chose to stage a fix plan → PLAN-SEC-05. At the overlap prompt (2 shared doc files with the running PLAN-SEC-04) the operator held it back: wait for PLAN-SEC-04 to land and fold its leftovers into PLAN-SEC-05 before emitting. The epic therefore no longer closes when PLAN-SEC-04 ships.
 
 ## Open Defects
 
