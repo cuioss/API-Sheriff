@@ -43,21 +43,27 @@ gateway holds in confidence.* The rule has five parts.
   its own. A reserved path that answers a problem document directly, such as the step-up path's
   `401` without a live session, answers a fixed body and adds no member either.
 . *After the standard members, in insertion order.* `ErrorResponseWriter.problemBody` writes `type`,
-  `title` and `status` first. It then appends the members in the order the rejection inserted them.
-  The standard members come from the gateway's event catalogue.
-. *The standard member names are reserved.* The constructor refuses a member named `type`, `title`,
-  `status`, `detail` or `instance`. The gateway writes no `detail` and no `instance` itself. The two
+  `title` and `status` first. It then appends the members in the iteration order of the map the
+  constructor received. The constructor keeps that order. It does not impose one. A call site
+  therefore passes an insertion-ordered map. The one in use passes a `LinkedHashMap`, so its members
+  appear in the order it inserted them. The standard members come from the gateway's event catalogue.
+. *The standard member names are reserved.* The constructor refuses a member named after one of the
+  five RFC 9457 standard members, the set `GatewayException.STANDARD_MEMBERS` holds: `type`, `title`,
+  `status`, `detail` and `instance`. The gateway writes no `detail` and no `instance` itself. The two
   names stay reserved anyway, so no member can pose as one.
 . *JSON-shaped, non-null values.* A value is a string, a number, a boolean, a collection or a map.
   The constructor refuses a `null` name or value. It copies the member map and every collection
-  value, so a caller cannot add, remove or replace a member, or change a collection member, after
-  the rejection is raised. A map value is not copied: it is held by reference, so a caller that
-  kept the map could still change it. No call site passes a map-valued member. `GatewayJson`
-  serializes each member name and value with RFC 8259 string escaping.
+  value, so a caller cannot add, remove or replace a member after the rejection is raised. Nor can
+  it add, remove or replace an element of a collection member. The copy is shallow. A map value,
+  and a collection or map held inside a collection, is kept by reference. A caller that kept such
+  an object could still change it. No call site passes one. `GatewayJson` serializes each member
+  name and value with RFC 8259 string escaping.
 . *Disclosed, so confined.* The exception message is for the log only and never reaches the body.
-  A member does reach the client. It therefore never carries token material or a session identifier.
-  Text taken from the request appears in a member only percent-encoded inside a URL the gateway
-  builds, never raw.
+  A member does reach the client. It therefore never carries token material the gateway holds, or a
+  session identifier. Text taken from the request appears in a member only percent-encoded inside a
+  URL the gateway builds, never raw. That text is whatever the client sent. A secret the client put
+  in its own query therefore returns to it inside `step_up_url`. A client that logs the body logs
+  that secret too.
 
 === Where no member appears
 

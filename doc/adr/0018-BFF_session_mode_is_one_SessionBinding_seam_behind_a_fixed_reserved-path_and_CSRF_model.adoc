@@ -74,12 +74,17 @@ joined the set for the same reason
 (link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
 
 [[reserved-path-boot-rule]]
-==== Amendment: the boot refuses a reserved path no request can reach
+==== Amendment: the boot refuses a reserved path its configured spelling cannot reach
 
 The registry stores a reserved path verbatim. The edge matches it by exact equality with the
-canonical request path, ahead of the route table. A configured value that no request spells
-canonically therefore names an endpoint no request reaches. The canonical path such a request
+canonical request path, ahead of the route table. A request that spells a non-canonical value as
+configured therefore never reaches the reserved endpoint. The canonical path such a request
 resolves to stays unreserved and falls through to the route table.
+
+The claim covers the configured spelling, not every request. A value with a matrix parameter is
+still matched by a request that encodes the `;` as `%3B`. The canonical-path guard reads the raw
+path. The registry matches the decoded one. That encoded URL is not the one an operator registers,
+so the refusal rests on the configured spelling alone.
 
 `ReservedPathRules` refuses such a value at boot. It judges four keys: `oidc.user_info.path`,
 `oidc.login.path`, `oidc.step_up.path` and `oidc.client_authentication.jwks_path`.
@@ -422,9 +427,10 @@ silent and shows only in the deployments least equipped to diagnose it.
 * Six reserved paths occupy their configured paths on the OIDC host, and the back-channel logout and
   client JWKS paths on every host. An operator who needs such a namespace proxied relocates the
   reserved path.
-* A reserved path must be declared in canonical form. A value with a percent-encoded character, a
-  matrix parameter or a dot segment stops the boot, even where some other system spells the URL that
-  way.
+* The user-info, login, step-up and client JWKS paths must be declared in canonical form. A value
+  with a percent-encoded character, a matrix parameter or a dot segment stops the boot, even where
+  some other system spells the URL that way. The boot does not hold the callback, the logout path,
+  its return leg or the back-channel logout path to that form.
 * A truly cross-site SPA cannot be served, because the fixed cookie policy does not attach the session
   cookie cross-site. Such an SPA must be hosted under the gateway's site.
 * The authorization code travels in the callback URL. The exposure is bounded by the four obligations
