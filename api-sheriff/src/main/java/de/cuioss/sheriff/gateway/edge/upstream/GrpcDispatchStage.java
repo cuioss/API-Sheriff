@@ -72,9 +72,11 @@ import io.vertx.core.streams.ReadStream;
  * ends without any message is not ended by it, and the bound no longer applies once the upstream has
  * answered.
  * <p>
- * <strong>The rest of the call is bounded too.</strong> Once the first message has gone, and until the
- * upstream sends its response headers, the guard's timeout bounds the call — an upstream that received the
- * request and never answers is ended there and counted as an upstream failure. That timeout bounds each
+ * <strong>The rest of the call is bounded too.</strong> The first-message bound ends with the first
+ * forwarded request byte, not with a complete gRPC message. From then until the upstream sends its response
+ * headers, the guard's timeout alone bounds the call, and a call that timeout ends — an upstream that never
+ * answers, or a client that stops sending after its first byte — is counted as an upstream failure. That
+ * timeout bounds each
  * attempt, and a gRPC call is a {@code POST}, which the retry predicate never retries, so its one attempt
  * is the whole call. Once the headers have arrived the guarded call has returned, and the call's
  * stream-idle bound takes over: the edge hands this stage the request body

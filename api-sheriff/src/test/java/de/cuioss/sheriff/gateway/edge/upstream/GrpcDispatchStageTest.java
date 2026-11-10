@@ -861,7 +861,8 @@ class GrpcDispatchStageTest {
         /**
          * The breaker rules of the production guard (UpstreamGuards#guardFor) — the breaker skipping a
          * {@link GatewayException}, the timeout inside it — with a threshold of {@value #BREAKER_THRESHOLD}
-         * and a timeout of {@value #BREAKER_GUARD_MILLIS} ms.
+         * and a timeout of {@value #BREAKER_GUARD_MILLIS} ms. {@code UpstreamGuardsTest} is the test that binds
+         * these mirrored rules to the production guard.
          */
         private Guard breakerGuard() {
             return Guard.create()
