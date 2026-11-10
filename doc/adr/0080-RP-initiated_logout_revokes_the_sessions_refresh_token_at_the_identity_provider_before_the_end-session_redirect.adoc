@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: RP-initiated logout revokes the logged-out session's refresh token at the identity provider through RFC 7009 (token_type_hint=refresh_token), over the back-channel origin with the runtime's one revocation client and one client authentication, synchronously after the local session destruction and before the end-session redirect is built; a session without a refresh token and a provider without a revocation_endpoint send nothing; the access token, the back-channel logout path and any token the provider does not revoke on its own stay unrevoked; the wait is bounded by the engine's default 5-second connect and 10-second read timeouts per request; a failed revocation is the latched ApiSheriff-146 WARN, once per runtime and DEBUG afterwards, and never stops the logout; eight alternatives, including the no-op binding, asynchronous dispatch and access-token revocation, are rejected
+// summary: RP-initiated logout revokes the logged-out session's refresh token at the identity provider through RFC 7009 (token_type_hint=refresh_token), over the back-channel origin with the runtime's one revocation client and one client authentication, synchronously after the local session destruction and before the end-session redirect is built; a session without a refresh token and a provider without a revocation_endpoint send nothing; the access token, the back-channel logout path and any token the provider does not revoke on its own stay unrevoked; the wait is bounded by the engine's default 5-second connect and 10-second read timeouts per request; a failed revocation is the latched ApiSheriff-147 WARN, once per runtime and DEBUG afterwards, and never stops the logout; eight alternatives, including the no-op binding, asynchronous dispatch and access-token revocation, are rejected
 // tags: bff, oidc, logout, revocation, rfc-7009, refresh-token, back-channel, identity-provider, session-termination, latched-warn, rejected-alternatives
 // affects: api-sheriff
 // supersedes:
@@ -144,7 +144,7 @@ transport fails, or the revocation endpoint answers with a non-success status.
 `RpInitiatedLogout.initiate` catches that failure and completes the logout.
 
 * *The first failure per runtime is a `WARN`.* It is recorded as
-  link:../LogMessages.adoc#apisheriff-146[`ApiSheriff-146`]. The record takes no substitution and no
+  link:../LogMessages.adoc#apisheriff-147[`ApiSheriff-147`]. The record takes no substitution and no
   throwable, because the identity provider's answer is not sanitised.
 * *Every failure leaves a `DEBUG` line.* That line names the exception types in the failure's cause
   chain, outermost first, joined by ` caused by `. It carries no exception and no exception message.
@@ -241,7 +241,7 @@ provider round trip to a reserved path that a caller reaches without a credentia
   still deliver a refresh token the logout never saw.
 * *A provider without a `revocation_endpoint` revokes nothing on logout.* Only a `DEBUG` line records
   it. The operator learns the capability from the provider's discovery document.
-* *A repeated failure is visible once per runtime.* After the first `ApiSheriff-146`, further failures
+* *A repeated failure is visible once per runtime.* After the first `ApiSheriff-147`, further failures
   appear only at `DEBUG`. An operator who sees the record must assume that later logouts fail too.
 
 == Links
@@ -275,4 +275,4 @@ provider round trip to a reserved path that a caller reaches without a credentia
   -- the rule that a caller who can repeat a condition gets a latched `WARN`
 * link:../security-threat-model.adoc#bff-09[Security threat model, BFF-09] -- the threat this control
   answers and the residual it leaves
-* link:../LogMessages.adoc#apisheriff-146[Log messages, ApiSheriff-146] -- the latched failure record
+* link:../LogMessages.adoc#apisheriff-147[Log messages, ApiSheriff-147] -- the latched failure record

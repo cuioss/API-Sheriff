@@ -62,7 +62,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>A failed revocation is a latched {@code WARN}.</strong> A {@link RuntimeException} the seam
  * raises — a transport failure, a non-success answer, provider metadata that cannot be obtained — is
- * recorded once per instance as {@code ApiSheriff-146}, which carries no value and no throwable; every
+ * recorded once per instance as {@code ApiSheriff-147}, which carries no value and no throwable; every
  * failure, the first included, also leaves a {@code DEBUG} line that names the exception types of the
  * failure's cause chain and nothing else — neither the throwable nor any exception message is logged,
  * because a message may carry the identity provider's unsanitised answer or the refresh token itself.
@@ -160,7 +160,7 @@ public final class RpInitiatedLogout {
      * <p>
      * The seam is called first and in every case, also when no redirect can be built. A
      * {@link RuntimeException} it raises does not stop the logout: the first one per instance is
-     * recorded as {@code ApiSheriff-146} and every one leaves a {@code DEBUG} line naming the
+     * recorded as {@code ApiSheriff-147} and every one leaves a {@code DEBUG} line naming the
      * exception types of its cause chain — never the throwable or an exception message.
      * <p>
      * The result is empty — and the caller completes the logout locally — when the session holds no ID
@@ -238,7 +238,7 @@ public final class RpInitiatedLogout {
 
     /**
      * Reports a failed refresh-token revocation. The first failure per instance is the
-     * {@code ApiSheriff-146} {@code WARN}, which carries no substitution and no throwable, because the
+     * {@code ApiSheriff-147} {@code WARN}, which carries no substitution and no throwable, because the
      * throwable's message may carry the identity provider's unsanitised answer. Every failure, the
      * first included, leaves a {@code DEBUG} line that names the exception types of the failure's cause
      * chain and nothing more: the throwable is not attached and no exception message is printed, because

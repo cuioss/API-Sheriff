@@ -165,7 +165,7 @@ class BffLogoutIT extends BaseIntegrationTest {
                 () -> "the logout must revoke the session's refresh token at Keycloak, which detaches "
                         + CLIENT_ID + " from the user session; it is still attached. The end-session redirect"
                         + " was not followed, so only the revocation could have detached it: check that the"
-                        + " gateway log carries no ApiSheriff-146 (a failed revocation) and that the realm's"
+                        + " gateway log carries no ApiSheriff-147 (a failed revocation) and that the realm's"
                         + " discovery document declares a revocation_endpoint");
     }
 

@@ -2998,7 +2998,7 @@ already spent is answered with success (RFC 7009, section 2.2), so that revocati
 The request runs synchronously, so a slow provider delays the logout answer, bounded by the engine's
 connect and read timeouts; the session is already gone during that wait. A failed revocation never
 turns the logout into an error: the first failure per runtime is the `WARN`
-link:LogMessages.adoc#apisheriff-146[`ApiSheriff-146`], every later one a `DEBUG` line.
+link:LogMessages.adoc#apisheriff-147[`ApiSheriff-147`], every later one a `DEBUG` line.
 
 *Status:* COVERED in server mode. Both channels, the logout-token checks -- `typ`, `iss`, `aud`,
 `iat`, `exp`, `events`, `nonce`, `sub`/`sid`, `jti` and the single use of a token -- and the
@@ -3085,7 +3085,7 @@ removed, rotated material included, and nothing when the session was already gon
 (`InMemorySessionStoreTest`, `ServerSessionBindingTest`); the cookie binding returns the record the
 request presented, never a re-sealed successor (`CookieSessionBindingTest`). The seam runs before the
 end-session redirect is built and also when none can be built, and a failing revocation is recorded
-as `ApiSheriff-146` once over repeated logouts and at `DEBUG` afterwards (`RpInitiatedLogoutTest`).
+as `ApiSheriff-147` once over repeated logouts and at `DEBUG` afterwards (`RpInitiatedLogoutTest`).
 No record at any level carries the refresh token, also when the failing seam puts it into its
 exception's message and its cause's: the `DEBUG` line names only the exception types of the cause
 chain (`RpInitiatedLogoutTest`, `shouldKeepATokenCarryingRevocationFailureOutOfTheLog`), and a cause
@@ -4487,7 +4487,7 @@ outstanding hardening work (next section).
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
-| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-146`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-147`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED

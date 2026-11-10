@@ -60,7 +60,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Covered: the initiate leg (the token-revocation seam, handed the logged-out session once and before
  * the end-session redirect is built, engine end-session redirect carrying
  * {@code id_token_hint}/{@code post_logout_redirect_uri}/{@code state}, and the single-use
- * {@code __Host-sheriff-logout} cookie), a failing seam reported as the latched {@code ApiSheriff-146}
+ * {@code __Host-sheriff-logout} cookie), a failing seam reported as the latched {@code ApiSheriff-147}
  * {@code WARN} without stopping the logout (a cause chain that loops back on itself included), the
  * logout-state cookie round-trip through
  * {@link RpInitiatedLogout#completeReturn}, the open-redirect rejection of an unregistered
@@ -248,12 +248,12 @@ class RpInitiatedLogoutTest {
 
         /**
          * A caller can repeat a logout at will, so the volume of {@code WARN} lines it produces must not
-         * be its to set (ADR-0051). The first failure is the {@code ApiSheriff-146} {@code WARN}, which
+         * be its to set (ADR-0051). The first failure is the {@code ApiSheriff-147} {@code WARN}, which
          * carries no value and no throwable; every failure leaves a {@code DEBUG} line naming the
          * exception type — never the throwable itself — and a repeat leaves that line only.
          */
         @Test
-        @DisplayName("Should report a failed revocation once as ApiSheriff-146 over two failing logouts, the second at DEBUG only")
+        @DisplayName("Should report a failed revocation once as ApiSheriff-147 over two failing logouts, the second at DEBUG only")
         void shouldReportAFailedRevocationOnceAndRepeatsAtDebug() {
             AtomicInteger attempts = new AtomicInteger();
             RpInitiatedLogout resilient = logoutRevokingWith(failingRevocation(attempts), PUBLISHED);

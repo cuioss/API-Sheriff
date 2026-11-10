@@ -152,7 +152,7 @@ public final class BffLogMessages {
 
     /**
      * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 134, 135, 145
-     * and 146).
+     * and 147).
      */
     @UtilityClass
     public static final class WARN {
@@ -390,7 +390,7 @@ public final class BffLogMessages {
          */
         public static final LogRecord LOGOUT_REVOCATION_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
-                .identifier(146)
+                .identifier(147)
                 .template("Logout could not revoke the session's refresh token at the identity provider — the gateway session is ended and the refresh token stays valid at the provider until it expires; further failures stay at DEBUG")
                 .build();
     }

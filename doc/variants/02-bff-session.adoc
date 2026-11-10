@@ -169,7 +169,7 @@ attached. Same-origin deployments need neither.
   store held when the session was destroyed, so a refresh that rotated it just before is covered.
   When something else ended the session just before the logout destroyed it, the gateway revokes the
   refresh token of the session the logout found instead. A failure never stops the logout, and the
-  first one per runtime is reported as `ApiSheriff-146`. The access token is not revoked and
+  first one per runtime is reported as `ApiSheriff-147`. The access token is not revoked and
   stays valid at a resource server until it expires. A session without a refresh token, or an IdP
   without a `revocation_endpoint`, gets no revocation request
   (link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).

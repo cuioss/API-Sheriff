@@ -201,7 +201,7 @@ link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide])
   link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`]). Before that redirect the
   gateway revokes at the IdP (RFC 7009) the refresh token sealed in the cookie the logout request
   presents; a failure never stops the logout, and the first one per runtime is reported as
-  `ApiSheriff-146`. The access token is not revoked and stays valid at a resource server until it
+  `ApiSheriff-147`. The access token is not revoked and stays valid at a resource server until it
   expires; a session without a refresh token, or an IdP without a `revocation_endpoint`, gets no
   revocation request
   (link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
