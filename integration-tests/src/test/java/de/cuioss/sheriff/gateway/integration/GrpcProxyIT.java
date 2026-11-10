@@ -360,7 +360,8 @@ class GrpcProxyIT extends BaseIntegrationTest {
      * Sends {@code requestBytes} on a raw HTTP/2 {@code Echo/Unary} call and, when {@code halfClose} is
      * set, ends the request stream after them; otherwise the stream is left open with nothing more to
      * come. Completes with the gRPC status — from the response headers on a trailers-only answer, else
-     * from the trailers — the response body and the time from sending to the end of the response.
+     * from the trailers — the response body and the time from sending to the end of the response. A
+     * failure to send completes it exceptionally with that failure.
      */
     private static CompletableFuture<RawCallOutcome> rawUnaryCall(Buffer requestBytes, boolean halfClose) {
         CompletableFuture<RawCallOutcome> outcome = new CompletableFuture<>();
@@ -384,10 +385,23 @@ class GrpcProxyIT extends BaseIntegrationTest {
                                     body, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))))
                             .onSuccess(outcome::complete)
                             .onFailure(outcome::completeExceptionally);
-                    if (halfClose) {
-                        request.end(requestBytes);
-                    } else {
-                        request.write(requestBytes);
+                    try {
+                        if (halfClose) {
+                            request.end(requestBytes).onFailure(outcome::completeExceptionally);
+                        } else {
+                            // A body write that does not end the request needs either a Content-Length or
+                            // chunked mode, or Vert.x refuses it before the request head is sent. Chunked
+                            // mode only lifts that client-side check: on HTTP/2 Vert.x builds the HEADERS frame
+                            // from the request headers alone, so no transfer-encoding header reaches the wire
+                            // and the call declares no length — as a real gRPC client's request does not.
+                            request.setChunked(true);
+                            request.write(requestBytes).onFailure(outcome::completeExceptionally);
+                        }
+                    } catch (RuntimeException e) {
+                        // A synchronous send failure is a client-side defect: the call never reached the
+                        // gateway. Fail the case with its cause now rather than leaving it to the idle timeout,
+                        // whose stream reset would hide it.
+                        outcome.completeExceptionally(e);
                     }
                 });
         return outcome;
