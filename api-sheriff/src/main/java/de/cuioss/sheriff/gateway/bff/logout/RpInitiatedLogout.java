@@ -194,16 +194,6 @@ public final class RpInitiatedLogout {
             // control and is reported, latched.
             reportRevocationFailure(revocationFailure);
         }
-        return endSessionRedirect(session);
-    }
-
-    /**
-     * The second half of {@link #initiate}: resolves the provider's end-session endpoint, mints the
-     * session-bound {@code state}, and has the engine build the redirect carrying the
-     * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the {@code state}. Empty
-     * when the session holds no ID token or no usable endpoint can be resolved; none of these raises.
-     */
-    private Optional<LogoutRedirect> endSessionRedirect(SessionRecord session) {
         if (session.idToken().isBlank()) {
             LOGGER.debug("RP-initiated logout for a session without an ID token — no end-session redirect is sent");
             return Optional.empty();
