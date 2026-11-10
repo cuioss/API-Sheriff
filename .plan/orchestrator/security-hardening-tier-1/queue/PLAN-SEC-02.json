@@ -2,10 +2,10 @@
   "id": "PLAN-SEC-02",
   "slug": "upstream-attribution-and-forward-headers",
   "workstream": "WS-02",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "sec-02-upstream-attribution-forward-headers",
+  "pr": "590",
+  "landing": "landings/PLAN-SEC-02.md",
   "seq": 3
 }
