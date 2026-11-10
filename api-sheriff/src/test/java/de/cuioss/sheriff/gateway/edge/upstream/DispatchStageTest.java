@@ -119,6 +119,15 @@ class DispatchStageTest {
     /** The {@code max_body_bytes} ceiling of the unit-level body streams, above every body they carry. */
     private static final long BODY_CAP = 1024L;
 
+    /** Length of a gRPC message prefix: one compressed-flag byte and a 4-byte big-endian payload length. */
+    private static final int GRPC_PREFIX_LENGTH = 5;
+
+    /** @return {@code payload} framed as one uncompressed gRPC length-prefixed message */
+    private static Buffer grpcMessage(String payload) {
+        byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
+        return Buffer.buffer().appendByte((byte) 0).appendInt(bytes.length).appendBytes(bytes);
+    }
+
     /**
      * A proxy route together with the stage that serves it. The route's shared client and guard are
      * not route components: the stage resolves them from its {@link UpstreamClients}
@@ -779,7 +788,7 @@ class DispatchStageTest {
 
     /**
      * The first-message clock of {@link DispatchStage.ByteCappedBodyStream} — the gRPC dispatch's bound on
-     * the wait for the first body byte — driven by hand on a {@link ManualTime}. The probes arm no idle
+     * the wait for the first complete request message — driven by hand on a {@link ManualTime}. The probes arm no idle
      * clock and no deadline, so the first-message clock is the only timer a case can observe. Every case
      * that pins the clock staying quiet also pins that it was scheduled first, so a clock that never ran
      * cannot pass for one that was stopped.
@@ -791,8 +800,8 @@ class DispatchStageTest {
         private static final long BOUND_MILLIS = 1_000L;
 
         @Test
-        @DisplayName("no body byte within the bound: ends once as a FirstMessageTimeout, resets the upstream request and propagates the failure")
-        void noFirstByteWithinTheBoundEndsTheBody() {
+        @DisplayName("no complete message within the bound: ends once as a FirstMessageTimeout, resets the upstream request and propagates the failure")
+        void noCompleteMessageWithinTheBoundEndsTheBody() {
             IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
             probe.capped.startFirstMessageClock();
 
@@ -802,7 +811,7 @@ class DispatchStageTest {
             GatewayException expiry = probe.capped.clientAbort();
             probe.time.advanceMillis(5 * BOUND_MILLIS);
 
-            assertAll("a body with no byte within the first-message bound",
+            assertAll("a body with no complete message within the first-message bound",
                     () -> assertTrue(quietBeforeTheBound, "nothing may fire before the whole bound passed"),
                     () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, expiry,
                             "the expiry is recorded as the stream's client abort"),
@@ -816,22 +825,22 @@ class DispatchStageTest {
         }
 
         @Test
-        @DisplayName("a first body byte within the bound stops the clock for good: later silence is never ended by it")
-        void firstByteStopsTheClock() {
+        @DisplayName("a complete first message within the bound stops the clock for good: later silence is never ended by it")
+        void completeFirstMessageStopsTheClock() {
             IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
             probe.capped.startFirstMessageClock();
             int scheduledOnStart = probe.time.scheduledCount();
             probe.time.advanceMillis(BOUND_MILLIS - 1);
 
-            probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
-            int pendingAfterTheFirstByte = probe.time.pendingCount();
+            probe.source.emit(grpcMessage(Generators.letterStrings(2, 6).next()));
+            int pendingAfterTheFirstMessage = probe.time.pendingCount();
             probe.time.advanceMillis(5 * BOUND_MILLIS);
             probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
             probe.time.advanceMillis(5 * BOUND_MILLIS);
 
-            assertAll("a body whose first byte arrived within the bound",
+            assertAll("a body whose complete first message arrived within the bound",
                     () -> assertEquals(1, scheduledOnStart, "the clock was armed when it was started"),
-                    () -> assertEquals(0, pendingAfterTheFirstByte, "the first byte cancels the pending timer"),
+                    () -> assertEquals(0, pendingAfterTheFirstMessage, "the complete message cancels the pending timer"),
                     () -> assertEquals(1, probe.time.scheduledCount(), "a later chunk never re-arms the clock"),
                     () -> assertEquals(2, probe.forwarded.size(), "both chunks are forwarded"),
                     () -> assertNull(probe.capped.clientAbort(), "nothing is refused"),
@@ -840,8 +849,8 @@ class DispatchStageTest {
         }
 
         @Test
-        @DisplayName("a chunk of length zero is not a first byte: the clock still ends the body at the bound")
-        void emptyChunkIsNotAFirstByte() {
+        @DisplayName("a chunk of length zero is not a message: the clock still ends the body at the bound")
+        void emptyChunkIsNotAMessage() {
             IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
             probe.capped.startFirstMessageClock();
 
@@ -960,20 +969,48 @@ class DispatchStageTest {
         }
 
         @Test
-        @DisplayName("a first byte arriving after the expiry is dropped: the expiry keeps the claim")
-        void firstByteAfterTheExpiryIsDropped() {
+        @DisplayName("a completing chunk arriving after the expiry is dropped: the expiry keeps the claim")
+        void completingChunkAfterTheExpiryIsDropped() {
             IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            Buffer message = grpcMessage(Generators.letterStrings(2, 6).next());
             probe.capped.startFirstMessageClock();
+            probe.source.emit(message.slice(0, GRPC_PREFIX_LENGTH));
             probe.time.advanceMillis(BOUND_MILLIS);
             GatewayException expiry = probe.capped.clientAbort();
 
-            probe.source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+            probe.source.emit(message.slice(GRPC_PREFIX_LENGTH, message.length()));
 
-            assertAll("a byte after the expiry",
+            assertAll("a message completed only after the expiry",
                     () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, expiry),
                     () -> assertSame(expiry, probe.capped.clientAbort(), "the expiry keeps the claim"),
-                    () -> assertEquals(List.of(), probe.forwarded, "the late byte never crosses to the upstream"),
+                    () -> assertEquals(1, probe.forwarded.size(),
+                            "only the prefix crossed; the completing chunk never reaches the upstream"),
                     () -> assertEquals(1, probe.aborts.get()));
+        }
+
+        /**
+         * The expiry's side of the race against a completing chunk, from the other end: the completing chunk
+         * arrives one millisecond before the bound, so the completion takes the clock and the timer that would
+         * have fired at the bound reports nothing.
+         */
+        @Test
+        @DisplayName("a completing chunk just before the bound wins: the expiry reports nothing")
+        void completingChunkJustBeforeTheBoundWins() {
+            IdleProbe probe = firstMessageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            Buffer message = grpcMessage(Generators.letterStrings(2, 6).next());
+            probe.capped.startFirstMessageClock();
+            probe.source.emit(message.slice(0, GRPC_PREFIX_LENGTH));
+            probe.time.advanceMillis(BOUND_MILLIS - 1);
+
+            probe.source.emit(message.slice(GRPC_PREFIX_LENGTH, message.length()));
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("a message completed just before the bound",
+                    () -> assertEquals(2, probe.forwarded.size(), "both parts cross to the upstream"),
+                    () -> assertNull(probe.capped.clientAbort(), "the expiry never claims the abort"),
+                    () -> assertNull(probe.failure.get()),
+                    () -> assertEquals(0, probe.aborts.get()),
+                    () -> assertEquals(0, probe.time.pendingCount(), "the completion cancelled the timer"));
         }
 
         @Test
@@ -1032,6 +1069,111 @@ class DispatchStageTest {
         private IdleProbe firstMessageProbe(long declaredLength) {
             return new IdleProbe(DispatchStage.NO_BODY_IDLE_TIMEOUT, declaredLength, OptionalLong.empty(),
                     BOUND_MILLIS);
+        }
+    }
+
+    /**
+     * The complete-message stop of the first-message clock: on a gRPC body the clock stops only once a
+     * whole length-prefixed message — the 5-byte prefix and the payload length it declares — has been
+     * forwarded, however the chunks split it. A body that forwards part of a message and stalls is still
+     * ended at the bound. Every probe arms only the first-message clock.
+     */
+    @Nested
+    @DisplayName("complete-message stop of the first-message clock")
+    class CompleteFirstMessage {
+
+        private static final long BOUND_MILLIS = 1_000L;
+
+        @Test
+        @DisplayName("part of a first message then silence: ends at the bound as a FirstMessageTimeout and resets the upstream request")
+        void partialFirstMessageThenSilenceEndsTheBody() {
+            IdleProbe probe = probe();
+            Buffer message = grpcMessage(Generators.letterStrings(4, 12).next());
+            probe.capped.startFirstMessageClock();
+
+            probe.source.emit(message.slice(0, GRPC_PREFIX_LENGTH + 1));
+            int pendingAfterThePart = probe.time.pendingCount();
+            probe.time.advanceMillis(BOUND_MILLIS);
+
+            GatewayException expiry = probe.capped.clientAbort();
+            assertAll("a first message that arrived only in part",
+                    () -> assertEquals(1, pendingAfterThePart, "part of a message leaves the clock pending"),
+                    () -> assertEquals(1, probe.forwarded.size(), "the part is forwarded as it arrives"),
+                    () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, expiry,
+                            "a stalled partial message is the client's abort"),
+                    () -> assertSame(expiry, probe.failure.get(), "the expiry is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the inbound stream is paused by the expiry"));
+        }
+
+        @ParameterizedTest(name = "prefix split after byte {0}")
+        @ValueSource(ints = {1, 3})
+        @DisplayName("a prefix split across chunks is read across them: the clock stops only once the message is complete")
+        void prefixSplitAcrossChunksStopsTheClockAtTheCompleteMessage(int split) {
+            IdleProbe probe = probe();
+            Buffer message = grpcMessage(Generators.letterStrings(4, 12).next());
+            probe.capped.startFirstMessageClock();
+
+            probe.source.emit(message.slice(0, split));
+            int pendingInsideThePrefix = probe.time.pendingCount();
+            probe.source.emit(message.slice(split, message.length()));
+            int pendingOnceComplete = probe.time.pendingCount();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("a first message whose prefix straddles two chunks",
+                    () -> assertEquals(1, pendingInsideThePrefix, "part of the prefix leaves the clock pending"),
+                    () -> assertEquals(0, pendingOnceComplete, "the completing chunk stops the clock"),
+                    () -> assertEquals(message, joined(probe.forwarded), "every byte is forwarded unchanged"),
+                    () -> assertNull(probe.capped.clientAbort(), "a complete message is never refused"),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("a payload split across chunks stops the clock only with its last byte")
+        void payloadSplitAcrossChunksStopsTheClockWithItsLastByte() {
+            IdleProbe probe = probe();
+            Buffer message = grpcMessage(Generators.letterStrings(4, 12).next());
+            int lastByte = message.length() - 1;
+            probe.capped.startFirstMessageClock();
+
+            probe.source.emit(message.slice(0, lastByte));
+            int pendingBeforeTheLastByte = probe.time.pendingCount();
+            probe.source.emit(message.slice(lastByte, message.length()));
+            int pendingAfterTheLastByte = probe.time.pendingCount();
+
+            assertAll("a first message whose payload straddles two chunks",
+                    () -> assertEquals(1, pendingBeforeTheLastByte, "a message one byte short leaves the clock pending"),
+                    () -> assertEquals(0, pendingAfterTheLastByte, "the last payload byte stops the clock"),
+                    () -> assertNull(probe.capped.clientAbort()));
+        }
+
+        @Test
+        @DisplayName("a zero-length message is complete at its prefix")
+        void zeroLengthMessageCompletesAtItsPrefix() {
+            IdleProbe probe = probe();
+            probe.capped.startFirstMessageClock();
+
+            probe.source.emit(grpcMessage(""));
+            int pendingAfterThePrefix = probe.time.pendingCount();
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+
+            assertAll("an empty first message",
+                    () -> assertEquals(0, pendingAfterThePrefix, "the prefix of an empty message completes it"),
+                    () -> assertNull(probe.capped.clientAbort()),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        /** A probe whose only clock is the first-message clock, bounded by {@link #BOUND_MILLIS}. */
+        private IdleProbe probe() {
+            return new IdleProbe(DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_DECLARED_LENGTH,
+                    OptionalLong.empty(), BOUND_MILLIS);
+        }
+
+        /** @return the forwarded chunks joined in order */
+        private Buffer joined(List<Buffer> chunks) {
+            Buffer all = Buffer.buffer();
+            chunks.forEach(all::appendBuffer);
+            return all;
         }
     }
 
@@ -2743,7 +2885,7 @@ class DispatchStageTest {
 
             Future<HttpClientResponse> dispatched = dispatch(routed(DispatchStage.NO_BODY_IDLE_TIMEOUT, patientGuard(),
                     false), HttpMethod.POST, LATE_FIRST_BYTE_PATH, inbound);
-            emitLateFirstByte(inbound, chunk);
+            emitLate(inbound, Buffer.buffer(chunk));
             String answer = answerOf(dispatched);
 
             assertAll("an HTTP dispatch whose first body byte arrived late",
@@ -2753,26 +2895,26 @@ class DispatchStageTest {
         }
 
         /**
-         * Matched control of {@link #httpDispatchNeverArmsTheFirstMessageClock()}: the same late first byte
-         * under a stage bounding the first-message wait at {@link #IDLE_TIMEOUT_MILLIS} ends the dispatch at
-         * the bound as the client's abort. The request head leaves with the first chunk, so the reset leaves
-         * the pool's only connection reusable for the next dispatch.
+         * Matched control of {@link #httpDispatchNeverArmsTheFirstMessageClock()}: a complete first message
+         * arriving as late under a stage bounding the first-message wait at {@link #IDLE_TIMEOUT_MILLIS} ends the
+         * dispatch at the bound as the client's abort. The request head leaves with the first chunk, so the
+         * reset leaves the pool's only connection reusable for the next dispatch.
          */
         @Test
-        @DisplayName("control — the same late first byte under a first-message bound ends the dispatch as a FirstMessageTimeout")
-        void firstMessageBoundEndsALateFirstByte() throws Exception {
+        @DisplayName("control — a late complete first message under a first-message bound ends the dispatch as a FirstMessageTimeout")
+        void firstMessageBoundEndsALateFirstMessage() throws Exception {
             TestReadStream inbound = new TestReadStream();
             Routed bounded = Routed.withFirstMessageBound("first-message",
                     new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""), upstreamClient,
                     patientGuard(), IDLE_TIMEOUT_MILLIS, failureMapper);
 
             Future<HttpClientResponse> dispatched = dispatch(bounded, HttpMethod.POST, LATE_FIRST_BYTE_PATH, inbound);
-            emitLateFirstByte(inbound, Generators.letterStrings(4, 8).next());
+            emitLate(inbound, grpcMessage(Generators.letterStrings(4, 8).next()));
             GatewayException rejection = rejectionOf(dispatched);
             String next = answerOf(dispatch(routed(DispatchStage.NO_BODY_IDLE_TIMEOUT, patientGuard(), false),
                     HttpMethod.GET, ANSWERING_PATH, new TestReadStream()));
 
-            assertAll("a bounded dispatch whose first body byte arrived late",
+            assertAll("a bounded dispatch whose complete first message arrived late",
                     () -> assertInstanceOf(DispatchStage.FirstMessageTimeout.class, rejection,
                             () -> "the client's abort, not an upstream failure: " + rejection),
                     () -> assertEquals(EventType.INBOUND_BODY_ABORTED, rejection.getEventType()),
@@ -2782,11 +2924,11 @@ class DispatchStageTest {
         }
 
         /** Emits {@code chunk} and ends the body {@link #LATE_FIRST_BYTE_MILLIS} after the dispatch subscribed to it. */
-        private void emitLateFirstByte(TestReadStream inbound, String chunk) throws Exception {
+        private void emitLate(TestReadStream inbound, Buffer chunk) throws Exception {
             Awaits.until(inbound::subscribed, "the dispatch to subscribe to the request body",
                     Awaits.CONNECT_CEILING_SECONDS);
             vertx.setTimer(LATE_FIRST_BYTE_MILLIS, _ -> {
-                inbound.emit(Buffer.buffer(chunk));
+                inbound.emit(chunk);
                 inbound.end();
             });
         }

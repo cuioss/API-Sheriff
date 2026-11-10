@@ -136,17 +136,19 @@ import org.jspecify.annotations.Nullable;
  * {@link UpstreamAttempt}), so none of them reports anything afterwards. A dispatch constructed without a
  * deadline ({@link #NO_BODY_DEADLINE}) never arms it.
  * <p>
- * <strong>A body whose first byte does not arrive in time is ended at the first-message bound.</strong> A
- * dispatch constructed with a first-message bound — the gRPC dispatch, whose upstream request head is
- * written only with the first body chunk — bounds how long an attempt waits for its first body byte. The
- * clock starts when the attempt hands its body to the upstream request, so the wait for a pooled
- * connection is never counted, and the bound is shorter than the guard's timeout. When it passes before
- * a body byte was forwarded, the body ended or the attempt's send completed, the attempt's upstream
- * request is reset and the dispatch is ended as a {@link FirstMessageTimeout}
- * ({@link EventType#INBOUND_BODY_ABORTED}): a client that opens a call and sends nothing ends it as its
- * own abort, never as the guard's timeout. A body that ends without any byte is not ended by the bound,
- * and once the send completed — the upstream answered — the bound no longer applies. A dispatch
- * constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — never arms it.
+ * <strong>A body whose complete first message does not arrive in time is ended at the first-message
+ * bound.</strong> A dispatch constructed with a first-message bound — the gRPC dispatch, whose upstream
+ * request head is written only with the first body chunk — bounds how long an attempt waits for its first
+ * complete gRPC message: the 5-byte length prefix and every payload byte it declares, read as the chunks
+ * cross, however they split the message, without holding any of them. The clock starts when the attempt
+ * hands its body to the upstream request, so the wait for a pooled connection is never counted, and the
+ * bound is shorter than the guard's timeout. When it passes before a complete first message was forwarded,
+ * the body ended or the attempt's send completed, the attempt's upstream request is reset and the dispatch
+ * is ended as a {@link FirstMessageTimeout} ({@link EventType#INBOUND_BODY_ABORTED}): a client that opens a
+ * call and sends nothing, or only part of its first message, ends it as its own abort, never as the guard's
+ * timeout. A body that ends before a complete message is not ended by the bound, and once the send
+ * completed — the upstream answered — the bound no longer applies. A dispatch constructed with
+ * {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — never arms it.
  * <p>
  * The dispatch is awaited synchronously on the caller's virtual thread inside the guard so the
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
@@ -157,10 +159,10 @@ import org.jspecify.annotations.Nullable;
  * ended — the body-cap breach, an inbound body stream that failed after dispatch began, a body byte
  * on a bodyless method, a body that disagreed with its declared length, a body that made no progress
  * for the request-body idle timeout, a body still arriving at the request-body deadline, or a body whose
- * first byte did not arrive within the first-message bound — reaches the guard as the
+ * complete first message did not arrive within the first-message bound — reaches the guard as the
  * {@link GatewayException} the body stream recorded for it ({@link EventType#CONTENT_TOO_LARGE},
  * {@link EventType#INBOUND_BODY_ABORTED} for the failed or short inbound body and for the body with no
- * first byte, {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for
+ * complete first message, {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for
  * the idle body and the body past its deadline), never as the transport error the aborted upstream
  * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
  * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
@@ -262,8 +264,8 @@ public final class DispatchStage {
     public static final long NO_BODY_DEADLINE = 0L;
 
     /**
-     * The first-message bound of a dispatch that does not bound the wait for its first request-body
-     * byte: the first-message clock is never armed. Every HTTP dispatch is constructed with it; only the
+     * The first-message bound of a dispatch that does not bound the wait for its first complete request
+     * message: the first-message clock is never armed. Every HTTP dispatch is constructed with it; only the
      * gRPC dispatch ({@link GrpcDispatchStage}) arms the clock. It is derived from
      * {@link #NO_BODY_IDLE_TIMEOUT} because both clocks are {@link IdleClock}s, whose armed test compares
      * against that one value.
@@ -303,7 +305,7 @@ public final class DispatchStage {
     }
 
     /**
-     * A dispatch that does not bound the wait for its first request-body byte
+     * A dispatch that does not bound the wait for its first complete request message
      * ({@link #NO_FIRST_MESSAGE_TIMEOUT}) — every HTTP dispatch.
      *
      * @param upstreamClients       the boot-built lookup the route's shared client and guard are
@@ -345,7 +347,7 @@ public final class DispatchStage {
      *                                  shares
      * @param firstMessageTimeoutMillis how long, in milliseconds from the moment the attempt hands its
      *                                  body to the upstream request, a body-carrying attempt may wait for
-     *                                  its first body byte before it is ended as a
+     *                                  its first complete gRPC message before it is ended as a
      *                                  {@link FirstMessageTimeout}, or {@link #NO_FIRST_MESSAGE_TIMEOUT}
      *                                  when that wait is not bounded
      * @param failureMapper             the mapper turning guarded-dispatch failures into the error
@@ -1038,7 +1040,7 @@ public final class DispatchStage {
          * @param cappedBody the attempt's body stream, {@code null} for a bodyless request
          * @return the refusal that came before the hand-over — the client's departure, a bodyless
          *         request's body byte, a body still arriving at the request-body deadline, or a body whose
-         *         first byte did not arrive within the first-message bound — or {@code null} when there
+         *         complete first message did not arrive within the first-message bound — or {@code null} when there
          *         was none
          */
         @Nullable
@@ -1610,9 +1612,9 @@ public final class DispatchStage {
     }
 
     /**
-     * The client abort of a dispatch whose first request-body byte did not arrive within the
-     * first-message bound — on a gRPC call, a client that opened the call and sent no request message.
-     * The attempt's upstream request is reset when it is raised. It is an
+     * The client abort of a dispatch whose complete first request message did not arrive within the
+     * first-message bound — on a gRPC call, a client that opened the call and sent no request message, or
+     * only part of one. The attempt's upstream request is reset when it is raised. It is an
      * {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told apart from
      * it by its type so it is reported with its own disposition. Like every client-ended dispatch it is a
      * gateway rejection: the breaker skips it and the retry predicate refuses it, so an idle client is
@@ -1627,7 +1629,7 @@ public final class DispatchStage {
 
         /** Fixed disposition of the abort; carries nothing the client supplied. */
         private static final String NO_FIRST_MESSAGE =
-                "Request body sent no first byte within the first-message bound; the upstream request was aborted";
+                "Request body sent no complete first message within the first-message bound; the upstream request was aborted";
 
         FirstMessageTimeout() {
             super(EventType.INBOUND_BODY_ABORTED, NO_FIRST_MESSAGE);
@@ -1712,18 +1714,23 @@ public final class DispatchStage {
      * it. {@link #stopClocks()} — the end of the body, an abort, or an attempt the dispatch no longer waits
      * for — cancels both timers and drops a passed deadline: a stopped clock reports nothing.
      * <p>
-     * <strong>A body whose first byte does not arrive is ended at the first-message bound.</strong> A
-     * stream constructed with an armed first-message clock arms one more timer at
-     * {@link #startFirstMessageClock()}, for the bound's length. It is a single timer, never re-armed: the
-     * first forwarded chunk carrying a byte stops it, and so do the inbound end, any abort claim,
-     * {@link #stopFirstMessageClock()} — which the dispatch calls when the attempt's send completes — and
-     * {@link #stopClocks()}. A chunk of length zero is not a first byte. When the timer fires before any of
-     * these, the expiry takes the single abort claim with a {@link FirstMessageTimeout}
-     * ({@link EventType#INBOUND_BODY_ABORTED}), pauses the inbound stream, runs the abort action and
-     * propagates the failure, exactly like the other client-caused aborts. The claim is taken under the
-     * clocks' monitor, the same monitor a first chunk and the inbound end stop the clock under, so either
-     * the expiry wins and the chunk or the end is dropped, or the chunk or the end wins and the expiry
-     * reports nothing.
+     * <strong>A body whose complete first message does not arrive is ended at the first-message
+     * bound.</strong> A stream constructed with an armed first-message clock arms one more timer at
+     * {@link #startFirstMessageClock()}, for the bound's length. It is a single timer, never re-armed. While
+     * it runs, a {@link GrpcMessageFrame} reads the first gRPC message's frame from each chunk as it crosses
+     * — the 5-byte prefix one byte at a time, then a count of the payload bytes the prefix declares — with
+     * no buffer and no copy of the payload; the prefix and the payload may straddle any number of chunks.
+     * The forwarded chunk that completes the message stops the clock (a message of declared length zero is
+     * complete at its prefix); a chunk carrying only part of it, or nothing, does not. The inbound end, any
+     * abort claim, {@link #stopFirstMessageClock()} — which the dispatch calls when the attempt's send
+     * completes — and {@link #stopClocks()} stop it too. A declared length the body cannot carry within
+     * {@code max_body_bytes} is not refused by the tracker: the body's cumulative cap refuses it as the bytes
+     * arrive. When the timer fires before any of these, the expiry takes the single abort claim with a
+     * {@link FirstMessageTimeout} ({@link EventType#INBOUND_BODY_ABORTED}), pauses the inbound stream, runs
+     * the abort action and propagates the failure, exactly like the other client-caused aborts. The claim is
+     * taken under the clocks' monitor, the same monitor the completing chunk and the inbound end stop the
+     * clock under, and the completion is checked before that chunk is forwarded, so either the expiry wins
+     * and the chunk or the end is dropped, or the chunk or the end wins and the expiry reports nothing.
      * <p>
      * Thread-safe: chunks arrive on the inbound connection's event loop, the consumer pauses and
      * resumes from either loop, and the timers fire on the loop they were scheduled from. The last
@@ -1791,19 +1798,25 @@ public final class DispatchStage {
          */
         private volatile boolean deadlinePassed;
         private long deadlineTimer = NO_TIMER;
-        /** The first-message clock, {@link IdleClock#UNARMED} for a body whose first byte is not awaited. */
+        /** The first-message clock, {@link IdleClock#UNARMED} for a body whose first message is not awaited. */
         private final IdleClock firstMessageClock;
         /**
-         * Whether the first-message clock can no longer fire: a first byte was forwarded, the body ended,
-         * an abort was claimed, the clocks were stopped, or the bound expired.
+         * Whether the first-message clock can no longer fire: a complete first message was forwarded, the
+         * body ended, an abort was claimed, the clocks were stopped, or the bound expired.
          */
         private boolean firstMessageEnded;
         private long firstMessageTimer = NO_TIMER;
         /**
-         * Whether a first body byte was forwarded, so later chunks skip the first-message clock. Read and
-         * written by chunk delivery only, which runs on the inbound connection's event loop.
+         * Reads the first gRPC message's frame as its chunks cross. Used by chunk delivery only, which runs
+         * on the inbound connection's event loop.
          */
-        private boolean firstByteForwarded;
+        private final GrpcMessageFrame firstMessage = new GrpcMessageFrame();
+        /**
+         * Whether a complete first message was forwarded, so later chunks skip the first-message clock and
+         * its frame tracker. Read and written by chunk delivery only, which runs on the inbound connection's
+         * event loop.
+         */
+        private boolean firstMessageForwarded;
         /** Receives a deadline refusal once the response was handed over; {@code null} until then. */
         private @Nullable Consumer<GatewayException> lateViolation;
         /** Whether the inbound body's end arrived, whatever was made of it. */
@@ -1858,7 +1871,7 @@ public final class DispatchStage {
         }
 
         /**
-         * A stream whose first byte is not awaited: the first-message clock is never armed.
+         * A stream whose first message is not awaited: the first-message clock is never armed.
          *
          * @param delegate       the inbound request body
          * @param maxBytes       the {@code max_body_bytes} ceiling
@@ -1975,8 +1988,8 @@ public final class DispatchStage {
                         "Request body exceeded max_body_bytes=" + maxBytes));
                 return;
             }
-            if (chunk.length() > 0 && firstMessageBoundExpired()) {
-                // The first-message bound expired just before this first byte: the body was ended there.
+            if (firstMessageBoundExpired(chunk)) {
+                // The first-message bound expired before this chunk: the body was ended there.
                 return;
             }
             // The chunk cleared every bound and is about to cross to the upstream — record it so the
@@ -2120,10 +2133,10 @@ public final class DispatchStage {
         }
 
         /**
-         * Starts the first-message clock: from now on, the clock's timeout passing before a first body
-         * byte was forwarded ends the stream as a {@link FirstMessageTimeout}. A no-op for an unarmed
-         * clock, a clock already started, and one already stopped — by a first byte forwarded before it
-         * was started among others.
+         * Starts the first-message clock: from now on, the clock's timeout passing before a complete first
+         * message was forwarded ends the stream as a {@link FirstMessageTimeout}. A no-op for an unarmed
+         * clock, a clock already started, and one already stopped — by a complete first message forwarded
+         * before it was started among others.
          */
         void startFirstMessageClock() {
             if (!firstMessageClock.armed()) {
@@ -2156,28 +2169,30 @@ public final class DispatchStage {
         }
 
         /**
-         * A first body byte arrived: stops the first-message clock, unless its expiry came first.
+         * A chunk is about to be forwarded while the first message is still awaited: the frame tracker
+         * reads the chunk's bytes of that message, and the chunk that completes it stops the first-message
+         * clock — unless its expiry came first.
          *
-         * @return {@code true} when the bound had already expired and ended the body — the byte must not
+         * @param chunk the chunk about to be forwarded
+         * @return {@code true} when the bound had already expired and ended the body — the chunk must not
          *         be forwarded
          */
-        private boolean firstMessageBoundExpired() {
-            if (!firstMessageClock.armed() || firstByteForwarded) {
+        private boolean firstMessageBoundExpired(Buffer chunk) {
+            if (!firstMessageClock.armed() || firstMessageForwarded) {
                 return false;
             }
-            // The expiry claims the abort under the same monitor the stop takes, so once the stop returns,
-            // an expiry that came first has already recorded its claim.
-            stopFirstMessageClock();
-            if (abortReason.get() != null) {
-                return true;
+            if (firstMessage.completedBy(chunk)) {
+                // The expiry claims the abort under the same monitor the stop takes, so once the stop
+                // returns, an expiry that came first has already recorded its claim.
+                stopFirstMessageClock();
+                firstMessageForwarded = true;
             }
-            firstByteForwarded = true;
-            return false;
+            return abortReason.get() != null;
         }
 
         /**
-         * The first-message timer fired before a first byte was forwarded and before the clock was
-         * stopped: the stream is refused as a {@link FirstMessageTimeout} through the single abort claim,
+         * The first-message timer fired before a complete first message was forwarded and before the clock
+         * was stopped: the stream is refused as a {@link FirstMessageTimeout} through the single abort claim,
          * taken under the clocks' monitor. Outside it, the inbound stream is paused, the upstream request
          * reset and the failure propagated.
          */
@@ -2457,6 +2472,63 @@ public final class DispatchStage {
             this.endHandler = endHandler;
             delegate.endHandler(endHandler == null ? null : this::onInboundEnd);
             return this;
+        }
+    }
+
+    /**
+     * Reads the frame of one gRPC length-prefixed message as its bytes cross, without holding any of them:
+     * the 5-byte prefix — a compressed-flag byte and the payload length as an unsigned 32-bit big-endian
+     * integer — is read one byte at a time, and the payload bytes it declares are then only counted. The
+     * prefix and the payload may each straddle any number of chunks; a message whose declared length is
+     * zero is complete at its prefix. The tracker says when the message is complete and reads nothing
+     * after it. It never refuses a length: a declared length past {@code max_body_bytes} is refused by the
+     * body's cumulative cap as the bytes arrive.
+     * <p>
+     * Not thread-safe: it is used by chunk delivery only, which runs on the inbound connection's event loop.
+     */
+    static final class GrpcMessageFrame {
+
+        /** The length of a gRPC message prefix: the compressed flag and the 4-byte payload length. */
+        static final int PREFIX_LENGTH = 5;
+
+        /** How many prefix bytes have been read. */
+        private int prefixBytesRead;
+        /** The declared payload length, assembled from the prefix's length bytes as they are read. */
+        private long declaredLength;
+        /** How many declared payload bytes have not crossed yet; meaningful once the prefix is read. */
+        private long payloadBytesOwed;
+        /** Whether the message is complete; nothing is read once it is. */
+        private boolean complete;
+
+        /**
+         * Reads {@code chunk}'s bytes of the message.
+         *
+         * @param chunk the next chunk of the body, read in place
+         * @return {@code true} exactly once: for the chunk that completes the message
+         */
+        boolean completedBy(Buffer chunk) {
+            if (complete) {
+                return false;
+            }
+            int index = 0;
+            int length = chunk.length();
+            while (prefixBytesRead < PREFIX_LENGTH && index < length) {
+                byte next = chunk.getByte(index++);
+                if (prefixBytesRead > 0) {
+                    // Bytes 2-5 carry the length, most significant first; the flag byte carries none.
+                    declaredLength = (declaredLength << Byte.SIZE) | (next & 0xFF);
+                }
+                prefixBytesRead++;
+                if (prefixBytesRead == PREFIX_LENGTH) {
+                    payloadBytesOwed = declaredLength;
+                }
+            }
+            if (prefixBytesRead < PREFIX_LENGTH) {
+                return false;
+            }
+            payloadBytesOwed -= Math.min(payloadBytesOwed, (long) length - index);
+            complete = payloadBytesOwed == 0;
+            return complete;
         }
     }
 

@@ -58,25 +58,27 @@ import io.vertx.core.streams.ReadStream;
  * call on a shared connection instead of holding a pooled connection of its own, so there is no
  * connection for such a bound to release.
  * <p>
- * <strong>The wait for the first request message is bounded.</strong> The forced-HTTP/2 upstream request
- * head is written only with the first body chunk, so a client that opens a call and sends no request
- * message would leave the dispatch waiting until the guard's timeout — and the breaker would count that
- * timeout as an upstream failure, so idle clients could open the breaker for every caller of a healthy
- * upstream. The dispatch is therefore built with a fixed first-message bound,
- * {@value #GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS} ms, counted from the moment the attempt hands its body to
- * the upstream request. When no request byte has been forwarded by then, the gateway resets the upstream
- * request and ends the call as the client's own abort, a {@link DispatchStage.FirstMessageTimeout}
- * ({@link EventType#INBOUND_BODY_ABORTED}), which the breaker skips. The bound is shorter than the guard's
- * timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds), so it fires first unless waiting for an
+ * <strong>The wait for the first complete request message is bounded.</strong> The forced-HTTP/2 upstream
+ * request head is written only with the first body chunk, and an upstream cannot act on a request message
+ * it holds only part of, so a client that opens a call and sends no complete request message would leave
+ * the dispatch waiting until the guard's timeout — and the breaker would count that timeout as an upstream
+ * failure, so idle clients could open the breaker for every caller of a healthy upstream. The dispatch is
+ * therefore built with a fixed first-message bound, {@value #GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS} ms, counted
+ * from the moment the attempt hands its body to the upstream request. The bound ends only once a complete
+ * first message — its 5-byte length prefix and every payload byte the prefix declares, read as the bytes
+ * cross without holding them — has been forwarded. When none has been by then, the gateway resets the
+ * upstream request and ends the call as the client's own abort, a {@link DispatchStage.FirstMessageTimeout}
+ * ({@link EventType#INBOUND_BODY_ABORTED}), which the breaker skips — whether the client sent nothing or only
+ * part of its first message. The bound is shorter than the guard's timeout
+ * ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds), so it fires first unless waiting for an
  * upstream connection — which the guard counts and the bound does not — consumed the difference. A body that
- * ends without any message is not ended by it, and the bound no longer applies once the upstream has
+ * ends before a complete message is not ended by it, and the bound no longer applies once the upstream has
  * answered.
  * <p>
- * <strong>The rest of the call is bounded too.</strong> The first-message bound ends with the first
- * forwarded request byte, not with a complete gRPC message. From then until the upstream sends its response
- * headers, the guard's timeout alone bounds the call, and a call that timeout ends — an upstream that never
- * answers, or a client that stops sending after its first byte — is counted as an upstream failure. That
- * timeout bounds each
+ * <strong>The rest of the call is bounded too.</strong> The first-message bound ends with a complete first
+ * request message. From then until the upstream sends its response headers, the guard's timeout alone bounds
+ * the call, and a call that timeout ends — an upstream that never answers, or a client that stops sending
+ * after its first complete message — is counted as an upstream failure. That timeout bounds each
  * attempt, and a gRPC call is a {@code POST}, which the retry predicate never retries, so its one attempt
  * is the whole call. Once the headers have arrived the guarded call has returned, and the call's
  * stream-idle bound takes over: the edge hands this stage the request body
@@ -90,10 +92,11 @@ import io.vertx.core.streams.ReadStream;
 public final class GrpcDispatchStage {
 
     /**
-     * How long, in milliseconds, a gRPC call may wait for its first request byte once its attempt has
-     * handed the body to the upstream request, before it is ended as the client's abort
-     * ({@link DispatchStage.FirstMessageTimeout}). Fixed, and shorter than the guard's timeout
-     * ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds).
+     * How long, in milliseconds, a gRPC call may wait for its first complete request message — the length
+     * prefix and every payload byte it declares — once its attempt has handed the body to the upstream
+     * request, before it is ended as the client's abort ({@link DispatchStage.FirstMessageTimeout}). A
+     * forwarded byte of an incomplete message does not end the bound. Fixed, and shorter than the guard's
+     * timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds).
      */
     public static final long GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS = 10_000;
 
@@ -122,8 +125,8 @@ public final class GrpcDispatchStage {
      * @param maxBodyBytes              the streaming request-body ceiling in bytes ({@code max_body_bytes})
      * @param failureMapper             the mapper turning a guarded-dispatch (including h2-negotiation)
      *                                  failure into the error contract
-     * @param firstMessageTimeoutMillis how long, in milliseconds, the call may wait for its first request
-     *                                  byte; positive
+     * @param firstMessageTimeoutMillis how long, in milliseconds, the call may wait for its first complete
+     *                                  request message; positive
      * @throws IllegalArgumentException when {@code firstMessageTimeoutMillis} is not positive
      */
     GrpcDispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, UpstreamFailureMapper failureMapper,

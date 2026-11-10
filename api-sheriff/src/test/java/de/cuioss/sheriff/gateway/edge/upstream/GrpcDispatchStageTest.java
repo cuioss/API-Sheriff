@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Proxy;
 import java.net.ConnectException;
+import java.nio.charset.StandardCharsets;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -35,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 
@@ -337,12 +339,19 @@ class GrpcDispatchStageTest {
      * dispatch enforces on the streamed body like any other dispatch.
      * <p>
      * <strong>The first-message bound.</strong> The one request-body wait the gRPC dispatch does bound is
-     * the wait for the first request message: a client that opens a call and sends nothing is ended at
-     * that bound as its own abort, which the breaker skips, instead of at the guard's timeout as an
-     * upstream failure the breaker counts. Those cases build the stage with the bound shortened to
+     * the wait for the first complete request message: a client that opens a call and sends nothing, or
+     * only part of its first message, is ended at that bound as its own abort, which the breaker skips,
+     * instead of at the guard's timeout as an upstream failure the breaker counts. A complete first message
+     * stops the bound. Those cases build the stage with the bound shortened to
      * {@value #FIRST_MESSAGE_BOUND_MILLIS} ms and run under a guard carrying the production breaker rules
      * with a {@value #BREAKER_GUARD_MILLIS} ms timeout, beside a matched control whose upstream received
-     * the first message and never answers.
+     * a complete first message and never answers.
+     * <p>
+     * <strong>Every request payload is a gRPC message.</strong> The dispatch reads the length prefix of the
+     * first request message to tell when it is complete, so every payload a case sends is framed by
+     * {@link GrpcDispatchStageTest#grpcFrame(String)}; a payload sent unframed would be read as a prefix
+     * declaring a huge length, and the bound would end the call. Response frames are not framed: the
+     * dispatch does not read them.
      * <p>
      * <strong>How the stream-idle bound is driven.</strong> The cases on it run the call through a front
      * HTTP/2 server that composes the production pieces the way {@code TerminalDispatch#dispatchGrpc}
@@ -360,8 +369,9 @@ class GrpcDispatchStageTest {
      * {@value #TICKING} is answered like {@value #BIDI} and then sends one more frame every
      * {@value #TICK_MILLIS} ms until the request stream has ended; a call to {@value #LATE_ANSWER} is
      * answered {@value #LATE_ANSWER_MILLIS} ms after its request stream has ended. Every call ends with a
-     * {@code grpc-status: 0} trailer. The stub records every frame it read, and whether the request
-     * stream ended or failed — a failed stream is how it observes the gateway resetting the call.
+     * {@code grpc-status: 0} trailer. The stub reassembles the request stream into its gRPC messages and
+     * records the payload of every complete one, and whether the request stream ended or failed — a failed
+     * stream is how it observes the gateway resetting the call.
      */
     @Nested
     @DisplayName("stream bounds over a live forced-h2 upstream")
@@ -406,11 +416,14 @@ class GrpcDispatchStageTest {
         private static final String GRPC_OK = "0";
         /** The request-body cap of every case but the cap case: far above anything a case sends. */
         private static final long ROOMY_CAP_BYTES = 1024L * 1024L;
-        /** The request-body cap of the cap case: the two frames it sends cross it only together. */
-        private static final long BODY_CAP_BYTES = 8L;
-        /** The first frame of the cap case: five bytes, under the cap. */
+        /**
+         * The request-body cap of the cap case, counted in framed bytes: the first message it sends is under
+         * it, and the two messages cross it only together.
+         */
+        private static final long BODY_CAP_BYTES = 16L;
+        /** The first message of the cap case: five payload bytes, ten framed, under the cap. */
         private static final String UNDER_CAP_FRAME = "first";
-        /** The second frame of the cap case: six bytes, which carry the running count to eleven. */
+        /** The second message of the cap case: six payload bytes, eleven framed, carrying the running count to 21. */
         private static final String BREACHING_FRAME = "second";
 
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
@@ -465,12 +478,10 @@ class GrpcDispatchStageTest {
             HttpServerResponse response = request.response().setChunked(true);
             boolean ticking = TICKING.equals(request.path());
             long ticker = ticking ? vertx.setPeriodic(TICK_MILLIS, fired -> response.write("tick")) : -1L;
-            request.handler(frame -> {
-                // An empty final DATA frame carries only the end of the stream, not a message.
-                if (frame.length() > 0) {
-                    upstreamFrames.add(frame.toString());
-                }
-            });
+            // The request arrives as length-prefixed gRPC messages, split into DATA frames however the
+            // transport chose; the stub reassembles them and records each message's payload.
+            MessageReassembler messages = new MessageReassembler(upstreamFrames::add);
+            request.handler(messages::read);
             request.exceptionHandler(failure -> {
                 vertx.cancelTimer(ticker);
                 upstreamFailed.complete(failure);
@@ -595,7 +606,7 @@ class GrpcDispatchStageTest {
             long openedNanos = System.nanoTime();
             ClientCall call = open(BIDI);
 
-            Awaits.connect(call.request().write("first"), "the first frame to be sent");
+            Awaits.connect(call.request().write(grpcFrame("first")), "the first frame to be sent");
             Awaits.until(() -> call.frames().contains("head") && upstreamFrames.contains("first"),
                     "the first frame each way to arrive", Awaits.CONNECT_CEILING_SECONDS);
             MultiMap trailers = Awaits.connect(call.trailers(), "the idle call to be ended by its stream-idle bound");
@@ -620,12 +631,12 @@ class GrpcDispatchStageTest {
         void upstreamTrafficKeepsTheCallOpenWhileTheClientIsSilent() throws Exception {
             ClientCall call = open(TICKING);
 
-            Awaits.connect(call.request().write("first"), "the first frame to be sent");
+            Awaits.connect(call.request().write(grpcFrame("first")), "the first frame to be sent");
             Awaits.until(() -> call.frames().contains("head") && upstreamFrames.contains("first"),
                     "the first frame each way to arrive", Awaits.CONNECT_CEILING_SECONDS);
             Awaits.connect(pause(SILENCE_MILLIS), "the client to stay silent for three stream-idle bounds");
             boolean openAfterSilence = !call.trailers().isDone() && !upstreamFailed.isDone();
-            Awaits.connect(call.request().end("last"), "the request stream to end");
+            Awaits.connect(call.request().end(grpcFrame("last")), "the request stream to end");
             MultiMap trailers = Awaits.connect(call.trailers(), "the call to end with its request stream");
 
             assertAll("a call whose client stayed silent while its upstream kept sending",
@@ -645,12 +656,12 @@ class GrpcDispatchStageTest {
             ClientCall call = open(BIDI);
             int pings = (int) (SILENCE_MILLIS / TICK_MILLIS);
 
-            Awaits.connect(call.request().write("first"), "the first frame to be sent");
+            Awaits.connect(call.request().write(grpcFrame("first")), "the first frame to be sent");
             Awaits.until(() -> call.frames().contains("head") && upstreamFrames.contains("first"),
                     "the first frame each way to arrive", Awaits.CONNECT_CEILING_SECONDS);
             for (int ping = 0; ping < pings; ping++) {
                 Awaits.connect(pause(TICK_MILLIS), "the gap before the next client frame");
-                Awaits.connect(call.request().write("ping"), "a client frame to be sent");
+                Awaits.connect(call.request().write(grpcFrame("ping")), "a client frame to be sent");
             }
             boolean openAfterSilence = !call.trailers().isDone() && !upstreamFailed.isDone();
             Awaits.connect(call.request().end(), "the request stream to end");
@@ -667,9 +678,9 @@ class GrpcDispatchStageTest {
         }
 
         /**
-         * Pins that the stage enforces the route's request-body cap on a streamed body: a frame that
-         * carries the running byte count past {@value #BODY_CAP_BYTES} bytes refuses the dispatch as
-         * {@code CONTENT_TOO_LARGE} and is never forwarded, while the frame before it was. The call is
+         * Pins that the stage enforces the route's request-body cap on a streamed body: a message whose
+         * framed bytes carry the running byte count past {@value #BODY_CAP_BYTES} bytes refuses the dispatch
+         * as {@code CONTENT_TOO_LARGE} and is never forwarded, while the message before it was. The call is
          * client-streaming, so the upstream has not answered when the cap is crossed and the refusal is
          * the dispatch's own failure.
          */
@@ -749,11 +760,48 @@ class GrpcDispatchStageTest {
         }
 
         /**
+         * A client that opens a call and sends only part of its first message — the length prefix and one
+         * payload byte of a longer message — and then stalls. The partial message writes the forced-h2
+         * upstream request head, but the upstream holds no message it could act on, so the call is the
+         * client's to end: every such call is ended at the shortened first-message bound as the client's own
+         * abort, long before the breaker guard's timeout, and one more of them than the breaker's threshold
+         * leaves it closed.
+         */
+        @Test
+        @DisplayName("a client that sends part of its first message and stalls ends as its own abort within the first-message bound and never moves the breaker")
+        void partialFirstMessageEndsAsTheClientsAbortAndLeavesTheBreakerClosed() {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = boundedStage(route, breakerGuard());
+            List<GatewayException> aborts = new ArrayList<>();
+            List<Long> endedAfterMillis = new ArrayList<>();
+            Buffer partialMessage = grpcFrame(UNDER_CAP_FRAME).slice(0, GRPC_PREFIX_LENGTH + 1);
+
+            for (int call = 0; call <= BREAKER_THRESHOLD; call++) {
+                PushedBody stalled = new PushedBody();
+                stalled.pushBytes(partialMessage.copy());
+                long started = System.nanoTime();
+                aborts.add(assertThrows(GatewayException.class,
+                        () -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), stalled, -1L),
+                        "a stalled call is not answered"));
+                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+            }
+
+            assertAll("stalled partial first messages beyond the breaker's threshold",
+                    () -> assertTrue(aborts.stream().allMatch(DispatchStage.FirstMessageTimeout.class::isInstance),
+                            () -> "every stalled call is the client's first-message abort: " + aborts),
+                    () -> assertTrue(endedAfterMillis.stream().allMatch(
+                                    millis -> millis >= FIRST_MESSAGE_BOUND_MILLIS && millis < BREAKER_GUARD_MILLIS),
+                            () -> "each stalled call ends at the bound, before the guard's timeout: " + endedAfterMillis),
+                    () -> assertEquals(List.of(), breakerTransitions, "the breaker stays closed"),
+                    () -> assertEquals(List.of(), upstreamFrames, "no complete message reached the upstream"));
+        }
+
+        /**
          * Matched control of {@link #idleClientEndsAsItsOwnAbortAndLeavesTheBreakerClosed()}: the same rig
-         * and guard, but each call sends its first message and its upstream never answers — the client
-         * never ends the call. The first message stops the bound, so the guard's timeout ends each call as
-         * an upstream failure, counted by the breaker, which opens at its threshold and refuses the call
-         * behind them without calling the upstream.
+         * and guard, but each call sends one complete first message and its upstream never answers — the
+         * client never ends the call. A complete first message stops the bound, so the guard's timeout ends
+         * each call as an upstream failure, counted by the breaker, which opens at its threshold and refuses
+         * the call behind them without calling the upstream.
          */
         @Test
         @DisplayName("control — an upstream that received the first message and never answers is the guard's timeout, counted until the breaker opens")
@@ -890,6 +938,48 @@ class GrpcDispatchStageTest {
         }
     }
 
+    /** Length of a gRPC message prefix: one compressed-flag byte and a 4-byte big-endian payload length. */
+    private static final int GRPC_PREFIX_LENGTH = 5;
+
+    /**
+     * Frames {@code payload} as one uncompressed gRPC length-prefixed message: compressed flag {@code 0},
+     * the payload's length as a 4-byte big-endian integer, then the UTF-8 payload. Every request payload a
+     * {@link StreamBounds} case sends goes through it, because the gRPC dispatch reads that framing to tell
+     * when a complete message has crossed.
+     */
+    private static Buffer grpcFrame(String payload) {
+        byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
+        return Buffer.buffer().appendByte((byte) 0).appendInt(bytes.length).appendBytes(bytes);
+    }
+
+    /**
+     * The stub upstream's reader of a gRPC request stream: it collects the bytes of each DATA frame and hands
+     * on the payload of every complete length-prefixed message, however the frames split the messages. An
+     * empty final DATA frame carries only the end of the stream and adds nothing. Used on one request's event
+     * loop only.
+     */
+    private static final class MessageReassembler {
+
+        private final Consumer<String> payloads;
+        private Buffer pending = Buffer.buffer();
+
+        MessageReassembler(Consumer<String> payloads) {
+            this.payloads = payloads;
+        }
+
+        void read(Buffer frame) {
+            pending.appendBuffer(frame);
+            while (pending.length() >= GRPC_PREFIX_LENGTH) {
+                int end = GRPC_PREFIX_LENGTH + pending.getInt(1);
+                if (pending.length() < end) {
+                    return;
+                }
+                payloads.accept(pending.getString(GRPC_PREFIX_LENGTH, end, StandardCharsets.UTF_8.name()));
+                pending = pending.getBuffer(end, pending.length());
+            }
+        }
+    }
+
     /**
      * One call to the front server of {@link StreamBounds}: its request, every response frame it received
      * and the trailers its response ended with.
@@ -902,8 +992,9 @@ class GrpcDispatchStageTest {
     }
 
     /**
-     * A request body the test pushes frames into: frames are delivered to the consumer while it has not
-     * paused the stream, and held until it resumes otherwise; the end is delivered after the last frame.
+     * A request body the test pushes gRPC messages into: each pushed payload is framed as one message, and
+     * the messages are delivered to the consumer while it has not paused the stream, and held until it
+     * resumes otherwise; the end is delivered after the last one.
      * It starts paused, as the edge hands the dispatch a paused inbound request, so nothing flows before
      * the forwarding pipe asks for it.
      * Thread-safe: frames are pushed from the test thread while the consumer pauses and resumes from an
@@ -918,8 +1009,14 @@ class GrpcDispatchStageTest {
         private boolean ended;
         private boolean endDelivered;
 
-        synchronized void push(String frame) {
-            pending.add(Buffer.buffer(frame));
+        /** Pushes {@code payload} as one complete gRPC message ({@link GrpcDispatchStageTest#grpcFrame(String)}). */
+        void push(String payload) {
+            pushBytes(grpcFrame(payload));
+        }
+
+        /** Pushes {@code bytes} as they are — part of a message, when a case needs one. */
+        synchronized void pushBytes(Buffer bytes) {
+            pending.add(bytes);
             drain();
         }
 
