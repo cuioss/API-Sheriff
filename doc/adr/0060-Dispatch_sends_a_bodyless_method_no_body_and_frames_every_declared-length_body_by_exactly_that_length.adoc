@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT), a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
+// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT), a gRPC call with no request byte after 10 s (INBOUND_BODY_ABORTED, not counted as a failure by the breaker), a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
 // tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, request-body-deadline, grpc-stream-idle-timeout, upstream-connection
 // affects: api-sheriff
 // supersedes:
@@ -156,13 +156,39 @@ arm it.
 [[grpc-stream-idle-bound]]
 === A gRPC call silent for five minutes is ended
 
-A gRPC call arms neither request-body bound. Until the upstream sends its response headers, the
-guard's 30 s timeout bounds the call. After them the gRPC relay carries a stream-idle bound of five
-minutes, the default stream idle timeout of Envoy. Every request frame the dispatch reads and every
+A gRPC call arms neither request-body bound. A fixed bound ends a call whose client sends no request
+byte (<<grpc-first-message-bound>>). The bound ends when the first request byte is forwarded, not when
+a complete gRPC message has arrived. From that byte until the upstream sends its response headers, the
+call is bounded by the guard's 30 s timeout alone, which runs from the start of the attempt. After the
+response headers the gRPC relay carries a stream-idle bound of five minutes, the default stream idle
+timeout of Envoy. Every request frame the dispatch reads and every
 upstream frame the relay writes restarts it. When five minutes pass with no frame in either
 direction, the gateway resets the upstream request. It ends the client response with
 `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout`. Connection-level
 HTTP/2 `PING` frames are not frames of the call and do not count.
+
+[[grpc-first-message-bound]]
+=== Amendment: a gRPC call with no request byte ends after 10 s as the client's abort
+
+The forced-HTTP/2 upstream request head is written only with the first body chunk. A client that
+opens a call and sends no request byte would hold the dispatch until the guard's 30 s timeout. The
+breaker would then count that timeout against a healthy upstream.
+
+`GrpcDispatchStage` therefore builds its dispatch with a fixed first-message bound,
+`GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS` (10 s). The clock starts when the attempt hands its body to the
+upstream request. The first forwarded body byte, the end of the body, any abort claim and the end of
+the attempt stop it. When it expires, it takes the body stream's single abort claim with a
+`DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`) and resets the upstream request. The
+breaker does not count that rejection as a failure. `ApiSheriff-22` records it under the disposition `no-first-message`,
+at `INFO` for the first inbound-body abort on the route and at `DEBUG` after that: the three dispositions
+`client-left`, `body-stream-failed` and `no-first-message` share one per-route latch.
+
+The bound is below `UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS`, so it fires first unless waiting for an upstream
+connection — which the guard counts and the bound does not — consumed the difference. A body that
+ends without a message is not ended by it. Every HTTP dispatch is built with
+`DispatchStage.NO_FIRST_MESSAGE_TIMEOUT` and never arms it. Once the first request byte has been
+forwarded the bound is spent: until the upstream sends its response headers the call is bounded only
+by the guard's 30 s timeout, and a call that timeout ends is counted as an upstream failure.
 
 [[unread-upload-bodies]]
 === Unread HTTP/2 upload bodies give their credit back
@@ -187,7 +213,8 @@ measurement].
 
 === Fixed values, retry and recording
 
-The 10 s idle timeout, the 25 s deadline and the five-minute stream-idle bound are gateway constants.
+The 10 s idle timeout, the 25 s deadline, the 10 s gRPC first-message bound and the five-minute
+stream-idle bound are gateway constants.
 No configuration key or system property reaches them. They follow ADR-0064: the guard they sit under
 is a fixed policy of the gateway. Both request-body bounds are shorter than the guard's timeout, so
 the gateway ends a stalled or trickling body as the request's before the guard would end it as the
@@ -343,6 +370,7 @@ link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body boun
 * link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap] -- the streaming counter that also holds a declared-length body to its length.
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] and link:0008-data-plane-transport.adoc[ADR-0008 -- Data-plane transport] -- the never-buffered body model.
 * link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the fixed guard and its 30 s timeout every bound of this record sits below.
+* `GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS`, `DispatchStage.FirstMessageTimeout` -- the first-message bound; `GrpcDispatchStageTest` -- the idle-client test and its guard-timeout control.
 * link:../architecture/tls-and-inbound-security.adoc#_dispatch_body_framing[Architecture -- dispatch body framing], link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[request-body idle timeout], link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[request-body deadline], link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound], link:../architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[unread upload release] and link:../architecture/tls-and-inbound-security.adoc#_http2_connection_window_measurement[connection-window measurement].
 * link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class (GW-02), and link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds].
 * `DispatchStage`, `ByteCappedBodyStream`, `EdgeHardeningOptions` -- the implementation; `DispatchStageTest`, `GatewayEdgeRequestBodyIdleTimeoutTest`, `GrpcDispatchStageTest` -- the tests.

@@ -50,6 +50,31 @@ The gateway never appends to or forwards an inbound chain. It emits freshly gene
 
 The gateway emits no `by=` parameter. The context-path prefix travels only as `X-Forwarded-Prefix`.
 
+=== Amendment: every resolver input is gated, and the gateway is the only provenance authority
+
+The `X-Forwarded-*` / `Forwarded` names are not the whole inbound surface. The resolver also reads
+`X-ProxyScheme`, `X-ProxyHost`, `X-ProxyPort` and `X-ProxyContextPath`.
+`ForwardPolicyStage.RESOLVER_INPUT_HEADERS` names all ten resolver inputs in their separator-folded
+spelling. The stage treats every member alike:
+
+* The mode copy never copies one from the client, under any forward mode or `-`/`_` spelling. A
+  `headers_allow` naming one copies nothing either.
+* For a peer `TcpPeerGate` does not trust, the stage hands the resolver an empty value for every
+  member. The resolver receives no peer address, so `TcpPeerGate` stays the one trust decision.
+
+`ForwardedTrust` builds the resolver configuration from `forwarded.trusted_proxies` and the baseline
+alone. A change that wires `forwarded.trust_scheme_host` into it must keep this mask in front of the
+resolver.
+
+Provenance names the resolver does not read are withheld instead. `ConnectionHeaders.REQUEST_STRIP`
+holds the provenance and URL-override class, such as `X-Forwarded-Server`, `X-Original-URL` and
+`Fastly-Client-IP`. The full list is the
+link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set]. The gateway
+withholds the class for every peer, a trusted proxy included, so an upstream hears provenance only
+from the gateway. A route re-admits a member only by naming it in `headers_allow`.
+`ConnectionHeaders.REQUEST_READMITTABLE` holds the re-admittable members
+(link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+
 == Alternatives rejected
 
 === Emit `Forwarded` by default
@@ -110,6 +135,8 @@ RFC 7239 section 6.3 suggests obfuscated identifiers to avoid leaking internal t
 * link:0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]: the breadth posture of `trusted_proxies`
 * `cui-http/doc/forwarded-header-resolution.adoc`: the resolver's behaviour contract
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/TcpPeerGate.java`: the immediate-peer gate
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/ForwardPolicyStage.java`: the resolver-input skip and mask
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/ConnectionHeaders.java`: the withheld provenance and URL-override class
 * https://www.rfc-editor.org/rfc/rfc7239.html[RFC 7239, Forwarded HTTP Extension] (section 5 syntax, section 8 security)
 * https://adam-p.ca/blog/2022/03/forwarded-header-sabotage/[Forwarded Header Sabotage]
 * nginx-devel rationale (parsing cost, "no practical implementations"), HAProxy #575, Kong #2202 and #13599, Envoy #5889, Traefik #4099, Apache Bugzilla #62377

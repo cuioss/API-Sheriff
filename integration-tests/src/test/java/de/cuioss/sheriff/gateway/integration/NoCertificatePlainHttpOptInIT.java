@@ -385,8 +385,8 @@ class NoCertificatePlainHttpOptInIT {
      *       but WHETHER it regenerates one at all — none under zero trust, the honoured chain under
      *       a declared trusted peer. This instance declares no {@code forwarded.trusted_proxies}, so
      *       {@code TcpPeerGate} trusts no peer and
-     *       {@code ForwardPolicyStage.applyRegeneratedForwarding} (:387-399) hands the resolver an
-     *       empty list for every forwarding name, while cui-http's
+     *       {@code ForwardPolicyStage.applyRegeneratedForwarding} hands the resolver an empty list for
+     *       every resolver input, while cui-http's
      *       {@code ForwardedHeaderResolver.resolveClientIp} returns empty unconditionally on an
      *       empty {@code trustedProxies} — so {@code ResolvedForwarding.toXForwardedHeaders} emits
      *       nothing. The gateway never synthesises a chain from the TCP peer instead: that resolver
@@ -422,7 +422,7 @@ class NoCertificatePlainHttpOptInIT {
          * A header the gateway has no opinion about, sent on both runs of Leg A purely so its echo
          * proves the upstream saw the request.
          * <p>
-         * It is in neither {@code ForwardPolicyStage.FORWARDING_HEADERS} nor
+         * It is in neither {@code ForwardPolicyStage.RESOLVER_INPUT_HEADERS} nor
          * {@code ConnectionHeaders.REQUEST_STRIP}, and the forward-all route declares no
          * {@code headers_deny}, so the copy carries it verbatim. That is what makes it a vacuity
          * guard for an assertion whose subject is an ABSENT header: without it a null
@@ -459,7 +459,7 @@ class NoCertificatePlainHttpOptInIT {
                             "THIS is the assertion that carries the verdict. Run A claimed "
                                     + SPOOFED_CLIENT + " and the upstream must see NO "
                                     + FORWARDED_FOR + " at all: the peer is untrusted, so "
-                                    + "ForwardPolicyStage.applyRegeneratedForwarding (:387-399) "
+                                    + "ForwardPolicyStage.applyRegeneratedForwarding "
                                     + "blanks the inbound claim AND the resolver — whose "
                                     + "trustedProxies is empty — regenerates nothing to put in its "
                                     + "place. Declare the caller's own peer (or any range containing "

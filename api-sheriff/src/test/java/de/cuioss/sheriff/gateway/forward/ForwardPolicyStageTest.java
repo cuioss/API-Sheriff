@@ -18,10 +18,15 @@ package de.cuioss.sheriff.gateway.forward;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -44,6 +49,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -201,6 +207,254 @@ class ForwardPolicyStageTest {
             assertFalse(result.headers().containsValue(CLIENT_IP),
                     "an absent peer address is never trusted");
         }
+    }
+
+    /**
+     * The {@link ForwardedHeaderResolver} reads four {@code X-Proxy*} headers besides the regenerated
+     * {@code X-Forwarded-*} / {@code Forwarded} family — {@code X-ProxyScheme}, {@code X-ProxyHost},
+     * {@code X-ProxyPort} and {@code X-ProxyContextPath} — and derives the scheme, host, port and
+     * prefix of the regenerated set from them. They are therefore masked from the resolver for an
+     * untrusted peer and never copied from the client, under any spelling and any forward mode.
+     * <p>
+     * The resolver-side cases run against {@link #honouringStage}: the production resolver configuration
+     * ({@code ForwardedTrust}) honours no scheme, host, port or context path, so against it an
+     * {@code X-Proxy*} value could never surface in the regenerated set and the mask would be unobservable.
+     * A resolver that honours them makes the peer gate's mask the only thing between a client's claim and
+     * the regenerated set — which is exactly the property under test.
+     */
+    @Nested
+    @DisplayName("the X-Proxy* resolver inputs are masked like the regenerated names")
+    class XProxyResolverInputs {
+
+        /** A host the client claims; no fixture emits it, so any hit is the client's claim crossing. */
+        private static final String SPOOFED_HOST = "attacker.example";
+        /** A context path the client claims; no fixture emits it either. */
+        private static final String SPOOFED_CONTEXT_PATH = "/attacker-prefix";
+        /** The host a trusted proxy in front of the gateway reports. */
+        private static final String PROXY_HOST = "edge.example.com";
+
+        /** The two path-steering inputs, each in its canonical and its underscore spelling. */
+        static Stream<Arguments> untrustedSteeringInputs() {
+            return Stream.of(
+                    Arguments.of("X-ProxyHost", SPOOFED_HOST),
+                    Arguments.of("X_ProxyHost", SPOOFED_HOST),
+                    Arguments.of("X-ProxyContextPath", SPOOFED_CONTEXT_PATH),
+                    Arguments.of("X_ProxyContextPath", SPOOFED_CONTEXT_PATH));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("untrustedSteeringInputs")
+        @DisplayName("an untrusted peer's X-Proxy* claim never reaches the upstream, regenerated or copied")
+        void untrustedPeerXProxyClaimNeverReachesTheUpstream(String name, String claimed) {
+            // Arrange — the empty positive-list copies no client header, so a hit there can only be
+            // the resolver regenerating from the claim, which the honouring resolver would do unmasked;
+            // forward-all adds the mode-copy path. The unowned companion header is the matched control
+            // proving the forward-all copy ran.
+            ForwardPolicyStage stage = honouringStage(EMIT_BOTH);
+            Map<String, List<String>> headers = Map.of(
+                    name, List.of(claimed),
+                    "X-Api-Version", List.of("v2"));
+
+            // Act
+            ForwardPolicyStage.Result resolverOnly = stage.process(request(UNTRUSTED_PEER, headers),
+                    allow(List.of()), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result underForwardAll = stage.process(request(UNTRUSTED_PEER, headers),
+                    forwardAll(), CookiesConfig.NONE, false);
+
+            // Assert — a substring match, so the claim embedded in a regenerated Forwarded value
+            // (host=…) is caught as well as a verbatim copy
+            assertAll("an untrusted peer cannot steer the regenerated set through an X-Proxy* input",
+                    () -> assertTrue(noValueContains(resolverOnly.headers(), claimed),
+                            () -> name + " from an untrusted peer must be masked from the resolver, but"
+                                    + " the regenerated headers carry its value: " + resolverOnly.headers()),
+                    () -> assertTrue(noValueContains(underForwardAll.headers(), claimed),
+                            () -> name + " from an untrusted peer must reach the upstream neither"
+                                    + " regenerated nor copied under forward-all: " + underForwardAll.headers()),
+                    () -> assertEquals(List.of("v2"), valuesNamed(underForwardAll.headers(), "X-Api-Version"),
+                            "control: forward-all really did copy the client's unowned header"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "X-ProxyScheme", "X_ProxyScheme", "X-ProxyHost", "X_ProxyHost",
+                "X-ProxyPort", "X_ProxyPort", "X-ProxyContextPath", "X_ProxyContextPath"})
+        @DisplayName("an X-Proxy* header is copied under no forward mode, not even when a positive-list names it")
+        void xProxyHeaderIsCopiedUnderNoMode(String name) {
+            // Arrange — the value is irrelevant here: the gateway emits no X-Proxy* header itself, so
+            // the NAME reaching the upstream under any spelling is the leak. The trusted forward-all run
+            // shows that peer trust lets the resolver read the header but never re-admits the copy.
+            Map<String, List<String>> headers = Map.of(
+                    name, List.of("probe-value"),
+                    "X-Api-Version", List.of("v2"));
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR), Set.of(TRUSTED_CIDR));
+
+            // Act
+            ForwardPolicyStage.Result underForwardAll = stage.process(request(UNTRUSTED_PEER, headers),
+                    forwardAll(), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result underNegativeList = stage.process(request(UNTRUSTED_PEER, headers),
+                    deny(List.of("X-Unrelated")), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result underNamingPositiveList = stage.process(request(UNTRUSTED_PEER, headers),
+                    allow(List.of(name, "X-Api-Version")), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result trustedUnderForwardAll = stage.process(request(TRUSTED_PEER, headers),
+                    forwardAll(), CookiesConfig.NONE, false);
+
+            // Assert
+            assertAll("the X-Proxy* skip applies on every mode, positive-list included",
+                    () -> assertFalse(carriesSpellingOf(underForwardAll.headers(), name),
+                            () -> name + " must not be copied under forward-all"),
+                    () -> assertFalse(carriesSpellingOf(underNegativeList.headers(), name),
+                            () -> name + " must not be copied under a negative-list that does not name it"),
+                    () -> assertFalse(carriesSpellingOf(underNamingPositiveList.headers(), name),
+                            () -> name + " must not be copied even when a positive-list names it — a"
+                                    + " resolver input is not an operator's to re-admit from client input"),
+                    () -> assertFalse(carriesSpellingOf(trustedUnderForwardAll.headers(), name),
+                            () -> name + " must not be copied from a trusted peer either"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(underForwardAll.headers(), "X-Api-Version"),
+                            "control: forward-all copied the unowned header"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(underNegativeList.headers(), "X-Api-Version"),
+                            "control: the negative-list copied the undenied header"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(underNamingPositiveList.headers(), "X-Api-Version"),
+                            "control: the positive-list admitted its other entry"));
+        }
+
+        @Test
+        @DisplayName("control: a trusted peer's X-ProxyHost still feeds the regenerated X-Forwarded-Host")
+        void trustedPeerXProxyHostFeedsTheRegeneratedHost() {
+            // Arrange — the matched control for the mask: from a trusted proxy the resolver must still
+            // read the input, so the mask above is the peer gate's decision and not a dead input. Same
+            // honouring resolver as the untrusted case, so the two differ in the peer alone.
+            ForwardPolicyStage stage = honouringStage(EMIT_XFORWARDED);
+            PipelineRequest request = request(TRUSTED_PEER, Map.of(
+                    "X-ProxyHost", List.of(PROXY_HOST),
+                    XFF, List.of(CLIENT_IP)));
+
+            // Act — the empty positive-list copies nothing, so the value can only arrive regenerated
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), CookiesConfig.NONE, false);
+
+            // Assert
+            assertAll("a trusted proxy's X-ProxyHost reaches the resolver",
+                    () -> assertEquals(List.of(PROXY_HOST), valuesNamed(result.headers(), "X-Forwarded-Host"),
+                            () -> "the regenerated X-Forwarded-Host must come from the trusted X-ProxyHost: "
+                                    + result.headers()),
+                    () -> assertFalse(carriesSpellingOf(result.headers(), "X-ProxyHost"),
+                            "the input itself is still never copied"));
+        }
+
+        /**
+         * A stage whose resolver honours the scheme, host, port and context path it reads
+         * ({@code trustAll}) on top of the trusted proxies, behind the same TCP peer gate as every
+         * other case. Without it an {@code X-Proxy*} claim could not reach the regenerated set even
+         * unmasked, and the resolver-side assertions would pass with the mask removed.
+         */
+        private static ForwardPolicyStage honouringStage(String emitMode) {
+            return new ForwardPolicyStage(honouringResolver(), new TcpPeerGate(List.of(TRUSTED_CIDR)), emitMode,
+                    GATEWAY_COOKIES);
+        }
+
+        private static boolean noValueContains(Map<String, String> headers, String claimed) {
+            return headers.values().stream().noneMatch(value -> value.contains(claimed));
+        }
+    }
+
+    /**
+     * {@link ForwardPolicyStage#RESOLVER_INPUT_HEADERS} is written out by hand because cui-http keeps
+     * the names its {@link ForwardedHeaderResolver} reads in a package-private type. This guard asks the
+     * resolver itself which names it reads, through a recording lookup, so a cui-http upgrade that adds
+     * an input fails here instead of leaving that input unmasked for an untrusted peer and copyable by
+     * the client, and one that drops an input fails as a stale mask entry.
+     * <p>
+     * The probe runs against {@link #honouringResolver}, the configuration under which the resolver
+     * reads its full input surface. The production configuration ({@code ForwardedTrust}) reads a
+     * subset, and the set has to cover every name the resolver <em>can</em> read, not only the names
+     * one configuration happens to read today.
+     */
+    @Nested
+    @DisplayName("RESOLVER_INPUT_HEADERS equals the names the cui-http resolver reads")
+    class ResolverInputDrift {
+
+        @Test
+        @DisplayName("every name the resolver reads is masked, and every masked name is one it reads")
+        void resolverInputSetEqualsTheResolversOwnReads() {
+            // Arrange — the second probe answers every name with a well-formed value, so a resolver that
+            // stops reading once an absent input has decided the outcome still reaches every input
+            ForwardedHeaderResolver resolver = honouringResolver();
+            Set<String> requested = new LinkedHashSet<>();
+
+            // Act
+            resolver.resolve(recordingLookup(requested, name -> null));
+            resolver.resolve(recordingLookup(requested, ResolverInputDrift::wellFormedValue));
+            Set<String> read = requested.stream()
+                    .map(ConnectionHeaders::separatorFolded)
+                    .collect(Collectors.toCollection(TreeSet::new));
+
+            // Assert
+            Set<String> unmasked = new TreeSet<>(read);
+            unmasked.removeAll(ForwardPolicyStage.RESOLVER_INPUT_HEADERS);
+            Set<String> stale = new TreeSet<>(ForwardPolicyStage.RESOLVER_INPUT_HEADERS);
+            stale.removeAll(read);
+            assertAll("RESOLVER_INPUT_HEADERS mirrors the resolver's reads exactly",
+                    () -> assertFalse(read.isEmpty(), "non-vacuity: the probe recorded no read at all"),
+                    () -> assertTrue(read.containsAll(Set.of("x-forwarded-for", "x-proxyscheme",
+                                    "x-proxyhost", "x-proxyport", "x-proxycontextpath")),
+                            () -> "non-vacuity: the probe never reached the resolver's read path: " + read),
+                    () -> assertEquals(Set.of(), unmasked,
+                            "read by the resolver but not masked — add it to RESOLVER_INPUT_HEADERS"),
+                    () -> assertEquals(Set.of(), stale,
+                            "stale mask entry — the resolver no longer reads it"));
+        }
+
+        /**
+         * A lookup that records every name it is asked for and answers with {@code value}'s result,
+         * or with no value when that is {@code null}.
+         */
+        private static Function<String, List<String>> recordingLookup(Set<String> sink,
+                Function<String, @Nullable String> value) {
+            return name -> {
+                sink.add(name);
+                String answer = value.apply(name);
+                return answer == null ? List.of() : List.of(answer);
+            };
+        }
+
+        /** A value the resolver accepts for the input {@code name}, chosen by the kind of input. */
+        private static String wellFormedValue(String name) {
+            String folded = ConnectionHeaders.separatorFolded(name);
+            if ("forwarded".equals(folded)) {
+                return "for=" + CLIENT_IP + ";proto=https;host=edge.example.com";
+            }
+            if (folded.endsWith("-for")) {
+                return CLIENT_IP;
+            }
+            if (folded.endsWith("proto") || folded.endsWith("scheme")) {
+                return "https";
+            }
+            if (folded.endsWith("host")) {
+                return "edge.example.com";
+            }
+            if (folded.endsWith("port")) {
+                return "443";
+            }
+            return "/edge";
+        }
+    }
+
+    /**
+     * A resolver that honours the scheme, host, port and context path it reads ({@code trustAll}) on
+     * top of the trusted proxies — the configuration under which it reads every input it has.
+     */
+    private static ForwardedHeaderResolver honouringResolver() {
+        ForwardedResolverConfig config = ForwardedResolverConfig.builder()
+                .trustAll(true)
+                .trustedProxies(Set.of(TRUSTED_CIDR))
+                .build();
+        return new ForwardedHeaderResolver(config, new SecurityEventCounter());
+    }
+
+    /** Whether any outbound name is a {@code -}/{@code _} or case spelling of {@code name}. */
+    private static boolean carriesSpellingOf(Map<String, String> headers, String name) {
+        String folded = ConnectionHeaders.separatorFolded(name);
+        return headers.keySet().stream()
+                .anyMatch(outbound -> ConnectionHeaders.separatorFolded(outbound).equals(folded));
     }
 
     @Nested
@@ -382,7 +636,7 @@ class ForwardPolicyStageTest {
 
             // Assert
             assertFalse(result.headers().containsValue(CLIENT_IP),
-                    "the FORWARDING_HEADERS skip is retained on the negative-list mode: a regenerated"
+                    "the RESOLVER_INPUT_HEADERS skip is retained on the negative-list mode: a regenerated"
                             + " header is never copied from the client, whatever the mode");
         }
     }
@@ -435,7 +689,7 @@ class ForwardPolicyStageTest {
             // Assert
             assertFalse(result.headers().containsValue(CLIENT_IP),
                     "forward-all is not a way to smuggle a regenerated forwarding header through — the"
-                            + " FORWARDING_HEADERS skip applies on every mode");
+                            + " RESOLVER_INPUT_HEADERS skip applies on every mode");
         }
 
         @Test
@@ -1463,8 +1717,8 @@ class ForwardPolicyStageTest {
                     () -> assertEquals("v2", negativeListResult.headers().get("x-api-version"),
                             "control: the negative-list copy carried the undenied header through"),
                     () -> assertFalse(positiveListResult.headers().containsValue(H2C_SETTINGS),
-                            () -> name + " must not cross even when a positive-list names it —"
-                                    + " Authorization is the single re-admittable member"),
+                            () -> name + " must not cross even when a positive-list names it — it is"
+                                    + " no member of ConnectionHeaders.REQUEST_READMITTABLE"),
                     () -> assertEquals("v2", positiveListResult.headers().get("X-Api-Version"),
                             "control: the positive-list really did admit its other entry"));
         }
@@ -1489,8 +1743,8 @@ class ForwardPolicyStageTest {
         }
 
         @Test
-        @DisplayName("Authorization is the single re-admittable member, and only under a positive-list")
-        void authorizationIsTheSingleReadmittableMember() {
+        @DisplayName("Authorization is re-admitted only under a positive-list naming it")
+        void authorizationIsReadmittedOnlyUnderAPositiveList() {
             Map<String, List<String>> headers = Map.of("Authorization", List.of("Bearer inbound-xyz"));
 
             ForwardPolicyStage.Result allowListed = stage(EMIT_XFORWARDED, List.of(), Set.of())
@@ -1522,6 +1776,132 @@ class ForwardPolicyStageTest {
             assertEquals("Bearer mediated-abc", result.headers().get("Authorization"),
                     "applyMediatedBearer runs last, so the upstream sees only the mediated bearer even"
                             + " when the route re-admitted the inbound one");
+        }
+
+        /** A value no fixture emits, so a hit can only be the client's provenance claim crossing. */
+        private static final String CLAIMED_PROVENANCE = "claimed-by-client.example";
+
+        /**
+         * The provenance and URL-override class, one canonical spelling each — written out here
+         * rather than read from the production set, so a name dropped from the set fails below.
+         */
+        static Stream<String> provenanceOverrideNames() {
+            return Stream.of(
+                    "X-Forwarded-Server", "X-Forwarded-Ssl", "Front-End-Https", "X-Url-Scheme",
+                    "X-Forwarded-Scheme", "X-Forwarded-Protocol", "X-Forwarded-Uri", "X-Forwarded-Path",
+                    "X-Original-URL", "X-Rewrite-URL", "X-Original-Host", "X-Host",
+                    "X-Original-Forwarded-For", "X-Cluster-Client-IP", "Fastly-Client-IP");
+        }
+
+        /** Every provenance and URL-override name in its canonical and its fully underscored spelling. */
+        static Stream<String> provenanceOverrideSpellings() {
+            return provenanceOverrideNames().flatMap(name -> Stream.of(name, name.replace('-', '_')));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("provenanceOverrideSpellings")
+        @DisplayName("a provenance or URL-override header crosses under neither forward-all nor a negative-list, from any peer")
+        void provenanceOverrideNeverCrossesUnderPermissiveModes(String name) {
+            // Arrange — the two permissive modes, each from a trusted proxy and from an untrusted
+            // client: the gateway is the only provenance authority whoever sent the claim. The unowned
+            // companion header is the matched positive control proving each mode copy really ran.
+            Map<String, List<String>> headers = Map.of(
+                    name, List.of(CLAIMED_PROVENANCE),
+                    "X-Api-Version", List.of("v2"));
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR), Set.of(TRUSTED_CIDR));
+            ForwardConfig negativeList = deny(List.of("X-Unrelated"));
+
+            // Act
+            List<ForwardPolicyStage.Result> results = List.of(
+                    stage.process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false),
+                    stage.process(request(TRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false),
+                    stage.process(request(UNTRUSTED_PEER, headers), negativeList, CookiesConfig.NONE, false),
+                    stage.process(request(TRUSTED_PEER, headers), negativeList, CookiesConfig.NONE, false));
+
+            // Assert — containsValue as well as a folded name lookup, so the claim crossing under any
+            // spelling at all still fails
+            List<String> runs = List.of("forward-all, untrusted peer", "forward-all, trusted peer",
+                    "negative-list, untrusted peer", "negative-list, trusted peer");
+            assertAll("the provenance and URL-override class is withheld under every permissive mode",
+                    IntStream.range(0, results.size()).boxed().flatMap(run -> Stream.<Executable>of(
+                            () -> assertFalse(results.get(run).headers().containsValue(CLAIMED_PROVENANCE),
+                                    () -> name + " must not reach the upstream (" + runs.get(run) + "): "
+                                            + results.get(run).headers()),
+                            () -> assertFalse(carriesSpellingOf(results.get(run).headers(), name),
+                                    () -> name + " must not be relayed under any spelling (" + runs.get(run) + ")"),
+                            () -> assertEquals(List.of("v2"), valuesNamed(results.get(run).headers(), "X-Api-Version"),
+                                    () -> "control: the mode copy carried the unowned header (" + runs.get(run) + ")"))));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("provenanceOverrideNames")
+        @DisplayName("a positive-list naming a provenance or URL-override header re-admits it")
+        void positiveListNamingAProvenanceOverrideReadmitsIt(String name) {
+            // Arrange — the one re-admission path: the operator names the member in headers_allow
+            Map<String, List<String>> headers = Map.of(
+                    name, List.of(CLAIMED_PROVENANCE),
+                    "X-Api-Version", List.of("v2"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR), Set.of(TRUSTED_CIDR))
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of(name, "X-Api-Version")),
+                            CookiesConfig.NONE, false);
+
+            // Assert
+            assertEquals(List.of(CLAIMED_PROVENANCE), valuesNamed(result.headers(), name),
+                    () -> name + " is re-admittable, so a positive-list naming it forwards the client's value");
+        }
+
+        @Test
+        @DisplayName("a positive-list re-admits the provenance header it names and no other withheld name")
+        void positiveListReadmitsOnlyTheNamedMember() {
+            // Arrange — the list names one re-admittable member beside withheld names that are NOT
+            // re-admittable, and the request carries further re-admittable members the list does not
+            // name. Only the named member, and the unowned control header, may cross.
+            Map<String, List<String>> headers = new HashMap<>();
+            provenanceOverrideNames().forEach(name -> headers.put(name, List.of(CLAIMED_PROVENANCE + "/" + name)));
+            headers.put("X-Real-IP", List.of(CLAIMED_PROVENANCE + "/x-real-ip"));
+            headers.put("X_Forwarded_Host", List.of(CLAIMED_PROVENANCE + "/x_forwarded_host"));
+            headers.put("Proxy-Authorization", List.of(CLAIMED_PROVENANCE + "/proxy-authorization"));
+            headers.put("Authorization", List.of(CLAIMED_PROVENANCE + "/authorization"));
+            headers.put("X-Api-Version", List.of("v2"));
+            ForwardConfig positiveList = allow(List.of("X-Forwarded-Server", "X-Real-IP", "X_Forwarded_Host",
+                    "Proxy-Authorization", "X-Api-Version"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), positiveList, CookiesConfig.NONE, false);
+
+            // Assert — exactly two client headers cross; every other claimed value stays behind
+            assertAll("re-admission is per named member",
+                    () -> assertEquals(List.of(CLAIMED_PROVENANCE + "/X-Forwarded-Server"),
+                            valuesNamed(result.headers(), "X-Forwarded-Server"),
+                            "the named re-admittable member crosses"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(result.headers(), "X-Api-Version"),
+                            "control: the named unowned header crosses"),
+                    () -> assertEquals(List.of(CLAIMED_PROVENANCE + "/X-Forwarded-Server"),
+                            result.headers().values().stream()
+                                    .filter(value -> value.startsWith(CLAIMED_PROVENANCE)).toList(),
+                            () -> "no other withheld name may cross — not a listed name outside the"
+                                    + " re-admittable subset, not an unlisted member: " + result.headers()));
+        }
+
+        @Test
+        @DisplayName("a headers_allow entry re-admits a member compared separator-folded")
+        void readmissionComparesSeparatorFolded() {
+            // Arrange — the operator writes the underscore spelling the client also sends
+            Map<String, List<String>> headers = Map.of(
+                    "X_Forwarded_Server", List.of(CLAIMED_PROVENANCE),
+                    "X-Api-Version", List.of("v2"));
+
+            // Act
+            ForwardPolicyStage.Result result = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("X_Forwarded_Server", "X-Api-Version")),
+                            CookiesConfig.NONE, false);
+
+            // Assert
+            assertEquals(List.of(CLAIMED_PROVENANCE), valuesNamed(result.headers(), "X_Forwarded_Server"),
+                    "an underscore entry names the same re-admittable member as X-Forwarded-Server");
         }
 
         @Test

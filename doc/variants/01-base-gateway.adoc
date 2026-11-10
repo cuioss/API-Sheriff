@@ -95,12 +95,17 @@ link:../architecture/observability-and-errors.adoc#_html_error_pages[Architectur
   as a default on its endpoint. Headers and query parameters each resolve a positive-list, a
   negative-list, or -- when the block declares neither -- forward-all. Whatever the mode, the
   gateway-owned link:../configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set]
-  withholds the hop-by-hop, framing and provenance names. An inbound `Authorization` is its *single*
-  re-admittable member, and only under a positive-list naming it. The browser `Cookie` reaches the
+  withholds the hop-by-hop, framing and provenance names -- the provenance and URL-override class
+  (`X-Forwarded-Server`, `X-Original-URL` and the rest) included, for every peer. Its re-admittable
+  members are an inbound `Authorization` and that provenance and URL-override class, each re-admitted
+  only under a route's `headers_allow` naming it; forward-all and a negative-list never re-admit one.
+  The browser `Cookie` reaches the
   upstream only as the route's link:../configuration/routing-and-forwarding.adoc#_cookies[`cookies`]
   block admits it -- under the default `allow: none` not at all. Inbound `Forwarded` /
   `X-Forwarded-*` are resolved behind a trusted-proxy allowlist, and the gateway emits regenerated
-  canonical output (`X-Forwarded-*` by default). See
+  canonical output (`X-Forwarded-*` by default). The `X-Proxy*` resolver inputs are treated alike:
+  never copied from the client, and masked from the resolver for an untrusted peer alongside
+  `Forwarded` / `X-Forwarded-*`. See
   link:../adr/0003-forwarded-headers.adoc[ADR-0003] and
   link:../architecture/routing-and-forwarding.adoc#_forward_policy[Architecture -- Forward Policy].
 

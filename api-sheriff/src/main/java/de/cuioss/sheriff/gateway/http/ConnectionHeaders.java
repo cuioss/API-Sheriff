@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.http;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Stream;
 
 
 import lombok.experimental.UtilityClass;
@@ -31,8 +32,14 @@ import lombok.experimental.UtilityClass;
  * the request-direction set: names a client may send but the gateway never forwards upstream. The
  * request-direction set is what makes the permissive forward-all baseline safe — without it a
  * forward-all route would relay the client's own {@code Authorization} and its spoofable provenance
- * claims to every upstream. The {@code Cookie} header is not a member: it is neither copied by any
- * forward mode nor withheld wholesale, but rebuilt per route — the gateway's own cookies
+ * claims to every upstream. The gateway is the only provenance authority an upstream hears, for
+ * every peer: a provenance name a trusted proxy sends is withheld exactly as one a direct client
+ * sends, and what reaches the upstream about the connection is what the gateway regenerates. The
+ * request-direction set has a named re-admittable subset, {@link #REQUEST_READMITTABLE}, whose
+ * members a route passes on only by naming them in a positive-list.
+ * <p>
+ * The {@code Cookie} header is not a request-direction member: it is neither copied by any forward
+ * mode nor withheld wholesale, but rebuilt per route — the gateway's own cookies
  * ({@link GatewayCookies}) are withheld under every mode, and the browser's other cookies cross only
  * as far as the route's {@code cookies} policy admits them.
  * <p>
@@ -66,6 +73,19 @@ import lombok.experimental.UtilityClass;
 public class ConnectionHeaders {
 
     private static final String PARAM_HEADER_NAME = "headerName";
+
+    /**
+     * The provenance and URL-override class, all lower case — the client-sendable names a backend may
+     * read as the client's address, as the scheme, host or server it was reached through, or as the
+     * URL to serve in place of the request line. Declared once and folded into both
+     * {@link #REQUEST_STRIP} (withheld by default) and {@link #REQUEST_READMITTABLE} (re-admittable by
+     * a positive-list naming the member), so the two sets cannot disagree about the class.
+     */
+    private static final Set<String> PROVENANCE_OVERRIDE = Set.of(
+            "x-forwarded-server", "x-forwarded-ssl", "front-end-https", "x-url-scheme",
+            "x-forwarded-scheme", "x-forwarded-protocol", "x-forwarded-uri", "x-forwarded-path",
+            "x-original-url", "x-rewrite-url", "x-original-host", "x-host",
+            "x-original-forwarded-for", "x-cluster-client-ip", "fastly-client-ip");
 
     /**
      * The connection-specific and framing response headers, all lower case.
@@ -121,31 +141,51 @@ public class ConnectionHeaders {
      *   <li><strong>Spoofable provenance claims the gateway alone is entitled to make</strong> — the
      *       underscore spellings of the regenerated forwarding names ({@code x_forwarded_for},
      *       {@code x_forwarded_host}, {@code x_forwarded_proto}, {@code x_forwarded_port},
-     *       {@code x_forwarded_prefix}) and the vendor client-IP aliases ({@code x-real-ip},
-     *       {@code x-client-ip}, {@code true-client-ip}, {@code cf-connecting-ip}). See the
-     *       placement note below for why these live here rather than beside the canonical names.</li>
+     *       {@code x_forwarded_prefix}), the vendor client-IP aliases ({@code x-real-ip},
+     *       {@code x-client-ip}, {@code true-client-ip}, {@code cf-connecting-ip}), and the
+     *       provenance and URL-override class: {@code x-forwarded-server}, {@code x-forwarded-ssl},
+     *       {@code front-end-https}, {@code x-url-scheme}, {@code x-forwarded-scheme},
+     *       {@code x-forwarded-protocol}, {@code x-forwarded-uri}, {@code x-forwarded-path},
+     *       {@code x-original-url}, {@code x-rewrite-url}, {@code x-original-host}, {@code x-host},
+     *       {@code x-original-forwarded-for}, {@code x-cluster-client-ip} and
+     *       {@code fastly-client-ip} — names a backend may read as the client's address, as the
+     *       scheme, host or server it was reached through, or as the URL it should serve in place of
+     *       the request line. See the placement note below for why these live here rather than beside
+     *       the canonical names.</li>
      * </ul>
      * <p>
      * <strong>Why the provenance variants are here and not in the forwarding set.</strong> The
-     * forwarding set in {@code forward.ForwardPolicyStage} enumerates the names the gateway
-     * <em>regenerates</em>: it is read both as a client-copy skip and as the mask that hides inbound
-     * forwarding headers from the resolver when the immediate peer is untrusted. The gateway
-     * regenerates {@code X-Forwarded-For}; it does not regenerate {@code X_Forwarded_For} or
-     * {@code X-Real-IP}, and the resolver never queries either, so filing them there would assert a
-     * regeneration relationship that does not exist and widen the resolver mask with names it never
-     * asks for. What is true of them is the question <em>this</em> set asks: they are claims about
-     * the connection's provenance that only the gateway is entitled to make, so a client-sent copy
-     * is never relayed. The canonical hyphenated names stay where they are — they are genuinely
-     * regenerated, and duplicating them here would create two lists that can disagree.
+     * resolver-input set in {@code forward.ForwardPolicyStage} enumerates the names the forwarded-header
+     * resolver <em>reads</em>: it is read both as a client-copy skip and as the mask that hides those
+     * inputs from the resolver when the immediate peer is untrusted. The resolver reads
+     * {@code X-Forwarded-For}; it does not read {@code X_Forwarded_For}, {@code X-Real-IP} or any
+     * name of the provenance and URL-override class, so filing them there would assert a resolver
+     * relationship that does not exist and widen the resolver mask with names it never asks for. What
+     * is true of them is the question <em>this</em> set asks: they are claims about the connection's
+     * provenance that only the gateway is entitled to make, so a client-sent copy is not relayed.
+     * The resolver inputs stay where they are — the resolver genuinely reads them, and duplicating
+     * them here would create two lists that can disagree.
      * <p>
-     * The threat is a backend that reads them <em>as though</em> they were the canonical name: a
-     * framework folding {@code -} and {@code _} into one CGI-style variable resolves
-     * {@code X_Forwarded_For} to the same {@code HTTP_X_FORWARDED_FOR} the real header produces.
-     * Under the old allow-list-only forward model such a name was dropped incidentally, because
-     * everything unlisted was; under the forward-all baseline it is an ordinary client header, so
-     * withholding it has to be stated. {@code Forwarded} contributes no separate entry: it carries
-     * no hyphen to fold, so its underscore spelling is the canonical name itself, already held by
-     * the forwarding set.
+     * The threat is a backend that reads such a name as a statement about the connection — and, for
+     * an underscore spelling, reads it <em>as though</em> it were the canonical name: a framework
+     * folding {@code -} and {@code _} into one CGI-style variable resolves {@code X_Forwarded_For} to
+     * the same {@code HTTP_X_FORWARDED_FOR} the real header produces. Under the old allow-list-only
+     * forward model such a name was dropped incidentally, because everything unlisted was; under the
+     * forward-all baseline it is an ordinary client header, so withholding it has to be stated.
+     * {@code Forwarded} contributes no separate entry: it carries no hyphen to fold, so its
+     * underscore spelling is the canonical name itself, already held by the resolver-input set.
+     * <p>
+     * <strong>The gateway is the only provenance authority, for every peer.</strong> No member is
+     * relayed on the strength of who sent it: a trusted proxy's copy is withheld exactly as a direct
+     * client's is. What an upstream learns about the connection is what the gateway regenerates; no
+     * peer supplies it in the gateway's place, and no forward mode relays a peer's claim about the
+     * client address, the scheme, the host or the URL by default. The one way a member reaches an
+     * upstream is a route naming it — see {@link #REQUEST_READMITTABLE}.
+     * <p>
+     * <strong>The enumeration is bounded by knowledge.</strong> The provenance names listed here are
+     * the ones the gateway knows a backend or framework to honour; a name not listed is an ordinary
+     * client header. A newly known provenance name joins this set, and the separator folding below
+     * extends to it without further work.
      * <p>
      * <strong>The literal names one spelling each; {@link #separatorFolded} closes the rest of the
      * class.</strong> A name with two separators has four {@code -}/{@code _} spellings and a
@@ -168,19 +208,43 @@ public class ConnectionHeaders {
      *       smuggling vector; admitting it would buy nothing.</li>
      * </ul>
      * <p>
-     * <strong>Two behaviours ride on top of membership, and neither lives in this literal.</strong>
-     * {@code te} is withheld unless its value is exactly the {@code trailers} token, and
-     * {@code authorization} is the single re-admittable member (honoured only when a route's
-     * {@code headers_allow} names it). Both are value- or mode-dependent, so they belong to the
-     * request-direction application in {@code forward.ForwardPolicyStage}, not to a set of names.
+     * <strong>Two behaviours ride on top of membership.</strong> {@code te} is withheld unless its
+     * value is exactly the {@code trailers} token, and the members of {@link #REQUEST_READMITTABLE}
+     * ({@code authorization} and the provenance and URL-override class) cross when — and only when —
+     * a route's {@code headers_allow} names them. Both are value- or mode-dependent, so they are
+     * applied by the request-direction application in {@code forward.ForwardPolicyStage}, not by a
+     * test of this set.
      */
-    public static final Set<String> REQUEST_STRIP = Set.of(
+    @SuppressWarnings("java:S2386") // false positive: union(...) returns Set.copyOf(...), which is unmodifiable
+    public static final Set<String> REQUEST_STRIP = union(Set.of(
             "authorization", "connection", "content-length", "date", "host",
             "http2-settings", "keep-alive", "origin", "proxy-authenticate", "proxy-authorization",
             "proxy-connection", "referer", "te", "trailer", "transfer-encoding", "upgrade",
             "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto", "x_forwarded_port",
             "x_forwarded_prefix", "x-real-ip", "x-client-ip", "true-client-ip",
-            "cf-connecting-ip");
+            "cf-connecting-ip"), PROVENANCE_OVERRIDE);
+
+    /**
+     * The re-admittable subset of {@link #REQUEST_STRIP}, all lower case: {@code authorization} and
+     * the provenance and URL-override class.
+     * <p>
+     * A member is still withheld under every forward mode by default. It crosses only when the
+     * route resolves a positive-list whose {@code headers_allow} names it — membership compared
+     * {@linkplain #separatorFolded separator-folded}, the client header then looked up under the entry's
+     * own spelling — and only that named member does: there is no
+     * global switch, and a negative-list or forward-all route never re-admits one, so a permissive
+     * baseline relays neither an inbound credential nor a client's provenance claim. Naming the
+     * member is an operator's statement that this upstream needs the client's own value of it.
+     * <p>
+     * Every other {@link #REQUEST_STRIP} member is never re-admitted: the hop-by-hop and framing
+     * names, the names the gateway owns, the underscore spellings of the regenerated forwarding names
+     * and the vendor client-IP aliases ({@code x-real-ip}, {@code x-client-ip},
+     * {@code true-client-ip}, {@code cf-connecting-ip}). The resolver inputs in
+     * {@code forward.ForwardPolicyStage} are not members of either set and are never copied from the
+     * client at all.
+     */
+    @SuppressWarnings("java:S2386") // false positive: union(...) returns Set.copyOf(...), which is unmodifiable
+    public static final Set<String> REQUEST_READMITTABLE = union(Set.of("authorization"), PROVENANCE_OVERRIDE);
 
     /**
      * Canonicalizes a client-sent header name to the spelling the gateway-owned sets are written
@@ -222,8 +286,8 @@ public class ConnectionHeaders {
      * folded test is what makes the mixed spellings between the two reach one of the two sets.
      * <p>
      * It answers only "is this name gateway-owned?" — the {@code TE: trailers} carve-out and the
-     * single-member {@code authorization} re-admission are value- and mode-dependent and are applied
-     * by the caller, not decided here.
+     * positive-list re-admission of a {@link #REQUEST_READMITTABLE} member are value- and
+     * mode-dependent and are applied by the caller, not decided here.
      *
      * @param headerName the client-sent request-header name; never {@code null}
      * @return {@code true} when the name, or its separator-folded form, is a {@link #REQUEST_STRIP}
@@ -233,6 +297,34 @@ public class ConnectionHeaders {
         Objects.requireNonNull(headerName, PARAM_HEADER_NAME);
         return REQUEST_STRIP.contains(headerName.toLowerCase(Locale.ROOT))
                 || REQUEST_STRIP.contains(separatorFolded(headerName));
+    }
+
+    /**
+     * Whether {@code headerName} is a spelling of a {@link #REQUEST_READMITTABLE} member — a
+     * withheld name a route's positive-list may re-admit by naming it.
+     * <p>
+     * Membership is tested on the {@linkplain #separatorFolded separator-folded} name, so every case
+     * and every {@code -}/{@code _} spelling of a member answers {@code true}. The answer says nothing
+     * about whether the name crosses: that also needs a route whose positive-list names it, which the
+     * caller decides — and the positive-list copy looks the client's header up under the
+     * {@code headers_allow} entry's own spelling (case-insensitively), so a client header in a
+     * different {@code -}/{@code _} spelling than the entry is still withheld.
+     *
+     * @param headerName a header name, as a client or a route's {@code headers_allow} spells it; never
+     *                   {@code null}
+     * @return {@code true} when the separator-folded name is a {@link #REQUEST_READMITTABLE} member
+     */
+    public static boolean isRequestReadmittable(String headerName) {
+        Objects.requireNonNull(headerName, PARAM_HEADER_NAME);
+        return REQUEST_READMITTABLE.contains(separatorFolded(headerName));
+    }
+
+    /**
+     * The unmodifiable union of two name sets, used to fold {@link #PROVENANCE_OVERRIDE} into the
+     * two sets that share it.
+     */
+    private static Set<String> union(Set<String> first, Set<String> second) {
+        return Set.copyOf(Stream.concat(first.stream(), second.stream()).toList());
     }
 
     /**

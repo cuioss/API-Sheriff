@@ -89,8 +89,10 @@ set of things well, with zero mandatory external dependencies.
   (link:adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
   What makes the permissive baseline defensible is not operator diligence but two gateway-owned
   sets no route can override: a request-direction
-  link:configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set] (`Authorization` re-admittable
-  only on a positive-list naming it, plus the hop-by-hop, framing and gateway-owned names) and a
+  link:configuration/routing-and-forwarding.adoc#_never_forward_set[never-forward set] (the hop-by-hop,
+  framing and gateway-owned names, plus `Authorization` and the provenance and URL-override class --
+  `X-Forwarded-Server`, `X-Original-URL` and the rest, withheld for every peer -- each of these two
+  re-admittable only on a positive-list naming it, a route's `headers_allow`) and a
   gateway-understood protocol set that crosses without an operator entry
   (link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
   The browser `Cookie` is no forward mode's to copy: a per-route `cookies` block decides which

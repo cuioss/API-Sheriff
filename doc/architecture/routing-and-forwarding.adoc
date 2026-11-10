@@ -75,10 +75,15 @@ enumeration of `Accept`, `Content-Type` or `Range`.
 * *The request-direction never-forward set* applies under *every* mode, tested on the
   *separator-folded* name (lower-cased, `_` mapped to `-`) to close the `-`/`_` equivalence class
   against CGI-folding backends (see link:../configuration/routing-and-forwarding.adoc#_never_forward_set[Configuration --
-  Never-forward set] for the full request and response sets). `Authorization` is the single
-  re-admittable member, honoured only where a route declares a *positive*-list naming it (and still
-  overwritten by a mediated session bearer). `TE` crosses only when its value is exactly `trailers`
-  (gRPC over HTTP/2, RFC 9110).
+  Never-forward set] for the full request and response sets). The set holds the provenance and
+  URL-override class (`X-Forwarded-Server`, `X-Original-URL`, `Fastly-Client-IP` and the rest),
+  withheld for every peer, a trusted proxy included: the gateway is the only provenance authority an
+  upstream hears. `Authorization` and that class are the re-admittable members
+  (`ConnectionHeaders.REQUEST_READMITTABLE`). A route re-admits one only by naming it in
+  `headers_allow`, a *positive*-list, and only the named member crosses; forward-all and a
+  negative-list never re-admit one. A mediated session bearer still overwrites a re-admitted
+  `Authorization`. `TE` crosses only when its value is exactly `trailers` (gRPC over HTTP/2,
+  RFC 9110).
 
 * *The gateway-understood protocol set* crosses *without* an operator entry: `Accept`,
   `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Range`, and the preconditions `If-Range`,
@@ -89,10 +94,14 @@ enumeration of `Accept`, `Content-Type` or `Range`.
   explicit `headers_deny` entry naming a member wins.
 
 * *The regenerated forwarding headers* replace any client-supplied `Forwarded`, `X-Forwarded-*` or
-  `X-Proxy*` chains. `cui-http`'s forwarding resolver normalizes client IP behind the
-  `trusted_proxies` allowlist plus TCP-peer gate (and scheme/host/port/prefix only when
-  `trust_scheme_host` opts in) and emits freshly regenerated `X-Forwarded-*` headers by default,
-  with RFC 7239 `Forwarded` opt-in and additive
+  `X-Proxy*` chains. The resolver inputs -- the regenerated names plus `X-ProxyScheme`,
+  `X-ProxyHost`, `X-ProxyPort` and `X-ProxyContextPath` -- are never copied from the client, under
+  any mode or `-`/`_` spelling, a `headers_allow` naming one included. For an immediate peer the
+  TCP-peer gate does not trust, every resolver input is masked from the resolver. `cui-http`'s
+  forwarding resolver normalizes client IP behind the `trusted_proxies` allowlist plus that gate. It
+  honours no forwarded scheme, host, port or prefix: the resolver is built from `trusted_proxies` and
+  the baseline alone, so `trust_scheme_host` parses but has no effect. The resolver emits freshly regenerated
+  `X-Forwarded-*` headers by default, with RFC 7239 `Forwarded` opt-in and additive
   (link:../adr/0003-forwarded-headers.adoc[ADR-0003],
   link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]).
 

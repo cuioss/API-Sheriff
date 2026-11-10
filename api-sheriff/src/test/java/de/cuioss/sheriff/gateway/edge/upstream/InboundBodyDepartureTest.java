@@ -78,8 +78,9 @@ import org.junit.jupiter.api.Test;
  * request whose body had nothing left to arrive, a {@code body-stream-failed} abort for one whose body
  * was still arriving — both {@link EventType#INBOUND_BODY_ABORTED}, both refused by the retry predicate.
  * A departure that releases an attempt still waiting for its pooled upstream connection ends the same
- * way once the pool hands the connection over, and the circuit breaker counts no failure for it. And {@link RejectionReporter} records the two
- * under their own dispositions on one per-route latch.
+ * way once the pool hands the connection over, and the circuit breaker counts no failure for it. And
+ * {@link RejectionReporter} records the two, and a gRPC call that sent no first message
+ * ({@link DispatchStage.FirstMessageTimeout}), under their own dispositions on one per-route latch.
  */
 @EnableGeneratorController
 @EnableTestLogger(debug = RejectionReporter.class)
@@ -317,11 +318,13 @@ class InboundBodyDepartureTest {
 
     /**
      * {@link RejectionReporter#reportRejection} over a routing context that answers the stashed route id
-     * only: which disposition the latched {@code INFO} ApiSheriff-22 names, and the latch the two
-     * dispositions share. The aborts are the ones the dispatch produces.
+     * only: which disposition the latched {@code INFO} ApiSheriff-22 names, and the latch the three
+     * dispositions share. The departure and the failed body are the aborts the dispatch produces; the
+     * {@link DispatchStage.FirstMessageTimeout} is the one its first-message clock records, whose
+     * production by a gRPC dispatch is pinned by {@code GrpcDispatchStageTest}.
      */
     @Nested
-    @DisplayName("the reporter records a departed client as client-left, on the latch body-stream-failed shares")
+    @DisplayName("the reporter records a departed client as client-left and a gRPC call with no first message as no-first-message, on the latch body-stream-failed shares")
     class Reported {
 
         private RejectionReporter reporter;
@@ -329,6 +332,7 @@ class InboundBodyDepartureTest {
         private String routeId;
         private GatewayException departed;
         private GatewayException bodyFailed;
+        private GatewayException noFirstMessage;
 
         @BeforeEach
         void setUp() {
@@ -340,6 +344,7 @@ class InboundBodyDepartureTest {
             DispatchStage stage = departedStage(route, timeoutGuard());
             departed = dispatchAfterDeparture(stage, route, departureCause(), bodyless());
             bodyFailed = dispatchAfterDeparture(stage, route, departureCause(), streamed());
+            noFirstMessage = new DispatchStage.FirstMessageTimeout();
         }
 
         @Test
@@ -387,6 +392,43 @@ class InboundBodyDepartureTest {
                     () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
                     () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO,
                             "Request body on route '" + routeId + "' did not arrive whole (body-stream-failed)"));
+        }
+
+        @Test
+        @DisplayName("the first gRPC call with no first message on a route is one INFO ApiSheriff-22 naming no-first-message")
+        void firstNoFirstMessageIsOneInfoNamingIt() {
+            reporter.reportRejection(routed, noFirstMessage);
+
+            assertAll("the first call with no first message",
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
+                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO,
+                            "Request body on route '" + routeId + "' did not arrive whole (no-first-message)"));
+        }
+
+        @Test
+        @DisplayName("a call with no first message after a departure on the same route finds the latch taken")
+        void noFirstMessageSharesTheLatchWithClientLeft() {
+            reporter.reportRejection(routed, departed);
+            reporter.reportRejection(routed, noFirstMessage);
+
+            assertAll("one latch for client-left and no-first-message",
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
+                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "(client-left)"),
+                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG,
+                            "did not arrive whole again (no-first-message)"));
+        }
+
+        @Test
+        @DisplayName("a body-stream-failed after a call with no first message on the same route finds the latch taken")
+        void bodyStreamFailedSharesTheLatchWithNoFirstMessage() {
+            reporter.reportRejection(routed, noFirstMessage);
+            reporter.reportRejection(routed, bodyFailed);
+
+            assertAll("one latch for no-first-message and body-stream-failed",
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
+                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "(no-first-message)"),
+                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG,
+                            "did not arrive whole again (body-stream-failed)"));
         }
     }
 

@@ -195,17 +195,33 @@ gateway terminates or mediates, the hop the gateway terminates rather than the m
 alone), the framing the gateway re-establishes, and the names the gateway itself owns.
 
 The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
-vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and
-the underscore spellings of the regenerated forwarding names, `X_Forwarded_For`,
-`X_Forwarded_Host`, `X_Forwarded_Proto`, `X_Forwarded_Port` and `X_Forwarded_Prefix`. Every name in
-the set is matched on its *separator-folded* spelling -- lower-cased with each `_` mapped to `-` --
-so `X_Real_IP` and `X-Real_IP` are withheld exactly as `X-Real-IP` is.
+vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`; the
+underscore spellings of the regenerated forwarding names, `X_Forwarded_For`, `X_Forwarded_Host`,
+`X_Forwarded_Proto`, `X_Forwarded_Port` and `X_Forwarded_Prefix`; and the *provenance and
+URL-override class* `X-Forwarded-Server`, `X-Forwarded-Ssl`, `Front-End-Https`, `X-Url-Scheme`,
+`X-Forwarded-Scheme`, `X-Forwarded-Protocol`, `X-Forwarded-Uri`, `X-Forwarded-Path`,
+`X-Original-URL`, `X-Rewrite-URL`, `X-Original-Host`, `X-Host`, `X-Original-Forwarded-For`,
+`X-Cluster-Client-IP` and `Fastly-Client-IP` -- names a backend may read as the client's address, as
+the scheme, host or server it was reached through, or as the URL to serve in place of the request
+line. They are withheld for every peer, a trusted proxy included: unless a route re-admits a member by
+naming it in its positive-list (the re-admission rule below), the gateway is the only provenance authority
+an upstream hears. Every name in the set is matched on its *separator-folded* spelling --
+lower-cased with each `_` mapped to `-` -- so `X_Real_IP` and `X-Real_IP` are withheld exactly as
+`X-Real-IP` is.
 
-Two members carry value- or mode-dependent behaviour:
+Two behaviours depend on the value or the mode:
 
-* *`Authorization`* is the single re-admittable member, and only by a *positive*-list naming it
-  (e.g. a pure-proxy route). A negative-list or forward-all never passes an inbound credential. On a
-  `require: session` route the mediated bearer is merged last and overwrites it.
+* *Re-admission.* `Authorization` and the provenance and URL-override class are the re-admittable
+  members. A route re-admits one only by naming it in `headers_allow` -- a *positive*-list -- and
+  only the named member crosses; every other withheld name stays withheld on that route. Membership
+  is tested separator-folded, but the copy then looks the client header up under the entry's own
+  spelling, case-insensitively, so the entry must use the separators the client sends:
+  `headers_allow: [X-Original-URL]` does not copy an inbound `X_Original_URL`. There is no global switch, and a negative-list or forward-all never
+  re-admits a member, so a permissive baseline passes neither an inbound credential nor a client's
+  provenance claim. A typical use is `Authorization` on a pure-proxy route. The vendor client-IP
+  aliases, the underscore spellings of the regenerated forwarding names and every other member are
+  never re-admitted. On a `require: session` route the mediated bearer is merged last and
+  overwrites a re-admitted `Authorization`.
 * *`TE`* crosses only as the exact token `trailers` (required by gRPC over HTTP/2); any other value is
   withheld.
 
@@ -261,6 +277,11 @@ not consulted for the set.
 
 *The regenerated forwarding headers.* The client's `X-Forwarded-*` / `Forwarded` copies never cross
 under any mode; the gateway emits its own set per the link:#_forwarded_headers[`forwarded`] policy.
+The `X-ProxyScheme`, `X-ProxyHost`, `X-ProxyPort` and `X-ProxyContextPath` inputs the
+forwarded-header resolver also reads are treated the same way: they are never copied from the
+client, under any mode or `-`/`_` spelling (a `headers_allow` naming one included), and when the
+immediate peer is not a trusted proxy they are masked from the resolver together with the
+`X-Forwarded-*` / `Forwarded` names.
 
 === `set_headers`, and what wins
 
@@ -773,9 +794,10 @@ authoritative specification is `cui-http/doc/forwarded-header-resolution.adoc`. 
   the value. An explicit `trusted_proxies: []` written in the file stays valid and trusts no proxy.
 
 | `trust_scheme_host`
-| *Optional* boolean, *default `false`*. Honor the *sanitized* forwarded scheme, host, port and
-  context-path prefix. Enable only when the gateway sits fully behind trusted proxies. Per-prefix
-  trust is not configurable.
+| *Optional* boolean, *default `false`*. Accepted and validated, but it has *no effect*: the gateway
+  builds its resolver from `trusted_proxies` and the baseline alone, so no forwarded scheme, host,
+  port or context-path prefix is honoured, whatever the value
+  (link:../adr/0003-forwarded-headers.adoc[ADR-0003]).
 
 | `emit`
 | *Optional*, `x-forwarded` (default) or `both`. `x-forwarded` emits
@@ -799,9 +821,10 @@ RFC 7239 `Forwarded` (`proto`, `host`, `for`; no prefix directive) and the NiFi
 | client IP   | `X-Forwarded-For` chain -> RFC 7239 `for` chain
 |===
 
-The `prefix` is an inbound hint, honored only under `trust_scheme_host` and used only when composing
-forwarded values. It never moves where the gateway serves; the gateway's own context paths are
-build-time (see link:../user/context-path.adoc[The Context Path]).
+The table is the `cui-http` resolver's precedence. The gateway's resolver honours only the client-IP
+row: it takes no forwarded scheme, host, port or prefix (see `trust_scheme_host` above). A forwarded
+prefix never moves where the gateway serves; the gateway's own context paths are build-time (see
+link:../user/context-path.adoc[The Context Path]).
 
 *Sanitization (fail-safe, never throws).* Every honored value passes the `cui-http` header-value
 pipeline (CR/LF, NUL, control characters, over-length, suspicious patterns), configured from the
@@ -816,22 +839,20 @@ backslash, checked on the *raw* value before normalization.
 
 | Pipeline sanitization failure | Value dropped; the security event counter (gateway metrics) is incremented.
 | Raw-value guard failure | Value dropped; WARN `HTTP-120`..`HTTP-123`.
-| Trust miss (e.g. forwarded host with `trust_scheme_host: false`) | Value not honored; no log.
+| Trust miss (an untrusted immediate peer, or a forwarded scheme, host, port or prefix, whatever `trust_scheme_host` says) | Value not honored; no log.
 |===
 
 *Emission is regeneration, never propagation.* Inbound chains are never appended to or forwarded; the
 gateway emits fresh headers from the resolved, sanitized facts, and `X-Forwarded-For` carries exactly
-the one resolved client IP. Only present fields are emitted: under `trust_scheme_host: false` only the
-client IP resolves, so only `X-Forwarded-For` / `Forwarded: for=...` appear. With
-`trust_scheme_host: true`, `emit: both`, and a trusted proxy sending `X-Forwarded-Host: gw.example.com`
-/ `X-Forwarded-Proto: https` for client `192.0.2.60`:
+the one resolved client IP. Only present fields are emitted, and only the client IP resolves, so only
+`X-Forwarded-For` / `Forwarded: for=...` appear. With `emit: both` and a trusted proxy sending
+`X-Forwarded-Host: gw.example.com` / `X-Forwarded-Proto: https` for client `192.0.2.60`, the host and
+scheme claims are not honoured:
 
 [source,text]
 ----
 X-Forwarded-For: 192.0.2.60
-X-Forwarded-Host: gw.example.com
-X-Forwarded-Proto: https
-Forwarded: for=192.0.2.60;host=gw.example.com;proto=https
+Forwarded: for=192.0.2.60
 ----
 
 RFC 7239 encoding is strict: IPv6 client addresses are bracketed and quoted; other values are quoted

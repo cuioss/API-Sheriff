@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The provenance-header acceptance endpoint exercised by ProvenanceHeaderPolicyIT. It proves on the
+# native image that the gateway is the only provenance authority an upstream hears: the provenance and
+# URL-override class (ConnectionHeaders.REQUEST_STRIP) is withheld under every forward mode unless a
+# route's headers_allow names a member, and the X-Proxy* resolver inputs
+# (ForwardPolicyStage.RESOLVER_INPUT_HEADERS) never cross and never steer the regenerated
+# X-Forwarded-* set.
+#
+# UPSTREAM — the HTTPBIN_ROOT alias, the go-httpbin backend WITHOUT a base path. Every route sets
+# upstream.path: /anything, so the remainder after the match key is appended to go-httpbin's /anything
+# echo, which answers the request headers it received as JSON.
+#
+# ANCHOR — every route rides the EXISTING 'api' anchor (/proxy, public). No anchor and no Compose
+# service is added: every gateway instance mounts this shared endpoints directory and already
+# resolves the anchor and the HTTPBIN_ROOT alias (cookie-policy.yaml and origin-headers.yaml need the
+# same two). The endpoint declares require: none itself because the 'api' anchor carries no auth
+# block (ADR-0013).
+#
+# FORWARD POSTURE — one route per header mode. Each route names the key the IT holds it to: deleting
+# that key changes what the echo shows, so a test goes red.
+endpoint:
+  id: provenance-headers
+  enabled: true
+  base_url: HTTPBIN_ROOT
+  anchor: api
+  auth:
+    require: none
+  routes:
+    # MODE: forward-all, by omission of a forward block. Every client header crosses except the
+    # gateway-owned never-forward set, so the provenance class is withheld and an unrelated header
+    # crosses as the matched positive control.
+    - id: provenance-forward-all
+      match:
+        path_prefix: /proxy/provenance-headers/forward-all
+      upstream:
+        path: /anything
+
+    # MODE: negative-list. headers_deny names X-Sheriff-Provenance-Denied, a test-only name no other
+    # suite sends: it is withheld while every other unlisted client header crosses. A negative-list
+    # never re-admits a withheld member, so the provenance class stays withheld here too.
+    - id: provenance-negative-list
+      match:
+        path_prefix: /proxy/provenance-headers/negative-list
+      forward:
+        headers_deny: ["X-Sheriff-Provenance-Denied"]
+      upstream:
+        path: /anything
+
+    # MODE: positive-list. headers_allow names X-Forwarded-Server, one member of the re-admittable
+    # provenance class: that member crosses, every other withheld name stays withheld, and an unlisted
+    # client header does not cross.
+    - id: provenance-positive-list
+      match:
+        path_prefix: /proxy/provenance-headers/positive-list
+      forward:
+        headers_allow: ["X-Forwarded-Server"]
+      upstream:
+        path: /anything

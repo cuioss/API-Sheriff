@@ -184,9 +184,10 @@ A route that omits the block, or one of its two dimensions, forwards that dimens
 *The bound.* The policy decides what crosses *within* a route the operator exposed; it never decides
 *which* routes are reachable. Route matching stays deny-by-default -- a request matching no route still reaches no upstream. Nor does it leak
 credentials: no forward mode copies the browser `Cookie` -- it crosses only as the route's `cookies`
-block admits it, and the gateway's own cookies never do -- an inbound `Authorization` is re-admitted
-only where a route declares a positive-list naming it, and the hop-by-hop, framing and provenance
-headers the gateway owns are withheld regardless (see
+block admits it, and the gateway's own cookies never do -- an inbound `Authorization`, like a
+client-sent provenance or URL-override header (`X-Original-URL`, `X-Forwarded-Server`, ...), is
+re-admitted only where a route declares a positive-list naming it, and the hop-by-hop, framing and
+regenerated forwarding headers the gateway owns are withheld regardless (see
 link:doc/configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward set]). Note also that a *declared-empty* list is not the
 absent state: `headers_allow: []` is a positive-list naming nothing, and keeps forwarding nothing.
 +

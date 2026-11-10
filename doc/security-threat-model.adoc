@@ -747,16 +747,18 @@ Two properties carry this control:
 * *The request-direction never-forward set applies under every forward mode* -- including the
   permissive forward-all baseline. Its members are listed once, in
   link:configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward section of the configuration
-  reference]. `Authorization` is its single re-admittable member (only on a route declaring a
-  positive-list naming it). No route configuration re-admits the hop-by-hop, framing or
-  gateway-owned names from the request. The one path around the set is an operator's *static*
+  reference]. `Authorization` and the provenance and URL-override class are its re-admittable
+  members (`ConnectionHeaders.REQUEST_READMITTABLE`), each only on a route whose `headers_allow`
+  positive-list names it; forward-all and a negative-list never re-admit one (GW-04). No route
+  configuration re-admits the hop-by-hop, framing or gateway-owned names from the request. The one path around the set is an operator's *static*
   `set_headers` value, which is merged after the strip and carries no caller-supplied material.
   The browser `Cookie` is not a member: no forward mode copies it, and it crosses only as the
   route's `cookies` policy admits it, with the gateway's own cookies dropped under every policy
   (<<gw-15>>).
 * *The forwarded header set is built by regeneration, never by editing the client's map.* The
-  client's `X-Forwarded-*` / `Forwarded` copies are skipped on *every* mode, forward-all
-  included, so a permissive route is not a way to smuggle a spoofed chain upstream (GW-04).
+  client's copies of every resolver input -- `X-Forwarded-*`, `Forwarded` and the `X-Proxy*`
+  inputs -- are skipped on *every* mode, forward-all and a positive-list naming one included, so a
+  permissive route is not a way to smuggle a spoofed chain upstream (GW-04).
 
 *The equivalence class is carried in the set, not left to the operator.* The old allow-list-only
 forward model dropped *everything* an operator did not enumerate, which incidentally also dropped
@@ -818,9 +820,28 @@ header names across the *whole* equivalence class (case, `-`/`_`, aliases) befor
 or the strip is incomplete -- the Traefik fix-chain is the cautionary tale.
 
 *Status:* COVERED. ADR-0003 + pipeline stage 5 (TCP-peer gate, drop-and-regenerate) + the
-configuration validator (CIDR parsing, split-range trust-all rejection). The client's canonical
-`X-Forwarded-*` / `Forwarded` copies are skipped under every forward mode, forward-all included,
-so the *emitted* chain is always the gateway's own.
+configuration validator (CIDR parsing, split-range trust-all rejection). The client's copies of
+every resolver input -- the canonical `X-Forwarded-*` / `Forwarded` names and the `X-ProxyScheme`,
+`X-ProxyHost`, `X-ProxyPort` and `X-ProxyContextPath` inputs the resolver also reads -- are skipped
+under every forward mode, forward-all included, so the *emitted* chain is always the gateway's own.
+
+*Every resolver input is gated by the TCP peer, not only the `X-Forwarded-*` family.* For a peer
+`TcpPeerGate` does not trust, stage 5 hands the resolver an empty value for each name in
+`ForwardPolicyStage.RESOLVER_INPUT_HEADERS`, `X-Proxy*` included, so a direct client seeds neither
+the chain nor the scheme, host, port or prefix the resolver derives. The resolver receives no peer
+address; `TcpPeerGate` stays the one trust decision. `ForwardedTrust` builds the resolver
+configuration from `trusted_proxies` and the baseline alone; a change that wires
+`forwarded.trust_scheme_host` into it must keep this mask in front of the resolver, so that only a
+trusted peer's scheme, host, port and prefix claims can ever be honoured (ADR-0003).
+
+*Provenance the resolver does not read is withheld for every peer.* The provenance and URL-override
+class -- its members are listed once, in
+link:configuration/routing-and-forwarding.adoc#_never_forward_set[the never-forward section of the
+configuration reference], where `DocumentedHeaderSetsContractTest` binds the list to
+`ConnectionHeaders` -- sits in the request-direction never-forward set and is withheld from a trusted
+proxy exactly as from a direct client: the gateway is the only provenance authority an upstream
+hears. A route re-admits one only by naming it in `headers_allow`
+(`ConnectionHeaders.REQUEST_READMITTABLE`); forward-all and a negative-list never do.
 
 *Trusted-proxy breadth below trust-all is warned, not refused, and the residual is chosen rather than
 safe*
@@ -847,12 +868,14 @@ row past each boundary and a silent row exactly at it, asserted by identifier an
 
 *The equivalence class beyond the canonical names is covered too, and it is closed by a rule
 rather than by a list.* Two sets hold the names, split by *which question each name answers*: the
-regeneration skip holds the canonical spellings (`x-forwarded-for`, `-host`, `-proto`, `-port`,
-`-prefix`, `forwarded`) -- what the gateway *emits* -- and the request-direction never-forward set
-holds the names it does not emit but must never *relay*, the vendor aliases `X-Real-IP`,
-`X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`. The split is deliberate: filing a name the
-gateway does not regenerate beside the ones it does would assert a relationship that is not there,
-and would widen the untrusted-peer resolver mask with names the resolver never queries.
+resolver-input set holds the canonical spellings of every name the resolver reads
+(`x-forwarded-for`, `-host`, `-proto`, `-port`, `-prefix`, `forwarded`, and `x-proxyscheme`,
+`-host`, `-port`, `-contextpath`) -- what the gateway *regenerates from* -- and the
+request-direction never-forward set holds the provenance names the resolver does not read but the
+gateway must never *relay*: the vendor aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and
+`CF-Connecting-IP`, and the provenance and URL-override class above. The split is deliberate: filing
+a name the resolver does not read beside the ones it does would assert a relationship that is not
+there, and would widen the untrusted-peer resolver mask with names the resolver never queries.
 
 *Both sets are then tested on the separator-folded name* -- lower-cased with every `_` mapped to
 `-` -- so each set closes its own names across the whole `-`/`_` class instead of listing the
@@ -874,7 +897,16 @@ under *every* forward mode, forward-all included; each underscore variant and ve
 withheld from the upstream under *both* forward-all and a negative-list that does not name it,
 each leg carrying a matched positive control; every *mixed* `-`/`_` spelling of a forwarding name
 or a vendor alias is withheld under forward-all, a negative-list *and* a positive-list naming it,
-so the equivalence class is asserted closed rather than sampled; an operator's `set_headers` still
+so the equivalence class is asserted closed rather than sampled; a client-sent `X-ProxyHost` or
+`X-ProxyContextPath`, in any spelling, from an untrusted peer leaves the regenerated set unchanged,
+and no `X-Proxy*` input reaches the upstream under forward-all, a negative-list or a positive-list
+naming it, while a trusted peer's `X-ProxyHost` still feeds the regeneration under a test resolver
+configured to honour host inputs (`ForwardPolicyStageTest`) -- the resolver `ForwardedTrust` builds in
+production honours no scheme, host, port or prefix input, so there a trusted peer's `X-ProxyHost` feeds
+nothing, and the control shows only that the mask applies to an untrusted peer alone; every name of
+the provenance and URL-override class, in either spelling, is withheld under forward-all and a negative-list for trusted and untrusted peers alike, each leg
+with a matched positive control, and a positive-list naming one re-admits that name and no other
+(`ForwardPolicyStageTest`, `ConnectionHeadersTest`); an operator's `set_headers` still
 places such a name deliberately; a `0.0.0.0/1`+`128.0.0.0/1` config is rejected at boot; an entry broader
 than `/16` or `/48` emits `ApiSheriff-102` while an entry exactly at either boundary does not.
 
@@ -1503,8 +1535,25 @@ stream-idle bound]):
   ended the same way as soon as it is read again. An attempt that ends without handing its response
   back stops the deadline, which then reports nothing
   (link:architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline]).
-* *A gRPC call that goes quiet.* A gRPC call arms neither request-body bound. Until its upstream sends
-  the response headers the guard's 30 s timeout bounds it; after them, a call that carries no frame
+* *A gRPC call whose client never sends a byte.* The forced-HTTP/2 upstream request head is
+  written only with the first request body chunk, so a client that opens a call and sends nothing would
+  hold the dispatch until the guard's 30 s timeout -- and the breaker would count that timeout as an
+  upstream failure, letting idle clients open the breaker for every caller of a healthy upstream. A
+  gRPC call that forwards no request byte within the fixed 10 s first-message bound
+  (`GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS`) has its upstream request reset and ends as
+  the client's own abort, `DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`), which the
+  breaker does not count as a failure; the bound is below the guard's timeout, so it fires first
+  unless waiting for an upstream connection (counted by the guard, not by the bound) consumed the
+  difference. The bound ends when the first request byte is forwarded, not when a complete gRPC
+  message has arrived; from then until the upstream sends its response headers the call is bounded
+  only by the guard's 30 s timeout, so a call that sends part of a message and stalls ends at that
+  timeout. An upstream that received the first byte and never answers is ended by the guard and
+  counted as an upstream failure
+  (link:architecture/tls-and-inbound-security.adoc#_grpc_first_message_bound[Architecture -- gRPC first-message bound]).
+* *A gRPC call that goes quiet.* A gRPC call arms neither request-body bound. After its first request
+  byte and until its upstream sends the response headers, the guard's 30 s timeout, which runs from
+  the start of the attempt, bounds it;
+  after them, a call that carries no frame
   in either direction for five minutes has its upstream request reset and ends with
   `grpc-status: 4` (`DEADLINE_EXCEEDED`)
   (link:architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound]).
@@ -1516,7 +1565,9 @@ stream-idle bound]):
 
 The idle timeout and the deadline are recorded as `INFO` `ApiSheriff-23` and `ApiSheriff-24` and
 counted under `sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`; a call ended by the stream-idle
-bound is recorded as `INFO` `ApiSheriff-25`. All three records are latched per route (CWE-779).
+bound is recorded as `INFO` `ApiSheriff-25`; a gRPC call ended by the first-message bound is
+recorded as `INFO` `ApiSheriff-22` with the disposition `no-first-message` and counted under
+`sheriff_errors_total{event="INBOUND_BODY_ABORTED"}`. All four records are latched per route (CWE-779).
 
 *Residual (accepted).* A body may hold its upstream connection for up to 25 s from the start of its
 attempt while it keeps arriving. A body the upstream is not taking data for when the deadline passes
@@ -1575,6 +1626,17 @@ with, `GrpcStreamIdleBound.on(...)`, carries exactly the fixed five minutes
 `ApiSheriff-24` (`GatewayEdgeRequestBodyIdleTimeoutTest`, `deadlineRecordIsLatchedPerRoute`) and
 `ApiSheriff-25` (`TerminalDispatchGrpcStreamIdleTest`, `idleExpiryRecordIsLatchedPerRoute`): a repeat
 on the same route stays at `DEBUG`, and a first occurrence on another route is recorded at `INFO`.
+`GrpcDispatchStageTest.StreamBounds` also drives the first-message bound, shortened to 300 ms, under a
+guard carrying the production breaker rules: idle calls beyond the breaker's threshold each end as
+`DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`, rendered `INVALID_ARGUMENT`) at the
+bound, the breaker makes no transition and a following call reaches the upstream
+(`idleClientEndsAsItsOwnAbortAndLeavesTheBreakerClosed`); its matched
+control forwards its first request byte to an upstream that never answers, and the guard's timeout
+opens the breaker at its threshold (`unansweredFirstMessageIsTheGuardTimeoutAndOpensTheBreaker`); a
+call whose stream ends without a byte is not ended (`bodyEndingWithoutAMessageIsNotAborted`); and
+`firstMessageBoundIsBelowTheGuardTimeout` pins the fixed 10 s below the 30 s guard timeout.
+`InboundBodyDepartureTest` asserts the `no-first-message` disposition of `ApiSheriff-22` and its
+per-route latch shared with `client-left` and `body-stream-failed`.
 `GatewayEdgeEarlyResponseResetTest` asserts
 the release of credit and permit (`admissionRefusedUploadReturnsItsConnectionWindow`,
 `uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit`). The trickle and pool-wait
@@ -4257,13 +4319,13 @@ outstanding hardening work (next section).
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
 | <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1 and HTTP/2, the h2->h1 declared-length framing included; the upstream reset is pinned against an HTTP/1.1 upstream only)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
-| <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
+| <<gw-04>> | TCP-peer forwarded gate over every resolver input, `X-Proxy*` included; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode; the provenance and URL-override class withheld for every peer, re-admittable only by a `headers_allow` naming it; `forwarded.trust_scheme_host` never wired without the resolver-input mask | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, `ForwardPolicyStage` resolver-input mask, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on the mapped egress TLS clients) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
-| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
+| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither; a gRPC call that sends no request byte within 10 s ends as the client's `INBOUND_BODY_ABORTED`, not counted by the breaker as a failure, before the guard's 30 s timeout could count it against the upstream (unless an upstream connection wait, counted by the guard only, used up the difference); one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no configuration key sets any of them | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
 | <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED

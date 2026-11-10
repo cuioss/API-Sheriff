@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The gateway owns four header sets — a request-direction never-forward set, a response-direction strip, a response-direction identity set (UpstreamIdentityHeaders: Server, X-Powered-By, removed rather than rewritten on the HTTP relay, the gRPC relay and the upstream asset envelope unless the route sets keep_identity_headers: true), and a gateway-understood protocol set that crosses without an operator entry — each enumerated in full per direction rather than derived from a sibling; membership answers "does the gateway know what this header means?" rather than "is it technically necessary", and the value- or mode-dependent behaviours (TE: trailers, the single re-admittable Authorization) live in the application rather than in a set literal. With not_modified off the two 304 validators (If-None-Match, If-Modified-Since) are withheld from GET and HEAD under every forward mode (on every other method they cross: If-None-Match is a 412 write precondition, If-Modified-Since is ignored), so the toggle governs both halves of the exchange everywhere, while If-Match, If-Unmodified-Since and If-Range cross unchanged because withholding them would change the request rather than discard an answer. The browser Cookie is not a set member: a per-route cookies block (allow none | all | list, same_origin_check, additional_origins; four policy scopes, whole-block replacement, default none) decides which cookies reach the upstream and which upstream Set-Cookie lines reach the client, the gateway's own cookies never cross under any block (one GatewayCookies definition), and a cookie-forwarding route rejects a cross-site unsafe request that carries a forwarded cookie, answered as the unrouted 404 by default per ADR-0073.
+// summary: The gateway owns four header sets — a request-direction never-forward set, a response-direction strip, a response-direction identity set (UpstreamIdentityHeaders: Server, X-Powered-By, removed rather than rewritten on the HTTP relay, the gRPC relay and the upstream asset envelope unless the route sets keep_identity_headers: true), and a gateway-understood protocol set that crosses without an operator entry — each enumerated in full per direction rather than derived from a sibling; membership answers "does the gateway know what this header means?" rather than "is it technically necessary", and the value- or mode-dependent behaviours (TE: trailers, the positive-list-only re-admittable subset of Authorization plus the provenance and URL-override class) live in the application rather than in a set literal. With not_modified off the two 304 validators (If-None-Match, If-Modified-Since) are withheld from GET and HEAD under every forward mode (on every other method they cross: If-None-Match is a 412 write precondition, If-Modified-Since is ignored), so the toggle governs both halves of the exchange everywhere, while If-Match, If-Unmodified-Since and If-Range cross unchanged because withholding them would change the request rather than discard an answer. The browser Cookie is not a set member: a per-route cookies block (allow none | all | list, same_origin_check, additional_origins; four policy scopes, whole-block replacement, default none) decides which cookies reach the upstream and which upstream Set-Cookie lines reach the client, the gateway's own cookies never cross under any block (one GatewayCookies definition), and a cookie-forwarding route rejects a cross-site unsafe request that carries a forwarded cookie, answered as the unrouted 404 by default per ADR-0073.
 // tags: header-policy, forward-policy, connection-headers, zero-trust, rfc9110, rfc9113, conditional-requests, protocol-set, cookie-policy, csrf, identity-headers, fingerprinting
 // affects: api-sheriff
 // supersedes:
@@ -83,11 +83,12 @@ the members once. This record states the rule that admits a name. Membership ans
   forwards.
 * *Framing the gateway re-establishes:* the body length.
 * *Names the gateway owns or regenerates:* the authority, the request's origin and referrer, and the date.
-* *Spoofable provenance claims only the gateway may make:* the underscore spellings of the forwarding names and
-  the vendor client-IP aliases.
+* *Spoofable provenance claims only the gateway may make:* the underscore spellings of the forwarding names,
+  the vendor client-IP aliases, and the provenance and URL-override class (<<_amendment_readmittable_subset>>).
 
 *Two sets split the forwarding names, by the question each name answers.* The canonical forwarding names stay in
-the regeneration skip. That set enumerates what the gateway emits. The gateway reads it twice: as the client-copy
+the regeneration skip. That set (`ForwardPolicyStage.RESOLVER_INPUT_HEADERS`) enumerates what the gateway emits plus
+the four `X-Proxy*` names the resolver reads as inputs (ADR-0003 amendment). The gateway reads it twice: as the client-copy
 skip, and as the mask that hides inbound forwarding headers from the resolver when the immediate peer is
 untrusted. The gateway does not regenerate `X_Forwarded_For` or `X-Real-IP`, and the resolver never queries
 either. Filing them there would assert a false regeneration relationship and widen a mask with names nothing asks
@@ -116,9 +117,10 @@ addition fails that set's assertion instead of propagating.
 
 *Two behaviours ride on membership and stay out of the set literal*, because each depends on a value or a mode:
 
-. *`authorization` is the single re-admittable member.* The gateway honours it only when a route declares a
-  positive-list naming it. A negative-list or forward-all has no positive-list, so neither can leak an inbound
-  credential. The mediated bearer, merged last, still overwrites a re-admitted value.
+. *A member of the re-admittable subset crosses only under a positive-list naming it.* The subset is
+  `authorization` plus the provenance and URL-override class (<<_amendment_readmittable_subset>>). A negative-list
+  or forward-all has no positive-list, so neither can leak an inbound credential or provenance claim. The mediated
+  bearer, merged last, still overwrites a re-admitted `authorization`.
 . *`te` crosses only when its value is exactly the `trailers` token.* RFC 9110 admits that one value end-to-end.
   Any other value negotiates a transfer coding for the hop the gateway terminates.
 
@@ -127,6 +129,24 @@ refuses a `forward.headers_allow`, `forward.headers_deny` or `forward.set_header
 `cookies` block is the one place that decides, and a second place would let two blocks disagree about one header.
 `authorization` stays re-admittable through a positive-list because it is one credential with one owner. `Cookie`
 has its own block because it is many.
+
+[[_amendment_readmittable_subset]]
+=== Amendment: the provenance and URL-override class and the re-admittable subset
+
+`ConnectionHeaders.REQUEST_STRIP` also holds the provenance and URL-override class: fifteen names an upstream may
+read as the client's address, the scheme, host or server it was reached through, or the URL to serve. Examples
+are `X-Forwarded-Server`, `X-Original-URL` and `Fastly-Client-IP`. The class answers this set's provenance
+question, and the gateway withholds it for every peer, a trusted proxy included.
+
+`ConnectionHeaders.REQUEST_READMITTABLE` replaces the single re-admittable `authorization`. It holds
+`authorization` and the fifteen names. A route re-admits a member only by naming it in `headers_allow`, and only that
+member crosses. Membership is tested separator-folded, but the positive-list copy looks the client header up under
+the entry's own spelling, case-insensitively, so the entry must use the separators the client sends:
+`headers_allow: [X-Original-URL]` does not copy an inbound `X_Original_URL` (`ConnectionHeaders.isRequestReadmittable`).
+The vendor client-IP aliases and the underscore spellings of the regenerated forwarding names stay outside the
+subset. An entry spelled with underscores re-admits that spelling: `headers_allow: [X_Original_URL]` copies an
+inbound `X_Original_URL`, which re-admission folds to `x-original-url`. `DocumentedHeaderSetsContractTest` binds the
+subset to the never-forward section.
 
 [[_the_browser_cookie_is_a_per_route_policy]]
 === The browser `Cookie` is a per-route policy
