@@ -180,10 +180,14 @@ request (`INBOUND_BODY_ABORTED`). Requests without a declared length keep chunke
 *Aborted inbound body.* When the inbound body stream fails after dispatch began (client disconnect
 or broken chunk framing), the upstream request is reset and the gateway records
 `INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`). A body exceeding `max_body_bytes` remains
-`CONTENT_TOO_LARGE` (`413`). A gRPC call that sends no request byte within its bound is recorded as
-`INBOUND_BODY_ABORTED` too, but its client receives `INVALID_ARGUMENT` in a trailers-only `200`
-(<<_grpc_first_message_bound>>). Client-ended dispatches are never retried and are not
-counted as a failure by the upstream circuit breaker.
+`CONTENT_TOO_LARGE` (`413`). A gRPC call whose client holds its request stream open without sending
+its next complete request message within the message bound — before the first message or between any
+two — is recorded as `INBOUND_BODY_ABORTED` too, with the disposition `client-idle`, but its client
+receives `INVALID_ARGUMENT` in a trailers-only `200` (<<_grpc_message_bound>>). Every
+`INBOUND_BODY_ABORTED` end is counted by its disposition (`body-stream-failed`, `client-left`,
+`client-idle`) on `sheriff_inbound_body_aborts_total`, and `ApiSheriff-22` is latched per route and
+disposition. Client-ended dispatches are never retried and are not counted as a failure by the
+upstream circuit breaker.
 
 [[_request_body_idle_timeout]]
 *Request-body idle timeout (10 s).* Once a proxied dispatch holds an upstream connection and is
@@ -191,36 +195,57 @@ reading the body, 10 s without a forwarded body byte resets the upstream request
 (`REQUEST_BODY_TIMEOUT`;
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-idle-timeout[ADR-0060]).
 Waiting for a pooled upstream connection, upstream backpressure pauses, bodyless requests, and
-`protocol: grpc` routes do not arm or advance this clock; a gRPC call's wait for its first request
-byte has its own bound (<<_grpc_first_message_bound>>).
+`protocol: grpc` routes do not arm or advance this clock; a gRPC call's wait for each request message
+has its own bound (<<_grpc_message_bound>>).
 
 [[_request_body_deadline]]
 *Request-body deadline (25 s).* A slow sender that drips chunks faster than every 10 s is bounded by
 a fixed 25 s deadline from the start of the upstream attempt (including pool wait;
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[ADR-0060]).
 Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`); expiry after the
-response head preserves the upstream status and resets/closes the stream.
+response head preserves the upstream status and resets/closes the stream. A `protocol: grpc` call is
+bounded by the same deadline too, but only until its upstream answers, and the end is rendered to its
+client as `DEADLINE_EXCEEDED` (<<_grpc_message_bound>>).
 
-[[_grpc_first_message_bound]]
-*gRPC first-message bound (10 s).* The forced-HTTP/2 upstream request head is written only with the
-first request body chunk. A `protocol: grpc` call whose client sends no request byte within
-`GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS` (10 s) of the attempt handing its body to the
-upstream request is ended by the gateway: the upstream request is reset and the call ends as the
-client's abort, `DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`, disposition
-`no-first-message`), which the circuit breaker does not count as a failure. The clock starts once the
-upstream connection is obtained and stops at the first forwarded request byte, not at a complete gRPC
-message; an empty-ended body stops it too, so a body that ends without a byte is not ended by it. The
-bound is fixed and never armed on an HTTP dispatch. It is below the 30 s upstream guard timeout, so it
-fires first unless waiting for an upstream connection — which the guard counts and the bound does
-not — consumed the difference; the call then ends as an upstream timeout, which the circuit breaker
-counts
-(link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-first-message-bound[ADR-0060]).
+[[_grpc_message_bound]]
+*gRPC message bound (10 s) and pre-response deadline (25 s).* A `protocol: grpc` call ends as an
+upstream failure only when the upstream had everything the client was going to send: time the client
+holds its request open is the client's. The forced-HTTP/2 upstream request head is written only with
+the first request body chunk, and an upstream cannot act on a request message it holds only part of,
+so until the upstream answers the request side of a call is bounded twice
+(link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-message-bound[ADR-0060]):
+
+* *The message bound*, `GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS` (10 s per message). The clock
+  starts when the attempt hands its body to the upstream request and starts again after every complete
+  message — the 5-byte length prefix and every payload byte it declares, read as the bytes cross and
+  never buffered. A forwarded byte of an incomplete message does not stop it, and a pause while the
+  upstream takes no data is not counted. When the next complete message does not arrive in time —
+  the client sent nothing, only part of a message, or stopped between two messages without ending its
+  request stream — the upstream request is reset and the call ends as the client's abort,
+  `DispatchStage.RequestMessageTimeout` (`INBOUND_BODY_ABORTED`, disposition `client-idle`, rendered
+  `INVALID_ARGUMENT`).
+* *The pre-response deadline*, `GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS` (25 s), counted
+  from the start of the attempt like the guard's timeout and equal to the request-body deadline. A
+  client that keeps sending complete messages, each within the message bound, without ever ending its
+  request stream is ended there: the upstream request is reset and the call ends as
+  `DispatchStage.RequestBodyDeadlineExceeded` (`REQUEST_BODY_TIMEOUT`, `408`), rendered trailers-only
+  as `DEADLINE_EXCEEDED` with `grpc-message: input-validation`.
+
+Both stop when the upstream answers, when the request stream ends, on any abort and when the attempt
+ends, so a bidirectional stream the upstream has answered is bounded by neither. Neither counts as a
+failure for the circuit breaker, and neither is retried. Both are fixed and below the 30 s upstream
+guard timeout. An HTTP dispatch arms neither; it keeps the idle timeout and the whole-body deadline
+above. The guard's timeout is therefore reached only by an
+upstream holding a complete, half-closed request — or by an attempt whose wait for an upstream
+connection, which the guard counts and these bounds do not, consumed the margin between them; that
+call ends as an upstream timeout, which the circuit breaker counts.
 
 [[_grpc_stream_idle_bound]]
-*gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages,
-`protocol: grpc` routes rely on the upstream guard's fixed 30 s per-attempt timeout, which runs from
-the start of the attempt — the pool wait and the first-byte wait consume its budget — and keeps
-bounding the call after the first request byte until response headers arrive. From then on a 5-minute
+*gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages, a
+`protocol: grpc` call arms no request-body idle timeout. Until its response headers arrive it is
+bounded by the message bound and the pre-response deadline (<<_grpc_message_bound>>), and by the
+upstream guard's fixed 30 s per-attempt timeout, which runs from the start of the attempt and bounds
+an upstream that holds a complete, half-closed request. From then on a 5-minute
 bidirectional frame-idle timer (HTTP/2 `PING` excluded) bounds the call. Expiry resets the upstream request
 and ends the client stream with trailers `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message:
 stream-idle-timeout`

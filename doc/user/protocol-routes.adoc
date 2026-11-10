@@ -258,23 +258,32 @@ service path.
 [[_what_bounds_a_long_lived_call]]
 === What bounds a long-lived call
 
-A gRPC call is not held to the request-body idle timeout or the request-body deadline of an HTTP
-route, so a client-streaming or bidirectional call may pause between its messages. The wait for the
-*first* request byte is bounded: a call whose client sends no request byte within the fixed 10 s
-first-message bound is ended by the gateway as a client abort (`INBOUND_BODY_ABORTED`, rendered
-`INVALID_ARGUMENT`) before the upstream request head is written, and the upstream's circuit breaker
-does not count it as a failure. The bound ends with the first request byte, not with a complete gRPC
-message. The upstream guard's 30 s timeout runs from the start of the attempt, and after the first
-request byte it alone keeps bounding the call until the upstream sends its response headers. After
-them,
-the call stays open while a frame travels in either direction, and a call that carries no frame for
-five minutes is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
-`grpc-message: stream-idle-timeout` in place of the upstream's trailers. HTTP/2 `PING` frames do not
-count, and the call's `grpc-timeout` is not honoured. A service whose calls stay silent for longer
-than five minutes has to send messages to keep them open; both bounds are fixed and have no
-configuration key. See
+A gRPC call is not held to the request-body idle timeout of an HTTP route. Until the upstream
+answers, the time a client holds its request stream open is the client's, and two fixed bounds end
+it as the client's own abort, which the upstream's circuit breaker does not count as a failure:
+
+* *One complete request message every 10 s.* Each request message must arrive whole -- its 5-byte
+  length prefix and every payload byte the prefix declares -- within 10 s of the attempt's start or of
+  the message before it, until the client ends its request stream. Part of a message does not count.
+  A call that sends nothing, only part of a message, or stops between two messages without ending its
+  stream is ended with `grpc-status: 3` (`INVALID_ARGUMENT`; `INBOUND_BODY_ABORTED`).
+* *The request stream ended within 25 s.* A call whose request stream is still open 25 s after its
+  attempt started -- however steadily it sends -- is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`)
+  and `grpc-message: input-validation` (`REQUEST_BODY_TIMEOUT`). A client-streaming call that the
+  upstream answers only after the client ends its stream must therefore end its stream within 25 s.
+
+Both bounds stop as soon as the upstream sends its response headers. The upstream guard's 30 s
+timeout runs from the start of the attempt and ends a call whose upstream holds the complete,
+half-closed request and does not answer; that call ends with `DEADLINE_EXCEEDED` and
+`grpc-message: upstream`, and the breaker counts it. After the response headers, a client-streaming
+or bidirectional call may pause between its messages: the call stays open while a frame travels in
+either direction, and a call that carries no frame for five minutes is ended with `grpc-status: 4`
+(`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout` in place of the upstream's trailers.
+HTTP/2 `PING` frames do not count, and the call's `grpc-timeout` is not honoured. A service whose
+calls stay silent for longer than five minutes has to send messages to keep them open; every bound
+is fixed and has no configuration key. See
 link:edge-security.adoc#_edge_hardening_defaults[Edge Security -- edge hardening defaults],
-link:../architecture/tls-and-inbound-security.adoc#_grpc_first_message_bound[Architecture -- gRPC first-message bound] and
+link:../architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline] and
 link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 === gRPC rejections are trailers-only
