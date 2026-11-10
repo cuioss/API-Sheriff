@@ -24,6 +24,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.LogRecord;
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
@@ -247,8 +248,8 @@ class RpInitiatedLogoutTest {
         /**
          * A caller can repeat a logout at will, so the volume of {@code WARN} lines it produces must not
          * be its to set (ADR-0051). The first failure is the {@code ApiSheriff-146} {@code WARN}, which
-         * carries no value and no throwable; every failure leaves a {@code DEBUG} line with the throwable,
-         * and a repeat leaves that line only.
+         * carries no value and no throwable; every failure leaves a {@code DEBUG} line naming the
+         * exception type — never the throwable itself — and a repeat leaves that line only.
          */
         @Test
         @DisplayName("Should report a failed revocation once as ApiSheriff-146 over two failing logouts, the second at DEBUG only")
@@ -276,10 +277,50 @@ class RpInitiatedLogoutTest {
                             "the WARN carries no throwable, whose message may hold the provider's answer"),
                     () -> assertEquals(2, debugLines.size(), "every failure leaves a DEBUG line"),
                     () -> assertTrue(debugLines.stream()
-                                    .allMatch(line -> line.getThrown() instanceof IllegalStateException),
-                            "each DEBUG line carries the seam's throwable"),
+                                    .allMatch(line -> line.getMessage().contains(IllegalStateException.class.getName())),
+                            "each DEBUG line names the type of the seam's exception"),
+                    () -> assertTrue(debugLines.stream().allMatch(line -> line.getThrown() == null),
+                            "no DEBUG line carries the throwable, whose message may hold the token or the provider's answer"),
                     () -> assertEquals(1, debugLinesContaining(REVOCATION_FAILED_AGAIN_DEBUG).size(),
                             "the second failure is a DEBUG line only"));
+            assertNoRecordCarries(refreshToken, "refresh token");
+        }
+
+        /**
+         * A seam may put the refresh token itself into the exception it raises — in its message, or in
+         * a cause's. The failure is still reported, but only by the types of its cause chain: no record
+         * at any level, {@code DEBUG} included, carries the token. The seam here does carry the token,
+         * which the case proves before asserting its absence from the log, so the assertion can fail.
+         */
+        @Test
+        @DisplayName("Should keep a refresh token the failing seam carries in its exception chain out of every log record")
+        void shouldKeepATokenCarryingRevocationFailureOutOfTheLog() {
+            AtomicReference<RuntimeException> raised = new AtomicReference<>();
+            RpInitiatedLogout resilient = logoutRevokingWith(ended -> {
+                IllegalStateException failure = new IllegalStateException(
+                        "revocation of refresh token " + ended.refreshToken() + " refused",
+                        new IllegalArgumentException("token=" + ended.refreshToken()));
+                raised.set(failure);
+                throw failure;
+            }, PUBLISHED);
+
+            LogoutRedirect redirect = resilient.initiate(session).orElseThrow();
+
+            RuntimeException failure = raised.get();
+            List<LogRecord> debugLines = debugLinesContaining(REVOCATION_FAILED_DEBUG);
+            assertAll("a failed revocation whose exception chain carries the refresh token",
+                    () -> assertTrue(redirect.location().startsWith(END_SESSION), "the logout still redirects"),
+                    () -> assertNotNull(failure, "the seam raised"),
+                    () -> assertTrue(failure.getMessage().contains(refreshToken),
+                            "the seam's own message carries the refresh token"),
+                    () -> assertTrue(failure.getCause().getMessage().contains(refreshToken),
+                            "and so does its cause's"),
+                    () -> assertEquals(1, revocationFailureWarnings().size(), "the failure is reported"),
+                    () -> assertEquals(1, debugLines.size(), "and leaves one DEBUG line"),
+                    () -> assertTrue(debugLines.getFirst().getMessage().contains(IllegalStateException.class.getName()
+                                    + " caused by " + IllegalArgumentException.class.getName()),
+                            "the DEBUG line names every exception type of the chain, outermost first"),
+                    () -> assertNull(debugLines.getFirst().getThrown(), "the DEBUG line carries no throwable"));
             assertNoRecordCarries(refreshToken, "refresh token");
         }
     }

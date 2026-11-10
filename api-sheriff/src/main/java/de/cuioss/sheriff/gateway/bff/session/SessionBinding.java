@@ -20,7 +20,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -170,12 +169,24 @@ public interface SessionBinding {
     List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now);
 
     /**
-     * Destroys the given session (RP-initiated logout or a failed refresh). A no-op when the
-     * session is already gone.
+     * Destroys the given session (RP-initiated logout or a failed refresh) and hands back the record
+     * that was destroyed. A no-op when the session is already gone.
+     * <p>
+     * <strong>The result is the session as it stood when it was destroyed</strong>, which need not be
+     * {@code session}: the caller resolved the session earlier, and an updating write may have replaced
+     * its token material since. An implementation that holds server-side state returns the record it
+     * removed, read in the same atomic step as the removal, so a refresh token rotated in after the
+     * caller's resolve is the one the result carries. A stateless implementation holds nothing to
+     * remove and returns {@code session} itself — the record the request presented.
+     * <p>
+     * Thread-safe, like every operation of this seam.
      *
-     * @param session the session to destroy
+     * @param session the session to destroy, as the caller resolved it; its identity names the session
+     * @return the destroyed session as it stood at its destruction; empty when the implementation
+     *         observed that the session was already gone
+     * @since 1.0
      */
-    void destroy(SessionRecord session);
+    Optional<SessionRecord> destroy(SessionRecord session);
 
     /**
      * Destroys every session carrying the given IdP {@code sid} (back-channel logout).

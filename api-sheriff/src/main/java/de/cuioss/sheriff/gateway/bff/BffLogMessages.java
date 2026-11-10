@@ -377,8 +377,9 @@ public final class BffLogMessages {
          * <p>
          * The template takes no substitution and is logged without a throwable, so it carries no
          * value at all — never the refresh token, the session id, the subject, or the identity
-         * provider's answer, whose text is not sanitised. The throwable goes to a {@code DEBUG} line
-         * written beside it.
+         * provider's answer, whose text is not sanitised. A {@code DEBUG} line
+         * written beside it names the exception types of the failure's cause chain and carries
+         * neither the throwable nor any exception message.
          * <p>
          * <strong>Latched.</strong> A caller can repeat a logout at will and must not be able to set
          * the volume of {@code WARN} lines it produces (ADR-0051), so the record is emitted on its

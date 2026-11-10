@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
@@ -42,7 +41,8 @@ import org.jspecify.annotations.Nullable;
  * {@link #resolve} unseals the request cookie, enforces the absolute TTL <strong>server-side</strong>
  * against the sealed login instant (a browser that keeps an expired cookie past its {@code Max-Age}
  * still gets "no session"), and reconstructs the record; {@link #persist} re-seals the updated
- * material; {@link #destroy} is a no-op locally — the browser's copies are cleared through
+ * material; {@link #destroy} is a no-op locally and hands back the record the request presented — the
+ * browser's copies are cleared through
  * {@link #clearingSetCookieHeaders()}, which the logout edge emits. A client that retains the cookie of a
  * session the refresh coordinator ended is refused by that coordinator's ended-refresh-token marker,
  * not by this binding.
@@ -342,12 +342,26 @@ public final class CookieSessionBinding implements SessionBinding {
         return List.of(activityCodec.toSetCookieHeader(signedActivity, session.expiresAt(), now));
     }
 
+    /**
+     * Destroys nothing locally and returns {@code session} itself.
+     * <p>
+     * Nothing is held server-side, so the sealed cookie the request presented <em>is</em> the session
+     * as it stands at its destruction: the record returned is the one the caller resolved from it,
+     * carrying the refresh token sealed there. A successor sealed into a response the browser has not
+     * stored yet is not seen (see the class documentation). The browser's copies are cleared by the
+     * caller emitting {@link #clearingSetCookieHeaders()}.
+     * <p>
+     * Thread-safe: the method reads only its argument.
+     *
+     * @param session the session to destroy, as resolved from the request
+     * @return {@code session}; never empty, since this binding cannot observe a destruction
+     */
     @Override
-    public void destroy(SessionRecord session) {
+    public Optional<SessionRecord> destroy(SessionRecord session) {
         Objects.requireNonNull(session, SESSION_PARAMETER);
-        // Nothing is held server-side. The browser's copies are cleared by the caller emitting
-        // clearingSetCookieHeaders() — an expired-by-Max-Age cookie the browser keeps anyway is
-        // still refused by resolve()'s server-side TTL check.
+        // An expired-by-Max-Age cookie the browser keeps anyway is still refused by resolve()'s
+        // server-side TTL check.
+        return Optional.of(session);
     }
 
     @Override

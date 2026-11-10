@@ -32,7 +32,6 @@ import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -227,6 +226,53 @@ class ServerSessionBindingTest {
         assertEquals(1, store.size(), "the update added no entry");
     }
 
+    @Test
+    @DisplayName("Should hand back the record the store held on destroy, not the snapshot the caller resolved")
+    void shouldReturnTheRecordTheStoreHeldOnDestroy() {
+        SessionRecord resolvedSnapshot = session(SessionRecord.newSessionId(), "access-token-1");
+        BoundSession created = binding.bind(resolvedSnapshot, NOW);
+        SessionRecord rotated = session(resolvedSnapshot.sessionId(), "access-token-2");
+        assertTrue(binding.persist(rotated, NOW).isPresent(),
+                "precondition: a refresh replaced the record after the caller resolved it");
+
+        Optional<SessionRecord> destroyed = binding.destroy(resolvedSnapshot);
+
+        assertAll("destroy after a rotation the caller did not see",
+                () -> assertEquals(Optional.of(rotated), destroyed,
+                        "the result is the record the store removed, carrying the rotated token material"),
+                () -> assertNotEquals(Optional.of(resolvedSnapshot), destroyed,
+                        "the caller's resolve-time snapshot is not handed back"),
+                () -> assertTrue(binding.resolve(requestCookieOf(created), NOW).isEmpty(),
+                        "the session no longer resolves"),
+                () -> assertEquals(0, store.size(), "the session is removed from the store"));
+    }
+
+    @Test
+    @DisplayName("Should hand back nothing on destroy when the session was already terminated")
+    void shouldReturnEmptyOnDestroyOfATerminatedSession() {
+        SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
+        binding.bind(session, NOW);
+        assertEquals(1, binding.destroyBySid(SID), "precondition: a back-channel logout ended the session");
+
+        Optional<SessionRecord> destroyed = binding.destroy(session);
+
+        assertTrue(destroyed.isEmpty(), "the store held nothing to remove, so nothing is handed back");
+        assertEquals(0, store.size(), "the store is unchanged");
+    }
+
+    @Test
+    @DisplayName("Should hand back nothing on destroy of a session that was never bound")
+    void shouldReturnEmptyOnDestroyOfANeverBoundSession() {
+        SessionRecord live = session(SessionRecord.newSessionId(), "access-token-1");
+        binding.bind(live, NOW);
+        SessionRecord neverBound = session(SessionRecord.newSessionId(), "access-token-2");
+
+        Optional<SessionRecord> destroyed = binding.destroy(neverBound);
+
+        assertTrue(destroyed.isEmpty(), "no record is held under the never-bound session's id");
+        assertEquals(1, store.size(), "an unrelated session is left in place");
+    }
+
     static Stream<Arguments> terminations() {
         BiConsumer<ServerSessionBinding, SessionRecord> byIdentity = SessionBinding::destroy;
         BiConsumer<ServerSessionBinding, SessionRecord> bySid = (target, session) -> target.destroyBySid(SID);
@@ -352,11 +398,8 @@ class ServerSessionBindingTest {
         }
 
         @Override
-        public void destroyById(String sessionId) {
-            aroundWrite(() -> {
-                delegate.destroyById(sessionId);
-                return true;
-            });
+        public Optional<SessionRecord> destroyById(String sessionId) {
+            return aroundWrite(() -> delegate.destroyById(sessionId));
         }
 
         @Override
@@ -400,7 +443,7 @@ class ServerSessionBindingTest {
 
             boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle);
 
-            void destroyById(String sessionId);
+            Optional<SessionRecord> destroyById(String sessionId);
 
             int destroyBySid(String sid);
 

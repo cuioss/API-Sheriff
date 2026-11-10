@@ -4003,6 +4003,12 @@ class BffRuntimeProducerTest {
                     () -> assertEquals(warningsBefore, warningCount(), "and at no level above it"));
         }
 
+        /**
+         * The caller, {@code RpInitiatedLogout}, logs only the exception types of the throwable this
+         * binding raises, never the throwable or a message. The binding does not lean on that: neither
+         * the message of the throwable it raises nor the message of any cause it chains holds the
+         * refresh token it failed to revoke, nor the access token, so the chain is safe wherever it ends up.
+         */
         @Test
         @DisplayName("Should throw when the revocation endpoint answers a logout's revocation with a server error")
         void shouldThrowOnLogoutWhenTheRevocationEndpointFails() {
@@ -4011,15 +4017,34 @@ class BffRuntimeProducerTest {
             ClientAuthentication authentication = clientAuthenticationOf(runtime);
             SessionRecord session = loggedOutSession(token());
             stub.script(StubIdentityProvider.Endpoint.REVOCATION, StubIdentityProvider.Answer.of(503));
+            AtomicReference<RuntimeException> raised = new AtomicReference<>();
 
             StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.REVOCATION,
-                    () -> assertThrows(RuntimeException.class,
+                    () -> raised.set(assertThrows(RuntimeException.class,
                             () -> BffRuntimeProducer.revokeOnLogout(revocationClient, this::revocationMetadata,
                                     authentication, session),
-                            "a non-success answer reaches the caller, which reports it"));
+                            "a non-success answer reaches the caller, which reports it")));
 
             assertEquals(session.refreshToken(), request.form().get("token"),
                     "the refused request was the revocation of the session's refresh token");
+            List<String> carried = messagesOfTheChain(raised.get());
+            assertAll("what the raised throwable carries to the caller: " + carried.size() + " message(s)",
+                    () -> assertFalse(carried.isEmpty(), "precondition: a throwable was raised"),
+                    () -> assertEquals(List.of(), carried.stream()
+                                    .filter(message -> message.contains(session.refreshToken())).toList(),
+                            "no message of the chain carries the refresh token"),
+                    () -> assertEquals(List.of(), carried.stream()
+                                    .filter(message -> message.contains(session.accessToken())).toList(),
+                            "no message of the chain carries the access token"));
+        }
+
+        /** The message of {@code thrown} and of every cause it chains, in chain order. */
+        private static List<String> messagesOfTheChain(@Nullable Throwable thrown) {
+            List<String> messages = new ArrayList<>();
+            for (Throwable link = thrown; link != null; link = link.getCause()) {
+                messages.add(String.valueOf(link.getMessage()));
+            }
+            return messages;
         }
 
         /**

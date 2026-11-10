@@ -19,9 +19,13 @@ import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.StringJoiner;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
@@ -48,14 +52,19 @@ import org.jspecify.annotations.Nullable;
  * {@link TokenRevocation} seam to an RFC 7009 revocation of the session's refresh token at the
  * identity provider ({@code BffRuntimeProducer.revokeOnLogout}). {@link #initiate} calls it once,
  * synchronously, before the end-session redirect is built — and the caller has already destroyed the
- * local session by then. A session without a refresh token sends nothing. The access token is not
- * revoked: it stays valid at a resource server until it expires.
+ * local session by then. The caller hands {@link #initiate} the record its destruction removed, so the
+ * token revoked is the one the session held when it was destroyed; when the session was already gone,
+ * there is nothing to revoke and the caller uses {@link #endSessionRedirect} instead. A session
+ * without a refresh token sends nothing. The access token is not revoked: it stays valid at a resource
+ * server until it expires.
  * <p>
  * <strong>A failed revocation is a latched {@code WARN}.</strong> A {@link RuntimeException} the seam
  * raises — a transport failure, a non-success answer, provider metadata that cannot be obtained — is
- * recorded once per instance as {@code ApiSheriff-146}, which carries no value and no throwable; the
- * throwable goes to a {@code DEBUG} line, and every repeat is a {@code DEBUG} line only. The logout
- * proceeds in every case: the local session destruction is the authoritative logout.
+ * recorded once per instance as {@code ApiSheriff-146}, which carries no value and no throwable; every
+ * failure, the first included, also leaves a {@code DEBUG} line that names the exception types of the
+ * failure's cause chain and nothing else — neither the throwable nor any exception message is logged,
+ * because a message may carry the identity provider's unsanitised answer or the refresh token itself.
+ * The logout proceeds in every case: the local session destruction is the authoritative logout.
  * <p>
  * <strong>The end-session request is a redirect.</strong> {@link #initiate} hands out the URL the
  * engine built on the provider's {@code end_session_endpoint}; its query carries the
@@ -94,6 +103,7 @@ public final class RpInitiatedLogout {
     private static final int FOUND = 302;
     private static final String SCHEME_HTTPS = "https";
     private static final String SCHEME_HTTP = "http";
+    private static final String CAUSE_SEPARATOR = " caused by ";
 
     private final EndSessionFlow endSessionFlow;
     private final TokenRevocation revocation;
@@ -148,14 +158,19 @@ public final class RpInitiatedLogout {
      * <p>
      * The seam is called first and in every case, also when no redirect can be built. A
      * {@link RuntimeException} it raises does not stop the logout: the first one per instance is
-     * recorded as {@code ApiSheriff-146} and every one leaves a {@code DEBUG} line carrying the
-     * throwable.
+     * recorded as {@code ApiSheriff-146} and every one leaves a {@code DEBUG} line naming the
+     * exception types of its cause chain — never the throwable or an exception message.
      * <p>
      * The result is empty — and the caller completes the logout locally — when the session holds no ID
      * token, when the end-session endpoint cannot be resolved, or when the provider publishes none
      * that is an absolute {@code http} or {@code https} URI. None of these raises.
+     * <p>
+     * {@code session} is the record whose refresh token is revoked, so the caller passes the record its
+     * local destruction removed — the session as it stood when it was destroyed — rather than one it
+     * resolved earlier, which a concurrent refresh may since have rotated away from.
      *
-     * @param session the session being logged out (its raw ID token is the {@code id_token_hint})
+     * @param session the session being logged out, as it stood at its destruction (its refresh token is
+     *                the one revoked; its raw ID token is the {@code id_token_hint})
      * @return the redirect to the IdP {@code end_session_endpoint} carrying the logout-state
      *         {@code Set-Cookie}; empty when the browser cannot be sent there
      */
@@ -173,6 +188,27 @@ public final class RpInitiatedLogout {
             // control and is reported, latched.
             reportRevocationFailure(revocationFailure);
         }
+        return endSessionRedirect(session);
+    }
+
+    /**
+     * Builds the end-session redirect for a session <em>without</em> revoking anything — the path for
+     * a logout that holds no token to revoke, because the session was already gone when the caller
+     * destroyed it.
+     * <p>
+     * The {@link TokenRevocation} seam is not called. Otherwise this is the second half of
+     * {@link #initiate}: it resolves the provider's end-session endpoint, mints the session-bound
+     * {@code state}, and has the engine build the redirect carrying the {@code id_token_hint}, the
+     * exact {@code post_logout_redirect_uri}, and the {@code state}. The result is empty under the same
+     * conditions, and none of them raises.
+     *
+     * @param session the session being logged out (its raw ID token is the {@code id_token_hint})
+     * @return the redirect to the IdP {@code end_session_endpoint} carrying the logout-state
+     *         {@code Set-Cookie}; empty when the browser cannot be sent there
+     * @since 1.0
+     */
+    public Optional<LogoutRedirect> endSessionRedirect(SessionRecord session) {
+        Objects.requireNonNull(session, "session");
         if (session.idToken().isBlank()) {
             LOGGER.debug("RP-initiated logout for a session without an ID token — no end-session redirect is sent");
             return Optional.empty();
@@ -218,18 +254,39 @@ public final class RpInitiatedLogout {
     /**
      * Reports a failed refresh-token revocation. The first failure per instance is the
      * {@code ApiSheriff-146} {@code WARN}, which carries no substitution and no throwable, because the
-     * throwable's message may carry the identity provider's unsanitised answer; every failure, the
-     * first included, leaves a {@code DEBUG} line carrying the throwable. The latch keeps the caller, who can
-     * repeat a logout at will, from setting the volume of {@code WARN} lines (ADR-0051).
+     * throwable's message may carry the identity provider's unsanitised answer. Every failure, the
+     * first included, leaves a {@code DEBUG} line that names the exception types of the failure's cause
+     * chain and nothing more: the throwable is not attached and no exception message is printed, because
+     * a seam may put the refresh token itself into a message or a cause, and a {@code DEBUG} line is
+     * still a log line. The latch keeps the caller, who can repeat a logout at will, from setting the
+     * volume of {@code WARN} lines (ADR-0051).
      */
     private void reportRevocationFailure(RuntimeException revocationFailure) {
+        String failureTypes = exceptionTypes(revocationFailure);
         if (revocationFailureReported.compareAndSet(false, true)) {
             LOGGER.warn(BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED);
-            LOGGER.debug(revocationFailure, "Refresh-token revocation failed during RP-initiated logout — proceeding with the logout");
+            LOGGER.debug("Refresh-token revocation failed during RP-initiated logout (%s) — proceeding with the logout",
+                    failureTypes);
         } else {
-            LOGGER.debug(revocationFailure, "Refresh-token revocation failed during RP-initiated logout again — already "
-                    + "reported once, stays at DEBUG for the rest of the process");
+            LOGGER.debug("Refresh-token revocation failed during RP-initiated logout again (%s) — already "
+                    + "reported once, stays at DEBUG for the rest of the process", failureTypes);
         }
+    }
+
+    /**
+     * Names the exception types of a failure's cause chain, outermost first, separated by
+     * {@code " caused by "}. Only class names are read — never a message — and a cause chain that
+     * loops back on itself is cut at the first repeat.
+     */
+    private static String exceptionTypes(Throwable failure) {
+        StringJoiner types = new StringJoiner(CAUSE_SEPARATOR);
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = failure;
+        while (current != null && visited.add(current)) {
+            types.add(current.getClass().getName());
+            current = current.getCause();
+        }
+        return types.toString();
     }
 
     private void reportMissingEndpoint() {
@@ -322,7 +379,9 @@ public final class RpInitiatedLogout {
     /**
      * The token-revocation seam: the hook through which a session's token is revoked at the identity
      * provider during logout. {@link RpInitiatedLogout} calls it once per initiated logout, after the
-     * caller has destroyed the local session and before the end-session redirect is built.
+     * caller has destroyed the local session and before the end-session redirect is built. The record it
+     * receives is the one the caller's destruction removed, so its refresh token is the one the session
+     * held at that moment. It is not called for a logout whose session was already gone.
      * <p>
      * The runtime binds it to {@code BffRuntimeProducer.revokeOnLogout}, an RFC 7009 revocation of the
      * session's refresh token ({@code token_type_hint=refresh_token}). That binding sends nothing when
@@ -341,7 +400,7 @@ public final class RpInitiatedLogout {
         /**
          * Revokes the logged-out session's token at the identity provider.
          *
-         * @param session the session being logged out
+         * @param session the session being logged out, as it stood when the caller destroyed it
          * @throws RuntimeException when the revocation cannot be completed — metadata that cannot be
          *                          obtained, a transport failure or a non-success answer; the caller
          *                          reports it and completes the logout

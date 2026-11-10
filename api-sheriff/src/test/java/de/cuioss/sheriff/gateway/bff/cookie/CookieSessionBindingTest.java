@@ -27,7 +27,6 @@ import java.util.Set;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -479,6 +478,69 @@ class CookieSessionBindingTest {
             assertEquals("rotated-access-token",
                     binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow().accessToken(),
                     "the re-sealed cookie resolves, carrying the updated material");
+        }
+    }
+
+    /**
+     * What {@code destroy} hands back: the record the request presented. Nothing is held server-side,
+     * so that record — with the refresh token sealed in the presented cookie — is the session as it
+     * stands at its destruction, and a successor sealed into a response the browser has not stored is
+     * not seen.
+     */
+    @Nested
+    @DisplayName("Destroy")
+    class Destroy {
+
+        @Test
+        @DisplayName("Should hand back the record the request presented, carrying its sealed refresh token")
+        void shouldReturnThePresentedRecord() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord presented = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+
+            Optional<SessionRecord> destroyed = binding.destroy(presented);
+
+            assertTrue(destroyed.isPresent(), "a stateless binding cannot observe a destruction, so it is never empty");
+            assertSame(presented, destroyed.get(), "the presented record is the session at its destruction");
+            assertEquals(REFRESH_TOKEN, destroyed.get().refreshToken(),
+                    "the refresh token handed back is the one sealed in the presented cookie");
+        }
+
+        @Test
+        @DisplayName("Should hand back the presented record, not a re-sealed successor the browser has not stored")
+        void shouldNotSeeAResealedSuccessor() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord presented = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+            SessionRecord successor = SessionRecord.builder()
+                    .sessionId(presented.sessionId())
+                    .accessToken("rotated-access-token")
+                    .refreshToken("rotated-refresh-token")
+                    .idToken(presented.idToken())
+                    .sub(presented.sub())
+                    .sid(presented.sid())
+                    .expiresAt(presented.expiresAt())
+                    .sessionNonce(presented.sessionNonce())
+                    .build();
+            reseal(successor, LOGIN.plusSeconds(60));
+
+            Optional<SessionRecord> destroyed = binding.destroy(presented);
+
+            assertEquals(Optional.of(presented), destroyed,
+                    "nothing is held server-side, so the re-sealed successor cannot be what is handed back");
+            assertEquals(REFRESH_TOKEN, destroyed.orElseThrow().refreshToken(),
+                    "the documented cookie-mode residual: the presented token, not the rotated one");
+        }
+
+        @Test
+        @DisplayName("Should hand back the presented record on every destroy, since nothing is removed")
+        void shouldReturnThePresentedRecordOnEveryDestroy() {
+            SessionRecord presented = resealable("rotated-access-token");
+
+            Optional<SessionRecord> first = binding.destroy(presented);
+            Optional<SessionRecord> second = binding.destroy(presented);
+
+            assertEquals(Optional.of(presented), first);
+            assertEquals(Optional.of(presented), second,
+                    "a second destroy finds nothing gone either: this binding cannot observe a destruction");
         }
     }
 

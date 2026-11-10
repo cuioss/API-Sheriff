@@ -28,8 +28,11 @@
  *       and on the return leg verifies the returned {@code state} against that cookie before landing
  *       the browser on {@code final_redirect}. The runtime binds the seam to an RFC 7009 revocation of
  *       the session's refresh token at the identity provider, so an RP-initiated logout revokes that
- *       token; the access token is not revoked, and a failed revocation is a latched {@code WARN} that
- *       never stops the logout.</li>
+ *       token — the one the session held when the logout destroyed it, which in server mode is the
+ *       record the store removed, so a rotation persisted after the logout resolved the session is
+ *       honoured. A session that was already gone at its destruction has no token to revoke. The
+ *       access token is not revoked, and a failed revocation is a latched {@code WARN} that never stops
+ *       the logout.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver} receives an OIDC
  *       back-channel {@code logout_token}: it signature-verifies the token through the engine's
  *       issuer/JWKS infrastructure, runs the claim residual, then destroys the affected sessions
