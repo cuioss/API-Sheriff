@@ -35,6 +35,8 @@ import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -88,6 +90,15 @@ class GatewayEdgeWebSocketUpgradeGateTest {
     /** The refusals each case sends: more than the two general permits, so one kept permit would starve the rest. */
     private static final int REFUSED_ATTEMPTS = 3;
     private static final String SAMPLE_KEY = "dGhlIHNhbXBsZSBub25jZQ==";
+    /** One byte above the 8192 handshake body bytes vertx-core 4.5.34 buffers. */
+    private static final int OVER_BOUND_BODY = 8193;
+    /** The prefix of the {@code profile: minimal} WebSocket route, whose query is not validated before the gate. */
+    private static final String MINIMAL_WS_PATH = "/minimal";
+    /**
+     * A request URI {@code java.net.URI} cannot parse — {@code |} is no legal query character — on the
+     * minimal-profile route: on the default route the security filter refuses that query first.
+     */
+    private static final String UNPARSEABLE_URI = MINIMAL_WS_PATH + "/room?a|b";
     private static final String HSTS = "Strict-Transport-Security";
     private static final String CSP = "Content-Security-Policy";
     private static final int ROUTE_HSTS_MAX_AGE = 31536000;
@@ -119,8 +130,14 @@ class GatewayEdgeWebSocketUpgradeGateTest {
                     request.response().setStatusCode(400).end();
                 })
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
+        // The GET-body opt-in lets a handshake declaring a Content-Length past the framing gate, so the
+        // upgrade gate's body bound is reachable; only the over-bound cases declare a length, and none
+        // sends a body byte.
         front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
-                .routes(webSocketRoute(upstream.actualPort()))
+                .routes(webSocketRoute(upstream.actualPort()), minimalProfileWebSocketRoute(upstream.actualPort()))
+                .gatewayConfig(ConfigFixtures.gateway()
+                        .securityDefaults(SecurityDefaultsConfig.builder().allowGetWithContentLengthBody(Boolean.TRUE).build())
+                        .build())
                 .hardening(new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)))
                 .serve();
         httpClient = vertx.createHttpClient();
@@ -175,6 +192,29 @@ class GatewayEdgeWebSocketUpgradeGateTest {
     }
 
     @Test
+    @DisplayName("an upgrade token on a later Connection line only, or websocket inside an Upgrade list, is answered 426 and dials nothing")
+    void upgradeHeadersTheHandshakeRefusesAreRefusedBeforeAnyDial() throws Exception {
+        List<String> laterConnectionLine = List.of("Upgrade: websocket", "Connection: keep-alive",
+                "Connection: Upgrade", "Sec-WebSocket-Key: " + SAMPLE_KEY, "Sec-WebSocket-Version: 13",
+                "Origin: " + ORIGIN);
+        List<String> websocketInsideList = List.of("Upgrade: chat, websocket", "Connection: Upgrade",
+                "Sec-WebSocket-Key: " + SAMPLE_KEY, "Sec-WebSocket-Version: 13", "Origin: " + ORIGIN);
+
+        Answer laterLine = rawHttp11(laterConnectionLine);
+        Answer insideList = rawHttp11(websocketInsideList);
+
+        assertAll("both are refused by the edge, not by the HTTP stack after the upstream was dialled",
+                () -> assertEquals(426, laterLine.status(), "Vert.x reads only the first Connection line"),
+                () -> assertEquals("websocket", laterLine.headers().get("Upgrade"),
+                        "the 426 names the protocol to switch to"),
+                () -> assertEquals(426, insideList.status(),
+                        "the handshake accepts websocket only as the whole Upgrade value"),
+                () -> assertEquals("websocket", insideList.headers().get("Upgrade"),
+                        "the 426 names the protocol to switch to"));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
     @DisplayName("an HTTP/1.1 upgrade with Sec-WebSocket-Version 8 is answered 426 naming version 13")
     void unsupportedVersionIsRefusedNamingVersion13() throws Exception {
         Answer answer = rawHttp11(handshake("8", SAMPLE_KEY));
@@ -211,6 +251,61 @@ class GatewayEdgeWebSocketUpgradeGateTest {
                         () -> assertEquals(405, answer.status(), "a WebSocket is opened by a GET only"),
                         () -> assertEquals("GET", answer.headers().get("Allow"),
                                 "the 405 names GET as the one method the handshake allows"))));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
+    @DisplayName("a handshake declaring a body above 8192 bytes is answered 413 Connection: close, the edge closes the connection, dials nothing and returns its permit")
+    void oversizedDeclaredBodyIsRefused413AndClosesTheConnection() throws Exception {
+        List<String> oversized = new ArrayList<>(handshake("13", SAMPLE_KEY));
+        oversized.add("Content-Length: " + OVER_BOUND_BODY);
+        List<Answer> answers = new ArrayList<>();
+        for (int attempt = 0; attempt < REFUSED_ATTEMPTS; attempt++) {
+            answers.add(exchange("GET", WS_URI, oversized, true));
+        }
+
+        assertAll("every over-bound handshake body is refused by the edge before a byte of it is read",
+                answers.stream().map(answer -> (Executable) () -> assertAll("413 refusal",
+                        () -> assertEquals(413, answer.status(), "Vert.x buffers at most 8192 handshake body bytes"),
+                        () -> assertEquals("close", answer.headers().get("Connection"),
+                                "the unread body would frame the next request, so the connection is retired"))));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
+    @DisplayName("a 400 and a 426 of a request declaring a body above 8192 bytes keep their status, answer Connection: close and the edge closes the connection")
+    void earlierRefusalOfAnOversizedDeclaredBodyClosesTheConnection() throws Exception {
+        List<String> withoutKey = new ArrayList<>(handshake("13", SAMPLE_KEY));
+        withoutKey.removeIf(line -> line.startsWith("Sec-WebSocket-Key"));
+        withoutKey.add("Content-Length: " + OVER_BOUND_BODY);
+        List<String> plainGet = List.of("Origin: " + ORIGIN, "Content-Length: " + OVER_BOUND_BODY);
+
+        Answer badRequest = exchange("GET", WS_URI, withoutKey, true);
+        Answer upgradeRequired = exchange("GET", WS_URI, plainGet, true);
+
+        assertAll("an earlier refusal keeps its status and retires the connection whose body it never reads",
+                () -> assertEquals(400, badRequest.status(), "the missing key is the first rule broken"),
+                () -> assertEquals("close", badRequest.headers().get("Connection"),
+                        "the unread body would frame the next request, so the connection is retired"),
+                () -> assertEquals(426, upgradeRequired.status(), "the missing upgrade tokens are the first rule broken"),
+                () -> assertEquals("websocket", upgradeRequired.headers().get("Upgrade"),
+                        "the 426 still names the protocol to switch to"),
+                () -> assertEquals("Upgrade, close", upgradeRequired.headers().get("Connection"),
+                        "the 426 keeps its upgrade option beside close"));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
+    @DisplayName("a handshake whose request URI does not parse is answered 400, dials nothing and returns its permit")
+    void unparseableRequestUriIsRefused400() throws Exception {
+        List<Answer> answers = new ArrayList<>();
+        for (int attempt = 0; attempt < REFUSED_ATTEMPTS; attempt++) {
+            answers.add(exchange("GET", UNPARSEABLE_URI, handshake("13", SAMPLE_KEY), false));
+        }
+
+        assertAll("every handshake with an unparseable request URI is refused by the edge",
+                answers.stream().map(answer -> (Executable) () -> assertEquals(400, answer.status(),
+                        "Vert.x cannot compose the WebSocket location from an unparseable request URI")));
         assertNothingDialedAndPermitsReturned();
     }
 
@@ -328,8 +423,21 @@ class GatewayEdgeWebSocketUpgradeGateTest {
 
     /** Like {@link #rawHttp11(List)}, sending the request with {@code method} instead of {@code GET}. */
     private Answer rawHttp11(String method, List<String> headerLines) throws Exception {
+        return exchange(method, WS_URI, headerLines, false);
+    }
+
+    /**
+     * Sends one HTTP/1.1 request with {@code method} to {@code requestUri} over a raw connection, carrying
+     * exactly {@code headerLines} beside {@code Host} and no body, and returns the status and headers of
+     * the edge's answer, which must come promptly. With {@code awaitEdgeClose} the edge must also close
+     * the connection promptly after its answer.
+     */
+    private Answer exchange(String method, String requestUri, List<String> headerLines, boolean awaitEdgeClose)
+            throws Exception {
         NetSocket socket = Awaits.connect(netClient.connect(front.actualPort(), LoopbackHost.ADDRESS),
                 "the TCP connection to the edge");
+        CompletableFuture<Void> closedByEdge = new CompletableFuture<>();
+        socket.closeHandler(v -> closedByEdge.complete(null));
         CompletableFuture<Answer> answer = new CompletableFuture<>();
         Buffer received = Buffer.buffer();
         socket.handler(chunk -> {
@@ -341,15 +449,20 @@ class GatewayEdgeWebSocketUpgradeGateTest {
             }
         });
         List<String> request = new ArrayList<>();
-        request.add(method + " " + WS_URI + " HTTP/1.1");
+        request.add(method + " " + requestUri + " HTTP/1.1");
         request.add("Host: " + LoopbackHost.ADDRESS + ":" + front.actualPort());
         request.addAll(headerLines);
         request.add("");
         request.add("");
         try {
             Awaits.connect(socket.write(String.join("\r\n", request)), "the raw request to be written");
-            return Awaits.connect(answer.orTimeout(PROMPT_ANSWER_SECONDS, TimeUnit.SECONDS),
+            Answer edgeAnswer = Awaits.connect(answer.orTimeout(PROMPT_ANSWER_SECONDS, TimeUnit.SECONDS),
                     "the edge's prompt answer to the raw HTTP/1.1 request");
+            if (awaitEdgeClose) {
+                Awaits.connect(closedByEdge.orTimeout(PROMPT_ANSWER_SECONDS, TimeUnit.SECONDS),
+                        "the edge to close the connection after its answer");
+            }
+            return edgeAnswer;
         } finally {
             Awaits.teardown(socket.close(), "the raw connection to close");
         }
@@ -386,7 +499,22 @@ class GatewayEdgeWebSocketUpgradeGateTest {
      * block, so a refusal can be checked for the headers every response after route selection carries.
      */
     private static Route webSocketRoute(int upstreamPort) {
-        return ConfigFixtures.route("ws", WS_PATH)
+        return webSocketRoute("ws", WS_PATH, upstreamPort).build();
+    }
+
+    /**
+     * The same WebSocket route declaring {@code security_filter.profile: minimal}, which skips the
+     * url-parameter validation of the route's security filter — the one place a query character
+     * {@code java.net.URI} rejects is refused ahead of the gate — so such a request URI reaches the gate.
+     */
+    private static Route minimalProfileWebSocketRoute(int upstreamPort) {
+        return webSocketRoute("minimal", MINIMAL_WS_PATH, upstreamPort)
+                .effectiveSecurityFilter(SecurityFilterConfig.builder().profile("minimal").build())
+                .build();
+    }
+
+    private static Route.RouteBuilder webSocketRoute(String id, String pathPrefix, int upstreamPort) {
+        return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.WEBSOCKET)
                 .effectiveAllowedMethods(EnumSet.allOf(de.cuioss.sheriff.gateway.config.model.HttpMethod.class))
                 .securityHeaders(SecurityHeadersConfig.builder()
@@ -395,8 +523,7 @@ class GatewayEdgeWebSocketUpgradeGateTest {
                         .build())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(Set.of(ORIGIN))
-                .effectiveForward(ForwardConfig.builder().headersAllow(List.of()).build())
-                .build();
+                .effectiveForward(ForwardConfig.builder().headersAllow(List.of()).build());
     }
 
     /** What the client saw of the edge's answer: its status and its headers, looked up case-insensitively. */

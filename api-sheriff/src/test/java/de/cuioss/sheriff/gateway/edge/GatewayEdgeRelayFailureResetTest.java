@@ -70,14 +70,26 @@ import org.junit.jupiter.api.Test;
  * client is. A request under {@value #ENDLESS} is answered at once with a chunked {@code 200} head and a
  * first chunk, then one chunk every {@value #CHUNK_INTERVAL_MILLIS} ms until its response is closed or
  * fails — which is how it observes the gateway resetting the upstream request, the reset closing the
- * HTTP/1.1 upstream connection. Every other request is answered {@code ok} at once.
+ * HTTP/1.1 upstream connection. A request under {@value #QUIET} is answered with the same head and first
+ * chunk and then nothing at all: the upstream goes quiet without ending its body. Every other request is
+ * answered {@code ok} at once.
+ * <p>
+ * <strong>Why the quiet upstream is its own case.</strong> While the upstream keeps sending, the relay's
+ * next write to a client that has gone fails, and that write failure fails the relay. A quiet upstream
+ * gives the relay nothing to write, so the only signal that the client has gone is the close of the client
+ * response itself — and the relay pipe does not turn that close into a failure on its own: run against a
+ * terminal dispatch that waited for the relay alone, the HTTP/1.1 quiet case found the upstream request
+ * still open 30 s after its client had closed. The terminal dispatch therefore observes the client
+ * response closing before it ended and fails the relay outcome itself, which reaches its single reset
+ * site. The quiet cases pin that property for an HTTP/1.1 client closing its connection and for an HTTP/2
+ * client resetting its stream.
  * <p>
  * <strong>How the release shows.</strong> Every connection the upstream client pools — the Vert.x default
- * HTTP/1.1 pool size of a fresh {@link PoolOptions}, which the gateway does not change — is taken by an
- * endless answer whose client leaves once it has read the response head. Each upstream request must be
- * reset within {@value #RESET_BOUND_MILLIS} ms of its client leaving, and a request that follows on the
- * same route must then be served within the same bound. Without the reset no upstream request is reset,
- * and the request that follows waits on the exhausted pool.
+ * HTTP/1.1 pool size of a fresh {@link PoolOptions}, which the gateway does not change and no fixture seam
+ * reaches — is taken by an endless or quiet answer whose client leaves once it has read the response head.
+ * Each upstream request must be reset within {@value #RESET_BOUND_MILLIS} ms of its client leaving, and a
+ * request that follows on the same route must then be served within the same bound. Without the reset no
+ * upstream request is reset, and the request that follows waits on the exhausted pool.
  */
 @DisplayName("GatewayEdgeRoute — a relay that fails after the hand-over resets the upstream exchange")
 @Tag("isolated-fork")
@@ -87,6 +99,8 @@ class GatewayEdgeRelayFailureResetTest {
     private static final String ROUTE = "up";
     /** The upstream path prefix the stub answers with a body that never ends. */
     private static final String ENDLESS = "/endless";
+    /** The upstream path prefix the stub answers with a head and a first chunk, then silence. */
+    private static final String QUIET = "/quiet";
     /** How often the stub upstream sends one chunk of an endless body. */
     private static final long CHUNK_INTERVAL_MILLIS = 20L;
     /**
@@ -108,7 +122,7 @@ class GatewayEdgeRelayFailureResetTest {
 
     /** Every request the stub upstream received a head for, as {@code METHOD path}. */
     private final List<String> upstreamStarted = new CopyOnWriteArrayList<>();
-    /** Per endless upstream path, completed with the time its response was closed or failed. */
+    /** Per endless or quiet upstream path, completed with the time its response was closed or failed. */
     private final Map<String, CompletableFuture<Long>> upstreamReset = new ConcurrentHashMap<>();
 
     @BeforeEach
@@ -140,14 +154,19 @@ class GatewayEdgeRelayFailureResetTest {
     private void handleUpstreamRequest(HttpServerRequest request) {
         upstreamStarted.add(request.method() + " " + request.path());
         HttpServerResponse response = request.response();
-        if (!request.path().startsWith(ENDLESS)) {
+        boolean quiet = request.path().startsWith(QUIET);
+        if (!quiet && !request.path().startsWith(ENDLESS)) {
             response.end(ANSWER);
             return;
         }
         CompletableFuture<Long> reset = upstreamReset(request.path());
         response.closeHandler(closed -> reset.complete(System.nanoTime()));
         response.exceptionHandler(failure -> reset.complete(System.nanoTime()));
+        // The first chunk is what makes the gateway send the response head on to its client.
         response.setChunked(true).write(CHUNK);
+        if (quiet) {
+            return;
+        }
         vertx.setPeriodic(CHUNK_INTERVAL_MILLIS, timer -> {
             if (reset.isDone() || response.closed()) {
                 vertx.cancelTimer(timer);
@@ -166,7 +185,19 @@ class GatewayEdgeRelayFailureResetTest {
             leftNanos.add(readHeadThenClose(ENDLESS + "-" + i));
         }
 
-        assertEachUpstreamResetAndTheRouteServes(pooled, leftNanos);
+        assertEachUpstreamResetAndTheRouteServes(ENDLESS, pooled, leftNanos);
+    }
+
+    @Test
+    @DisplayName("HTTP/1.1 — clients closing after the head of a quiet upstream free every pooled upstream connection")
+    void http1ClientClosingAfterTheHeadOfAQuietUpstreamResetsTheUpstreamExchange() throws Exception {
+        int pooled = new PoolOptions().getHttp1MaxSize();
+        List<Long> leftNanos = new ArrayList<>();
+        for (int i = 0; i < pooled; i++) {
+            leftNanos.add(readHeadThenClose(QUIET + "-" + i));
+        }
+
+        assertEachUpstreamResetAndTheRouteServes(QUIET, pooled, leftNanos);
     }
 
     @Test
@@ -179,18 +210,32 @@ class GatewayEdgeRelayFailureResetTest {
             leftNanos.add(readHeadThenReset(http2Client, ENDLESS + "-" + i));
         }
 
-        assertEachUpstreamResetAndTheRouteServes(pooled, leftNanos);
+        assertEachUpstreamResetAndTheRouteServes(ENDLESS, pooled, leftNanos);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — streams reset after the head of a quiet upstream free every pooled upstream connection")
+    void http2ClientResettingAfterTheHeadOfAQuietUpstreamResetsTheUpstreamExchange() throws Exception {
+        int pooled = new PoolOptions().getHttp1MaxSize();
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        List<Long> leftNanos = new ArrayList<>();
+        for (int i = 0; i < pooled; i++) {
+            leftNanos.add(readHeadThenReset(http2Client, QUIET + "-" + i));
+        }
+
+        assertEachUpstreamResetAndTheRouteServes(QUIET, pooled, leftNanos);
     }
 
     /**
-     * Awaits the reset of every endless upstream request, then sends a request that follows on the same
-     * route, and asserts that each reset and the answer came within {@link #RESET_BOUND_MILLIS}.
+     * Awaits the reset of every upstream request under {@code prefix}, then sends a request that follows on
+     * the same route, and asserts that each reset and the answer came within {@link #RESET_BOUND_MILLIS}.
      */
-    private void assertEachUpstreamResetAndTheRouteServes(int pooled, List<Long> leftNanos) throws Exception {
+    private void assertEachUpstreamResetAndTheRouteServes(String prefix, int pooled, List<Long> leftNanos)
+            throws Exception {
         List<Long> resetMillis = new ArrayList<>();
         for (int i = 0; i < pooled; i++) {
-            long reset = Awaits.connect(upstreamReset(ENDLESS + "-" + i),
-                    "the upstream request of endless answer " + i + " to be reset after its client left");
+            long reset = Awaits.connect(upstreamReset(prefix + "-" + i),
+                    "the upstream request of " + prefix + " answer " + i + " to be reset after its client left");
             resetMillis.add(TimeUnit.NANOSECONDS.toMillis(reset - leftNanos.get(i)));
         }
         HttpClient http1Client = client(HttpVersion.HTTP_1_1);
@@ -232,7 +277,7 @@ class GatewayEdgeRelayFailureResetTest {
         socket.write("GET /" + ROUTE + path + " HTTP/1.1" + CRLF + "Host: localhost:" + frontServer.actualPort()
                 + CRLF + CRLF);
         String exchange = Awaits.connect(head, "the response head of " + path + " to arrive");
-        assertTrue(exchange.startsWith("HTTP/1.1 200 "), () -> "the endless answer is relayed: " + exchange);
+        assertTrue(exchange.startsWith("HTTP/1.1 200 "), () -> "the answer head of " + path + " is relayed: " + exchange);
         awaitUpstreamStarted(path);
         Awaits.connect(socket.close(), "the client of " + path + " to close its connection");
         return System.nanoTime();
@@ -250,7 +295,7 @@ class GatewayEdgeRelayFailureResetTest {
         HttpClientResponse response = Awaits.connect(request.end().compose(sent -> request.response()),
                 "the response head of " + path + " to arrive");
         response.exceptionHandler(GatewayEdgeRelayFailureResetTest::ignoreOwnReset);
-        assertEquals(200, response.statusCode(), "the endless answer is relayed");
+        assertEquals(200, response.statusCode(), () -> "the answer head of " + path + " is relayed");
         awaitUpstreamStarted(path);
         request.reset();
         return System.nanoTime();

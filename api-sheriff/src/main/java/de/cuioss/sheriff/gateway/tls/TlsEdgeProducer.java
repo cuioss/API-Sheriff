@@ -30,6 +30,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound;
+import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
@@ -77,6 +78,30 @@ import org.jspecify.annotations.Nullable;
  * off a WebSocket or gRPC stream the route still allows to be idle. The margin lets the inner close
  * (a WebSocket close frame, gRPC trailers, the HTTP idle close) traverse the relay first. No
  * configuration key reaches the value.
+ * <p>
+ * <strong>A disabled HTTP idle timeout leaves the relay as the bound.</strong> A
+ * {@code quarkus.http.idle-timeout} of zero is read by Vert.x as "no idle timeout", so it contributes no
+ * bound to the derivation: the relay idle timeout is then the longer of the gRPC stream-idle bound and the
+ * longest WebSocket idle timeout, plus the margin — six minutes unless a WebSocket route declares an idle
+ * timeout above five minutes. It never
+ * undercuts an inner bound the gateway still applies, since the terminated listener then applies none of
+ * its own. It does mean that the relay becomes the effective idle bound of a terminated connection: an
+ * idle connection behind the front is closed after the relay idle timeout even though the operator
+ * disabled the HTTP idle timeout.
+ * <p>
+ * <strong>The relay's backend dial is bounded.</strong> The relay's dial client carries the fixed
+ * {@link #RELAY_CONNECT_TIMEOUT} of ten seconds as its connect timeout, replacing the implicit Vert.x
+ * default of sixty seconds. A connection the front has routed keeps its undecided-connection slot until
+ * that dial settles, so the dial window counts against the front's cap. The connect timeout bounds the
+ * TCP connect: a target named by host name is resolved before the connect starts, and that lookup is
+ * bounded by the DNS resolver's own query timeout, not by this value, while the slot stays held. A
+ * dial that has not connected within the connect timeout fails, and the relay closes the accepted
+ * client connection. Like the idle timeout, the connect timeout is not configurable.
+ * <p>
+ * <strong>Front refusals are counted.</strong> The front listener reports every connection it closes
+ * at accept — beyond its undecided-connection cap or beyond a source's share of it — to a recorder
+ * this producer wires to {@link SheriffMetrics}, so the refusal rate is visible on
+ * {@value SheriffMetrics#FRONT_CONNECTIONS_REFUSED_TOTAL}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -91,16 +116,27 @@ public class TlsEdgeProducer {
     /** How much longer than the longest inner idle bound a relayed leg may stay idle. */
     static final Duration RELAY_IDLE_MARGIN = Duration.ofSeconds(60);
 
+    /**
+     * How long the relay's dial client may take to connect to a backend before the dial fails. A
+     * routed connection keeps its undecided-connection slot until the dial settles, so this bounds how
+     * long the TCP connect of the dial phase holds a slot of the front's cap; the host-name lookup of a
+     * target named by host name precedes the connect and is bounded by the DNS resolver's own query
+     * timeout instead.
+     */
+    static final Duration RELAY_CONNECT_TIMEOUT = Duration.ofSeconds(10);
+
     private final Vertx vertx;
     private final GatewayConfig gatewayConfig;
     private final ResolvedTopology topology;
     private final RouteTable routeTable;
+    private final SheriffMetrics metrics;
     private final Duration httpIdleTimeout;
     private final int publicPort;
     private final int internalHttpsPort;
     private final RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
 
     private @Nullable NetClient netClient;
+    private @Nullable NetClientOptions dialClientOptions;
     private @Nullable SniFrontListener listener;
 
     /**
@@ -109,6 +145,7 @@ public class TlsEdgeProducer {
      * @param topology          the resolved topology the passthrough aliases are looked up against
      * @param routeTable        the route table whose WebSocket idle timeouts the relay idle timeout must
      *                          not undercut
+     * @param metrics           the metrics adapter the front listener's refusals are counted on
      * @param httpIdleTimeout   the idle timeout of the terminated Quarkus HTTPS listener
      *                          ({@code quarkus.http.idle-timeout}), which the relay idle timeout must
      *                          not undercut
@@ -116,7 +153,9 @@ public class TlsEdgeProducer {
      * @param internalHttpsPort the internal loopback port the terminated Quarkus HTTPS listener owns
      */
     @Inject
+    @SuppressWarnings("java:S107") // CDI constructor injection: each parameter is one injected collaborator or key
     public TlsEdgeProducer(Vertx vertx, GatewayConfig gatewayConfig, ResolvedTopology topology, RouteTable routeTable,
+            SheriffMetrics metrics,
             @ConfigProperty(name = "quarkus.http.idle-timeout", defaultValue = "30M") Duration httpIdleTimeout,
             @ConfigProperty(name = "sheriff.tls.public-port", defaultValue = "8443") int publicPort,
             @ConfigProperty(name = "sheriff.tls.internal-https-port", defaultValue = "8444") int internalHttpsPort) {
@@ -124,6 +163,7 @@ public class TlsEdgeProducer {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.topology = Objects.requireNonNull(topology, "topology");
         this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
+        this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.httpIdleTimeout = Objects.requireNonNull(httpIdleTimeout, "httpIdleTimeout");
         this.publicPort = publicPort;
         this.internalHttpsPort = internalHttpsPort;
@@ -165,13 +205,56 @@ public class TlsEdgeProducer {
         }
         Duration relayIdleTimeout = relayIdleTimeout(httpIdleTimeout, routeTable);
         LOGGER.debug("Relay idle timeout derived as %s", relayIdleTimeout);
-        this.netClient = vertx.createNetClient(relayClientOptions(relayIdleTimeout));
+        NetClientOptions clientOptions = relayClientOptions(relayIdleTimeout);
+        this.dialClientOptions = clientOptions;
+        this.netClient = vertx.createNetClient(clientOptions);
         PassthroughRelay relay = new PassthroughRelay(netClient, relayedPeers);
         RelayTarget terminatedTarget = new RelayTarget(TERMINATED_HOST, internalHttpsPort);
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, publicPort,
-                relayIdleTimeout);
+                relayIdleTimeout, this::recordRefusal);
         this.listener = front;
         awaitBind(front);
+    }
+
+    /**
+     * Test seam: the options {@link #onStartup} built the relay's dial client from, so a test can
+     * observe the idle and connect timeouts the client was created with instead of waiting for either to
+     * elapse. Reading them changes nothing: the returned value is a copy.
+     *
+     * @return a copy of the dial-client options, or empty when the front listener was not started —
+     *         before {@link #onStartup}, or because {@code tls.passthrough_sni} is empty
+     */
+    Optional<NetClientOptions> dialClientOptions() {
+        NetClientOptions current = dialClientOptions;
+        return current == null ? Optional.empty() : Optional.of(new NetClientOptions(current));
+    }
+
+    /**
+     * Test seam: the front listener {@link #onStartup} started, so a test can observe how its server
+     * was configured.
+     *
+     * @return the started front listener, or empty when it was not started — before
+     *         {@link #onStartup}, or because {@code tls.passthrough_sni} is empty
+     */
+    Optional<SniFrontListener> frontListener() {
+        return Optional.ofNullable(listener);
+    }
+
+    /**
+     * Counts one connection the front listener refused at accept on the metric for its reason. This is
+     * the refusal recorder {@link #onStartup} hands the front listener; it is package-private so a test
+     * can pin the reason-to-label mapping without saturating a front of the production cap. The mapping
+     * is a switch expression, which the compiler checks for exhaustiveness: a new
+     * {@link SniFrontListener.Refusal} constant does not compile until it is given a counter.
+     *
+     * @param refusal why the front closed the connection
+     */
+    void recordRefusal(SniFrontListener.Refusal refusal) {
+        Runnable counter = switch (refusal) {
+            case CAP -> metrics::recordFrontConnectionRefusedAtCap;
+            case SOURCE_SHARE -> metrics::recordFrontConnectionRefusedAtSourceShare;
+        };
+        counter.run();
     }
 
     /**
@@ -182,8 +265,15 @@ public class TlsEdgeProducer {
      * timeout across {@code routeTable}. The route table materializes that timeout on every WebSocket
      * route, the 300-second default included for a route that declares none, and leaves it absent on
      * every other route. The result is therefore never shorter than any of them.
+     * <p>
+     * <strong>The zero rule.</strong> An {@code httpIdleTimeout} of zero — Vert.x's "no idle timeout" —
+     * is the absence of a bound, not a bound of zero, and the derivation needs no special case for it: as
+     * the shortest candidate it never wins the comparison, so the result is the longer of the gRPC
+     * stream-idle bound and the longest WebSocket idle timeout, plus the margin. The relay is then the
+     * effective idle bound of a terminated connection.
      *
-     * @param httpIdleTimeout the idle timeout of the terminated Quarkus HTTPS listener
+     * @param httpIdleTimeout the idle timeout of the terminated Quarkus HTTPS listener; zero when the
+     *                        operator disabled it
      * @param routeTable      the route table whose WebSocket routes are compared
      * @return the relay idle timeout
      */
@@ -209,14 +299,35 @@ public class TlsEdgeProducer {
     /**
      * The options of the relay's dial client: the relay idle timeout, set exactly as the front server
      * sets it ({@link SniFrontListener#applyIdleTimeout}), so both legs of a relayed connection carry
-     * the same bound.
+     * the same bound, and the fixed {@link #RELAY_CONNECT_TIMEOUT} as the connect timeout.
      *
      * @param relayIdleTimeout the derived relay idle timeout; positive
-     * @return the dial-client options carrying that idle timeout
+     * @return the dial-client options carrying that idle timeout and the fixed connect timeout
      */
     static NetClientOptions relayClientOptions(Duration relayIdleTimeout) {
+        return relayClientOptions(relayIdleTimeout, RELAY_CONNECT_TIMEOUT);
+    }
+
+    /**
+     * The options of the relay's dial client with an explicit connect timeout, so a test can shorten
+     * the dial bound instead of waiting for {@link #RELAY_CONNECT_TIMEOUT}. Production uses
+     * {@link #relayClientOptions(Duration)}.
+     *
+     * @param relayIdleTimeout the derived relay idle timeout; positive
+     * @param connectTimeout   how long a backend dial may take to connect; at least one millisecond
+     *                         and at most {@link Integer#MAX_VALUE} milliseconds
+     * @return the dial-client options carrying both timeouts
+     * @throws IllegalArgumentException when {@code connectTimeout} is outside that range — Vert.x takes
+     *                                  whole {@code int} milliseconds, and zero would mean no bound
+     */
+    static NetClientOptions relayClientOptions(Duration relayIdleTimeout, Duration connectTimeout) {
+        long connectTimeoutMillis = Objects.requireNonNull(connectTimeout, "connectTimeout").toMillis();
+        if (connectTimeoutMillis < 1 || connectTimeoutMillis > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("connect timeout out of range: " + connectTimeout);
+        }
         NetClientOptions clientOptions = new NetClientOptions();
         SniFrontListener.applyIdleTimeout(clientOptions, relayIdleTimeout);
+        clientOptions.setConnectTimeout((int) connectTimeoutMillis);
         return clientOptions;
     }
 

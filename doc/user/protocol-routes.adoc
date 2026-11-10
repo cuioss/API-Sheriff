@@ -100,7 +100,9 @@ contact* -- it takes no relay budget and the upstream is never dialled:
 | `Allow: GET`
 
 | Not HTTP/1.1 -- an HTTP/2 request, for example -- or missing the `Connection: Upgrade` /
-  `Upgrade: websocket` pair (a plain `GET`)
+  `Upgrade: websocket` pair (a plain `GET`). `Upgrade` must be a token of the *first* `Connection`
+  header line, and `websocket` the whole value of an `Upgrade` line rather than one entry of a list
+  such as `chat, websocket`
 | `426`
 | On HTTP/1.x `Upgrade: websocket` and `Connection: Upgrade`; on HTTP/2 none, as HTTP/2 forbids both
 
@@ -117,19 +119,46 @@ contact* -- it takes no relay budget and the upstream is never dialled:
   base64 (RFC 4648 §4) of a 16-byte nonce: exactly 24 characters, the last two `==`
 | `400`
 | --
+
+| A declared `Content-Length` above 8192 bytes -- reachable only on a gateway that admits a `GET`
+  body through `security_defaults.allow_get_with_content_length_body`; without that opt-in the
+  gateway's framing check refuses a `GET` declaring a body before route selection, so this check never
+  sees one
+| `413`
+| `Connection: close` -- the gateway closes the connection after the answer, since the body is never
+  read
+
+| A request URI that cannot be parsed as a URI -- reached on a route with
+  `security_filter.profile: minimal`; under every other profile the route's query-parameter check
+  refuses such a URI before this one
+| `400`
+| --
 |===
 
 Each refusal has no body; like every response on the route, it carries the route's
 `security_headers` and any `Set-Cookie` line the session handling wrote for the request, such as a
 refreshed session cookie. The rules are checked in a fixed order -- the method,
-the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key --
-and the first one broken decides the answer. A WebSocket can only be opened over HTTP/1.1, so a client that
-negotiated HTTP/2 with the gateway has to offer HTTP/1.1 for its WebSocket connections.
+the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key, the
+declared body length, the request URI -- and the first one broken decides the answer. The last two,
+and the exact form the upgrade headers must take, mirror what the gateway's HTTP stack
+(vertx-core 4.5.34) would itself refuse in a handshake, so a request the gateway lets through is not
+refused by the stack after the upstream was dialled. A
+WebSocket can only be opened over HTTP/1.1, so a client that negotiated HTTP/2 with the gateway has to
+offer HTTP/1.1 for its WebSocket connections.
+
+*A declared body above 8192 bytes closes the connection, whichever check refuses.* The gateway never
+reads the body of a refused handshake. A request that declares more than 8192 bytes and breaks an
+earlier rule -- answered `405`, `426` or `400` -- keeps that status, and on HTTP/1.x the gateway closes
+the connection after the answer exactly as it does after the `413`: the answer carries
+`Connection: close`, a `426` `Connection: Upgrade, close`. On HTTP/2 only that request's stream is
+ended; the connection stays open.
 
 *A failed client upgrade is answered `502`.* The gateway dials the upstream before it upgrades the
 client connection. If the upstream accepts the upgrade and the client upgrade then fails, the gateway
 closes the upstream connection and answers the client `502`. Where the HTTP stack has already refused
-the client's handshake itself -- with `400` or `426` on HTTP/1.1 -- that answer stands instead.
+the client's handshake itself -- with `400`, `405`, `413` or `426` on HTTP/1.1 -- that answer stands
+instead; each of those is a refusal the gateway's own check above answers first, so it is not expected
+for a request that check let through.
 
 === Tuning `websocket.idle_timeout_seconds`
 

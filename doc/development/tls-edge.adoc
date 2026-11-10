@@ -47,11 +47,22 @@ On each accepted connection an `Incoming` reassembles the ClientHello:
 
 The data, exception and close handlers and the deadline timer of a connection all run on that
 connection's Vert.x event loop, so the reassembly buffer, the parser and the `settled` latch are
-single-threaded and need no synchronization. The one state shared across the front's event loops is
-the counter of the undecided-connection cap below: it is claimed with an atomic increment, rolled back
-with an atomic decrement when the claim overshoots the cap, and returned with an atomic decrement
-exactly once per admitted connection, by whichever of the route decision, the connection closing or
-failing, and the deadline comes first.
+single-threaded and need no synchronization. Three states are shared across the front's event loops:
+
+* *The counter of the undecided-connection cap* is claimed with an atomic increment and rolled back
+  with an atomic decrement when the claim overshoots the cap.
+* *The per-source counts of the share* are claimed and returned inside `ConcurrentHashMap.compute` on
+  the source key, which is atomic per key. A source is removed when its count reaches zero, so the map
+  never holds more entries than there are held slots. A share refusal rolls back the global slot the
+  connection had already claimed, so a refused connection holds neither.
+* *The time of the last refusal `WARN` per reason* is advanced with a compare-and-set, so of two
+  concurrent refusals at most one logs at `WARN`.
+
+An admitted connection returns its two slots together, exactly once. Whichever comes first of the
+route decision, the connection closing or failing, and the deadline sets the `settled` latch. A close,
+a failure or the deadline returns the slots at once. The route decision does not: the connection keeps
+its slots until the relay's backend dial settles (see <<relay-dial-bound>>), and the listener returns
+them in the single completion handler of the dial-phase future `PassthroughRelay.relay(...)` returns.
 
 The front listener is *conditional*: `TlsEdgeProducer` constructs and starts it only when
 `tls.passthrough_sni` is non-empty. When passthrough is unconfigured the front is never created, the
@@ -61,8 +72,8 @@ overhead -- the default single-listener topology is unchanged.
 [#front-listener-bounds]
 === The bounds of the front
 
-Three bounds keep a connection the front has not routed yet, or a relay nobody uses, from being held
-indefinitely. None of them is configurable.
+Four bounds keep a connection the front has not routed yet, or a relay nobody uses, from being held
+indefinitely, or one source from holding the others off. None of them is configurable.
 
 * *ClientHello deadline* -- `SniFrontListener.CLIENT_HELLO_DEADLINE`, 10 s. The timer is armed when the
   connection is accepted and cancelled when the connection settles; a connection that has not
@@ -71,7 +82,8 @@ indefinitely. None of them is configurable.
   connection. The close is logged at `DEBUG` with the disposition only, never the bytes received.
 
 * *Undecided-connection cap* -- `SniFrontListener.MAX_UNDECIDED_CONNECTIONS`, 1024 connections
-  accepted and not yet settled, across every event loop of the front. A connection accepted beyond the
+  accepted and not yet routed, or routed and still waiting for the relay's backend dial to settle,
+  across every event loop of the front. A connection accepted beyond the
   cap is closed at once, without reading from it. An undecided connection has received less than
   `ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES` (32 KiB) -- the parser reaches its verdict as soon as
   that much has arrived -- and between two reads holds those bytes in three copies: the listener's
@@ -81,7 +93,7 @@ indefinitely. None of them is configurable.
   deadline window per wave of such sockets -- the deadline frees every slot again -- and that bounded
   delay is preferred over unbounded pre-route memory.
 +
-*What the 96 MiB does not include.* Three amounts lie outside it. Each is stated for the transport's
+*What the 96 MiB does not include.* Two amounts lie outside it. Each is stated for the transport's
 default read sizing: Netty's adaptive receive allocator, whose largest single read is 64 KiB. The
 front sets no receive-buffer option.
 +
@@ -92,10 +104,23 @@ front sets no receive-buffer option.
    and as the copy offered to the parser. The extension walk of a complete ClientHello copies it once
    more. That is at most 64 + 64 + 32 KiB per event loop, since an event loop processes one read at a
    time.
-.. *The dialing window.* A decided connection returns its slot before the relay dials its backend. It
-   keeps its replay buffer, below 96 KiB, until that dial succeeds or fails. The dial client's connect
-   timeout bounds that window -- the Vert.x default of 60 s, since `TlsEdgeProducer` sets none -- and the
-   cap does not.
++
+*The dialing window is inside the cap.* A decided connection keeps its slot while the relay dials its
+backend, so a dialing connection counts against the cap and its source's share like an undecided one.
+It keeps the slot until the dial settles whether or not its client is still connected: a client that
+leaves during the dial does not hand the slot back early, so no dialing connection escapes the cap.
+At the route decision the listener drops the parser and its own reference to the replay buffer, so a
+dialing connection holds only the replay buffer, below 96 KiB, and the relay drops that too as soon as
+the client is known gone. The window is bounded by the backend's host-name resolution and
+`TlsEdgeProducer.RELAY_CONNECT_TIMEOUT`, 10 s -- see <<relay-dial-bound>>.
+
+* *Per-source share* -- `SniFrontListener.MAX_UNDECIDED_PER_SOURCE`, a fixed quarter of the cap (256
+  connections), held by one source at the same time. A connection accepted while its source already
+  holds its full share is closed at once, without reading from it, exactly like one beyond the cap. One
+  source filling its share therefore leaves three quarters of the cap to every other source, instead of
+  starving them all. The quarter mirrors the quarter derivation of
+  link:../adr/0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020].
+  See <<front-refusal-keying>> for what a source is.
 
 * *Relay idle timeout* -- the Vert.x idle timeout of the front's `NetServer`, which `TlsEdgeProducer`
   also sets on the relay's dial `NetClient`, so both legs of every relayed connection -- passthrough
@@ -111,9 +136,106 @@ front sets no receive-buffer option.
   margin lets the inner close -- a WebSocket close frame, gRPC trailers, the HTTP idle close -- cross
   the relay first. No configuration key reaches the value; it moves only with the values it is derived
   from.
++
+*A zero HTTP idle timeout is no bound.* Vert.x reads `quarkus.http.idle-timeout=0` as "no idle timeout",
+and the derivation treats it the same way without a special case: as the shortest candidate it never
+wins the comparison, so the result is `max(gRPC stream-idle bound, longest WebSocket idle) + 60 s`. That
+never undercuts an inner bound -- the terminated listener then applies none of its own -- but it makes the
+relay the effective idle bound of every terminated connection behind the front.
++
+*A refuted premise.* The work that reviewed this bound started from the assumption that
+`quarkus.http.idle-timeout=0` shortens the relay idle timeout. Reading `relayIdleTimeout(...)` refutes
+it: the method takes the longest of the inner bounds and adds the margin, so a zero HTTP idle timeout
+contributes no bound and cannot make the result shorter. The method body was therefore left unchanged,
+and the zero-HTTP-idle cases of `TlsEdgeProducerTest.RelayIdleTimeoutDerivation` pin that behaviour so a
+later change cannot turn the assumption true unnoticed.
++
+*Why the value stays derived and fixed (option b).* The alternative considered was a configuration key
+for the relay idle timeout (option a). It was rejected: the derivation already guarantees that the relay
+never undercuts an inner bound, and a configured value could break that guarantee; the only safe values
+of such a key would be the derived one or a larger one, so it would add an operator surface without a
+safe use the derivation does not already cover. An operator who wants idle terminated connections kept
+open longer sets `quarkus.http.idle-timeout` to that duration, which the derivation follows. The method
+body of `relayIdleTimeout(...)` is pinned by `TlsEdgeProducerTest` for a zero HTTP idle timeout, a long
+WebSocket idle timeout and a long HTTP idle timeout.
 
 The threat these bounds answer is recorded under
 link:../security-threat-model.adoc#gw-07-sni-front[GW-07 -- the SNI front listener].
+
+[#relay-dial-bound]
+=== The relay's backend dial
+
+*The dial is bounded.* `TlsEdgeProducer.relayClientOptions(...)` sets the fixed
+`TlsEdgeProducer.RELAY_CONNECT_TIMEOUT`, 10 s, as the connect timeout of the relay's dial `NetClient`,
+replacing the implicit Vert.x default of 60 s. A dial that has not connected by then fails, and the relay
+closes the accepted client connection. The value is not configurable; a package-private overload that
+takes the connect timeout exists only so a test can shorten it.
+
+*The connect timeout bounds the TCP connect, not the name lookup.* A target named by host name -- a
+passthrough backend whose topology alias resolves to a host name, and the terminated listener's
+`localhost` -- is resolved before the connect starts. The lookup is bounded by the DNS resolver's own
+query timeout, not by `RELAY_CONNECT_TIMEOUT`, so the whole dial can take longer than 10 s, and the
+connection keeps its slot during the lookup as well.
+
+*The slot is held until the dial settles.* `PassthroughRelay.relay(...)` returns a `Future<Void>` that
+completes exactly once, when the dial settles: it succeeds -- the relay is established, or, for a
+client already gone, the backend leg is closed -- or it fails or times out. The client closing during
+the dial does *not* complete the future; it only releases the buffered ClientHello (see below), and the
+dial keeps running until it settles. `SniFrontListener` returns the connection's two slots -- of the
+cap and of its source's share, as one unit -- in that future's single completion handler, so a dialing
+connection holds its slots until the dial settles, bounded by the name lookup and the 10 s connect
+timeout, whether or not the client is still connected. The client's close and the dial callbacks all
+run on the event loop of the accepted connection. The ClientHello deadline is still cancelled at the
+route decision; from then on the name lookup and the connect timeout bound the connection instead.
+
+*The ClientHello is released early.* At the route decision the listener's `Incoming` drops its parser
+and its reference to the replay buffer, so the parser's two copies of the ClientHello are released at
+once and the relay is the buffer's only owner. The relay keeps the buffer in a single-owner holder: the
+dial success takes it to replay it, and the client's close handler clears it, so a client that leaves
+during the dial frees the bytes at once rather than when the dial later settles. That is all the close
+releases: the slot stays held until the dial settles. A dial that succeeds after the client left still
+gets no session -- its backend leg is closed at once.
+
+[#front-refusal-keying]
+=== Refusals at accept: the source key, the WARN and the counter
+
+*The source is the TCP peer address.* `SniFrontListener` keys the share on the accepted socket's
+`remoteAddress().hostAddress()`; every connection whose peer address is unavailable shares one fallback
+source. The edge's `SourceKeys` (`edge/admission`) is deliberately *not* reused, for two reasons:
+
+* it resolves a source from an `HttpServerRequest` -- the address a trusted forwarder reported and the
+  `Host` header -- and neither exists before the ClientHello at L4;
+* importing it from `tls` would close a package cycle: `edge.admission.SourceKeys` ->
+  `edge.request.EdgeRequests` -> `tls.RelayedPeerRegistry`. The `EdgeSubPackageArchTest` guard
+  (ADR-0068) judges only the sub-packages of `edge`, so nothing would fail; the cycle is avoided by
+  design, not by a test.
+
+Behind an L4 load balancer that does not propagate client addresses, every client shares one source,
+and the share then acts as a global sub-cap of 256 concurrent undecided connections. That still admits
+tens of thousands of one-round-trip handshakes per second, and is an accepted trade-off. Like every
+front bound, the share is not configurable.
+
+*Every refusal is visible.* A connection closed at accept -- beyond the cap or beyond its source's
+share -- is:
+
+* *counted* on `sheriff_front_connections_refused_total{reason}`, with `reason` `cap` or
+  `source_share`. The listener stays free of Micrometer: it reports each refusal to a plain
+  `Consumer<SniFrontListener.Refusal>` callback, which `TlsEdgeProducer` wires to the two record methods
+  of `SheriffMetrics`. Each of those fixes its own label value, so the label set is closed by
+  construction, and the metrics adapter needs no type from `tls`.
+* *logged* as `WARN ApiSheriff-146` (`ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED`), at most once
+  per `SniFrontListener.SATURATION_WARN_INTERVAL` (60 s, measured on the monotonic `System.nanoTime()`
+  clock) per reason, with the reason token (`cap` / `source_share` -- the same spelling as the metric
+  label), the bound that was full and the
+  window. Every further refusal of that reason inside the window is logged at `DEBUG`. Neither line
+  ever names the peer address or a received byte.
+
+The package-private constructor of `SniFrontListener` takes the share, the warn window, the clock, the
+source key and the recorder explicitly. A test drives a second warn window by advancing its own clock
+instead of waiting a minute, and assigns connections to sources through the source key, because a
+second loopback address is not available on every platform; the production key itself,
+`SniFrontListener.sourceOf`, is pinned by a case in which two connections from one address share one
+share.
 
 == The Accept-Time L4/L7 Split
 

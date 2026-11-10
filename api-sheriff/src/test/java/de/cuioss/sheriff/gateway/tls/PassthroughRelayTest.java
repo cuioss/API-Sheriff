@@ -17,23 +17,33 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
+import java.io.Closeable;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
-import io.vertx.core.Context;
-import io.vertx.core.Handler;
-import io.vertx.core.Promise;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
+import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;
@@ -48,16 +58,24 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for {@link PassthroughRelay}'s opaque L4 pipe: byte fidelity (including the replayed
  * ClientHello prefix), integrity under backpressure with a large payload, half-close propagation on
- * a graceful {@code FIN}, and abort propagation when a leg is closed. Exercised against real Vert.x
- * sockets so the backpressure and close semantics are the production ones.
+ * a graceful {@code FIN}, abort propagation when a leg is closed, and the bounded, reported dial
+ * phase. Exercised against real Vert.x sockets so the backpressure, close and connect-timeout
+ * semantics are the production ones.
  */
 @DisplayName("PassthroughRelay")
 @Tag("isolated-fork")
+@EnableTestLogger(debug = PassthroughRelay.class)
 class PassthroughRelayTest {
 
     private static final String HOST = LoopbackHost.ADDRESS;
-    /** {@link Handler#handle}, invoked reflectively so a chained handler needs no unchecked cast. */
-    private static final Method HANDLE = handleMethod();
+    /** The relay's diagnostic for a client that left during the dial, written while handling the close. */
+    private static final String HELLO_DROPPED_LINE = "ClientHello dropped";
+    /** An idle timeout no case here can reach. */
+    private static final Duration LONG_IDLE = Duration.ofMinutes(31);
+    /** The shortened connect timeout standing in for {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}. */
+    private static final Duration DIAL_TIMEOUT = Duration.ofMillis(500);
+    /** How much later than {@link #DIAL_TIMEOUT} a loaded machine may report the abandoned dial. */
+    private static final Duration DIAL_SLACK = Duration.ofSeconds(4);
 
     private final RelayedPeerRegistry relayedPeers = new RelayedPeerRegistry();
     private Vertx vertx;
@@ -255,9 +273,9 @@ class PassthroughRelayTest {
         CompletableFuture<Void> dialRequested = new CompletableFuture<>();
         CompletableFuture<Void> releaseDial = new CompletableFuture<>();
         CompletableFuture<Void> relaySawClose = new CompletableFuture<>();
-        PassthroughRelay relay = new PassthroughRelay(
-                heldDialClient(vertx.createNetClient(), dialRequested, releaseDial), relayedPeers);
-        int frontPort = startHarness(accepted -> relay.relay(closeObserved(accepted, relaySawClose),
+        PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                () -> dialRequested.complete(null), releaseDial), relayedPeers);
+        int frontPort = startHarness(accepted -> relay.relay(RelayTestProxies.closeObserved(accepted, relaySawClose),
                 Buffer.buffer("PREFIX"), backend, RelayKind.TERMINATED, ""));
 
         NetSocket client = connectClient(frontPort, socket -> {
@@ -273,6 +291,107 @@ class PassthroughRelayTest {
                 () -> assertEquals(0, backendReceived.length(),
                         "the departed client's ClientHello is never replayed, so no session was started"),
                 () -> assertEquals(0, relayedPeers.size(), "no relayed-peer entry remains"));
+    }
+
+    /**
+     * A backend that never completes the TCP handshake. The relay's dial must be abandoned by the dial
+     * client's connect timeout, and closing the client is the only correct reaction; the wider bound
+     * is the Awaits ceiling, far below the Vert.x default of sixty seconds the connect timeout replaces.
+     * <p>
+     * The client is closed not before the connect timeout, which is what tells a timed-out dial from a
+     * refused one: a dial to a port nothing listens on fails at once with a reset, the wrong signal for
+     * this bound.
+     */
+    @Test
+    @DisplayName("abandons a dial to a backend that never answers within the connect timeout and closes the client")
+    void abandonsANeverAnsweringDialWithinTheConnectTimeout() throws Exception {
+        try (NeverAnsweringBackend backend = NeverAnsweringBackend.start()) {
+            PassthroughRelay relay = new PassthroughRelay(
+                    vertx.createNetClient(TlsEdgeProducer.relayClientOptions(LONG_IDLE, DIAL_TIMEOUT)), relayedPeers);
+            CompletableFuture<Future<Void>> dialPhase = new CompletableFuture<>();
+            int frontPort = startHarness(accepted -> dialPhase.complete(relay.relay(accepted,
+                    Buffer.buffer("PREFIX"), backend.target(), RelayKind.TERMINATED, "")));
+            CompletableFuture<Long> clientClosed = new CompletableFuture<>();
+            long startedNanos = System.nanoTime();
+
+            connectClient(frontPort, socket -> socket.closeHandler(v -> clientClosed.complete(System.nanoTime())));
+            long closedAt = Awaits.connect(clientClosed, "the relay to give up the dial and close the client");
+            Future<Void> phase = Awaits.connect(dialPhase, "the relay to hand back its dial-phase future");
+            Awaits.connect(phase, "the dial phase to be over once the dial timed out");
+
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(closedAt - startedNanos);
+            assertAll("the dial is bounded by the connect timeout, and only by it",
+                    () -> assertTrue(elapsedMillis >= DIAL_TIMEOUT.toMillis(),
+                            "the client is closed by the timed-out dial, not by a refused one: closed after "
+                                    + elapsedMillis + " ms"),
+                    () -> assertTrue(elapsedMillis < DIAL_TIMEOUT.plus(DIAL_SLACK).toMillis(),
+                            "the dial is abandoned within the connect timeout: closed after " + elapsedMillis + " ms"),
+                    () -> assertEquals(0, relayedPeers.size(), "a dial that never connected registers nothing"));
+        }
+    }
+
+    /**
+     * A client that leaves while the backend dial is held does not end the dial phase: the dial keeps
+     * its connection's slot at the front until it settles. The dial here succeeds once released.
+     */
+    @Test
+    @DisplayName("keeps the dial phase open when the client leaves, until the held dial succeeds")
+    void dialPhaseOutlastsTheClientUntilTheDialSucceeds() throws Exception {
+        assertDialPhaseOutlastsTheClient(startSignalBackend(socket -> {
+        }));
+    }
+
+    /**
+     * As {@link #dialPhaseOutlastsTheClientUntilTheDialSucceeds()}, with a dial that fails once released:
+     * the target refuses the connection, so the dial settles by failing.
+     */
+    @Test
+    @DisplayName("keeps the dial phase open when the client leaves, until the held dial fails")
+    void dialPhaseOutlastsTheClientUntilTheDialFails() throws Exception {
+        assertDialPhaseOutlastsTheClient(new RelayTarget(HOST, UnreachablePort.pick()));
+    }
+
+    /**
+     * Holds the relay's dial to {@code backend}, lets the client leave, and only then releases the dial.
+     * The dial-phase future must still be incomplete once the relay's side of the client connection has
+     * seen the close — the close handler has run by then — and complete once the released dial settles.
+     * The buffered ClientHello, in contrast, is dropped at the close, which the relay records while
+     * handling it. The matched control reads the future incomplete while the client is connected and
+     * the dial pending.
+     */
+    private void assertDialPhaseOutlastsTheClient(RelayTarget backend) throws Exception {
+        CompletableFuture<Void> dialRequested = new CompletableFuture<>();
+        CompletableFuture<Void> releaseDial = new CompletableFuture<>();
+        CompletableFuture<Void> relaySawClose = new CompletableFuture<>();
+        PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                () -> dialRequested.complete(null), releaseDial), relayedPeers);
+        CompletableFuture<Future<Void>> dialPhase = new CompletableFuture<>();
+        int frontPort = startHarness(accepted -> dialPhase.complete(relay.relay(
+                RelayTestProxies.closeObserved(accepted, relaySawClose), Buffer.buffer("PREFIX"), backend,
+                RelayKind.TERMINATED, "")));
+
+        NetSocket client = connectClient(frontPort, socket -> {
+        });
+        Awaits.connect(dialRequested, "the relay to start dialling the backend");
+        Future<Void> phase = Awaits.connect(dialPhase, "the relay to hand back its dial-phase future");
+        boolean overWhileDialling = phase.isComplete();
+        Awaits.teardown(client.close(), "the client leg to close");
+        Awaits.connect(relaySawClose, "the relay's side of the client connection to see the close");
+        boolean overOnceTheClientLeft = phase.isComplete();
+        boolean helloDroppedAtTheClose = !TestLoggerFactory.getTestHandler()
+                .resolveLogMessagesContaining(TestLogLevel.DEBUG, HELLO_DROPPED_LINE).isEmpty();
+        releaseDial.complete(null);
+        Awaits.connect(phase, "the dial phase to be over once the held dial settled");
+
+        assertAll("the dial phase ends with the dial, not with the client",
+                () -> assertFalse(overWhileDialling,
+                        "the dial phase is not over while the client is connected and the dial pending"),
+                () -> assertFalse(overOnceTheClientLeft,
+                        "the dial phase is not over when the client leaves while the dial is held"),
+                () -> assertTrue(helloDroppedAtTheClose,
+                        "the departed client's ClientHello is dropped at the close, not when the dial settles"),
+                () -> assertTrue(phase.succeeded(), "the dial phase ends once the dial settled, and never fails"),
+                () -> assertEquals(0, relayedPeers.size(), "a client that left during the dial registers nothing"));
     }
 
     /**
@@ -292,80 +411,6 @@ class PassthroughRelayTest {
                     }
                 }));
         return Awaits.connect(connected, "the client leg to connect to the relay front");
-    }
-
-    /**
-     * A dial client whose {@code connect(int, String)} — the one the relay calls — signals
-     * {@code requested} and dials only once {@code release} completes, on the caller's own context so
-     * the relay's callbacks keep running on the accepted connection's event loop. Every other call goes
-     * to {@code delegate}.
-     */
-    private static NetClient heldDialClient(NetClient delegate, CompletableFuture<Void> requested,
-            CompletableFuture<Void> release) {
-        return (NetClient) Proxy.newProxyInstance(NetClient.class.getClassLoader(), new Class<?>[]{NetClient.class},
-                (proxy, method, args) -> {
-                    if ("connect".equals(method.getName()) && args != null && args.length == 2
-                            && args[0] instanceof Integer port && args[1] instanceof String host) {
-                        Context caller = Vertx.currentContext();
-                        Promise<NetSocket> dialled = Promise.promise();
-                        release.thenRun(() -> caller.runOnContext(v -> delegate.connect(port, host)
-                                .onComplete(result -> {
-                                    if (result.succeeded()) {
-                                        dialled.complete(result.result());
-                                    } else {
-                                        dialled.fail(result.cause());
-                                    }
-                                })));
-                        requested.complete(null);
-                        return dialled.future();
-                    }
-                    return invokeOn(delegate, method, args);
-                });
-    }
-
-    /**
-     * The accepted connection as the relay sees it, with its close observed: {@code closed} completes
-     * when the connection closes, whether or not the relay has installed a close handler of its own —
-     * one the relay installs is run first and chained, never replaced.
-     */
-    private static NetSocket closeObserved(NetSocket accepted, CompletableFuture<Void> closed) {
-        accepted.closeHandler(v -> closed.complete(null));
-        return (NetSocket) Proxy.newProxyInstance(NetSocket.class.getClassLoader(), new Class<?>[]{NetSocket.class},
-                (proxy, method, args) -> {
-                    if ("closeHandler".equals(method.getName()) && args != null && args.length == 1) {
-                        Object relayHandler = args[0];
-                        accepted.closeHandler(v -> {
-                            if (relayHandler != null) {
-                                invokeOn(relayHandler, HANDLE, new Object[]{v});
-                            }
-                            closed.complete(null);
-                        });
-                        return proxy;
-                    }
-                    return invokeOn(accepted, method, args);
-                });
-    }
-
-    private static Method handleMethod() {
-        try {
-            return Handler.class.getMethod("handle", Object.class);
-        } catch (NoSuchMethodException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    /** Invokes {@code method} on {@code target}, rethrowing what the method itself threw. */
-    private static Object invokeOn(Object target, Method method, Object[] args) {
-        try {
-            return method.invoke(target, args);
-        } catch (InvocationTargetException e) {
-            if (e.getCause() instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            throw new IllegalStateException(e.getCause());
-        } catch (IllegalAccessException e) {
-            throw new IllegalStateException(e);
-        }
     }
 
     /** Starts a harness front server handing every accepted, paused connection to {@code onAccept}. */
@@ -419,5 +464,158 @@ class PassthroughRelayTest {
                 done.complete(accumulator.copy());
             }
         });
+    }
+
+    /**
+     * A loopback port whose kernel drops the SYN of a dial, so the dial never completes the TCP
+     * handshake and nothing ever answers it.
+     * <p>
+     * No single mechanism does this on every platform, and the two that do it each do it on one:
+     * <ul>
+     * <li>a socket bound to the port that never listens — macOS drops the SYN, Linux resets it;</li>
+     * <li>a listener whose accept queue is full and that never accepts — Linux drops the SYN, macOS
+     * resets it.</li>
+     * </ul>
+     * The fixture therefore chooses by measurement rather than by platform name: it builds each in
+     * turn and keeps the first whose own probe dial times out after {@link #PROBE_TIMEOUT_MILLIS}
+     * instead of being reset, and it fails loudly when neither does. The accept queue is filled by
+     * the same probing — connections are queued until one is dropped — so the fixture does not depend
+     * on how a platform sizes the queue for a given backlog.
+     * <p>
+     * Deliberately not {@link de.cuioss.sheriff.gateway.testsupport.UnreachablePort}: a port nothing is
+     * bound to answers the dial with a reset at once on every platform, the wrong signal for a connect
+     * timeout.
+     */
+    private static final class NeverAnsweringBackend implements AutoCloseable {
+
+        private static final int BACKLOG = 1;
+        private static final int PROBE_TIMEOUT_MILLIS = 500;
+        /** Far beyond any platform's queue for a backlog of one; reaching it means the queue never filled. */
+        private static final int MAX_QUEUED = 64;
+
+        private final int port;
+        private final List<Closeable> held;
+
+        private NeverAnsweringBackend(int port, List<Closeable> held) {
+            this.port = port;
+            this.held = held;
+        }
+
+        static NeverAnsweringBackend start() throws IOException {
+            InetAddress loopback = InetAddress.getByName(HOST);
+            NeverAnsweringBackend unlistened = boundButNotListening(loopback);
+            if (unlistened.dropsADial()) {
+                return unlistened;
+            }
+            unlistened.close();
+            return listeningWithAFullAcceptQueue(loopback).orElseThrow(() -> new IllegalStateException(
+                    "Neither a bound socket that does not listen nor a full accept queue drops a loopback dial "
+                            + "on this platform; both answered the probe dial with a reset"));
+        }
+
+        RelayTarget target() {
+            return new RelayTarget(HOST, port);
+        }
+
+        private static NeverAnsweringBackend boundButNotListening(InetAddress loopback) throws IOException {
+            Socket holder = new Socket();
+            try {
+                holder.setReuseAddress(false);
+                holder.bind(new InetSocketAddress(loopback, 0));
+            } catch (IOException e) {
+                holder.close();
+                throw e;
+            }
+            return new NeverAnsweringBackend(holder.getLocalPort(), new ArrayList<>(List.of(holder)));
+        }
+
+        /**
+         * Queues connections on a listener that never accepts until the kernel drops one.
+         *
+         * @return the backend, or empty when the kernel resets a dial to the full queue instead
+         */
+        private static Optional<NeverAnsweringBackend> listeningWithAFullAcceptQueue(InetAddress loopback)
+                throws IOException {
+            ServerSocket listener = new ServerSocket(0, BACKLOG, loopback);
+            NeverAnsweringBackend backend = new NeverAnsweringBackend(listener.getLocalPort(),
+                    new ArrayList<>(List.of(listener)));
+            // Only the DROPPED path hands the backend over open; every other exit, including an exception
+            // or an error thrown by a dial, closes the listener and every queued socket.
+            try (HandOverGuard guard = new HandOverGuard(backend)) {
+                for (int attempt = 0; attempt < MAX_QUEUED; attempt++) {
+                    Socket queued = new Socket();
+                    backend.held.add(queued);
+                    switch (backend.dial(queued)) {
+                        case CONNECTED -> {
+                            // queued and never accepted: the queue is one connection fuller
+                        }
+                        case DROPPED -> {
+                            return Optional.of(guard.handOver());
+                        }
+                        case RESET -> {
+                            return Optional.empty();
+                        }
+                    }
+                }
+                throw new IllegalStateException("The accept queue of a listener with backlog " + BACKLOG
+                        + " still accepted after " + MAX_QUEUED + " connections");
+            }
+        }
+
+        private boolean dropsADial() throws IOException {
+            try (Socket probe = new Socket()) {
+                return dial(probe) == DialOutcome.DROPPED;
+            }
+        }
+
+        private DialOutcome dial(Socket socket) throws IOException {
+            try {
+                socket.connect(new InetSocketAddress(HOST, port), PROBE_TIMEOUT_MILLIS);
+                return DialOutcome.CONNECTED;
+            } catch (SocketTimeoutException _) {
+                socket.close();
+                return DialOutcome.DROPPED;
+            } catch (IOException _) {
+                socket.close();
+                return DialOutcome.RESET;
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            for (Closeable resource : held.reversed()) {
+                resource.close();
+            }
+        }
+
+        private enum DialOutcome {
+            CONNECTED, DROPPED, RESET
+        }
+
+        /**
+         * Closes a backend when its scope ends, unless {@link #handOver()} was called first — the
+         * conditional hand-over a try-with-resources block over the backend itself cannot express.
+         */
+        private static final class HandOverGuard implements AutoCloseable {
+
+            private final NeverAnsweringBackend backend;
+            private boolean handedOver;
+
+            private HandOverGuard(NeverAnsweringBackend backend) {
+                this.backend = backend;
+            }
+
+            NeverAnsweringBackend handOver() {
+                handedOver = true;
+                return backend;
+            }
+
+            @Override
+            public void close() throws IOException {
+                if (!handedOver) {
+                    backend.close();
+                }
+            }
+        }
     }
 }

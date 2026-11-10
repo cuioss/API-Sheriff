@@ -70,8 +70,8 @@ public final class ResponseEnds {
      * the WebSocket relay's answer to a failed upstream dial, its relay of an upstream's upgrade
      * refusal and its {@code 502} answer to a failed client upgrade, all written before any upgrade
      * (through {@link de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage}), the upgrade gate's
-     * {@code 405} / {@code 426} / {@code 400} refusal of a request that is no valid WebSocket opening handshake (through
-     * {@link #reject}), and the admission {@code 503}.
+     * {@code 405} / {@code 426} / {@code 400} / {@code 413} refusal of a request that is no valid
+     * WebSocket opening handshake (through {@link #reject}), and the admission {@code 503}.
      * <ul>
      *   <li><strong>HTTP/1.x, or a request body that has ended</strong> — the response is ended at once
      *       and nothing else happens. An HTTP/1.x request is never reset; where the bytes behind a

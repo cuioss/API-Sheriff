@@ -91,16 +91,41 @@ link:../architecture/README.adoc#_edge_package_structure[Architecture -- Edge Pa
 `OriginValidationStage` (a foreign or absent origin is rejected `403` *before* any upstream dial --
 GW-09 / CSWSH). It then asks `WebSocketUpgradeGate` whether the request is a valid WebSocket opening
 handshake, before the request is tracked with its session, takes a relay sub-permit or dials the
-upstream. The gate reads only the request's method, version and headers, in a fixed order: a method
+upstream. The gate reads only the request's method, version, request URI and headers -- among them
+the declared `Content-Length` -- and no Vert.x internal API, in a fixed order: a method
 other than `GET` is refused `405` with `Allow: GET` -- the route's effective `allowed_methods` falls
 back to every standard method, so the router does not enforce this; a request that is not HTTP/1.1,
-or does not carry the `Connection: upgrade` and `Upgrade: websocket` tokens, is refused `426` (on
-HTTP/1.x with `Upgrade: websocket` and `Connection: Upgrade`, on HTTP/2 with neither); a
+whose first `Connection` header line does not carry the token `upgrade`, or that has no `Upgrade`
+header line whose whole value is `websocket`, is refused `426` (on HTTP/1.x with `Upgrade: websocket`
+and `Connection: Upgrade`, on HTTP/2 with neither) -- an `upgrade` token on a later `Connection` line
+only, or `websocket` inside a list such as `Upgrade: chat, websocket`, does not count; a
 `Sec-WebSocket-Version` or `Sec-WebSocket-Key` sent on more than one header line is refused `400`
 before either value is read (RFC 6455 §11.3.1, §11.3.5); a `Sec-WebSocket-Version` other than `13` is
 refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or malformed
 `Sec-WebSocket-Key` -- anything but 24 characters of padded base64 (RFC 4648 §4) decoding to 16 bytes
--- is refused `400`. A refusal is answered on the
+-- is refused `400`; a declared `Content-Length` that is a decimal number above 8192 is refused `413`
+(reached only under `security_defaults.allow_get_with_content_length_body`: without that opt-in the
+stage-1 framing gate refuses a `GET` declaring a body before route selection); a request URI that
+does not parse as a `java.net.URI` is refused `400` (reached on a `security_filter.profile: minimal`
+route; under every other profile the stage-3 url-parameter validation refuses such a query first).
+A `Content-Length` that is no decimal number, and a second `Content-Length` line, never reach the gate:
+the stage-1 framing gate refuses both `400` on every method, whatever the opt-in, before route
+selection. The gate refuses them `413` as well, since neither can be shown to stay within the bound,
+but behind the framing gate that branch is defence in depth. With these rules the gate mirrors the
+refusals of the vertx-core 4.5.34 HTTP/1.1 upgrade path (`Http1xServerRequest.webSocket()` buffers at
+most 8192 body bytes and answers `413` with a connection close beyond it;
+`Http1xServerConnection.createHandshaker` reads only the first `Connection` line and answers `400`
+when it lacks `upgrade`, `405` to another method, `400` for an unparseable request URI and `426` for
+an unsupported version, and refuses no `Host`; the handshake it then completes through Netty's
+`WebSocketServerHandshaker13` fails when no `Upgrade` value is `websocket`, and
+`ServerWebSocketImpl.doHandshake` answers that failure `400`), so a request the gate accepts is not
+refused by the HTTP stack after the upstream was dialled. The rules decide the status in that order;
+the declared length decides the connection on its own. Every refusal of an HTTP/1.x request declaring a
+body above the bound -- the `413`, or an earlier `405`, `426` or `400` -- is a `Verdict.Refused` with
+`retiresConnection` set, whose own headers name the `close` connection option (`Upgrade, close` on a
+`426`), and the connection is retired with the answer
+(`ConnectionRetirement.retireConnectionAfterResponse`), since the body behind it is never read. On
+HTTP/2 a refusal ends only its own stream. A refusal is answered on the
 event loop through `ResponseEnds.reject` with no body, carrying the route's security headers, its own
 headers and the pipeline's `Set-Cookie` lines, as every response after route selection does -- the two
 `503` refusals of an upgrade too -- and logged at `DEBUG` with the route id and the status only (see
@@ -111,8 +136,9 @@ completes the client upgrade, relays frames opaquely in both directions, and rec
 relay that idles past the route's `idle_timeout_seconds` (closing both legs with WebSocket code
 `1001`). When the upstream has confirmed `101` but the client upgrade fails, the relay stage closes
 the upstream leg with `1011` and answers the client `502` through `ResponseEnds.endResponse`, unless
-Vert.x has answered the request already -- it refuses an invalid HTTP/1.1 handshake itself with `400`
-or `426`, while it fails an HTTP/2 request, which cannot be upgraded, without answering. Every answer
+Vert.x has answered the request already -- it refuses an invalid HTTP/1.1 handshake itself with `400`,
+`405`, `413` or `426` (none of them expected for a request the gate accepted, since the gate answers
+each first), while it fails an HTTP/2 request, which cannot be upgraded, without answering. Every answer
 the relay stage writes before an upgrade holds the connection is an ordinary response end and passes
 the one end rule. No HTTP `ResponseStage` relay runs for a WebSocket route.
 

@@ -25,8 +25,10 @@ import java.net.Socket;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -34,11 +36,14 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound;
+import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
@@ -50,6 +55,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /**
  * Boot-wiring contract of {@link TlsEdgeProducer}: the relay map is built from {@code
@@ -57,7 +63,8 @@ import org.junit.jupiter.api.Test;
  * when at least one passthrough SNI resolves, and shutdown is a clean no-op when nothing was started.
  * An unresolved passthrough alias is defensively skipped rather than aborting boot (ADR-0009). The
  * relay idle timeout is derived as the longest inner idle bound plus 60 seconds, which
- * {@link RelayIdleTimeoutDerivation} pins for each bound that can be the longest.
+ * {@link RelayIdleTimeoutDerivation} pins for each bound that can be the longest — a disabled
+ * ({@code 0}) HTTP idle timeout included, which is no bound rather than a bound of zero.
  * <p>
  * The positive case is asserted against the <em>public port itself</em>: it allocates a free port,
  * hands it to the producer, and probes whether anything accepts a connection there. A quiet
@@ -95,6 +102,8 @@ class TlsEdgeProducerTest {
     private static final RouteTable NO_ROUTES = new RouteTable(List.of());
     private static final ResolvedUpstream WS_UPSTREAM = new ResolvedUpstream("http", "ws.backend.local", 8080, "");
 
+    private final SheriffMetrics metrics = new SheriffMetrics(new SimpleMeterRegistry());
+
     private Vertx vertx;
 
     @BeforeEach
@@ -107,6 +116,16 @@ class TlsEdgeProducerTest {
         vertx.close().toCompletionStage().toCompletableFuture().join();
     }
 
+    /**
+     * Every case pins the derived value exactly, and every case also asserts the invariant the
+     * derivation exists for: the relay never undercuts an idle bound the gateway still applies behind
+     * the terminated branch.
+     * <p>
+     * The three cases with an HTTP idle timeout of zero, or one above both other bounds, are regression
+     * pins on existing behaviour rather than failing-first tests: they were written against the
+     * unchanged derivation and pass there. They keep the zero rule documented on
+     * {@link TlsEdgeProducer#relayIdleTimeout(Duration, RouteTable)} from silently changing.
+     */
     @Nested
     @DisplayName("Relay idle timeout derivation")
     class RelayIdleTimeoutDerivation {
@@ -114,47 +133,110 @@ class TlsEdgeProducerTest {
         @Test
         @DisplayName("is the HTTP idle timeout plus 60 s when no WebSocket route exists")
         void httpIdleTimeoutWithoutWebSocketRoute() {
-            // Arrange — a plain HTTP route carries no WebSocket idle timeout and must not count
+            // A plain HTTP route carries no WebSocket idle timeout and must not count
             RouteTable routes = new RouteTable(List.of(
                     ConfigFixtures.route("api", "/api").upstream(WS_UPSTREAM).build()));
 
-            // Act
             Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, routes);
 
-            // Assert
             assertEquals(HTTP_IDLE_TIMEOUT.plusSeconds(60), derived,
                     "without a WebSocket route the HTTP idle timeout is the longest inner bound");
+            assertNotShorterThanEveryPositiveInnerBound(derived, HTTP_IDLE_TIMEOUT, routes);
         }
 
         @Test
         @DisplayName("is a WebSocket idle timeout above the HTTP idle timeout plus 60 s")
         void webSocketIdleTimeoutAboveHttpIdleTimeout() {
-            // Arrange — a route declaring one hour, above the thirty-minute HTTP idle timeout, next to a
-            // route declaring less, so the longest one has to win
+            // A route declaring one hour, above the thirty-minute HTTP idle timeout, next to a route
+            // declaring less, so the longest one has to win
             RouteTable routes = new RouteTable(List.of(
                     webSocketRoute("ws-short", "/ws-short", 120),
                     webSocketRoute("ws-long", "/ws-long", 3600)));
 
-            // Act
             Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, routes);
 
-            // Assert
             assertEquals(Duration.ofSeconds(3600 + 60), derived,
                     "the longest WebSocket idle timeout plus the margin bounds the relay");
+            assertNotShorterThanEveryPositiveInnerBound(derived, HTTP_IDLE_TIMEOUT, routes);
         }
 
         @Test
         @DisplayName("is the gRPC stream-idle bound of five minutes plus 60 s when the HTTP idle timeout is shorter")
         void grpcStreamIdleBoundAboveShortHttpIdleTimeout() {
-            // Arrange — an HTTP idle timeout below five minutes and a WebSocket route below it too
+            // An HTTP idle timeout below five minutes and a WebSocket route below it too
+            Duration httpIdleTimeout = Duration.ofMinutes(2);
             RouteTable routes = new RouteTable(List.of(webSocketRoute("ws", "/ws", 30)));
 
-            // Act
-            Duration derived = TlsEdgeProducer.relayIdleTimeout(Duration.ofMinutes(2), routes);
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(httpIdleTimeout, routes);
 
-            // Assert
             assertEquals(Duration.ofMinutes(5).plusSeconds(60), derived,
                     "the gRPC stream-idle bound is the floor of the derivation");
+            assertNotShorterThanEveryPositiveInnerBound(derived, httpIdleTimeout, routes);
+        }
+
+        @Test
+        @DisplayName("is the gRPC stream-idle bound of five minutes plus 60 s when the HTTP idle timeout is zero")
+        void zeroHttpIdleTimeoutLeavesTheGrpcStreamIdleBound() {
+            // quarkus.http.idle-timeout=0 is Vert.x's "no idle timeout": it is no bound, so the relay
+            // must not collapse to the margin alone. The WebSocket route stays below five minutes, so
+            // max(gRPC stream idle, longest WebSocket idle) is the gRPC bound.
+            RouteTable routes = new RouteTable(List.of(webSocketRoute("ws", "/ws", 120)));
+
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(Duration.ZERO, routes);
+
+            assertEquals(Duration.ofMinutes(6), derived,
+                    "a disabled HTTP idle timeout leaves the gRPC stream-idle bound plus the margin");
+            assertNotShorterThanEveryPositiveInnerBound(derived, Duration.ZERO, routes);
+        }
+
+        @Test
+        @DisplayName("is a WebSocket idle timeout above the gRPC bound plus 60 s when the HTTP idle timeout is zero")
+        void zeroHttpIdleTimeoutLeavesTheLongestWebSocketIdleTimeout() {
+            // Ten minutes, above the five-minute gRPC bound, next to a route declaring less
+            RouteTable routes = new RouteTable(List.of(
+                    webSocketRoute("ws-short", "/ws-short", 120),
+                    webSocketRoute("ws-long", "/ws-long", 600)));
+
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(Duration.ZERO, routes);
+
+            assertEquals(Duration.ofSeconds(600 + 60), derived,
+                    "under a disabled HTTP idle timeout the longest WebSocket idle timeout still wins");
+            assertNotShorterThanEveryPositiveInnerBound(derived, Duration.ZERO, routes);
+        }
+
+        @Test
+        @DisplayName("is a positive HTTP idle timeout above the WebSocket and gRPC bounds plus 60 s")
+        void positiveHttpIdleTimeoutAboveBothOtherBounds() {
+            // Thirty minutes of HTTP idle, above a ten-minute WebSocket route and the five-minute gRPC
+            // bound, so neither of those may win
+            RouteTable routes = new RouteTable(List.of(webSocketRoute("ws", "/ws", 600)));
+
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, routes);
+
+            assertEquals(Duration.ofMinutes(31), derived,
+                    "a positive HTTP idle timeout above both other bounds still bounds the relay");
+            assertNotShorterThanEveryPositiveInnerBound(derived, HTTP_IDLE_TIMEOUT, routes);
+        }
+
+        /**
+         * Asserts that {@code derived} is not shorter than any positive inner idle bound: the HTTP idle
+         * timeout unless it is zero (no bound), the gRPC stream-idle bound as production applies it, and
+         * every WebSocket route's effective idle timeout.
+         */
+        private static void assertNotShorterThanEveryPositiveInnerBound(Duration derived, Duration httpIdleTimeout,
+                RouteTable routes) {
+            Stream<Duration> webSocketBounds = routes.routes().stream()
+                    .map(Route::effectiveWebSocketIdleTimeoutSeconds)
+                    .filter(Objects::nonNull)
+                    .mapToLong(Integer::longValue)
+                    .mapToObj(Duration::ofSeconds);
+            Stream<Duration> positiveInnerBounds = Stream.concat(
+                    Stream.of(httpIdleTimeout, Duration.ofMillis(GrpcStreamIdleBound.STREAM_IDLE_TIMEOUT_MILLIS)),
+                    webSocketBounds)
+                    .filter(Duration::isPositive);
+            assertAll("the relay idle timeout " + derived + " never undercuts a positive inner idle bound",
+                    positiveInnerBounds.<Executable>map(bound -> () -> assertFalse(derived.compareTo(bound) < 0,
+                            "the relay idle timeout is shorter than the inner bound " + bound)));
         }
 
         private static Route webSocketRoute(String id, String prefix, int idleTimeoutSeconds) {
@@ -198,6 +280,41 @@ class TlsEdgeProducerTest {
             assertTrue(set.compareTo(Duration.ofSeconds(Integer.MAX_VALUE).plus(TlsEdgeProducer.RELAY_IDLE_MARGIN)) >= 0,
                     "the timeout set is never shorter than the WebSocket bound plus the margin: " + set);
         }
+
+        /**
+         * The ten seconds are the documented contract, so they are written out here rather than read
+         * from {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}: a changed constant must turn this red.
+         */
+        @Test
+        @DisplayName("carry the fixed ten-second connect timeout next to the derived relay idle timeout")
+        void carryTheFixedConnectTimeoutNextToTheIdleTimeout() {
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, NO_ROUTES);
+
+            NetClientOptions options = TlsEdgeProducer.relayClientOptions(derived);
+
+            assertAll("the production dial client bounds the dial and the idle relay",
+                    () -> assertEquals(10_000, options.getConnectTimeout(),
+                            "the backend dial is bounded by ten seconds, not the Vert.x default of sixty"),
+                    () -> assertEquals(derived.toMillis(), options.getIdleTimeout(),
+                            "the derived idle timeout is kept next to the connect timeout"),
+                    () -> assertEquals(TimeUnit.MILLISECONDS, options.getIdleTimeoutUnit()));
+        }
+
+        @Test
+        @DisplayName("refuse a connect timeout of no whole millisecond or beyond Integer.MAX_VALUE milliseconds")
+        void refuseAConnectTimeoutOutsideTheVertxRange() {
+            Duration derived = TlsEdgeProducer.relayIdleTimeout(HTTP_IDLE_TIMEOUT, NO_ROUTES);
+            Duration subMillisecond = Duration.ofNanos(999_999);
+            Duration beyondInt = Duration.ofMillis(Integer.MAX_VALUE + 1L);
+
+            assertAll("Vert.x takes whole int milliseconds, and zero would mean no bound",
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> TlsEdgeProducer.relayClientOptions(derived, subMillisecond)),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> TlsEdgeProducer.relayClientOptions(derived, beyondInt)),
+                    () -> assertEquals(1, TlsEdgeProducer.relayClientOptions(derived, Duration.ofMillis(1))
+                            .getConnectTimeout(), "one millisecond is the shortest bound accepted"));
+        }
     }
 
     @Nested
@@ -221,8 +338,8 @@ class TlsEdgeProducerTest {
                     .tls(tls).build();
             ResolvedTopology topology = new ResolvedTopology(Map.of(
                     RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
-            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, HTTP_IDLE_TIMEOUT,
-                    port, INTERNAL_HTTPS_PORT);
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
+                    HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
             assertFalse(isListening(port), "control precondition: nothing owns the port before startup");
 
             // Act
@@ -239,6 +356,60 @@ class TlsEdgeProducerTest {
 
             // Assert
             awaitNotListening(port, "shutdown stops the started listener and releases the public port");
+        }
+
+        /**
+         * The relay idle timeout {@code onStartup} derives reaches both legs of a relayed connection: the
+         * front server's options and the dial client's options. Both are observed through the
+         * package-private test seams rather than by waiting for an idle connection to close, which would
+         * make the test wait out the derived duration. A WebSocket route of one hour makes the derived
+         * value differ from the thirty-minute HTTP default, so the route table demonstrably reached the
+         * derivation {@code onStartup} ran.
+         */
+        @Test
+        @DisplayName("wires the derived relay idle timeout onto the front server and the dial client")
+        void wiresTheDerivedRelayIdleTimeoutOntoBothLegs() throws Exception {
+            int port = freePort();
+            RouteTable routes = new RouteTable(List.of(ConfigFixtures.route("ws", "/ws")
+                    .protocol(Protocol.WEBSOCKET)
+                    .upstream(WS_UPSTREAM)
+                    .effectiveWebSocketIdleTimeoutSeconds(3600)
+                    .build()));
+            TlsConfig tls = TlsConfig.builder()
+                    .passthroughSni(Map.of("sni.resolved.example", RESOLVED_ALIAS))
+                    .build();
+            GatewayConfig config = GatewayConfig.builder().version(1).tls(tls).build();
+            ResolvedTopology topology = new ResolvedTopology(Map.of(
+                    RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, routes, metrics,
+                    HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
+            Duration expected = Duration.ofSeconds(3600 + 60);
+            assertAll("control precondition: nothing is observable before onStartup",
+                    () -> assertTrue(producer.dialClientOptions().isEmpty(), "no dial client before startup"),
+                    () -> assertTrue(producer.frontListener().isEmpty(), "no front listener before startup"));
+
+            producer.onStartup(new StartupEvent());
+
+            try {
+                NetClientOptions dialClient = producer.dialClientOptions()
+                        .orElseThrow(() -> new AssertionError("onStartup built no dial client"));
+                SniFrontListener front = producer.frontListener()
+                        .orElseThrow(() -> new AssertionError("onStartup started no front listener"));
+                Duration frontIdleTimeout = front.appliedIdleTimeout()
+                        .orElseThrow(() -> new AssertionError("the started front listener applied no idle timeout"));
+                Duration dialIdleTimeout = Duration.of(dialClient.getIdleTimeout(),
+                        dialClient.getIdleTimeoutUnit().toChronoUnit());
+                assertAll("both relay legs carry the idle timeout derived from the route table",
+                        () -> assertEquals(expected, frontIdleTimeout,
+                                "the front server carries the longest WebSocket idle timeout plus the margin"),
+                        () -> assertEquals(expected, dialIdleTimeout,
+                                "the dial client carries the same idle timeout as the front server"),
+                        () -> assertEquals(10_000, dialClient.getConnectTimeout(),
+                                "the dial client onStartup built carries the fixed ten-second connect timeout"));
+            } finally {
+                producer.onShutdown(new ShutdownEvent());
+                awaitNotListening(port, "shutdown stops the started listener and releases the public port");
+            }
         }
 
         /**
@@ -274,7 +445,7 @@ class TlsEdgeProducerTest {
                         .tls(tls).build();
                 ResolvedTopology topology = new ResolvedTopology(Map.of(
                         RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
-                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES,
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
                         HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
 
                 // Act + Assert — the bind cannot succeed against a held port, and the producer refuses
@@ -312,12 +483,15 @@ class TlsEdgeProducerTest {
                 int port = held.getLocalPort();
                 GatewayConfig config = GatewayConfig.builder().version(1).build();
                 ResolvedTopology topology = new ResolvedTopology(Map.of());
-                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES,
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
                         HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
 
                 // Act + Assert
                 assertDoesNotThrow(() -> producer.onStartup(new StartupEvent()),
                         "an empty passthrough map short-circuits before any bind is attempted");
+                assertAll("an unconfigured front builds neither relay leg",
+                        () -> assertTrue(producer.dialClientOptions().isEmpty(), "no dial client is built"),
+                        () -> assertTrue(producer.frontListener().isEmpty(), "no front listener is started"));
 
                 // Act + Assert — shutdown is a clean no-op because nothing was ever created
                 assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
@@ -344,7 +518,7 @@ class TlsEdgeProducerTest {
                 GatewayConfig config = GatewayConfig.builder().version(1)
                         .tls(tls).build();
                 ResolvedTopology topology = new ResolvedTopology(Map.of());
-                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES,
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, NO_ROUTES, metrics,
                         HTTP_IDLE_TIMEOUT, port, INTERNAL_HTTPS_PORT);
 
                 // Act + Assert — the declared-but-unresolvable entry contributed no relay target, so
@@ -356,6 +530,66 @@ class TlsEdgeProducerTest {
                 assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
                         "shutdown is a no-op when the only alias was skipped");
             }
+        }
+    }
+
+    /**
+     * The refusal recorder the producer hands the front listener counts each refusal on the metric
+     * series of its own reason. The metric name and the two label values are the documented contract,
+     * so they are written out here rather than read from {@link SheriffMetrics}. The two reasons are
+     * recorded a different number of times, so a recorder that swapped the mapping, or sent both reasons
+     * to one series, would leave a different count on each series than the one asserted.
+     */
+    @Nested
+    @DisplayName("Front refusal recorder")
+    class FrontRefusalRecorder {
+
+        private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        @Test
+        @DisplayName("counts a cap refusal under reason=cap and a share refusal under reason=source_share")
+        void countsEachRefusalUnderItsOwnReason() {
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, GatewayConfig.builder().version(1).build(),
+                    new ResolvedTopology(Map.of()), NO_ROUTES, new SheriffMetrics(registry), HTTP_IDLE_TIMEOUT, 8443,
+                    INTERNAL_HTTPS_PORT);
+
+            producer.recordRefusal(SniFrontListener.Refusal.CAP);
+            producer.recordRefusal(SniFrontListener.Refusal.SOURCE_SHARE);
+            producer.recordRefusal(SniFrontListener.Refusal.SOURCE_SHARE);
+
+            assertAll("each refusal reason lands on its own series of the refusal counter",
+                    () -> assertEquals(1.0, refusedCount("cap"), "one cap refusal on reason=cap"),
+                    () -> assertEquals(2.0, refusedCount("source_share"),
+                            "two share refusals on reason=source_share"),
+                    () -> assertEquals(2, registry.find("sheriff_front_connections_refused_total").counters().size(),
+                            "the refusal counter carries exactly the two reason series"));
+        }
+
+        /**
+         * The listener logs a refusal with {@link SniFrontListener.Refusal#token()} and the counter tags it
+         * with {@code reason}; the two are documented as one spelling, so an operator can match a log
+         * line to its series. This binds them for every constant: a token renamed on one side only, or a
+         * reason that reaches no series, leaves its series at zero.
+         */
+        @Test
+        @DisplayName("counts every refusal reason under the label that equals its log token")
+        void countsEveryRefusalReasonUnderItsLogToken() {
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, GatewayConfig.builder().version(1).build(),
+                    new ResolvedTopology(Map.of()), NO_ROUTES, new SheriffMetrics(registry), HTTP_IDLE_TIMEOUT, 8443,
+                    INTERNAL_HTTPS_PORT);
+
+            for (SniFrontListener.Refusal refusal : SniFrontListener.Refusal.values()) {
+                producer.recordRefusal(refusal);
+            }
+
+            assertAll("each refusal reason is counted under reason=<its log token>",
+                    Stream.of(SniFrontListener.Refusal.values()).<Executable>map(refusal -> () -> assertEquals(1.0,
+                            refusedCount(refusal.token()), "one refusal counted under reason=" + refusal.token())));
+        }
+
+        private double refusedCount(String reason) {
+            var counter = registry.find("sheriff_front_connections_refused_total").tag("reason", reason).counter();
+            return counter == null ? 0.0 : counter.count();
         }
     }
 
@@ -380,7 +614,7 @@ class TlsEdgeProducerTest {
                     .tls(TlsConfig.builder().passthroughSni(Map.of("sni.resolved.example", RESOLVED_ALIAS)).build())
                     .build();
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, new ResolvedTopology(Map.of()), NO_ROUTES,
-                    HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
+                    metrics, HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
 
             assertEquals(RelayedPeerRegistry.Attribution.UNATTRIBUTED_CONNECTION,
                     producer.relayedPeerRegistry().attribute(onTerminated, unregisteredLeg));
@@ -390,7 +624,7 @@ class TlsEdgeProducerTest {
         @DisplayName("control: leaves every connection neutral when passthrough_sni is empty")
         void neutralWhenPassthroughUnconfigured() {
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, GatewayConfig.builder().version(1).build(),
-                    new ResolvedTopology(Map.of()), NO_ROUTES, HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
+                    new ResolvedTopology(Map.of()), NO_ROUTES, metrics, HTTP_IDLE_TIMEOUT, 8443, INTERNAL_HTTPS_PORT);
 
             assertEquals(RelayedPeerRegistry.Attribution.NONE,
                     producer.relayedPeerRegistry().attribute(onTerminated, unregisteredLeg));

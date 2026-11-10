@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -59,6 +60,7 @@ import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
@@ -107,6 +109,8 @@ class GatewayEdgeSessionRelayTest {
     private static final String OPEN_WS = "/ws-open";
     private static final String DEAD_WS = "/ws-dead";
     private static final String SECOND_UPSTREAM_WS = "/ws-second";
+    private static final int ROUTE_HSTS_MAX_AGE = 31536000;
+    private static final String ROUTE_POLICY = "default-src 'self'";
 
     private final AtomicInteger upstreamConnects = new AtomicInteger();
     private final List<Closed> upstreamCloses = new CopyOnWriteArrayList<>();
@@ -447,6 +451,11 @@ class GatewayEdgeSessionRelayTest {
         private CookieSessionBinding binding;
 
         private void startEdge(Duration sessionTtl) throws Exception {
+            startEdge(sessionTtl, 16, new EdgeHardeningOptions());
+        }
+
+        private void startEdge(Duration sessionTtl, int relayRegistryCapacity, EdgeHardeningOptions hardening)
+                throws Exception {
             byte[] key = new byte[32];
             Arrays.fill(key, (byte) 0x11);
             byte[] salt = new byte[32];
@@ -461,7 +470,7 @@ class GatewayEdgeSessionRelayTest {
                     new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
                             new SecretKeySpec(activityKey, "AES"), (byte) 2),
                     Duration.ofMinutes(30));
-            registry = new SessionRelayRegistry(16, Clock.systemUTC());
+            registry = new SessionRelayRegistry(relayRegistryCapacity, Clock.systemUTC());
             BffRuntime runtime = GatewayEdgeRouteBffWiringTest.activeRuntime(binding, ClientJwksEndpoint.withheld(),
                     registry, sessionId -> true);
             OidcConfig oidc = OidcConfig.builder()
@@ -470,7 +479,7 @@ class GatewayEdgeSessionRelayTest {
                             .postLogoutRedirectUri(ORIGIN + "/auth/logout/return").build())
                     .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE).build())
                     .build();
-            startFront(runtime, oidc, new EdgeHardeningOptions(), echoUpstream.actualPort());
+            startFront(runtime, oidc, hardening, echoUpstream.actualPort());
         }
 
         private String login(Duration sessionTtl) {
@@ -524,6 +533,61 @@ class GatewayEdgeSessionRelayTest {
                     () -> assertEquals(426, refused.statusCode(), "a plain GET is no WebSocket upgrade"),
                     () -> assertFalse(refused.headers().getAll("Set-Cookie").isEmpty(),
                             "the activity cookie the stage wrote for the access reaches the browser"));
+        }
+
+        /**
+         * The session-relay registry holds one relay, so a second upgrade of the same live session is
+         * refused {@code 503} before any dial. The refusal is answered after route selection and after the
+         * session stage let the request through, so it carries the route's security headers and the
+         * {@code Set-Cookie} line the stage wrote for the access — the session logged in five activity
+         * intervals ago and presents no activity cookie, so the access writes a fresh one.
+         */
+        @Test
+        @DisplayName("a 503 for a full session relay registry carries the route's security headers and the stage's Set-Cookie line")
+        void registryFullRefusalCarriesSecurityHeadersAndSetCookie() throws Exception {
+            startEdge(SESSION_TTL, 1, new EdgeHardeningOptions());
+            String cookie = login(Instant.now().minus(CookieSessionBinding.ACTIVITY_COOKIE_INTERVAL.multipliedBy(5)),
+                    SESSION_TTL);
+            RelayClient held = openRelay(SESSION_WS, cookie);
+            int connectsBefore = upstreamConnects.get();
+
+            UpgradeRejectedException refused = rejectedUpgrade(SESSION_WS, cookie);
+
+            assertAll("the registry refusal is a complete response after route selection",
+                    () -> assertEquals(503, refused.getStatus(), "the registry of one is held by the open relay"),
+                    () -> assertEquals(1, registry.size(), "only the relay that was already open is tracked"),
+                    () -> assertEquals(connectsBefore, upstreamConnects.get(), "the upstream was not dialed"),
+                    () -> assertRouteSecurityHeaders(refused.getHeaders(), "the registry-full 503"),
+                    () -> assertFalse(refused.getHeaders().getAll("Set-Cookie").isEmpty(),
+                            "the activity cookie the stage wrote for the access reaches the browser"));
+            assertStillRelaying(held, 1);
+        }
+
+        /**
+         * The relay sub-budget admits one relay, so a second upgrade of the same live session is refused
+         * {@code 503} before any dial, with the registry well below its bound. Like the registry refusal it
+         * is answered after the session stage, so it carries the route's security headers and the stage's
+         * {@code Set-Cookie} line.
+         */
+        @Test
+        @DisplayName("a 503 for an exhausted relay sub-budget carries the route's security headers and the stage's Set-Cookie line")
+        void relayBudgetRefusalCarriesSecurityHeadersAndSetCookie() throws Exception {
+            startEdge(SESSION_TTL, 16, new EdgeHardeningOptions(new EdgeHardeningConfig(8, 1)));
+            String cookie = login(Instant.now().minus(CookieSessionBinding.ACTIVITY_COOKIE_INTERVAL.multipliedBy(5)),
+                    SESSION_TTL);
+            RelayClient held = openRelay(SESSION_WS, cookie);
+            int connectsBefore = upstreamConnects.get();
+
+            UpgradeRejectedException refused = rejectedUpgrade(SESSION_WS, cookie);
+
+            assertAll("the sub-budget refusal is a complete response after route selection",
+                    () -> assertEquals(503, refused.getStatus(), "the relay sub-budget of one is held by the open relay"),
+                    () -> assertEquals(1, registry.size(), "the refused relay's tracking entry is gone"),
+                    () -> assertEquals(connectsBefore, upstreamConnects.get(), "the upstream was not dialed"),
+                    () -> assertRouteSecurityHeaders(refused.getHeaders(), "the relay-budget 503"),
+                    () -> assertFalse(refused.getHeaders().getAll("Set-Cookie").isEmpty(),
+                            "the activity cookie the stage wrote for the access reaches the browser"));
+            assertStillRelaying(held, 1);
         }
 
         @Test
@@ -637,9 +701,17 @@ class GatewayEdgeSessionRelayTest {
         return started;
     }
 
+    /**
+     * A WebSocket route on {@code upstreamPort}. It resolves a {@code security_headers} block, so a
+     * refusal can be checked for the headers every response after route selection carries.
+     */
     private static Route wsRoute(String id, String pathPrefix, Require require, int upstreamPort) {
         return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.WEBSOCKET)
+                .securityHeaders(SecurityHeadersConfig.builder()
+                        .hsts(new SecurityHeadersConfig.Hsts(ROUTE_HSTS_MAX_AGE, false))
+                        .contentSecurityPolicy(ROUTE_POLICY)
+                        .build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(Set.of(ORIGIN))
@@ -677,9 +749,20 @@ class GatewayEdgeSessionRelayTest {
 
     /** The status an upgrade the edge does not accept is answered with. */
     private int rejectedUpgradeStatus(String pathPrefix, String cookie) {
+        return rejectedUpgrade(pathPrefix, cookie).getStatus();
+    }
+
+    /** The edge's answer to an upgrade it does not accept: its status and its headers. */
+    private UpgradeRejectedException rejectedUpgrade(String pathPrefix, String cookie) {
         ExecutionException failure = assertThrows(ExecutionException.class,
                 () -> Awaits.connect(wsClient.connect(upgradeTo(pathPrefix, cookie)), "the upgrade to be rejected"));
-        return assertInstanceOf(UpgradeRejectedException.class, failure.getCause()).getStatus();
+        return assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
+    }
+
+    private static void assertRouteSecurityHeaders(MultiMap headers, String which) {
+        assertAll(which + " carries the route's security_headers",
+                () -> assertEquals("max-age=" + ROUTE_HSTS_MAX_AGE, headers.get("Strict-Transport-Security")),
+                () -> assertEquals(ROUTE_POLICY, headers.get("Content-Security-Policy")));
     }
 
     private RequestOptions reservedHostRequest(String uri) {
