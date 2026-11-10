@@ -80,8 +80,9 @@ import org.junit.jupiter.api.Test;
  * A departure that releases an attempt still waiting for its pooled upstream connection ends the same
  * way once the pool hands the connection over, and the circuit breaker counts no failure for it. And
  * {@link RejectionReporter} records the two, and a gRPC call whose next complete message did not arrive
- * within the message bound ({@link DispatchStage.RequestMessageTimeout}), under their own dispositions on one
- * per-route latch.
+ * within the message bound ({@link DispatchStage.RequestMessageTimeout}), each under its own disposition:
+ * counted per disposition on {@code sheriff_inbound_body_aborts_total}, and latched per route and
+ * disposition, so the first end of each disposition on a route is its own {@code INFO}.
  */
 @EnableGeneratorController
 @EnableTestLogger(debug = RejectionReporter.class)
@@ -319,33 +320,38 @@ class InboundBodyDepartureTest {
 
     /**
      * {@link RejectionReporter#reportRejection} over a routing context that answers the stashed route id
-     * only: which disposition the latched {@code INFO} ApiSheriff-22 names, and the latch the three
-     * dispositions share. The departure and the failed body are the aborts the dispatch produces; the
-     * {@link DispatchStage.RequestMessageTimeout} is the one its message clock records, whose
-     * production by a gRPC dispatch is pinned by {@code GrpcDispatchStageTest}.
+     * only: which disposition the latched {@code INFO} ApiSheriff-22 names, the latch each disposition holds
+     * of its own on a route, and the {@code sheriff_inbound_body_aborts_total} series each disposition is
+     * counted on. The departure and the failed body are the aborts the dispatch produces; the
+     * {@link DispatchStage.RequestMessageTimeout} is the one its message clock records, whose production by a
+     * gRPC dispatch is pinned by {@code GrpcDispatchStageTest}.
      */
     @Nested
-    @DisplayName("the reporter records a departed client as client-left and a gRPC call with no first message as no-first-message, on the latch body-stream-failed shares")
+    @DisplayName("the reporter records client-left, body-stream-failed and an idle gRPC client as client-idle, each on its own per-route latch and counter series")
     class Reported {
 
+        private static final String ABORTS_TOTAL = "sheriff_inbound_body_aborts_total";
+        private static final String ERRORS_TOTAL = "sheriff_errors_total";
+
+        private SimpleMeterRegistry registry;
         private RejectionReporter reporter;
         private RoutingContext routed;
         private String routeId;
         private GatewayException departed;
         private GatewayException bodyFailed;
-        private GatewayException noFirstMessage;
+        private GatewayException idleClient;
 
         @BeforeEach
         void setUp() {
             Route route = departedRoute();
             routeId = route.id();
             routed = routingContextOn(routeId);
-            reporter = new RejectionReporter(new GatewayEventCounter(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    1_000L, 1_000L);
+            registry = new SimpleMeterRegistry();
+            reporter = new RejectionReporter(new GatewayEventCounter(), new SheriffMetrics(registry), 1_000L, 1_000L);
             DispatchStage stage = departedStage(route, timeoutGuard());
             departed = dispatchAfterDeparture(stage, route, departureCause(), bodyless());
             bodyFailed = dispatchAfterDeparture(stage, route, departureCause(), streamed());
-            noFirstMessage = new DispatchStage.RequestMessageTimeout();
+            idleClient = new DispatchStage.RequestMessageTimeout();
         }
 
         @Test
@@ -372,16 +378,16 @@ class InboundBodyDepartureTest {
         }
 
         @Test
-        @DisplayName("a body-stream-failed after a departure on the same route finds the latch taken")
-        void bodyStreamFailedSharesTheLatch() {
+        @DisplayName("a body-stream-failed after a departure on the same route is its own INFO")
+        void bodyStreamFailedAfterADepartureIsItsOwnInfo() {
             reporter.reportRejection(routed, departed);
             reporter.reportRejection(routed, bodyFailed);
 
-            assertAll("one latch for both dispositions",
-                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
-                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "(client-left)"),
-                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG,
-                            "did not arrive whole again (body-stream-failed)"));
+            assertAll("one latch per disposition",
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "did not arrive whole (client-left)"),
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "Request body on route '" + routeId + "' did not arrive whole (body-stream-failed)"));
         }
 
         @Test
@@ -396,40 +402,103 @@ class InboundBodyDepartureTest {
         }
 
         @Test
-        @DisplayName("the first gRPC call with no first message on a route is one INFO ApiSheriff-22 naming no-first-message")
-        void firstNoFirstMessageIsOneInfoNamingIt() {
-            reporter.reportRejection(routed, noFirstMessage);
+        @DisplayName("the first idle gRPC client on a route is one INFO ApiSheriff-22 naming client-idle")
+        void firstIdleClientIsOneInfoNamingClientIdle() {
+            reporter.reportRejection(routed, idleClient);
 
-            assertAll("the first call with no first message",
+            assertAll("the first idle client",
                     () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
                     () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO,
-                            "Request body on route '" + routeId + "' did not arrive whole (no-first-message)"));
+                            "Request body on route '" + routeId + "' did not arrive whole (client-idle)"));
         }
 
         @Test
-        @DisplayName("a call with no first message after a departure on the same route finds the latch taken")
-        void noFirstMessageSharesTheLatchWithClientLeft() {
-            reporter.reportRejection(routed, departed);
-            reporter.reportRejection(routed, noFirstMessage);
+        @DisplayName("a repeat idle client on the route logs no second INFO, only the DEBUG diagnostic")
+        void repeatIdleClientStaysAtDebug() {
+            reporter.reportRejection(routed, idleClient);
+            reporter.reportRejection(routed, idleClient);
 
-            assertAll("one latch for client-left and no-first-message",
+            assertAll("a repeat idle client",
                     () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
-                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "(client-left)"),
                     () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG,
-                            "did not arrive whole again (no-first-message)"));
+                            "Request body on route '" + routeId + "' did not arrive whole again (client-idle)"));
+        }
+
+        /**
+         * The case the per-disposition latch exists for: a route whose clients have already left once still
+         * records its first idle-client end at {@code INFO}, so an idle-client flood behind an earlier
+         * departure is not hidden at {@code DEBUG}.
+         */
+        @Test
+        @DisplayName("an idle client after a departure on the same route is its own INFO")
+        void idleClientAfterADepartureIsItsOwnInfo() {
+            reporter.reportRejection(routed, departed);
+            reporter.reportRejection(routed, idleClient);
+
+            assertAll("one latch per disposition",
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "did not arrive whole (client-left)"),
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "Request body on route '" + routeId + "' did not arrive whole (client-idle)"));
         }
 
         @Test
-        @DisplayName("a body-stream-failed after a call with no first message on the same route finds the latch taken")
-        void bodyStreamFailedSharesTheLatchWithNoFirstMessage() {
-            reporter.reportRejection(routed, noFirstMessage);
+        @DisplayName("a body-stream-failed after an idle client on the same route is its own INFO")
+        void bodyStreamFailedAfterAnIdleClientIsItsOwnInfo() {
+            reporter.reportRejection(routed, idleClient);
             reporter.reportRejection(routed, bodyFailed);
 
-            assertAll("one latch for no-first-message and body-stream-failed",
-                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
-                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "(no-first-message)"),
-                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.DEBUG,
-                            "did not arrive whole again (body-stream-failed)"));
+            assertAll("one latch per disposition",
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "did not arrive whole (client-idle)"),
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "Request body on route '" + routeId + "' did not arrive whole (body-stream-failed)"));
+        }
+
+        @Test
+        @DisplayName("an idle client on a second route is that route's own INFO")
+        void idleClientOnASecondRouteIsItsOwnInfo() {
+            String otherRouteId = routeId + "-other";
+
+            reporter.reportRejection(routed, idleClient);
+            reporter.reportRejection(routingContextOn(otherRouteId), idleClient);
+
+            assertAll("one latch per route",
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "Request body on route '" + routeId + "' did not arrive whole (client-idle)"),
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                            "Request body on route '" + otherRouteId + "' did not arrive whole (client-idle)"));
+        }
+
+        /**
+         * Every end is counted on its own disposition series, whether or not its {@code INFO} was already
+         * latched, while {@code sheriff_errors_total} keeps the one {@code INBOUND_BODY_ABORTED} series it
+         * held for all three.
+         */
+        @Test
+        @DisplayName("every end is counted on sheriff_inbound_body_aborts_total under its route and disposition")
+        void everyEndIsCountedUnderItsDisposition() {
+            reporter.reportRejection(routed, departed);
+            reporter.reportRejection(routed, bodyFailed);
+            reporter.reportRejection(routed, bodyFailed);
+            reporter.reportRejection(routed, idleClient);
+            reporter.reportRejection(routed, idleClient);
+            reporter.reportRejection(routed, idleClient);
+
+            assertAll("the counter series per disposition",
+                    () -> assertEquals(1.0, abortsCounted("client-left"), 0.0),
+                    () -> assertEquals(2.0, abortsCounted("body-stream-failed"), 0.0),
+                    () -> assertEquals(3.0, abortsCounted("client-idle"), 0.0),
+                    () -> assertEquals(3, registry.find(ABORTS_TOTAL).counters().size(),
+                            "one series per disposition on the route"),
+                    () -> assertEquals(6.0, registry.get(ERRORS_TOTAL)
+                                    .tags("route", routeId, "event", EventType.INBOUND_BODY_ABORTED.name())
+                                    .counter().count(), 0.0,
+                            "sheriff_errors_total keeps counting all three under one event series"));
+        }
+
+        private double abortsCounted(String disposition) {
+            return registry.get(ABORTS_TOTAL).tags("route", routeId, "disposition", disposition).counter().count();
         }
     }
 

@@ -50,6 +50,7 @@ import de.cuioss.sheriff.gateway.detection.SourceLedger;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics.InboundBodyAbortDisposition;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.enterprise.inject.Instance;
@@ -90,6 +91,7 @@ class SheriffMetricsTest {
             assertEquals("sheriff_requests_total", SheriffMetrics.REQUESTS_TOTAL);
             assertEquals("sheriff_request_duration_seconds", SheriffMetrics.REQUEST_DURATION_SECONDS);
             assertEquals("sheriff_errors_total", SheriffMetrics.ERRORS_TOTAL);
+            assertEquals("sheriff_inbound_body_aborts_total", SheriffMetrics.INBOUND_BODY_ABORTS_TOTAL);
             assertEquals("sheriff_security_events_total", SheriffMetrics.SECURITY_EVENTS_TOTAL);
             assertEquals("sheriff_upstream_duration_seconds", SheriffMetrics.UPSTREAM_DURATION_SECONDS);
             assertEquals("sheriff_session_events_total", SheriffMetrics.SESSION_EVENTS_TOTAL);
@@ -447,6 +449,60 @@ class SheriffMetricsTest {
                     () -> assertEquals(Set.of("route", "category", "event"),
                             counters.iterator().next().getId().getTags().stream().map(Tag::getKey)
                                     .collect(Collectors.toSet())));
+        }
+
+        @Test
+        @DisplayName("recordInboundBodyAbort counts under sheriff_inbound_body_aborts_total{route,disposition} per (route, disposition) pair")
+        void recordInboundBodyAbortCountsPerRouteAndDisposition() {
+            metrics.recordInboundBodyAbort("grpc", InboundBodyAbortDisposition.CLIENT_IDLE);
+            metrics.recordInboundBodyAbort("grpc", InboundBodyAbortDisposition.CLIENT_IDLE);
+            metrics.recordInboundBodyAbort("grpc", InboundBodyAbortDisposition.CLIENT_LEFT);
+            metrics.recordInboundBodyAbort("upload", InboundBodyAbortDisposition.BODY_STREAM_FAILED);
+
+            assertAll("one series per (route, disposition) pair, each moved only by its own calls",
+                    () -> assertEquals(2.0, registry.get(SheriffMetrics.INBOUND_BODY_ABORTS_TOTAL)
+                            .tags("route", "grpc", "disposition", "client-idle").counter().count(), 0.0),
+                    () -> assertEquals(1.0, registry.get(SheriffMetrics.INBOUND_BODY_ABORTS_TOTAL)
+                            .tags("route", "grpc", "disposition", "client-left").counter().count(), 0.0),
+                    () -> assertEquals(1.0, registry.get(SheriffMetrics.INBOUND_BODY_ABORTS_TOTAL)
+                            .tags("route", "upload", "disposition", "body-stream-failed").counter().count(), 0.0),
+                    () -> assertEquals(3, registry.find(SheriffMetrics.INBOUND_BODY_ABORTS_TOTAL).counters().size()),
+                    () -> assertTrue(registry.find(SheriffMetrics.ERRORS_TOTAL).counters().isEmpty(),
+                            "the disposition counter moves no sheriff_errors_total series of its own"));
+        }
+
+        @Test
+        @DisplayName("sheriff_inbound_body_aborts_total tags exactly route and disposition, the disposition bounded to three values")
+        void inboundBodyAbortLabelsAreBounded() {
+            for (InboundBodyAbortDisposition disposition : InboundBodyAbortDisposition.values()) {
+                metrics.recordInboundBodyAbort("grpc", disposition);
+            }
+
+            var counters = registry.find(SheriffMetrics.INBOUND_BODY_ABORTS_TOTAL).counters();
+            Set<String> tagKeys = counters.stream()
+                    .flatMap(counter -> counter.getId().getTags().stream())
+                    .map(Tag::getKey)
+                    .collect(Collectors.toSet());
+            Set<String> dispositions = counters.stream()
+                    .map(counter -> counter.getId().getTag("disposition"))
+                    .collect(Collectors.toSet());
+            assertAll("the label set is closed",
+                    () -> assertEquals(Set.of("route", "disposition"), tagKeys,
+                            "no event, category or client-derived label is attached"),
+                    () -> assertEquals(Set.of("body-stream-failed", "client-left", "client-idle"), dispositions,
+                            "the documented disposition values are exactly these three"));
+        }
+
+        @Test
+        @DisplayName("recordInboundBodyAbort rejects a null route or disposition fail-closed")
+        void recordInboundBodyAbortRejectsNull() {
+            assertAll(
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordInboundBodyAbort(null, InboundBodyAbortDisposition.CLIENT_IDLE)),
+                    () -> assertThrows(NullPointerException.class,
+                            () -> metrics.recordInboundBodyAbort("grpc", null)));
+            assertTrue(registry.find(SheriffMetrics.INBOUND_BODY_ABORTS_TOTAL).counters().isEmpty(),
+                    "a rejected null must not leave a series behind");
         }
 
         /** Every {@link EventType} that carries a category — the population {@code recordError} accepts. */

@@ -45,6 +45,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@value #REQUEST_DURATION_SECONDS}{@code {route}} — per-route latency distribution;</li>
  *   <li>{@value #ERRORS_TOTAL}{@code {route,category,event}} — the "errors" view, keyed by
  *       {@link EventCategory} and the {@link EventType} name;</li>
+ *   <li>{@value #INBOUND_BODY_ABORTS_TOTAL}{@code {route,disposition}} — the
+ *       {@link EventType#INBOUND_BODY_ABORTED} ends, split by why the request body did not arrive whole:
+ *       a body stream that failed, a client that left, or an idle gRPC client
+ *       ({@link InboundBodyAbortDisposition});</li>
  *   <li>{@value #SECURITY_EVENTS_TOTAL}{@code {failure_type}} — the {@code cui-http}
  *       security-filter counts;</li>
  *   <li>{@value #UPSTREAM_DURATION_SECONDS}{@code {route}} — downstream-call time, separated
@@ -82,7 +86,9 @@ import org.jspecify.annotations.Nullable;
  * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, the {@code action}
  * label of {@value #SOURCE_TRIPS_TOTAL} has exactly three, the source address a trip concerns is never
  * a label, the {@code reason} label of {@value #FRONT_CONNECTIONS_REFUSED_TOTAL} has exactly two values
- * fixed by its two record methods, and the {@code event}
+ * fixed by its two record methods, the {@code disposition} label of {@value #INBOUND_BODY_ABORTS_TOTAL} has
+ * exactly three values fixed by the {@link InboundBodyAbortDisposition} parameter type of its record method,
+ * and the {@code event}
  * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries
  * request-derived input — so every meter is safe to keep always on. Each record call
  * resolves its meter through the {@link MeterRegistry}, which caches meters by name and tag set,
@@ -103,6 +109,13 @@ public class SheriffMetrics {
      * {@link EventType} name ({@code event} label).
      */
     public static final String ERRORS_TOTAL = "sheriff_errors_total";
+    /**
+     * Counter of {@link EventType#INBOUND_BODY_ABORTED} ends keyed by route and the
+     * {@link InboundBodyAbortDisposition} label ({@code disposition} label {@code body-stream-failed},
+     * {@code client-left} or {@code client-idle}). Every such end is also counted on {@link #ERRORS_TOTAL}
+     * under its one {@code event} label; this counter is what tells the three apart.
+     */
+    public static final String INBOUND_BODY_ABORTS_TOTAL = "sheriff_inbound_body_aborts_total";
     /** The {@code cui-http} security-filter counts, per failure type. */
     public static final String SECURITY_EVENTS_TOTAL = "sheriff_security_events_total";
     /** Per-route downstream-call time (timer). */
@@ -188,6 +201,44 @@ public class SheriffMetrics {
     private static final String TAG_BRANCH = "branch";
     private static final String TAG_ACTION = "action";
     private static final String TAG_REASON = "reason";
+    private static final String TAG_DISPOSITION = "disposition";
+
+    /**
+     * Why an {@link EventType#INBOUND_BODY_ABORTED} request body did not arrive whole — the closed value set
+     * of the {@code disposition} label of {@link #INBOUND_BODY_ABORTS_TOTAL}, and the fixed disposition the
+     * aborted-body log record carries. None of the three describes anything the client sent.
+     * <p>
+     * Thread-safe: an immutable enum.
+     *
+     * @since 1.0
+     */
+    public enum InboundBodyAbortDisposition {
+
+        /** The request body stream failed after dispatch began, such as a client disconnecting mid-upload. */
+        BODY_STREAM_FAILED("body-stream-failed"),
+
+        /** The client left before its proxied request was answered, with or without a body. */
+        CLIENT_LEFT("client-left"),
+
+        /**
+         * A gRPC client held its request stream open without sending its next complete request message within
+         * the message bound — the client was idle, not gone.
+         */
+        CLIENT_IDLE("client-idle");
+
+        private final String label;
+
+        InboundBodyAbortDisposition(String label) {
+            this.label = label;
+        }
+
+        /**
+         * @return the fixed, lower-case label value of this disposition
+         */
+        public String label() {
+            return label;
+        }
+    }
 
     private final MeterRegistry registry;
 
@@ -257,6 +308,23 @@ public class SheriffMetrics {
         }
         registry.counter(ERRORS_TOTAL,
                 TAG_ROUTE, route, TAG_CATEGORY, category.slug(), TAG_EVENT, eventType.name()).increment();
+    }
+
+    /**
+     * Counts one {@link EventType#INBOUND_BODY_ABORTED} end against {@link #INBOUND_BODY_ABORTS_TOTAL},
+     * tagged with the route id and the disposition's {@link InboundBodyAbortDisposition#label() label}. The
+     * parameter type admits no other value, so the {@code disposition} label's value set is exactly
+     * {@code body-stream-failed}, {@code client-left} and {@code client-idle}. The same end is counted on
+     * {@link #ERRORS_TOTAL} by {@link #recordError}; this counter does not replace that one.
+     *
+     * @param route       the config-fixed route id, or {@link #NO_ROUTE} when unmatched
+     * @param disposition why the request body did not arrive whole
+     */
+    public void recordInboundBodyAbort(String route, InboundBodyAbortDisposition disposition) {
+        Objects.requireNonNull(route, TAG_ROUTE);
+        Objects.requireNonNull(disposition, TAG_DISPOSITION);
+        registry.counter(INBOUND_BODY_ABORTS_TOTAL, TAG_ROUTE, route, TAG_DISPOSITION, disposition.label())
+                .increment();
     }
 
     /**

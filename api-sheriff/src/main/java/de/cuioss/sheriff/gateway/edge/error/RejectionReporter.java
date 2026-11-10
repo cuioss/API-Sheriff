@@ -31,20 +31,22 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics.InboundBodyAbortDisposition;
 import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.ext.web.RoutingContext;
 import org.jspecify.annotations.Nullable;
 
 /**
  * The accounting half of every rejection the edge answers: meters it on the in-process event counter
- * and on {@link SheriffMetrics}, writes the security-relevant {@code WARN} and the per-route latched
- * {@code INFO} records, and records the per-request metrics from the single end-of-response hook. It
+ * and on {@link SheriffMetrics}, writes the security-relevant {@code WARN} and the latched {@code INFO}
+ * records (per route, and for an aborted inbound body per route and disposition), and records the
+ * per-request metrics from the single end-of-response hook. It
  * also meters the two signals of the uniform {@code 404} that are not a {@code GatewayException}: an
  * internal failure answered as that {@code 404} ({@link #reportPreTrustInternalFailure}) and an answer
  * released after the first floor step ({@link #recordFloorOverrun}).
  * Rendering the answer is {@link ErrorResponseWriter}'s job.
  * <p>
- * Thread-safe: the two report latches are concurrent sets, and every other collaborator is
+ * Thread-safe: the report latches are concurrent sets, and every other collaborator is
  * thread-safe.
  *
  * @author API Sheriff Team
@@ -56,25 +58,17 @@ public final class RejectionReporter {
 
     /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
     public static final String ROUTE_KEY = "sheriff.route";
-    /** The fixed disposition the aborted-inbound-body record carries; nothing the client supplied. */
-    private static final String INBOUND_BODY_ABORTED_DISPOSITION = "body-stream-failed";
-    /** The fixed disposition of the same record for a client that left before it was answered. */
-    private static final String CLIENT_DEPARTED_DISPOSITION = "client-left";
-    /**
-     * The fixed disposition of the same record for a gRPC call whose client sent no request byte
-     * within the first-message bound.
-     */
-    private static final String NO_FIRST_MESSAGE_DISPOSITION = "no-first-message";
 
     private final GatewayEventCounter gatewayEventCounter;
     private final SheriffMetrics sheriffMetrics;
     private final long requestBodyIdleTimeoutMillis;
     private final long requestBodyDeadlineMillis;
     /**
-     * The route ids an aborted inbound body has already been reported for at {@code INFO} (see
-     * {@link #logInboundBodyAborted}). Bounded by the number of configured routes.
+     * The route and disposition pairs an aborted inbound body has already been reported for at
+     * {@code INFO} (see {@link #logInboundBodyAborted}). Bounded by the number of configured routes times
+     * the three {@link InboundBodyAbortDisposition} values.
      */
-    private final Set<String> inboundBodyAbortReported = ConcurrentHashMap.newKeySet();
+    private final Set<InboundBodyAbortLatch> inboundBodyAbortReported = ConcurrentHashMap.newKeySet();
     /**
      * The route ids a request-body idle timeout has already been reported for at {@code INFO} (see
      * {@link #logRequestBodyTimeout}). Bounded by the number of configured routes.
@@ -129,10 +123,10 @@ public final class RejectionReporter {
             // message is a fixed disposition (never the raw Host value).
             case PASSTHROUGH_HOST_SMUGGLED -> LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED,
                     rejected.getMessage());
-            // A client-caused termination, not a security event: an INFO, latched per route. A client that
-            // left before it was answered, and a gRPC call that sent no first message, each carry a
-            // disposition of their own.
-            case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx), inboundBodyAbortDisposition(rejected));
+            // A client-caused termination, not a security event: counted per disposition, and an INFO
+            // latched per route and disposition. A body stream that failed, a client that left before it
+            // was answered, and an idle gRPC client each carry a disposition of their own.
+            case INBOUND_BODY_ABORTED -> reportInboundBodyAborted(routeLabel(ctx), inboundBodyAbortDisposition(rejected));
             // A body that stopped arriving while the dispatch held an upstream connection, or one still
             // arriving at the request-body deadline: an INFO each, latched per route.
             case REQUEST_BODY_TIMEOUT -> {
@@ -216,42 +210,60 @@ public final class RejectionReporter {
 
     /**
      * @param rejected an {@link EventType#INBOUND_BODY_ABORTED} rejection
-     * @return the fixed disposition its record carries: {@code client-left} for a
-     *         {@link DispatchStage.ClientDeparted}, {@code no-first-message} for a
+     * @return the fixed disposition it is counted and recorded under: {@code client-left} for a
+     *         {@link DispatchStage.ClientDeparted}, {@code client-idle} for a
      *         {@link DispatchStage.RequestMessageTimeout}, {@code body-stream-failed} otherwise
      */
-    private static String inboundBodyAbortDisposition(GatewayException rejected) {
+    private static InboundBodyAbortDisposition inboundBodyAbortDisposition(GatewayException rejected) {
         return switch (rejected) {
-            case DispatchStage.ClientDeparted _ -> CLIENT_DEPARTED_DISPOSITION;
-            case DispatchStage.RequestMessageTimeout _ -> NO_FIRST_MESSAGE_DISPOSITION;
-            default -> INBOUND_BODY_ABORTED_DISPOSITION;
+            case DispatchStage.ClientDeparted _ -> InboundBodyAbortDisposition.CLIENT_LEFT;
+            case DispatchStage.RequestMessageTimeout _ -> InboundBodyAbortDisposition.CLIENT_IDLE;
+            default -> InboundBodyAbortDisposition.BODY_STREAM_FAILED;
         };
     }
 
     /**
-     * Records one {@link EventType#INBOUND_BODY_ABORTED} — a request body that failed after dispatch
-     * began, such as a client disconnecting mid-upload (disposition {@code body-stream-failed}), a
-     * client that left before its proxied request was answered, with or without a body (disposition
-     * {@code client-left}), or a gRPC call whose client sent no request message within the first-message
-     * bound (disposition {@code no-first-message}).
+     * Counts and records one {@link EventType#INBOUND_BODY_ABORTED} — a request body that failed after
+     * dispatch began, such as a client disconnecting mid-upload (disposition {@code body-stream-failed}),
+     * a client that left before its proxied request was answered, with or without a body (disposition
+     * {@code client-left}), or a gRPC client that held its request stream open without sending its next
+     * complete request message within the message bound (disposition {@code client-idle}).
      * <p>
-     * <strong>Latched per route.</strong> Every caller a route admits can end its own upload at will,
-     * and on a route without authentication that is any caller at all, so a record per occurrence
-     * would hand out a log line per request (CWE-779). The first occurrence on a route is recorded at
-     * {@code INFO}; every repeat on that route is a {@code DEBUG} diagnostic. The latch is keyed by the
-     * route id, so it holds at most one entry per configured route. The absence of a repeated
-     * {@code INFO} says nothing about the rate — {@link SheriffMetrics#ERRORS_TOTAL} carries that.
+     * <strong>Counted per disposition.</strong> Every end is counted on
+     * {@link SheriffMetrics#INBOUND_BODY_ABORTS_TOTAL} under its route and disposition, beside the one
+     * {@code event} series {@link SheriffMetrics#ERRORS_TOTAL} holds for all three, so an idle-client flood
+     * is countable on its own.
+     * <p>
+     * <strong>Latched per route and disposition.</strong> Every caller a route admits can end its own
+     * upload at will, and on a route without authentication that is any caller at all, so a record per
+     * occurrence would hand out a log line per request (CWE-779). The first occurrence of each disposition
+     * on a route is recorded at {@code INFO} — the first idle-client end on a route gets its own record
+     * even after a client that left was recorded there; every repeat of that disposition on that route is a
+     * {@code DEBUG} diagnostic. The latch is keyed by the route id and the disposition, so it holds at most
+     * three entries per configured route. The absence of a repeated {@code INFO} says nothing about the rate
+     * — {@link SheriffMetrics#INBOUND_BODY_ABORTS_TOTAL} carries that.
      * <p>
      * The record carries the route id and a fixed disposition only: never the failure's message, which
      * can describe what the client sent.
      */
-    private void logInboundBodyAborted(String route, String disposition) {
-        if (inboundBodyAbortReported.add(route)) {
-            LOGGER.info(ApiSheriffLogMessages.INFO.INBOUND_BODY_ABORTED, route, disposition);
+    private void reportInboundBodyAborted(String route, InboundBodyAbortDisposition disposition) {
+        sheriffMetrics.recordInboundBodyAbort(route, disposition);
+        if (inboundBodyAbortReported.add(new InboundBodyAbortLatch(route, disposition))) {
+            LOGGER.info(ApiSheriffLogMessages.INFO.INBOUND_BODY_ABORTED, route, disposition.label());
             return;
         }
         LOGGER.debug("Request body on route '%s' did not arrive whole again (%s) — already reported once for "
-                + "this route, stays at DEBUG for the rest of the process", route, disposition);
+                + "this route and disposition, stays at DEBUG for the rest of the process", route,
+                disposition.label());
+    }
+
+    /**
+     * The key of the aborted-inbound-body {@code INFO} latch: one route and one disposition.
+     *
+     * @param route       the config-fixed route id, or {@link SheriffMetrics#NO_ROUTE}
+     * @param disposition why the request body did not arrive whole
+     */
+    private record InboundBodyAbortLatch(String route, InboundBodyAbortDisposition disposition) {
     }
 
     /**
