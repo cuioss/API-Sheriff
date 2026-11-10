@@ -306,8 +306,7 @@ class WebSocketUpgradeGateTest {
      * vertx-core 4.5.34 buffers at most 8192 bytes of a handshake request body and answers a larger one
      * {@code 413} with a connection close ({@code Http1xServerRequest.webSocket()}); the gate refuses
      * the same body from its declared length.
-     */
-    /**
+     * <p>
      * The gate judges every declared {@code Content-Length} on its own. Through the pipeline a
      * {@code Content-Length} that is no decimal number, and a second {@code Content-Length} line, are
      * refused by the framing gate before route selection, so the cases declaring them pin the gate's
