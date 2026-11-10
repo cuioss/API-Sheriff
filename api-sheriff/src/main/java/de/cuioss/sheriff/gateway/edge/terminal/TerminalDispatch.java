@@ -643,6 +643,13 @@ public final class TerminalDispatch {
      * stops receiving that body, the upstream request still receiving it is reset, and the end and a
      * {@code NO_ERROR} reset follow once the body stops arriving or the time cap passes. The relay's
      * future completes after that.
+     * <p>
+     * <strong>Once the relay has handed its end over, that end is the only one.</strong> The answer has
+     * then been relayed whole, and only its end is still to come — on HTTP/2, possibly after that wait. A
+     * client that leaves in the meantime, and an end that fails because the client has left, still fail
+     * the relay outcome and reach the one reset site, where the reset of an exchange already read to its
+     * end is a no-op, but they are not answered by {@code failRelay}: there is no truncated answer to
+     * complete, and its end would be a second one.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
@@ -654,6 +661,9 @@ public final class TerminalDispatch {
             Function<ResponseEnd, Future<Void>> relay) {
         ctx.vertx().runOnContext(v -> {
             Promise<Void> outcome = Promise.promise();
+            // Set once the relay hands the end of the response to the one end rule: from then on the
+            // answer is whole and that end is its only one.
+            AtomicBoolean endHandedOver = new AtomicBoolean();
             // A quiet upstream gives the relay no write that could fail, so the client leaving is
             // observed on its own: a response that closes before it ended fails the outcome at once.
             ctx.addEndHandler(ended -> {
@@ -665,7 +675,7 @@ public final class TerminalDispatch {
             if (response.closed() && !response.ended()) {
                 outcome.tryFail(new IllegalStateException("the client response closed before the relay started"));
             }
-            startRelay(ctx, stageSetCookies, relay).onComplete(relayed -> {
+            startRelay(ctx, stageSetCookies, relay, endHandedOver).onComplete(relayed -> {
                 if (relayed.succeeded()) {
                     outcome.tryComplete();
                 } else {
@@ -677,6 +687,14 @@ public final class TerminalDispatch {
                 // lost its client: nothing reads the upstream body any more, so release the exchange
                 // instead of letting it drain or idle.
                 upstream.request().reset();
+                if (endHandedOver.get()) {
+                    // The relay had already handed its end to the one end rule — on HTTP/2 still waiting
+                    // for request data to stop — so the client left an answer that was relayed whole.
+                    // That end stays the only one: answering this as a failed relay would end the
+                    // response a second time.
+                    LOGGER.debug("Client left while the end of its relayed response waited: %s", failure.getMessage());
+                    return;
+                }
                 failRelay(ctx, failure, upstream.statusCode());
             });
         });
@@ -865,17 +883,21 @@ public final class TerminalDispatch {
     /**
      * Starts the relay on the event loop, turning a failure thrown while starting it into a failed
      * future, which {@link #relayOnEventLoop} answers — releasing the paused upstream response first —
-     * exactly like a failure the relay reports on its future.
+     * exactly like a failure the relay reports on its future. The {@link ResponseEnd} the relay is handed
+     * sets {@code endHandedOver} before it passes the end to the one end rule.
      */
     private static Future<Void> startRelay(RoutingContext ctx, List<String> stageSetCookies,
-            Function<ResponseEnd, Future<Void>> relay) {
+            Function<ResponseEnd, Future<Void>> relay, AtomicBoolean endHandedOver) {
         // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
         // must be answered, so no narrower catch is correct. The failure is not swallowed — it is
         // handed to failRelay exactly like a failure the relay reports on its future.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             ResponseEnds.applyStageSetCookies(ctx.response(), stageSetCookies);
-            return relay.apply(ending -> ResponseEnds.endResponse(ctx, ending));
+            return relay.apply(ending -> {
+                endHandedOver.set(true);
+                return ResponseEnds.endResponse(ctx, ending);
+            });
         } catch (RuntimeException startFailure) {
             return Future.failedFuture(startFailure);
         }

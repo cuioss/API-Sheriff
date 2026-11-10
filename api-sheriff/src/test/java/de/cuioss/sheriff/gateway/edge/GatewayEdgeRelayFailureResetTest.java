@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -26,12 +27,17 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -39,6 +45,7 @@ import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
@@ -90,7 +97,18 @@ import org.junit.jupiter.api.Test;
  * Each upstream request must be reset within {@value #RESET_BOUND_MILLIS} ms of its client leaving, and a
  * request that follows on the same route must then be served within the same bound. Without the reset no
  * upstream request is reset, and the request that follows waits on the exhausted pool.
+ * <p>
+ * <strong>A client that leaves once the answer has been relayed whole.</strong> An HTTP/2 upload the
+ * upstream answered before reading its body has the end of its relayed answer held back by the one end
+ * rule (ADR-0066) until request data stops arriving. The upload of these cases keeps sending one byte every
+ * {@value #TRICKLE_INTERVAL_MILLIS} ms — far inside the wait's quiet period — so the wait is still running
+ * when the client, having read the whole answer, resets its stream. The relay itself succeeded; the
+ * client leaving during the wait for its end must not be answered as a failed relay, whose failure path
+ * would end the response a second time. A {@code DEBUG} record of the terminal dispatch names every relay
+ * it answers as failed, and none may appear. A control without the reset pins that the record does not
+ * appear for a wait that ends normally either.
  */
+@EnableTestLogger(debug = TerminalDispatch.class)
 @DisplayName("GatewayEdgeRoute — a relay that fails after the hand-over resets the upstream exchange")
 @Tag("isolated-fork")
 class GatewayEdgeRelayFailureResetTest {
@@ -112,6 +130,15 @@ class GatewayEdgeRelayFailureResetTest {
     private static final String CRLF = "\r\n";
     private static final String CHUNK = "x";
     private static final String ANSWER = "ok";
+    /** The upstream path prefix of an upload the stub answers {@value #ANSWER} at once, before its body. */
+    private static final String EARLY = "/early";
+    /**
+     * How often an upload whose answer arrived early sends one more body byte: a fifth of the 50 ms quiet
+     * period after which the one end rule stops waiting for request data, so the wait keeps running.
+     */
+    private static final long TRICKLE_INTERVAL_MILLIS = 10L;
+    /** The start of the {@code DEBUG} record the terminal dispatch writes for every relay it answers as failed. */
+    private static final String RELAY_FAILED = "Response relay failed";
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -133,8 +160,13 @@ class GatewayEdgeRelayFailureResetTest {
                 .requestHandler(this::handleUpstreamRequest)
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         ResolvedUpstream upstream = new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), "");
+        // GET for the relayed answers, POST for the uploads the upstream answers early: the fixture seed
+        // allows GET alone, and the verb gate answers any other method as an unrouted 404.
         frontServer = EdgeFixtures.edge(vertx, virtualThreadExecutor)
-                .routes(ConfigFixtures.route(ROUTE, "/" + ROUTE).upstream(upstream).build())
+                .routes(ConfigFixtures.route(ROUTE, "/" + ROUTE).upstream(upstream)
+                        .effectiveAllowedMethods(EnumSet.of(de.cuioss.sheriff.gateway.config.model.HttpMethod.GET,
+                                de.cuioss.sheriff.gateway.config.model.HttpMethod.POST))
+                        .build())
                 .serve();
         netClient = vertx.createNetClient();
     }
@@ -224,6 +256,95 @@ class GatewayEdgeRelayFailureResetTest {
         }
 
         assertEachUpstreamResetAndTheRouteServes(QUIET, pooled, leftNanos);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a client resetting its upload while the end of its whole relayed answer waits is no failed relay")
+    void http2ResetDuringTheEarlyEndWaitOfAWholeAnswerIsNoFailedRelay() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+
+        EarlyAnswer early = uploadAnsweredEarly(http2Client, EARLY + "-reset", true);
+        Answer after = followUp(http2Client);
+
+        assertAll("an upload whose client left once the whole early answer was relayed",
+                () -> assertEquals(200, early.status(), "the upstream's answer was relayed"),
+                () -> assertEquals(ANSWER, early.body(), "the whole answer was relayed before the client left"),
+                () -> assertFalse(early.endReached(), "the client left before the end of the answer reached it"),
+                () -> assertEquals(200, after.response().statusCode(), "the request that follows is served"),
+                () -> assertSame(early.connection(), after.response().request().connection(),
+                        "the request that follows shares the connection, so the reset was handled before it"),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.DEBUG, RELAY_FAILED));
+    }
+
+    @Test
+    @DisplayName("control: HTTP/2 — an upload whose whole early answer ends normally is no failed relay")
+    void http2EarlyAnswerEndingNormallyIsNoFailedRelay() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+
+        EarlyAnswer early = uploadAnsweredEarly(http2Client, EARLY + "-ends", false);
+        Answer after = followUp(http2Client);
+
+        assertAll("an upload whose early answer ends once its body stops arriving",
+                () -> assertEquals(200, early.status()),
+                () -> assertEquals(ANSWER, early.body()),
+                () -> assertTrue(early.endReached(), "the answer ends once the client stops sending"),
+                () -> assertEquals(200, after.response().statusCode(), "the request that follows is served"),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.DEBUG, RELAY_FAILED));
+    }
+
+    /**
+     * Opens an HTTP/2 upload to {@code /up{path}}, sends its head with a first body byte — which carries the
+     * upstream request head, so the stub answers {@value #ANSWER} at once — and then one byte every
+     * {@value #TRICKLE_INTERVAL_MILLIS} ms, never ending the body. Once the whole answer has been read the
+     * trickle stops; with {@code resetOnceRelayed} the stream is reset right then, otherwise the end of the
+     * answer is awaited.
+     */
+    private EarlyAnswer uploadAnsweredEarly(HttpClient client, String path, boolean resetOnceRelayed) throws Exception {
+        HttpClientRequest upload = Awaits.connect(client.request(HttpMethod.POST, frontServer.actualPort(),
+                LoopbackHost.ADDRESS, "/" + ROUTE + path), "the POST " + path + " upload to open");
+        upload.exceptionHandler(GatewayEdgeRelayFailureResetTest::ignoreOwnReset);
+        AtomicBoolean trickling = new AtomicBoolean(true);
+        CompletableFuture<String> relayed = new CompletableFuture<>();
+        CompletableFuture<Void> endReached = new CompletableFuture<>();
+        CompletableFuture<Integer> status = new CompletableFuture<>();
+        upload.response().onSuccess(response -> {
+            status.complete(response.statusCode());
+            response.exceptionHandler(GatewayEdgeRelayFailureResetTest::ignoreOwnReset);
+            Buffer body = Buffer.buffer();
+            response.handler(chunk -> {
+                body.appendBuffer(chunk);
+                if (body.length() >= ANSWER.length() && !relayed.isDone()) {
+                    trickling.set(false);
+                    if (resetOnceRelayed) {
+                        upload.reset();
+                    }
+                    relayed.complete(body.toString());
+                }
+            });
+            response.endHandler(ended -> endReached.complete(null));
+        });
+
+        Awaits.connect(upload.setChunked(true).write(CHUNK), "the head and first body byte of " + path + " to be sent");
+        vertx.setPeriodic(TRICKLE_INTERVAL_MILLIS, timer -> {
+            if (trickling.get()) {
+                upload.write(CHUNK);
+            } else {
+                vertx.cancelTimer(timer);
+            }
+        });
+        String body = Awaits.connect(relayed, "the whole early answer to " + path + " to be relayed");
+        if (!resetOnceRelayed) {
+            Awaits.connect(endReached, "the early answer to " + path + " to end");
+        }
+        return new EarlyAnswer(Awaits.connect(status, "the status of " + path), body, endReached.isDone(),
+                upload.connection());
+    }
+
+    /** Sends {@code GET /up/after} on {@code client} and awaits its whole answer. */
+    private Answer followUp(HttpClient client) throws Exception {
+        HttpClientRequest after = Awaits.connect(client.request(HttpMethod.GET, frontServer.actualPort(),
+                LoopbackHost.ADDRESS, "/" + ROUTE + "/after"), "the follow-up request to open");
+        return Awaits.connect(after.end().compose(sent -> answerOf(after)), "the follow-up request to be answered");
     }
 
     /**
@@ -331,5 +452,12 @@ class GatewayEdgeRelayFailureResetTest {
 
     /** The response to one client request, its body read whole. */
     private record Answer(HttpClientResponse response, String body) {
+    }
+
+    /**
+     * What the client of an early-answered upload saw: the status, the relayed body, whether the end of the
+     * answer reached it, and the connection the upload was sent on.
+     */
+    private record EarlyAnswer(int status, String body, boolean endReached, HttpConnection connection) {
     }
 }
