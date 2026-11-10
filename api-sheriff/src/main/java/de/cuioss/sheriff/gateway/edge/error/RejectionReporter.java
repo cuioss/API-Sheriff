@@ -61,7 +61,7 @@ public final class RejectionReporter {
     /** The fixed disposition of the same record for a client that left before it was answered. */
     private static final String CLIENT_DEPARTED_DISPOSITION = "client-left";
     /**
-     * The fixed disposition of the same record for a gRPC call whose client sent no request message
+     * The fixed disposition of the same record for a gRPC call whose client sent no request byte
      * within the first-message bound.
      */
     private static final String NO_FIRST_MESSAGE_DISPOSITION = "no-first-message";

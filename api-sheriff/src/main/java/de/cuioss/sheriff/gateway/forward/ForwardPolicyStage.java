@@ -78,7 +78,8 @@ import org.jspecify.annotations.Nullable;
  *       peer — this is what makes the forward-all baseline safe. The
  *       {@link ConnectionHeaders#REQUEST_READMITTABLE} members — {@code Authorization} and the
  *       provenance and URL-override class — are re-admitted only under a positive-list naming the
- *       member, compared separator-folded, and only the named member crosses; forward-all and a
+ *       member (membership compared separator-folded; the client header is then looked up under the
+ *       entry's own spelling, case-insensitively), and only the named member crosses; forward-all and a
  *       negative-list never re-admit one. {@code TE} crosses only as the {@code trailers}
  *       token.</li>
  *   <li><strong>The {@code Cookie} header is rebuilt, never copied.</strong> No forward mode copies

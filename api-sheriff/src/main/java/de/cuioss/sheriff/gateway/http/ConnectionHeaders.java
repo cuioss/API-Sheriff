@@ -229,8 +229,9 @@ public class ConnectionHeaders {
      * the provenance and URL-override class.
      * <p>
      * A member is still withheld under every forward mode by default. It crosses only when the
-     * route resolves a positive-list whose {@code headers_allow} names it — compared
-     * {@linkplain #separatorFolded separator-folded} — and only that named member does: there is no
+     * route resolves a positive-list whose {@code headers_allow} names it — membership compared
+     * {@linkplain #separatorFolded separator-folded}, the client header then looked up under the entry's
+     * own spelling — and only that named member does: there is no
      * global switch, and a negative-list or forward-all route never re-admits one, so a permissive
      * baseline relays neither an inbound credential nor a client's provenance claim. Naming the
      * member is an operator's statement that this upstream needs the client's own value of it.

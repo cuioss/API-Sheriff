@@ -1898,7 +1898,7 @@ public final class DispatchStage {
          *                          timer, for the clock's timeout, is scheduled through its own scheduler
          *                          once {@link #startFirstMessageClock()} is called
          */
-        @SuppressWarnings("java:S107") // each argument is an independent collaborator of the stream
+        @SuppressWarnings("java:S107") // internal stream; the three clocks are distinct per-attempt bounds built separately by the dispatch, and a holder type would only re-bundle them for this one call
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos,
                 IdleClock firstMessageClock) {

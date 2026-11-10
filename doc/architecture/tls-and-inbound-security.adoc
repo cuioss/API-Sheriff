@@ -180,8 +180,9 @@ request (`INBOUND_BODY_ABORTED`). Requests without a declared length keep chunke
 *Aborted inbound body.* When the inbound body stream fails after dispatch began (client disconnect
 or broken chunk framing), the upstream request is reset and the gateway records
 `INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`). A body exceeding `max_body_bytes` remains
-`CONTENT_TOO_LARGE` (`413`). A gRPC call that sends no request byte within its bound is recorded the
-same way (<<_grpc_first_message_bound>>). Client-ended dispatches are never retried and are not
+`CONTENT_TOO_LARGE` (`413`). A gRPC call that sends no request byte within its bound is recorded as
+`INBOUND_BODY_ABORTED` too, but its client receives `INVALID_ARGUMENT` in a trailers-only `200`
+(<<_grpc_first_message_bound>>). Client-ended dispatches are never retried and are not
 counted as a failure by the upstream circuit breaker.
 
 [[_request_body_idle_timeout]]

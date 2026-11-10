@@ -56,9 +56,10 @@ public final class UpstreamGuards {
      * counted from the start of the attempt like this timeout, so a body still arriving when this timeout
      * would end the attempt is ended as the request's first. So is the gRPC first-message bound
      * ({@link GrpcDispatchStage#GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS}), so a gRPC call whose client sends no
-     * request message is ended as the client's abort before this timeout could end it as the upstream's —
+     * request byte is ended as the client's abort before this timeout could end it as the upstream's —
      * unless waiting for an upstream connection, which this timeout counts and the bound does not, used up
-     * the difference.
+     * the difference. The bound ends with the first forwarded request byte: a call that then stalls is
+     * ended by this timeout.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -81,7 +82,7 @@ public final class UpstreamGuards {
      * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
      * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
      * length, a body that made no progress for the request-body idle timeout, a body still arriving at
-     * the request-body deadline, a gRPC call whose client sent no request message within the first-message
+     * the request-body deadline, a gRPC call whose client sent no request byte within the first-message
      * bound — reaches the guard as such a skipped {@link GatewayException} (see {@link DispatchStage}).
      * SmallRye Fault Tolerance has no neutral outcome, so the breaker records a skipped exception as a
      * success; keeping these dispatches out of its window would need the guarded call to be restructured.
