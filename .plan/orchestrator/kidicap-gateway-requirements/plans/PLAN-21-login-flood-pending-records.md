@@ -131,21 +131,39 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 ## Claim Labels
 
 - HYPOTHESIS: `PendingAuthorizationStore.InMemory` bounds at `DEFAULT_MAX_PENDING = 10_000` and evicts the oldest beyond capacity — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/` § pending-authorization store and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § store construction (verify-at-outline)
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer :296 DEFAULT_MAX_PENDING = 10_000, :580 construction; eviction InMemoryPendingAuthorizationStore :78-84 (class extracted from PendingAuthorizationStore by #573, behaviour unchanged)
+  - verdict: corroborated | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer :306 DEFAULT_MAX_PENDING = 10_000 and construction :590 still stand; since #581 it is the global backstop beside MAX_PENDING_PER_SOURCE = 256 (InMemoryPendingAuthorizationStore :85)
 - HYPOTHESIS: eviction is global rather than per-client, so a flood from one client evicts another client's live record — confirm/refute at the same store's eviction method (verify-at-outline)
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: InMemoryPendingAuthorizationStore :38 is one LinkedHashMap, :54-58 put then evictOldestBeyondCapacity, no client partition, no clock; expiry is checked only in consume :65
+  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: no longer true after #581 (3eef748b): the store purges expired records first, caps each source at 256 live records that overflow only into that source's own oldest, and refuses at global saturation with 503 + Retry-After instead of evicting another source's live record; PendingAuthorizationStore javadoc :39-41; BffPendingLoginBoundIT rewritten to prove it; rescoped in the spec banner
 - HYPOTHESIS: `rate_limit` is reserved in the schema with no reader — confirm/refute at `api-sheriff/src/main/resources/schema/gateway.schema.json` § `rate_limit` and a grep for its config accessor (verify-at-outline)
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: endpoint.schema.json :335 declares rate_limit as reserved and ignored; only LimitRules.validateRateLimitNotEnforced and boot WARN ApiSheriff-140 (ADR-0077) mention it; no limiter reads it
+  - verdict: corroborated | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: endpoint.schema.json :331 still declares rate_limit as reserved and ignored; ApiSheriff-140 boot WARN (ADR-0077) unchanged; #581 explicitly adds no login-initiation rate limiter and says rate_limit stays planned
 - OBSERVED: `LoginFlow.initiate` creates the pending record and validates the return URL's origin — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate :129; authorize :132, sameOrigin :133-135, create :138, store :140 (all one line lower than cited after #559)
+  - verdict: corroborated | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate :152 now takes a quotaKey; authorize :157, sameOrigin :159, create :163-164, store :167, binding cookie :169; behaviour of the origin check unchanged
 - OBSERVED (cleanup re-grounding, 3abc370): the binding cookie is minted from the newly created record's own id — `PendingAuthorizationRecord.create(...)` → `pendingStore.store(pending)` → `bindingCookieCodec.toSetCookieHeader(pending.id())` — so no inbound binding identity exists at record-creation time — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow :142 mints the binding cookie from pending.id(); no source argument on initiate; same pattern in SessionWidening :175 and StepUpCoordinator :180
+  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: half stale: the binding cookie is still minted from pending.id() (LoginFlow :169), but initiate now carries a source quotaKey (PendingQuotaKeys, SourceKeys rules, trusted-forwarder client address else TCP peer, IPv6 /64) threaded through LoginFlow, SessionWidening, StepUpCoordinator and the reserved endpoints; rescoped in the spec banner
 - OBSERVED: `PendingAuthorizationStore.InMemory` keys one shared insertion-ordered map on `pending.id()` with no per-client partition, and `evictOldestBeyondCapacity` walks that single map — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` § `InMemory`, `evictOldestBeyondCapacity`
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: InMemoryPendingAuthorizationStore :38, :56, :78-84 keys one shared insertion-ordered map on pending.id() with no per-client partition
+  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: no longer true after #581: InMemoryPendingAuthorizationStore keeps a per-source live count keyed on PendingAuthorizationRecord.quotaKey(); eviction is per-source, not one global oldest-first walk; rescoped in the spec banner
 - Verify-first clause (SETTLED and absorbed 2026-09-21): the clause's own "if not" branch fired — a per-binding cap keyed on an existing cookie is not viable, and deliverable 1 now carries the three re-scoped options. What remains open for outline is only WHICH option, and the cost of option (a)'s pre-login cookie on the unauthenticated path.
-  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: first half holds (no inbound client identity at record creation); second half stale: the per-source substrate landed (#532 ADR-0076 SourceLedger.admit) but is edge-only and unused by bff/; rescoped in the spec banner 2026-11-09
+  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: the choice among (a), (b) and (c) was settled by #581 (3eef748b) as a per-source quota inside the store with 503 refusal, keyed by the existing SourceKeys canonicalization without the SourceLedger leaky bucket; the open question is closed; what #581 leaves open is recorded in the spec banner
 
 ## Expected Surface
+
+> ⛔ **SUPERSEDED 2026-11-09 (cleanup at `2200ddb2`) by `security-hardening-tier-1` `PLAN-SEC-03` — merged as #581
+> (`3eef748b`). DO NOT EMIT.** Positive account of what closed the defect: `InMemoryPendingAuthorizationStore`
+> now purges expired records first, caps each source at `MAX_PENDING_PER_SOURCE = 256` live records (overflow
+> evicts only that source's own oldest), and refuses a net-new record at global saturation with `503` +
+> `Retry-After: 30` (`PENDING_AUTHORIZATION_SATURATED`) instead of evicting another source's live record; the key
+> is `PendingQuotaKeys` (trusted-forwarder client address else TCP peer, IPv6 by `/64`), threaded through
+> `LoginFlow`, `SessionWidening`, `StepUpCoordinator`, the reserved endpoints and `SessionAuthenticationStage`;
+> `ApiSheriff-145` is the latched saturation WARN and `sheriff_errors_total{event="PENDING_AUTHORIZATION_SATURATED"}`
+> the rate; `BffPendingLoginBoundIT` was rewritten to prove the acceptance criterion (a same-source flood drops
+> only that source's oldest record while another login completes); the docs and threat model carry the fairness
+> rules. This spec's acceptance criterion is therefore met.
+> **What #581 does NOT cover, recorded as Watches in `epic.md` rather than kept as a plan:** (1) no ADR records
+> the mechanism (deliverable 1 asked for one; `doc/adr` has none for the pending store); (2) no login-initiation
+> rate limiter (`rate_limit` stays reserved, ADR-0077); (3) a refused login has already made its PAR round trip
+> to the IdP (`LoginFlow.initiate` calls `authorize` before the store), which #581 accepts as a residual; (4) more
+> than 256 concurrent logins behind one shared source key evict that source's own oldest record, unobserved.
+> The spec file is kept as the audit record; it is never deleted.
 
 > ⚠ **Re-grounded 2026-11-09 (cleanup at `c85817d9`, 54 commits after `54f82f03`). DO NOT EMIT: probable
 > duplicate of a plan another epic is landing.** `security-hardening-tier-1` `PLAN-SEC-03`
