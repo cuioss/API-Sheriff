@@ -187,7 +187,7 @@ class GrpcDispatchStageTest {
 
             assertAll("the fixed request-side bounds of a gRPC call",
                     () -> assertTrue(GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS
-                                    < GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
+                            < GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
                             () -> "the message bound of " + GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS
                                     + " ms must be shorter than the pre-response deadline"),
                     () -> assertTrue(GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS < guardMillis,
@@ -203,8 +203,8 @@ class GrpcDispatchStageTest {
         @Test
         @DisplayName("the pre-response deadline equals the HTTP request-body deadline")
         void preResponseDeadlineEqualsTheRequestBodyDeadline() {
-            assertEquals(new EdgeHardeningOptions().requestBodyDeadlineMillis(),
-                    GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
+            assertEquals(
+                    GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS, new EdgeHardeningOptions().requestBodyDeadlineMillis(),
                     "the pre-response deadline is derived from EdgeHardeningOptions#requestBodyDeadlineMillis()");
         }
 

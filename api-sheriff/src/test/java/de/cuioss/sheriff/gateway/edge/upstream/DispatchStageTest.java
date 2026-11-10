@@ -269,7 +269,7 @@ class DispatchStageTest {
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP, IDLE_TIMEOUT_MILLIS,
                             DEADLINE_MILLIS, failureMapper)),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
-                            DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, IDLE_TIMEOUT_MILLIS, failureMapper),
+                                    DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, IDLE_TIMEOUT_MILLIS, failureMapper),
                             "a message bound carries the deadline as the pre-response deadline"),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                             DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, failureMapper)));

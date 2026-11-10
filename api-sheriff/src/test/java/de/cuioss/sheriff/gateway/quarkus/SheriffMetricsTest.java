@@ -141,7 +141,7 @@ class SheriffMetricsTest {
             assertAll("the label set is closed",
                     () -> assertEquals(Set.of("reason"), tagKeys, "no peer address or other label is attached"),
                     () -> assertEquals(Set.of(SheriffMetrics.REFUSAL_REASON_CAP,
-                            SheriffMetrics.REFUSAL_REASON_SOURCE_SHARE, SheriffMetrics.REFUSAL_REASON_DIAL_BUDGET),
+                                    SheriffMetrics.REFUSAL_REASON_SOURCE_SHARE, SheriffMetrics.REFUSAL_REASON_DIAL_BUDGET),
                             reasons),
                     () -> assertEquals(Set.of("cap", "source_share", "dial_budget"), reasons,
                             "the documented label values are exactly cap, source_share and dial_budget"));
