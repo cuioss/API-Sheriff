@@ -307,12 +307,13 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
   floor (<<_trust_boundary_rejections>>).
 
 | `sheriff_front_connections_refused_total{reason}`
-| Counter of connections the accept-time SNI front (active with `tls.passthrough_sni`) closed at accept
-  without reading from them, labelled by the bound that was full: `cap` (1024 connections waiting for
-  their ClientHello or for their backend dial to settle) or `source_share` (one TCP peer address already
-  holding its 256). The peer address
-  is never a label (`WARN ApiSheriff-146`; see
-  link:../development/tls-edge.adoc[TLS Edge -- Contributor Guide]).
+| Counter of connections the accept-time SNI front (active with `tls.passthrough_sni`) closed at once,
+  labelled by the bound that was full. At accept, without reading from them: `cap` (1024 connections
+  waiting for their ClientHello or for their backend dial to settle) or `source_share` (one source --
+  an IPv4 address, or the /64 prefix of an IPv6 address -- already holding its 256). At the route
+  decision of a passthrough match, without dialing its backend: `dial_budget` (128 connections already
+  dialing that passthrough target). The peer address is never a label (`WARN ApiSheriff-146`; see
+  link:../development/tls-edge.adoc#front-refusal-keying[TLS Edge -- Contributor Guide]).
 
 | `sheriff_security_events_total{failure_type}`
 | `cui-http` `SecurityEventCounter` counts per `UrlSecurityFailureType`.

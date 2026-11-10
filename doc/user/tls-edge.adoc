@@ -197,8 +197,8 @@ Operating rules:
 With passthrough configured, an accept-time front listener owns the public TLS port and reads the SNI
 out of each connection's ClientHello before it relays the connection -- to the passthrough backend or
 to the terminated listener. Five bounds keep a connection it has not routed yet, a backend that does
-not answer, or a relay nobody uses, from holding a connection indefinitely, or one client from holding
-the others off:
+not answer, or a relay nobody uses, from holding a connection indefinitely, or one client or one
+passthrough backend from holding the others off:
 
 [cols="1,1,3", options="header"]
 |===
@@ -213,25 +213,30 @@ the others off:
 | Undecided connections
 | 1024
 | At most 1024 accepted connections may be waiting for their ClientHello, or for the front to finish
-  connecting them to their backend, at the same time. A connection accepted beyond that is closed at
-  once, without being read. A client holding many silent sockets therefore delays new handshakes by at
-  most one deadline window per wave of held sockets, until the deadline frees the held slots.
+  connecting them to their backend (see _The backend dial_ below), at the same time. A connection
+  accepted beyond that is closed at once, without being read. A connection holds its slot for at most
+  one 10 s deadline window while it waits for its ClientHello, and for at most one dial window while its
+  backend is dialed, so a full bound delays new handshakes by at most that long. No single client or
+  backend can take the whole bound: the two rows below hold each to a share of it.
 
 | Undecided connections per source
 | 256
-| At most 256 of those 1024 may come from one source -- one TCP peer address -- at the same time. A
-  further connection from that source is closed at once, without being read, while every other source
-  still finds three quarters of the bound free.
+| At most 256 of those 1024 may come from one source at the same time. A source is the TCP peer
+  address for IPv4, and the /64 prefix of the address for IPv6, so one host cannot multiply its share
+  by spreading connections over the addresses of its own /64; an IPv4 address reaching the gateway as
+  an IPv4-mapped IPv6 address is the same source as over IPv4. A further connection from a source that
+  holds its 256 is closed at once, without being read, while every other source still finds three
+  quarters of the bound free.
 
-| Backend connect timeout
-| 10 s
-| Once the front has routed a connection, it connects to the backend -- the passthrough backend or the
-  terminated listener. A backend that has not accepted that connection within 10 s is given up on, and
-  the client's connection is closed without an answer. The 10 s count from the start of the TCP
-  connect: a backend named by host name is looked up first, and that lookup is bounded by the DNS
-  resolver's own timeout, not by the 10 s. Until the backend has accepted or been given up on, the
-  connection still counts against the 1024 and its source's 256 -- also when the client disconnects in
-  the meantime.
+| Dial budget per passthrough backend
+| 128
+| At most 128 of those 1024 may be connecting to one passthrough backend at the same time. A
+  connection whose SNI matches a backend that already has 128 connections in progress is closed at the
+  route decision, without the backend being dialed, and its slots of the 1024 and of its source's 256
+  come back at once. A passthrough backend that does not answer therefore holds at most 128 slots and
+  leaves seven eighths of the bound to terminated handshakes and to every other backend. Connections
+  to the terminated listener are not budgeted: that dial goes to the gateway's own loopback port and
+  completes at once.
 
 | Relay idle timeout
 | derived
@@ -247,6 +252,21 @@ None of the five is configurable. The relay idle timeout moves only with the val
 from: a route that declares a long WebSocket idle timeout, or a longer `quarkus.http.idle-timeout`,
 keeps idle relayed connections open longer. The front never logs a connection's bytes; a connection
 the deadline closes is recorded at `DEBUG` only.
+
+[[_front_listener_backend_dial]]
+*The backend dial.* Once the front has routed a connection, it connects to the backend -- the
+passthrough backend or the terminated listener. A backend that has not accepted the TCP connect within
+a fixed 10 s is given up on, and the client's connection is closed without an answer. A backend named
+by host name is looked up first, and the 10 s do not cover that lookup: with the resolver settings the
+gateway ships (5 s per DNS query, at most 4 queries per name, the search list of the container's
+`/etc/resolv.conf`) one lookup takes at most 20 s per name tried, and the name is tried at most once
+as given and once per search domain. The whole dial window is therefore at most 30 s with no search domain, and
+20 s longer for each search domain -- in a Kubernetes pod, with its three cluster search domains, at
+least 90 s. The terminated listener's `localhost` is answered from the hosts file and adds nothing.
+Until the backend has accepted or been given up on, the connection still counts against the 1024, its
+source's 256 and, for a passthrough backend, that backend's 128 -- also when the client disconnects in
+the meantime. The derivation is in
+link:../development/tls-edge.adoc#relay-dial-name-lookup[the developer TLS-edge topic].
 
 *`quarkus.http.idle-timeout=0` with passthrough active.* A zero HTTP idle timeout switches the
 terminated listener's own idle close off; it does not switch the relay's off. Zero contributes no
@@ -264,47 +284,56 @@ TLS alert -- the gateway never terminates a passthrough connection, so it has no
 with. When the backend actively refuses the connection, the client's connection is closed as soon as
 the refusal arrives. While the backend is unreachable, each waiting connection holds one of the 1024
 slots for the lookup plus up to those 10 s -- whether or not its client is still connected, so a
-client that gives up and reconnects does not free its earlier slot -- and a burst of clients for that
-hostname can briefly fill the bound and show up as `cap` refusals (see <<_front_listener_refusals>>).
+client that gives up and reconnects does not free its earlier slot. The backend's dial budget stops
+there: once 128 connections for that hostname are waiting, every further one is closed at once and
+shows up as a `dial_budget` refusal (see <<_front_listener_refusals>>), and the rest of the bound stays
+free for every other hostname. Several unreachable passthrough backends add up, 128 slots each: two
+hold at most a quarter of the bound, eight could hold all of it, each slot for at most one dial window.
 
 [[_front_listener_refusals]]
 ==== Reading the front's refusals
 
-A connection the front closes at accept -- because the 1024 bound or its source's 256 is full -- is
-visible in two places:
+A connection the front closes at once -- at accept because the 1024 bound or its source's 256 is
+full, or at its route decision because its passthrough backend's 128 are in use -- is visible in two
+places:
 
 [cols="1,3", options="header"]
 |===
 | Where | What you see
 
 | `sheriff_front_connections_refused_total{reason}`
-| Every refusal, on the management port's metrics. `reason` is `cap` (the 1024 bound was full) or
-  `source_share` (one source already held its 256).
+| Every refusal, on the management port's metrics. `reason` is `cap` (the 1024 bound was full),
+  `source_share` (one source already held its 256) or `dial_budget` (one passthrough backend already
+  had 128 connections in progress).
 
 | `WARN ApiSheriff-146`
-| The first refusal of each reason in a 60 s window, naming the reason (`cap` / `source_share`), the
-  bound and the window. Further refusals of that reason inside the window are logged at `DEBUG`, so a
-  flood leaves one line per minute and reason, not one per connection.
+| The first refusal of each reason in a 60 s window, naming the reason (`cap` / `source_share` /
+  `dial_budget`), the bound and the window. Further refusals of that reason inside the window are
+  logged at `DEBUG`, so a flood leaves one line per minute and reason, not one per connection.
 |===
 
 Neither names the client's address or anything it sent. Read the counter for the rate and the log
 line as the sign that the front is saturated at all:
 
 * *A sustained `cap` rate* has one of two causes. Either many connections are holding their
-  ClientHello back -- a slow or silent handshake flood -- or a passthrough backend does not answer the
-  dial, and each connection for its hostname holds a slot for the backend's host-name lookup plus up to
-  the 10 s connect timeout (see _An unreachable passthrough backend_ above). Either way, legitimate
-  clients then wait up to one such window -- the 10 s ClientHello deadline, or the lookup plus the 10 s
-  connect timeout -- before they are admitted. Check whether the refusals coincide with a passthrough backend being
-  down before treating them as a flood.
+  ClientHello back -- a slow or silent handshake flood -- or several passthrough backends do not answer
+  the dial, and each connection for their hostnames holds a slot for the backend's host-name lookup
+  plus up to the 10 s connect timeout (see _An unreachable passthrough backend_ above). Either way,
+  legitimate clients then wait up to one such window -- the 10 s ClientHello deadline, or the dial
+  window (see _The backend dial_ above) -- before they are admitted. Check whether the refusals
+  coincide with passthrough backends being down before treating them as a flood.
+* *A `dial_budget` rate* means 128 connections to one passthrough backend were in progress at once,
+  usually because that backend does not answer the dial. Its hostname is held to those 128, and
+  clients of every other hostname are unaffected. Check that backend first.
 * *A `source_share` rate from one client* is that client being held to its share; the others are
   unaffected.
 
 *Behind an L4 load balancer.* The source is the TCP peer address of the connection the gateway
-accepts. A layer-4 load balancer or NAT in front of the gateway that does not keep the client's source
-address on the connection makes every client the same source, so the share becomes a gateway-wide
-limit of 256 connections waiting for their ClientHello or for their backend dial to settle. That still admits tens of thousands of
-handshakes per second, but every client is refused together once it is reached, and `source_share`
+accepts (for IPv6, its /64 prefix). A layer-4 load balancer or NAT in front of the gateway that does
+not keep the client's source address on the connection makes every client the same source, so the
+share becomes a gateway-wide limit of 256 connections waiting for their ClientHello or for their
+backend dial to settle. That still admits tens of thousands of handshakes per second, but every
+client is refused together once it is reached, and `source_share`
 refusals then appear for everyone. The front reads no PROXY protocol header -- it expects the
 ClientHello as the connection's first bytes -- so keep the share per client by having the load
 balancer preserve the client's source address (transparent or client-IP-preserving mode).

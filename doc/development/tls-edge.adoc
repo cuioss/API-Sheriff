@@ -49,12 +49,16 @@ The data, exception and close handlers and the deadline timer of a connection al
 connection's Vert.x event loop, so the reassembly buffer, the parser and the `settled` latch are
 single-threaded and need no synchronization. Four states are shared across the front's event loops:
 
-* *The counter of the undecided-connection cap* is claimed with an atomic increment and rolled back
-  with an atomic decrement when the claim overshoots the cap.
 * *The per-source counts of the share* are claimed and returned inside `ConcurrentHashMap.compute` on
-  the source key, which is atomic per key. A source is removed when its count reaches zero, so the map
-  never holds more entries than there are held slots. A share refusal rolls back the global slot the
-  connection had already claimed, so a refused connection holds neither.
+  the source key, which is atomic per key. An accepted connection claims its source's slot first. A
+  source is removed when its count reaches zero, so the map never holds more entries than there are
+  held slots.
+* *The counter of the undecided-connection cap* is claimed second, with a compare-and-set update that
+  increments it only while it is below the cap, so it never holds a value above the cap -- not even for
+  an instant a concurrent accept could observe -- and is returned with an atomic decrement. A full cap
+  returns the source's slot just claimed. A connection refused for its source's share therefore never
+  touched the cap, and one refused for the cap holds no share: every refusal names the bound that
+  refused it.
 * *The per-target dial counts of the dial budget* are claimed and returned the same way, inside
   `ConcurrentHashMap.compute` on the passthrough target, so no read-then-write window lets two dials
   take a budget's last slot. A target is removed when no dial to it is in flight.
@@ -96,9 +100,12 @@ configurable.
   that much has arrived -- and between two reads holds those bytes in three copies: the listener's
   replay buffer and the parser's received and reassembled arrays. Between reads, the cap therefore
   bounds the front's pre-route buffer memory at 1024 x 3 x 32 KiB = 96 MiB. The trade-off is
-  deliberate: a client that holds 1024 silent sockets makes new handshakes wait for at most one
-  deadline window per wave of such sockets -- the deadline frees every slot again -- and that bounded
-  delay is preferred over unbounded pre-route memory.
+  deliberate: a slot held by a connection that never completes its ClientHello is held for at most one
+  deadline window -- the deadline frees it again -- and a slot held by a dialing connection for at most
+  one dial window, and that bounded delay for new handshakes is preferred over unbounded pre-route
+  memory. No single party can take the whole cap: one source holds at most its share, a quarter of the
+  cap, and the connections dialing one passthrough target at most that target's dial budget, an eighth
+  of it.
 +
 *What the 96 MiB does not include.* Two amounts lie outside it. Each is stated for the transport's
 default read sizing: Netty's adaptive receive allocator, whose largest single read is 64 KiB. The
@@ -119,7 +126,9 @@ leaves during the dial does not hand the slot back early, so no dialing connecti
 At the route decision the listener drops the parser and its own reference to the replay buffer, so a
 dialing connection holds only the replay buffer, below 96 KiB, and the relay drops that too as soon as
 the client is known gone. The window is bounded by the backend's host-name resolution and
-`TlsEdgeProducer.RELAY_CONNECT_TIMEOUT`, 10 s -- see <<relay-dial-bound>>.
+`TlsEdgeProducer.RELAY_CONNECT_TIMEOUT`, 10 s -- at worst 30 s for a backend name the resolver tries
+without a search domain, 20 s more per search domain (see <<relay-dial-bound>> and
+<<relay-dial-name-lookup>>).
 
 * *Per-source share* -- `SniFrontListener.MAX_UNDECIDED_PER_SOURCE`, a fixed quarter of the cap (256
   connections), held by one source at the same time. A connection accepted while its source already
@@ -127,7 +136,8 @@ the client is known gone. The window is bounded by the backend's host-name resol
   source filling its share therefore leaves three quarters of the cap to every other source, instead of
   starving them all. The quarter mirrors the quarter derivation of
   link:../adr/0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020].
-  See <<front-refusal-keying>> for what a source is.
+  A source is the peer's IPv4 address, or the /64 prefix of its IPv6 address; see
+  <<front-refusal-keying>>.
 
 * *Per-target dial budget* -- `SniFrontListener.MAX_DIALS_PER_TARGET`, a fixed eighth of the cap (128
   connections) dialing one passthrough target at the same time. A passthrough match claims one slot of
@@ -207,16 +217,37 @@ takes the connect timeout exists only so a test can shorten it.
 
 *The connect timeout bounds the TCP connect, not the name lookup.* A target named by host name -- a
 passthrough backend whose topology alias resolves to a host name, and the terminated listener's
-`localhost` -- is resolved before the connect starts. The lookup is bounded by the DNS resolver's own
-query timeout, not by `RELAY_CONNECT_TIMEOUT`, so the whole dial can take longer than 10 s, and the
-connection keeps its slot during the lookup as well.
+`localhost` -- is resolved before the connect starts. The lookup is bounded by the DNS resolver, not by
+`RELAY_CONNECT_TIMEOUT`, so the whole dial can take longer than 10 s, and the connection keeps its slot
+during the lookup as well.
+
+[#relay-dial-name-lookup]
+*The worst case of the name lookup.* The dial client runs on the Quarkus-managed Vert.x instance, whose
+resolver is configured from the `quarkus.vertx.resolver.*` keys. The gateway sets no resolver option in
+code -- no `AddressResolverOptions` -- and `application.properties` sets no `quarkus.vertx.resolver.*`
+key, so the configuration in effect is the Quarkus default (`AddressResolverConfiguration` in
+`quarkus-vertx` 3.40.1) plus the host's resolver file:
+
+* *query timeout* -- 5 s per DNS query (`quarkus.vertx.resolver.query-timeout`, default `5S`);
+* *queries per lookup* -- at most 4 (`quarkus.vertx.resolver.max-queries`, default `4`);
+* *search domains* -- none configured (`quarkus.vertx.resolver.search-domains` unset, `ndots` at its
+  default `-1`), so the resolver takes the search list and `ndots` from the `/etc/resolv.conf` the
+  gateway process runs with.
+
+A name is tried at most once as given and once per search domain, so the worst case of one lookup is
+query timeout x queries x (search domains + 1) = 5 s x 4 x (n + 1): 20 s with no search domain, and
+20 s more for each one. A Kubernetes pod's default search list carries three cluster domains before
+any of the node's own, which makes at least 80 s. The worst-case dial window is that figure plus the 10 s connect timeout -- 30 s with no
+search domain. A name answered from the hosts file, such as the terminated target's `localhost`, sends
+no DNS query and adds no time.
 
 *The slot is held until the dial settles.* `PassthroughRelay.relay(...)` returns a `Future<Void>` that
 completes exactly once, when the dial settles: it succeeds -- the relay is established, or, for a
 client already gone, the backend leg is closed -- or it fails or times out. The client closing during
 the dial does *not* complete the future; it only releases the buffered ClientHello (see below), and the
-dial keeps running until it settles. `SniFrontListener` returns the connection's two slots -- of the
-cap and of its source's share, as one unit -- in that future's single completion handler, so a dialing
+dial keeps running until it settles. `SniFrontListener` returns the connection's slots -- of the cap,
+of its source's share and, for a passthrough match, of its target's dial budget, as one unit -- in that
+future's single completion handler, so a dialing
 connection holds its slots until the dial settles, bounded by the name lookup and the 10 s connect
 timeout, whether or not the client is still connected. The client's close and the dial callbacks all
 run on the event loop of the accepted connection. The ClientHello deadline is still cancelled at the
@@ -233,9 +264,18 @@ gets no session -- its backend leg is closed at once.
 [#front-refusal-keying]
 === Refusals at accept: the source key, the WARN and the counter
 
-*The source is the TCP peer address.* `SniFrontListener` keys the share on the accepted socket's
-`remoteAddress().hostAddress()`; every connection whose peer address is unavailable shares one fallback
-source. The edge's `SourceKeys` (`edge/admission`) is deliberately *not* reused, for two reasons:
+*The source is the TCP peer address.* `SniFrontListener.sourceOf` keys the share on the accepted
+socket's `remoteAddress().hostAddress()`, folded by `SniFrontListener.sourceKeyOf`:
+
+* an IPv4 address is its own source;
+* an IPv6 address is keyed by its /64 prefix, the smallest prefix assigned to one end-site subnet, so
+  one host cannot multiply its share by spreading its connections over the addresses of its own /64;
+* an IPv4-mapped IPv6 address is keyed as the IPv4 address it carries, so a peer reaching the front
+  over a dual-stack socket is the same source as over IPv4.
+
+The literal is parsed, never resolved, and a zone index (`%scope`) is not part of the key. Every
+connection whose peer address is unavailable shares one fallback source. The edge's `SourceKeys`
+(`edge/admission`) is deliberately *not* reused, for two reasons:
 
 * it resolves a source from an `HttpServerRequest` -- the address a trusted forwarder reported and the
   `Host` header -- and neither exists before the ClientHello at L4;
@@ -267,9 +307,11 @@ share -- or at its route decision beyond its passthrough target's dial budget is
 The package-private constructor of `SniFrontListener` takes the share, the warn window, the clock, the
 source key and the recorder explicitly. A test drives a second warn window by advancing its own clock
 instead of waiting a minute, and assigns connections to sources through the source key, because a
-second loopback address is not available on every platform; the production key itself,
+second loopback address is not available on every platform. The production key itself,
 `SniFrontListener.sourceOf`, is pinned by a case in which two connections from one address share one
-share.
+share, and `SniFrontListenerTest.ProductionSourceKey` pins its folding: the fallback source, an IPv4
+peer on its address, an IPv6 peer -- zoned or not -- on its /64, and an IPv4-mapped peer as its IPv4
+address.
 
 == The Accept-Time L4/L7 Split
 

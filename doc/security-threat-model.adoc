@@ -1724,18 +1724,34 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   times out -- whether or not its client is still connected: a client that leaves during the dial
   does not hand the slot back early. The relay's dial client carries a fixed 10 s connect timeout in
   place of the Vert.x default of 60 s. That timeout bounds the TCP connect only: a backend named by host
-  name is resolved before the connect starts, the lookup is bounded by the DNS resolver's own query
-  timeout rather than by the 10 s, and the connection keeps its slot during the lookup as well. The dial
-  phase is therefore inside the cap and time-bounded: a backend that never answers the connect holds a
-  slot for its name lookup plus at most 10 s, and no dialing connection escapes the cap, so a client
-  cannot start more concurrent backend dials than the cap admits by hanging up after its ClientHello. During the dial the connection holds only its replay buffer -- the parser is dropped at
-  the route decision -- and the relay drops that buffer as soon as the client is known gone.
+  name is resolved before the connect starts, the lookup is bounded by the DNS resolver rather than by
+  the 10 s, and the connection keeps its slot during the lookup as well. With the resolver
+  configuration in effect -- 5 s per query, at most 4 queries per name, the search list of the
+  process's `/etc/resolv.conf` -- one lookup takes at most 5 s x 4 x (search domains + 1), so the dial
+  window is at most 30 s with no search domain and 20 s longer per search domain
+  (link:development/tls-edge.adoc#relay-dial-name-lookup[Development -- the worst case of the name
+  lookup]). The dial phase is therefore inside the cap and time-bounded, and no dialing connection
+  escapes the cap, so a client cannot start more concurrent backend dials than the cap admits by
+  hanging up after its ClientHello. During the dial the connection holds only its replay buffer -- the
+  parser is dropped at the route decision -- and the relay drops that buffer as soon as the client is
+  known gone.
 * *A per-source share of the cap.* At most 256 of those 1024 -- a fixed quarter -- may belong to one
-  source, the TCP peer address of the accepted connection, at the same time. A connection accepted
-  while its source holds its full share is closed at once, without being read, so one source filling
-  its share leaves three quarters of the cap to every other source instead of starving them all.
+  source at the same time. The source is the TCP peer address of the accepted connection: an IPv4
+  address, the /64 prefix of an IPv6 address -- so one host cannot multiply its share across the
+  addresses of its own /64 -- and, for an IPv4-mapped IPv6 address, the IPv4 address it carries. A
+  connection accepted while its source holds its full share is closed at once, without being read, so
+  one source filling its share leaves three quarters of the cap to every other source instead of
+  starving them all.
+* *A per-target dial budget.* At most 128 of those 1024 -- a fixed eighth -- may be dialing one
+  passthrough backend at the same time. A connection routed to a backend whose budget is full is closed
+  at the route decision without being dialed, and its slots of the cap and of its source's share come
+  back at once. A backend that never answers the dial therefore holds at most 128 slots of the cap, each
+  for at most one dial window, and leaves seven eighths of it to terminated handshakes and every other
+  backend. The terminated hand-off target is exempt: its dial goes to the gateway's own loopback
+  listener and settles at once.
 * *A visible refusal.* Every connection closed at accept, beyond the cap or beyond its source's share,
-  is counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share`) and logged
+  and every connection closed at its route decision beyond its backend's dial budget, is counted on
+  `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged
   as `WARN ApiSheriff-146` at most once per 60 s per reason, every repeat inside the window at `DEBUG`
   (CWE-779). Neither carries the peer address or a received byte. A saturated front is therefore
   reported rather than visible only as handshakes that wait.
@@ -1752,17 +1768,17 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   directly; it moves only with the values it is derived from.
 
 *Residual (accepted).* A single source can hold only its 256-connection share, so holding the whole
-cap of 1024 takes at least four source addresses. Clients that do hold 1024 silent sockets make new
-handshakes wait: a connection accepted while the cap is full is closed, and the deadline frees the
-held slots again within one 10 s window per wave of such sockets. That bounded delay is preferred over
-unbounded pre-route memory. The source is the TCP peer address, because nothing else exists before the
-ClientHello; behind an L4 load balancer or NAT that does not keep client addresses on the connection,
-every client shares one source and the share acts as a gateway-wide sub-cap of 256 undecided
-connections -- still tens of thousands of one-round-trip handshakes per second. While a backend
-silently drops the relay's dial, every connection routed to it holds its slot for the backend's name
-lookup plus up to the 10 s connect timeout, also after its client has left, so a burst of such
-connections can fill the cap for that window; counting the dial against the cap is preferred over letting dialing connections pile up
-outside it. A relayed connection
+cap of 1024 takes at least four sources. Sources that together fill the cap with silent sockets make
+new handshakes wait: a connection accepted while the cap is full is closed, and the deadline frees
+each held slot again within one 10 s window. That bounded delay is preferred over unbounded pre-route
+memory. The source is the TCP peer address, because nothing else exists before the ClientHello; behind
+an L4 load balancer or NAT that does not keep client addresses on the connection, every client shares
+one source and the share acts as a gateway-wide sub-cap of 256 undecided connections -- still tens of
+thousands of one-round-trip handshakes per second. While a backend silently drops the relay's dial,
+every connection routed to it holds its slot for the dial window, also after its client has left; the
+dial budget holds one such backend to 128 slots, but several add up -- two hold at most a quarter of
+the cap, eight could hold all of it, each slot for at most one dial window. Counting the dial against
+the cap is preferred over letting dialing connections pile up outside it. A relayed connection
 that carries a byte at least once per relay idle timeout stays open: the relay bounds idleness, not
 duration, and a route that declares a long WebSocket idle timeout lengthens the relay idle timeout
 with it.
@@ -1784,9 +1800,17 @@ after its client has left, until the dial settles (`holdsItsSlotWhenTheClientLea
 `PassthroughRelayTest` asserts that the dial phase outlasts a departed client until the dial succeeds
 or fails (`dialPhaseOutlastsTheClientUntilTheDialSucceeds`, `dialPhaseOutlastsTheClientUntilTheDialFails`).
 The last three were red on the code that returned the slot when the client left.
-`SheriffMetricsTest` pins the two `reason` values of `sheriff_front_connections_refused_total`. And a
-relay that
-carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`), also when
+`SniFrontListenerTest.ProductionSourceKey` pins the source key: an IPv4 peer on its address, an IPv6
+peer -- zoned or not -- on its /64 (`keysAnIpv6PeerOnItsSlash64`, `keysAZonedIpv6PeerOnItsSlash64`)
+and an IPv4-mapped peer as its IPv4 address (`keysAnIpv4MappedPeerAsItsIpv4Address`).
+`SniFrontListenerTest.DialBudget` asserts that a backend that never answers the dial holds at most its
+budget and leaves the rest of the cap to terminated handshakes
+(`aDarkTargetLeavesTheCapToTerminatedHandshakes`, with the matched control
+`aBudgetAtTheCapLetsADarkTargetTakeTheWholeCap`), and that the dial slot comes back after a dial
+success, a dial failure and a relay that throws (`returnsTheDialSlotAfterADialSuccess`,
+`returnsTheDialSlotAfterADialFailure`, `returnsTheDialSlotWhenTheRelayThrows`).
+`SheriffMetricsTest` pins the three `reason` values of `sheriff_front_connections_refused_total`. And a
+relay that carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`), also when
 only the front server or only the relay's dial client carries that timeout
 (`closesSilentRelayWithTheFrontTimeoutAlone`, `closesSilentRelayWithTheDialClientTimeoutAlone`).
 `SniFrontListenerTest.ApplyIdleTimeout` and `TlsEdgeProducerTest.DialClientOptions` pin that the
@@ -1804,7 +1828,7 @@ ClientHello are closed without an answer within the 10 s deadline plus a 5 s mar
 must arrive no earlier than the deadline minus a slack of 1 s (`EARLY_CLOSE_SLACK`, which covers the
 deadline being armed at accept before the client starts its clock), so a connection closed at once --
 refused at accept, or closed for any other reason -- cannot pass as the deadline's close. No
-integration test exercises the cap or the relay idle timeout.
+integration test exercises the cap, the dial budget or the relay idle timeout.
 
 [#gw-07-relay-failure-reset]
 *A client that leaves mid-response cannot keep an upstream connection leased.* Once the gateway hands
@@ -4510,7 +4534,7 @@ outstanding hardening work (next section).
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose request stream is still open 25 s after its attempt started ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, neither counted by the breaker as a failure, so the guard's 30 s timeout is reached only by an upstream holding a complete, half-closed request (or after an upstream connection wait, counted by the guard only, used up the difference); one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
-| <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no configuration key sets any of them | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap or the relay idle timeout)
+| <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
 | <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `405`/`426`/`400`/`413` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
