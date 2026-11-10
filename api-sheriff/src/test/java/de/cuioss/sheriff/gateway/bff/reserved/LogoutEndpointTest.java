@@ -301,7 +301,7 @@ class LogoutEndpointTest {
 
     @Test
     @DisplayName("Should hand the revocation seam the logged-out session once, after the binding destroyed it")
-    void shouldDestroyBeforeRevoking() {
+    void shouldDestroyBeforeInitiating() {
         SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
         List<String> revokedSessionIds = new CopyOnWriteArrayList<>();
         List<Boolean> liveWhenRevoked = new CopyOnWriteArrayList<>();

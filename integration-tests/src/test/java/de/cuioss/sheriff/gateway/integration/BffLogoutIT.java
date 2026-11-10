@@ -112,7 +112,7 @@ class BffLogoutIT extends BaseIntegrationTest {
 
     @Test
     @DisplayName("RP-initiated logout destroys the local session and revokes its refresh token at Keycloak")
-    void rpInitiatedLogoutDestroysLocalSessionAndRevokesTheRefreshToken() {
+    void rpInitiatedLogoutDestroysLocalSession() {
         // Arrange — a real login, then the Keycloak sessions of the user that integration-client is
         // attached to, read before anything is logged out.
         Session session = BffKeycloakLoginFlow.login("/app/get");

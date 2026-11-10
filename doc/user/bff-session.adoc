@@ -772,10 +772,12 @@ IdP.
 * *Discovery fails at that moment*, or the session holds no ID token. The browser lands on
   `oidc.logout.final_redirect` as well, and the IdP is asked again at the next logout.
 
-*What the logout revokes.* In every one of these cases, after the session is destroyed and before
-the browser is redirected, the gateway revokes the session's refresh token at the IdP's
-`revocation_endpoint` (RFC 7009). A refresh token stolen from the session can then no longer mint
-access tokens. What it does not revoke:
+*What the logout revokes.* In each of these cases, after the session is destroyed and before
+the browser is redirected, the gateway tries to revoke the session's refresh token at the IdP's
+`revocation_endpoint` (RFC 7009). When discovery fails, the revocation's own metadata read fails
+too: the attempt is reported as `ApiSheriff-146` and nothing is revoked. Where the revocation
+succeeds, a refresh token stolen from the session can no longer mint access tokens. What it does
+not revoke:
 
 * *The access token.* It stays valid at a resource server until it expires. Keep access-token
   lifetimes short.

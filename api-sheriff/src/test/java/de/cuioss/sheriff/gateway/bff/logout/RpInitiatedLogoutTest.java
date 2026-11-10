@@ -210,7 +210,7 @@ class RpInitiatedLogoutTest {
 
         @Test
         @DisplayName("Should hand the logged-out session to the revocation seam once, before the end-session redirect is built")
-        void shouldRevokeOnceBeforeBuildingTheRedirect() {
+        void shouldRevokeMediatedTokens() {
             List<String> steps = new CopyOnWriteArrayList<>();
             RpInitiatedLogout ordered = logoutRevokingWith(ended -> {
                 revocations.add(ended);
