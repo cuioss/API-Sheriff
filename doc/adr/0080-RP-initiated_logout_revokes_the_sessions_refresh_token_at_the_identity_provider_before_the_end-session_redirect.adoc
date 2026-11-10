@@ -46,8 +46,9 @@ The mechanism has four parts:
   travels the back channel through `oidc.back_channel_origin`, like every other gateway-to-provider
   call (ADR-0069).
 * *Synchronous, after the local destruction.* `LogoutEndpoint` destroys the local session first. It
-  then calls `RpInitiatedLogout.initiate`. That method calls the seam once, before it builds the
-  end-session redirect. It also calls the seam when no redirect can be built.
+  then calls `RpInitiatedLogout.initiate` with the record the destruction returned. That method calls
+  the seam once, before it builds the end-session redirect. It also calls the seam when no redirect
+  can be built.
 * *Metadata read per logout.* The binding reads the provider metadata when the logout runs, not when
   the logout endpoint is assembled. A provider that is unreachable at boot therefore never blocks the
   logout endpoint.
@@ -64,7 +65,8 @@ exchange, so the gateway never stores or seals one. An identity provider can als
 
 | server-session BFF
 | `true` (default)
-| The store's current token. Rotations are written to the store.
+| The token the store held when the logout destroyed the session. The destruction hands back the
+  record it removed, so a rotation written after the logout resolved the session is included.
 | Revokes it.
 
 | server-session BFF
@@ -91,6 +93,13 @@ exchange, so the gateway never stores or seals one. An identity provider can als
 A provider that declares no `revocation_endpoint` receives nothing either. The shared helper records
 that case at `DEBUG` for both of its callers.
 
+`SessionBinding.destroy` returns the destroyed record, and `RpInitiatedLogout.initiate` receives that
+record. The server-session binding returns the record the store removed. The cookie-based binding
+holds nothing server-side and returns the record the request presented. A session can also be gone
+when the logout destroys it, because something else ended it after the logout resolved it. That
+logout revokes nothing. `LogoutEndpoint` still builds the end-session redirect, through
+`RpInitiatedLogout.endSessionRedirect`.
+
 === What is not revoked
 
 * *The access token.* The binding never revokes it. It stays valid at a resource server until it
@@ -101,8 +110,10 @@ that case at `DEBUG` for both of its callers.
 * *Anything on the back-channel logout path.* `BackchannelLogoutReceiver` revokes nothing. The
   identity provider initiated that logout and has already ended its own session.
 
-A refresh in flight at logout is a separate case. In the server-session BFF, the refresh coordinator
-already revokes the rotated token when it finds the session terminated (ADR-0046).
+A refresh in flight at logout is a separate case. In the server-session BFF, a rotation the store
+took before the destruction is in the record the destruction returns, so the logout revokes it. A
+rotation that completes after the destruction finds the session terminated. The refresh coordinator
+then revokes the rotated token (ADR-0046).
 
 === The latency bound
 
@@ -129,8 +140,10 @@ transport fails, or the revocation endpoint answers with a non-success status.
 * *The first failure per runtime is a `WARN`.* It is recorded as
   link:../LogMessages.adoc#apisheriff-146[`ApiSheriff-146`]. The record takes no substitution and no
   throwable, because the identity provider's answer is not sanitised.
-* *Every failure leaves a `DEBUG` line.* That line carries the throwable. Every failure after the first
-  is a `DEBUG` line only.
+* *Every failure leaves a `DEBUG` line.* That line names the exception types in the failure's cause
+  chain, outermost first, joined by ` caused by `. It carries no exception and no exception message.
+  A message can carry the identity provider's answer or the refresh token itself. Every failure after
+  the first is a `DEBUG` line only.
 * *The logout always completes.* The local session destruction is the authoritative logout. A failed
   revocation never changes the answer the browser gets.
 
@@ -232,13 +245,18 @@ provider round trip to a reserved path that a caller reaches without a credentia
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogout.java` -- the
   `TokenRevocation` seam, its call before the end-session redirect and the failure latch
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java` -- the local
-  session destruction that runs before the seam
+  session destruction that runs before the seam, and the redirect without revocation for a session
+  already gone
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/SessionBinding.java` -- the
+  `destroy` contract that returns the destroyed record
 * `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogoutTest.java` -- the
-  seam call, the latched `WARN` and the logout that completes on failure
+  seam call, the latched `WARN`, the logout that completes on failure and the `DEBUG` line that keeps
+  a token-carrying failure out of the log
 * `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducerTest.java` -- the
   RFC 7009 request the binding sends, and the cases that send nothing
 * `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpointTest.java` -- the
-  ordering after the local destruction
+  ordering after the local destruction, the token held at the destruction, the presented token in
+  cookie mode and the session already gone at the destruction
 * `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffLogoutIT.java` -- the
   revocation observed at the integration stack's identity provider
 * link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]

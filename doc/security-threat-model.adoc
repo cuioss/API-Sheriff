@@ -2987,6 +2987,9 @@ before the end-session redirect is built, the logout sends one RFC 7009 request 
 refresh token (`token_type_hint=refresh_token`) to the provider's `revocation_endpoint`, over the
 back-channel with the runtime's one client authentication
 (link:adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
+The token revoked is the one the session held when it was destroyed: the binding's destruction hands
+back the record it removed, so in server mode a refresh that rotated the token after the logout
+resolved the session is honoured, and in cookie mode it is the token sealed in the presented cookie.
 The request runs synchronously, so a slow provider delays the logout answer, bounded by the engine's
 connect and read timeouts; the session is already gone during that wait. A failed revocation never
 turns the logout into an error: the first failure per runtime is the `WARN`
@@ -3011,7 +3014,10 @@ RP-initiated logout and nothing else:
 * *Nothing at all, where no request can be sent.* A session that holds no refresh token -- with
   `oidc.session.refresh.enabled=false`, or when the provider granted none -- and a provider that
   publishes no `revocation_endpoint` get no revocation request. The missing endpoint is recorded at
-  `DEBUG` only, so the operator reads that capability from the provider's discovery document.
+  `DEBUG` only, so the operator reads that capability from the provider's discovery document. Nor
+  does a logout whose session something else ended between the logout's resolve and its destruction:
+  the destruction hands back nothing, so there is no token to revoke, and the end-session redirect is
+  still built.
 
 The mitigations are short access-token lifetimes and the identity provider's own revocation on
 logout where it supports it. The refresh path's revocation is separate (<<bff-08>>).
@@ -3064,10 +3070,20 @@ without an ID token ends the session, clears the cookies and lands on `final_red
 `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and a refused back-channel delivery
 with `no-store` (`GatewayEdgeGatewayCookieTest`, `ServerMode`). The revocation seam receives the
 logged-out session once, after the binding destroyed it, and a seam that throws leaves the `302`, the
-ended session and the cleared cookie unchanged (`LogoutEndpointTest`); the seam runs before the
+ended session and the cleared cookie unchanged (`LogoutEndpointTest`). A refresh that rotates the
+refresh token between the logout's resolve and its destruction gets the rotated token revoked, not
+the resolve-time one; a session something else ended in that window revokes nothing and still
+redirects to the `end_session_endpoint` with the cookie cleared; and in cookie mode the seam receives
+the token sealed in the presented cookie, not a successor the browser has not stored
+(`LogoutEndpointTest`). In server mode the store and the binding return the record their destruction
+removed, rotated material included, and nothing when the session was already gone
+(`InMemorySessionStoreTest`, `ServerSessionBindingTest`); the cookie binding returns the record the
+request presented, never a re-sealed successor (`CookieSessionBindingTest`). The seam runs before the
 end-session redirect is built and also when none can be built, and a failing revocation is recorded
-as `ApiSheriff-146` once over repeated logouts and at `DEBUG` afterwards, with no record carrying the
-refresh token (`RpInitiatedLogoutTest`).
+as `ApiSheriff-146` once over repeated logouts and at `DEBUG` afterwards (`RpInitiatedLogoutTest`).
+No record at any level carries the refresh token, also when the failing seam puts it into its
+exception's message and its cause's: the `DEBUG` line names only the exception types of the cause
+chain (`RpInitiatedLogoutTest`, `shouldKeepATokenCarryingRevocationFailureOutOfTheLog`).
 The produced runtime's logout revokes the ended session's refresh token in one RFC 7009 request with
 `token_type_hint=refresh_token`, authenticated with the runtime's one client authentication and never
 naming the access token; a session without a refresh token and a provider without a
