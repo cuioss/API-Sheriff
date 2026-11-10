@@ -263,6 +263,13 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
 - OBSERVED (added 2026-10-26, read-only references for deliverables 4 and 5, not files this plan edits):
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ReservedPathRules.java` and
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`
+- OBSERVED (added 2026-11-10 from the landing, `landings/PLAN-26.md`; the plan shipped as #592 and these were
+  realized but not declared): `doc/LogMessages.adoc` (the `ApiSheriff-147` row; the WARN id collided with another
+  PR's 146 during the plan), `bff/session/SessionStore.java`, `bff/session/SessionBinding.java`,
+  `bff/session/ServerSessionBinding.java`, `bff/session/InMemorySessionStore.java` and
+  `bff/cookie/CookieSessionBinding.java` (the destroyed record is now returned so the token held at destruction
+  is the one revoked), `tls/DefaultTrustSourceAudit.java` (Javadoc that called the seam a no-op),
+  `doc/adr/0080-…`, `doc/adr/0081-…` and `doc/adr/0018-…` (the three records this plan wrote or amended)
 
 ## Dependencies and Sequencing
 

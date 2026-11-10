@@ -62,6 +62,11 @@ decision.
   (`observability-and-errors.adoc`), none with #582, no conflict. Declared 37 entries (both outcomes), realized 16
   files; three realized docs were undeclared. Landing record: `landings/PLAN-29.md`; the three-layer read found
   no blocker.
+- PLAN-26 — shipped #592 (`ad00807d`, 2026-11-10), the logout refresh-token revocation bound, BFF-09 and every logout
+  record corrected, ADR-0080 and ADR-0081 written, ADR-0018 amended. Ran alone in this epic. It took `ApiSheriff-147` because
+  #589 took 146 while it was open (two rebases, one real conflict in `doc/LogMessages.adoc`). Realized 31 files; the five
+  session-binding files, `doc/LogMessages.adoc` and ADR-0081 were not in the declared surface. Landing record:
+  `landings/PLAN-26.md`; the three-layer read found no blocker (1 layer-1, 5 layer-2 and 4 layer-3 findings, all minor).
 - **PLAN-31 (staged 2026-10-14 by the other orchestrator session, WS-01) — the exact JWKS publish rule**
   via token-sheriff 0.9.7's `getKeyIds()`. **Re-grounded 2026-10-26 at `54f82f03`:** premise intact, `main` is
   on 0.9.8 (#491; the jar was not readable locally, so the outline reads it first), the threat-model residual
@@ -164,6 +169,27 @@ decision.
 
 ## Decisions
 
+- 2026-11-10 — **Cleanup at `ad00807d` (after PLAN-26 landed as #592).** Re-ground of the two staged specs: 12 claims
+  re-stamped (PLAN-20 7, PLAN-31 5), 0 blocking; the 8 earlier verdicts on shipped or superseded specs are untouched.
+  Corpus 20 rows and 20 specs, all `declarative`, no indeterminate surface, no duplicate (0 source-origin matches, 0 live
+  plans). **Applied:** PLAN-20's banner re-grounded (anchors, the stale ordinals, the ADR-0081 and ADR-0018 constraints from
+  #592, including the open `step_up_url` query echo) and four surface entries added (`GatewayException.java`, ADR-0081,
+  ADR-0018, `SessionBinding.java`), verified by membership in `claimed[]` (53 to 57 entries). **Declined:** nothing
+  superseded, nothing merged (A4/A5 found no candidate). PLAN-31 needs no edit: its source, ADR-0063 and `pom.xml` are
+  unchanged since `2200ddb2`, only the threat-model residual moved (:1388-1394); the pin is 0.9.8 and TokenSheriff has no
+  0.9.9 tag. Settled-narrative relocation deferred again (no confirmation asked this pass). Compaction ok (20 rows, 20
+  specs, 21 pointers); archive drain refused; restart `not_ready` only on `registry_parity` (operator repin). PLAN-20 now
+  passes both admission tests: determinate comparison, 0 blocking candidates, no in-flight plan, no blocking verdict.
+- 2026-11-10 — **PLAN-26 landed and was reconciled** (analyze, inbox drain of 1 message, `origin/main` `ad00807d`). Shipped as
+  #592 through the merge queue after the operator confirmed it running. Corroborated
+  against the PR, the merge-group run, the review threads (none resolvable unresolved), the post-merge benchmark job
+  (green) and the merged code (one read-only leaf; the points the orchestrator re-read are listed in the landing report). No blocker.
+  D2 was implemented inside this plan as the operator decided on 2026-10-26; the failure semantics chosen are a latched WARN
+  `ApiSheriff-147` plus DEBUG with exception types only. Three Open Defects are retired (BFF-09 over-claim, cookie-mode
+  residual, two missing ADRs). Four layer-3 defects (all minor) and the layer-2 advisories are Watches and stage a fix plan
+  only on the operator's word. **Next free ADR ordinal is now 0082, next free WARN id 148** (the spec banners that say
+  0080 and 146 are stale; re-derive at write time). WS-04 now holds only PLAN-20. No operator decision was needed.
+  — source: `landings/PLAN-26.md`
 - 2026-11-09 — **PLAN-21 superseded by #581; PLAN-26 re-grounded and emitted; PLAN-20 and PLAN-31 re-grounded,
   not emitted** (cleanup at `2200ddb2`, then next). The operator's earlier decision was "hold, decide after #581"
   (the recommended option). #581 merged, so the decision came due. Positive account that closed PLAN-21's defect:
@@ -375,18 +401,10 @@ decision.
   plan here; the gateway maintainers repoint them (e.g. to API Sheriff issues/ADRs as plans land). —
   source: removal commit 08620f0 in kidicap-gateway (branch feature/initial-structure, not pushed)
 
-- **The threat model asserts a control the runtime does not implement**: BFF-09 is labelled **COVERED**
-  for IdP token revocation on logout, while the revocation hook is bound to a **no-op** in the shipped
-  runtime. PLAN-23 corrected the user docs and left the threat model, so the repository now states both
-  the truth and the claim. A false COVERED closes a question a gap would have invited. **Staged as
-  PLAN-26 deliverable 1.** The plan also recorded the pattern as lesson `2026-10-02-12-007` (kept in this
-  repo's store — the component is this project's). — source: `landings/PLAN-23.md`
-- Cookie mode cannot observe a logout, so a late refresh or widening response can set a fresh cookie.
-  Documented as a residual by PLAN-23; **CodeRabbit rates it Medium and nothing disposes of that rating**.
-  Staged as PLAN-26 deliverable 3. — source: `landings/PLAN-23.md`
-- Two shipped decisions carry no ADR: the problem+json extension-member rule, and the reserved-path boot
-  rule (the ADR check suggests an ADR-0018 amendment for the latter). Staged as PLAN-26 deliverables 4-5.
-  — source: `landings/PLAN-23.md`
+> ↪ Resolved by PLAN-26 (#592, `ad00807d`, 2026-11-10): the BFF-09 over-claim (revocation now bound and the record rewritten),
+> the cookie-mode residual (already an accepted residual; deliverable 3 dropped) and the two missing ADRs (ADR-0081 for the problem+json
+> rule, an ADR-0018 amendment for the reserved-path boot rule; ADR-0080 records the logout decision). Record: `landings/PLAN-26.md`
+
 - Three info-level audit items from PLAN-23, unstaged: a widening does not revoke the superseded refresh
   token; the active scope set falls back to the requested set when the provider states none; no boot rule
   refuses duplicate reserved paths. — source: `landings/PLAN-23.md`
@@ -400,6 +418,37 @@ decision.
 ## Watches
 
 > ↪ Relocated to `settled.md` § "Cross-epic hold on api-sheriff-0-2-0, resolved by its closure" — every sibling plan it names has shipped and the sibling epic is closed and archived
+
+- **Four minor defects in the merged logout revocation (2026-11-10).** (L3-1) one process-wide latch covers a discovery failure,
+  a transport failure and a non-success answer, so a transient first failure consumes the only `ApiSheriff-147` WARN and a later
+  persistent failure stays at DEBUG (`RpInitiatedLogout.java` :251; the spec offered one-per-reason, as `ApiSheriff-132` does);
+  (L3-2) cookie mode is stateless, so a replayed still-valid cookie triggers one synchronous revocation POST per logout
+  (about 15 s bound per call) and never trips the latch, and ADR-0080 does not discuss it; (L3-3) two concurrent logouts of one
+  server-mode session send two revocation POSTs (harmless, RFC 7009 section 2.2, unrecorded); (L3-4, not shown by reading)
+  `metadata.get()` is called twice per logout and the memoizing supplier may serialise concurrent logouts during a discovery
+  outage. L3-1 plus L3-2 are the ones worth a plan. The operator decides. Closes when each is planned or accepted in writing.
+  — source: `landings/PLAN-26.md` L3-1..L3-4
+- **Layer-2 residue of PLAN-26 (2026-11-10).** A test named `shouldRevokeNothingWhenTheSessionWasGoneAtDestruction` asserts the
+  opposite and the threat model cites it by that name (:3079); `RpInitiatedLogoutTest` :145 pins the WARN only through its
+  self-resolved identifier, so a renumber of 147 stays green; the `BffLogMessages.WARN` Javadoc keeps a hand-written
+  inventory its class Javadoc disclaims; `RpInitiatedLogout.java` :58 says no other session-ending path revokes but
+  `TokenRefreshCoordinator` does; the BFF-09 summary row's not-revoked list omits a failed revocation and a session without a
+  refresh token, `variants/03-bff-cookie.adoc` :298 drops two conditions the prose carries; ADR-0080 and the ADR-0018
+  amendment do not link ADR-0071; no cookie-mode runtime or IT case observes the revocation request at the IdP. One small
+  documentation-and-test pass would close all of it. — source: `landings/PLAN-26.md` L2-1..L2-5
+- **Two gaps the PLAN-26 reviews found outside its scope (2026-11-10).** The boot does not check the callback, logout,
+  logout-return and back-channel-logout reserved paths for canonical form (ADR-0018 now says so), and `step_up_url` echoes the
+  request's own query back to the client (ADR-0081 says so). The second bears on PLAN-20 and is carried into its
+  re-grounding. — source: `landings/PLAN-26.md`; ADR-0018, ADR-0081
+- **WARN ids and ADR ordinals are allocated from a free list two epics read at once (2026-11-10).** PLAN-26 and the in-flight
+  #589 both took `ApiSheriff-146`; the plan found it only in its second rebase and renumbered. PLAN-26's declared surface did
+  not name `doc/LogMessages.adoc`, so the disjointness gate had nothing to compare. Every spec that adds a WARN, an ERROR or an
+  ADR should declare `doc/LogMessages.adoc` or `doc/adr/` and derive the id at write time. Closes when the staged specs that
+  allocate (PLAN-20) declare it. — source: `landings/PLAN-26.md`
+- **Two PLAN-26 post-merge reads are unverified (2026-11-10).** The main-branch Maven Build run for `ad00807d` (where a
+  snapshot-deploy failure appears) is not readable through the CI abstraction; the lane's `total_wall_seconds` of about 28
+  hours does not reconcile with this session's clock. Closes when the run is read or the figure is explained. —
+  source: `landings/PLAN-26.md`
 
 - **What #581 left of PLAN-21's scope (2026-11-09).** Four gaps, none a defect of the shipped fix: (1) no ADR records
   the pending-store fairness mechanism (`doc/adr` has none; PLAN-21 deliverable 1 asked for one, and the sibling
