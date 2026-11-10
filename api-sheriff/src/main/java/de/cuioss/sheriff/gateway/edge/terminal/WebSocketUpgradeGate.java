@@ -63,14 +63,14 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@code Sec-WebSocket-Key} is present, is padded base64 (RFC 4648 §4) of exactly 24
  *       characters — 22 base64-alphabet characters followed by {@code ==} — and decodes to 16 bytes —
  *       refused {@code 400} otherwise (RFC 6455 §4.1, item 7);</li>
- *   <li>a declared {@code Content-Length} is at most 8192 bytes — refused {@code 413} otherwise, and
- *       the connection is closed once the answer has been written, so the answer carries
- *       {@code Connection: close} (see {@link Verdict.Refused#retiresConnection()}). Vert.x buffers at
- *       most 8192 bytes of a handshake request body and answers a larger one {@code 413} and closes
- *       the connection; the gate refuses the same body from its declared length, before a byte of it
- *       is read. A declared length that is no decimal number is refused the same way, since it cannot
- *       be shown to stay within the bound. A {@code GET} reaches the gate with a declared length only
- *       under the {@code security_defaults.allow_get_with_content_length_body} opt-in, and never with
+ *   <li>a declared {@code Content-Length} is at most 8192 bytes — refused {@code 413} otherwise, which
+ *       retires the connection (see below). Vert.x buffers at most 8192 bytes of a handshake request
+ *       body and answers a larger one {@code 413} and closes the connection; the gate refuses the same
+ *       body from its declared length, before a byte of it is read. A declared length that is no
+ *       decimal number is refused the same way, since it cannot be shown to stay within the bound. The
+ *       {@code 413} is reached only by a {@code GET} declaring a length, and a {@code GET} reaches the
+ *       gate with a declared length only under the
+ *       {@code security_defaults.allow_get_with_content_length_body} opt-in, and never with
  *       {@code Transfer-Encoding}: the framing gate refuses a declared length on {@code GET} without
  *       that opt-in, and {@code Transfer-Encoding} on {@code GET} always, before route selection;</li>
  *   <li>the request URI parses as a {@link URI} — refused {@code 400} otherwise. Vert.x composes the
@@ -80,6 +80,16 @@ import org.jspecify.annotations.Nullable;
  * </ol>
  * Token matching is case-insensitive and reads every value of the header as a comma-separated list,
  * across repeated header lines (RFC 9110 §5.3).
+ * <p>
+ * <strong>A declared body above the bound retires the connection, whichever rule refuses.</strong> The
+ * gate never reads a request body, so on HTTP/1.x the bytes behind a declared length above 8192 bytes,
+ * or one that is no decimal number, would frame the next request on the keep-alive connection. Every
+ * refusal of such a request therefore closes the connection once the answer has been written, and the
+ * answer carries the {@code close} connection option (see {@link Verdict.Refused#retiresConnection()}):
+ * the {@code 413}, and equally an earlier {@code 405}, {@code 426} or {@code 400}, which keeps its own
+ * status — the rules decide the answer in their order, the declared length decides the retirement on its
+ * own. A retiring {@code 426} carries {@code Connection: Upgrade, close}. On HTTP/2 a refusal ends only
+ * its own stream ({@link ResponseEnds#endResponse}), so nothing is retired there.
  * <p>
  * <strong>The headers of a {@code 426}.</strong> A {@code 426} names the protocol the client has to
  * switch to (RFC 9110 §15.5.22), so on HTTP/1.x it carries {@code Upgrade: websocket} together with
@@ -118,6 +128,10 @@ final class WebSocketUpgradeGate {
     private static final String WEBSOCKET_TOKEN = "websocket";
     /** The value {@code Connection} carries on a {@code 426} alongside {@code Upgrade}. */
     private static final String CONNECTION_UPGRADE = "Upgrade";
+    /** The {@code Connection} option of an answer after which the connection is closed (RFC 9112 §9.6). */
+    private static final String CONNECTION_CLOSE = "close";
+    /** The separator between two options of one {@code Connection} value (RFC 9110 §7.6.1). */
+    private static final String OPTION_SEPARATOR = ", ";
     /** The decoded length of a valid {@code Sec-WebSocket-Key}: a 16-byte nonce. */
     private static final int KEY_LENGTH = 16;
     /**
@@ -161,6 +175,27 @@ final class WebSocketUpgradeGate {
         Objects.requireNonNull(version, "version");
         Objects.requireNonNull(requestUri, "requestUri");
         Objects.requireNonNull(headers, "headers");
+        boolean bodyAboveBound = declaresBodyAboveBound(headers.getAll(CONTENT_LENGTH_HEADER));
+        Verdict verdict = firstBrokenRule(method, version, requestUri, headers, bodyAboveBound);
+        // The body behind an over-bound declared length is never read, whichever rule refused the
+        // request: on HTTP/1.x it would frame the next request on this keep-alive connection, so the
+        // connection is retired with the answer, as Vert.x closes it. An HTTP/2 refusal ends only its
+        // own stream, through the one end rule.
+        if (bodyAboveBound && ResponseEnds.isHttp1(version) && verdict instanceof Verdict.Refused refused) {
+            return refused.retiringConnection();
+        }
+        return verdict;
+    }
+
+    /**
+     * The rules of {@link #judge(HttpMethod, HttpVersion, String, MultiMap)} in their order.
+     *
+     * @return {@link Verdict.Accepted} when no rule is broken, otherwise the refusal of the first rule
+     * broken, leaving the connection open — {@link #judge(HttpMethod, HttpVersion, String, MultiMap)}
+     * decides the retirement
+     */
+    private static Verdict firstBrokenRule(HttpMethod method, HttpVersion version, String requestUri,
+            MultiMap headers, boolean bodyAboveBound) {
         if (!HttpMethod.GET.equals(method)) {
             return new Verdict.Refused(METHOD_NOT_ALLOWED, Map.of(ALLOW_HEADER, HttpMethod.GET.name()));
         }
@@ -186,11 +221,8 @@ final class WebSocketUpgradeGate {
         if (!isValidKey(trimmedOrNull(headers.get(KEY_HEADER)))) {
             return new Verdict.Refused(BAD_REQUEST, Map.of());
         }
-        // The body behind an over-bound declared length is never read, so it would frame the next
-        // request on this keep-alive connection: the connection is retired with the answer, as Vert.x
-        // closes it.
-        if (declaresBodyAboveBound(headers.getAll(CONTENT_LENGTH_HEADER))) {
-            return new Verdict.Refused(CONTENT_TOO_LARGE, Map.of(), true);
+        if (bodyAboveBound) {
+            return new Verdict.Refused(CONTENT_TOO_LARGE, Map.of());
         }
         if (!isParseableUri(requestUri)) {
             return new Verdict.Refused(BAD_REQUEST, Map.of());
@@ -310,9 +342,12 @@ final class WebSocketUpgradeGate {
          * @param headers           the response headers to add before the answer, in the order to write
          *                          them; empty when there are none
          * @param retiresConnection whether the connection is closed once the answer has been written —
-         *                          the answer then carries {@code Connection: close}. Only the
-         *                          {@code 413} retires it: the declared body behind it is never read and
-         *                          would otherwise frame the next request on the connection
+         *                          the answer then carries the {@code close} connection option. Every
+         *                          refusal of an HTTP/1.x request declaring a body above
+         *                          {@link WebSocketUpgradeGate#MAX_HANDSHAKE_BODY} retires it — the
+         *                          {@code 413} and an earlier {@code 405}, {@code 426} or {@code 400}
+         *                          alike: the declared body is never read and would otherwise frame the
+         *                          next request on the connection. No other refusal retires it
          * @since 1.0
          */
         record Refused(int status, Map<String, String> headers, boolean retiresConnection) implements Verdict {
@@ -336,6 +371,21 @@ final class WebSocketUpgradeGate {
              */
             public Refused(int status, Map<String, String> headers) {
                 this(status, headers, false);
+            }
+
+            /**
+             * This refusal, retiring its connection: the same status, and headers that add the
+             * {@code close} option to {@code Connection}. A {@code Connection} value the refusal already
+             * carries — the {@code Upgrade} option of an HTTP/1.x {@code 426}, which every sender of
+             * {@code Upgrade} must add (RFC 9110 §7.8) — is kept in front of it.
+             *
+             * @return the retiring refusal
+             */
+            Refused retiringConnection() {
+                Map<String, String> retiringHeaders = new LinkedHashMap<>(headers);
+                retiringHeaders.merge(CONNECTION_HEADER, CONNECTION_CLOSE,
+                        (options, close) -> options + OPTION_SEPARATOR + close);
+                return new Refused(status, retiringHeaders, true);
             }
         }
     }

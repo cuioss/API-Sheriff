@@ -1676,10 +1676,12 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   share, until the relay's backend dial settles -- the relay is established, or the dial fails or
   times out -- whether or not its client is still connected: a client that leaves during the dial
   does not hand the slot back early. The relay's dial client carries a fixed 10 s connect timeout in
-  place of the Vert.x default of 60 s. The dial phase is therefore inside the cap and time-bounded: a
-  backend that never answers holds a slot for at most 10 s, and no dialing connection escapes the cap,
-  so a client cannot start more concurrent backend dials than the cap admits by hanging up after its
-  ClientHello. During the dial the connection holds only its replay buffer -- the parser is dropped at
+  place of the Vert.x default of 60 s. That timeout bounds the TCP connect only: a backend named by host
+  name is resolved before the connect starts, the lookup is bounded by the DNS resolver's own query
+  timeout rather than by the 10 s, and the connection keeps its slot during the lookup as well. The dial
+  phase is therefore inside the cap and time-bounded: a backend that never answers the connect holds a
+  slot for its name lookup plus at most 10 s, and no dialing connection escapes the cap, so a client
+  cannot start more concurrent backend dials than the cap admits by hanging up after its ClientHello. During the dial the connection holds only its replay buffer -- the parser is dropped at
   the route decision -- and the relay drops that buffer as soon as the client is known gone.
 * *A per-source share of the cap.* At most 256 of those 1024 -- a fixed quarter -- may belong to one
   source, the TCP peer address of the accepted connection, at the same time. A connection accepted
@@ -1710,9 +1712,9 @@ unbounded pre-route memory. The source is the TCP peer address, because nothing 
 ClientHello; behind an L4 load balancer or NAT that does not keep client addresses on the connection,
 every client shares one source and the share acts as a gateway-wide sub-cap of 256 undecided
 connections -- still tens of thousands of one-round-trip handshakes per second. While a backend
-silently drops the relay's dial, every connection routed to it holds its slot for up to the 10 s
-connect timeout, also after its client has left, so a burst of such connections can fill the cap for
-that window; counting the dial against the cap is preferred over letting dialing connections pile up
+silently drops the relay's dial, every connection routed to it holds its slot for the backend's name
+lookup plus up to the 10 s connect timeout, also after its client has left, so a burst of such
+connections can fill the cap for that window; counting the dial against the cap is preferred over letting dialing connections pile up
 outside it. A relayed connection
 that carries a byte at least once per relay idle timeout stays open: the relay bounds idleness, not
 duration, and a route that declares a long WebSocket idle timeout lengthens the relay idle timeout
@@ -1921,8 +1923,14 @@ than `13` is refused `426` with `Sec-WebSocket-Version: 13`; a missing version, 
 malformed `Sec-WebSocket-Key` -- anything but padded base64 (RFC 4648 §4) of a 16-byte nonce -- is
 refused `400`. A declared `Content-Length` above 8192 bytes is refused `413` with `Connection: close`,
 and the connection is closed once the answer is written: the body behind it is never read, so it
-would otherwise frame the next request on the connection. A request URI that does not parse as a
-`java.net.URI` is refused `400`. With those two the gate mirrors the full refusal set of the
+would otherwise frame the next request on the connection. The `413` is reached only under the
+`security_defaults.allow_get_with_content_length_body` opt-in: without it the framing gate refuses a
+`GET` declaring a positive `Content-Length` before route selection, so the upgrade gate never sees one.
+A request that declares a body above the bound and breaks an earlier rule keeps that rule's `405`,
+`426` or `400`, and on HTTP/1.x its connection is retired the same way, since that body is never read
+either: the answer carries `Connection: close`, a `426` `Connection: Upgrade, close`. On HTTP/2 a
+refusal ends only its own stream. A request URI that does not parse as a `java.net.URI` is refused
+`400`. With the `413` and that `400` the gate mirrors the full refusal set of the
 vertx-core 4.5.34 HTTP/1.1 upgrade path (`Http1xServerRequest.webSocket()`,
 `Http1xServerConnection.createHandshaker`) before any dial: Vert.x answers a handshake body above
 8192 bytes `413` and closes the connection, an unparseable request URI `400`, a method other than
@@ -1964,7 +1972,9 @@ a valid handshake sent with `POST`, `PUT` and `DELETE` (`http2GetIsRefusedBefore
 `missingKeyIsRefused400`, `nonGetHandshakeIsRefused405`), a handshake declaring a body above 8192
 bytes and one whose request URI does not parse, the latter on a `security_filter.profile: minimal`
 route because every other profile's url-parameter validation refuses that query before the gate
-(`oversizedDeclaredBodyIsRefused413AndClosesTheConnection`, `unparseableRequestUriIsRefused400`) --
+(`oversizedDeclaredBodyIsRefused413AndClosesTheConnection`, `unparseableRequestUriIsRefused400`), and
+a `400` and a `426` of requests that also declare a body above the bound, which keep their status
+and close the connection (`earlierRefusalOfAnOversizedDeclaredBodyClosesTheConnection`) --
 and asserts the answer,
 that the upstream was never contacted and that every admission permit came back; a valid upgrade
 relayed end to end is the matched control (`validUpgradeIsRelayed`). The same class asserts that a

@@ -46,13 +46,15 @@ import org.jspecify.annotations.Nullable;
  * direction for that long, Vert.x closes it, and the close handlers below propagate the close to the
  * other leg, so an abandoned pipe is released on both sides. The relay itself sets no timer.
  * <p>
- * <strong>The dial phase is bounded and reported.</strong> The backend dial is bounded by the dial
- * client's connect timeout, {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}. {@link #relay} returns a
- * future that completes exactly once, when the dial settles — the relay is established, or the dial
- * failed or timed out — so the {@link SniFrontListener} can hold the connection's undecided slot until
- * then. A client that leaves during the dial does not end the dial phase: the dial keeps running and
- * the connection keeps its slot until the dial settles, so every dialling connection is bounded by the
- * connect timeout whether or not its client is still connected. The client leaving releases only the
+ * <strong>The dial phase is bounded and reported.</strong> The TCP connect to the backend is bounded by
+ * the dial client's connect timeout, {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT}. A target named by
+ * host name is resolved before the connect starts; that lookup is bounded by the DNS resolver's own
+ * query timeout, not by the connect timeout. {@link #relay} returns a future that completes exactly
+ * once, when the dial settles — the relay is established, or the dial failed or timed out — so the
+ * {@link SniFrontListener} can hold the connection's undecided slot until then. A client that leaves
+ * during the dial does not end the dial phase: the dial keeps running and the connection keeps its slot
+ * until the dial settles, so every dialling connection is bounded by the lookup and the connect timeout
+ * whether or not its client is still connected. The client leaving releases only the
  * buffered ClientHello, which the dial phase holds alone and drops the moment the client is known
  * gone, not when the dial later settles.
  * <p>
@@ -103,8 +105,9 @@ public final class PassthroughRelay {
      * The returned future completes exactly once, when the dial settles: it succeeded — the relay is
      * established, or, for a client already gone, the backend leg closed — or it failed or timed out.
      * The client leaving does not complete it, so the caller's hold on the connection spans the whole
-     * dial, bounded by the dial client's connect timeout. The client's close and the dial callbacks all
-     * run on the accepted connection's event loop.
+     * dial: the host-name lookup of a target named by host name, bounded by the DNS resolver's own query
+     * timeout, and the TCP connect, bounded by the dial client's connect timeout. The client's close and
+     * the dial callbacks all run on the accepted connection's event loop.
      *
      * @param client      the accepted client connection, already paused by the caller
      * @param clientHello the bytes buffered while the SNI was being read, replayed to the backend

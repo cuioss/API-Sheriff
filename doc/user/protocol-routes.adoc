@@ -119,7 +119,9 @@ contact* -- it takes no relay budget and the upstream is never dialled:
 | --
 
 | A declared `Content-Length` above 8192 bytes -- reachable only on a gateway that admits a `GET`
-  body through `security_defaults.allow_get_with_content_length_body`
+  body through `security_defaults.allow_get_with_content_length_body`; without that opt-in the
+  gateway's framing check refuses a `GET` declaring a body before route selection, so this check never
+  sees one
 | `413`
 | `Connection: close` -- the gateway closes the connection after the answer, since the body is never
   read
@@ -140,6 +142,13 @@ mirror what the gateway's HTTP stack (vertx-core 4.5.34) would itself refuse in 
 request the gateway lets through is not refused by the stack after the upstream was dialled. A
 WebSocket can only be opened over HTTP/1.1, so a client that negotiated HTTP/2 with the gateway has to
 offer HTTP/1.1 for its WebSocket connections.
+
+*A declared body above 8192 bytes closes the connection, whichever check refuses.* The gateway never
+reads the body of a refused handshake. A request that declares more than 8192 bytes and breaks an
+earlier rule -- answered `405`, `426` or `400` -- keeps that status, and on HTTP/1.x the gateway closes
+the connection after the answer exactly as it does after the `413`: the answer carries
+`Connection: close`, a `426` `Connection: Upgrade, close`. On HTTP/2 only that request's stream is
+ended; the connection stays open.
 
 *A failed client upgrade is answered `502`.* The gateway dials the upstream before it upgrades the
 client connection. If the upstream accepts the upgrade and the client upgrade then fails, the gateway

@@ -131,7 +131,8 @@ class GatewayEdgeWebSocketUpgradeGateTest {
                 })
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
         // The GET-body opt-in lets a handshake declaring a Content-Length past the framing gate, so the
-        // upgrade gate's body bound is reachable; no other case sends a body.
+        // upgrade gate's body bound is reachable; only the over-bound cases declare a length, and none
+        // sends a body byte.
         front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
                 .routes(webSocketRoute(upstream.actualPort()), minimalProfileWebSocketRoute(upstream.actualPort()))
                 .gatewayConfig(ConfigFixtures.gateway()
@@ -245,6 +246,29 @@ class GatewayEdgeWebSocketUpgradeGateTest {
                         () -> assertEquals(413, answer.status(), "Vert.x buffers at most 8192 handshake body bytes"),
                         () -> assertEquals("close", answer.headers().get("Connection"),
                                 "the unread body would frame the next request, so the connection is retired"))));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
+    @DisplayName("a 400 and a 426 of a request declaring a body above 8192 bytes keep their status, answer Connection: close and the edge closes the connection")
+    void earlierRefusalOfAnOversizedDeclaredBodyClosesTheConnection() throws Exception {
+        List<String> withoutKey = new ArrayList<>(handshake("13", SAMPLE_KEY));
+        withoutKey.removeIf(line -> line.startsWith("Sec-WebSocket-Key"));
+        withoutKey.add("Content-Length: " + OVER_BOUND_BODY);
+        List<String> plainGet = List.of("Origin: " + ORIGIN, "Content-Length: " + OVER_BOUND_BODY);
+
+        Answer badRequest = exchange("GET", WS_URI, withoutKey, true);
+        Answer upgradeRequired = exchange("GET", WS_URI, plainGet, true);
+
+        assertAll("an earlier refusal keeps its status and retires the connection whose body it never reads",
+                () -> assertEquals(400, badRequest.status(), "the missing key is the first rule broken"),
+                () -> assertEquals("close", badRequest.headers().get("Connection"),
+                        "the unread body would frame the next request, so the connection is retired"),
+                () -> assertEquals(426, upgradeRequired.status(), "the missing upgrade tokens are the first rule broken"),
+                () -> assertEquals("websocket", upgradeRequired.headers().get("Upgrade"),
+                        "the 426 still names the protocol to switch to"),
+                () -> assertEquals("Upgrade, close", upgradeRequired.headers().get("Connection"),
+                        "the 426 keeps its upgrade option beside close"));
         assertNothingDialedAndPermitsReturned();
     }
 

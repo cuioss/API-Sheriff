@@ -49,9 +49,11 @@ class WebSocketUpgradeGateTest {
     private static final String WEBSOCKET = "websocket";
     /** A valid origin-form request URI, the one every case sends unless it breaks the URI rule. */
     private static final String REQUEST_URI = "/ws/room";
-    /** The {@code 413} of an over-bound declared body: no headers of its own, and the connection retired. */
+    /** The {@code 413} of an over-bound declared body: only {@code Connection: close}, and the connection retired. */
     private static final WebSocketUpgradeGate.Verdict CONTENT_TOO_LARGE =
-            new WebSocketUpgradeGate.Verdict.Refused(413, Map.of(), true);
+            new WebSocketUpgradeGate.Verdict.Refused(413, Map.of(WebSocketUpgradeGate.CONNECTION_HEADER, "close"), true);
+    /** One byte above the 8192 handshake body bytes vertx-core 4.5.34 buffers. */
+    private static final String OVER_BOUND_LENGTH = "8193";
 
     @Nested
     @DisplayName("a valid handshake is accepted")
@@ -329,6 +331,87 @@ class WebSocketUpgradeGateTest {
     }
 
     /**
+     * The gate never reads a body, so on HTTP/1.x a declared body above the bound would frame the next
+     * request on the connection whichever rule refused the request first: every such refusal keeps its
+     * own status and retires the connection. On HTTP/2 a refusal ends only its own stream.
+     */
+    @Nested
+    @DisplayName("an earlier refusal of a request declaring a body above 8192 bytes keeps its status and retires the HTTP/1.x connection")
+    class EarlierRefusalOfAnOverBoundBody {
+
+        @ParameterizedTest(name = "Content-Length: {0}")
+        @ValueSource(strings = {OVER_BOUND_LENGTH, "abc"})
+        @DisplayName("a malformed key with an over-bound or non-decimal declared length is refused 400, retiring the connection")
+        void badKeyWithOverBoundBodyRetiresTheConnection(String contentLength) {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, "short")
+                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, contentLength);
+
+            assertEquals(retiring(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers),
+                    "the key decides the status, the unread body decides the retirement");
+        }
+
+        @ParameterizedTest(name = "Content-Length: {0}")
+        @ValueSource(strings = {"8192", "0"})
+        @DisplayName("control: a malformed key with a declared length within the bound is refused 400, keeping the connection")
+        void badKeyWithinTheBoundKeepsTheConnection(String contentLength) {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, "short")
+                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, contentLength);
+
+            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @Test
+        @DisplayName("a POST declaring an over-bound body is refused 405 Allow: GET, retiring the connection")
+        void nonGetWithOverBoundBodyRetiresTheConnection() {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, OVER_BOUND_LENGTH);
+
+            assertEquals(retiring(405, Map.of("Allow", "GET")), judge(HttpMethod.POST, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @Test
+        @DisplayName("a plain GET declaring an over-bound body is refused 426 with Connection: Upgrade, close")
+        void upgradeRequiredWithOverBoundBodyKeepsTheUpgradeOption() {
+            MultiMap headers = MultiMap.caseInsensitiveMultiMap()
+                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, OVER_BOUND_LENGTH);
+            Map<String, String> expected = Map.of(WebSocketUpgradeGate.UPGRADE_HEADER, WEBSOCKET,
+                    WebSocketUpgradeGate.CONNECTION_HEADER, "Upgrade, close");
+
+            assertEquals(new WebSocketUpgradeGate.Verdict.Refused(426, expected, true),
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers),
+                    "every sender of Upgrade must keep the upgrade option beside close (RFC 9110 §7.8)");
+        }
+
+        @Test
+        @DisplayName("an unsupported version declaring an over-bound body is refused 426 naming version 13, retiring the connection")
+        void unsupportedVersionWithOverBoundBodyRetiresTheConnection() {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.VERSION_HEADER, "8")
+                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, OVER_BOUND_LENGTH);
+
+            WebSocketUpgradeGate.Verdict.Refused verdict = assertInstanceOf(WebSocketUpgradeGate.Verdict.Refused.class,
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertAll("the 426 keeps its headers and retires the connection",
+                    () -> assertEquals(426, verdict.status()),
+                    () -> assertEquals("13", verdict.headers().get(WebSocketUpgradeGate.VERSION_HEADER)),
+                    () -> assertEquals("Upgrade, close", verdict.headers().get(WebSocketUpgradeGate.CONNECTION_HEADER)),
+                    () -> assertTrue(verdict.retiresConnection()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"GET", "POST"})
+        @DisplayName("on HTTP/2 a refusal of an over-bound body retires nothing and names no Connection option")
+        void http2RefusalRetiresNothing(String method) {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, OVER_BOUND_LENGTH);
+
+            WebSocketUpgradeGate.Verdict.Refused verdict = assertInstanceOf(WebSocketUpgradeGate.Verdict.Refused.class,
+                    judge(HttpMethod.valueOf(method), HttpVersion.HTTP_2, headers));
+            assertAll("an HTTP/2 refusal ends only its own stream",
+                    () -> assertFalse(verdict.retiresConnection(), "closing the connection would end every sibling stream"),
+                    () -> assertNull(verdict.headers().get(WebSocketUpgradeGate.CONNECTION_HEADER),
+                            "Connection is a connection-specific field HTTP/2 forbids"));
+        }
+    }
+
+    /**
      * vertx-core 4.5.34 composes the handshake's WebSocket location from the request URI and answers
      * {@code 400} when {@code new URI(request.uri())} fails ({@code HttpUtils.getWebSocketLocation},
      * {@code Http1xServerConnection.createHandshaker}).
@@ -405,12 +488,12 @@ class WebSocketUpgradeGateTest {
         }
 
         @Test
-        @DisplayName("the key is judged before the declared length: a bad key with an over-bound body is refused 400")
+        @DisplayName("the key is judged before the declared length: a bad key with an over-bound body is refused 400, still retiring the connection")
         void keyIsJudgedBeforeTheDeclaredLength() {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.KEY_HEADER, "short")
-                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, "8193");
+                    .set(WebSocketUpgradeGate.CONTENT_LENGTH_HEADER, OVER_BOUND_LENGTH);
 
-            assertEquals(refused(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+            assertEquals(retiring(400, Map.of()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
@@ -481,8 +564,18 @@ class WebSocketUpgradeGateTest {
         return WebSocketUpgradeGate.judge(method, version, REQUEST_URI, headers);
     }
 
-    /** A refusal that leaves the connection open, as every refusal but the {@code 413} does. */
+    /** A refusal that leaves the connection open, as every refusal of a request declaring no over-bound body does. */
     private static WebSocketUpgradeGate.Verdict refused(int status, Map<String, String> headers) {
         return new WebSocketUpgradeGate.Verdict.Refused(status, headers, false);
+    }
+
+    /**
+     * A refusal of an HTTP/1.x request declaring an over-bound body: its own {@code headers}, which carry
+     * no {@code Connection} value, plus {@code Connection: close}, and the connection retired.
+     */
+    private static WebSocketUpgradeGate.Verdict retiring(int status, Map<String, String> headers) {
+        Map<String, String> retiringHeaders = new LinkedHashMap<>(headers);
+        retiringHeaders.put(WebSocketUpgradeGate.CONNECTION_HEADER, "close");
+        return new WebSocketUpgradeGate.Verdict.Refused(status, retiringHeaders, true);
     }
 }

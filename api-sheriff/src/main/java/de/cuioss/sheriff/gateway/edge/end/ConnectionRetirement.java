@@ -177,10 +177,11 @@ public final class ConnectionRetirement {
      *       the next request framed on that connection, or pin the connection until the idle timeout —
      *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
      *       still tie up connections by repeatedly tripping the {@code 413};</li>
-     *   <li>the WebSocket upgrade gate's {@code 413} of a handshake declaring a {@code Content-Length}
-     *       above 8192 bytes — the body is never read, for the same reason as the reserved-body
-     *       {@code 413}, and vertx-core closes the connection on its own {@code 413} of an oversized
-     *       handshake body too ({@code TerminalDispatch.rejectWebSocketUpgrade});</li>
+     *   <li>a WebSocket upgrade gate refusal of a request declaring a {@code Content-Length} above 8192
+     *       bytes — its {@code 413}, or an earlier {@code 405}, {@code 426} or {@code 400} of such a
+     *       request: the body is never read, for the same reason as the reserved-body {@code 413}, and
+     *       vertx-core closes the connection on its own {@code 413} of an oversized handshake body too
+     *       ({@code TerminalDispatch.rejectWebSocketUpgrade});</li>
      *   <li>a framing rejection of an HTTP/1.x request — the framing gate's, or a body the dispatch
      *       could not finish reading (see {@link #markFramingRejection});</li>
      *   <li>the end of a relay that failed after a request body outlived the request-body deadline

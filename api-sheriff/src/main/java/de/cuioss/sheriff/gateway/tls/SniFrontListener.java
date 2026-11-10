@@ -88,9 +88,10 @@ import org.jspecify.annotations.Nullable;
  * instead of starting the dial, the slot is returned at once and the connection closed. A client that leaves
  * during the dial does not return the slot early; its connection holds the slot until the dial settles
  * all the same, so no dialling connection escapes the cap. The dial window therefore counts against the
- * cap and is bounded by the dial client's fixed connect timeout,
- * {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT} (ten seconds), whether or not the client is still
- * connected. The listener drops its parser
+ * cap, whether or not the client is still connected. It spans the host-name lookup of a target named by
+ * host name, bounded by the DNS resolver's own query timeout, and the TCP connect, bounded by the dial
+ * client's fixed connect timeout, {@link TlsEdgeProducer#RELAY_CONNECT_TIMEOUT} (ten seconds). The
+ * listener drops its parser
  * and its reference to the replay buffer at the route decision, so a dialling connection holds the
  * replay buffer alone, and the relay drops that too as soon as the client is known gone. Two amounts
  * lie outside the figure, each stated for the transport's default read sizing — Netty's adaptive

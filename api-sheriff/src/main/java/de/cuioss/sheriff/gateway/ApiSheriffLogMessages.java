@@ -316,7 +316,8 @@ public final class ApiSheriffLogMessages {
          * full share of that cap ({@code source_share}). The cap and the share count connections waiting
          * for their ClientHello or for their relay's backend dial to settle, so they fill under a flood of
          * slow or silent handshakes and equally behind a passthrough backend that does not answer the
-         * dial, whose connections each hold a slot for the full connect timeout. Rate-limited: emitted at
+         * dial, whose connections each hold a slot for any host-name lookup of the backend plus the full
+         * connect timeout. Rate-limited: emitted at
          * most once per fixed window per reason; every further refusal for that reason inside the window is a
          * {@code DEBUG} diagnostic, and every refusal is counted on
          * {@code sheriff_front_connections_refused_total}. Records the reason token, the bound that was

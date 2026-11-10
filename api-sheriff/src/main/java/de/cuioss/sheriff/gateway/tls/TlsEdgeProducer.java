@@ -92,9 +92,11 @@ import org.jspecify.annotations.Nullable;
  * <strong>The relay's backend dial is bounded.</strong> The relay's dial client carries the fixed
  * {@link #RELAY_CONNECT_TIMEOUT} of ten seconds as its connect timeout, replacing the implicit Vert.x
  * default of sixty seconds. A connection the front has routed keeps its undecided-connection slot until
- * that dial settles, so the dial window counts against the front's cap and is bounded by this value. A
- * dial that has not connected within it fails, and the relay closes the accepted client connection.
- * Like the idle timeout, the connect timeout is not configurable.
+ * that dial settles, so the dial window counts against the front's cap. The connect timeout bounds the
+ * TCP connect: a target named by host name is resolved before the connect starts, and that lookup is
+ * bounded by the DNS resolver's own query timeout, not by this value, while the slot stays held. A
+ * dial that has not connected within the connect timeout fails, and the relay closes the accepted
+ * client connection. Like the idle timeout, the connect timeout is not configurable.
  * <p>
  * <strong>Front refusals are counted.</strong> The front listener reports every connection it closes
  * at accept — beyond its undecided-connection cap or beyond a source's share of it — to a recorder
@@ -117,7 +119,9 @@ public class TlsEdgeProducer {
     /**
      * How long the relay's dial client may take to connect to a backend before the dial fails. A
      * routed connection keeps its undecided-connection slot until the dial settles, so this bounds how
-     * long the dial phase holds a slot of the front's cap.
+     * long the TCP connect of the dial phase holds a slot of the front's cap; the host-name lookup of a
+     * target named by host name precedes the connect and is bounded by the DNS resolver's own query
+     * timeout instead.
      */
     static final Duration RELAY_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 

@@ -102,8 +102,8 @@ before either value is read (RFC 6455 §11.3.1, §11.3.5); a `Sec-WebSocket-Vers
 refused `426` with `Sec-WebSocket-Version: 13`; a missing version, or a missing or malformed
 `Sec-WebSocket-Key` -- anything but 24 characters of padded base64 (RFC 4648 §4) decoding to 16 bytes
 -- is refused `400`; a declared `Content-Length` above 8192 bytes, or one that is no decimal number,
-is refused `413` and the connection retired with the answer (`Connection: close`, closed once written
-through `ConnectionRetirement.retireConnectionAfterResponse`), since the body behind it is never read;
+is refused `413` (reached only under `security_defaults.allow_get_with_content_length_body`: without
+that opt-in the stage-1 framing gate refuses a `GET` declaring a body before route selection);
 a request URI that does not parse as a `java.net.URI` is refused `400` (reached on a
 `security_filter.profile: minimal` route; under every other profile the stage-3 url-parameter
 validation refuses such a query first). Those last two complete the
@@ -111,7 +111,13 @@ mirror of the vertx-core 4.5.34 HTTP/1.1 upgrade path (`Http1xServerRequest.webS
 most 8192 body bytes and answers `413` with a connection close beyond it;
 `Http1xServerConnection.createHandshaker` answers `405`, `400` for an unparseable request URI and `426`
 for an unsupported version, and refuses no `Host`), so a request the gate accepts is not refused by
-the HTTP stack after the upstream was dialled. A refusal is answered on the
+the HTTP stack after the upstream was dialled. The rules decide the status in that order; the
+declared length decides the connection on its own. Every refusal of an HTTP/1.x request declaring a
+body above the bound -- the `413`, or an earlier `405`, `426` or `400` -- is a `Verdict.Refused` with
+`retiresConnection` set, whose own headers name the `close` connection option (`Upgrade, close` on a
+`426`), and the connection is retired with the answer
+(`ConnectionRetirement.retireConnectionAfterResponse`), since the body behind it is never read. On
+HTTP/2 a refusal ends only its own stream. A refusal is answered on the
 event loop through `ResponseEnds.reject` with no body, carrying the route's security headers, its own
 headers and the pipeline's `Set-Cookie` lines, as every response after route selection does -- the two
 `503` refusals of an upgrade too -- and logged at `DEBUG` with the route id and the status only (see

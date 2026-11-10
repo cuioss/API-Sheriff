@@ -227,9 +227,11 @@ the others off:
 | 10 s
 | Once the front has routed a connection, it connects to the backend -- the passthrough backend or the
   terminated listener. A backend that has not accepted that connection within 10 s is given up on, and
-  the client's connection is closed without an answer. Until the backend has accepted or been given up
-  on, the connection still counts against the 1024 and its source's 256 -- also when the client
-  disconnects in the meantime.
+  the client's connection is closed without an answer. The 10 s count from the start of the TCP
+  connect: a backend named by host name is looked up first, and that lookup is bounded by the DNS
+  resolver's own timeout, not by the 10 s. Until the backend has accepted or been given up on, the
+  connection still counts against the 1024 and its source's 256 -- also when the client disconnects in
+  the meantime.
 
 | Relay idle timeout
 | derived
@@ -256,13 +258,14 @@ to keep idle terminated connections open longer, set `quarkus.http.idle-timeout`
 want instead of zero.
 
 *An unreachable passthrough backend.* When a passthrough backend is down or filtered, clients for its
-hostname see their connection closed after at most 10 s, during the TLS handshake and without a TLS
-alert -- the gateway never terminates a passthrough connection, so it has no certificate to answer
+hostname see their connection closed once the 10 s connect timeout has passed -- after the backend's
+host-name lookup, when the topology names it by host name -- during the TLS handshake and without a
+TLS alert -- the gateway never terminates a passthrough connection, so it has no certificate to answer
 with. When the backend actively refuses the connection, the client's connection is closed as soon as
 the refusal arrives. While the backend is unreachable, each waiting connection holds one of the 1024
-slots for up to those 10 s -- whether or not its client is still connected, so a client that gives up
-and reconnects does not free its earlier slot -- and a burst of clients for that hostname can briefly
-fill the bound and show up as `cap` refusals (see <<_front_listener_refusals>>).
+slots for the lookup plus up to those 10 s -- whether or not its client is still connected, so a
+client that gives up and reconnects does not free its earlier slot -- and a burst of clients for that
+hostname can briefly fill the bound and show up as `cap` refusals (see <<_front_listener_refusals>>).
 
 [[_front_listener_refusals]]
 ==== Reading the front's refusals
@@ -289,9 +292,10 @@ line as the sign that the front is saturated at all:
 
 * *A sustained `cap` rate* has one of two causes. Either many connections are holding their
   ClientHello back -- a slow or silent handshake flood -- or a passthrough backend does not answer the
-  dial, and each connection for its hostname holds a slot for up to the 10 s connect timeout (see
-  _An unreachable passthrough backend_ above). Either way, legitimate clients then wait up to one 10 s
-  window before they are admitted. Check whether the refusals coincide with a passthrough backend being
+  dial, and each connection for its hostname holds a slot for the backend's host-name lookup plus up to
+  the 10 s connect timeout (see _An unreachable passthrough backend_ above). Either way, legitimate
+  clients then wait up to one such window -- the 10 s ClientHello deadline, or the lookup plus the 10 s
+  connect timeout -- before they are admitted. Check whether the refusals coincide with a passthrough backend being
   down before treating them as a flood.
 * *A `source_share` rate from one client* is that client being held to its share; the others are
   unaffected.

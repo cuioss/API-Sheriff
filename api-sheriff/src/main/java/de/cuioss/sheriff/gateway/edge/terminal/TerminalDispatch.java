@@ -259,10 +259,14 @@ public final class TerminalDispatch {
      * refused {@code 400}; a {@code Sec-WebSocket-Version} other than {@code 13} is refused
      * {@code 426} with {@code Sec-WebSocket-Version: 13}; a missing version, or a missing
      * {@code Sec-WebSocket-Key} or one that is not the padded base64 of a 16-byte nonce, is refused
-     * {@code 400}; a declared {@code Content-Length} above 8192 bytes is refused {@code 413} with
-     * {@code Connection: close}, and the connection is closed once the answer has been written, since
-     * the unread body behind it would frame the next request; a request URI that does not parse as a
-     * {@link java.net.URI} is refused {@code 400}. Those last two mirror the remaining refusals of the
+     * {@code 400}; a declared {@code Content-Length} above 8192 bytes is refused {@code 413} — reached
+     * only under the {@code security_defaults.allow_get_with_content_length_body} opt-in, since the
+     * framing gate refuses a {@code GET} declaring a body before route selection without it; a request
+     * URI that does not parse as a {@link java.net.URI} is refused {@code 400}. On HTTP/1.x every refusal
+     * of a request declaring a body above 8192 bytes — the {@code 413} and an earlier {@code 405},
+     * {@code 426} or {@code 400} alike — carries the {@code close} connection option, and the connection
+     * is closed once the answer has been written, since the unread body behind it would frame the next
+     * request. The {@code 413} and the unparseable request URI mirror the remaining refusals of the
      * vertx-core 4.5.34 HTTP/1.1 upgrade path, so a request the gate admits is not refused by the HTTP
      * stack after the upstream was dialed. A refusal releases the general admission permit through the
      * shared guard and is logged at {@code DEBUG} with the route id and the answered status, and no
@@ -389,10 +393,12 @@ public final class TerminalDispatch {
      * {@code ownHeaders} — the gate verdict's {@code Allow}, {@code Upgrade}, {@code Connection} or
      * {@code Sec-WebSocket-Version}, which win over a gateway header of the same name — then the
      * pipeline's {@code Set-Cookie} lines, then the status through {@link ResponseEnds#reject}. A
-     * refusal that retires its connection — the gate's {@code 413}, whose declared body is never read —
-     * additionally advertises {@code Connection: close} and closes the connection once the answer has
-     * been written ({@link ConnectionRetirement#retireConnectionAfterResponse}). A response that has
-     * already ended is left as it is.
+     * refusal that retires its connection — any gate refusal of an HTTP/1.x request declaring a body
+     * above the gate's bound, which is never read — additionally closes the connection once the answer
+     * has been written ({@link ConnectionRetirement#retireConnectionAfterResponse}). The retirement is
+     * armed before {@code ownHeaders} are written, so the verdict's own {@code Connection} value — which
+     * names {@code close}, and on a retiring {@code 426} {@code Upgrade, close} — is the one sent. A
+     * response that has already ended is left as it is.
      *
      * @param ctx               the refused request
      * @param gatewayHeaders    the route's gateway-authored response headers, snapshotted before the hop
@@ -408,11 +414,12 @@ public final class TerminalDispatch {
             return;
         }
         gatewayHeaders.forEach(response::putHeader);
-        ownHeaders.forEach(response::putHeader);
-        ResponseEnds.applyStageSetCookies(response, setCookies);
         if (retiresConnection) {
             ConnectionRetirement.retireConnectionAfterResponse(ctx);
         }
+        // After the retirement's Connection: close, so a retiring 426 keeps its Upgrade option beside it.
+        ownHeaders.forEach(response::putHeader);
+        ResponseEnds.applyStageSetCookies(response, setCookies);
         ResponseEnds.reject(ctx, status);
     }
 
