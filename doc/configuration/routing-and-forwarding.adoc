@@ -203,8 +203,9 @@ URL-override class* `X-Forwarded-Server`, `X-Forwarded-Ssl`, `Front-End-Https`, 
 `X-Original-URL`, `X-Rewrite-URL`, `X-Original-Host`, `X-Host`, `X-Original-Forwarded-For`,
 `X-Cluster-Client-IP` and `Fastly-Client-IP` -- names a backend may read as the client's address, as
 the scheme, host or server it was reached through, or as the URL to serve in place of the request
-line. They are withheld for every peer, a trusted proxy included: the gateway is the only provenance
-authority an upstream hears. Every name in the set is matched on its *separator-folded* spelling --
+line. They are withheld for every peer, a trusted proxy included: unless a route re-admits a member by
+naming it in its positive-list (the re-admission rule below), the gateway is the only provenance authority
+an upstream hears. Every name in the set is matched on its *separator-folded* spelling --
 lower-cased with each `_` mapped to `-` -- so `X_Real_IP` and `X-Real_IP` are withheld exactly as
 `X-Real-IP` is.
 

@@ -143,7 +143,10 @@ question, and the gateway withholds it for every peer, a trusted proxy included.
 member crosses. Membership is tested separator-folded, but the positive-list copy looks the client header up under
 the entry's own spelling, case-insensitively, so the entry must use the separators the client sends:
 `headers_allow: [X-Original-URL]` does not copy an inbound `X_Original_URL` (`ConnectionHeaders.isRequestReadmittable`).
-The vendor client-IP aliases and the underscore spellings stay outside the subset. `DocumentedHeaderSetsContractTest` binds the subset to the never-forward section.
+The vendor client-IP aliases and the underscore spellings of the regenerated forwarding names stay outside the
+subset. An entry spelled with underscores re-admits that spelling: `headers_allow: [X_Original_URL]` copies an
+inbound `X_Original_URL`, which re-admission folds to `x-original-url`. `DocumentedHeaderSetsContractTest` binds the
+subset to the never-forward section.
 
 [[_the_browser_cookie_is_a_per_route_policy]]
 === The browser `Cookie` is a per-route policy

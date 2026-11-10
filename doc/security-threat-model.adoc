@@ -900,9 +900,11 @@ or a vendor alias is withheld under forward-all, a negative-list *and* a positiv
 so the equivalence class is asserted closed rather than sampled; a client-sent `X-ProxyHost` or
 `X-ProxyContextPath`, in any spelling, from an untrusted peer leaves the regenerated set unchanged,
 and no `X-Proxy*` input reaches the upstream under forward-all, a negative-list or a positive-list
-naming it, while a trusted peer's `X-ProxyHost` still feeds the regeneration
-(`ForwardPolicyStageTest`); every name of the provenance and URL-override class, in either spelling,
-is withheld under forward-all and a negative-list for trusted and untrusted peers alike, each leg
+naming it, while a trusted peer's `X-ProxyHost` still feeds the regeneration under a test resolver
+configured to honour host inputs (`ForwardPolicyStageTest`) -- the resolver `ForwardedTrust` builds in
+production honours no scheme, host, port or prefix input, so there a trusted peer's `X-ProxyHost` feeds
+nothing, and the control shows only that the mask applies to an untrusted peer alone; every name of
+the provenance and URL-override class, in either spelling, is withheld under forward-all and a negative-list for trusted and untrusted peers alike, each leg
 with a matched positive control, and a positive-list naming one re-admits that name and no other
 (`ForwardPolicyStageTest`, `ConnectionHeadersTest`); an operator's `set_headers` still
 places such a name deliberately; a `0.0.0.0/1`+`128.0.0.0/1` config is rejected at boot; an entry broader

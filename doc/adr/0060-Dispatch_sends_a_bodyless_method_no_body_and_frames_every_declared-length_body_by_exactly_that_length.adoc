@@ -179,7 +179,9 @@ breaker would then count that timeout against a healthy upstream.
 upstream request. The first forwarded body byte, the end of the body, any abort claim and the end of
 the attempt stop it. When it expires, it takes the body stream's single abort claim with a
 `DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`) and resets the upstream request. The
-breaker does not count that rejection as a failure. `INFO` `ApiSheriff-22` records it under the disposition `no-first-message`.
+breaker does not count that rejection as a failure. `ApiSheriff-22` records it under the disposition `no-first-message`,
+at `INFO` for the first inbound-body abort on the route and at `DEBUG` after that: the three dispositions
+`client-left`, `body-stream-failed` and `no-first-message` share one per-route latch.
 
 The bound is below `UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS`, so it fires first unless waiting for an upstream
 connection — which the guard counts and the bound does not — consumed the difference. A body that
