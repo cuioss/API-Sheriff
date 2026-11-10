@@ -47,7 +47,7 @@ On each accepted connection an `Incoming` reassembles the ClientHello:
 
 The data, exception and close handlers and the deadline timer of a connection all run on that
 connection's Vert.x event loop, so the reassembly buffer, the parser and the `settled` latch are
-single-threaded and need no synchronization. Three states are shared across the front's event loops:
+single-threaded and need no synchronization. Four states are shared across the front's event loops:
 
 * *The counter of the undecided-connection cap* is claimed with an atomic increment and rolled back
   with an atomic decrement when the claim overshoots the cap.
@@ -55,14 +55,20 @@ single-threaded and need no synchronization. Three states are shared across the 
   the source key, which is atomic per key. A source is removed when its count reaches zero, so the map
   never holds more entries than there are held slots. A share refusal rolls back the global slot the
   connection had already claimed, so a refused connection holds neither.
+* *The per-target dial counts of the dial budget* are claimed and returned the same way, inside
+  `ConcurrentHashMap.compute` on the passthrough target, so no read-then-write window lets two dials
+  take a budget's last slot. A target is removed when no dial to it is in flight.
 * *The time of the last refusal `WARN` per reason* is advanced with a compare-and-set, so of two
   concurrent refusals at most one logs at `WARN`.
 
-An admitted connection returns its two slots together, exactly once. Whichever comes first of the
+An admitted connection returns its slots together, exactly once. Whichever comes first of the
 route decision, the connection closing or failing, and the deadline sets the `settled` latch. A close,
 a failure or the deadline returns the slots at once. The route decision does not: the connection keeps
 its slots until the relay's backend dial settles (see <<relay-dial-bound>>), and the listener returns
-them in the single completion handler of the dial-phase future `PassthroughRelay.relay(...)` returns.
+them in the single completion handler of the dial-phase future `PassthroughRelay.relay(...)` returns. A
+passthrough match also claims one slot of its target's dial budget at the route decision and returns it
+in that same handler; a match whose target's budget is full is refused instead, and returns its slots
+of the cap and of its source's share at once.
 
 The front listener is *conditional*: `TlsEdgeProducer` constructs and starts it only when
 `tls.passthrough_sni` is non-empty. When passthrough is unconfigured the front is never created, the
@@ -72,8 +78,9 @@ overhead -- the default single-listener topology is unchanged.
 [#front-listener-bounds]
 === The bounds of the front
 
-Four bounds keep a connection the front has not routed yet, or a relay nobody uses, from being held
-indefinitely, or one source from holding the others off. None of them is configurable.
+Five bounds keep a connection the front has not routed yet, or a relay nobody uses, from being held
+indefinitely, or one source or one passthrough backend from holding the others off. None of them is
+configurable.
 
 * *ClientHello deadline* -- `SniFrontListener.CLIENT_HELLO_DEADLINE`, 10 s. The timer is armed when the
   connection is accepted and cancelled when the connection settles; a connection that has not
@@ -121,6 +128,33 @@ the client is known gone. The window is bounded by the backend's host-name resol
   starving them all. The quarter mirrors the quarter derivation of
   link:../adr/0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020].
   See <<front-refusal-keying>> for what a source is.
+
+* *Per-target dial budget* -- `SniFrontListener.MAX_DIALS_PER_TARGET`, a fixed eighth of the cap (128
+  connections) dialing one passthrough target at the same time. A passthrough match claims one slot of
+  its target's budget at the route decision and returns it, with its slots of the cap and of its
+  source's share, when the dial settles -- on every path, a relay that throws instead of dialing
+  included. A connection routed to a target whose budget is full is refused there and then: its slots of
+  the cap and of its source's share come back at once, it is never dialed, and it is counted and logged
+  like a refusal at accept, under the reason `dial_budget` (see <<front-refusal-keying>>).
++
+*Why a budget.* The dialing window is inside the cap, and passthrough dials and terminated handshakes
+share that one cap. Without a budget, the dials to one passthrough backend that does not answer -- each
+holding its slot for the name lookup and the 10 s connect timeout -- could occupy every slot the
+terminated handshakes need. With it, one such backend holds at most 128 slots, each for at most one dial
+window, and leaves seven eighths of the cap to terminated handshakes and to every other target.
++
+*Form and value.* The budget is a per-target bound on concurrent dials, counted *inside* the cap rather
+than as a second bound beside it, so the cap stays the one memory bound of the front and there is no
+second one to reason about. The value is a fixed constant derived from the cap, like the share, and is
+not configurable.
++
+*Several dark targets add up.* The budget bounds what one unreachable backend can take, not what a set
+of them can: two dark targets hold at most a quarter of the cap, four at most half, and eight could hold
+all of it. Each slot is still released after at most one dial window.
++
+*The terminated target is exempt.* The terminated hand-off dials the gateway's own internal listener on
+loopback, which settles at once; budgeting it would refuse exactly the terminated handshakes the budget
+exists to protect.
 
 * *Relay idle timeout* -- the Vert.x idle timeout of the front's `NetServer`, which `TlsEdgeProducer`
   also sets on the relay's dial `NetClient`, so both legs of every relayed connection -- passthrough
@@ -216,17 +250,17 @@ tens of thousands of one-round-trip handshakes per second, and is an accepted tr
 front bound, the share is not configurable.
 
 *Every refusal is visible.* A connection closed at accept -- beyond the cap or beyond its source's
-share -- is:
+share -- or at its route decision beyond its passthrough target's dial budget is:
 
-* *counted* on `sheriff_front_connections_refused_total{reason}`, with `reason` `cap` or
-  `source_share`. The listener stays free of Micrometer: it reports each refusal to a plain
-  `Consumer<SniFrontListener.Refusal>` callback, which `TlsEdgeProducer` wires to the two record methods
-  of `SheriffMetrics`. Each of those fixes its own label value, so the label set is closed by
+* *counted* on `sheriff_front_connections_refused_total{reason}`, with `reason` exactly one of `cap`,
+  `source_share` and `dial_budget`. The listener stays free of Micrometer: it reports each refusal to a
+  plain `Consumer<SniFrontListener.Refusal>` callback, which `TlsEdgeProducer` wires to the three record
+  methods of `SheriffMetrics`. Each of those fixes its own label value, so the label set is closed by
   construction, and the metrics adapter needs no type from `tls`.
 * *logged* as `WARN ApiSheriff-146` (`ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED`), at most once
   per `SniFrontListener.SATURATION_WARN_INTERVAL` (60 s, measured on the monotonic `System.nanoTime()`
-  clock) per reason, with the reason token (`cap` / `source_share` -- the same spelling as the metric
-  label), the bound that was full and the
+  clock) per reason, with the reason token (`cap` / `source_share` / `dial_budget` -- the same spelling
+  as the metric label), the bound that was full and the
   window. Every further refusal of that reason inside the window is logged at `DEBUG`. Neither line
   ever names the peer address or a received byte.
 

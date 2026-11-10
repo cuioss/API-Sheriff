@@ -110,19 +110,25 @@ class SheriffMetricsTest {
             metrics.recordFrontConnectionRefusedAtCap();
             metrics.recordFrontConnectionRefusedAtCap();
             metrics.recordFrontConnectionRefusedAtSourceShare();
+            metrics.recordFrontConnectionRefusedAtDialBudget();
+            metrics.recordFrontConnectionRefusedAtDialBudget();
+            metrics.recordFrontConnectionRefusedAtDialBudget();
 
             assertAll("sheriff_front_connections_refused_total",
                     () -> assertEquals(2.0, registry.get(SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL)
                             .tag("reason", "cap").counter().count(), 0.0),
                     () -> assertEquals(1.0, registry.get(SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL)
-                            .tag("reason", "source_share").counter().count(), 0.0));
+                            .tag("reason", "source_share").counter().count(), 0.0),
+                    () -> assertEquals(3.0, registry.get(SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL)
+                            .tag("reason", "dial_budget").counter().count(), 0.0));
         }
 
         @Test
-        @DisplayName("the front refusal counter carries only the reason label, valued cap or source_share")
+        @DisplayName("the front refusal counter carries only the reason label, valued cap, source_share or dial_budget")
         void frontConnectionRefusedLabelIsBounded() {
             metrics.recordFrontConnectionRefusedAtCap();
             metrics.recordFrontConnectionRefusedAtSourceShare();
+            metrics.recordFrontConnectionRefusedAtDialBudget();
 
             var counters = registry.find(SheriffMetrics.FRONT_CONNECTIONS_REFUSED_TOTAL).counters();
             Set<String> tagKeys = counters.stream()
@@ -135,9 +141,10 @@ class SheriffMetricsTest {
             assertAll("the label set is closed",
                     () -> assertEquals(Set.of("reason"), tagKeys, "no peer address or other label is attached"),
                     () -> assertEquals(Set.of(SheriffMetrics.REFUSAL_REASON_CAP,
-                            SheriffMetrics.REFUSAL_REASON_SOURCE_SHARE), reasons),
-                    () -> assertEquals(Set.of("cap", "source_share"), reasons,
-                            "the documented label values are exactly cap and source_share"));
+                            SheriffMetrics.REFUSAL_REASON_SOURCE_SHARE, SheriffMetrics.REFUSAL_REASON_DIAL_BUDGET),
+                            reasons),
+                    () -> assertEquals(Set.of("cap", "source_share", "dial_budget"), reasons,
+                            "the documented label values are exactly cap, source_share and dial_budget"));
         }
 
         @Test

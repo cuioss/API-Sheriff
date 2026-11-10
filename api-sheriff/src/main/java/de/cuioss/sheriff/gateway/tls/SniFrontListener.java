@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -66,9 +67,9 @@ import org.jspecify.annotations.Nullable;
  * <li>a missing / malformed SNI fails closed (GW-06): it takes the same terminated-strict path and
  * an audited {@code WARN} records the disposition only, never raw bytes.</li>
  * </ul>
- * <strong>Four bounds keep a connection the front has not routed yet, or a relay nobody uses, from
- * being held indefinitely, or one source from holding the others off.</strong> None of them is
- * configurable.
+ * <strong>Five bounds keep a connection the front has not routed yet, or a relay nobody uses, from
+ * being held indefinitely, or one source or one passthrough backend from holding the others off.</strong>
+ * None of them is configurable.
  * <ul>
  * <li><em>ClientHello deadline</em> — {@link #CLIENT_HELLO_DEADLINE}, ten seconds. The timer is
  * armed when the connection is accepted and cancelled when the route is decided; a connection that
@@ -103,16 +104,33 @@ import org.jspecify.annotations.Nullable;
  * offered to the parser, and the extension walk of a complete ClientHello copies it once more —
  * transient copies of at most 64 + 64 + 32 KiB per event loop, which processes one read at a time.</li>
  * </ol>
- * The trade-off is deliberate: a client that holds
- * 1024 silent sockets makes new handshakes wait for at most one deadline window per wave of such
- * sockets — the deadline frees every slot again — and that bounded delay is preferred over unbounded
- * pre-route memory. Since a legitimate client completes its ClientHello within one round trip, 1024
- * concurrent undecided connections still admit tens of thousands of handshakes per second.</li>
+ * The trade-off is deliberate: a slot held by a connection that never completes its ClientHello is
+ * held for at most one deadline window — the deadline frees it again — and a slot held by a dialling
+ * connection for at most one dial window, and that bounded delay for new handshakes is preferred over
+ * unbounded pre-route memory. No single party can take the whole cap: one source holds at most its
+ * share, a quarter of the cap, and the connections dialling one passthrough target at most that
+ * target's dial budget, an eighth of it. Since a legitimate client completes its ClientHello within one
+ * round trip, 1024 concurrent undecided connections still admit tens of thousands of handshakes per
+ * second.</li>
  * <li><em>Per-source share</em> — {@link #MAX_UNDECIDED_PER_SOURCE}, a fixed quarter of the cap (256
  * connections), held by one source at the same time. A connection accepted while its source already
  * holds its full share is closed at once, like one beyond the cap, so a single source filling its
  * share leaves three quarters of the cap to everybody else. The source is the TCP peer address of the
  * accepted socket; every connection whose peer address is unavailable shares one fallback source.</li>
+ * <li><em>Per-target dial budget</em> — {@link #MAX_DIALS_PER_TARGET}, a fixed eighth of the cap (128
+ * connections) dialling one passthrough target at the same time. A passthrough match claims one dial
+ * slot of its target at the route decision and returns it, together with its slots of the cap and of
+ * its source's share, when the dial settles. A connection routed to a target whose budget is full is
+ * refused there and then — its slots of the cap and of its source's share come back at once, and it is
+ * counted and logged like a refusal at accept, under its own reason — so a passthrough backend that
+ * does not answer the dial holds at most 128 slots of the cap, each for at most one dial window, and
+ * leaves seven eighths of the cap to terminated handshakes and to every other target. The budget is a
+ * share of the cap, not a second bound beside it: every dialling connection still counts against the
+ * cap. Several dark targets add up: two hold at most a quarter of the cap, four at most half, and eight
+ * could hold all of it — the budget bounds what one unreachable backend can take, not what a set of
+ * them can. The terminated hand-off target is exempt: its dial goes to the gateway's own internal
+ * listener on loopback and settles at once, and budgeting it would refuse exactly the terminated
+ * handshakes the budget exists to protect.</li>
  * <li><em>Relay idle timeout</em> — the Vert.x idle timeout of the front server, the same value
  * {@link TlsEdgeProducer} also sets on the relay's dial client. It closes a relayed leg that carried
  * no byte in either direction for the timeout, which the relay's close handlers then propagate to the
@@ -120,7 +138,8 @@ import org.jspecify.annotations.Nullable;
  * bound inside the gateway behind the terminated branch.</li>
  * </ul>
  * <strong>A refusal is visible.</strong> Every connection closed at accept — beyond the cap, or beyond
- * its source's share — is reported to the refusal recorder the listener was built with, which
+ * its source's share — and every connection closed at its route decision beyond its target's dial
+ * budget is reported to the refusal recorder the listener was built with, which
  * {@link TlsEdgeProducer} wires to the {@code sheriff_front_connections_refused_total{reason}} counter,
  * and is logged as {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} at most once per
  * {@link #SATURATION_WARN_INTERVAL} per {@link Refusal reason}; every further refusal inside that
@@ -139,13 +158,15 @@ import org.jspecify.annotations.Nullable;
  * {@link TlsEdgeProducer}); when passthrough is unconfigured the front is never created, so the
  * default single-listener topology is unchanged.
  * <p>
- * <strong>Thread safety.</strong> Three states are shared across the front's event loops. The
+ * <strong>Thread safety.</strong> Four states are shared across the front's event loops. The
  * undecided-connection count is claimed with an atomic increment, rolled back with an atomic decrement
  * when the claim overshoots the cap, and returned with an atomic decrement. The per-source counts are
  * claimed and returned inside {@link ConcurrentHashMap#compute} on the source key, which is atomic per
  * key and removes a source whose count reaches zero, so the map never holds more entries than there
- * are held slots; a share refusal rolls the already-claimed global slot back. Both slots of an admitted
- * connection are returned together, exactly once. The time of the last {@code WARN} per reason is
+ * are held slots; a share refusal rolls the already-claimed global slot back. The per-target dial
+ * counts are claimed and returned the same way, inside {@link ConcurrentHashMap#compute} on the target
+ * key, so no read-then-write window lets two dials take the budget's last slot. Every slot of an
+ * admitted connection is returned together, exactly once. The time of the last {@code WARN} per reason is
  * advanced with a compare-and-set, so two concurrent refusals never both log it. Everything else about
  * a connection is confined to that connection's event loop.
  *
@@ -172,20 +193,33 @@ public final class SniFrontListener {
     public static final int MAX_UNDECIDED_PER_SOURCE = MAX_UNDECIDED_CONNECTIONS / 4;
 
     /**
+     * How many routed connections may be dialling one passthrough target at the same time: a fixed
+     * eighth of {@link #MAX_UNDECIDED_CONNECTIONS}, counted inside that cap. The terminated hand-off
+     * target is exempt.
+     */
+    public static final int MAX_DIALS_PER_TARGET = MAX_UNDECIDED_CONNECTIONS / 8;
+
+    /**
      * The window within which {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} is logged at
      * most once per {@link Refusal reason}; every further refusal for that reason inside the window is
      * a {@code DEBUG} diagnostic.
      */
     public static final Duration SATURATION_WARN_INTERVAL = Duration.ofSeconds(60);
 
-    /** Why the front closed an accepted connection at once, without reading from it. */
+    /**
+     * Why the front closed a connection at once: at accept, without reading from it, or at the route
+     * decision of a passthrough match, without dialling its backend.
+     */
     public enum Refusal {
 
         /** The undecided-connection cap was full. */
         CAP("cap"),
 
         /** The connection's source already held its full share of the cap. */
-        SOURCE_SHARE("source_share");
+        SOURCE_SHARE("source_share"),
+
+        /** The connection's passthrough target already had its full dial budget in flight. */
+        DIAL_BUDGET("dial_budget");
 
         private final String token;
 
@@ -226,6 +260,7 @@ public final class SniFrontListener {
     private final long clientHelloDeadlineMillis;
     private final int maxUndecidedConnections;
     private final int maxUndecidedPerSource;
+    private final int maxDialsPerTarget;
     private final Duration relayIdleTimeout;
     private final Duration warnInterval;
     private final LongSupplier nanoClock;
@@ -233,6 +268,7 @@ public final class SniFrontListener {
     private final Consumer<Refusal> refusalRecorder;
     private final AtomicInteger undecidedConnections = new AtomicInteger();
     private final ConcurrentHashMap<String, Integer> undecidedPerSource = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<RelayTarget, Integer> dialsPerTarget = new ConcurrentHashMap<>();
     private final Map<Refusal, AtomicLong> lastWarnNanos = new EnumMap<>(Refusal.class);
 
     private @Nullable NetServer server;
@@ -242,8 +278,8 @@ public final class SniFrontListener {
      * Creates a front listener bound on the Vert.x default host ({@link NetServerOptions#DEFAULT_HOST},
      * the wildcard address), which is the production bind scope {@link TlsEdgeProducer} relies on,
      * with the fixed {@link #CLIENT_HELLO_DEADLINE}, {@link #MAX_UNDECIDED_CONNECTIONS},
-     * {@link #MAX_UNDECIDED_PER_SOURCE} and {@link #SATURATION_WARN_INTERVAL} on the monotonic
-     * {@link System#nanoTime()} clock.
+     * {@link #MAX_UNDECIDED_PER_SOURCE}, {@link #MAX_DIALS_PER_TARGET} and
+     * {@link #SATURATION_WARN_INTERVAL} on the monotonic {@link System#nanoTime()} clock.
      *
      * @param vertx              the managed Vert.x instance the front server is created on
      * @param relay              the opaque L4 relay both routing branches hand connections to
@@ -254,24 +290,25 @@ public final class SniFrontListener {
      * @param publicPort         the public TLS port the front server binds
      * @param relayIdleTimeout   the idle timeout of the front server, derived by
      *                           {@link TlsEdgeProducer}; positive
-     * @param refusalRecorder    called once per connection closed at accept, with the reason; it runs
-     *                           on the accepting event loop and must not block
+     * @param refusalRecorder    called once per connection the front refuses, with the reason; it runs
+     *                           on the connection's event loop and must not block
      * @throws IllegalArgumentException when {@code relayIdleTimeout} is not positive
      */
     public SniFrontListener(Vertx vertx, PassthroughRelay relay, Map<String, RelayTarget> passthroughTargets,
             RelayTarget terminatedTarget, int publicPort, Duration relayIdleTimeout,
             Consumer<Refusal> refusalRecorder) {
         this(vertx, relay, passthroughTargets, terminatedTarget, publicPort, NetServerOptions.DEFAULT_HOST,
-                CLIENT_HELLO_DEADLINE, MAX_UNDECIDED_CONNECTIONS, MAX_UNDECIDED_PER_SOURCE, relayIdleTimeout,
-                SATURATION_WARN_INTERVAL, System::nanoTime, SniFrontListener::sourceOf, refusalRecorder);
+                CLIENT_HELLO_DEADLINE, MAX_UNDECIDED_CONNECTIONS, MAX_UNDECIDED_PER_SOURCE, MAX_DIALS_PER_TARGET,
+                relayIdleTimeout, SATURATION_WARN_INTERVAL, System::nanoTime, SniFrontListener::sourceOf,
+                refusalRecorder);
     }
 
     /**
      * Creates a front listener with every bound explicit, so a test can bind a specific host, shorten
      * the bounds instead of waiting for them, drive the warn window with its own clock and assign
      * connections to sources without a second network address. Production uses the public
-     * constructor, which fixes the host, the deadline, the cap, the share, the warn window, the clock
-     * and the TCP-peer-address source key ({@link #sourceOf}).
+     * constructor, which fixes the host, the deadline, the cap, the share, the dial budget, the warn
+     * window, the clock and the TCP-peer-address source key ({@link #sourceOf}).
      *
      * @param vertx                   the managed Vert.x instance the front server is created on
      * @param relay                   the opaque L4 relay both routing branches hand connections to
@@ -284,20 +321,22 @@ public final class SniFrontListener {
      * @param maxUndecidedConnections how many accepted connections may wait at the same time for their
      *                                ClientHello or for their relay's backend dial to settle; positive
      * @param maxUndecidedPerSource   how many of those one source may hold at the same time; positive
+     * @param maxDialsPerTarget       how many of those may be dialling one passthrough target at the same
+     *                                time; positive
      * @param relayIdleTimeout        the idle timeout of the front server; positive
      * @param warnInterval            the window within which a refusal reason is logged at {@code WARN}
      *                                at most once; positive
      * @param nanoClock               the monotonic clock, in nanoseconds, the warn window is measured on
      * @param sourceKey               the source an accepted connection is counted under
-     * @param refusalRecorder         called once per connection closed at accept, with the reason
+     * @param refusalRecorder         called once per connection the front refuses, with the reason
      * @throws IllegalArgumentException when a bound is not positive
      */
     @SuppressWarnings("java:S107") // every bound is explicit by design: this is the test seam
     SniFrontListener(Vertx vertx, PassthroughRelay relay, Map<String, RelayTarget> passthroughTargets,
             RelayTarget terminatedTarget, int publicPort, String host, Duration clientHelloDeadline,
-            int maxUndecidedConnections, int maxUndecidedPerSource, Duration relayIdleTimeout,
-            Duration warnInterval, LongSupplier nanoClock, Function<NetSocket, String> sourceKey,
-            Consumer<Refusal> refusalRecorder) {
+            int maxUndecidedConnections, int maxUndecidedPerSource, int maxDialsPerTarget,
+            Duration relayIdleTimeout, Duration warnInterval, LongSupplier nanoClock,
+            Function<NetSocket, String> sourceKey, Consumer<Refusal> refusalRecorder) {
         this.vertx = Objects.requireNonNull(vertx, "vertx");
         this.relay = Objects.requireNonNull(relay, "relay");
         this.passthroughTargets = Map.copyOf(Objects.requireNonNull(passthroughTargets, "passthroughTargets"));
@@ -307,6 +346,7 @@ public final class SniFrontListener {
         this.clientHelloDeadlineMillis = requirePositive(clientHelloDeadline, "clientHelloDeadline").toMillis();
         this.maxUndecidedConnections = requirePositive(maxUndecidedConnections, "maxUndecidedConnections");
         this.maxUndecidedPerSource = requirePositive(maxUndecidedPerSource, "maxUndecidedPerSource");
+        this.maxDialsPerTarget = requirePositive(maxDialsPerTarget, "maxDialsPerTarget");
         this.relayIdleTimeout = requirePositive(relayIdleTimeout, "relayIdleTimeout");
         this.warnInterval = requirePositive(warnInterval, "warnInterval");
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
@@ -452,11 +492,15 @@ public final class SniFrontListener {
      * Refuses a connection: logs the refusal — at {@code WARN} for the first refusal of its reason in a
      * warn window, at {@code DEBUG} for every further one, neither line naming the peer address or any
      * byte received — reports it to the recorder, and only then closes the connection without reading
-     * from it, so the close a client observes always follows the refusal's record.
+     * from it any further, so the close a client observes always follows the refusal's record.
      */
     private void refuse(NetSocket socket, Refusal refusal) {
         socket.pause();
-        String bound = Integer.toString(refusal == Refusal.CAP ? maxUndecidedConnections : maxUndecidedPerSource);
+        String bound = Integer.toString(switch (refusal) {
+            case CAP -> maxUndecidedConnections;
+            case SOURCE_SHARE -> maxUndecidedPerSource;
+            case DIAL_BUDGET -> maxDialsPerTarget;
+        });
         if (warnDue(refusal)) {
             LOGGER.warn(ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED, refusal.token(), bound,
                     Long.toString(warnInterval.toSeconds()));
@@ -539,10 +583,13 @@ public final class SniFrontListener {
      * slots — of the undecided-connection cap and of its source's share, as one unit — at once; the route
      * decision instead hands the connection to the relay and returns the slots in the single completion
      * handler of the relay's dial-phase future, which completes when the backend dial settles — not when
-     * the client leaves. A hand-off the relay refuses by throwing instead of returning that future —
-     * Vert.x, for one, throws from the dial call for a backend port outside 0 to 65535 — is turned into a
-     * failed dial phase, so the same handler runs at once: it returns the slots and closes the connection.
-     * On every path the slots are returned exactly once. At the
+     * the client leaves. A passthrough match also holds one dial slot of its target's budget, claimed at
+     * the route decision and returned in that same handler; when the budget is full the connection is
+     * refused at the route decision instead, and its slots are returned at once. A hand-off the relay
+     * refuses by throwing instead of returning that future — Vert.x, for one, throws from the dial call
+     * for a backend port outside 0 to 65535 — is turned into a failed dial phase, so the same handler runs
+     * at once: it returns the slots and closes the connection. On every path the slots are returned
+     * exactly once. At the
      * route decision the connection also drops its parser and its reference to the replay buffer, whose
      * only owner from then on is the relay.
      */
@@ -579,19 +626,58 @@ public final class SniFrontListener {
                 buffer = null;
                 parser = null;
                 socket.pause();
-                // Future.future turns a relay that throws instead of returning its dial-phase future
-                // into a failed dial phase, so the handler below still runs and the slots come back.
-                Future.<Void>future(dialPhase -> route(result.serverName(), replay).onComplete(dialPhase))
-                        .onComplete(dialPhaseOver -> {
-                            releaseSlot();
-                            if (dialPhaseOver.failed()) {
-                                LOGGER.debug(dialPhaseOver.cause(),
-                                        "Front connection closed: the hand-off to the relay failed: %s",
-                                        dialPhaseOver.cause().getMessage());
-                                closeQuietly(socket);
-                            }
-                        });
+                route(result.serverName(), replay);
             }
+        }
+
+        /**
+         * Hands the connection, with its replay buffer, to the relay for the target its SNI selects. A
+         * passthrough match first claims one dial slot of its target; when the target's budget is full the
+         * connection is refused instead — its slots of the cap and of its source's share are returned at
+         * once and it is never dialled. The terminated hand-off claims no dial slot.
+         */
+        private void route(@Nullable String serverName, Buffer replay) {
+            RelayTarget target = serverName == null ? null : passthroughTargets.get(normalizeSni(serverName));
+            if (serverName != null && target != null) {
+                if (!claimDial(target)) {
+                    releaseSlot();
+                    refuse(socket, Refusal.DIAL_BUDGET);
+                    return;
+                }
+                dial(() -> relay.relay(socket, replay, target, RelayKind.PASSTHROUGH, serverName), target);
+                return;
+            }
+            if (serverName == null) {
+                LOGGER.warn(ApiSheriffLogMessages.WARN.CLIENT_HELLO_FAIL_CLOSED, "no-usable-sni");
+            }
+            dial(() -> relay.relay(socket, replay, terminatedTarget, RelayKind.TERMINATED, ""), null);
+        }
+
+        /**
+         * Starts the hand-off and returns every slot the connection holds — of the cap, of its source's
+         * share and, for a passthrough match, of its target's dial budget — in the single completion
+         * handler of the relay's dial-phase future.
+         *
+         * @param handOff  starts the relay and returns its dial-phase future
+         * @param budgeted the passthrough target whose dial slot the connection holds, or {@code null} for
+         *                 the terminated hand-off, which holds none
+         */
+        private void dial(Supplier<Future<Void>> handOff, @Nullable RelayTarget budgeted) {
+            // Future.future turns a relay that throws instead of returning its dial-phase future into a
+            // failed dial phase, so the handler below still runs and every slot comes back.
+            Future.<Void>future(dialPhase -> handOff.get().onComplete(dialPhase))
+                    .onComplete(dialPhaseOver -> {
+                        releaseSlot();
+                        if (budgeted != null) {
+                            releaseDial(budgeted);
+                        }
+                        if (dialPhaseOver.failed()) {
+                            LOGGER.debug(dialPhaseOver.cause(),
+                                    "Front connection closed: the hand-off to the relay failed: %s",
+                                    dialPhaseOver.cause().getMessage());
+                            closeQuietly(socket);
+                        }
+                    });
         }
 
         private void onError(Throwable failure) {
@@ -649,22 +735,34 @@ public final class SniFrontListener {
             }
             return true;
         }
+    }
 
-        /**
-         * Hands the connection, with its replay buffer, to the relay for the target its SNI selects.
-         *
-         * @return the relay's dial-phase future, completing once the backend dial has settled
-         */
-        private Future<Void> route(@Nullable String serverName, Buffer replay) {
-            if (serverName == null) {
-                LOGGER.warn(ApiSheriffLogMessages.WARN.CLIENT_HELLO_FAIL_CLOSED, "no-usable-sni");
-                return relay.relay(socket, replay, terminatedTarget, RelayKind.TERMINATED, "");
+    /**
+     * Claims one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#compute}, atomic per
+     * target: the count is read and written in one step, so two dials can never both take the budget's
+     * last slot.
+     *
+     * @param target the passthrough target the connection is routed to
+     * @return {@code true} when the slot was claimed, {@code false} when the budget is full
+     */
+    private boolean claimDial(RelayTarget target) {
+        AtomicBoolean claimed = new AtomicBoolean();
+        dialsPerTarget.compute(target, (key, held) -> {
+            int count = held == null ? 0 : held;
+            if (count >= maxDialsPerTarget) {
+                return held;
             }
-            RelayTarget target = passthroughTargets.get(normalizeSni(serverName));
-            if (target != null) {
-                return relay.relay(socket, replay, target, RelayKind.PASSTHROUGH, serverName);
-            }
-            return relay.relay(socket, replay, terminatedTarget, RelayKind.TERMINATED, "");
-        }
+            claimed.set(true);
+            return count + 1;
+        });
+        return claimed.get();
+    }
+
+    /**
+     * Returns one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#computeIfPresent},
+     * which removes the target once no dial to it is in flight.
+     */
+    private void releaseDial(RelayTarget target) {
+        dialsPerTarget.computeIfPresent(target, (key, held) -> held <= 1 ? null : held - 1);
     }
 }

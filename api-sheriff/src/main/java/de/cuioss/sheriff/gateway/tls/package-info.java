@@ -63,11 +63,15 @@
  * <h2>The bounds of the front</h2>
  *
  * The front closes a connection that has not completed its ClientHello within a fixed ten-second
- * deadline, refuses a connection at accept while 1024 accepted connections are still waiting for
- * theirs, and bounds every relayed leg with a Vert.x idle timeout that {@link TlsEdgeProducer} derives
- * at boot so it never undercuts an idle bound inside the gateway. {@link SniFrontListener} documents
- * the deadline and the cap, {@link TlsEdgeProducer} the derivation of the idle timeout; none of them
- * is configurable.
+ * deadline, and refuses a connection at accept while 1024 accepted connections are still waiting —
+ * for their ClientHello, or, once routed, for their relay's backend dial to settle — or while its
+ * source already holds its share of a quarter of them. That dial window spans the backend's host-name
+ * lookup and a ten-second connect timeout, and one passthrough target may have at most an eighth of the
+ * cap dialling at once: a connection routed to a target whose dial budget is full is refused at its
+ * route decision. Every relayed leg is bounded by a Vert.x idle timeout that {@link TlsEdgeProducer}
+ * derives at boot so it never undercuts an idle bound inside the gateway. {@link SniFrontListener}
+ * documents the deadline, the cap, the per-source share and the dial budget, {@link TlsEdgeProducer}
+ * the connect timeout and the derivation of the idle timeout; none of them is configurable.
  *
  * @author API Sheriff Team
  * @since 1.0

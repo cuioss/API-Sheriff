@@ -99,7 +99,8 @@ import org.jspecify.annotations.Nullable;
  * client connection. Like the idle timeout, the connect timeout is not configurable.
  * <p>
  * <strong>Front refusals are counted.</strong> The front listener reports every connection it closes
- * at accept — beyond its undecided-connection cap or beyond a source's share of it — to a recorder
+ * at accept — beyond its undecided-connection cap or beyond a source's share of it — and every
+ * connection it closes at the route decision beyond its passthrough target's dial budget to a recorder
  * this producer wires to {@link SheriffMetrics}, so the refusal rate is visible on
  * {@value SheriffMetrics#FRONT_CONNECTIONS_REFUSED_TOTAL}.
  *
@@ -241,7 +242,8 @@ public class TlsEdgeProducer {
     }
 
     /**
-     * Counts one connection the front listener refused at accept on the metric for its reason. This is
+     * Counts one connection the front listener refused — at accept, or at the route decision beyond its
+     * passthrough target's dial budget — on the metric for its reason. This is
      * the refusal recorder {@link #onStartup} hands the front listener; it is package-private so a test
      * can pin the reason-to-label mapping without saturating a front of the production cap. The mapping
      * is a switch expression, which the compiler checks for exhaustiveness: a new
@@ -253,6 +255,7 @@ public class TlsEdgeProducer {
         Runnable counter = switch (refusal) {
             case CAP -> metrics::recordFrontConnectionRefusedAtCap;
             case SOURCE_SHARE -> metrics::recordFrontConnectionRefusedAtSourceShare;
+            case DIAL_BUDGET -> metrics::recordFrontConnectionRefusedAtDialBudget;
         };
         counter.run();
     }

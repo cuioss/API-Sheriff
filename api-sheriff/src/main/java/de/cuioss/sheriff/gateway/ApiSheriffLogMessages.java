@@ -316,13 +316,17 @@ public final class ApiSheriffLogMessages {
                 .build();
 
         /**
-         * The accept-time SNI front closed an accepted connection at once, without reading from it: the
-         * undecided-connection cap was full ({@code cap}), or the connection's source already held its
-         * full share of that cap ({@code source_share}). The cap and the share count connections waiting
-         * for their ClientHello or for their relay's backend dial to settle, so they fill under a flood of
-         * slow or silent handshakes and equally behind a passthrough backend that does not answer the
-         * dial, whose connections each hold a slot for any host-name lookup of the backend plus the full
-         * connect timeout. Rate-limited: emitted at
+         * The accept-time SNI front closed a connection at once, for one of exactly three reasons. At
+         * accept, without reading from it: the undecided-connection cap was full ({@code cap}), or the
+         * connection's source already held its full share of that cap ({@code source_share}). At the
+         * route decision of a passthrough match, without dialling its backend: the connection's target
+         * already had its full dial budget in flight ({@code dial_budget}), so the bound logged is that
+         * budget — the dialling connections of one target, which count against the cap. The cap and the
+         * share count connections waiting for their ClientHello or for their relay's backend dial to
+         * settle, so they fill under a flood of slow or silent handshakes and equally behind passthrough
+         * backends that do not answer the dial, whose connections each hold a slot for any host-name
+         * lookup of the backend plus the full connect timeout; the dial budget keeps one such backend
+         * from holding more than its eighth of the cap. Rate-limited: emitted at
          * most once per fixed window per reason; every further refusal for that reason inside the window is a
          * {@code DEBUG} diagnostic, and every refusal is counted on
          * {@code sheriff_front_connections_refused_total}. Records the reason token, the bound that was

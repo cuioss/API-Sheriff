@@ -70,9 +70,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@value #UNIFORM_NOT_FOUND_OVERRUNS_TOTAL} — the uniform {@code 404} answers whose processing
  *       ran past the first step of the response-timing floor and were released on a later step;</li>
  *   <li>{@value #FRONT_CONNECTIONS_REFUSED_TOTAL}{@code {reason}} — the connections the accept-time
- *       SNI front closed at accept, keyed by the bound that was full: {@value #REFUSAL_REASON_CAP} for
- *       the undecided-connection cap, {@value #REFUSAL_REASON_SOURCE_SHARE} for a source's share of
- *       it.</li>
+ *       SNI front refused, keyed by the bound that was full, one of exactly three values:
+ *       {@value #REFUSAL_REASON_CAP} for the undecided-connection cap, {@value #REFUSAL_REASON_SOURCE_SHARE}
+ *       for a source's share of it, {@value #REFUSAL_REASON_DIAL_BUDGET} for a passthrough target's
+ *       dial budget.</li>
  * </ul>
  * A request refused because its source is blocked is recorded on {@value #ERRORS_TOTAL} under
  * {@link EventType#SOURCE_BLOCKED}, like every other categorized rejection, with the
@@ -155,9 +156,11 @@ public class SheriffMetrics {
      */
     public static final String UNIFORM_NOT_FOUND_OVERRUNS_TOTAL = "sheriff_uniform_not_found_overruns_total";
     /**
-     * Counter of connections the accept-time SNI front closed at accept, without reading from them,
-     * keyed by the bound that was full ({@code reason} label {@value #REFUSAL_REASON_CAP} or
-     * {@value #REFUSAL_REASON_SOURCE_SHARE}).
+     * Counter of connections the accept-time SNI front refused — closed at accept, without reading from
+     * them, or at the route decision of a passthrough match, without dialling its backend — keyed by the
+     * bound that was full. The {@code reason} label has exactly three values:
+     * {@value #REFUSAL_REASON_CAP}, {@value #REFUSAL_REASON_SOURCE_SHARE} and
+     * {@value #REFUSAL_REASON_DIAL_BUDGET}.
      */
     public static final String FRONT_CONNECTIONS_REFUSED_TOTAL = "sheriff_front_connections_refused_total";
 
@@ -172,6 +175,13 @@ public class SheriffMetrics {
      * refused because its source already held its full share of the undecided-connection cap.
      */
     public static final String REFUSAL_REASON_SOURCE_SHARE = "source_share";
+
+    /**
+     * The {@code reason} label value of {@link #FRONT_CONNECTIONS_REFUSED_TOTAL} for a connection
+     * refused at its route decision because its passthrough target already had its full dial budget in
+     * flight.
+     */
+    public static final String REFUSAL_REASON_DIAL_BUDGET = "dial_budget";
 
     /** The bounded label value shared by requests that matched no route. */
     public static final String NO_ROUTE = "<no-route>";
@@ -429,6 +439,16 @@ public class SheriffMetrics {
      */
     public void recordFrontConnectionRefusedAtSourceShare() {
         registry.counter(FRONT_CONNECTIONS_REFUSED_TOTAL, TAG_REASON, REFUSAL_REASON_SOURCE_SHARE).increment();
+    }
+
+    /**
+     * Counts one connection the accept-time SNI front refused at its route decision because its
+     * passthrough target already had its full dial budget in flight against
+     * {@link #FRONT_CONNECTIONS_REFUSED_TOTAL}, with the {@code reason} label
+     * {@value #REFUSAL_REASON_DIAL_BUDGET}. Neither the target nor the peer address is a label value.
+     */
+    public void recordFrontConnectionRefusedAtDialBudget() {
+        registry.counter(FRONT_CONNECTIONS_REFUSED_TOTAL, TAG_REASON, REFUSAL_REASON_DIAL_BUDGET).increment();
     }
 
     /**
