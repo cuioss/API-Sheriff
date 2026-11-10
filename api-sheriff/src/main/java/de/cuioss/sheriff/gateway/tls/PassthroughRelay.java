@@ -51,7 +51,10 @@ import org.jspecify.annotations.Nullable;
  * host name is resolved before the connect starts; that lookup is bounded by the DNS resolver's own
  * query timeout, not by the connect timeout. {@link #relay} returns a future that completes exactly
  * once, when the dial settles — the relay is established, or the dial failed or timed out — so the
- * {@link SniFrontListener} can hold the connection's undecided slot until then. A client that leaves
+ * {@link SniFrontListener} can hold the connection's undecided slot until then. It completes on every
+ * path: the completion runs in a {@code finally} of both dial outcomes, so a session that fails to
+ * start, or a close that throws, still ends the dial phase and lets the listener return the slot; a
+ * session that fails to start closes both legs. A client that leaves
  * during the dial does not end the dial phase: the dial keeps running and the connection keeps its slot
  * until the dial settles, so every dialling connection is bounded by the lookup and the connect timeout
  * whether or not its client is still connected. The client leaving releases only the
@@ -81,6 +84,7 @@ public final class PassthroughRelay {
 
     private final NetClient netClient;
     private final RelayedPeerRegistry relayedPeers;
+    private final Runnable beforeSessionStart;
 
     /**
      * @param netClient    the shared plain-TCP client the relay dials the backend with (no TLS), carrying
@@ -88,8 +92,23 @@ public final class PassthroughRelay {
      * @param relayedPeers the registry a terminated relay hands its client's address over through
      */
     public PassthroughRelay(NetClient netClient, RelayedPeerRegistry relayedPeers) {
+        this(netClient, relayedPeers, () -> {
+        });
+    }
+
+    /**
+     * Test seam: a relay that runs {@code beforeSessionStart} on the event loop just before a session is
+     * wired, after a successful dial, so a test can make the session start throw. Production uses the
+     * public constructor, which runs nothing there.
+     *
+     * @param netClient          the plain-TCP client the relay dials the backend with
+     * @param relayedPeers       the registry a terminated relay hands its client's address over through
+     * @param beforeSessionStart run before every session is wired
+     */
+    PassthroughRelay(NetClient netClient, RelayedPeerRegistry relayedPeers, Runnable beforeSessionStart) {
         this.netClient = Objects.requireNonNull(netClient, "netClient");
         this.relayedPeers = Objects.requireNonNull(relayedPeers, "relayedPeers");
+        this.beforeSessionStart = Objects.requireNonNull(beforeSessionStart, "beforeSessionStart");
     }
 
     /**
@@ -104,7 +123,9 @@ public final class PassthroughRelay {
      * <p>
      * The returned future completes exactly once, when the dial settles: it succeeded — the relay is
      * established, or, for a client already gone, the backend leg closed — or it failed or timed out.
-     * The client leaving does not complete it, so the caller's hold on the connection spans the whole
+     * The completion runs in a {@code finally} of both dial outcomes, so the future completes on every
+     * path, a session that fails to start included; such a session closes both legs. The client leaving
+     * does not complete it, so the caller's hold on the connection spans the whole
      * dial: the host-name lookup of a target named by host name, bounded by the DNS resolver's own query
      * timeout, and the TCP connect, bounded by the dial client's connect timeout. The client's close and
      * the dial callbacks all run on the accepted connection's event loop.
@@ -141,36 +162,61 @@ public final class PassthroughRelay {
         });
         netClient.connect(target.port(), target.host())
                 .onSuccess(backend -> {
-                    Buffer hello = pendingHello.getAndSet(null);
-                    if (hello == null) {
-                        LOGGER.debug("Relay client left during the backend dial to %s — closing the backend leg",
-                                target);
-                        closeQuietly(backend);
-                    } else {
-                        establish(client, backend, hello, target, kind, sniLabel);
+                    try {
+                        Buffer hello = pendingHello.getAndSet(null);
+                        if (hello == null) {
+                            LOGGER.debug("Relay client left during the backend dial to %s — closing the backend leg",
+                                    target);
+                            closeQuietly(backend);
+                        } else {
+                            establish(client, backend, hello, target, kind, sniLabel);
+                        }
+                    } finally {
+                        dialPhase.complete();
                     }
-                    dialPhase.complete();
                 })
                 .onFailure(failure -> {
-                    LOGGER.debug(failure, "Relay backend dial to %s failed: %s", target, failure.getMessage());
-                    pendingHello.set(null);
-                    closeQuietly(client);
-                    dialPhase.complete();
+                    try {
+                        LOGGER.debug(failure, "Relay backend dial to %s failed: %s", target, failure.getMessage());
+                        pendingHello.set(null);
+                        closeQuietly(client);
+                    } finally {
+                        dialPhase.complete();
+                    }
                 });
         return dialPhase.future();
     }
 
+    /**
+     * Starts the session over both legs. A session that fails to start — its hand-over, its wiring or its
+     * replay throws — is closed at once: both legs are closed and a relayed-peer entry already registered
+     * is released, so nothing outlives the failed start.
+     */
     private void establish(NetSocket client, NetSocket backend, Buffer clientHello, RelayTarget target,
             RelayKind kind, String sniLabel) {
-        Runnable release = () -> {
-        };
+        @Nullable RelaySession session = null;
+        try {
+            Runnable release = kind == RelayKind.PASSTHROUGH ? () -> {
+            } : handOver(client, backend);
+            session = new RelaySession(client, backend, release);
+            beforeSessionStart.run();
+            session.start(clientHello);
+        } catch (RuntimeException failure) {
+            LOGGER.debug(failure, "Relay session to %s failed to start, closing both legs: %s", target,
+                    failure.getMessage());
+            if (session != null) {
+                session.closeBoth();
+            } else {
+                closeQuietly(client);
+                closeQuietly(backend);
+            }
+            return;
+        }
         if (kind == RelayKind.PASSTHROUGH) {
             LOGGER.info(ApiSheriffLogMessages.INFO.PASSTHROUGH_RELAY_ESTABLISHED, sniLabel, target.toString());
         } else {
-            release = handOver(client, backend);
             LOGGER.debug("Terminated relay established to %s", target);
         }
-        new RelaySession(client, backend, release).start(clientHello);
     }
 
     /**

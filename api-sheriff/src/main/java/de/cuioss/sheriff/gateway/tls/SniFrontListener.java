@@ -15,8 +15,11 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.time.Duration;
 import java.util.EnumMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -116,7 +119,11 @@ import org.jspecify.annotations.Nullable;
  * connections), held by one source at the same time. A connection accepted while its source already
  * holds its full share is closed at once, like one beyond the cap, so a single source filling its
  * share leaves three quarters of the cap to everybody else. The source is the TCP peer address of the
- * accepted socket; every connection whose peer address is unavailable shares one fallback source.</li>
+ * accepted socket: an IPv4 peer is counted by its address, an IPv6 peer by the /64 prefix of its
+ * address — the smallest prefix assigned to one end-site subnet, so one host cannot multiply its share
+ * by spreading its connections over the addresses of its own /64 — and an IPv4-mapped IPv6 peer by the
+ * IPv4 address it carries, the same source as that peer reaching the front over IPv4. Every connection
+ * whose peer address is unavailable shares one fallback source.</li>
  * <li><em>Per-target dial budget</em> — {@link #MAX_DIALS_PER_TARGET}, a fixed eighth of the cap (128
  * connections) dialling one passthrough target at the same time. A passthrough match claims one dial
  * slot of its target at the route decision and returns it, together with its slots of the cap and of
@@ -143,7 +150,9 @@ import org.jspecify.annotations.Nullable;
  * {@link TlsEdgeProducer} wires to the {@code sheriff_front_connections_refused_total{reason}} counter,
  * and is logged as {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} at most once per
  * {@link #SATURATION_WARN_INTERVAL} per {@link Refusal reason}; every further refusal inside that
- * window is a {@code DEBUG} diagnostic. Neither names the peer address or any byte received.
+ * window is a {@code DEBUG} diagnostic. Neither names the peer address or any byte received. The
+ * refusal is recorded before the connection is closed, so the close a client observes follows the
+ * record; when logging or recording the refusal throws, the connection is closed all the same.
  * <p>
  * <strong>Why the share keys on the TCP peer address.</strong> The edge's {@code SourceKeys} resolves a
  * source from an HTTP request — a trusted forwarder's report and the {@code Host} header — and neither
@@ -158,12 +167,16 @@ import org.jspecify.annotations.Nullable;
  * {@link TlsEdgeProducer}); when passthrough is unconfigured the front is never created, so the
  * default single-listener topology is unchanged.
  * <p>
- * <strong>Thread safety.</strong> Four states are shared across the front's event loops. The
- * undecided-connection count is claimed with an atomic increment, rolled back with an atomic decrement
- * when the claim overshoots the cap, and returned with an atomic decrement. The per-source counts are
+ * <strong>Thread safety.</strong> Four states are shared across the front's event loops. An accepted
+ * connection claims its source's slot first and the cap's slot second. The per-source counts are
  * claimed and returned inside {@link ConcurrentHashMap#compute} on the source key, which is atomic per
  * key and removes a source whose count reaches zero, so the map never holds more entries than there
- * are held slots; a share refusal rolls the already-claimed global slot back. The per-target dial
+ * are held slots. The undecided-connection count is then claimed with a compare-and-set update that
+ * increments it only while it is below the cap, so it never holds a value above the cap — not even for
+ * an instant a concurrent accept could observe — and is returned with an atomic decrement. A full cap
+ * returns the source's slot just claimed. A connection refused for its source's share therefore never
+ * touched the cap, and one refused for the cap holds no share: every refusal names the bound that
+ * refused it. The per-target dial
  * counts are claimed and returned the same way, inside {@link ConcurrentHashMap#compute} on the target
  * key, so no read-then-write window lets two dials take the budget's last slot. Every slot of an
  * admitted connection is returned together, exactly once. The time of the last {@code WARN} per reason is
@@ -246,6 +259,12 @@ public final class SniFrontListener {
      * Package-private so a test can assert the key {@link #sourceOf} falls back to.
      */
     static final String UNKNOWN_SOURCE = "<unknown-source>";
+
+    /** How many leading bytes of an IPv6 peer address its source is keyed on: the /64 prefix. */
+    private static final int IPV6_SOURCE_PREFIX_BYTES = 8;
+
+    /** Appended to the hex-encoded /64 prefix, so an IPv6 source key never equals an IPv4 one. */
+    private static final String IPV6_SOURCE_SUFFIX = "/64";
 
     /** The units an idle timeout is set in, finest first; see {@link #applyIdleTimeout}. */
     private static final List<TimeUnit> IDLE_TIMEOUT_UNITS = List.of(TimeUnit.MILLISECONDS, TimeUnit.SECONDS,
@@ -458,20 +477,17 @@ public final class SniFrontListener {
     }
 
     /**
-     * Claims one slot of the cap and one of {@code source}'s share. The global slot is claimed with one
-     * atomic increment and rolled back with one atomic decrement on overshoot, so concurrent accepts on
-     * different event loops can never push the count past the cap. The source's slot is claimed inside
-     * {@link ConcurrentHashMap#compute}, atomic per key; when the share is full, the global slot already
-     * claimed is rolled back, so a refused connection holds neither.
+     * Claims one slot of {@code source}'s share and then one of the cap. The source's slot is claimed
+     * inside {@link ConcurrentHashMap#compute}, atomic per key. The cap's slot is claimed with a
+     * compare-and-set update that increments the count only while it is below the cap, so concurrent
+     * accepts on different event loops never store — and so never observe — a count above the cap. When
+     * the cap is full, the source's slot just claimed is returned, so a refused connection holds neither,
+     * and the refusal names the bound that refused it.
      *
      * @param source the source the connection is counted under
      * @return {@code null} when both slots were claimed, otherwise the reason neither is held
      */
     private @Nullable Refusal claimSlot(String source) {
-        if (undecidedConnections.incrementAndGet() > maxUndecidedConnections) {
-            undecidedConnections.decrementAndGet();
-            return Refusal.CAP;
-        }
         AtomicBoolean claimed = new AtomicBoolean();
         undecidedPerSource.compute(source, (key, held) -> {
             int count = held == null ? 0 : held;
@@ -482,34 +498,61 @@ public final class SniFrontListener {
             return count + 1;
         });
         if (!claimed.get()) {
-            undecidedConnections.decrementAndGet();
             return Refusal.SOURCE_SHARE;
         }
+        int before = undecidedConnections.getAndUpdate(held -> held < maxUndecidedConnections ? held + 1 : held);
+        if (before >= maxUndecidedConnections) {
+            releaseShare(source);
+            return Refusal.CAP;
+        }
         return null;
+    }
+
+    /**
+     * Returns one slot of {@code source}'s share inside {@link ConcurrentHashMap#computeIfPresent}, which
+     * removes the source once it holds no slot.
+     */
+    private void releaseShare(String source) {
+        undecidedPerSource.computeIfPresent(source, (key, held) -> held <= 1 ? null : held - 1);
+    }
+
+    /**
+     * Test seam: how many sources hold at least one slot of their share right now — the number of entries
+     * of the per-source map, which drops a source once it holds no slot. Reading it changes nothing.
+     *
+     * @return the number of sources currently holding a slot
+     */
+    int sourcesHoldingSlots() {
+        return undecidedPerSource.size();
     }
 
     /**
      * Refuses a connection: logs the refusal — at {@code WARN} for the first refusal of its reason in a
      * warn window, at {@code DEBUG} for every further one, neither line naming the peer address or any
      * byte received — reports it to the recorder, and only then closes the connection without reading
-     * from it any further, so the close a client observes always follows the refusal's record.
+     * from it any further, so the close a client observes always follows the refusal's record. The close
+     * runs in a {@code finally}: a recorder or a log handler that throws still leaves the connection
+     * closed.
      */
     private void refuse(NetSocket socket, Refusal refusal) {
-        socket.pause();
-        String bound = Integer.toString(switch (refusal) {
-            case CAP -> maxUndecidedConnections;
-            case SOURCE_SHARE -> maxUndecidedPerSource;
-            case DIAL_BUDGET -> maxDialsPerTarget;
-        });
-        if (warnDue(refusal)) {
-            LOGGER.warn(ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED, refusal.token(), bound,
-                    Long.toString(warnInterval.toSeconds()));
-        } else {
-            LOGGER.debug("Front connection refused at accept (%s): the bound of %s undecided connections is full",
-                    refusal.token(), bound);
+        try {
+            socket.pause();
+            String bound = Integer.toString(switch (refusal) {
+                case CAP -> maxUndecidedConnections;
+                case SOURCE_SHARE -> maxUndecidedPerSource;
+                case DIAL_BUDGET -> maxDialsPerTarget;
+            });
+            if (warnDue(refusal)) {
+                LOGGER.warn(ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED, refusal.token(), bound,
+                        Long.toString(warnInterval.toSeconds()));
+            } else {
+                LOGGER.debug("Front connection refused at accept (%s): the bound of %s undecided connections is full",
+                        refusal.token(), bound);
+            }
+            refusalRecorder.accept(refusal);
+        } finally {
+            closeQuietly(socket);
         }
-        refusalRecorder.accept(refusal);
-        closeQuietly(socket);
     }
 
     /**
@@ -526,8 +569,9 @@ public final class SniFrontListener {
     }
 
     /**
-     * The source a connection is counted under in production: its TCP peer address — the port is not
-     * part of it — or the shared fallback source when the address is unavailable.
+     * The source a connection is counted under in production: its TCP peer address, keyed by
+     * {@link #sourceKeyOf} — the port is not part of it — or the shared fallback source when the address
+     * is unavailable.
      *
      * @param socket the accepted connection
      * @return the connection's source key
@@ -535,7 +579,34 @@ public final class SniFrontListener {
     static String sourceOf(NetSocket socket) {
         SocketAddress peer = socket.remoteAddress();
         String address = peer == null ? null : peer.hostAddress();
-        return address == null || address.isEmpty() ? UNKNOWN_SOURCE : address;
+        return address == null || address.isEmpty() ? UNKNOWN_SOURCE : sourceKeyOf(address);
+    }
+
+    /**
+     * The source key of a peer address literal: an IPv4 address is its own key; an IPv6 address is keyed
+     * by its /64 prefix, so every address of one end-site subnet is one source; an IPv4-mapped IPv6
+     * address is keyed as the IPv4 address it carries. The literal is parsed, never resolved — no name
+     * lookup happens — and a zone index ({@code %scope}) is not part of the key. A literal that does not
+     * parse as an IP address is its own key.
+     *
+     * @param address the peer's address literal, as the transport reports it
+     * @return the source key the address is counted under
+     */
+    static String sourceKeyOf(String address) {
+        if (address.indexOf(':') < 0) {
+            return address;
+        }
+        int zone = address.indexOf('%');
+        InetAddress parsed;
+        try {
+            parsed = InetAddress.ofLiteral(zone < 0 ? address : address.substring(0, zone));
+        } catch (IllegalArgumentException _) {
+            return address;
+        }
+        if (parsed instanceof Inet4Address mapped) {
+            return mapped.getHostAddress();
+        }
+        return HexFormat.of().formatHex(parsed.getAddress(), 0, IPV6_SOURCE_PREFIX_BYTES) + IPV6_SOURCE_SUFFIX;
     }
 
     private static void closeQuietly(NetSocket socket) {
@@ -716,7 +787,7 @@ public final class SniFrontListener {
          * it holds no slot.
          */
         private void releaseSlot() {
-            undecidedPerSource.computeIfPresent(source, (key, held) -> held <= 1 ? null : held - 1);
+            releaseShare(source);
             undecidedConnections.decrementAndGet();
         }
 
