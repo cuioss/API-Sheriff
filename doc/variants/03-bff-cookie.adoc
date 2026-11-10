@@ -198,8 +198,16 @@ link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide])
   link:02-bff-session.adoc[session-based variant]: the session cookie and the activity cookie are
   expired first, then the browser is redirected to the IdP's end-session endpoint with a
   session-bound `state` (carried in the short-lived logout cookie, see
-  link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`]). The gateway revokes no
-  token at the IdP on logout.
+  link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`]). Before that redirect the
+  gateway revokes at the IdP (RFC 7009) the refresh token sealed in the cookie the logout request
+  presents; a failure never stops the logout, and the first one per runtime is reported as
+  `ApiSheriff-147`. The access token is not revoked and stays valid at a resource server until it
+  expires; a session without a refresh token, or an IdP without a `revocation_endpoint`, gets no
+  revocation request
+  (link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
+  Once the revocation succeeded, a copy of the logged-out cookie stops working at its next
+  transparent refresh, which the revoked refresh token fails; until then it still carries a usable
+  access token.
 * *Back-channel is disabled.* With no server-side session there is nothing a logout token could
   destroy, so in `mode: cookie` `backchannel_path` answers `404`. An IdP-side session termination
   takes effect at the next transparent refresh, when the revoked refresh token fails. Until then,
@@ -208,6 +216,9 @@ link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide])
   the browser logs out still answers with a re-sealed cookie; if it arrives after the logout
   response, the browser again holds a valid session, until `ttl_seconds` at the latest
   (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
+  The revocation of the presented refresh token shrinks that window but does not close it: a cookie
+  re-sealed with the revoked token ends at its next transparent refresh, but a refresh whose
+  rotation already ran, or a widening, seals a refresh token the logout never saw.
 
 Mitigate with a short `ttl_seconds` and short access-token lifetimes; where a logout has to be final
 at once, choose the link:02-bff-session.adoc[session-based variant].
@@ -284,7 +295,7 @@ link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration refer
 | State | Stateless after login -- the sealed cookie carries the session; the login and widening legs need affinity.
 | Token custody | Tokens leave the server only sealed in an `HttpOnly` cookie; script cannot read them, but XSS on the page can still drive requests -- hence the fixed CSRF defence and short token lifetimes.
 | Shared material | The sealing-key file and the two signing-key files (with a client secret: the secret and the proof-key file).
-| Revocation | Not immediate: no back-channel logout; an ended IdP session takes effect at the next refresh.
+| Revocation | Not immediate: no back-channel logout; an ended IdP session takes effect at the next refresh. RP-initiated logout revokes the presented refresh token at the IdP, never the access token, so a retained cookie ends at its next refresh.
 | OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
 |===
 

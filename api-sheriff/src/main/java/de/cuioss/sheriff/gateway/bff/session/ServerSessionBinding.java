@@ -23,7 +23,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -48,7 +47,8 @@ import org.jspecify.annotations.Nullable;
  *       {@code Max-Age} is the session's remaining absolute lifetime, and the previous cookie value
  *       resolves nothing from then on;</li>
  *   <li>{@link #recordAccess} moves the session's last access in the store and returns no cookie;</li>
- *   <li>{@link #destroy} is {@code destroyById}.</li>
+ *   <li>{@link #destroy} is {@code destroyById} and returns the record the store removed, so the
+ *       caller sees the token material the session held when it ended.</li>
  * </ul>
  * The store's O(1) secondary indexes back the IdP-driven destruction, so this binding reports
  * {@link IdpDestruction#SUPPORTED}. Those indexes are keyed on the session id, so a back-channel
@@ -155,10 +155,19 @@ public final class ServerSessionBinding implements SessionBinding {
         return List.of();
     }
 
+    /**
+     * Destroys the session through the store's {@code destroyById} and returns the record the store
+     * removed — the one it held at that moment, not {@code session}. A refresh that replaced the record
+     * after the caller resolved it is therefore reflected in the result, including its rotated refresh
+     * token.
+     *
+     * @param session the session to destroy; only its session id is read
+     * @return the record the store removed; empty when the store no longer held the session
+     */
     @Override
-    public void destroy(SessionRecord session) {
+    public Optional<SessionRecord> destroy(SessionRecord session) {
         Objects.requireNonNull(session, SESSION_PARAMETER);
-        sessionStore.destroyById(session.sessionId());
+        return sessionStore.destroyById(session.sessionId());
     }
 
     @Override

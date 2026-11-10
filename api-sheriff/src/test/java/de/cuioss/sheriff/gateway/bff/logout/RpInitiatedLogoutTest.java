@@ -19,20 +19,26 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.LogRecord;
 
-
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.EndSessionEndpointSource;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.LogoutRedirect;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.LogoutReturn;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.TokenRevocation;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
+import de.cuioss.test.generator.Generators;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -40,6 +46,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -50,13 +57,21 @@ import org.junit.jupiter.params.provider.ValueSource;
  * open-redirect defence and the constant-time {@code state} verification are the genuine engine code
  * paths — not stubs.
  * <p>
- * Covered: the initiate leg (best-effort revocation, engine end-session redirect carrying
+ * Covered: the initiate leg (the token-revocation seam, handed the logged-out session once and before
+ * the end-session redirect is built, engine end-session redirect carrying
  * {@code id_token_hint}/{@code post_logout_redirect_uri}/{@code state}, and the single-use
- * {@code __Host-sheriff-logout} cookie), the logout-state cookie round-trip through
- * {@link RpInitiatedLogout#completeReturn}, and the open-redirect rejection of an unregistered
+ * {@code __Host-sheriff-logout} cookie), a failing seam reported as the latched {@code ApiSheriff-147}
+ * {@code WARN} without stopping the logout (a cause chain that loops back on itself included), the
+ * logout-state cookie round-trip through
+ * {@link RpInitiatedLogout#completeReturn}, the open-redirect rejection of an unregistered
  * {@code post_logout_redirect_uri}, and the cases in which no end-session redirect is built at all.
+ * <p>
+ * The log handler captures from {@code DEBUG} upwards ({@link SheriffDebugCapture}), so a case that
+ * states what a failed revocation does <em>not</em> write examines the {@code DEBUG} line as well.
  */
-@EnableTestLogger
+@EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
+@ExtendWith(SheriffDebugCapture.class)
+@EnableGeneratorController
 class RpInitiatedLogoutTest {
 
     private static final String END_SESSION = "https://idp.example.com/protocol/openid-connect/logout";
@@ -67,26 +82,34 @@ class RpInitiatedLogoutTest {
     private static final String RAW_ID_TOKEN = "raw-id-token-hint";
     /** A provider that publishes {@link #END_SESSION} as its end-session endpoint. */
     private static final EndSessionEndpointSource PUBLISHED = () -> Optional.of(END_SESSION);
+    /** The text of the DEBUG line every failed revocation leaves, the first one included. */
+    private static final String REVOCATION_FAILED_DEBUG = "Refresh-token revocation failed during RP-initiated logout";
+    /** The part of the DEBUG line only a repeated failure leaves. */
+    private static final String REVOCATION_FAILED_AGAIN_DEBUG = "already reported once";
 
-    private AtomicReference<SessionRecord> revoked;
+    private List<SessionRecord> revocations;
     private EndSessionFlow endSessionFlow;
     private RpInitiatedLogout logout;
+    private String refreshToken;
     private SessionRecord session;
 
     @BeforeEach
     void setUp() {
-        revoked = new AtomicReference<>();
-        TokenRevocation revocation = revoked::set;
+        revocations = new CopyOnWriteArrayList<>();
+        TokenRevocation revocation = revocations::add;
         endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(REGISTERED_RETURN)));
         logout = new RpInitiatedLogout(endSessionFlow, revocation, PUBLISHED, REGISTERED_RETURN, FINAL_REDIRECT,
                 STATE_TTL);
+        refreshToken = Generators.letterStrings(24, 32).next();
         session = sessionWithIdToken(RAW_ID_TOKEN);
     }
 
-    private static SessionRecord sessionWithIdToken(String idToken) {
+    /** A session holding {@code idToken} and the case's refresh token. */
+    private SessionRecord sessionWithIdToken(String idToken) {
         return SessionRecord.builder()
                 .sessionId(SessionRecord.newSessionId())
                 .accessToken("mediated-access-token")
+                .refreshToken(refreshToken)
                 .idToken(idToken)
                 .sub("user-sub-1")
                 .expiresAt(NOW.plus(Duration.ofHours(8)))
@@ -95,13 +118,49 @@ class RpInitiatedLogoutTest {
 
     /** A logout over the real engine flow whose end-session endpoint comes from {@code source}. */
     private RpInitiatedLogout logoutOver(EndSessionEndpointSource source) {
-        return new RpInitiatedLogout(endSessionFlow, revoked::set, source, REGISTERED_RETURN, FINAL_REDIRECT,
+        return logoutRevokingWith(revocations::add, source);
+    }
+
+    /** A logout over the real engine flow whose revocation seam is {@code revocation}. */
+    private RpInitiatedLogout logoutRevokingWith(TokenRevocation revocation, EndSessionEndpointSource source) {
+        return new RpInitiatedLogout(endSessionFlow, revocation, source, REGISTERED_RETURN, FINAL_REDIRECT,
                 STATE_TTL);
+    }
+
+    /** A revocation seam that fails the way an unreachable or refusing revocation endpoint does. */
+    private static TokenRevocation failingRevocation(AtomicInteger attempts) {
+        return ended -> {
+            attempts.incrementAndGet();
+            throw new IllegalStateException("revocation endpoint answered 503");
+        };
     }
 
     private static int missingEndpointWarnings() {
         return TestLoggerFactory.getTestHandler()
                 .resolveLogMessagesContaining(TestLogLevel.WARN, "ApiSheriff-135").size();
+    }
+
+    private static List<LogRecord> revocationFailureWarnings() {
+        return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
+                BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.resolveIdentifierString());
+    }
+
+    private static List<LogRecord> debugLinesContaining(String part) {
+        return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, part);
+    }
+
+    /**
+     * Asserts that no captured record of any level — its message or the message of a throwable it
+     * chains — carries {@code value}, after proving that a {@code DEBUG} line of {@link RpInitiatedLogout}
+     * is captured at all.
+     */
+    private static void assertNoRecordCarries(String value, String what) {
+        SheriffDebugCapture.assertDebugIsCaptured(RpInitiatedLogout.class);
+        List<LogRecord> captured = SheriffDebugCapture.capturedRecords();
+        assertFalse(captured.isEmpty(), "no record was captured, so the absence of the " + what + " proves nothing");
+        assertEquals(List.of(), captured.stream().map(SheriffDebugCapture::rendered)
+                        .filter(line -> line.contains(value)).toList(),
+                "no captured record carries the " + what);
     }
 
     private static String cookieValue(String setCookieHeader) {
@@ -152,26 +211,155 @@ class RpInitiatedLogoutTest {
         }
 
         @Test
-        @DisplayName("Should revoke the mediated tokens best-effort during initiation")
+        @DisplayName("Should hand the logged-out session to the revocation seam once, before the end-session redirect is built")
         void shouldRevokeMediatedTokens() {
-            logout.initiate(session).orElseThrow();
+            List<String> steps = new CopyOnWriteArrayList<>();
+            RpInitiatedLogout ordered = logoutRevokingWith(ended -> {
+                revocations.add(ended);
+                steps.add("revoke");
+            }, () -> {
+                steps.add("resolve end-session endpoint");
+                return Optional.of(END_SESSION);
+            });
 
-            assertEquals(session, revoked.get(), "the session's tokens are handed to the revocation seam");
+            LogoutRedirect redirect = ordered.initiate(session).orElseThrow();
+
+            assertAll("the revocation seam of one initiated logout",
+                    () -> assertEquals(List.of(session), revocations,
+                            "the seam receives the logged-out session, exactly once"),
+                    () -> assertEquals(List.of("revoke", "resolve end-session endpoint"), steps,
+                            "the revocation runs before the end-session redirect is built"),
+                    () -> assertTrue(redirect.location().startsWith(END_SESSION), "and the redirect is built"),
+                    () -> assertEquals(List.of(), revocationFailureWarnings(), "a revocation that succeeds is not reported"));
         }
 
         @Test
-        @DisplayName("Should proceed with logout even when token revocation fails")
+        @DisplayName("Should still build the end-session redirect when the revocation seam throws")
         void shouldProceedWhenRevocationFails() {
-            TokenRevocation failing = ignored -> {
-                throw new IllegalStateException("revocation endpoint unreachable");
-            };
-            RpInitiatedLogout resilient = new RpInitiatedLogout(endSessionFlow, failing, PUBLISHED,
-                    REGISTERED_RETURN, FINAL_REDIRECT, STATE_TTL);
+            AtomicInteger attempts = new AtomicInteger();
+            RpInitiatedLogout resilient = logoutRevokingWith(failingRevocation(attempts), PUBLISHED);
 
             LogoutRedirect redirect = resilient.initiate(session).orElseThrow();
 
             assertTrue(redirect.location().startsWith(END_SESSION),
                     "a revocation failure never strands the browser half-logged-out");
+            assertEquals(1, attempts.get(), "the seam was called");
+        }
+
+        /**
+         * A caller can repeat a logout at will, so the volume of {@code WARN} lines it produces must not
+         * be its to set (ADR-0051). The first failure is the {@code ApiSheriff-147} {@code WARN}, which
+         * carries no value and no throwable; every failure leaves a {@code DEBUG} line naming the
+         * exception type — never the throwable itself — and a repeat leaves that line only.
+         */
+        @Test
+        @DisplayName("Should report a failed revocation once as ApiSheriff-147 over two failing logouts, the second at DEBUG only")
+        void shouldReportAFailedRevocationOnceAndRepeatsAtDebug() {
+            AtomicInteger attempts = new AtomicInteger();
+            RpInitiatedLogout resilient = logoutRevokingWith(failingRevocation(attempts), PUBLISHED);
+
+            Optional<LogoutRedirect> first = resilient.initiate(session);
+            int warningsAfterFirst = revocationFailureWarnings().size();
+            int repeatLinesAfterFirst = debugLinesContaining(REVOCATION_FAILED_AGAIN_DEBUG).size();
+            Optional<LogoutRedirect> second = resilient.initiate(session);
+
+            List<LogRecord> warnings = revocationFailureWarnings();
+            List<LogRecord> debugLines = debugLinesContaining(REVOCATION_FAILED_DEBUG);
+            assertAll("two logouts whose revocation fails",
+                    () -> assertTrue(first.orElseThrow().location().startsWith(END_SESSION),
+                            "the first logout still redirects"),
+                    () -> assertTrue(second.orElseThrow().location().startsWith(END_SESSION),
+                            "and so does the second"),
+                    () -> assertEquals(2, attempts.get(), "the seam was called once per logout"),
+                    () -> assertEquals(1, warningsAfterFirst, "the first failure is the WARN"),
+                    () -> assertEquals(0, repeatLinesAfterFirst, "the first failure is not reported as a repeat"),
+                    () -> assertEquals(1, warnings.size(), "the WARN is recorded exactly once over two failures"),
+                    () -> assertNull(warnings.getFirst().getThrown(),
+                            "the WARN carries no throwable, whose message may hold the provider's answer"),
+                    () -> assertEquals(2, debugLines.size(), "every failure leaves a DEBUG line"),
+                    () -> assertTrue(debugLines.stream()
+                                    .allMatch(line -> line.getMessage().contains(IllegalStateException.class.getName())),
+                            "each DEBUG line names the type of the seam's exception"),
+                    () -> assertTrue(debugLines.stream().allMatch(line -> line.getThrown() == null),
+                            "no DEBUG line carries the throwable, whose message may hold the token or the provider's answer"),
+                    () -> assertEquals(1, debugLinesContaining(REVOCATION_FAILED_AGAIN_DEBUG).size(),
+                            "the second failure is a DEBUG line only"));
+            assertNoRecordCarries(refreshToken, "refresh token");
+        }
+
+        /**
+         * A seam may put the refresh token itself into the exception it raises — in its message, or in
+         * a cause's. The failure is still reported, but only by the types of its cause chain: no record
+         * at any level, {@code DEBUG} included, carries the token. The seam here does carry the token,
+         * which the case proves before asserting its absence from the log, so the assertion can fail.
+         */
+        @Test
+        @DisplayName("Should keep a refresh token the failing seam carries in its exception chain out of every log record")
+        void shouldKeepATokenCarryingRevocationFailureOutOfTheLog() {
+            AtomicReference<RuntimeException> raised = new AtomicReference<>();
+            RpInitiatedLogout resilient = logoutRevokingWith(ended -> {
+                IllegalStateException failure = new IllegalStateException(
+                        "revocation of refresh token " + ended.refreshToken() + " refused",
+                        new IllegalArgumentException("token=" + ended.refreshToken()));
+                raised.set(failure);
+                throw failure;
+            }, PUBLISHED);
+
+            LogoutRedirect redirect = resilient.initiate(session).orElseThrow();
+
+            RuntimeException failure = raised.get();
+            List<LogRecord> debugLines = debugLinesContaining(REVOCATION_FAILED_DEBUG);
+            assertAll("a failed revocation whose exception chain carries the refresh token",
+                    () -> assertTrue(redirect.location().startsWith(END_SESSION), "the logout still redirects"),
+                    () -> assertNotNull(failure, "the seam raised"),
+                    () -> assertTrue(failure.getMessage().contains(refreshToken),
+                            "the seam's own message carries the refresh token"),
+                    () -> assertTrue(failure.getCause().getMessage().contains(refreshToken),
+                            "and so does its cause's"),
+                    () -> assertEquals(1, revocationFailureWarnings().size(), "the failure is reported"),
+                    () -> assertEquals(1, debugLines.size(), "and leaves one DEBUG line"),
+                    () -> assertTrue(debugLines.getFirst().getMessage().contains(IllegalStateException.class.getName()
+                                    + " caused by " + IllegalArgumentException.class.getName()),
+                            "the DEBUG line names every exception type of the chain, outermost first"),
+                    () -> assertNull(debugLines.getFirst().getThrown(), "the DEBUG line carries no throwable"));
+            assertNoRecordCarries(refreshToken, "refresh token");
+        }
+
+        /**
+         * {@link Throwable#initCause} refuses only self-causation, so a seam can raise an exception whose
+         * cause chain loops back on itself through a second exception. Naming the chain's types must stop
+         * at the first repeat: without that guard the walk never ends, which the bounded timeout turns
+         * into a failure instead of a hung build.
+         */
+        @Test
+        @DisplayName("Should name each type of a cause chain that loops back on itself once and complete the logout")
+        void shouldCutACauseChainThatLoopsBackOnItself() {
+            IllegalStateException outer = new IllegalStateException("revocation refused");
+            IllegalArgumentException inner = new IllegalArgumentException("refusal detail");
+            outer.initCause(inner);
+            inner.initCause(outer);
+            AtomicInteger attempts = new AtomicInteger();
+            RpInitiatedLogout resilient = logoutRevokingWith(ended -> {
+                attempts.incrementAndGet();
+                throw outer;
+            }, PUBLISHED);
+
+            Optional<LogoutRedirect> redirect = assertTimeoutPreemptively(Duration.ofSeconds(10),
+                    () -> resilient.initiate(session), "naming the types of a looping cause chain terminates");
+
+            List<LogRecord> debugLines = debugLinesContaining(REVOCATION_FAILED_DEBUG);
+            assertAll("a failed revocation whose cause chain loops back on itself",
+                    () -> assertSame(outer, inner.getCause(), "precondition: the cause chain loops back on itself"),
+                    () -> assertEquals(1, attempts.get(), "the seam was called and threw"),
+                    () -> assertTrue(redirect.orElseThrow().location().startsWith(END_SESSION),
+                            "the logout still redirects"),
+                    () -> assertEquals(1, revocationFailureWarnings().size(), "the failure is reported"),
+                    () -> assertEquals(1, debugLines.size(), "and leaves one DEBUG line"),
+                    () -> assertTrue(debugLines.getFirst().getMessage().contains("(" + IllegalStateException.class.getName()
+                                    + " caused by " + IllegalArgumentException.class.getName() + ")"),
+                            "the DEBUG line names each type of the loop once, outermost first: "
+                                    + debugLines.getFirst().getMessage()),
+                    () -> assertNull(debugLines.getFirst().getThrown(), "the DEBUG line carries no throwable"));
         }
     }
 
@@ -182,7 +370,7 @@ class RpInitiatedLogoutTest {
         @Test
         @DisplayName("Should reject an unregistered post_logout_redirect_uri via the engine validator")
         void shouldRejectUnregisteredReturnUri() {
-            RpInitiatedLogout evil = new RpInitiatedLogout(endSessionFlow, revoked::set, PUBLISHED,
+            RpInitiatedLogout evil = new RpInitiatedLogout(endSessionFlow, revocations::add, PUBLISHED,
                     "https://evil.example.com/steal", FINAL_REDIRECT, STATE_TTL);
 
             assertThrows(ClientProtocolException.class, () -> evil.initiate(session),
@@ -266,16 +454,16 @@ class RpInitiatedLogoutTest {
         @Test
         @DisplayName("Should reject blank required constructor settings")
         void shouldRejectBlankSettings() {
-            assertThrows(IllegalArgumentException.class, () -> new RpInitiatedLogout(endSessionFlow, revoked::set,
+            assertThrows(IllegalArgumentException.class, () -> new RpInitiatedLogout(endSessionFlow, revocations::add,
                     PUBLISHED, "  ", FINAL_REDIRECT, STATE_TTL));
-            assertThrows(IllegalArgumentException.class, () -> new RpInitiatedLogout(endSessionFlow, revoked::set,
+            assertThrows(IllegalArgumentException.class, () -> new RpInitiatedLogout(endSessionFlow, revocations::add,
                     PUBLISHED, REGISTERED_RETURN, "  ", STATE_TTL));
         }
 
         @Test
         @DisplayName("Should reject a missing end-session endpoint source")
         void shouldRejectMissingEndpointSource() {
-            assertThrows(NullPointerException.class, () -> new RpInitiatedLogout(endSessionFlow, revoked::set,
+            assertThrows(NullPointerException.class, () -> new RpInitiatedLogout(endSessionFlow, revocations::add,
                     null, REGISTERED_RETURN, FINAL_REDIRECT, STATE_TTL));
         }
 
@@ -297,7 +485,7 @@ class RpInitiatedLogoutTest {
      * A logout the browser cannot be sent to the identity provider for yields no redirect and never
      * raises, so the caller's local logout stands on its own. Every such case is run beside the provider
      * that does publish a usable endpoint ({@code Initiation}), so an implementation that never
-     * redirected would fail there.
+     * redirected would fail there. The revocation seam is called in every one of them, once.
      */
     @Nested
     @DisplayName("No usable end-session endpoint")
@@ -312,6 +500,7 @@ class RpInitiatedLogoutTest {
 
             assertTrue(local.initiate(session).isEmpty(), "no redirect is built on " + published);
             assertEquals(1, missingEndpointWarnings());
+            assertEquals(List.of(session), revocations, "the revocation seam is still called, once");
         }
 
         @Test
@@ -320,8 +509,24 @@ class RpInitiatedLogoutTest {
             RpInitiatedLogout local = logoutOver(Optional::empty);
 
             assertTrue(local.initiate(session).isEmpty());
-            assertEquals(session, revoked.get(), "the revocation seam is still called");
+            assertEquals(List.of(session), revocations, "the revocation seam is still called, once");
             assertEquals(1, missingEndpointWarnings());
+        }
+
+        @Test
+        @DisplayName("Should report a failed revocation and yield no redirect when the provider publishes no end-session endpoint")
+        void shouldReportAFailedRevocationWithoutEndpoint() {
+            AtomicInteger attempts = new AtomicInteger();
+            RpInitiatedLogout local = logoutRevokingWith(failingRevocation(attempts), Optional::empty);
+
+            Optional<LogoutRedirect> redirect = assertDoesNotThrow(() -> local.initiate(session),
+                    "a failed revocation never turns a local logout into an error");
+
+            assertAll("a failed revocation on a logout that cannot be redirected",
+                    () -> assertTrue(redirect.isEmpty(), "no redirect is built"),
+                    () -> assertEquals(1, attempts.get(), "the seam was called"),
+                    () -> assertEquals(1, revocationFailureWarnings().size(), "the failure is reported"),
+                    () -> assertEquals(1, missingEndpointWarnings(), "beside the missing endpoint"));
         }
 
         @Test
@@ -364,7 +569,7 @@ class RpInitiatedLogoutTest {
 
             assertTrue(logout.initiate(withoutIdToken).isEmpty(),
                     "there is no id_token_hint to send, so the browser is not sent to the provider");
-            assertEquals(withoutIdToken, revoked.get(), "the revocation seam is still called");
+            assertEquals(List.of(withoutIdToken), revocations, "the revocation seam is still called, once");
             assertEquals(0, missingEndpointWarnings());
         }
     }

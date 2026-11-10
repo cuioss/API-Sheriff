@@ -175,11 +175,23 @@ public interface SessionStore {
 
     /**
      * Destroys the session with the given session id (RP-initiated logout) together with its cookie
-     * handle. A no-op when absent.
+     * handle, and hands back the record it removed. A no-op when absent.
+     * <p>
+     * <strong>The returned record is the one stored at the moment of removal</strong> — not one the
+     * caller resolved earlier. The lookup and the removal are one atomic step, so a
+     * {@link #replaceIfPresent} or {@link #replaceAndReissueHandle} that ran after the caller resolved
+     * the session is reflected in the result: a logout that revokes the returned record's refresh token
+     * revokes the token a refresh rotated in, not the one it spent.
+     * <p>
+     * The removal does not test liveness: a record whose lifetime has lapsed but that nothing has
+     * evicted yet is removed and returned like any other.
      *
      * @param sessionId the stable session id
+     * @return the record the store held under {@code sessionId} and has now removed; empty when none
+     *         was held, in which case the store is unchanged
+     * @since 1.0
      */
-    void destroyById(String sessionId);
+    Optional<SessionRecord> destroyById(String sessionId);
 
     /**
      * Destroys every session carrying the given IdP {@code sid} (back-channel logout), O(1) via

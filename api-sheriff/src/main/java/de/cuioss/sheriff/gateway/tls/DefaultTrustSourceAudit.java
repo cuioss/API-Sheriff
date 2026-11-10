@@ -56,11 +56,11 @@ import jakarta.inject.Inject;
  *       anchors and handed to the engine's client configuration as the {@code SSLContext} every one of
  *       those calls dials with, replacing the JVM default anchors on that leg (ADR-0045). With no
  *       profile named, the leg verifies against the JVM default {@code TrustManager}, which this
- *       property governs. Logout is deliberately absent from that list: it builds an
- *       {@code end_session_endpoint} redirect for the browser rather than dialling the IdP, and the
- *       logout flow's token-revocation seam is bound to a no-op in production wiring, so no outbound
- *       call is made for it to trust. The revocation a refresh failure triggers is a different,
- *       real call on the same back-channel (ADR-0046).</li>
+ *       property governs. Logout's {@code end_session_endpoint} redirect is built for the browser and
+ *       dials nothing, but the refresh-token revocation an RP-initiated logout sends before that
+ *       redirect is one of those calls, made through the same engine client and
+ *       {@code SSLContext} (ADR-0080), as is the revocation a refresh failure triggers
+ *       (ADR-0046).</li>
  *   <li>The Quarkus {@code <default>} TLS bucket's trust material governs every leg that resolves
  *       through {@link TlsConfigurationRegistry}.</li>
  * </ul>

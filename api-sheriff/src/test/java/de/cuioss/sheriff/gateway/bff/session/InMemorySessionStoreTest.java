@@ -32,7 +32,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
-
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -153,6 +152,91 @@ class InMemorySessionStoreTest {
             store.destroyById("absent");
             assertEquals(0, store.size());
         }
+
+        @Test
+        @DisplayName("Should hand back the record the store held at destroy-by-id, not the one it was created with")
+        void shouldReturnTheRecordHeldAtDestruction() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            SessionRecord created = session("s1", "sub1", "sid1", FUTURE);
+            create(store, created, T0);
+            SessionRecord rotated = withRefreshToken(created, "refresh-rotated");
+            assertTrue(store.replaceIfPresent(rotated), "precondition: a refresh rotated the stored record");
+
+            Optional<SessionRecord> destroyed = store.destroyById("s1");
+
+            assertAll("destroy-by-id after a rotation",
+                    () -> assertEquals(Optional.of(rotated), destroyed, "the removed record is the rotated one"),
+                    () -> assertEquals("refresh-rotated", destroyed.map(SessionRecord::refreshToken).orElseThrow(),
+                            "it carries the refresh token the rotation stored, not the created one"),
+                    () -> assertTrue(resolve(store, "s1", T0).isEmpty(), "the session no longer resolves"),
+                    () -> assertEquals(0, store.size(), "the session is removed"));
+        }
+
+        @Test
+        @DisplayName("Should hand back the record a handle re-issue stored, and remove the re-issued handle with it")
+        void shouldReturnTheRecordAReissueStored() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            SessionRecord created = session("s1", "sub1", "sid1", FUTURE);
+            create(store, created, T0);
+            SessionRecord widened = withRefreshToken(created, "refresh-widened");
+            assertTrue(store.replaceAndReissueHandle(widened, REISSUED_HANDLE),
+                    "precondition: a widening replaced the record and re-issued the handle");
+
+            Optional<SessionRecord> destroyed = store.destroyById("s1");
+
+            assertAll("destroy-by-id after a re-issue",
+                    () -> assertEquals(Optional.of(widened), destroyed, "the removed record is the re-issued one"),
+                    () -> assertTrue(store.resolve(REISSUED_HANDLE, T0).isEmpty(),
+                            "the re-issued handle resolves nothing"),
+                    () -> assertEquals(0, store.size(), "the session is removed"));
+        }
+
+        @Test
+        @DisplayName("Should hand back nothing and leave the store unchanged when destroying an absent session id")
+        void shouldReturnEmptyWhenDestroyingAnAbsentId() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            SessionRecord other = session("s1", "sub1", "sid1", FUTURE);
+            create(store, other, T0);
+
+            Optional<SessionRecord> destroyed = store.destroyById("absent");
+
+            assertAll("destroy-by-id of an absent id",
+                    () -> assertTrue(destroyed.isEmpty(), "nothing was removed, so nothing is handed back"),
+                    () -> assertEquals(1, store.size(), "the store is unchanged"),
+                    () -> assertEquals(Optional.of(other), resolve(store, "s1", T0), "an unrelated session lives on"));
+        }
+
+        @Test
+        @DisplayName("Should hand back nothing on a second destroy-by-id of the same session")
+        void shouldReturnEmptyOnASecondDestruction() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            SessionRecord created = session("s1", "sub1", "sid1", FUTURE);
+            create(store, created, T0);
+
+            Optional<SessionRecord> first = store.destroyById("s1");
+            Optional<SessionRecord> second = store.destroyById("s1");
+
+            assertEquals(Optional.of(created), first, "precondition: the first destruction removed the session");
+            assertTrue(second.isEmpty(), "the session was already gone, so the second destruction hands back nothing");
+        }
+    }
+
+    /** {@code session} carrying {@code refreshToken} in place of its own, as a refresh's rotation writes it. */
+    private static SessionRecord withRefreshToken(SessionRecord session, String refreshToken) {
+        return SessionRecord.builder()
+                .sessionId(session.sessionId())
+                .accessToken(session.accessToken())
+                .refreshToken(refreshToken)
+                .idToken(session.idToken())
+                .sub(session.sub())
+                .sid(session.sid())
+                .expiresAt(session.expiresAt())
+                .acr(session.acr())
+                .authTime(session.authTime())
+                .sessionNonce(session.sessionNonce())
+                .activeScopes(session.activeScopes())
+                .grantedScopes(session.grantedScopes())
+                .build();
     }
 
     @Nested

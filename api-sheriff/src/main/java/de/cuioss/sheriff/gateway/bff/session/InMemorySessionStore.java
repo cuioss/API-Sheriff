@@ -28,7 +28,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 
-
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
@@ -328,12 +327,25 @@ public final class InMemorySessionStore implements SessionStore {
         return Optional.of(held.session);
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * The record is read and removed under the instance monitor every write takes, so it is exactly
+     * the one the last write stored: the record {@link #create} stored, for a session never updated
+     * since, otherwise the one the last {@link #replaceIfPresent} or {@link #replaceAndReissueHandle}
+     * stored. The end of the session is reported to the {@link SessionEndListener} after the monitor
+     * has been left.
+     */
     @Override
-    public void destroyById(String sessionId) {
+    public Optional<SessionRecord> destroyById(String sessionId) {
         Objects.requireNonNull(sessionId, SESSION_ID_PARAMETER);
-        announcingEnds(() -> {
+        return announcingEnds(() -> {
+            HeldSession held = byId.get(sessionId);
+            if (held == null) {
+                return Optional.empty();
+            }
             endInternal(sessionId);
-            return Boolean.TRUE;
+            return Optional.of(held.session);
         });
     }
 

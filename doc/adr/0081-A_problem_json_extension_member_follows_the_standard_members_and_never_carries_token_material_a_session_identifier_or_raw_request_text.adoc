@@ -1,0 +1,187 @@
+= ADR-0081: A problem+json extension member follows the standard members and never carries token material, a session identifier or raw request text
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: An RFC 9457 extension member reaches a gateway problem document only through the GatewayException extension constructor, is written after the standard members type, title and status in insertion order, never redefines type, title, status, detail or instance (the constructor refuses), holds a JSON-shaped non-null value serialized with RFC 8259 escaping, and is disclosed to the client, so it never carries token material or a session identifier and carries text taken from the request only percent-encoded inside a URL the gateway builds; a rejection without members renders exactly the standard body, and the unrouted 404, the HTML error page, the trailers-only gRPC status and the opaque 500 carry none; the two members in use are missing_scopes and step_up_url on the session route's 403; free-form members per call site, members carrying diagnostic detail, overriding standard members, echoing raw request text and members on the unrouted 404 are rejected
+// tags: error-contract, problem-details, rfc-9457, extension-members, disclosure, bff, scope-enforcement, rejected-alternatives
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+RFC 9457 lets a problem document carry extension members beside its standard members. A client
+reads them, so every member is disclosed.
+
+The gateway's problem document carries members on one rejection today: the `403` of a session route
+that lacks a needed OAuth scope
+(link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
+ADR-0057, link:0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]
+and link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+mention extension members. None of them states the rule a member follows.
+
+This record settles that rule. Where does a member come from? Where does it go in the body? What may
+it hold? Which answers carry none?
+
+=== The decision
+
+*An extension member follows the standard members, has one carrier, and discloses nothing the
+gateway holds in confidence.* The rule has five parts.
+
+. *One carrier.* A member reaches a rendered rejection only through the extension constructor of
+  `GatewayException`. `ErrorResponseWriter` renders the members of that instance and adds none of
+  its own. A reserved path that answers a problem document directly, such as the step-up path's
+  `401` without a live session, answers a fixed body and adds no member either.
+. *After the standard members, in insertion order.* `ErrorResponseWriter.problemBody` writes `type`,
+  `title` and `status` first. It then appends the members in the iteration order of the map the
+  constructor received. The constructor keeps that order. It does not impose one. A call site
+  therefore passes an insertion-ordered map. The one in use passes a `LinkedHashMap`, so its members
+  appear in the order it inserted them. The standard members come from the gateway's event catalogue.
+. *The standard member names are reserved.* The constructor refuses a member named after one of the
+  five RFC 9457 standard members, the set `GatewayException.STANDARD_MEMBERS` holds: `type`, `title`,
+  `status`, `detail` and `instance`. The gateway writes no `detail` and no `instance` itself. The two
+  names stay reserved anyway, so no member can pose as one.
+. *JSON-shaped, non-null values.* A value is a string, a number, a boolean, a collection or a map.
+  The constructor refuses a `null` name or value. It copies the member map and every collection
+  value, so a caller cannot add, remove or replace a member after the rejection is raised. Nor can
+  it add, remove or replace an element of a collection member. The copy is shallow. A map value,
+  and a collection or map held inside a collection, is kept by reference. A caller that kept such
+  an object could still change it. No call site passes one. `GatewayJson` serializes each member
+  name and value with RFC 8259 string escaping.
+. *Disclosed, so confined.* The exception message is for the log only and never reaches the body.
+  A member does reach the client. It therefore never carries token material the gateway holds, or a
+  session identifier. Text taken from the request appears in a member only percent-encoded inside a
+  URL the gateway builds, never raw. That text is whatever the client sent. A secret the client put
+  in its own query therefore returns to it inside `step_up_url`. A client that logs the body logs
+  that secret too.
+
+=== Where no member appears
+
+A rejection without members renders exactly the three standard members. Four answers never carry a
+member, whatever the rejection held:
+
+* *The unrouted `404`.* A rejection that ADR-0073 answers as an unrouted address is rendered as
+  `NO_ROUTE_MATCHED` without members. A member would make it distinguishable from the genuine
+  unrouted answer.
+* *The HTML error page.* The negotiated page renders from the status alone.
+* *The trailers-only gRPC status.* A trailers-only answer has no body to hold a member. Its
+  `grpc-message` carries the category slug (ADR-0059).
+* *The opaque `500`* of an unexpected internal failure.
+
+=== The members in use
+
+[cols="1,2,3", options="header"]
+|===
+| Member | Rejection | Content and source
+
+| `missing_scopes`
+| `403` `SCOPE_MISSING` on a session route
+| A JSON array of the missing OAuth scope names, sorted. Every name comes from the route's
+  boot-configured `neededScopes`, never from a token.
+
+| `step_up_url`
+| The same `403`, only when `oidc.step_up.path` is configured
+| The configured step-up path with the refused request's path and query as its `returnUrl`
+  parameter, percent-encoded with `URLEncoder`. The path is a reserved path on the gateway's own
+  origin.
+|===
+
+`SessionAuthenticationStage` builds both members. A navigation never reaches this `403`: the stage
+redirects it into a widening instead.
+
+== Alternatives rejected
+
+=== Free-form members per call site
+
+Each rejecting stage would build its own map, or write its own problem body, with whatever names and
+values suit it.
+
+Rejected because the reservation and the value checks run in one constructor only. A second writer
+would bypass them. A reviewer would also have to audit every call site for disclosure, instead of
+every use of one constructor.
+
+=== Members that carry diagnostic detail
+
+A member would carry the exception message, the identity provider's answer or the rejected value, so
+a client could see why it was refused.
+
+Rejected because diagnostic detail is internal state and often attacker-chosen text. The log is the
+channel for it (link:../security-threat-model.adoc#gw-12[GW-12]). The category's `type` and
+`title` already tell the client where to look (ADR-0059).
+
+=== Overriding a standard member
+
+A rejection would set its own `title`, or add a `detail` that explains the refusal in words.
+
+Rejected because the standard members are read by three readers that hold no copy: the problem
+document, the error metric and `grpc-message` (ADR-0059). A per-call `title` would split one category
+into many. A `detail` written per call would invite request text into the body. The constructor
+therefore refuses the five standard names outright.
+
+=== Echoing raw request text
+
+A member would carry the refused path or a query value as the client sent it, for example as a plain
+`return_to` string.
+
+Rejected because the body would reflect attacker-chosen text to every client that renders it. Inside
+a URL the gateway builds, percent-encoding keeps that text inert: it is a parameter value of a link
+to the gateway's own reserved path, not free text.
+
+=== Members on the unrouted `404`
+
+A pre-trust rejection answered as the unrouted `404` would keep the members of its true event, so an
+honest client could still recover.
+
+Rejected because ADR-0073 makes that answer identical to the answer for an address no route serves.
+One member on one of them reopens the enumeration ADR-0073 closes. The true event stays visible to
+the operator through the metric and the log, not to the caller.
+
+== Consequences
+
+* *One place to review.* Every member in the gateway is a call of one constructor. A new member is
+  reviewed against this record at that call.
+* *Clients can rely on the order.* The standard members come first and the members follow in a fixed
+  order. A client that reads `type` first never meets a member that shadows it.
+* *Disclosure is a review rule, not a runtime check.* The constructor enforces the reserved names, the
+  non-null values and the copy. It cannot tell token material from any other string. The members in
+  use are safe by construction: one comes from boot configuration, the other is a URL the gateway
+  builds.
+* *A member is public surface.* A client may parse it. Renaming or removing one is a breaking change
+  for that client.
+* *Members do not survive serialization.* The member map is transient, so a `GatewayException`
+  restored from its serialized form carries none. The edge always renders from the live instance.
+
+== Links
+
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/GatewayException.java` -- the one
+  carrier, the reserved names and the copy
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/ErrorResponseWriter.java` -- the
+  body layout (`problemBody`) and the answers that carry no member
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`
+  -- `missing_scopes` and `step_up_url` on the session route's `403`
+* `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/events/GatewayExceptionTest.java` -- the
+  carrier's contract
+* `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStageScopeEnforcementTest.java`
+  -- the two members on the session route's `403`
+* `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRouteTest.java` -- the rendered
+  problem body
+* link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]
+  -- the scope enforcement that raises the `403` carrying both members
+* link:0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059] -- the
+  category, its `type` and `title`, and the three readers of the slug
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+  -- the unrouted `404` that carries no member
+* link:../architecture/observability-and-errors.adoc#_error_contract[Architecture, Error Contract]
+  -- the consolidated status mapping
+* link:../user/bff-session.adoc#scope-enforcement[BFF -- session mode, scope enforcement] -- what a
+  client does with the `403`

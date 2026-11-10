@@ -29,7 +29,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
@@ -77,6 +76,7 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
@@ -139,7 +139,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>Client authentication has two modes, selected once (ADR-0058).</strong> The mode is read
  * through {@link OidcConfig#usesClientSecret()}, and the one {@link ClientAuthentication} instance it
  * yields is shared by every pushed authorization request, the code exchange of a login and of a
- * widening, both refresh legs and RFC 7009 revocation.
+ * widening, both refresh legs and RFC 7009 revocation — on the refresh path and on RP-initiated
+ * logout alike.
  * <ul>
  *   <li><em>Key mode</em> — no {@code oidc.client_secret}, the default. The client-authentication key
  *       is resolved by {@link ClientSigningKey} from {@code oidc.client_authentication.key_file}; an
@@ -250,9 +251,11 @@ import org.jspecify.annotations.Nullable;
  * session terminated while the refresh was in flight, it is revoked, best-effort, through the engine's
  * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
  * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
- * failing request never waits for the revocation endpoint. A fourth outcome carries no session and
- * ends none: the refresh leader could not resolve a session from the request's own cookie a second
- * time. It answers the refresh-failure response <em>without</em> a clearing cookie, because in server
+ * failing request never waits for the revocation endpoint. RP-initiated logout revokes through that
+ * same client independently of this switch, but only a refresh token the session holds: with the
+ * switch off none is retained, so such a logout sends no revocation request. A fourth outcome
+ * carries no session and ends none: the refresh leader could not resolve a session from the request's
+ * own cookie a second time. It answers the refresh-failure response <em>without</em> a clearing cookie, because in server
  * mode that cookie value may just have been re-issued by a step-up while the session lives on.
  * <p>
  * <strong>Idle timeout, in both modes.</strong> {@code oidc.session.idle_timeout_seconds} is resolved
@@ -284,7 +287,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
  * pushed authorization request, the authorization-code exchange, refresh and refresh-token
- * revocation — is the sixth TLS-terminating outbound leg, and it is bound
+ * revocation on the refresh path and on RP-initiated logout — is the sixth TLS-terminating outbound
+ * leg, and it is bound
  * to the global {@code egress_tls} block through its own peer keys: {@code oidc_verify_hostname} is
  * passed to the builder's {@code verifyHostname} on every build, the {@code true} path included, so
  * the leg's effect never depends on token-sheriff's own default ({@code doc/technical_aspects.adoc},
@@ -403,7 +407,7 @@ public class BffRuntimeProducer {
      * @param trustProfileResolver  the single seam mapping a logical {@code egress_tls.oidc_tls_profile}
      *                              name to concrete trust anchors, consulted only on the active path and
      *                              only when a profile is named
-     * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor a best-effort refresh-token
+     * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor a best-effort refresh-path
      *                              revocation is dispatched on, off the request path, and the periodic
      *                              session sweep runs on, off the event loop
      * @param gatewayJson           the serializer the runtime renders its gateway-authored JSON bodies
@@ -640,6 +644,8 @@ public class BffRuntimeProducer {
         // SessionAuthenticationStage.TokenRefresh documents (session unchanged, no cookies).
         // The revocation client is built from the SAME back-channel configuration, so a refresh token
         // revoked after a refused redemption travels the pinned ADR-0045 posture like every other leg.
+        // It is built whether or not refresh is on: the RP-initiated logout below revokes through this
+        // one instance too, so the runtime holds exactly one revocation client.
         // The refresh grant requests the set the coordinator names through ScopedEngineFlows — the
         // session's active scope set A near expiry, A plus the missing scopes on the scope-driven leg —
         // never the static oidc.scopes the base configuration carries.
@@ -760,11 +766,13 @@ public class BffRuntimeProducer {
         // memoized metadata supplier itself, never as a resolved value: the logout asks for it per
         // request and only after the local session is gone, so neither a provider without that
         // endpoint nor a failed discovery can stand between a user and the end of their session.
-        // buildLogoutEndpoint binds the token-revocation seam to a no-op, so no revocation request is
-        // sent on logout; the authoritative logout is the local session destruction the
-        // LogoutEndpoint performs.
+        // buildLogoutEndpoint binds the token-revocation seam to revokeOnLogout over the runtime's one
+        // RevocationClient and one ClientAuthentication: once the LogoutEndpoint has destroyed the local
+        // session, the session's refresh token is revoked at the identity provider (RFC 7009),
+        // synchronously and before the end-session redirect is built. The local destruction stays the
+        // authoritative logout; a failed revocation never turns the logout into an error.
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata, sessionBinding));
+                metadata, sessionBinding, revocationClient, clientAuthentication));
 
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
 
@@ -827,7 +835,7 @@ public class BffRuntimeProducer {
      * {@code oidc.back_channel_origin} is handed to the engine as its back-channel origin, so the
      * server-to-server calls to an endpoint the issuer advertises on its own origin — discovery, the
      * pushed authorization request, the authorization-code exchange, refresh and refresh-token
-     * revocation — dial the configured origin instead, while the issuer stays the identity every
+     * revocation, on the refresh path and on RP-initiated logout — dial the configured origin instead, while the issuer stays the identity every
      * exact-match check uses and the authorization endpoint the browser is sent to is untouched. Since
      * token-sheriff 0.9.8 the DPoP proof of such a re-targeted call names the URL actually dialled, not
      * the advertised one, which is what an identity provider that compares the proof's {@code htu} with
@@ -899,7 +907,8 @@ public class BffRuntimeProducer {
      * Selects the confidential-client credential once, for the single build this {@link Singleton}
      * runtime performs: the authentication every authenticated back-channel leg presents, and the form
      * of the client JWKS endpoint that goes with it. The authentication instance is shared by the pushed
-     * authorization request, the code exchange, the refresh grant and RFC 7009 revocation.
+     * authorization request, the code exchange, the refresh grant and RFC 7009 revocation on the refresh
+     * path and on RP-initiated logout.
      * <p>
      * <strong>Client-secret mode</strong> — {@link OidcConfig#usesClientSecret()} is {@code true}. The
      * gateway keeps authenticating with {@code client_secret_basic} and reports {@code ApiSheriff-133},
@@ -1260,10 +1269,13 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Binds the coordinator's best-effort refresh-token revocation to the engine's RFC 7009 client.
-     * A provider that declares no {@code revocation_endpoint} leaves nothing to call, so the token is
-     * not revoked and the gap is recorded at {@code DEBUG}; the session has already been destroyed
-     * locally either way.
+     * Revokes one refresh token at the identity provider through the engine's RFC 7009 client, with
+     * {@code token_type_hint=refresh_token}. It has two callers: the refresh coordinator's best-effort
+     * revocation of a token still live after its session ended, and {@link #revokeOnLogout}, which
+     * revokes the session's refresh token on RP-initiated logout. A provider that declares no
+     * {@code revocation_endpoint} leaves nothing to call, so the token is not revoked and the gap is
+     * recorded at {@code DEBUG}; the session has already been destroyed locally either way. A transport
+     * failure or a non-success answer of the endpoint propagates to the caller.
      *
      * @param revocationClient     the engine revocation client on the pinned back-channel posture
      * @param metadata             the resolved provider metadata
@@ -1278,6 +1290,37 @@ public class BffRuntimeProducer {
             return;
         }
         revocationClient.revoke(revocationEndpoint.get(), refreshToken, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
+    }
+
+    /**
+     * The binding of {@link RpInitiatedLogout.TokenRevocation}: revokes the logged-out session's
+     * refresh token at the identity provider (RFC 7009) through {@link #revokeRefreshToken}.
+     * <p>
+     * A session that holds no refresh token — {@code oidc.session.refresh.enabled=false}, or an
+     * identity provider that granted none — leaves nothing to revoke: one {@code DEBUG} line is written
+     * and no request is sent. A provider that declares no {@code revocation_endpoint} sends nothing
+     * either (see {@link #revokeRefreshToken}). The access token is never revoked.
+     * <p>
+     * The provider metadata is read here, per logout, and not when the logout endpoint is assembled, so
+     * a discovery failure surfaces to the caller as the {@link RuntimeException} the supplier raises,
+     * exactly like a transport failure or a non-success answer of the revocation endpoint. The caller,
+     * {@link RpInitiatedLogout#initiate}, reports such a failure and completes the logout anyway. No log
+     * line written here carries the token value.
+     *
+     * @param revocationClient     the runtime's one engine revocation client, on the pinned back-channel
+     *                             posture
+     * @param metadata             the memoized provider metadata, resolved here and not at assembly
+     * @param clientAuthentication the runtime's one confidential-client authentication
+     * @param session              the session being logged out
+     */
+    static void revokeOnLogout(RevocationClient revocationClient, Supplier<ProviderMetadata> metadata,
+            ClientAuthentication clientAuthentication, SessionRecord session) {
+        String refreshToken = session.refreshToken();
+        if (refreshToken == null) {
+            LOGGER.debug("RP-initiated logout for a session without a refresh token — nothing to revoke at the identity provider");
+            return;
+        }
+        revokeRefreshToken(revocationClient, metadata.get(), refreshToken, clientAuthentication);
     }
 
     /**
@@ -1398,15 +1441,25 @@ public class BffRuntimeProducer {
      * ended the local session. A provider that publishes no such endpoint, and discovery that cannot be
      * completed, therefore leave the logout endpoint available: the session is ended, the cookies are
      * cleared, and the browser lands on {@code final_redirect}.
+     * <p>
+     * <strong>The logout revokes the session's refresh token.</strong> The token-revocation seam is
+     * bound to {@link #revokeOnLogout} over the runtime's one {@link RevocationClient} and one
+     * {@link ClientAuthentication}, so after the local session is destroyed and before the end-session
+     * redirect is built, the session's refresh token is revoked at the identity provider (RFC 7009),
+     * synchronously. The provider metadata that revocation needs is likewise read per request. The
+     * access token is not revoked.
      *
-     * @param oidc           the global {@code oidc} block
-     * @param gatewayOrigin  the gateway's own origin, the base of the default return leg
-     * @param metadata       the memoized provider metadata, resolved by the seam and not here
-     * @param sessionBinding the session binding the logout resolves, destroys and clears through
+     * @param oidc                 the global {@code oidc} block
+     * @param gatewayOrigin        the gateway's own origin, the base of the default return leg
+     * @param metadata             the memoized provider metadata, resolved by the seams and not here
+     * @param sessionBinding       the session binding the logout resolves, destroys and clears through
+     * @param revocationClient     the runtime's one engine revocation client
+     * @param clientAuthentication the runtime's one confidential-client authentication
      * @return the logout endpoint
      */
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin,
-            Supplier<ProviderMetadata> metadata, SessionBinding sessionBinding) {
+            Supplier<ProviderMetadata> metadata, SessionBinding sessionBinding, RevocationClient revocationClient,
+            ClientAuthentication clientAuthentication) {
         OidcConfig.Logout logout = oidc.logout();
         String declaredPostLogoutRedirectUri = logout == null ? null : logout.postLogoutRedirectUri();
         String postLogoutRedirectUri = declaredPostLogoutRedirectUri == null
@@ -1418,10 +1471,7 @@ public class BffRuntimeProducer {
                 : declaredFinalRedirect;
         EndSessionFlow endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(postLogoutRedirectUri)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow,
-                sessionRecord -> {
-                    // A no-op binding: no revocation request is sent to the identity provider on
-                    // logout. The authoritative logout is the local session destruction.
-                },
+                sessionRecord -> revokeOnLogout(revocationClient, metadata, clientAuthentication, sessionRecord),
                 () -> metadata.get().getEndSessionEndpoint(), postLogoutRedirectUri, finalRedirect,
                 LOGOUT_STATE_TTL);
         return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);

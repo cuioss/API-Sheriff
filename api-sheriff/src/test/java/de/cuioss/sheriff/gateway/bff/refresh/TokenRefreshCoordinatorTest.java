@@ -48,7 +48,6 @@ import java.util.stream.Stream;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -2669,8 +2668,8 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Override
-        public void destroy(SessionRecord session) {
-            delegate.destroy(session);
+        public Optional<SessionRecord> destroy(SessionRecord session) {
+            return delegate.destroy(session);
         }
 
         @Override
@@ -2746,8 +2745,8 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Override
-        public void destroy(SessionRecord session) {
-            delegate.destroy(session);
+        public Optional<SessionRecord> destroy(SessionRecord session) {
+            return delegate.destroy(session);
         }
 
         @Override

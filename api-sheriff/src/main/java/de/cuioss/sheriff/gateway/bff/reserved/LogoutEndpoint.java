@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -33,18 +32,34 @@ import org.jspecify.annotations.Nullable;
  * mirror of {@link CallbackEndpoint} for the logout direction (D5). It owns the two reserved logout
  * legs ({@link ReservedPathRegistry.ReservedEndpoint#LOGOUT} and
  * {@link ReservedPathRegistry.ReservedEndpoint#LOGOUT_RETURN}) and the session binding; the
- * transport-free logic — the call to the token-revocation seam, {@code state} minting, the engine
- * end-session redirect, and the return-leg {@code state} verification — lives in
+ * transport-free logic — the revocation of the session's refresh token, {@code state} minting, the
+ * engine end-session redirect, and the return-leg {@code state} verification — lives in
  * {@link RpInitiatedLogout}.
  * <p>
  * <strong>Logout leg.</strong> {@link #logout(String, Instant)} resolves the request's live
  * {@link SessionRecord} through the mode-neutral {@link SessionBinding} seam and
  * <strong>destroys it first</strong> ({@link SessionBinding#destroy}): the local session
  * destruction is the authoritative, immediately-effective logout, and nothing that follows can
- * prevent it. Only then does it drive {@link RpInitiatedLogout#initiate} (which calls its
- * token-revocation seam and builds the {@code end_session_endpoint} redirect carrying the
- * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the single-use logout-state
- * cookie). Every answer clears every cookie the binding sets
+ * prevent it. Only then does it drive {@link RpInitiatedLogout#initiate}, which first revokes the
+ * session's refresh token at the identity provider (RFC 7009, synchronously) and then builds the
+ * {@code end_session_endpoint} redirect carrying the {@code id_token_hint}, the exact
+ * {@code post_logout_redirect_uri}, and the single-use logout-state cookie. A failed revocation is
+ * reported by {@link RpInitiatedLogout} and never turns the logout into an error; the access token is
+ * not revoked.
+ * <p>
+ * <strong>Which refresh token is revoked.</strong> The one the session held <em>when it was
+ * destroyed</em>, not the one it held when it was resolved: {@link SessionBinding#destroy} hands back
+ * the session as it stood at its destruction, and that record is what {@link RpInitiatedLogout#initiate}
+ * receives. In server mode it is the record the store removed, so a refresh that rotated the token
+ * between the resolve and the destruction is honoured; in cookie mode it is the record the request
+ * presented. When the session was already gone at the destruction — another path ended it after the
+ * resolve: a concurrent login evicting the subject's oldest session, the periodic expiry sweep, or a
+ * concurrent resolve evicting it as expired — the destruction hands back nothing, and the endpoint
+ * hands {@link RpInitiatedLogout#initiate} the session it resolved instead. None of those paths
+ * revokes anything, so the resolved record's refresh token is revoked here; if it was already spent
+ * by a rotation, revoking it is harmless (RFC 7009, section 2.2).
+ * <p>
+ * Every answer clears every cookie the binding sets
  * ({@link SessionBinding#clearingSetCookieHeaders()} — in cookie mode the session cookie and its
  * activity cookie).
  * <p>
@@ -93,8 +108,12 @@ public final class LogoutEndpoint {
     }
 
     /**
-     * Handles the RP-initiated logout leg: resolves the live session, destroys it, drives the engine
-     * end-session redirect, and clears the session cookie.
+     * Handles the RP-initiated logout leg: resolves the live session, destroys it, revokes the refresh
+     * token the destroyed session held — or the resolved session's, when another path had already ended
+     * it — drives the engine end-session redirect, and clears the session cookie.
+     * <p>
+     * Thread-safe: the endpoint holds no mutable state and its collaborators are safe for concurrent
+     * use.
      *
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
      * @param now          the reference instant (the session-resolution TTL anchor)
@@ -113,8 +132,19 @@ public final class LogoutEndpoint {
         }
         SessionRecord session = resolved.get();
         // Local logout is the authoritative, immediately-effective step, so it comes first: whatever
-        // happens to the end-session redirect below, the session is already gone.
-        sessionBinding.destroy(session);
+        // happens to the end-session redirect below, the session is already gone. The destruction hands
+        // back the session as it stood at that moment: a refresh that rotated the refresh token after
+        // the resolve above is reflected there, and only there.
+        Optional<SessionRecord> destroyed = sessionBinding.destroy(session);
+        // Revoke the token the session held when it was destroyed, not the resolve-time snapshot, which
+        // a rotation may already have spent. When another path ended the session between the resolve and
+        // the destruction, nothing came back, and none of those paths revokes anything — so the
+        // resolve-time record is the only one left that names the token, and it is revoked instead.
+        // Revoking a token that is already spent is harmless (RFC 7009, section 2.2).
+        SessionRecord toRevoke = destroyed.orElse(session);
+        if (destroyed.isEmpty()) {
+            LOGGER.debug("RP-initiated logout — session already gone at destruction, revoking the resolved session's token");
+        }
 
         Optional<RpInitiatedLogout.LogoutRedirect> endSession;
         // The catch is deliberately broad: the end-session redirect is built by the engine over
@@ -122,7 +152,7 @@ public final class LogoutEndpoint {
         // an error answer.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            endSession = rpInitiatedLogout.initiate(session);
+            endSession = rpInitiatedLogout.initiate(toRevoke);
         } catch (RuntimeException initiationFailure) {
             LOGGER.debug(initiationFailure,
                     "RP-initiated logout — end-session redirect construction failed; local session destroyed, landing on final_redirect");

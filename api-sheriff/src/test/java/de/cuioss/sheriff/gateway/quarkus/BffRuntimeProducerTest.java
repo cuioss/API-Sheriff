@@ -73,6 +73,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
@@ -160,6 +161,7 @@ import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.StepUpChallengeParser.StepUpChallenge;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
+import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
@@ -3916,6 +3918,212 @@ class BffRuntimeProducerTest {
                     () -> assertNotNull(keyMode.form().get(CLIENT_ASSERTION),
                             "the control runtime did authenticate with a client assertion"));
             assertNoRecordCarriesTheSecret(fixture);
+        }
+
+        // RP-initiated logout revokes the logged-out session's refresh token (RFC 7009) through
+        // BffRuntimeProducer.revokeOnLogout, the binding of RpInitiatedLogout.TokenRevocation. The
+        // binding is driven directly against the stub's revocation endpoint, and once through the
+        // produced runtime's own reserved logout dispatch, which is what shows the runtime binds it.
+
+        /**
+         * The revocation client comes from a key-mode runtime and the client authentication from a
+         * client-secret one, so a request that carries the Basic credential was authenticated with the
+         * authentication the binding was passed, and with no other.
+         */
+        @Test
+        @DisplayName("Should revoke the logged-out session's refresh token in one RFC 7009 request authenticated with the passed client authentication")
+        void shouldRevokeTheRefreshTokenOnLogout() {
+            SecretFixture fixture = secretFixture();
+            ClientAuthentication passed = clientAuthenticationOf(stubProducer(fixture.oidc()).bffRuntime());
+            RevocationClient revocationClient = revocationClientOf(stubProducer(stubOidc().build()).bffRuntime());
+            String refreshToken = token();
+            SessionRecord session = loggedOutSession(refreshToken);
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.REVOCATION,
+                    () -> BffRuntimeProducer.revokeOnLogout(revocationClient, this::revocationMetadata, passed,
+                            session));
+
+            Map<String, String> form = request.form();
+            assertPresentsTheBasicCredentialOnly(fixture, request, "the revocation of a logout");
+            assertAll("the RFC 7009 request a logout sends",
+                    () -> assertEquals("POST", request.method()),
+                    () -> assertEquals(refreshToken, form.get("token"), "the session's refresh token is revoked"),
+                    () -> assertEquals("refresh_token", form.get("token_type_hint")),
+                    () -> assertNotEquals(session.accessToken(), form.get("token"), "never the access token"),
+                    () -> assertEquals(Optional.empty(), request.header(DPOP_HEADER),
+                            "a revocation is authenticated, never sender-constrained"));
+            assertNoRecordCarriesTheSecret(fixture);
+            assertNoRecordCarries(refreshToken, "refresh token");
+        }
+
+        @Test
+        @DisplayName("Should send no revocation request, read no provider metadata and not throw for a session without a refresh token")
+        void shouldSendNothingOnLogoutWithoutARefreshToken() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            AtomicInteger metadataReads = new AtomicInteger();
+            Supplier<ProviderMetadata> countingMetadata = () -> {
+                metadataReads.incrementAndGet();
+                return revocationMetadata();
+            };
+
+            assertDoesNotThrow(() -> BffRuntimeProducer.revokeOnLogout(revocationClientOf(runtime),
+                    countingMetadata, clientAuthenticationOf(runtime), loggedOutSession(null)));
+
+            assertAll("a logout of a session that holds no refresh token",
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.REVOCATION),
+                            "nothing is sent to the identity provider"),
+                    () -> assertEquals(0, metadataReads.get(), "and the provider metadata is not even read"),
+                    () -> assertEquals(1, recordsContaining(TestLogLevel.DEBUG,
+                                    "nothing to revoke at the identity provider"),
+                            "the absence is recorded at DEBUG"));
+        }
+
+        /**
+         * A provider that declares no {@code revocation_endpoint} leaves nothing to call. That is a
+         * property of the provider, not a failure, so it stays at {@code DEBUG} and writes no
+         * {@code WARN} line at all.
+         */
+        @Test
+        @DisplayName("Should send no revocation request and not throw when the provider declares no revocation_endpoint")
+        void shouldSendNothingOnLogoutWithoutARevocationEndpoint() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            ProviderMetadata withoutRevocation = stubMetadata();
+            int warningsBefore = warningCount();
+
+            assertDoesNotThrow(() -> BffRuntimeProducer.revokeOnLogout(revocationClientOf(runtime),
+                    () -> withoutRevocation, clientAuthenticationOf(runtime), loggedOutSession(token())));
+
+            assertAll("a logout against a provider without a revocation_endpoint",
+                    () -> assertEquals(Optional.empty(), withoutRevocation.getRevocationEndpoint(),
+                            "precondition: the metadata names no revocation endpoint"),
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.REVOCATION),
+                            "nothing is sent to the identity provider"),
+                    () -> assertEquals(1, recordsContaining(TestLogLevel.DEBUG, "declares no revocation_endpoint"),
+                            "the gap is recorded at DEBUG"),
+                    () -> assertEquals(warningsBefore, warningCount(), "and at no level above it"));
+        }
+
+        /**
+         * The caller, {@code RpInitiatedLogout}, logs only the exception types of the throwable this
+         * binding raises, never the throwable or a message. The binding does not lean on that: neither
+         * the message of the throwable it raises nor the message of any cause it chains holds the
+         * refresh token it failed to revoke, nor the access token, so the chain is safe wherever it ends up.
+         */
+        @Test
+        @DisplayName("Should throw when the revocation endpoint answers a logout's revocation with a server error")
+        void shouldThrowOnLogoutWhenTheRevocationEndpointFails() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            RevocationClient revocationClient = revocationClientOf(runtime);
+            ClientAuthentication authentication = clientAuthenticationOf(runtime);
+            SessionRecord session = loggedOutSession(token());
+            stub.script(StubIdentityProvider.Endpoint.REVOCATION, StubIdentityProvider.Answer.of(503));
+            AtomicReference<RuntimeException> raised = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.REVOCATION,
+                    () -> raised.set(assertThrows(RuntimeException.class,
+                            () -> BffRuntimeProducer.revokeOnLogout(revocationClient, this::revocationMetadata,
+                                    authentication, session),
+                            "a non-success answer reaches the caller, which reports it")));
+
+            assertEquals(session.refreshToken(), request.form().get("token"),
+                    "the refused request was the revocation of the session's refresh token");
+            List<String> carried = messagesOfTheChain(raised.get());
+            assertAll("what the raised throwable carries to the caller: " + carried.size() + " message(s)",
+                    () -> assertFalse(carried.isEmpty(), "precondition: a throwable was raised"),
+                    () -> assertEquals(List.of(), carried.stream()
+                                    .filter(message -> message.contains(session.refreshToken())).toList(),
+                            "no message of the chain carries the refresh token"),
+                    () -> assertEquals(List.of(), carried.stream()
+                                    .filter(message -> message.contains(session.accessToken())).toList(),
+                            "no message of the chain carries the access token"));
+        }
+
+        /** The message of {@code thrown} and of every cause it chains, in chain order. */
+        private static List<String> messagesOfTheChain(@Nullable Throwable thrown) {
+            List<String> messages = new ArrayList<>();
+            for (Throwable link = thrown; link != null; link = link.getCause()) {
+                messages.add(String.valueOf(link.getMessage()));
+            }
+            return messages;
+        }
+
+        /**
+         * The wiring case: the logout the produced runtime dispatches revokes the refresh token of the
+         * session it ends, through the runtime's one revocation client and with its one client
+         * authentication — the key id is the one every other leg of the runtime signs with.
+         */
+        @Test
+        @DisplayName("Should revoke the session's refresh token when the produced runtime's logout ends the session")
+        void shouldRevokeThroughTheProducedLogout() throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            String refreshToken = token();
+            String sessionCookie = bind(runtime, loggedOutSession(refreshToken));
+            AtomicReference<BffRuntime.ReservedHttpResponse> answered = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.REVOCATION,
+                    () -> answered.set(logout(runtime, sessionCookie)));
+
+            String revocationLegKeyId = keyIdOf(drive(Leg.REVOCATION, runtime));
+            assertAll("the logout of the produced runtime",
+                    () -> assertEquals(302, answered.get().status(), "the logout completes"),
+                    () -> assertEquals(refreshToken, request.form().get("token"),
+                            "the ended session's refresh token is revoked"),
+                    () -> assertEquals("refresh_token", request.form().get("token_type_hint")),
+                    () -> assertEquals(revocationLegKeyId, keyIdOf(request),
+                            "with the runtime's one client authentication"),
+                    () -> assertEquals(Optional.empty(), sessionBindingOf(runtime).resolve(sessionCookie, NOW),
+                            "the local session is ended"),
+                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN,
+                                    BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.resolveIdentifierString()),
+                            "a revocation the provider accepted is not reported as failed"));
+        }
+
+        /** Dispatches the reserved logout path on a browser presenting {@code sessionCookie}. */
+        private static BffRuntime.ReservedHttpResponse logout(BffRuntime runtime, String sessionCookie) {
+            return runtime.dispatch(ReservedEndpoint.LOGOUT,
+                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null, null, null, null, "POST", QUOTA_KEY),
+                    NOW);
+        }
+
+        /** A live session to log out, holding {@code refreshToken} — {@code null} for a session holding none. */
+        private static SessionRecord loggedOutSession(@Nullable String refreshToken) {
+            return refreshableSession(Set.of("openid"), Set.of("openid"), refreshToken);
+        }
+
+        /** The stub's provider metadata, hand-built and naming the stub's revocation endpoint. */
+        private ProviderMetadata revocationMetadata() {
+            ProviderMetadata metadata = stubMetadata();
+            metadata.revocationEndpoint = stub.url(StubIdentityProvider.Endpoint.REVOCATION);
+            return metadata;
+        }
+
+        /** The one revocation client of an assembled runtime — exactly one, shared by refresh and logout. */
+        private static RevocationClient revocationClientOf(BffRuntime runtime) {
+            return single(reachableInstancesOf(runtime, RevocationClient.class), "revocation client");
+        }
+
+        /** The one client authentication of an assembled runtime. */
+        private static ClientAuthentication clientAuthenticationOf(BffRuntime runtime) {
+            return single(reachableInstancesOf(runtime, ClientAuthentication.class), "client authentication");
+        }
+
+        private static int warningCount() {
+            return (int) SheriffDebugCapture.capturedRecords().stream()
+                    .filter(captured -> Level.WARNING.equals(captured.getLevel())).count();
+        }
+
+        /**
+         * Asserts that no record captured so far, down to {@code DEBUG}, carries {@code value} in its
+         * message or in the message of a throwable it chains — after proving that a {@code DEBUG} record
+         * of the producer and of the engine revocation client is captured at all.
+         */
+        private static void assertNoRecordCarries(String value, String what) {
+            SheriffDebugCapture.assertDebugIsCaptured(BffRuntimeProducer.class, RevocationClient.class);
+            List<LogRecord> records = SheriffDebugCapture.capturedRecords();
+            assertFalse(records.isEmpty(), "no record was captured, so the absence of the " + what + " proves nothing");
+            assertEquals(List.of(), records.stream().map(SheriffDebugCapture::rendered)
+                            .filter(line -> line.contains(value)).toList(),
+                    "no captured record carries the " + what);
         }
 
         @ParameterizedTest(name = "{0} sender-constraint key")

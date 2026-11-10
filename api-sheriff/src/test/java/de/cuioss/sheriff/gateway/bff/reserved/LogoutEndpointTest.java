@@ -23,9 +23,10 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import javax.crypto.spec.SecretKeySpec;
-
 
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -41,11 +42,13 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link LogoutEndpoint}, focused on the invariant that local logout ALWAYS succeeds. When
@@ -54,6 +57,18 @@ import org.junit.jupiter.params.provider.EnumSource;
  * the endpoint must still destroy the server-side session and clear the session cookie before landing
  * the browser on {@code final_redirect} — a redirect-construction failure must never leave the local
  * session usable.
+ * <p>
+ * The token-revocation seam is driven the same way: it receives the logged-out session once, after the
+ * binding has destroyed it, and a seam that throws never changes the {@code 302} the logout answers.
+ * <p>
+ * <strong>Which refresh token the seam receives.</strong> The {@link InterleavingBinding} cases put a
+ * write into the window between the logout's resolve and its destruction. A refresh that rotates the
+ * refresh token there must be honoured — the seam receives the token the store held when the session
+ * was destroyed, never the resolve-time snapshot the rotation already spent. A destruction that finds
+ * the session already gone — another path ended it after the resolve — hands back nothing, so the seam
+ * receives the resolve-time record instead, whose token no other path revokes, and the logout still
+ * answers the same {@code 302}. In cookie mode the seam receives the token sealed in the cookie the
+ * request presented.
  */
 class LogoutEndpointTest {
 
@@ -67,6 +82,10 @@ class LogoutEndpointTest {
     /** The opaque value the server-mode session cookie carries — never the session id. */
     private static final String COOKIE_HANDLE = "opaque-cookie-handle";
     private static final String UNREGISTERED_RETURN = "https://evil.example.com/steal";
+    /** The refresh token the session holds when the logout resolves it. */
+    private static final String RESOLVED_REFRESH_TOKEN = "refresh-token-held-at-resolve";
+    /** The refresh token a refresh rotates in after the logout resolved the session. */
+    private static final String ROTATED_REFRESH_TOKEN = "refresh-token-rotated-before-destruction";
 
     private InMemorySessionStore store;
     private SessionBinding binding;
@@ -295,19 +314,70 @@ class LogoutEndpointTest {
     }
 
     @Test
-    @DisplayName("Should end the session before the end-session redirect is built")
+    @DisplayName("Should hand the revocation seam the logged-out session once, after the binding destroyed it")
     void shouldDestroyBeforeInitiating() {
-        AtomicReference<Boolean> liveWhenInitiated = new AtomicReference<>();
-        TokenRevocation observingStore = ignored ->
-                liveWhenInitiated.set(store.resolve(COOKIE_HANDLE, NOW).isPresent());
+        SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
+        List<String> revokedSessionIds = new CopyOnWriteArrayList<>();
+        List<Boolean> liveWhenRevoked = new CopyOnWriteArrayList<>();
+        TokenRevocation observingStore = ended -> {
+            revokedSessionIds.add(ended.sessionId());
+            liveWhenRevoked.add(store.resolve(COOKIE_HANDLE, NOW).isPresent());
+        };
         LogoutEndpoint endpoint = endpoint(observingStore, () -> Optional.of(END_SESSION), REGISTERED_RETURN,
                 binding);
 
         LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
 
-        assertTrue(outcome.location().startsWith(END_SESSION), "precondition: the redirect was built");
-        assertEquals(Boolean.FALSE, liveWhenInitiated.get(),
-                "the session was already gone when the redirect construction began");
+        assertAll("the revocation seam of one logout",
+                () -> assertTrue(outcome.location().startsWith(END_SESSION), "precondition: the redirect was built"),
+                () -> assertEquals(List.of(stored.sessionId()), revokedSessionIds,
+                        "the seam receives the session the request presented, exactly once"),
+                () -> assertEquals(List.of(Boolean.FALSE), liveWhenRevoked,
+                        "the binding had already destroyed the session when the seam ran"));
+    }
+
+    @Test
+    @DisplayName("Should not call the revocation seam when the request carries no live session")
+    void shouldNotRevokeWithoutSession() {
+        AtomicInteger revocations = new AtomicInteger();
+        LogoutEndpoint endpoint = endpoint(ended -> revocations.incrementAndGet(), () -> Optional.of(END_SESSION),
+                REGISTERED_RETURN, binding);
+
+        LogoutOutcome outcome = endpoint.logout(null, NOW);
+
+        assertEquals(FINAL_REDIRECT, outcome.location(), "precondition: the logout landed without a session");
+        assertEquals(0, revocations.get(), "there is no session whose token could be revoked");
+    }
+
+    /**
+     * Whether the browser is sent to the identity provider or lands on {@code final_redirect}, a
+     * revocation seam that throws changes nothing about the answer: the session is ended, its cookie
+     * cleared, and the answer is the same {@code 302} a logout whose revocation succeeded gets.
+     */
+    @ParameterizedTest(name = "end_session_endpoint published: {0}")
+    @ValueSource(booleans = {true, false})
+    @DisplayName("Should answer the same 302 and end the session when the revocation seam throws")
+    void shouldAnswerTheSameRedirectWhenRevocationFails(boolean published) {
+        EndSessionEndpointSource source = published ? () -> Optional.of(END_SESSION) : Optional::empty;
+        AtomicInteger attempts = new AtomicInteger();
+        TokenRevocation failing = ended -> {
+            attempts.incrementAndGet();
+            throw new IllegalStateException("revocation endpoint answered 503");
+        };
+        String expectedLocation = published ? END_SESSION : FINAL_REDIRECT;
+
+        LogoutOutcome outcome = endpoint(failing, source, REGISTERED_RETURN, binding).logout(cookieHeader, NOW);
+
+        assertAll("a logout whose revocation fails",
+                () -> assertEquals(1, attempts.get(), "precondition: the seam was called and threw"),
+                () -> assertEquals(302, outcome.status(), "never an error answer"),
+                () -> assertTrue(outcome.location().startsWith(expectedLocation),
+                        "the browser goes where a successful revocation would send it: " + outcome.location()),
+                () -> assertEquals(published, outcome.carriesIdToken()),
+                () -> assertTrue(store.resolve(COOKIE_HANDLE, NOW).isEmpty(), "the session is ended"),
+                () -> assertEquals(0, store.size(), "nothing is left in the store"),
+                () -> assertTrue(outcome.setCookieHeaders().containsAll(binding.clearingSetCookieHeaders()),
+                        "the session cookie is cleared"));
     }
 
     @Test
@@ -380,5 +450,209 @@ class LogoutEndpointTest {
         assertEquals(FINAL_REDIRECT, outcome.location());
         assertFalse(outcome.carriesIdToken());
         assertEquals(0, store.size(), "the session is ended");
+    }
+
+    @Test
+    @DisplayName("Should revoke the refresh token the store held at destruction, not the one the logout resolved")
+    void shouldRevokeTheRefreshTokenTheStoreHeldAtDestruction() {
+        SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
+        assertTrue(store.replaceIfPresent(withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),
+                "precondition: the stored session holds a refresh token");
+        List<String> resolvedTokens = new CopyOnWriteArrayList<>();
+        SessionBinding refreshedAfterResolve = new InterleavingBinding(binding, resolved -> {
+            resolvedTokens.add(resolved.refreshToken());
+            store.replaceIfPresent(withRefreshToken(resolved, ROTATED_REFRESH_TOKEN));
+        });
+        List<String> revokedTokens = new CopyOnWriteArrayList<>();
+        LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
+                () -> Optional.of(END_SESSION), REGISTERED_RETURN, refreshedAfterResolve);
+
+        LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
+
+        assertAll("a logout overtaken by a refresh between its resolve and its destruction",
+                () -> assertEquals(List.of(RESOLVED_REFRESH_TOKEN), resolvedTokens,
+                        "precondition: the logout resolved the token the refresh then rotated away"),
+                () -> assertEquals(List.of(ROTATED_REFRESH_TOKEN), revokedTokens,
+                        "the seam revokes the token the store held when the session was destroyed, once"),
+                () -> assertTrue(outcome.location().startsWith(END_SESSION), "the redirect was built"),
+                () -> assertEquals(0, store.size(), "the rotated session is destroyed"));
+    }
+
+    /**
+     * Another path — a concurrent login's per-subject eviction, the expiry sweep, a lazy eviction — ends
+     * the session between the logout's resolve and its destruction, and none of those paths revokes
+     * anything. The destruction hands back nothing, so the logout revokes the resolve-time record's
+     * refresh token; left unrevoked it would stay valid at the identity provider after an explicit
+     * logout. (The method keeps its original name; what it asserts is that the resolve-time token IS
+     * revoked.)
+     */
+    @Test
+    @DisplayName("Should revoke the resolved refresh token and still send the browser to the provider when the session was gone at destruction")
+    void shouldRevokeNothingWhenTheSessionWasGoneAtDestruction() {
+        SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
+        assertTrue(store.replaceIfPresent(withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),
+                "precondition: the resolve-time snapshot holds a refresh token the logout could revoke");
+        List<Boolean> endedByAnotherPath = new CopyOnWriteArrayList<>();
+        SessionBinding endedAfterResolve = new InterleavingBinding(binding,
+                resolved -> endedByAnotherPath.add(store.destroyById(resolved.sessionId()).isPresent()));
+        List<String> revokedTokens = new CopyOnWriteArrayList<>();
+        LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
+                () -> Optional.of(END_SESSION), REGISTERED_RETURN, endedAfterResolve);
+
+        LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, NOW));
+
+        assertAll("a logout whose session something else ended after the resolve",
+                () -> assertEquals(List.of(Boolean.TRUE), endedByAnotherPath,
+                        "precondition: another path ended the session between the resolve and the destruction"),
+                () -> assertEquals(List.of(RESOLVED_REFRESH_TOKEN), revokedTokens,
+                        "the destruction removed nothing, so the token the logout resolved is revoked, once"),
+                () -> assertEquals(302, outcome.status(), "never an error answer"),
+                () -> assertTrue(outcome.location().startsWith(END_SESSION),
+                        "the browser is still sent to the identity provider: " + outcome.location()),
+                () -> assertTrue(outcome.carriesIdToken(), "the redirect carries the resolved id_token_hint"),
+                () -> assertTrue(outcome.setCookieHeaders().containsAll(binding.clearingSetCookieHeaders()),
+                        "the session cookie is cleared"),
+                () -> assertEquals(0, store.size(), "nothing is left in the store"));
+    }
+
+    /**
+     * The same interleaving for a session that never held a refresh token: the seam receives the
+     * resolve-time record once and it names no refresh token, so there is nothing to revoke — the
+     * runtime's revocation binding sends nothing for such a record — and the browser is still sent to
+     * the identity provider.
+     */
+    @Test
+    @DisplayName("Should have no refresh token to revoke when the session was gone at destruction and the resolved one holds none")
+    void shouldHaveNoRefreshTokenToRevokeWhenTheGoneSessionHeldNone() {
+        SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
+        assertNull(stored.refreshToken(), "precondition: the resolve-time snapshot holds no refresh token");
+        List<Boolean> endedByAnotherPath = new CopyOnWriteArrayList<>();
+        SessionBinding endedAfterResolve = new InterleavingBinding(binding,
+                resolved -> endedByAnotherPath.add(store.destroyById(resolved.sessionId()).isPresent()));
+        List<SessionRecord> handedToSeam = new CopyOnWriteArrayList<>();
+        LogoutEndpoint endpoint = endpoint(handedToSeam::add, () -> Optional.of(END_SESSION), REGISTERED_RETURN,
+                endedAfterResolve);
+
+        LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, NOW));
+
+        assertAll("a logout whose session without a refresh token something else ended after the resolve",
+                () -> assertEquals(List.of(Boolean.TRUE), endedByAnotherPath,
+                        "precondition: another path ended the session between the resolve and the destruction"),
+                () -> assertEquals(List.of(stored.sessionId()),
+                        handedToSeam.stream().map(SessionRecord::sessionId).toList(),
+                        "the seam receives the resolved session, once"),
+                () -> assertNull(handedToSeam.getFirst().refreshToken(),
+                        "the record names no refresh token, so nothing is revoked"),
+                () -> assertTrue(outcome.location().startsWith(END_SESSION),
+                        "the browser is still sent to the identity provider: " + outcome.location()),
+                () -> assertEquals(0, store.size(), "nothing is left in the store"));
+    }
+
+    @Test
+    @DisplayName("Should revoke the refresh token the request presented in cookie mode, not a successor the browser has not stored")
+    void shouldRevokeThePresentedRefreshTokenInCookieMode() {
+        SessionBinding cookieBinding = cookieBinding();
+        String setCookie = cookieBinding.bind(withRefreshToken(session(), RESOLVED_REFRESH_TOKEN), NOW)
+                .setCookieHeaders().getFirst();
+        String presentedCookie = setCookie.substring(0, setCookie.indexOf(';'));
+        SessionRecord presented = cookieBinding.resolve(presentedCookie, NOW).orElseThrow();
+        cookieBinding.persist(withRefreshToken(presented, ROTATED_REFRESH_TOKEN), NOW).orElseThrow();
+        List<String> revokedTokens = new CopyOnWriteArrayList<>();
+        LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
+                () -> Optional.of(END_SESSION), REGISTERED_RETURN, cookieBinding);
+
+        LogoutOutcome outcome = endpoint.logout(presentedCookie, NOW);
+
+        assertAll("a cookie-mode logout",
+                () -> assertTrue(outcome.location().startsWith(END_SESSION),
+                        "precondition: the presented cookie resolved and the redirect was built"),
+                () -> assertEquals(List.of(RESOLVED_REFRESH_TOKEN), revokedTokens,
+                        "the seam revokes the token sealed in the cookie the request presented, once"));
+    }
+
+    /** {@code session} carrying {@code refreshToken} in place of its own, as a refresh's rotation writes it. */
+    private static SessionRecord withRefreshToken(SessionRecord session, String refreshToken) {
+        return SessionRecord.builder()
+                .sessionId(session.sessionId())
+                .accessToken(session.accessToken())
+                .refreshToken(refreshToken)
+                .idToken(session.idToken())
+                .sub(session.sub())
+                .sid(session.sid())
+                .expiresAt(session.expiresAt())
+                .acr(session.acr())
+                .authTime(session.authTime())
+                .sessionNonce(session.sessionNonce())
+                .activeScopes(session.activeScopes())
+                .grantedScopes(session.grantedScopes())
+                .build();
+    }
+
+    /**
+     * A binding that hands every session it resolves to {@code afterResolve} before returning it — the
+     * window between a logout's resolve and its destruction, where a concurrent refresh or a
+     * back-channel logout of the same session lands. Every other operation is the delegate's.
+     */
+    private static final class InterleavingBinding implements SessionBinding {
+
+        private final SessionBinding delegate;
+        private final Consumer<SessionRecord> afterResolve;
+
+        InterleavingBinding(SessionBinding delegate, Consumer<SessionRecord> afterResolve) {
+            this.delegate = delegate;
+            this.afterResolve = afterResolve;
+        }
+
+        @Override
+        public BoundSession bind(SessionRecord session, Instant now) {
+            return delegate.bind(session, now);
+        }
+
+        @Override
+        public Optional<SessionRecord> resolve(@Nullable String cookieHeader, Instant now) {
+            Optional<SessionRecord> resolved = delegate.resolve(cookieHeader, now);
+            resolved.ifPresent(afterResolve);
+            return resolved;
+        }
+
+        @Override
+        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+            return delegate.persist(updated, now);
+        }
+
+        @Override
+        public Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now) {
+            return delegate.persistReissuingCookie(updated, now);
+        }
+
+        @Override
+        public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
+            return delegate.recordAccess(session, cookieHeader, now);
+        }
+
+        @Override
+        public Optional<SessionRecord> destroy(SessionRecord session) {
+            return delegate.destroy(session);
+        }
+
+        @Override
+        public int destroyBySid(String sid) {
+            return delegate.destroyBySid(sid);
+        }
+
+        @Override
+        public int destroyBySub(String sub) {
+            return delegate.destroyBySub(sub);
+        }
+
+        @Override
+        public IdpDestruction idpDestruction() {
+            return delegate.idpDestruction();
+        }
+
+        @Override
+        public List<String> clearingSetCookieHeaders() {
+            return delegate.clearingSetCookieHeaders();
+        }
     }
 }

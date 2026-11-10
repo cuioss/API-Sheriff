@@ -163,10 +163,20 @@ attached. Same-origin deployments need neither.
   expires the cookie *first*, then redirects to the IdP's end-session endpoint with `id_token_hint`
   and a session-bound `state` verified on the return leg. The local logout does not depend on the
   IdP: without a usable end-session endpoint the browser lands on `oidc.logout.final_redirect`
-  (`ApiSheriff-135`). The gateway revokes no token at the IdP on logout.
+  (`ApiSheriff-135`).
+* *What RP-initiated logout revokes.* After destroying the session and before building the
+  redirect, the gateway revokes the session's refresh token at the IdP (RFC 7009) -- the one the
+  store held when the session was destroyed, so a refresh that rotated it just before is covered.
+  When something else ended the session just before the logout destroyed it, the gateway revokes the
+  refresh token of the session the logout found instead. A failure never stops the logout, and the
+  first one per runtime is reported as `ApiSheriff-147`. The access token is not revoked and
+  stays valid at a resource server until it expires. A session without a refresh token, or an IdP
+  without a `revocation_endpoint`, gets no revocation request
+  (link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
 * *Back-channel* (`oidc.logout.backchannel_path`). A signed logout token from the IdP destroys the
-  matching session; a token acts once. Because the session is held server-side, revocation is
+  matching session; a token acts once. Because the session is held server-side, the termination is
   *immediately effective* -- an advantage over the link:03-bff-cookie.adoc[cookie-based variant].
+  This path revokes no token: the IdP initiated the logout and has already ended its own session.
   What the IdP must send is in link:../user/bff-session.adoc#backchannel-logout[the operator guide].
 * *Logout wins over in-flight work.* A refresh or scope widening running when the session is
   destroyed does not write it back: the refresh is answered as session-ended and revokes the refresh
@@ -281,7 +291,7 @@ endpoint:
 
 | State | Stateful -- a server-side token store (`memory`; one node or sticky sessions).
 | Token custody | The token never leaves the server in any form; the browser holds an opaque handle.
-| Revocation | Immediate: logout and back-channel logout destroy the stored session.
+| Revocation | Immediate: logout and back-channel logout destroy the stored session; RP-initiated logout also revokes the session's refresh token at the IdP, never the access token.
 | OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
 | CSRF | Fixed origin verification on unsafe methods (<<_csrf_defence>>).
 |===

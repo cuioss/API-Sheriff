@@ -1,0 +1,278 @@
+= ADR-0080: RP-initiated logout revokes the session's refresh token at the identity provider before the end-session redirect
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: RP-initiated logout revokes the logged-out session's refresh token at the identity provider through RFC 7009 (token_type_hint=refresh_token), over the back-channel origin with the runtime's one revocation client and one client authentication, synchronously after the local session destruction and before the end-session redirect is built; a session without a refresh token and a provider without a revocation_endpoint send nothing; the access token, the back-channel logout path and any token the provider does not revoke on its own stay unrevoked; the wait is bounded by the engine's default 5-second connect and 10-second read timeouts per request; a failed revocation is the latched ApiSheriff-147 WARN, once per runtime and DEBUG afterwards, and never stops the logout; eight alternatives, including the no-op binding, asynchronous dispatch and access-token revocation, are rejected
+// tags: bff, oidc, logout, revocation, rfc-7009, refresh-token, back-channel, identity-provider, session-termination, latched-warn, rejected-alternatives
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+A BFF holds the tokens of a browser session. When the user logs out through the gateway, the local
+session ends. The tokens the identity provider issued for that session can outlive it. A refresh
+token in particular can mint new access tokens until it expires.
+
+The `TokenRevocation` seam of `RpInitiatedLogout` exists to close that gap. Until this decision, the
+runtime bound it to a no-op. The records said the logout revoked tokens, but no revocation request
+was ever sent.
+
+This record settles four questions. What does a logout revoke? When does the revocation run? How long
+can it delay the logout answer? How is a failed revocation reported?
+
+=== The decision
+
+*RP-initiated logout revokes the logged-out session's refresh token at the identity provider.*
+
+The mechanism has four parts:
+
+* *RFC 7009, refresh token only.* `BffRuntimeProducer.revokeOnLogout` is the binding of the seam. It
+  sends one RFC 7009 revocation request for the session's refresh token, with
+  `token_type_hint=refresh_token`. It delegates to `BffRuntimeProducer.revokeRefreshToken`, the
+  helper the refresh coordinator already uses (ADR-0046).
+* *The runtime's one client and one credential.* The binding uses the one `RevocationClient` and the
+  one `ClientAuthentication` the runtime builds. No second client exists. The request therefore
+  travels the back channel through `oidc.back_channel_origin`, like every other gateway-to-provider
+  call (ADR-0069).
+* *Synchronous, after the local destruction.* `LogoutEndpoint` destroys the local session first. It
+  then calls `RpInitiatedLogout.initiate` with the record the destruction returned, or with the
+  record it resolved when the destruction returned none. That method calls the seam once, before it
+  builds the end-session redirect. It also calls the seam when no redirect can be built.
+* *Metadata read per logout.* The binding reads the provider metadata when the logout runs, not when
+  the logout endpoint is assembled. A provider that is unreachable at boot therefore never blocks the
+  logout endpoint.
+
+=== Which logout carries a refresh token
+
+`SessionRecord.refreshToken()` is `null` when the session holds no refresh token. Two causes produce
+that state. `oidc.session.refresh.enabled=false` makes the runtime drop the refresh token at the code
+exchange, so the gateway never stores or seals one. An identity provider can also grant none.
+
+[cols="1,1,2,2", options="header"]
+|===
+| Session mode | `refresh.enabled` | Refresh token at logout | What the binding does
+
+| server-session BFF
+| `true` (default)
+| The token the store held when the logout destroyed the session. The destruction hands back the
+  record it removed, so a rotation written after the logout resolved the session is included. When
+  another path had already ended the session, the token of the record the logout resolved.
+| Revokes it.
+
+| server-session BFF
+| `false`
+| None.
+| Sends nothing.
+
+| cookie-based BFF
+| `true` (default)
+| The token sealed in the cookie the logout request presents.
+| Revokes that token. A successor sealed into a response the browser has not stored yet is not seen.
+
+| cookie-based BFF
+| `false`
+| None.
+| Sends nothing.
+
+| either
+| either
+| None, because the identity provider granted none.
+| Sends nothing.
+|===
+
+A provider that declares no `revocation_endpoint` receives nothing either. The shared helper records
+that case at `DEBUG` for both of its callers.
+
+`SessionBinding.destroy` returns the destroyed record, and `RpInitiatedLogout.initiate` receives that
+record. The server-session binding returns the record the store removed. The cookie-based binding
+holds nothing server-side and returns the record the request presented.
+
+A server-session can also be gone when the logout destroys it, because another path ended it after
+the logout resolved it: a concurrent login that evicts the subject's oldest session, the periodic
+expiry sweep, or a concurrent resolve that evicts it as expired. None of those paths revokes
+anything, and the destruction returns no record. `LogoutEndpoint` then hands
+`RpInitiatedLogout.initiate` the record it resolved, so the logout revokes that record's refresh
+token and still builds the end-session redirect. If a rotation had already spent that token, the
+revocation is harmless: RFC 7009, section 2.2 answers a token that is already invalid with success.
+
+=== What is not revoked
+
+* *The access token.* The binding never revokes it. It stays valid at a resource server until it
+  expires.
+* *Tokens the identity provider does not revoke on its own.* RFC 7009 lets a provider also invalidate
+  the other tokens of the same grant. Whether it does is the provider's decision. A resource server
+  that validates a self-contained access token offline does not see that invalidation.
+* *Anything on the back-channel logout path.* `BackchannelLogoutReceiver` revokes nothing. The
+  identity provider initiated that logout and has already ended its own session.
+
+A refresh in flight at logout is a separate case. In the server-session BFF, a rotation the store
+took before the destruction is in the record the destruction returns, so the logout revokes it. A
+rotation that completes after the destruction finds the session terminated. The refresh coordinator
+then revokes the rotated token (ADR-0046).
+
+=== The latency bound
+
+The revocation adds at most two requests to the logout answer:
+
+. one discovery request, only when the provider metadata is not yet memoized;
+. one RFC 7009 revocation request.
+
+The engine bounds each request with the timeouts of its `ClientConfiguration`. The gateway's
+back-channel configuration sets neither timeout, so the engine defaults apply. In token-sheriff 0.9.8,
+the version the build pins, the defaults are `DEFAULT_CONNECT_TIMEOUT_SECONDS = 5` and
+`DEFAULT_READ_TIMEOUT_SECONDS = 10`. Each request therefore waits at most 5 seconds to connect and at
+most 10 seconds for the answer.
+
+The end-session lookup that follows reads the same memoized metadata. When the revocation's discovery
+request failed, that lookup makes its own attempt. It did so before this decision as well.
+
+=== Failure semantics
+
+The binding throws when the revocation cannot complete: the metadata cannot be obtained, the
+transport fails, or the revocation endpoint answers with a non-success status.
+`RpInitiatedLogout.initiate` catches that failure and completes the logout.
+
+* *The first failure per runtime is a `WARN`.* It is recorded as
+  link:../LogMessages.adoc#apisheriff-147[`ApiSheriff-147`]. The record takes no substitution and no
+  throwable, because the identity provider's answer is not sanitised.
+* *Every failure leaves a `DEBUG` line.* That line names the exception types in the failure's cause
+  chain, outermost first, joined by ` caused by `. It carries no exception and no exception message.
+  A message can carry the identity provider's answer or the refresh token itself. Every failure after
+  the first is a `DEBUG` line only.
+* *The logout always completes.* The local session destruction is the authoritative logout. A failed
+  revocation never changes the answer the browser gets.
+
+The latch follows ADR-0051. A caller can repeat a logout at will, so the caller must not set the
+volume of `WARN` lines. A session without a refresh token and a provider without a
+`revocation_endpoint` produce no request and no `WARN`.
+
+== Alternatives rejected
+
+=== Keep the no-op binding
+
+The seam would stay bound to a lambda that sends nothing.
+
+Rejected because the records then claimed a control the gateway did not perform. The threat model, the
+variant pages and the operator guides described a logout revocation that never happened. A refresh
+token taken from a session stayed usable after the user logged out.
+
+=== Dispatch the revocation asynchronously, off the request path
+
+The logout would hand the revocation to an executor, as the refresh coordinator does for its own
+revocation, and answer at once.
+
+Rejected for two reasons. The revocation would race the end-session redirect, so the browser could
+reach the identity provider before the gateway's request did. A failure could also no longer be tied
+to the logout that caused it. The refresh coordinator's case differs: its request has already failed,
+and the revocation there cleans up after it.
+
+=== Revoke before the local session destruction
+
+The seam would run first, and the gateway would destroy the local session afterwards.
+
+Rejected because the authoritative logout would then wait on the identity provider. A slow or
+unreachable provider would keep a session alive that the user asked to end. The local destruction is
+immediate and needs nothing from the provider, so it runs first.
+
+=== Record a failed revocation at `DEBUG` only
+
+The catch arm would keep the `DEBUG` line it had and add nothing.
+
+Rejected because a failed revocation is a failed security control. A `DEBUG` line is not visible at
+the default log level, so the operator would never learn that logouts leave refresh tokens valid.
+
+=== Report a failed revocation as a metric instead of a log record
+
+A counter would record each failed revocation.
+
+Rejected because no revocation metric exists, and the log catalogue is the established channel for a
+latched condition (`ApiSheriff-132`, `ApiSheriff-135`). A new metric would add a second channel for
+one condition.
+
+=== Record a missing `revocation_endpoint` as a `WARN`
+
+The binding would raise a `WARN` when the provider declares no `revocation_endpoint`.
+
+Rejected because the absence is the provider's declared capability, not a failed request. The gateway
+sends nothing, and nothing fails. The shared helper records it at `DEBUG` for both of its callers, and
+a `WARN` on one caller only would split their reporting. The operator can read the capability from the
+provider's discovery document.
+
+=== Also revoke the access token
+
+The binding would send a second revocation request for the access token.
+
+Rejected because most providers issue self-contained JWT access tokens. A resource server validates
+them offline and never asks the provider, so a revocation at the provider would not stop them. The
+request would add latency and claim a protection it does not give.
+
+=== Revoke on the back-channel logout path
+
+`BackchannelLogoutReceiver` would also revoke the refresh tokens of the sessions it destroys.
+
+Rejected because the identity provider initiated that logout and has already ended its own session.
+A revocation request from the gateway would repeat the provider's own work. It would also add a
+provider round trip to a reserved path that a caller reaches without a credential (ADR-0051).
+
+== Consequences
+
+* *A logout now ends the refresh token's life at the identity provider.* A refresh token taken from a
+  session can no longer mint access tokens after an RP-initiated logout, once the revocation succeeds.
+* *A slow identity provider delays the logout answer.* The delay is bounded by the latency bound above.
+  The local session is already gone during that wait, so the outcome of the logout never depends on
+  the provider.
+* *The access token outlives the logout.* It stays valid at a resource server until it expires. The
+  mitigations are short access-token lifetimes and provider-side revocation on logout, where the
+  provider supports it.
+* *The cookie-based BFF's in-flight residual shrinks but does not close.* A refresh in flight at
+  logout can deliver a new sealed session cookie through an updating write (ADR-0018). The logout
+  revokes the refresh token the logout request presents. A refresh whose rotation already ran can
+  still deliver a refresh token the logout never saw.
+* *A provider without a `revocation_endpoint` revokes nothing on logout.* Only a `DEBUG` line records
+  it. The operator learns the capability from the provider's discovery document.
+* *A repeated failure is visible once per runtime.* After the first `ApiSheriff-147`, further failures
+  appear only at `DEBUG`. An operator who sees the record must assume that later logouts fail too.
+
+== Links
+
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` -- the
+  `revokeOnLogout` binding, the shared `revokeRefreshToken` helper and the one `RevocationClient`
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogout.java` -- the
+  `TokenRevocation` seam, its call before the end-session redirect and the failure latch
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java` -- the local
+  session destruction that runs before the seam, and the resolved record it revokes for a session
+  already gone
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/SessionBinding.java` -- the
+  `destroy` contract that returns the destroyed record
+* `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogoutTest.java` -- the
+  seam call, the latched `WARN`, the logout that completes on failure, the `DEBUG` line that keeps
+  a token-carrying failure out of the log and the cut of a cause chain that loops back on itself
+* `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducerTest.java` -- the
+  RFC 7009 request the binding sends, and the cases that send nothing
+* `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpointTest.java` -- the
+  ordering after the local destruction, the token held at the destruction, the presented token in
+  cookie mode, and the session already gone at the destruction, whose resolved token is revoked
+* `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffLogoutIT.java` -- the
+  revocation observed at the integration stack's identity provider
+* link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]
+  -- the back channel and the back-channel origin the revocation request travels
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+  -- the session modes, the reserved paths and the cookie-based BFF's updating writes
+* link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]
+  -- the refresh path's own revocation and the in-flight refresh at session end
+* link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]
+  -- the rule that a caller who can repeat a condition gets a latched `WARN`
+* link:../security-threat-model.adoc#bff-09[Security threat model, BFF-09] -- the threat this control
+  answers and the residual it leaves
+* link:../LogMessages.adoc#apisheriff-147[Log messages, ApiSheriff-147] -- the latched failure record
