@@ -5,7 +5,8 @@
   "workstreams": [
     "WS-01-edge-transport",
     "WS-02-upstream-and-forwarding",
-    "WS-03-bff-login-availability"
+    "WS-03-bff-login-availability",
+    "WS-04-tier-2-quick-wins"
   ],
   "metadata": {
     "parallelization_scope": "2"

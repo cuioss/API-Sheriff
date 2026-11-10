@@ -37,10 +37,16 @@ The six findings, by priority rank:
 | 5 | M6 — an idle gRPC client is charged to the upstream circuit breaker | Medium (gRPC routes) | M | PLAN-SEC-02 |
 | 6 | C3 — after the response hand-over, a departed client never resets the upstream exchange | Low; Medium with streaming upstreams | S | PLAN-SEC-01 |
 
-Out of scope (tier 2 and below, kept in the operator's private assessment): the header-read
-deadline / connection cap for the main listener, the upstream pool wait bound, back-channel
-logout across replicas, the early-response quiet rule, the `/auth`-fronted sample, and every
-Low finding.
+Added 2026-11-10 on the operator's word (WS-04, PLAN-SEC-06): the cheap tier-2 fixes from the same
+assessment — the main listener's connection cap, the `/auth`-fronted sample's IdP routing, the JWKS
+refresh window's key pickup, an origin rule for unauthenticated WebSocket routes that re-admit
+`Authorization`, removal of the inert `forwarded.trust_scheme_host` key, and the tracked
+documentation that overclaims.
+
+Out of scope (kept in the operator's private assessment): the request-head deadline, the upstream
+pool wait bound and departure wake-up, back-channel logout across replicas, the PING-confirmed
+early-response exit, a management boot refusal, logout CSRF, the late-timeout answer, the
+detection-ledger items and the remaining Low findings.
 
 ## Queue annotations
 
@@ -50,6 +56,7 @@ Low finding.
 - PLAN-SEC-02 — held back on 2026-11-09 by the operator at the overlap prompt (2 shared doc files with the then-running PLAN-SEC-03), emitted after PLAN-SEC-03 merged. SHIPPED 2026-11-10 as PR #590 (81b46785) — see `landings/PLAN-SEC-02.md`. M5 closed; M6 closed for the client that sends no request byte (the threat model keeps GW-07 PARTIAL). Realized surface 34 files vs 13 declared, all doc/test propagation; only predicted doc files shared with the other plans.
 - PLAN-SEC-04 — staged 2026-11-09 from the PLAN-SEC-01 landing analysis: follow-up hardening of the new transport bounds plus the PLAN-SEC-01 test-coverage advisories (folded here, so that Watch is retired). Mechanism-level spec by operator choice; details in the operator's git-ignored local notes. Same `tls/` + `edge/terminal/` surface as the shipped PLAN-SEC-01; shares only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` with PLAN-SEC-02 / PLAN-SEC-03. SHIPPED 2026-11-10 as PR #589 (47e73a15) — see `landings/PLAN-SEC-04.md`. Realized surface 28 files vs 20 declared, all explained (log record, metric, retirement Javadoc, doc propagation); rebased over PLAN-SEC-02 with no content conflict.
 - PLAN-SEC-05 — staged 2026-11-10 on the operator's word from the PLAN-SEC-02 landing analysis (L3-A): finish M6 — the first-message bound covers a complete gRPC message, and a request stream the client holds open is not charged to the upstream. Mechanism-level spec; details in the operator's git-ignored local notes. Production surface `edge/upstream/**` + `edge/error/RejectionReporter`; shares only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` with PLAN-SEC-04. Held by the operator until PLAN-SEC-04 landed; at that landing's analysis PLAN-SEC-04's leftovers were folded in as Part B (deliverables 6–9: front dial budget, front accounting robustness, verify-first gate / relay-end probes, stale docs), widening the surface to `tls/**` and `edge/terminal/**` (14 → 33 declared entries). 9 deliverables, above the split threshold, kept as one plan on the operator's fold instruction; split into two serial PRs only if it would exceed CodeRabbit's 100-file cap.
+- PLAN-SEC-06 — staged 2026-11-10 on the operator's word: the tier-2 quick wins (WS-04), 6 deliverables, full-detail spec for what it fixes; the request-head deadline, pool wait bound and other larger items stay in the private assessment. Production surface `edge/admission/**` Javadoc, `auth/RetryingJwksLoader`, `config/**`, `bff/cookie` Javadoc, `deployment/compose-sample/**`; shares 4 documentation files and no production file with the running PLAN-SEC-05. Its findings were removed from the operator's private assessment document, as the tier-1 ones were.
 - All three plans share `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` (the latter declared as a HYPOTHESIS in PLAN-SEC-01 / PLAN-SEC-02, only if a new LogRecord is needed). Two shared files per pair means `next` puts the overlap to the operator. Both are append/row-local documentation edits in different sections, so a parallel launch risks at most a trivial doc rebase; no production file is shared.
 
 ## Decisions
@@ -68,6 +75,8 @@ Low finding.
 - 2026-11-10 — PLAN-SEC-04 landing review: layer 1 refuted claim 6 (a zero HTTP idle timeout never shortens the derived relay idle; the plan kept it derived and fixed); layer 3 found one major consequence (the dial window draws on the shared front cap) and minor accounting edges, plus three gate / relay-end points not shown by reading and stale documentation. All recorded in the operator's local security notes and, per the operator's standing instruction of 2026-11-10, folded into PLAN-SEC-05 as Part B with its Expected Surface updated in the same edit. The plan's outline-time possibility about a client leaving during the upstream head wait was refuted by reading. The 14 code-review advisories outside PLAN-SEC-05 deliverable 9 are left as logged.
 - 2026-11-10 — PLAN-SEC-04's landing repeated the review-body / Sonar count differences (4 vs 6; 0 vs 5), again artifacts (all handled; the Sonar search returned the first of four PR analyses). Recorded as false claims in the landing report as the contract requires; the recurrence and the new evidence were added to the routed `api-sheriff-security-hardening-tier-1-005` by `inbox amend` (revision 1) instead of a second message.
 - 2026-11-10 — inbox `plan-sec-04-edge-transport-bounds-follow-up-001.md` (landing, complete): reconciled. PLAN-SEC-05 released for emission.
+
+- 2026-11-10 — Tier-2 quick wins: the operator asked to stage them as one plan (minimise PRs) and remove them from the private assessment → WS-04 / PLAN-SEC-06. Taken: M1 part a (connection cap), C4 + F6 (sample), B8 (JWKS key pickup), D6 (WebSocket origin rule), F2 part a (delete `trust_scheme_host`, closing the 2026-11-10 operator follow-up), and the doc corrections B3, T7, C1 part a, C2 part a, T6 part a, D5, D2(a), D3, T2. Held back because their classes are held by the running PLAN-SEC-05: M3 part a (pool wait bound, `DispatchStage`) and R3 (`TerminalDispatch`). Disclosure: full detail for what the plan fixes, mechanism-only wording for the docs, consistent with the 2026-11-07 decision.
 
 ## Open Defects
 
