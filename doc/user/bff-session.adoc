@@ -775,7 +775,9 @@ IdP.
 *What the logout revokes.* In each of these cases, after the session is destroyed and before
 the browser is redirected, the gateway tries to revoke the session's refresh token at the IdP's
 `revocation_endpoint` (RFC 7009). It revokes the token the session held when it was destroyed, so a
-refresh that rotated the token while the logout was running is covered. When discovery fails, the
+refresh that rotated the token while the logout was running is covered. When something else ended
+the session after the logout found it and before it destroyed it, the gateway revokes the refresh
+token of the session the logout found instead. When discovery fails, the
 revocation's own metadata read fails too: the attempt is reported as `ApiSheriff-146` and nothing is revoked. Where the revocation
 succeeds, a refresh token stolen from the session can no longer mint access tokens. What it does
 not revoke:
@@ -801,10 +803,12 @@ IdP's revocation endpoint over its back channel and that the IdP accepts the gat
 authentication there -- until then, logouts leave refresh tokens valid until they expire.
 
 A logout without a live session answers the same redirect to `oidc.logout.final_redirect` and
-clears the cookie. There is no session token to revoke, so no revocation request is sent. The same
-holds when something else -- a back-channel logout, say -- ended the session after the logout found
-it and before it destroyed it: nothing is revoked, but the browser is still redirected as described
-above, to the IdP's end-session endpoint where one is usable.
+clears the cookie. There is no session token to revoke, so no revocation request is sent. A logout
+that found a live session which something else -- a new login of the same user, the expiry sweep, a
+back-channel logout -- ended before the logout destroyed it is different: the gateway revokes the
+refresh token of the session it found, as described above, and the browser is still redirected to
+the IdP's end-session endpoint where one is usable. Revoking a token that is already invalid does no
+harm; the IdP answers it with success.
 
 [[backchannel-logout]]
 === Back-channel logout: what the identity provider must send

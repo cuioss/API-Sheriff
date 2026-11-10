@@ -50,8 +50,10 @@ gateway holds in confidence.* The rule has five parts.
   names stay reserved anyway, so no member can pose as one.
 . *JSON-shaped, non-null values.* A value is a string, a number, a boolean, a collection or a map.
   The constructor refuses a `null` name or value. It copies the member map and every collection
-  value, so a caller cannot change the body after the rejection is raised. `GatewayJson` serializes
-  each member name and value with RFC 8259 string escaping.
+  value, so a caller cannot add, remove or replace a member, or change a collection member, after
+  the rejection is raised. A map value is not copied: it is held by reference, so a caller that
+  kept the map could still change it. No call site passes a map-valued member. `GatewayJson`
+  serializes each member name and value with RFC 8259 string escaping.
 . *Disclosed, so confined.* The exception message is for the log only and never reaches the body.
   A member does reach the client. It therefore never carries token material or a session identifier.
   Text taken from the request appears in a member only percent-encoded inside a URL the gateway

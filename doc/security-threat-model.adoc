@@ -2990,6 +2990,11 @@ back-channel with the runtime's one client authentication
 The token revoked is the one the session held when it was destroyed: the binding's destruction hands
 back the record it removed, so in server mode a refresh that rotated the token after the logout
 resolved the session is honoured, and in cookie mode it is the token sealed in the presented cookie.
+When another path ended a server-mode session between the logout's resolve and its destruction -- a
+concurrent login evicting the subject's oldest session, the expiry sweep, or a concurrent resolve
+evicting it as expired -- the destruction hands back nothing and none of those paths revokes
+anything, so the logout revokes the refresh token of the record it resolved; a token a rotation
+already spent is answered with success (RFC 7009, section 2.2), so that revocation is harmless.
 The request runs synchronously, so a slow provider delays the logout answer, bounded by the engine's
 connect and read timeouts; the session is already gone during that wait. A failed revocation never
 turns the logout into an error: the first failure per runtime is the `WARN`
@@ -3014,10 +3019,7 @@ RP-initiated logout and nothing else:
 * *Nothing at all, where no request can be sent.* A session that holds no refresh token -- with
   `oidc.session.refresh.enabled=false`, or when the provider granted none -- and a provider that
   publishes no `revocation_endpoint` get no revocation request. The missing endpoint is recorded at
-  `DEBUG` only, so the operator reads that capability from the provider's discovery document. Nor
-  does a logout whose session something else ended between the logout's resolve and its destruction:
-  the destruction hands back nothing, so there is no token to revoke, and the end-session redirect is
-  still built.
+  `DEBUG` only, so the operator reads that capability from the provider's discovery document.
 
 The mitigations are short access-token lifetimes and the identity provider's own revocation on
 logout where it supports it. The refresh path's revocation is separate (<<bff-08>>).
@@ -3072,8 +3074,11 @@ with `no-store` (`GatewayEdgeGatewayCookieTest`, `ServerMode`). The revocation s
 logged-out session once, after the binding destroyed it, and a seam that throws leaves the `302`, the
 ended session and the cleared cookie unchanged (`LogoutEndpointTest`). A refresh that rotates the
 refresh token between the logout's resolve and its destruction gets the rotated token revoked, not
-the resolve-time one; a session something else ended in that window revokes nothing and still
-redirects to the `end_session_endpoint` with the cookie cleared; and in cookie mode the seam receives
+the resolve-time one; a session something else ended in that window gets the resolve-time token
+revoked, once, and still redirects to the `end_session_endpoint` with the cookie cleared
+(`shouldRevokeNothingWhenTheSessionWasGoneAtDestruction`, which keeps its original name), while such
+a session that holds no refresh token hands the seam a record with none to revoke
+(`shouldHaveNoRefreshTokenToRevokeWhenTheGoneSessionHeldNone`); and in cookie mode the seam receives
 the token sealed in the presented cookie, not a successor the browser has not stored
 (`LogoutEndpointTest`). In server mode the store and the binding return the record their destruction
 removed, rotated material included, and nothing when the session was already gone
@@ -3083,7 +3088,9 @@ end-session redirect is built and also when none can be built, and a failing rev
 as `ApiSheriff-146` once over repeated logouts and at `DEBUG` afterwards (`RpInitiatedLogoutTest`).
 No record at any level carries the refresh token, also when the failing seam puts it into its
 exception's message and its cause's: the `DEBUG` line names only the exception types of the cause
-chain (`RpInitiatedLogoutTest`, `shouldKeepATokenCarryingRevocationFailureOutOfTheLog`).
+chain (`RpInitiatedLogoutTest`, `shouldKeepATokenCarryingRevocationFailureOutOfTheLog`), and a cause
+chain that loops back on itself is named type by type once while the logout still completes
+(`RpInitiatedLogoutTest`, `shouldCutACauseChainThatLoopsBackOnItself`).
 The produced runtime's logout revokes the ended session's refresh token in one RFC 7009 request with
 `token_type_hint=refresh_token`, authenticated with the runtime's one client authentication and never
 naming the access token; a session without a refresh token and a provider without a

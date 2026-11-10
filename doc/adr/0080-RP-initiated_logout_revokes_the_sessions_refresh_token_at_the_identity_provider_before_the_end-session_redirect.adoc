@@ -46,9 +46,9 @@ The mechanism has four parts:
   travels the back channel through `oidc.back_channel_origin`, like every other gateway-to-provider
   call (ADR-0069).
 * *Synchronous, after the local destruction.* `LogoutEndpoint` destroys the local session first. It
-  then calls `RpInitiatedLogout.initiate` with the record the destruction returned. That method calls
-  the seam once, before it builds the end-session redirect. It also calls the seam when no redirect
-  can be built.
+  then calls `RpInitiatedLogout.initiate` with the record the destruction returned, or with the
+  record it resolved when the destruction returned none. That method calls the seam once, before it
+  builds the end-session redirect. It also calls the seam when no redirect can be built.
 * *Metadata read per logout.* The binding reads the provider metadata when the logout runs, not when
   the logout endpoint is assembled. A provider that is unreachable at boot therefore never blocks the
   logout endpoint.
@@ -66,7 +66,8 @@ exchange, so the gateway never stores or seals one. An identity provider can als
 | server-session BFF
 | `true` (default)
 | The token the store held when the logout destroyed the session. The destruction hands back the
-  record it removed, so a rotation written after the logout resolved the session is included.
+  record it removed, so a rotation written after the logout resolved the session is included. When
+  another path had already ended the session, the token of the record the logout resolved.
 | Revokes it.
 
 | server-session BFF
@@ -95,10 +96,15 @@ that case at `DEBUG` for both of its callers.
 
 `SessionBinding.destroy` returns the destroyed record, and `RpInitiatedLogout.initiate` receives that
 record. The server-session binding returns the record the store removed. The cookie-based binding
-holds nothing server-side and returns the record the request presented. A session can also be gone
-when the logout destroys it, because something else ended it after the logout resolved it. That
-logout revokes nothing. `LogoutEndpoint` still builds the end-session redirect, through
-`RpInitiatedLogout.endSessionRedirect`.
+holds nothing server-side and returns the record the request presented.
+
+A server-session can also be gone when the logout destroys it, because another path ended it after
+the logout resolved it: a concurrent login that evicts the subject's oldest session, the periodic
+expiry sweep, or a concurrent resolve that evicts it as expired. None of those paths revokes
+anything, and the destruction returns no record. `LogoutEndpoint` then hands
+`RpInitiatedLogout.initiate` the record it resolved, so the logout revokes that record's refresh
+token and still builds the end-session redirect. If a rotation had already spent that token, the
+revocation is harmless: RFC 7009, section 2.2 answers a token that is already invalid with success.
 
 === What is not revoked
 
@@ -245,18 +251,18 @@ provider round trip to a reserved path that a caller reaches without a credentia
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogout.java` -- the
   `TokenRevocation` seam, its call before the end-session redirect and the failure latch
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java` -- the local
-  session destruction that runs before the seam, and the redirect without revocation for a session
+  session destruction that runs before the seam, and the resolved record it revokes for a session
   already gone
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/SessionBinding.java` -- the
   `destroy` contract that returns the destroyed record
 * `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogoutTest.java` -- the
-  seam call, the latched `WARN`, the logout that completes on failure and the `DEBUG` line that keeps
-  a token-carrying failure out of the log
+  seam call, the latched `WARN`, the logout that completes on failure, the `DEBUG` line that keeps
+  a token-carrying failure out of the log and the cut of a cause chain that loops back on itself
 * `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducerTest.java` -- the
   RFC 7009 request the binding sends, and the cases that send nothing
 * `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpointTest.java` -- the
   ordering after the local destruction, the token held at the destruction, the presented token in
-  cookie mode and the session already gone at the destruction
+  cookie mode, and the session already gone at the destruction, whose resolved token is revoked
 * `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffLogoutIT.java` -- the
   revocation observed at the integration stack's identity provider
 * link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]
