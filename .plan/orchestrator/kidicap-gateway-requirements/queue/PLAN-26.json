@@ -2,9 +2,9 @@
   "id": "PLAN-26",
   "slug": "logout-truth-up",
   "workstream": "WS-04",
-  "status": "launched",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "status": "shipped",
+  "plan_marshall_plan_id": "plan-26-logout-truth-up",
+  "pr": "#592",
+  "landing": "landings/PLAN-26.md",
   "seq": 14
 }

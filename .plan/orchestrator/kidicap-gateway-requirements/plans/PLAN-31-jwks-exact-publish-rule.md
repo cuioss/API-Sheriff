@@ -105,15 +105,15 @@ Split guard: 3 deliverables.
 ## Claim Labels
 
 - OBSERVED: `settleRefresh` discards the fresh delegate when `fresh.getKeyInfo(kid).isEmpty()` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java` § `settleRefresh`, at `5c2a8143`
-  - verdict: corroborated | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.settleRefresh :554 still discards the fresh delegate when fresh.getKeyInfo(kid) is empty; no Jwks source, ADR-0063 or pom.xml change since c85817d9
+  - verdict: corroborated | checked_at: ad00807d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.settleRefresh :554 still discards the fresh delegate when fresh.getKeyInfo(kid) is empty (:556); no Jwks source, ADR-0063 or pom.xml change since 2200ddb2 (empty diff stat)
 - OBSERVED: `RetryingJwksLoader.getKeyIds()` delegates to the current delegate's active set and was added by #449 — read in the diff of `5c2a8143`
-  - verdict: corroborated | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.getKeyIds :684-685 is Set.copyOf(snapshot.get().delegate().getKeyIds()); unchanged since c85817d9
+  - verdict: corroborated | checked_at: ad00807d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.getKeyIds :684-685 is Set.copyOf(snapshot.get().delegate().getKeyIds()); unchanged
 - OBSERVED: `main` pins `version.token-sheriff` 0.9.7 — read at `pom.xml`, at `5c2a8143`
-  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: pom.xml :63 pins version.token-sheriff 0.9.8, not 0.9.7; TokenSheriff has no 0.9.9 tag yet (tags end at 0.9.8, read via ls-remote); rescoped in the spec banner 2026-11-09
+  - verdict: contradicted | checked_at: ad00807d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: pom.xml :63 pins version.token-sheriff 0.9.8, not 0.9.7; TokenSheriff tags end at 0.9.8 (ls-remote re-read 2026-11-10, no 0.9.9); rescoped in the spec banner 2026-11-09
 - OBSERVED: ADR-0063 § Risks and the threat model's GW-07 residual both say closing the residual needs a key-id accessor that 0.9.6 lacks — read at `doc/adr/0063-…adoc` (~lines 219–227) and `doc/security-threat-model.adoc` (~lines 1276–1290), at `5c2a8143`
-  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: premise holds but the locations moved: ADR-0063 Risks :161 and the threat-model residual :1348-1358; rescoped in the spec banner 2026-11-09
+  - verdict: contradicted | checked_at: ad00807d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: premise holds but the locations moved: ADR-0063 Risks :159 and the threat-model residual :1388-1394 (moved by #592); rescoped in the spec banner 2026-11-09
 - HYPOTHESIS: `JwksKeyRotationIT` can drive a rotation behind a claimed window end to end — confirm/refute at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/JwksKeyRotationIT.java` (verify-at-outline)
-  - verdict: unverifiable | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: outline judgement: JwksKeyRotationIT has a single test, rotatedKeyIsAcceptedTheFloodIsBoundedAndALoginRecovers :158, with a flood leg (inventedKeyIdsAreBounded :210); a combined rotation-behind-a-claimed-window leg is constructible from the rig helpers, unproven
+  - verdict: unverifiable | checked_at: ad00807d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: outline judgement: JwksKeyRotationIT has one test rotatedKeyIsAcceptedTheFloodIsBoundedAndALoginRecovers :158 with a flood leg inventedKeyIdsAreBounded :210; a combined rotation-behind-a-claimed-window leg is constructible from the rig helpers, unproven
 
 ## Expected Surface
 
