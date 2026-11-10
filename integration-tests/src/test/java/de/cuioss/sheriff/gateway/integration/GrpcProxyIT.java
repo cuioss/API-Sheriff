@@ -385,6 +385,9 @@ class GrpcProxyIT extends BaseIntegrationTest {
                                     body, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))))
                             .onSuccess(outcome::complete)
                             .onFailure(outcome::completeExceptionally);
+                    // Any synchronous send failure, whatever its type, must fail the outcome future rather
+                    // than hang the call into the idle timeout, so the catch is deliberately broad.
+                    // cui-rewrite:disable InvalidExceptionUsageRecipe
                     try {
                         if (halfClose) {
                             request.end(requestBytes).onFailure(outcome::completeExceptionally);
