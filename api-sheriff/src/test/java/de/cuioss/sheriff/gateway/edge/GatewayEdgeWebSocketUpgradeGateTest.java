@@ -192,6 +192,29 @@ class GatewayEdgeWebSocketUpgradeGateTest {
     }
 
     @Test
+    @DisplayName("an upgrade token on a later Connection line only, or websocket inside an Upgrade list, is answered 426 and dials nothing")
+    void upgradeHeadersTheHandshakeRefusesAreRefusedBeforeAnyDial() throws Exception {
+        List<String> laterConnectionLine = List.of("Upgrade: websocket", "Connection: keep-alive",
+                "Connection: Upgrade", "Sec-WebSocket-Key: " + SAMPLE_KEY, "Sec-WebSocket-Version: 13",
+                "Origin: " + ORIGIN);
+        List<String> websocketInsideList = List.of("Upgrade: chat, websocket", "Connection: Upgrade",
+                "Sec-WebSocket-Key: " + SAMPLE_KEY, "Sec-WebSocket-Version: 13", "Origin: " + ORIGIN);
+
+        Answer laterLine = rawHttp11(laterConnectionLine);
+        Answer insideList = rawHttp11(websocketInsideList);
+
+        assertAll("both are refused by the edge, not by the HTTP stack after the upstream was dialled",
+                () -> assertEquals(426, laterLine.status(), "Vert.x reads only the first Connection line"),
+                () -> assertEquals("websocket", laterLine.headers().get("Upgrade"),
+                        "the 426 names the protocol to switch to"),
+                () -> assertEquals(426, insideList.status(),
+                        "the handshake accepts websocket only as the whole Upgrade value"),
+                () -> assertEquals("websocket", insideList.headers().get("Upgrade"),
+                        "the 426 names the protocol to switch to"));
+        assertNothingDialedAndPermitsReturned();
+    }
+
+    @Test
     @DisplayName("an HTTP/1.1 upgrade with Sec-WebSocket-Version 8 is answered 426 naming version 13")
     void unsupportedVersionIsRefusedNamingVersion13() throws Exception {
         Answer answer = rawHttp11(handshake("8", SAMPLE_KEY));

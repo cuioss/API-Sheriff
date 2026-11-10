@@ -100,7 +100,9 @@ contact* -- it takes no relay budget and the upstream is never dialled:
 | `Allow: GET`
 
 | Not HTTP/1.1 -- an HTTP/2 request, for example -- or missing the `Connection: Upgrade` /
-  `Upgrade: websocket` pair (a plain `GET`)
+  `Upgrade: websocket` pair (a plain `GET`). `Upgrade` must be a token of the *first* `Connection`
+  header line, and `websocket` the whole value of an `Upgrade` line rather than one entry of a list
+  such as `chat, websocket`
 | `426`
 | On HTTP/1.x `Upgrade: websocket` and `Connection: Upgrade`; on HTTP/2 none, as HTTP/2 forbids both
 
@@ -137,9 +139,10 @@ Each refusal has no body; like every response on the route, it carries the route
 `security_headers` and any `Set-Cookie` line the session handling wrote for the request, such as a
 refreshed session cookie. The rules are checked in a fixed order -- the method,
 the HTTP version, the upgrade headers, repeated handshake fields, the WebSocket version, the key, the
-declared body length, the request URI -- and the first one broken decides the answer. The last two
-mirror what the gateway's HTTP stack (vertx-core 4.5.34) would itself refuse in a handshake, so a
-request the gateway lets through is not refused by the stack after the upstream was dialled. A
+declared body length, the request URI -- and the first one broken decides the answer. The last two,
+and the exact form the upgrade headers must take, mirror what the gateway's HTTP stack
+(vertx-core 4.5.34) would itself refuse in a handshake, so a request the gateway lets through is not
+refused by the stack after the upstream was dialled. A
 WebSocket can only be opened over HTTP/1.1, so a client that negotiated HTTP/2 with the gateway has to
 offer HTTP/1.1 for its WebSocket connections.
 

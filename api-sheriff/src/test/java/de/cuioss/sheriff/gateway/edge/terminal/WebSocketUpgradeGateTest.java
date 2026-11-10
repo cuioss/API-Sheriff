@@ -78,23 +78,33 @@ class WebSocketUpgradeGateTest {
         }
 
         @Test
-        @DisplayName("a token is found anywhere in a comma-separated list, with surrounding whitespace")
-        void acceptsTokenInsideCommaList() {
-            MultiMap headers = validHandshake()
-                    .set(WebSocketUpgradeGate.CONNECTION_HEADER, "keep-alive ,  Upgrade")
-                    .set(WebSocketUpgradeGate.UPGRADE_HEADER, "foo/1, websocket");
+        @DisplayName("the upgrade token is found anywhere in a comma-separated Connection value, with surrounding whitespace")
+        void acceptsUpgradeTokenInsideCommaList() {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONNECTION_HEADER, "keep-alive ,  Upgrade");
 
             assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
                     judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
         }
 
         @Test
-        @DisplayName("a token is found on any of several repeated header lines")
-        void acceptsTokenOnRepeatedHeaderLine() {
+        @DisplayName("the upgrade token on the first of several Connection lines is accepted")
+        void acceptsUpgradeTokenOnTheFirstConnectionLine() {
             MultiMap headers = validHandshake();
             headers.remove(WebSocketUpgradeGate.CONNECTION_HEADER);
-            headers.add(WebSocketUpgradeGate.CONNECTION_HEADER, "keep-alive")
-                    .add(WebSocketUpgradeGate.CONNECTION_HEADER, "Upgrade");
+            headers.add(WebSocketUpgradeGate.CONNECTION_HEADER, "Upgrade")
+                    .add(WebSocketUpgradeGate.CONNECTION_HEADER, "keep-alive");
+
+            assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
+                    judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @Test
+        @DisplayName("websocket as the whole value of any of several Upgrade lines is accepted")
+        void acceptsWebsocketAsTheWholeValueOfAnyUpgradeLine() {
+            MultiMap headers = validHandshake();
+            headers.remove(WebSocketUpgradeGate.UPGRADE_HEADER);
+            headers.add(WebSocketUpgradeGate.UPGRADE_HEADER, "chat")
+                    .add(WebSocketUpgradeGate.UPGRADE_HEADER, WEBSOCKET);
 
             assertSame(WebSocketUpgradeGate.Verdict.Accepted.INSTANCE,
                     judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
@@ -146,6 +156,27 @@ class WebSocketUpgradeGateTest {
             MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONNECTION_HEADER, "keep-alive, upgraded");
 
             assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers));
+        }
+
+        @Test
+        @DisplayName("an upgrade token on a later Connection line only is refused 426: Vert.x reads the first line alone")
+        void refusesUpgradeTokenOnALaterConnectionLineOnly() {
+            MultiMap headers = validHandshake();
+            headers.remove(WebSocketUpgradeGate.CONNECTION_HEADER);
+            headers.add(WebSocketUpgradeGate.CONNECTION_HEADER, "keep-alive")
+                    .add(WebSocketUpgradeGate.CONNECTION_HEADER, "Upgrade");
+
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers),
+                    "Vert.x would answer 400 to this handshake after the upstream was dialled");
+        }
+
+        @Test
+        @DisplayName("websocket only inside an Upgrade list is refused 426: the handshake accepts the whole value alone")
+        void refusesWebsocketInsideAnUpgradeList() {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.UPGRADE_HEADER, "chat, websocket");
+
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers),
+                    "the handshake would answer 400 to this request after the upstream was dialled");
         }
 
         @Test
@@ -275,6 +306,12 @@ class WebSocketUpgradeGateTest {
      * vertx-core 4.5.34 buffers at most 8192 bytes of a handshake request body and answers a larger one
      * {@code 413} with a connection close ({@code Http1xServerRequest.webSocket()}); the gate refuses
      * the same body from its declared length.
+     */
+    /**
+     * The gate judges every declared {@code Content-Length} on its own. Through the pipeline a
+     * {@code Content-Length} that is no decimal number, and a second {@code Content-Length} line, are
+     * refused by the framing gate before route selection, so the cases declaring them pin the gate's
+     * defence in depth; a single decimal length above 8192 on a {@code GET} is the one that reaches it.
      */
     @Nested
     @DisplayName("a handshake declaring a body above 8192 bytes is refused 413 and retires its connection")

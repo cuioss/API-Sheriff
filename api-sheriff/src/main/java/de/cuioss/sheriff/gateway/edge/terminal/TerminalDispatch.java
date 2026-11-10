@@ -252,25 +252,26 @@ public final class TerminalDispatch {
      * {@link WebSocketUpgradeGate} judges the handshake. A request sent with another method than
      * {@code GET} is refused {@code 405} with {@code Allow: GET} — the route's effective
      * {@code allowed_methods} does not narrow a WebSocket route to {@code GET}, so the gate is where
-     * that is enforced. A request that is not HTTP/1.1, or does not carry the
-     * {@code Connection: upgrade} and {@code Upgrade: websocket} tokens, is refused {@code 426} — on
-     * HTTP/1.x with {@code Upgrade: websocket} and {@code Connection: Upgrade}; a
-     * {@code Sec-WebSocket-Version} or {@code Sec-WebSocket-Key} repeated on a second header line is
-     * refused {@code 400}; a {@code Sec-WebSocket-Version} other than {@code 13} is refused
-     * {@code 426} with {@code Sec-WebSocket-Version: 13}; a missing version, or a missing
-     * {@code Sec-WebSocket-Key} or one that is not the padded base64 of a 16-byte nonce, is refused
-     * {@code 400}; a declared {@code Content-Length} above 8192 bytes is refused {@code 413} — reached
-     * only under the {@code security_defaults.allow_get_with_content_length_body} opt-in, since the
-     * framing gate refuses a {@code GET} declaring a body before route selection without it; a request
+     * that is enforced. A request that is not HTTP/1.1, whose first {@code Connection} header line does
+     * not carry the token {@code upgrade}, or that has no {@code Upgrade} header line whose whole value
+     * is {@code websocket}, is refused {@code 426} — on HTTP/1.x with {@code Upgrade: websocket} and
+     * {@code Connection: Upgrade}; a {@code Sec-WebSocket-Version} or {@code Sec-WebSocket-Key} repeated
+     * on a second header line is refused {@code 400}; a {@code Sec-WebSocket-Version} other than
+     * {@code 13} is refused {@code 426} with {@code Sec-WebSocket-Version: 13}; a missing version, or a
+     * missing {@code Sec-WebSocket-Key} or one that is not the padded base64 of a 16-byte nonce, is
+     * refused {@code 400}; a single decimal {@code Content-Length} above 8192 bytes is refused
+     * {@code 413} — reached only under the {@code security_defaults.allow_get_with_content_length_body}
+     * opt-in, since the framing gate refuses a {@code GET} declaring a body before route selection
+     * without it, and refuses a non-decimal or repeated {@code Content-Length} on every method; a request
      * URI that does not parse as a {@link java.net.URI} is refused {@code 400}. On HTTP/1.x every refusal
      * of a request declaring a body above 8192 bytes — the {@code 413} and an earlier {@code 405},
      * {@code 426} or {@code 400} alike — carries the {@code close} connection option, and the connection
      * is closed once the answer has been written, since the unread body behind it would frame the next
-     * request. The {@code 413} and the unparseable request URI mirror the remaining refusals of the
-     * vertx-core 4.5.34 HTTP/1.1 upgrade path, so a request the gate admits is not refused by the HTTP
-     * stack after the upstream was dialed. A refusal releases the general admission permit through the
-     * shared guard and is logged at {@code DEBUG} with the route id and the answered status, and no
-     * request data. Without
+     * request. The two header rules, the {@code 413} and the unparseable request URI mirror the remaining
+     * refusals of the vertx-core 4.5.34 HTTP/1.1 upgrade path, so a request the gate admits is not
+     * refused by the HTTP stack after the upstream was dialed. A refusal releases the general admission
+     * permit through the shared guard and is logged at {@code DEBUG} with the route id and the answered
+     * status, and no request data. Without
      * the gate an HTTP/2 request or a plain {@code GET} would have dialed the upstream and held a permit
      * until the relay's client upgrade failed.
      * <p>

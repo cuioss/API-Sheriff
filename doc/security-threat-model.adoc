@@ -1914,7 +1914,8 @@ session, takes a relay sub-budget permit or dials the upstream, `WebSocketUpgrad
 a request on a `protocol: websocket` route is a valid opening handshake (RFC 6455 §4.2.1). A method
 other than `GET` is refused `405` with `Allow: GET` first -- the route's effective `allowed_methods`
 falls back to every standard method, so nothing before the gate enforces it. A request that is not
-HTTP/1.1, or does not carry the `Connection: upgrade` and `Upgrade: websocket` tokens, is refused
+HTTP/1.1, whose first `Connection` header line does not carry the token `upgrade`, or that has no
+`Upgrade` header line whose whole value is `websocket`, is refused
 `426` -- on HTTP/1.x with `Upgrade: websocket` and `Connection: Upgrade`, on HTTP/2 with neither, as
 both are connection-specific fields HTTP/2 forbids. A `Sec-WebSocket-Version` or `Sec-WebSocket-Key`
 sent on more than one header line is refused `400` before either value is read, so a handshake is
@@ -1935,9 +1936,12 @@ vertx-core 4.5.34 HTTP/1.1 upgrade path (`Http1xServerRequest.webSocket()`,
 `Http1xServerConnection.createHandshaker`) before any dial: Vert.x answers a handshake body above
 8192 bytes `413` and closes the connection, an unparseable request URI `400`, a method other than
 `GET` `405` and an unsupported version `426` -- all of which the gate now answers first -- and it
-refuses no `Host`, which it only concatenates into the WebSocket location. Its `400` to a
-`Connection` header without the letters `upgrade` is covered by the gate's stricter `426` for a
-missing `upgrade` token. The refusal returns the general admission permit and is written through
+refuses no `Host`, which it only concatenates into the WebSocket location. Its `400` to a first
+`Connection` line without the letters `upgrade` -- it reads no later `Connection` line -- is covered
+by the gate's stricter `426` for a first `Connection` line without the `upgrade` token, and the `400`
+it answers when the handshake it completes through Netty's `WebSocketServerHandshaker13` finds no
+`Upgrade` value equal to `websocket` (`ServerWebSocketImpl.doHandshake`) by the gate's `426` for the
+same. The refusal returns the general admission permit and is written through
 `ResponseEnds.reject` with no problem document. Being decided after route selection and
 authentication, it carries what every response after route selection carries: the route's
 `security_headers`, its own headers (which win over a security header of the same name) and the
@@ -1969,7 +1973,9 @@ exactly one rule of a valid handshake. `GatewayEdgeWebSocketUpgradeGateTest` dri
 through the edge -- an HTTP/2 `GET`, a plain HTTP/1.1 `GET`, an unsupported version, a missing key and
 a valid handshake sent with `POST`, `PUT` and `DELETE` (`http2GetIsRefusedBeforeAnyDial`,
 `plainHttp11GetIsRefusedBeforeAnyDial`, `unsupportedVersionIsRefusedNamingVersion13`,
-`missingKeyIsRefused400`, `nonGetHandshakeIsRefused405`), a handshake declaring a body above 8192
+`missingKeyIsRefused400`, `nonGetHandshakeIsRefused405`), an `upgrade` token on a later `Connection`
+line only and `websocket` inside an `Upgrade` list, each answered `426`
+(`upgradeHeadersTheHandshakeRefusesAreRefusedBeforeAnyDial`), a handshake declaring a body above 8192
 bytes and one whose request URI does not parse, the latter on a `security_filter.profile: minimal`
 route because every other profile's url-parameter validation refuses that query before the gate
 (`oversizedDeclaredBodyIsRefused413AndClosesTheConnection`, `unparseableRequestUriIsRefused400`), and

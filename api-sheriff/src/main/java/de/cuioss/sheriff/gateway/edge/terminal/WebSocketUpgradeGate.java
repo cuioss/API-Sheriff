@@ -42,9 +42,10 @@ import org.jspecify.annotations.Nullable;
  * headers; no Vert.x internal API (such as {@code HttpUtils.canUpgradeToWebSocket} or
  * {@code HttpUtils.getWebSocketLocation}) is consulted. Together they cover every refusal the HTTP/1.1
  * upgrade path of vertx-core 4.5.34 itself answers ({@code Http1xServerRequest.webSocket()},
- * {@code Http1xServerConnection.createHandshaker}), so no request the gate admits is refused by the
- * HTTP stack after the edge has spent a relay permit and an upstream dial on it. They are checked in
- * this order, and the first one broken decides the answer:
+ * {@code Http1xServerConnection.createHandshaker}, and the Netty {@code WebSocketServerHandshaker13}
+ * handshake whose failure {@code ServerWebSocketImpl.doHandshake} answers {@code 400}), so no request
+ * the gate admits is refused by the HTTP stack after the edge has spent a relay permit and an upstream
+ * dial on it. They are checked in this order, and the first one broken decides the answer:
  * <ol>
  *   <li>the method is <strong>{@code GET}</strong> — an opening handshake is a {@code GET}
  *       (RFC 6455 §4.1, item 2), so any other method is refused {@code 405} with {@code Allow: GET}.
@@ -52,8 +53,13 @@ import org.jspecify.annotations.Nullable;
  *       {@code allowed_methods} falls back to every standard method like any other route's;</li>
  *   <li>the request is <strong>HTTP/1.1</strong> — a WebSocket is opened by the HTTP/1.1 upgrade
  *       mechanism (RFC 9110 §7.8), so any other version is refused {@code 426};</li>
- *   <li>{@code Connection} carries the token {@code upgrade} — refused {@code 426} otherwise;</li>
- *   <li>{@code Upgrade} carries the token {@code websocket} — refused {@code 426} otherwise;</li>
+ *   <li>the <strong>first</strong> {@code Connection} header line carries the token {@code upgrade} —
+ *       refused {@code 426} otherwise. {@code Http1xServerConnection.createHandshaker} reads
+ *       {@code Connection} through {@code getHeader}, its first value, and answers {@code 400} when that
+ *       lacks {@code upgrade}, so the token on a later line alone is not enough;</li>
+ *   <li>an {@code Upgrade} header line has the <strong>whole value</strong> {@code websocket} — refused
+ *       {@code 426} otherwise. The Netty handshake accepts only a value equal to {@code websocket}, so
+ *       {@code websocket} as one entry of a list such as {@code chat, websocket} is not enough;</li>
  *   <li>neither {@code Sec-WebSocket-Version} nor {@code Sec-WebSocket-Key} occurs on more than one
  *       header line — refused {@code 400} otherwise, before either value is read (RFC 6455 §11.3.1,
  *       §11.3.5);</li>
@@ -66,20 +72,23 @@ import org.jspecify.annotations.Nullable;
  *   <li>a declared {@code Content-Length} is at most 8192 bytes — refused {@code 413} otherwise, which
  *       retires the connection (see below). Vert.x buffers at most 8192 bytes of a handshake request
  *       body and answers a larger one {@code 413} and closes the connection; the gate refuses the same
- *       body from its declared length, before a byte of it is read. A declared length that is no
- *       decimal number is refused the same way, since it cannot be shown to stay within the bound. The
- *       {@code 413} is reached only by a {@code GET} declaring a length, and a {@code GET} reaches the
- *       gate with a declared length only under the
- *       {@code security_defaults.allow_get_with_content_length_body} opt-in, and never with
- *       {@code Transfer-Encoding}: the framing gate refuses a declared length on {@code GET} without
- *       that opt-in, and {@code Transfer-Encoding} on {@code GET} always, before route selection;</li>
+ *       body from its declared length, before a byte of it is read. Through the pipeline the {@code 413}
+ *       is reached only by a {@code GET} whose single {@code Content-Length} is a decimal number above
+ *       8192, and only under the {@code security_defaults.allow_get_with_content_length_body} opt-in:
+ *       the framing gate refuses a declared length on {@code GET} without that opt-in, and
+ *       {@code Transfer-Encoding} on {@code GET} always, before route selection. The framing gate also
+ *       refuses, on every method and whatever the opt-in, a {@code Content-Length} that is no decimal
+ *       number and a second {@code Content-Length} line, so neither reaches this gate. The gate refuses
+ *       them {@code 413} as well, since neither can be shown to stay within the bound; behind the
+ *       framing gate that branch is defence in depth;</li>
  *   <li>the request URI parses as a {@link URI} — refused {@code 400} otherwise. Vert.x composes the
  *       handshake's WebSocket location from it and answers {@code 400} when it cannot be parsed. The
  *       location's other part, the {@code Host} header, is concatenated as it is and never refused
  *       there, so the gate adds no {@code Host} rule.</li>
  * </ol>
- * Token matching is case-insensitive and reads every value of the header as a comma-separated list,
- * across repeated header lines (RFC 9110 §5.3).
+ * Both header rules compare case-insensitively and read the headers as the upgrade path does: the
+ * first {@code Connection} line as a comma-separated list of options (RFC 9110 §7.6.1), and every
+ * {@code Upgrade} line as one value, trimmed.
  * <p>
  * <strong>A declared body above the bound retires the connection, whichever rule refuses.</strong> The
  * gate never reads a request body, so on HTTP/1.x the bytes behind a declared length above 8192 bytes,
@@ -202,8 +211,10 @@ final class WebSocketUpgradeGate {
         if (version != HttpVersion.HTTP_1_1) {
             return upgradeRequired(version, Map.of());
         }
-        if (!carriesToken(headers.getAll(CONNECTION_HEADER), UPGRADE_TOKEN)
-                || !carriesToken(headers.getAll(UPGRADE_HEADER), WEBSOCKET_TOKEN)) {
+        // Read as the upgrade path reads them: Vert.x checks the first Connection line alone (getHeader),
+        // and the Netty handshake accepts an Upgrade line only when its whole value is websocket.
+        if (!carriesToken(headers.get(CONNECTION_HEADER), UPGRADE_TOKEN)
+                || !hasWholeValue(headers.getAll(UPGRADE_HEADER), WEBSOCKET_TOKEN)) {
             return upgradeRequired(version, Map.of());
         }
         // Neither field may appear more than once (RFC 6455 §11.3.1, §11.3.5); headers.get() would read
@@ -278,15 +289,29 @@ final class WebSocketUpgradeGate {
     }
 
     /**
-     * @return whether any of {@code values}, each read as a comma-separated list, carries
-     * {@code token}, compared case-insensitively
+     * @return whether {@code value}, read as a comma-separated list, carries {@code token}, compared
+     * case-insensitively; {@code false} for an absent value
      */
-    private static boolean carriesToken(List<String> values, String token) {
+    private static boolean carriesToken(@Nullable String value, String token) {
+        if (value == null) {
+            return false;
+        }
+        for (String element : value.split(TOKEN_SEPARATOR)) {
+            if (token.equalsIgnoreCase(element.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @return whether any of {@code values}, trimmed, is {@code expected} as a whole, compared
+     * case-insensitively
+     */
+    private static boolean hasWholeValue(List<String> values, String expected) {
         for (String value : values) {
-            for (String element : value.split(TOKEN_SEPARATOR)) {
-                if (token.equalsIgnoreCase(element.trim())) {
-                    return true;
-                }
+            if (expected.equalsIgnoreCase(value.trim())) {
+                return true;
             }
         }
         return false;
