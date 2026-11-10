@@ -290,18 +290,33 @@ final class WebSocketUpgradeGate {
 
     /**
      * @return whether {@code value}, read as a comma-separated list, carries {@code token}, compared
-     * case-insensitively; {@code false} for an absent value
+     * case-insensitively; {@code false} for an absent value. An element is trimmed of spaces only, as
+     * the Netty handshake's list match trims it: an element padded with a tab is not the token there,
+     * so it is not the token here either.
      */
     private static boolean carriesToken(@Nullable String value, String token) {
         if (value == null) {
             return false;
         }
         for (String element : value.split(TOKEN_SEPARATOR)) {
-            if (token.equalsIgnoreCase(element.trim())) {
+            if (token.equalsIgnoreCase(trimSpaces(element))) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** @return {@code element} without leading and trailing space characters; a tab is kept */
+    private static String trimSpaces(String element) {
+        int start = 0;
+        int end = element.length();
+        while (start < end && element.charAt(start) == ' ') {
+            start++;
+        }
+        while (end > start && element.charAt(end - 1) == ' ') {
+            end--;
+        }
+        return element.substring(start, end);
     }
 
     /**

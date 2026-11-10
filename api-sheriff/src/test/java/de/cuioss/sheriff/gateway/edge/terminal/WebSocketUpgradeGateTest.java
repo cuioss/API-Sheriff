@@ -179,6 +179,16 @@ class WebSocketUpgradeGateTest {
                     "the handshake would answer 400 to this request after the upstream was dialled");
         }
 
+        @ParameterizedTest
+        @ValueSource(strings = {"keep-alive,\tUpgrade", "Upgrade\t, keep-alive"})
+        @DisplayName("an upgrade token padded with a tab is refused 426: the handshake trims list elements of spaces only")
+        void refusesUpgradeTokenPaddedWithATab(String connection) {
+            MultiMap headers = validHandshake().set(WebSocketUpgradeGate.CONNECTION_HEADER, connection);
+
+            assertEquals(refused(426, upgradeHeaders()), judge(HttpMethod.GET, HttpVersion.HTTP_1_1, headers),
+                    "the handshake would answer 400 to this request after the upstream was dialled");
+        }
+
         @Test
         @DisplayName("a request without an Upgrade header is refused 426 naming the websocket protocol")
         void refusesMissingUpgrade() {
