@@ -6,8 +6,8 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Session mode selects only which SessionBinding is assembled; reserved paths (exact, ahead of the route table, six on the OIDC host and the back-channel logout and client JWKS paths on every host), a fixed CSRF model with SameSite=Lax and the session identity are mode-neutral; the fixed Lax policy forces response_mode=query, whose code-in-URL exposure is accepted and bounded; the seam has one creating write (bind) and two updating writes (persist, persistReissuingCookie) that never create a session, and server mode re-issues a cookie handle separate from the session identity; a session has an absolute and an idle deadline in both modes, the idle one kept in the store in server mode and in a separate authenticated activity cookie in cookie mode; cookie mode has one optional sealing key and a derived identity with a per-session nonce; the two inbound-validation relaxations the BFF needs belong to ADR-0019
-// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff, logout, session-termination, cookie-handle, idle-timeout, activity-cookie
+// summary: Session mode selects only which SessionBinding is assembled; reserved paths (exact, ahead of the route table, six on the OIDC host and the back-channel logout and client JWKS paths on every host), a fixed CSRF model with SameSite=Lax and the session identity are mode-neutral; the fixed Lax policy forces response_mode=query, whose code-in-URL exposure is accepted and bounded; the seam has one creating write (bind) and two updating writes (persist, persistReissuingCookie) that never create a session, and server mode re-issues a cookie handle separate from the session identity; a session has an absolute and an idle deadline in both modes, the idle one kept in the store in server mode and in a separate authenticated activity cookie in cookie mode; cookie mode has one optional sealing key and a derived identity with a per-session nonce; an amendment records that the boot refuses a declared user-info, login, step-up or client JWKS path that is not a canonical absolute gateway path (no query, fragment, backslash, control character, whitespace, //, dot segment, ; or %), because a path matched exactly ahead of the route table could never be reached, and that no /bff/ prefix is required; the two inbound-validation relaxations the BFF needs belong to ADR-0019
+// tags: bff, session-mode, csrf, reserved-paths, boot-validation, canonical-path, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff, logout, session-termination, cookie-handle, idle-timeout, activity-cookie
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -72,6 +72,64 @@ The widening grants no authorization. The receiver acts only on a logout token w
 verifies against the IdP's JWKS and whose `iss` and `aud` match the client. The client JWKS path
 joined the set for the same reason
 (link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
+
+[[reserved-path-boot-rule]]
+==== Amendment: the boot refuses a reserved path no request can reach
+
+The registry stores a reserved path verbatim. The edge matches it by exact equality with the
+canonical request path, ahead of the route table. A configured value that no request spells
+canonically therefore names an endpoint no request reaches. The canonical path such a request
+resolves to stays unreserved and falls through to the route table.
+
+`ReservedPathRules` refuses such a value at boot. It judges four keys: `oidc.user_info.path`,
+`oidc.login.path`, `oidc.step_up.path` and `oidc.client_authentication.jwks_path`.
+
+*The shape check (`validateReservedPath`).* The first three keys must each be an absolute gateway
+path. The refusal states the requirement in `ABSOLUTE_GATEWAY_PATH_REQUIREMENT`: a single leading
+`/`, no query, no fragment, no backslash, no control character and no whitespace. A value that passes
+is then held to the canonical form. A value that fails the shape check is not judged again, so one
+defect is reported once.
+
+[cols="1,3", options="header"]
+|===
+| The boot refuses | Why
+
+| A value without a leading `/`, or one starting with `//`
+| A relative value names no gateway path. `//host` is a scheme-relative URL: the login path and the
+  `step_up_url` built from the step-up path would send a browser to another host.
+
+| A query (`?`) or a fragment (`#`)
+| The canonical request path carries neither, so the endpoint is unreachable. The step-up path has a
+  second reason: `step_up_url` appends `?returnUrl=`, which a configured query would swallow and a
+  configured fragment would keep from being sent.
+
+| A backslash, a control character or whitespace
+| A browser reads `/\host` and `/<TAB>/host` as `//host`.
+
+| A `//` inside the path, or a dot segment
+| The canonical request path has neither, so the configured spelling never equals it. This is the
+  canonical-path review `portal.path` is held to, reused.
+
+| A matrix parameter (`;`)
+| The canonical-path guard refuses every request whose raw path carries a `;`. A request for the
+  configured URL is answered `400`.
+
+| A percent-encoded character (`%`)
+| The edge decodes the request path once before it matches. It refuses a second encoding layer, so no
+  request yields the configured string.
+|===
+
+The shape refusal echoes the value through `RuleSupport.renderForMessage`, so a value cannot forge a
+boot log line. The canonical-form refusal is fixed text and echoes nothing. Every refusal joins the
+shared list; the rule never fails fast.
+
+*The client JWKS path* is held to the canonical form, declared or defaulted to `/bff/jwks`. The boot
+also refuses it when another reserved endpoint resolves to the same path. The registry keeps the
+first registration and registers the client JWKS path last, so the key set would silently disappear.
+
+*No prefix is required.* The samples place every reserved path under `/bff/`, and the client JWKS path
+defaults to `/bff/jwks`. The boot checks no prefix. Any canonical gateway path works, so an operator
+can still move a reserved path out of a namespace that needs to be proxied.
 
 [[csrf]]
 === (ii) The CSRF model is fixed
@@ -243,6 +301,24 @@ alternative that changes no code. Rejected because a provider on a private netwo
 resolve the public name. Making it resolve means DNS or hairpin routing between two containers that
 stand side by side.
 
+*Canonicalise a non-canonical reserved path at boot instead of refusing it.* The gateway would register
+the canonical form of the configured value. Rejected because the operator wrote the configured
+spelling into links and into the IdP's registration. A rewritten path serves a URL nobody configured,
+and the configured URL still reaches nothing.
+
+*Match reserved paths on the raw request path.* The configured spelling would then match as written.
+Rejected because the reserved paths and the route table would judge two representations of one
+request. A request that spells a reserved path differently would pass the reserved check and reach the
+route table, the desync of link:../security-threat-model.adoc#gw-01[GW-01].
+
+*Accept a non-canonical reserved path with a boot WARN.* Rejected because the gateway would serve a
+broken endpoint. For the client JWKS path in key mode every login fails, and no request-time
+diagnostic names the cause. A WARN does not stop the boot from serving that state.
+
+*Require a fixed `/bff/` prefix.* It would keep reserved paths away from most proxied namespaces.
+Rejected because decision (i) lets an operator move a reserved path out of a namespace that needs to
+be proxied. The suffix would still need every refusal above.
+
 *Make CSRF defence configurable, with a secure default.* Rejected because the option's existence is
 the vulnerability. A defence that can be switched off will be switched off where the exposure is
 least understood, and a secure default does not resist a deliberate override.
@@ -346,6 +422,9 @@ silent and shows only in the deployments least equipped to diagnose it.
 * Six reserved paths occupy their configured paths on the OIDC host, and the back-channel logout and
   client JWKS paths on every host. An operator who needs such a namespace proxied relocates the
   reserved path.
+* A reserved path must be declared in canonical form. A value with a percent-encoded character, a
+  matrix parameter or a dot segment stops the boot, even where some other system spells the URL that
+  way.
 * A truly cross-site SPA cannot be served, because the fixed cookie policy does not attach the session
   cookie cross-site. Such an SPA must be hosted under the gateway's site.
 * The authorization code travels in the callback URL. The exposure is bounded by the four obligations
@@ -404,3 +483,4 @@ silent and shows only in the deployments least equipped to diagnose it.
 * link:../development/bff-session.adoc[Contributor guide -- server-session BFF] and link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF].
 * link:../security-threat-model.adoc#bff-09[BFF-09] and link:../security-threat-model.adoc#bff-21[BFF-21] -- the accepted cookie-mode residuals.
 * `SessionBinding`, `ServerSessionBinding`, `CookieSessionBinding`, `ReservedPathRegistry`, `QueryResponseModeAuthorizationRequestBuilder` -- the implementation; `BffReservedPathPrecedenceIT`, `BffBackchannelLogoutIT`, `BffSessionIdleTimeoutIT` -- the integration tests.
+* `ReservedPathRules` and `ReservedPathRulesTest` -- the boot refusals of the reserved-path amendment.
