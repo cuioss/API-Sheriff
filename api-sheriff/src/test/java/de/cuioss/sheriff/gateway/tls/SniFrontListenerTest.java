@@ -520,7 +520,7 @@ class SniFrontListenerTest {
             Backend terminated = startBackend(1);
             SniFrontListener front = startFront(Map.of(), terminated.target(), DEADLINE, 2, 1, LONG_IDLE, LONG_IDLE,
                     clockNanos::get, sourcesInOrder("source-a", "source-b", "source-a", "source-a", "source-a",
-                            "source-c"));
+                    "source-c"));
             ClientLeg ofA = connectClient(front);
             ClientLeg ofB = connectClient(front);
 
@@ -1587,8 +1587,8 @@ class SniFrontListenerTest {
             Backend passthrough = startBackend(hello.length);
             PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.heldDialClient(vertx.createNetClient(),
                     () -> nextDial.complete(null), releaseDials), relayedPeers, () -> {
-                        throw new IllegalStateException("the relay session failed to start");
-                    });
+                throw new IllegalStateException("the relay session failed to start");
+            });
             SniFrontListener front = startFront(relay, Map.of(MAPPED_SNI, passthrough.target()),
                     passthrough.target(), LONG_DEADLINE, 1, 1, SniFrontListener::sourceOf);
             ClientLeg routed = routeWithAHeldDial(front);

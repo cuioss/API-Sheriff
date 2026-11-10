@@ -195,6 +195,9 @@ public final class PassthroughRelay {
     private void establish(NetSocket client, NetSocket backend, Buffer clientHello, RelayTarget target,
             RelayKind kind, String sniLabel) {
         @Nullable RelaySession session = null;
+        // Any failure starting the session, whatever its type, must close both legs and must not escape
+        // into the event loop's dial callback, so the catch is deliberately broad.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             Runnable release = kind == RelayKind.PASSTHROUGH ? () -> {
             } : handOver(client, backend);
