@@ -84,7 +84,8 @@ import org.jspecify.annotations.Nullable;
  * holds those bytes in three copies: the replay buffer and the parser's received and reassembled
  * arrays. Between reads, the cap therefore bounds the front's pre-route buffer memory at about 96 MiB.
  * A decided connection keeps its slot — of the cap and of its source's share — until the relay's
- * backend dial settles: the relay is established, or the dial fails or times out. A client that leaves
+ * backend dial settles: the relay is established, or the dial fails or times out. When the relay throws
+ * instead of starting the dial, the slot is returned at once and the connection closed. A client that leaves
  * during the dial does not return the slot early; its connection holds the slot until the dial settles
  * all the same, so no dialling connection escapes the cap. The dial window therefore counts against the
  * cap and is bounded by the dial client's fixed connect timeout,
@@ -537,7 +538,10 @@ public final class SniFrontListener {
      * slots — of the undecided-connection cap and of its source's share, as one unit — at once; the route
      * decision instead hands the connection to the relay and returns the slots in the single completion
      * handler of the relay's dial-phase future, which completes when the backend dial settles — not when
-     * the client leaves. Either way the slots are returned exactly once. At the
+     * the client leaves. A hand-off the relay refuses by throwing instead of returning that future —
+     * Vert.x, for one, throws from the dial call for a backend port outside 0 to 65535 — is turned into a
+     * failed dial phase, so the same handler runs at once: it returns the slots and closes the connection.
+     * On every path the slots are returned exactly once. At the
      * route decision the connection also drops its parser and its reference to the replay buffer, whose
      * only owner from then on is the relay.
      */
@@ -574,7 +578,18 @@ public final class SniFrontListener {
                 buffer = null;
                 parser = null;
                 socket.pause();
-                route(result.serverName(), replay).onComplete(dialPhaseOver -> releaseSlot());
+                // Future.future turns a relay that throws instead of returning its dial-phase future
+                // into a failed dial phase, so the handler below still runs and the slots come back.
+                Future.<Void>future(dialPhase -> route(result.serverName(), replay).onComplete(dialPhase))
+                        .onComplete(dialPhaseOver -> {
+                            releaseSlot();
+                            if (dialPhaseOver.failed()) {
+                                LOGGER.debug(dialPhaseOver.cause(),
+                                        "Front connection closed: the hand-off to the relay failed: %s",
+                                        dialPhaseOver.cause().getMessage());
+                                closeQuietly(socket);
+                            }
+                        });
             }
         }
 

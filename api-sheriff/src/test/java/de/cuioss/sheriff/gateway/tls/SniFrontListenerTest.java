@@ -67,8 +67,8 @@ import org.junit.jupiter.api.Test;
  * routing decision — a mapped SNI is relayed opaquely to the passthrough backend, an empty /
  * non-matching SNI takes the terminated-strict path, and the backend receives the exact ClientHello
  * the client sent — and the bounds of the front: the ClientHello deadline, the undecided-connection
- * cap, its per-source share, the dial phase held inside that cap and the relay idle timeout, together
- * with how a refusal at accept is reported.
+ * cap, its per-source share, the dial phase held inside that cap, a hand-off the relay refuses outright
+ * and the relay idle timeout, together with how a refusal at accept is reported.
  * <p>
  * The bounds are shortened through the package-private constructor so each case observes its bound
  * within a fraction of a second instead of waiting out the production values. Each bound case is
@@ -709,6 +709,65 @@ class SniFrontListenerTest {
                 return true;
             }
             return false;
+        }
+    }
+
+    /**
+     * A hand-off the relay refuses outright: the relay throws instead of returning its dial-phase
+     * future — Vert.x, for one, throws from the dial call for a backend port outside 0 to 65535. The
+     * front then has no dial to wait for, so it returns the connection's slot at once and closes the
+     * connection. The case routes the holder of the only slot of a cap of one into such a hand-off, then
+     * shows that connection closed and a fresh connection admitted into the returned slot and routed. The
+     * dial client throws on the first dial only, so the fresh connection's dial proceeds.
+     */
+    @Nested
+    @DisplayName("failed hand-off")
+    class FailedHandOff {
+
+        private static final int CAP = 1;
+        /** Long enough that a close well inside it cannot be the deadline's doing. */
+        private static final Duration LONG_DEADLINE = Duration.ofSeconds(6);
+        private static final String HAND_OFF_FAILED_LINE = "the hand-off to the relay failed";
+        private static final String DEADLINE_LINE = "no complete ClientHello within";
+
+        private final byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
+
+        @Test
+        @DisplayName("returns the slot and closes the connection when the relay throws instead of dialling")
+        void returnsTheSlotWhenTheRelayThrows() throws Exception {
+            // Arrange — a relay whose first dial throws, in front of a cap of one
+            Backend passthrough = startBackend(hello.length);
+            PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.firstDialThrows(vertx.createNetClient(),
+                    new IllegalArgumentException("port p must be in range 0 <= p <= 65535")), relayedPeers);
+            SniFrontListener front = startFront(relay, Map.of(MAPPED_SNI, passthrough.target()),
+                    passthrough.target(), LONG_DEADLINE, CAP);
+            ClientLeg failing = connectClient(front);
+
+            // Act — the only slot's holder is routed into the throwing hand-off, then a fresh client follows
+            Awaits.connect(failing.socket().write(Buffer.buffer(hello)), "the ClientHello to be written");
+            long closedAt = Awaits.connect(failing.closedNanos(),
+                    "the front to close the connection whose hand-off failed");
+            ClientLeg fresh = connectClient(front);
+            Awaits.connect(fresh.socket().write(Buffer.buffer(hello)), "the fresh ClientHello to be written");
+            Buffer received = Awaits.connect(passthrough.firstBytes(),
+                    "the fresh connection admitted into the returned slot to be routed");
+
+            // Assert — the failed hand-off, not the deadline, closed its connection and returned the slot
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(closedAt - failing.connectedNanos());
+            assertAll("the failed hand-off returned the slot and closed its connection",
+                    () -> assertTrue(elapsedMillis < LONG_DEADLINE.toMillis(),
+                            "the failed hand-off closed the connection, not the deadline: after " + elapsedMillis
+                                    + " ms"),
+                    () -> assertEquals(1, debugLines(HAND_OFF_FAILED_LINE).size(),
+                            "the one failed hand-off is logged"),
+                    () -> assertTrue(debugLines(DEADLINE_LINE).isEmpty(), "no deadline fired"),
+                    () -> assertEquals(Buffer.buffer(hello), received,
+                            "the fresh connection admitted into the returned slot is relayed"),
+                    () -> assertFalse(fresh.closedNanos().isDone(),
+                            "the fresh connection was routed, not closed at accept"),
+                    () -> assertEquals(List.of(), refusals,
+                            "the slot was already returned when the fresh connection arrived"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
     }
 

@@ -19,6 +19,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 import io.vertx.core.Context;
@@ -32,10 +33,11 @@ import io.vertx.core.net.NetSocket;
  * Proxies that let a relay test take control of the two events a {@link PassthroughRelay} races
  * during its dial phase: the backend dial completing and the client leaving. Shared by
  * {@link PassthroughRelayTest} and {@link SniFrontListenerTest}, so the front's slot accounting is
- * driven by exactly the dial the relay's own tests hold.
+ * driven by exactly the dial the relay's own tests hold. One more proxy makes the dial call itself
+ * throw, so a front test can drive a hand-off the relay refuses before any dial starts.
  * <p>
  * Thread-safe: the class is stateless; each proxy confines its callbacks to the Vert.x context it was
- * called on.
+ * called on, and the throwing proxy decides its one throw with an atomic compare-and-set.
  */
 final class RelayTestProxies {
 
@@ -74,6 +76,28 @@ final class RelayTestProxies {
                                 })));
                         onRequest.run();
                         return dialled.future();
+                    }
+                    return invokeOn(delegate, method, args);
+                });
+    }
+
+    /**
+     * A dial client whose first {@code connect(int, String)} — the one the relay calls — throws
+     * {@code failure} instead of returning a future, as Vert.x does for a backend port outside 0 to
+     * 65535. Every later dial, and every other call, goes to {@code delegate}.
+     *
+     * @param delegate the real dial client
+     * @param failure  thrown by the first dial
+     * @return the dial client whose first dial throws
+     */
+    static NetClient firstDialThrows(NetClient delegate, RuntimeException failure) {
+        AtomicBoolean thrown = new AtomicBoolean();
+        return (NetClient) Proxy.newProxyInstance(NetClient.class.getClassLoader(), new Class<?>[]{NetClient.class},
+                (proxy, method, args) -> {
+                    if ("connect".equals(method.getName()) && args != null && args.length == 2
+                            && args[0] instanceof Integer && args[1] instanceof String
+                            && thrown.compareAndSet(false, true)) {
+                        throw failure;
                     }
                     return invokeOn(delegate, method, args);
                 });
