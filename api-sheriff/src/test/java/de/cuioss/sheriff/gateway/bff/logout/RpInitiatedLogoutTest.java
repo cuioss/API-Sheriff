@@ -116,8 +116,7 @@ class RpInitiatedLogoutTest {
 
     /** A logout over the real engine flow whose end-session endpoint comes from {@code source}. */
     private RpInitiatedLogout logoutOver(EndSessionEndpointSource source) {
-        return new RpInitiatedLogout(endSessionFlow, revocations::add, source, REGISTERED_RETURN, FINAL_REDIRECT,
-                STATE_TTL);
+        return logoutRevokingWith(revocations::add, source);
     }
 
     /** A logout over the real engine flow whose revocation seam is {@code revocation}. */

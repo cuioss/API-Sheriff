@@ -224,9 +224,6 @@ class BffLogoutIT extends BaseIntegrationTest {
                 .when().get(KEYCLOAK_ORIGIN + "/admin/realms/integration/users/" + userId + "/sessions")
                 .then().statusCode(OK)
                 .extract().jsonPath().getList("$");
-        if (sessions == null) {
-            return Set.of();
-        }
         return sessions.stream()
                 .filter(candidate -> candidate.get("clients") instanceof Map<?, ?> clients
                         && clients.containsValue(CLIENT_ID))
