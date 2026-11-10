@@ -85,19 +85,24 @@ public final class ApiSheriffLogMessages {
                 .build();
 
         /**
-         * A proxied request's body stream failed after the upstream dispatch had begun — a client that
-         * disconnected mid-upload, or broken chunk framing — and the upstream request was aborted. An
-         * ordinary client-caused termination, not a security filter violation. Records the route id
-         * and a fixed disposition only — never the failure's own message or anything the client sent.
+         * A proxied request's body did not arrive whole and the upstream request was aborted: its body
+         * stream failed after the upstream dispatch had begun, for example on broken chunk framing
+         * ({@code body-stream-failed}); the client left before the answer ({@code client-left}); or a
+         * gRPC call's client held its request stream open without sending its next complete request
+         * message within the message bound ({@code client-idle}). An ordinary client-caused termination,
+         * not a security filter violation. Records the route id and that fixed disposition only — never
+         * the failure's own message or anything the client sent.
          * <p>
-         * Latched per route: the event is reachable by any caller the route admits, at will, so the
-         * first occurrence on a route is recorded and every repeat on that route is a {@code DEBUG}
-         * diagnostic. The rate is carried by the error counter, not by this record.
+         * Latched per route and disposition: the event is reachable by any caller the route admits, at
+         * will, so the first occurrence of each disposition on a route is recorded and every repeat of
+         * that disposition on that route is a {@code DEBUG} diagnostic. A disposition already latched
+         * therefore never hides the first occurrence of another. The rate is carried by the error
+         * counter and, per disposition, by {@code sheriff_inbound_body_aborts_total}, not by this record.
          */
         public static final LogRecord INBOUND_BODY_ABORTED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(22)
-                .template("Request body on route '%s' did not arrive whole (%s) — upstream request aborted; further occurrences on this route stay at DEBUG")
+                .template("Request body on route '%s' did not arrive whole (%s) — upstream request aborted; further occurrences of this disposition on this route stay at DEBUG")
                 .build();
 
         /**

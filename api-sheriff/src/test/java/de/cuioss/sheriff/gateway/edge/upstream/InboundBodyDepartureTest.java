@@ -362,7 +362,9 @@ class InboundBodyDepartureTest {
             assertAll("the first departure",
                     () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, "ApiSheriff-22"),
                     () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO,
-                            "Request body on route '" + routeId + "' did not arrive whole (client-left)"));
+                            "Request body on route '" + routeId + "' did not arrive whole (client-left) — upstream "
+                                    + "request aborted; further occurrences of this disposition on this route stay "
+                                    + "at DEBUG"));
         }
 
         @Test
