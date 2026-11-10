@@ -53,10 +53,12 @@ import org.jspecify.annotations.Nullable;
  * identity provider ({@code BffRuntimeProducer.revokeOnLogout}). {@link #initiate} calls it once,
  * synchronously, before the end-session redirect is built — and the caller has already destroyed the
  * local session by then. The caller hands {@link #initiate} the record its destruction removed, so the
- * token revoked is the one the session held when it was destroyed; when the session was already gone,
- * there is nothing to revoke and the caller uses {@link #endSessionRedirect} instead. A session
- * without a refresh token sends nothing. The access token is not revoked: it stays valid at a resource
- * server until it expires.
+ * token revoked is the one the session held when it was destroyed. When something else had already
+ * ended the session before the caller's destruction — so the destruction removed nothing — the caller
+ * hands over the record it resolved instead, and that record's refresh token is revoked: no other path
+ * that ends a session revokes anything, and revoking a token that is already spent or invalid is
+ * harmless (RFC 7009, section 2.2). A session without a refresh token sends nothing. The access token
+ * is not revoked: it stays valid at a resource server until it expires.
  * <p>
  * <strong>A failed revocation is a latched {@code WARN}.</strong> A {@link RuntimeException} the seam
  * raises — a transport failure, a non-success answer, provider metadata that cannot be obtained — is
@@ -167,10 +169,14 @@ public final class RpInitiatedLogout {
      * <p>
      * {@code session} is the record whose refresh token is revoked, so the caller passes the record its
      * local destruction removed — the session as it stood when it was destroyed — rather than one it
-     * resolved earlier, which a concurrent refresh may since have rotated away from.
+     * resolved earlier, which a concurrent refresh may since have rotated away from. When the
+     * destruction removed nothing, because another path had already ended the session, the caller
+     * passes the record it resolved: that is the only record left that names the token, and revoking
+     * one that was already spent is harmless.
      *
-     * @param session the session being logged out, as it stood at its destruction (its refresh token is
-     *                the one revoked; its raw ID token is the {@code id_token_hint})
+     * @param session the session being logged out — as it stood at its destruction, or as the caller
+     *                resolved it when the destruction removed nothing (its refresh token is the one
+     *                revoked; its raw ID token is the {@code id_token_hint})
      * @return the redirect to the IdP {@code end_session_endpoint} carrying the logout-state
      *         {@code Set-Cookie}; empty when the browser cannot be sent there
      */
@@ -192,23 +198,12 @@ public final class RpInitiatedLogout {
     }
 
     /**
-     * Builds the end-session redirect for a session <em>without</em> revoking anything — the path for
-     * a logout that holds no token to revoke, because the session was already gone when the caller
-     * destroyed it.
-     * <p>
-     * The {@link TokenRevocation} seam is not called. Otherwise this is the second half of
-     * {@link #initiate}: it resolves the provider's end-session endpoint, mints the session-bound
-     * {@code state}, and has the engine build the redirect carrying the {@code id_token_hint}, the
-     * exact {@code post_logout_redirect_uri}, and the {@code state}. The result is empty under the same
-     * conditions, and none of them raises.
-     *
-     * @param session the session being logged out (its raw ID token is the {@code id_token_hint})
-     * @return the redirect to the IdP {@code end_session_endpoint} carrying the logout-state
-     *         {@code Set-Cookie}; empty when the browser cannot be sent there
-     * @since 1.0
+     * The second half of {@link #initiate}: resolves the provider's end-session endpoint, mints the
+     * session-bound {@code state}, and has the engine build the redirect carrying the
+     * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the {@code state}. Empty
+     * when the session holds no ID token or no usable endpoint can be resolved; none of these raises.
      */
-    public Optional<LogoutRedirect> endSessionRedirect(SessionRecord session) {
-        Objects.requireNonNull(session, "session");
+    private Optional<LogoutRedirect> endSessionRedirect(SessionRecord session) {
         if (session.idToken().isBlank()) {
             LOGGER.debug("RP-initiated logout for a session without an ID token — no end-session redirect is sent");
             return Optional.empty();
@@ -381,7 +376,8 @@ public final class RpInitiatedLogout {
      * provider during logout. {@link RpInitiatedLogout} calls it once per initiated logout, after the
      * caller has destroyed the local session and before the end-session redirect is built. The record it
      * receives is the one the caller's destruction removed, so its refresh token is the one the session
-     * held at that moment. It is not called for a logout whose session was already gone.
+     * held at that moment; when another path had already ended the session, so the destruction removed
+     * nothing, it receives the record the caller resolved.
      * <p>
      * The runtime binds it to {@code BffRuntimeProducer.revokeOnLogout}, an RFC 7009 revocation of the
      * session's refresh token ({@code token_type_hint=refresh_token}). That binding sends nothing when
@@ -400,7 +396,8 @@ public final class RpInitiatedLogout {
         /**
          * Revokes the logged-out session's token at the identity provider.
          *
-         * @param session the session being logged out, as it stood when the caller destroyed it
+         * @param session the session being logged out — as it stood when the caller destroyed it, or as
+         *                the caller resolved it when another path had already ended it
          * @throws RuntimeException when the revocation cannot be completed — metadata that cannot be
          *                          obtained, a transport failure or a non-success answer; the caller
          *                          reports it and completes the logout

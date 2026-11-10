@@ -65,8 +65,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * write into the window between the logout's resolve and its destruction. A refresh that rotates the
  * refresh token there must be honoured — the seam receives the token the store held when the session
  * was destroyed, never the resolve-time snapshot the rotation already spent. A destruction that finds
- * the session already gone revokes nothing and still answers the same {@code 302}. In cookie mode the
- * seam receives the token sealed in the cookie the request presented.
+ * the session already gone — another path ended it after the resolve — hands back nothing, so the seam
+ * receives the resolve-time record instead, whose token no other path revokes, and the logout still
+ * answers the same {@code 302}. In cookie mode the seam receives the token sealed in the cookie the
+ * request presented.
  */
 class LogoutEndpointTest {
 
@@ -476,29 +478,73 @@ class LogoutEndpointTest {
                 () -> assertEquals(0, store.size(), "the rotated session is destroyed"));
     }
 
+    /**
+     * Another path — a concurrent login's per-subject eviction, the expiry sweep, a lazy eviction — ends
+     * the session between the logout's resolve and its destruction, and none of those paths revokes
+     * anything. The destruction hands back nothing, so the logout revokes the resolve-time record's
+     * refresh token; left unrevoked it would stay valid at the identity provider after an explicit
+     * logout. (The method keeps its original name; what it asserts is that the resolve-time token IS
+     * revoked.)
+     */
     @Test
-    @DisplayName("Should revoke nothing and still send the browser to the provider when the session was gone at destruction")
+    @DisplayName("Should revoke the resolved refresh token and still send the browser to the provider when the session was gone at destruction")
     void shouldRevokeNothingWhenTheSessionWasGoneAtDestruction() {
         SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
         assertTrue(store.replaceIfPresent(withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),
                 "precondition: the resolve-time snapshot holds a refresh token the logout could revoke");
+        List<Boolean> endedByAnotherPath = new CopyOnWriteArrayList<>();
         SessionBinding endedAfterResolve = new InterleavingBinding(binding,
-                resolved -> store.destroyById(resolved.sessionId()));
-        AtomicInteger revocations = new AtomicInteger();
-        LogoutEndpoint endpoint = endpoint(ended -> revocations.incrementAndGet(),
+                resolved -> endedByAnotherPath.add(store.destroyById(resolved.sessionId()).isPresent()));
+        List<String> revokedTokens = new CopyOnWriteArrayList<>();
+        LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
                 () -> Optional.of(END_SESSION), REGISTERED_RETURN, endedAfterResolve);
 
         LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, NOW));
 
         assertAll("a logout whose session something else ended after the resolve",
-                () -> assertEquals(0, revocations.get(),
-                        "the destruction removed nothing, so there is no token to revoke"),
+                () -> assertEquals(List.of(Boolean.TRUE), endedByAnotherPath,
+                        "precondition: another path ended the session between the resolve and the destruction"),
+                () -> assertEquals(List.of(RESOLVED_REFRESH_TOKEN), revokedTokens,
+                        "the destruction removed nothing, so the token the logout resolved is revoked, once"),
                 () -> assertEquals(302, outcome.status(), "never an error answer"),
                 () -> assertTrue(outcome.location().startsWith(END_SESSION),
                         "the browser is still sent to the identity provider: " + outcome.location()),
                 () -> assertTrue(outcome.carriesIdToken(), "the redirect carries the resolved id_token_hint"),
                 () -> assertTrue(outcome.setCookieHeaders().containsAll(binding.clearingSetCookieHeaders()),
                         "the session cookie is cleared"),
+                () -> assertEquals(0, store.size(), "nothing is left in the store"));
+    }
+
+    /**
+     * The same interleaving for a session that never held a refresh token: the seam receives the
+     * resolve-time record once and it names no refresh token, so there is nothing to revoke — the
+     * runtime's revocation binding sends nothing for such a record — and the browser is still sent to
+     * the identity provider.
+     */
+    @Test
+    @DisplayName("Should have no refresh token to revoke when the session was gone at destruction and the resolved one holds none")
+    void shouldHaveNoRefreshTokenToRevokeWhenTheGoneSessionHeldNone() {
+        SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
+        assertNull(stored.refreshToken(), "precondition: the resolve-time snapshot holds no refresh token");
+        List<Boolean> endedByAnotherPath = new CopyOnWriteArrayList<>();
+        SessionBinding endedAfterResolve = new InterleavingBinding(binding,
+                resolved -> endedByAnotherPath.add(store.destroyById(resolved.sessionId()).isPresent()));
+        List<SessionRecord> handedToSeam = new CopyOnWriteArrayList<>();
+        LogoutEndpoint endpoint = endpoint(handedToSeam::add, () -> Optional.of(END_SESSION), REGISTERED_RETURN,
+                endedAfterResolve);
+
+        LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, NOW));
+
+        assertAll("a logout whose session without a refresh token something else ended after the resolve",
+                () -> assertEquals(List.of(Boolean.TRUE), endedByAnotherPath,
+                        "precondition: another path ended the session between the resolve and the destruction"),
+                () -> assertEquals(List.of(stored.sessionId()),
+                        handedToSeam.stream().map(SessionRecord::sessionId).toList(),
+                        "the seam receives the resolved session, once"),
+                () -> assertNull(handedToSeam.getFirst().refreshToken(),
+                        "the record names no refresh token, so nothing is revoked"),
+                () -> assertTrue(outcome.location().startsWith(END_SESSION),
+                        "the browser is still sent to the identity provider: " + outcome.location()),
                 () -> assertEquals(0, store.size(), "nothing is left in the store"));
     }
 

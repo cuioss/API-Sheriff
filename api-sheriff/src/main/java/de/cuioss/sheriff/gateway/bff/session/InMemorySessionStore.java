@@ -331,8 +331,10 @@ public final class InMemorySessionStore implements SessionStore {
      * {@inheritDoc}
      * <p>
      * The record is read and removed under the instance monitor every write takes, so it is exactly
-     * the one the last {@link #replaceIfPresent} or {@link #replaceAndReissueHandle} stored. The end of
-     * the session is reported to the {@link SessionEndListener} after the monitor has been left.
+     * the one the last write stored: the record {@link #create} stored, for a session never updated
+     * since, otherwise the one the last {@link #replaceIfPresent} or {@link #replaceAndReissueHandle}
+     * stored. The end of the session is reported to the {@link SessionEndListener} after the monitor
+     * has been left.
      */
     @Override
     public Optional<SessionRecord> destroyById(String sessionId) {
