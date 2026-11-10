@@ -218,12 +218,12 @@ public final class RejectionReporter {
      * @param rejected an {@link EventType#INBOUND_BODY_ABORTED} rejection
      * @return the fixed disposition its record carries: {@code client-left} for a
      *         {@link DispatchStage.ClientDeparted}, {@code no-first-message} for a
-     *         {@link DispatchStage.FirstMessageTimeout}, {@code body-stream-failed} otherwise
+     *         {@link DispatchStage.RequestMessageTimeout}, {@code body-stream-failed} otherwise
      */
     private static String inboundBodyAbortDisposition(GatewayException rejected) {
         return switch (rejected) {
             case DispatchStage.ClientDeparted _ -> CLIENT_DEPARTED_DISPOSITION;
-            case DispatchStage.FirstMessageTimeout _ -> NO_FIRST_MESSAGE_DISPOSITION;
+            case DispatchStage.RequestMessageTimeout _ -> NO_FIRST_MESSAGE_DISPOSITION;
             default -> INBOUND_BODY_ABORTED_DISPOSITION;
         };
     }

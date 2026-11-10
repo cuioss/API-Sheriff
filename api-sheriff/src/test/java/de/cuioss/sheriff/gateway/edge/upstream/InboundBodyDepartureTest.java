@@ -79,8 +79,9 @@ import org.junit.jupiter.api.Test;
  * was still arriving — both {@link EventType#INBOUND_BODY_ABORTED}, both refused by the retry predicate.
  * A departure that releases an attempt still waiting for its pooled upstream connection ends the same
  * way once the pool hands the connection over, and the circuit breaker counts no failure for it. And
- * {@link RejectionReporter} records the two, and a gRPC call that sent no first message
- * ({@link DispatchStage.FirstMessageTimeout}), under their own dispositions on one per-route latch.
+ * {@link RejectionReporter} records the two, and a gRPC call whose next complete message did not arrive
+ * within the message bound ({@link DispatchStage.RequestMessageTimeout}), under their own dispositions on one
+ * per-route latch.
  */
 @EnableGeneratorController
 @EnableTestLogger(debug = RejectionReporter.class)
@@ -320,7 +321,7 @@ class InboundBodyDepartureTest {
      * {@link RejectionReporter#reportRejection} over a routing context that answers the stashed route id
      * only: which disposition the latched {@code INFO} ApiSheriff-22 names, and the latch the three
      * dispositions share. The departure and the failed body are the aborts the dispatch produces; the
-     * {@link DispatchStage.FirstMessageTimeout} is the one its first-message clock records, whose
+     * {@link DispatchStage.RequestMessageTimeout} is the one its message clock records, whose
      * production by a gRPC dispatch is pinned by {@code GrpcDispatchStageTest}.
      */
     @Nested
@@ -344,7 +345,7 @@ class InboundBodyDepartureTest {
             DispatchStage stage = departedStage(route, timeoutGuard());
             departed = dispatchAfterDeparture(stage, route, departureCause(), bodyless());
             bodyFailed = dispatchAfterDeparture(stage, route, departureCause(), streamed());
-            noFirstMessage = new DispatchStage.FirstMessageTimeout();
+            noFirstMessage = new DispatchStage.RequestMessageTimeout();
         }
 
         @Test

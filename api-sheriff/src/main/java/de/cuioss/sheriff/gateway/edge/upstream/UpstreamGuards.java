@@ -54,12 +54,15 @@ public final class UpstreamGuards {
      * would end it as the upstream's. So is the request-body deadline
      * ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}),
      * counted from the start of the attempt like this timeout, so a body still arriving when this timeout
-     * would end the attempt is ended as the request's first. So is the gRPC first-message bound
-     * ({@link GrpcDispatchStage#GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS}), so a gRPC call whose client sends no
-     * complete request message — nothing, or only part of one — is ended as the client's abort before this
-     * timeout could end it as the upstream's, unless waiting for an upstream connection, which this timeout
-     * counts and the bound does not, used up the difference. The bound ends with the first complete request
-     * message: a call that then stalls is ended by this timeout.
+     * would end the attempt is ended as the request's first. So are the two request bounds of a gRPC call,
+     * the message bound ({@link GrpcDispatchStage#GRPC_MESSAGE_TIMEOUT_MILLIS}) and the pre-response
+     * deadline ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_DEADLINE_MILLIS}): a gRPC call whose client does
+     * not send its next complete request message in time, or still holds its request stream open at the
+     * deadline, is ended as the client's abort ({@link DispatchStage.RequestMessageTimeout} or
+     * {@link DispatchStage.RequestBodyDeadlineExceeded}) before this timeout could end it as the upstream's,
+     * unless waiting for an upstream connection, which this timeout counts and the message bound does not,
+     * used up the difference. On a gRPC call this timeout is therefore reached only once the request stream
+     * has ended: it bounds an upstream holding a complete, half-closed request.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -82,16 +85,18 @@ public final class UpstreamGuards {
      * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
      * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
      * length, a body that made no progress for the request-body idle timeout, a body still arriving at
-     * the request-body deadline, a gRPC call whose client sent no complete request message within the
-     * first-message bound — reaches the guard as such a skipped {@link GatewayException} (see {@link DispatchStage}).
-     * SmallRye Fault Tolerance has no neutral outcome, so the breaker records a skipped exception as a
-     * success; keeping these dispatches out of its window would need the guarded call to be restructured.
-     * The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each attempt: it is nested inside the
-     * retry, so a route that enables retry gives each of up to three attempts (two retries, 100 ms apart)
-     * its own timeout, about 90 s for the whole dispatch. The request-body idle timeout, the request-body
-     * deadline and the gRPC first-message bound are shorter, so a body the gateway is still waiting for
-     * ends as the request's (for the gRPC bound, unless an upstream connection wait used up the
-     * difference), and the timeout ends an attempt the upstream holds up.
+     * the request-body deadline, a gRPC call whose client did not send its next complete request message
+     * within the message bound ({@link DispatchStage.RequestMessageTimeout}), a gRPC request stream still
+     * open at its pre-response deadline — reaches the guard as such a skipped {@link GatewayException} (see
+     * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records a
+     * skipped exception as a success; keeping these dispatches out of its window would need the guarded call
+     * to be restructured. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each attempt: it is
+     * nested inside the retry, so a route that enables retry gives each of up to three attempts (two
+     * retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The request-body idle
+     * timeout, the request-body deadline and the gRPC message bound and pre-response deadline are shorter,
+     * so a body the gateway is still waiting for ends as the request's (for the gRPC message bound, unless
+     * an upstream connection wait used up the difference), and the timeout ends an attempt the upstream
+     * holds up — on a gRPC call, one whose request stream has ended.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard

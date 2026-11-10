@@ -125,8 +125,12 @@ public enum EventType {
      * reports this event; the client is answered {@code 408}. On HTTP/1.1 the connection returns to the
      * pool only when no body chunk had been forwarded; a partly sent request closes it. The wait for a
      * pooled connection, the upstream's backpressure and
-     * the time after the response was handed over are not counted, and bodyless requests and gRPC
-     * routes are never watched.
+     * the time after the response was handed over are not counted, and bodyless requests are never
+     * watched. The same event reports a body still arriving at the gateway's fixed request-body deadline.
+     * A {@code protocol: grpc} route is never watched by the idle timeout — its message bound ends a
+     * client idle between request messages as an {@link #INBOUND_BODY_ABORTED} instead — and is watched by
+     * the deadline only until the upstream answers: a request stream still open at that pre-response
+     * deadline is reported as this event, which a gRPC route renders as {@code DEADLINE_EXCEEDED}.
      * <p>
      * Contrast {@link #INBOUND_BODY_ABORTED}, which is a body stream that failed — this event is a body
      * that is still open but stopped arriving — and {@link #UPSTREAM_TIMEOUT}, which is the whole

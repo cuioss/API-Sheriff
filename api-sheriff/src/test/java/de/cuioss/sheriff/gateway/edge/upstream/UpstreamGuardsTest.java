@@ -83,11 +83,15 @@ class UpstreamGuardsTest {
      * @return one named supplier per rejection type
      */
     static Stream<Arguments> clientEndedDispatches() {
-        Supplier<GatewayException> noFirstMessage = DispatchStage.FirstMessageTimeout::new;
+        Supplier<GatewayException> noCompleteMessage = DispatchStage.RequestMessageTimeout::new;
+        Supplier<GatewayException> streamStillOpen = DispatchStage.RequestBodyDeadlineExceeded::new;
         Supplier<GatewayException> clientLeft =
                 () -> new DispatchStage.ClientDeparted(new IllegalStateException("the client reset its stream"));
         return Stream.of(
-                Arguments.of(Named.of("a gRPC call whose client sent no first message", noFirstMessage)),
+                Arguments.of(Named.of("a gRPC call whose next complete message did not arrive within the message bound",
+                        noCompleteMessage)),
+                Arguments.of(Named.of("a gRPC call whose request stream was still open at its pre-response deadline",
+                        streamStillOpen)),
                 Arguments.of(Named.of("a dispatch whose client left before it was answered", clientLeft)));
     }
 
