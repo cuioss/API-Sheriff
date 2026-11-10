@@ -67,6 +67,18 @@ decision.
   on 0.9.8 (#491; the jar was not readable locally, so the outline reads it first), the threat-model residual
   moved and was already reworded by #492, and the operator hold's three named overlaps (V02-12, V02-23,
   V02-44) have all shipped. Sequence before sibling `PLAN-V02-48`.
+- **PLAN-21 — SUPERSEDED 2026-11-09 by `security-hardening-tier-1` PLAN-SEC-03 (#581, `3eef748b`).** Its
+  acceptance criterion is met by the per-source quota, the `503` at saturation and the rewritten
+  `BffPendingLoginBoundIT`. The spec is kept as the audit record. Four gaps stay as Watches.
+- **Cleanup 2026-11-09 (HEAD `2200ddb2`, after #581 and #586).** Re-ground of the three emittable-or-held specs
+  plus PLAN-31: 23 claims re-stamped at `2200ddb2` (PLAN-20 7, PLAN-21 7, PLAN-26 4, PLAN-31 5), 0 blocking, 0
+  stale among the staged specs. Premises intact for PLAN-20, PLAN-26 and PLAN-31; PLAN-21 no longer applicable.
+  PLAN-26 is the next emit: the #581 gate is met and it shares nothing with in-flight work. PLAN-20 follows it
+  (shared `BffRuntimeProducer`, threat model and `doc/adr`) and still needs an operator decision at outline
+  (replay against the streaming stance). PLAN-31 waits for the TokenSheriff 0.9.9 tag (none exists yet).
+  Next free ADR ordinal **0080**, next free WARN id **146**. WS-04 is now PLAN-26 then PLAN-20, strictly
+  sequential. `security-hardening-tier-1` has PLAN-SEC-02 and -04 staged; the cross-check measures 2 and 3 shared
+  files with PLAN-26 (the threat model, ADR files, `authentication-and-oidc.adoc`).
 - **Cleanup 2026-11-09 (HEAD `c85817d9`, worktree rebased onto `origin/main`; 54 commits after the last
   pass).** All five staged plans (PLAN-20, -21, -26, -29, -31) were re-grounded by five read-only leaves, one
   per spec: 32 claims, 20 corroborated, 8 contradicted and rescoped in the spec (each spec carries a dated
@@ -151,6 +163,19 @@ decision.
   `landings/`.
 
 ## Decisions
+
+- 2026-11-09 — **PLAN-21 superseded by #581; PLAN-26 re-grounded and emitted; PLAN-20 and PLAN-31 re-grounded,
+  not emitted** (cleanup at `2200ddb2`, then next). The operator's earlier decision was "hold, decide after #581"
+  (the recommended option). #581 merged, so the decision came due. Positive account that closed PLAN-21's defect:
+  `InMemoryPendingAuthorizationStore` purges expired records first, caps each source at 256 live records, evicts only
+  that source's own oldest, and refuses at saturation with `503` + `Retry-After` (`ApiSheriff-145`);
+  `PendingQuotaKeys` supplies the source; `BffPendingLoginBoundIT` proves the acceptance criterion. Superseded
+  rather than kept-in-part because what #581 does not cover is not a buildable remainder of PLAN-21's design: the
+  live-eviction WARN is moot (it refuses instead of evicting), and the rate limiter was named as a non-goal. Four
+  gaps are recorded as a Watch for the operator to promote. Alternative not taken: keep PLAN-21 narrowed to the ADR
+  and the PAR-before-admission ordering.
+  PLAN-26 keeps its decided scope (bind logout revocation, 2026-10-26) and is emitted; PLAN-20 is sequenced after it
+  because they share `BffRuntimeProducer`, the threat model and `doc/adr`.
 
 - 2026-11-09 — **PLAN-29 landed and was reconciled** (analyze, inbox drain of 5 messages, origin/main `ab568dab`).
   Shipped as #586; corroborated against `ci pr view 586`, `ci checks status` (24 checks, success), the merged
@@ -375,6 +400,15 @@ decision.
 ## Watches
 
 > ↪ Relocated to `settled.md` § "Cross-epic hold on api-sheriff-0-2-0, resolved by its closure" — every sibling plan it names has shipped and the sibling epic is closed and archived
+
+- **What #581 left of PLAN-21's scope (2026-11-09).** Four gaps, none a defect of the shipped fix: (1) no ADR records
+  the pending-store fairness mechanism (`doc/adr` has none; PLAN-21 deliverable 1 asked for one, and the sibling
+  epic's plan did not write it); (2) no login-initiation rate limiter (`rate_limit` stays reserved, ADR-0077);
+  (3) `LoginFlow.initiate` calls `authorize` (the PAR push to the IdP) before the store, so a refused login has
+  already cost the IdP a round trip, which #581 accepts as a residual; (4) more than 256 concurrent logins behind
+  one shared source key (a NAT) evict that source's own oldest record, with no WARN or metric. The operator decides
+  whether any of them earns a plan; (1) is the cheapest and the one a reviewer would ask for. Closes when each is
+  planned or accepted in writing. — source: PLAN-21's spec banner; #581 body
 
 - **Retry gap "100 ms apart" is unverified against SmallRye's default jitter (2026-11-09).** ADR-0064:86,
   `doc/configuration/routing-and-forwarding.adoc` and `UpstreamGuards.java:85` state retries are 100 ms apart;

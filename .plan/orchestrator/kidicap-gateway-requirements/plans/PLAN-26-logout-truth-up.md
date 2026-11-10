@@ -164,19 +164,19 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/` § the logout handler's revocation call
   (verify-at-outline). ⛔ If BFF-09 is already corrected, close deliverable 1 and say so — do not rewrite
   a row that someone has since fixed.
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.buildLogoutEndpoint :1376, empty no-op lambda :1389-1392; threat model BFF-09 Control :2788, Status COVERED :2838, summary row :4181 carries no revocation caveat
+  - verdict: corroborated | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.buildLogoutEndpoint :1408, empty no-op lambda :1421-1424, explaining comment :763-765; threat model BFF-09 anchor :2776, Control :2789, Status COVERED in server mode :2839, summary row :4286 carries no revocation caveat; #581 touched neither the logout path nor these lines' meaning
 - HYPOTHESIS: the cookie-mode residual is documented in the user docs but carries no disposition of
   CodeRabbit's Medium rating — confirm/refute at `doc/user/bff-cookie.adoc` and
   `doc/security-threat-model.adoc` § the cookie-mode rows (verify-at-outline).
-  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: the cookie-mode residual is an accepted residual with its bound and mitigations (threat model :2853-2869, summary row :4181, doc/user/bff-cookie.adoc :501-508); deliverable 3 stays dropped; rescoped in the spec banner 2026-11-09
+  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: the cookie-mode residual is an accepted residual with its bound and mitigations (threat model :2854, summary row :4286, doc/user/bff-cookie.adoc :501); deliverable 3 stays dropped; rescoped in the spec banner 2026-11-09 at 2200ddb2
 - HYPOTHESIS: neither the problem+json extension-member rule nor the reserved-path boot rule has an ADR at
   HEAD — confirm/refute by searching `doc/adr/` for both subjects (verify-at-outline).
-  - verdict: corroborated | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr hits for extension member are only 0057:67, 0059:124 and 0073:138; no ADR covers the reserved-path boot rule (ReservedPathRules); ADR-0018 :51-59 covers precedence only
+  - verdict: corroborated | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr hits for extension member are only 0057, 0059 and 0073; no ADR covers the reserved-path boot rule (ReservedPathRules); ADR-0018 is 406 lines (about 94 under the 500-line ceiling); no ADR landed since c85817d9
 - OBSERVED: ADR ordinals 0053, 0056 and 0057 are taken at HEAD (0053 once, after PR #367 resolved the
   collision; 0056 the header-matcher ADR; 0057 PLAN-23's session-scope ADR) — orchestrator-verified
   2026-10-02 by listing `doc/adr/`. **Re-scoped 2026-10-26: 0053 and 0057 are still taken; 0056 no longer
   exists (merged into 0054) and the next free ordinal is 0072.**
-  - verdict: contradicted | checked_at: c85817d | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: ordinals are stale: highest ADR is 0079, the next free is 0080; 0053 and 0057 exist and 0056 is gone; rescoped in the spec banner 2026-11-09
+  - verdict: contradicted | checked_at: 2200ddb2 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: ordinals are stale in the body: highest ADR is 0079 (no new ADR since c85817d9), next free is 0080; 0053 and 0057 exist, 0056 is gone, no duplicate ordinal; rescoped in the spec banner 2026-11-09 at 2200ddb2
 
 ## Expected Surface
 
@@ -209,6 +209,30 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
 > - **Gate.** This plan shares `BffRuntimeProducer` and `BffLogMessages` with `security-hardening-tier-1`
 >   `PLAN-SEC-03` (open PR #581), and 12 declared files overall. Sequence after #581 merges. Never beside
 >   PLAN-20 or PLAN-21.
+>
+> ⚠ **Re-grounded 2026-11-09 (cleanup at `2200ddb2`, after #581 and #586). The premise is intact and the
+> #581 gate is MET (merged as `3eef748b`).** #581 changed `BffRuntimeProducer` and `BffLogMessages` but not the
+> logout path, so every fact above still holds; only the numbers moved. **Locate by symbol, not by line.**
+> Current anchors:
+> - `BffRuntimeProducer`: `buildLogoutEndpoint` :1408, the empty no-op lambda :1421-1424, the explaining comment
+>   :763-765, the `RevocationClient` :648, its use by the refresh coordinator :655, `revokeRefreshToken` :1273
+>   (the old :1376 / :1389-1392 / :638 / :1241 are stale). `RpInitiatedLogout` calls the seam at :152 and
+>   catches to DEBUG at :153.
+> - Threat model: BFF-09 heading :2776, Control line :2789, Status "COVERED in server mode" :2839, *Not
+>   delivered* paragraph :2846, cookie-mode residual :2854, summary row :4286 (no revocation caveat).
+> - Docs: `doc/variants/02-bff-session.adoc` :166 and `doc/variants/03-bff-cookie.adoc` :201 state the gateway
+>   revokes no token on logout; `doc/configuration/authentication-and-oidc.adoc` :585; `doc/user/bff-session.adoc`
+>   :702 (the logout events do not revoke); `doc/user/bff-cookie.adoc` :501.
+> - **WARN ids:** ids up to **145** are taken (`ApiSheriff-145`, #581's pending-store saturation); derive any new
+>   id at write time. **ADR ordinal:** the next free one is still **0080**; re-list `doc/adr` at write time.
+> - **Sequencing now.** PLAN-21 is superseded by #581 (see its banner), so "never beside PLAN-21" is moot.
+>   PLAN-20 still shares `BffRuntimeProducer`, the threat model and `doc/adr`: sequence PLAN-26 FIRST. The
+>   sibling epic `security-hardening-tier-1` has `PLAN-SEC-02` and `PLAN-SEC-04` staged (none running at
+>   `2200ddb2`). The cross-check measures their overlap with this spec as 2 files for SEC-02
+>   (`doc/adr/0003-forwarded-headers.adoc`, `doc/security-threat-model.adoc`) and 3 for SEC-04
+>   (`doc/adr/0066-…`, `doc/configuration/authentication-and-oidc.adoc`, `doc/security-threat-model.adoc`). Both
+>   are staged in another epic, so neither is in this epic's gate population today; if that epic emits one before
+>   this plan lands, the multi-file overlap is the operator's call.
 
 - OBSERVED: `doc/security-threat-model.adoc` — BFF-09, and the cookie-mode logout rows
 - OBSERVED: `doc/adr/` — two new records, or one new record plus an ADR-0018 amendment
