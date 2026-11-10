@@ -32,6 +32,14 @@ import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.MetadataUtils;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.RequestOptions;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -86,19 +94,26 @@ class GrpcProxyIT extends BaseIntegrationTest {
     private static final int CALL_TIMEOUT_SECONDS = 15;
 
     /**
-     * The client deadline of the HEADERS-only call: beyond the guard's 30-second timeout, so the client
-     * never ends the call itself and the status it observes is always the gateway's.
+     * The client deadline of a call the gateway is expected to end itself: beyond the guard's 30-second
+     * timeout, so the client never ends the call itself and the status it observes is always the gateway's.
      */
     private static final long IDLE_CALL_DEADLINE_SECONDS = UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS + 15L;
 
-    /** Slack around the first-message bound for scheduling and the client's own clock. */
+    /** Slack around the message bound for scheduling and the client's own clock. */
     private static final long TIMING_TOLERANCE_MILLIS = 1_000;
+
+    /** The length of a gRPC message's prefix: one compressed-flag byte and a 4-byte big-endian length. */
+    private static final int GRPC_PREFIX_BYTES = 5;
 
     private static ManagedChannel channel;
 
+    /** The raw HTTP/2 client that frames gRPC messages by hand, so a call can stop inside a message. */
+    private static Vertx vertx;
+    private static HttpClient rawClient;
+
     @BeforeAll
     static void setUpGrpcChannel() throws Exception {
-        int testPort = Integer.parseInt(System.getProperty("test.https.port", "10443"));
+        int testPort = testPort();
         // Trust-all TLS over ALPN h2 for the stack's self-signed localhost certificate — the gRPC
         // analogue of BaseIntegrationTest's relaxed REST Assured validation. Scoped strictly to this
         // black-box integration test against a throwaway local certificate, never production trust.
@@ -109,12 +124,24 @@ class GrpcProxyIT extends BaseIntegrationTest {
                 .overrideAuthority("localhost")
                 .sslContext(sslContext)
                 .build();
+        vertx = Vertx.vertx();
+        // The same trust-all scope as the channel above: the stack's self-signed localhost certificate,
+        // trusted blindly by this black-box IT only.
+        rawClient = vertx.createHttpClient(new HttpClientOptions()
+                .setProtocolVersion(HttpVersion.HTTP_2)
+                .setSsl(true)
+                .setUseAlpn(true)
+                .setTrustAll(true)
+                .setVerifyHost(false));
     }
 
     @AfterAll
     static void tearDownGrpcChannel() throws Exception {
         if (channel != null) {
             channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+        }
+        if (vertx != null) {
+            vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -174,7 +201,7 @@ class GrpcProxyIT extends BaseIntegrationTest {
 
     /**
      * A call that opens its stream and never sends a request message is ended by the gateway's
-     * first-message bound, as the client's own abort, and does not count against the upstream.
+     * message bound, as the client's own abort, and does not count against the upstream.
      * <p>
      * The call is driven through a raw {@link ClientCall} that is started and never sent anything — no
      * {@code sendMessage}, no {@code halfClose} — so the gateway holds a gRPC call whose upstream request
@@ -185,7 +212,7 @@ class GrpcProxyIT extends BaseIntegrationTest {
      * call that sends nothing never reaches the wire, and the gateway would never see it. The method
      * type is client-side only — it is not on the wire — so the route, the upstream and the path are
      * those of the ordinary unary call. The gateway must end it after
-     * {@link GrpcDispatchStage#GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS} with the trailers-only rendering of
+     * {@link GrpcDispatchStage#GRPC_MESSAGE_TIMEOUT_MILLIS} with the trailers-only rendering of
      * {@code INBOUND_BODY_ABORTED}, {@code INVALID_ARGUMENT}, well before the guard's
      * {@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS}-second timeout would end it as the upstream's
      * failure with {@code DEADLINE_EXCEEDED}. The client's own deadline is set beyond both, so neither
@@ -196,10 +223,10 @@ class GrpcProxyIT extends BaseIntegrationTest {
      * relay it.
      */
     @Test
-    @DisplayName("a call sending HEADERS only is ended as a client abort after the first-message bound, "
+    @DisplayName("a call sending HEADERS only is ended as a client abort after the message bound, "
             + "and the route still serves the next call")
-    void headersOnlyCallIsEndedByTheFirstMessageBound() throws Exception {
-        long bound = GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS;
+    void headersOnlyCallIsEndedByTheMessageBound() throws Exception {
+        long bound = GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS;
         long guardTimeout = TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS);
         CompletableFuture<Status> closed = new CompletableFuture<>();
         MethodDescriptor<EchoRequest, EchoResponse> headersFlushedOnStart = EchoGrpc.getUnaryMethod().toBuilder()
@@ -219,16 +246,16 @@ class GrpcProxyIT extends BaseIntegrationTest {
         Status status = closed.get(IDLE_CALL_DEADLINE_SECONDS + 5L, TimeUnit.SECONDS);
         long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
 
-        assertAll("the idle call is ended by the first-message bound, as the client's abort",
+        assertAll("the idle call is ended by the message bound, as the client's abort",
                 () -> assertEquals(Status.Code.INVALID_ARGUMENT, status.getCode(),
                         () -> "a call with no request message ends as INBOUND_BODY_ABORTED, rendered "
                                 + "INVALID_ARGUMENT — DEADLINE_EXCEEDED would mean the guard's timeout ended "
                                 + "it as the upstream's failure. Status was " + status),
                 () -> assertTrue(elapsedMillis >= bound - TIMING_TOLERANCE_MILLIS,
-                        () -> "the gateway must wait out the " + bound + " ms first-message bound before "
+                        () -> "the gateway must wait out the " + bound + " ms message bound before "
                                 + "ending the call; it ended after " + elapsedMillis + " ms"),
                 () -> assertTrue(elapsedMillis < bound + TIMING_TOLERANCE_MILLIS * 10,
-                        () -> "the call must end at the first-message bound, well before the guard's "
+                        () -> "the call must end at the message bound, well before the guard's "
                                 + guardTimeout + " ms timeout; it ended after " + elapsedMillis + " ms"));
 
         EchoResponse next = echoStub().unary(EchoRequest.newBuilder().setMessage("after-idle-call").build());
@@ -237,6 +264,157 @@ class GrpcProxyIT extends BaseIntegrationTest {
                 "THE CONTROL: the next ordinary call on the same route is relayed, so the idle call left "
                         + "the route serving (the breaker skip itself is proven by the INVALID_ARGUMENT client-abort "
                         + "classification above and at unit level; one call cannot reach the breaker's request volume)");
+    }
+
+    /**
+     * A call that sends part of a length-prefixed request message and then stalls is ended by the
+     * gateway's message bound, as the client's own abort — a forwarded byte of an incomplete message does
+     * not stop the bound.
+     * <p>
+     * grpc-java frames every message whole, so the call is sent through a raw HTTP/2 client that frames
+     * the message by hand ({@link #grpcFrame}): it writes the request HEADERS, the complete 5-byte prefix
+     * of one {@code Echo/Unary} message and only the first half of the payload that prefix declares, and
+     * then neither writes nor ends its stream. The upstream cannot act on half a message, so the time the
+     * call is held open is the client's. The gateway must end it after
+     * {@link GrpcDispatchStage#GRPC_MESSAGE_TIMEOUT_MILLIS} as {@code INBOUND_BODY_ABORTED}, rendered
+     * trailers-only as {@code INVALID_ARGUMENT}. A gateway whose bound stopped at the first forwarded byte
+     * would leave the call to the guard's {@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS}-second timeout,
+     * which ends it as the upstream's failure with {@code DEADLINE_EXCEEDED} and counts it against the
+     * upstream's circuit breaker. The client's own idle timeout is set beyond both.
+     * <p>
+     * The ordinary unary call that follows on the same route shows the route still serves: the stalled
+     * call neither wedged it nor opened its breaker.
+     */
+    @Test
+    @DisplayName("a call stalling inside its first request message is ended as a client abort after the "
+            + "message bound, and the route still serves the next call")
+    void partialFirstMessageIsEndedByTheMessageBound() throws Exception {
+        long bound = GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS;
+        long guardTimeout = TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS);
+        Buffer frame = grpcFrame(EchoRequest.newBuilder().setMessage("stalls-inside-its-message").build());
+        int payloadBytes = frame.length() - GRPC_PREFIX_BYTES;
+        Buffer partialFrame = frame.getBuffer(0, GRPC_PREFIX_BYTES + payloadBytes / 2);
+
+        RawCallOutcome outcome = rawUnaryCall(partialFrame, false)
+                .get(IDLE_CALL_DEADLINE_SECONDS + 5L, TimeUnit.SECONDS);
+
+        assertAll("the call stalled inside its message is ended by the message bound, as the client's abort",
+                () -> assertEquals(Status.Code.INVALID_ARGUMENT, outcome.code(),
+                        () -> "a call stalled inside its first message ends as INBOUND_BODY_ABORTED, rendered "
+                                + "INVALID_ARGUMENT — DEADLINE_EXCEEDED would mean the guard's timeout ended it "
+                                + "as the upstream's failure. Status was " + outcome.code()),
+                () -> assertEquals(0, outcome.body().length(),
+                        "the gateway's client-abort answer is trailers-only: it carries no response message"),
+                () -> assertTrue(outcome.elapsedMillis() >= bound - TIMING_TOLERANCE_MILLIS,
+                        () -> "the gateway must wait out the " + bound + " ms message bound before ending the "
+                                + "call; it ended after " + outcome.elapsedMillis() + " ms"),
+                () -> assertTrue(outcome.elapsedMillis() < bound + TIMING_TOLERANCE_MILLIS * 10,
+                        () -> "the call must end at the message bound, well before the guard's " + guardTimeout
+                                + " ms timeout; it ended after " + outcome.elapsedMillis() + " ms"));
+
+        EchoResponse next = echoStub().unary(EchoRequest.newBuilder().setMessage("after-partial-call").build());
+
+        assertEquals("after-partial-call", next.getMessage(),
+                "the next ordinary call on the same route is relayed, so the stalled call left the route serving "
+                        + "and did not open its breaker");
+    }
+
+    /**
+     * THE MATCHED CONTROL of {@link #partialFirstMessageIsEndedByTheMessageBound()}: the same raw client,
+     * the same route and the same hand-framed message, sent whole and followed by the end of the request
+     * stream, is answered by the upstream normally. The only difference from the stalled call is the second
+     * half of the payload and the half-close — so the bound does not cut off a well-formed call, and the
+     * hand framing the stalled call relies on is a valid gRPC message.
+     */
+    @Test
+    @DisplayName("THE CONTROL: the same hand-framed message, sent whole and half-closed, is answered by the upstream")
+    void completeHalfClosedMessageIsAnsweredByTheUpstream() throws Exception {
+        Buffer frame = grpcFrame(EchoRequest.newBuilder().setMessage("sent-whole").build());
+
+        RawCallOutcome outcome = rawUnaryCall(frame, true).get(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        assertEquals(Status.Code.OK, outcome.code(),
+                () -> "a complete, half-closed call must be answered by the upstream. Status was " + outcome.code());
+        EchoResponse response = EchoResponse.parseFrom(
+                outcome.body().getBytes(GRPC_PREFIX_BYTES, outcome.body().length()));
+        assertAll("the upstream's answer to the complete call",
+                () -> assertEquals(GRPC_PREFIX_BYTES + response.getSerializedSize(), outcome.body().length(),
+                        "the answer carries exactly one length-prefixed response message"),
+                () -> assertEquals("sent-whole", response.getMessage(),
+                        "the upstream must echo the hand-framed request message verbatim"));
+    }
+
+    /**
+     * Encodes a message as one uncompressed gRPC message: a {@code 0} compressed flag, its serialized
+     * length as a 4-byte big-endian integer, then the serialized message.
+     */
+    private static Buffer grpcFrame(EchoRequest message) {
+        byte[] payload = message.toByteArray();
+        return Buffer.buffer(GRPC_PREFIX_BYTES + payload.length)
+                .appendByte((byte) 0)
+                .appendInt(payload.length)
+                .appendBytes(payload);
+    }
+
+    /**
+     * Sends {@code requestBytes} on a raw HTTP/2 {@code Echo/Unary} call and, when {@code halfClose} is
+     * set, ends the request stream after them; otherwise the stream is left open with nothing more to
+     * come. Completes with the gRPC status — from the response headers on a trailers-only answer, else
+     * from the trailers — the response body and the time from sending to the end of the response.
+     */
+    private static CompletableFuture<RawCallOutcome> rawUnaryCall(Buffer requestBytes, boolean halfClose) {
+        CompletableFuture<RawCallOutcome> outcome = new CompletableFuture<>();
+        RequestOptions options = new RequestOptions()
+                .setMethod(HttpMethod.POST)
+                .setHost("localhost")
+                .setPort(testPort())
+                .setURI("/" + EchoGrpc.getUnaryMethod().getFullMethodName())
+                .setIdleTimeout(TimeUnit.SECONDS.toMillis(IDLE_CALL_DEADLINE_SECONDS))
+                .putHeader("content-type", "application/grpc")
+                .putHeader("te", "trailers");
+        rawClient.request(options)
+                .onFailure(outcome::completeExceptionally)
+                .onSuccess(request -> {
+                    // A reset that follows the end of the answer ends only the stream; one that comes
+                    // first fails the call, and the response future below reports it.
+                    request.exceptionHandler(outcome::completeExceptionally);
+                    long started = System.nanoTime();
+                    request.response()
+                            .compose(response -> response.body().map(body -> new RawCallOutcome(grpcStatus(response),
+                                    body, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))))
+                            .onSuccess(outcome::complete)
+                            .onFailure(outcome::completeExceptionally);
+                    if (halfClose) {
+                        request.end(requestBytes);
+                    } else {
+                        request.write(requestBytes);
+                    }
+                });
+        return outcome;
+    }
+
+    /** The gRPC status of a raw call: the headers carry it on a trailers-only answer, else the trailers. */
+    private static Status.Code grpcStatus(HttpClientResponse response) {
+        String value = response.getHeader("grpc-status");
+        if (value == null) {
+            value = response.getTrailer("grpc-status");
+        }
+        return value == null ? null : Status.fromCodeValue(Integer.parseInt(value)).getCode();
+    }
+
+    private static int testPort() {
+        return Integer.parseInt(System.getProperty("test.https.port", "10443"));
+    }
+
+    /**
+     * How a raw call ended.
+     *
+     * @param code          the gRPC status the gateway or the upstream ended it with, {@code null} when the
+     *                      answer carried none
+     * @param body          the response body as received, length prefixes included
+     * @param elapsedMillis the time from sending the request to the end of the response
+     */
+    private record RawCallOutcome(Status.Code code, Buffer body, long elapsedMillis) {
     }
 
     /**
