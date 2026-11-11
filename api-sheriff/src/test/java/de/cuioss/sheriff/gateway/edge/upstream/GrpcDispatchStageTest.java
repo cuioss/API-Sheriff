@@ -218,7 +218,7 @@ class GrpcDispatchStageTest {
                             <= GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS,
                             () -> "a prompt hand-over must keep the whole pre-response deadline of "
                                     + GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS + " ms"),
-                    () -> assertEquals(guardMillis - 1_000L, GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS,
+                    () -> assertEquals(GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, guardMillis - 1_000L,
                             () -> "the pre-response cap must pass one second before the guard's "
                                     + UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS + " s timeout"));
         }
