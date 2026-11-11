@@ -1262,8 +1262,8 @@ class GrpcDispatchStageTest {
             behind.push("behind");
             behind.end();
             Object behindTheCalls = Awaits.connect(CompletableFuture
-                    .supplyAsync(() -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), behind, -1L))
-                    .handle((answer, refusal) -> refusal == null ? answer.statusCode() : refusal.getCause()),
+                            .supplyAsync(() -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), behind, -1L))
+                            .handle((answer, refusal) -> refusal == null ? answer.statusCode() : refusal.getCause()),
                     "the call behind the outpacing calls to end");
 
             assertAll("clients outpacing a healthy upstream, as many as the breaker's threshold",
