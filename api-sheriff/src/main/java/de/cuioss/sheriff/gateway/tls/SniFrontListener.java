@@ -109,12 +109,13 @@ import org.jspecify.annotations.Nullable;
  * </ol>
  * The trade-off is deliberate: a slot held by a connection that never completes its ClientHello is
  * held for at most one deadline window — the deadline frees it again — and a slot held by a dialling
- * connection for at most one dial window, and that bounded delay for new handshakes is preferred over
- * unbounded pre-route memory. No single party can take the whole cap: one source holds at most its
- * share, a quarter of the cap, and the connections dialling one passthrough target at most that
- * target's dial budget, an eighth of it. Since a legitimate client completes its ClientHello within one
- * round trip, 1024 concurrent undecided connections still admit tens of thousands of handshakes per
- * second.</li>
+ * connection for at most one dial window. While the cap is full a new connection is not queued: it is
+ * closed, and its client has to connect again. Refusing new connections for that bounded time is
+ * preferred over unbounded pre-route memory. No single party can take the whole cap: one source holds
+ * at most its share, a quarter of the cap, and the connections dialling one passthrough target at most
+ * that target's dial budget, an eighth of it. Since a legitimate client completes its ClientHello
+ * within one round trip, 1024 concurrent undecided connections still admit tens of thousands of
+ * handshakes per second.</li>
  * <li><em>Per-source share</em> — {@link #MAX_UNDECIDED_PER_SOURCE}, a fixed quarter of the cap (256
  * connections), held by one source at the same time. A connection accepted while its source already
  * holds its full share is closed at once, like one beyond the cap, so a single source filling its
@@ -135,9 +136,12 @@ import org.jspecify.annotations.Nullable;
  * share of the cap, not a second bound beside it: every dialling connection still counts against the
  * cap. Several dark targets add up: two hold at most a quarter of the cap, four at most half, and eight
  * could hold all of it — the budget bounds what one unreachable backend can take, not what a set of
- * them can. The terminated hand-off target is exempt: its dial goes to the gateway's own internal
- * listener on loopback and settles at once, and budgeting it would refuse exactly the terminated
- * handshakes the budget exists to protect.</li>
+ * them can. A target is a backend's host and port, not an SNI hostname: every {@code passthrough_sni}
+ * entry that resolves to the same host and port shares one budget, and a host name is compared without
+ * regard to letter case ({@link #dialBudgetKeyOf}), so two entries that spell one backend's name
+ * differently share it too. The terminated hand-off target is exempt: its dial goes to the gateway's
+ * own internal listener on loopback and settles at once, and budgeting it would refuse exactly the
+ * terminated handshakes the budget exists to protect.</li>
  * <li><em>Relay idle timeout</em> — the Vert.x idle timeout of the front server, the same value
  * {@link TlsEdgeProducer} also sets on the relay's dial client. It closes a relayed leg that carried
  * no byte in either direction for the timeout, which the relay's close handlers then propagate to the
@@ -177,8 +181,8 @@ import org.jspecify.annotations.Nullable;
  * returns the source's slot just claimed. A connection refused for its source's share therefore never
  * touched the cap, and one refused for the cap holds no share: every refusal names the bound that
  * refused it. The per-target dial
- * counts are claimed and returned the same way, inside {@link ConcurrentHashMap#compute} on the target
- * key, so no read-then-write window lets two dials take the budget's last slot. Every slot of an
+ * counts are claimed and returned the same way, inside {@link ConcurrentHashMap#compute} on the target's
+ * budget key, so no read-then-write window lets two dials take the budget's last slot. Every slot of an
  * admitted connection is returned together, exactly once. The time of the last {@code WARN} per reason is
  * advanced with a compare-and-set, so two concurrent refusals never both log it. Everything else about
  * a connection is confined to that connection's event loop.
@@ -810,15 +814,15 @@ public final class SniFrontListener {
 
     /**
      * Claims one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#compute}, atomic per
-     * target: the count is read and written in one step, so two dials can never both take the budget's
-     * last slot.
+     * {@linkplain #dialBudgetKeyOf budget key}: the count is read and written in one step, so two dials can
+     * never both take the budget's last slot.
      *
      * @param target the passthrough target the connection is routed to
      * @return {@code true} when the slot was claimed, {@code false} when the budget is full
      */
     private boolean claimDial(RelayTarget target) {
         AtomicBoolean claimed = new AtomicBoolean();
-        dialsPerTarget.compute(target, (key, held) -> {
+        dialsPerTarget.compute(dialBudgetKeyOf(target), (key, held) -> {
             int count = held == null ? 0 : held;
             if (count >= maxDialsPerTarget) {
                 return held;
@@ -831,9 +835,29 @@ public final class SniFrontListener {
 
     /**
      * Returns one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#computeIfPresent},
-     * which removes the target once no dial to it is in flight.
+     * under the same {@linkplain #dialBudgetKeyOf budget key} it was claimed under; the key is removed once
+     * no dial to it is in flight.
      */
     private void releaseDial(RelayTarget target) {
-        dialsPerTarget.computeIfPresent(target, (key, held) -> held <= 1 ? null : held - 1);
+        dialsPerTarget.computeIfPresent(dialBudgetKeyOf(target), (key, held) -> held <= 1 ? null : held - 1);
+    }
+
+    /**
+     * The key a passthrough target's dial budget is counted under: the target with a host <em>name</em>
+     * lowered in the root locale. Host names compare without regard to letter case, so two targets that
+     * spell one backend's name differently dial the same backend and must share its budget; keyed by the
+     * target as declared, each spelling would hold a budget of its own and one unreachable backend could
+     * take a multiple of its eighth of the cap.
+     * <p>
+     * A host holding a colon is an IPv6 literal and is kept as declared: it may carry a zone index, which
+     * names an interface and is case-sensitive. An IPv4 literal has no letter case. Only the count is
+     * keyed this way — the relay dials the target as it was declared.
+     *
+     * @param target the passthrough target a connection is routed to
+     * @return the target the dial budget counts it as
+     */
+    static RelayTarget dialBudgetKeyOf(RelayTarget target) {
+        String host = target.host();
+        return host.indexOf(':') >= 0 ? target : new RelayTarget(host.toLowerCase(Locale.ROOT), target.port());
     }
 }

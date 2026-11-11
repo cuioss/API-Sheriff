@@ -26,6 +26,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -63,6 +64,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Unit tests for {@link SniFrontListener}, exercised against real Vert.x sockets: the accept-time
@@ -71,7 +74,8 @@ import org.junit.jupiter.api.Test;
  * the client sent — and the bounds of the front: the ClientHello deadline, the undecided-connection
  * cap, its per-source share, the dial phase held inside that cap, the per-target dial budget, a hand-off
  * the relay refuses outright and the relay idle timeout, together with how a refusal is reported and
- * labelled, how a peer address is keyed to its source — IPv4 by address, IPv6 by /64 — and that the
+ * labelled, how a peer address is keyed to its source — IPv4 by address, IPv6 by /64 — how a passthrough
+ * target is keyed to its dial budget — a host name without regard to letter case — and that the
  * per-source map returns to empty on every path that ends a connection's hold.
  * <p>
  * The bounds are shortened through the package-private constructor so each case observes its bound
@@ -1064,6 +1068,56 @@ class SniFrontListenerTest {
         }
 
         /**
+         * Two passthrough SNIs whose targets spell one backend's host name in different letter case. A host
+         * name compares without regard to case, so both dial the same backend, and the budget that bounds
+         * what one unreachable backend can take counts them together: with a budget of one, a dial under one
+         * spelling refuses a dial under the other. The slot is returned under the key it was claimed under —
+         * once the first dial settles, the other spelling is admitted — and each dial still names the host
+         * as its target declared it. The targets name a host no resolver knows, so the dial client records
+         * the name it is asked for and dials the loopback backend in its place.
+         */
+        @Test
+        @DisplayName("counts two targets that spell one host name in different case against one dial budget, and dials each as declared")
+        void caseVariantsOfOneHostNameShareOneDialBudget() throws Exception {
+            Backend backend = startBackend(darkHello.length);
+            RelayTarget mixedCaseTarget = new RelayTarget("Backend.Example.TEST", backend.target().port());
+            RelayTarget lowerCaseTarget = new RelayTarget("backend.example.test", backend.target().port());
+            byte[] lowerCaseHello = ClientHelloFixture.withSni(SECOND_MAPPED_SNI);
+            List<String> dialledHosts = new CopyOnWriteArrayList<>();
+            NetClient heldDials = RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                    () -> nextDial.complete(null), releaseDials);
+            SniFrontListener front = startFront(
+                    new PassthroughRelay(RelayTestProxies.recordingLoopbackDials(heldDials, HOST, dialledHosts),
+                            relayedPeers),
+                    Map.of(MAPPED_SNI, mixedCaseTarget, SECOND_MAPPED_SNI, lowerCaseTarget), backend.target(),
+                    DEADLINE, CAP, 1, SniFrontListener::sourceOf);
+
+            Offer mixedCase = offer(front, darkHello);
+            Offer lowerCase = offer(front, lowerCaseHello);
+            // A refusal is recorded before its connection is closed, so it is in the list once the offer returns.
+            List<Refusal> whileTheFirstDialWasPending = List.copyOf(refusals);
+            releaseDials.complete(null);
+            Awaits.connect(backend.firstBytes(), "the released dial to establish the relay");
+            Offer lowerCaseOnceSettled = awaitAdmitted(front, lowerCaseHello);
+
+            assertAll("one backend named in two spellings has one dial budget",
+                    () -> assertTrue(mixedCase.admitted(), "the first dial takes the backend's one dial slot"),
+                    () -> assertFalse(lowerCase.admitted(),
+                            "a dial to the same host in another spelling finds that budget full"),
+                    () -> assertEquals(List.of(Refusal.DIAL_BUDGET), whileTheFirstDialWasPending,
+                            "the second spelling is refused on the dial budget"),
+                    () -> assertTrue(lowerCaseOnceSettled.admitted(),
+                            "the slot claimed under one spelling is returned, and the other spelling takes it"),
+                    () -> assertEquals("Backend.Example.TEST", dialledHosts.getFirst(),
+                            "the relay dials the host as its target declared it, not as the budget keys it"),
+                    () -> assertEquals("backend.example.test", dialledHosts.getLast(),
+                            "the dial admitted after the release names its own target's spelling"),
+                    () -> assertTrue(refusals.stream().allMatch(Refusal.DIAL_BUDGET::equals),
+                            "every refusal is a dial-budget refusal: " + refusals));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
          * A front of {@link #CAP} with the given dial budget whose relay holds every dial for the whole
          * case. The first {@link #CAP} connections come from one source, every later one from another.
          */
@@ -1109,9 +1163,14 @@ class SniFrontListenerTest {
 
         /** Offers dark-target connections until one is admitted, and returns that one. */
         private Offer awaitAdmitted(SniFrontListener front) throws Exception {
+            return awaitAdmitted(front, darkHello);
+        }
+
+        /** Offers connections carrying {@code hello} until one is admitted, and returns that one. */
+        private Offer awaitAdmitted(SniFrontListener front, byte[] hello) throws Exception {
             List<Offer> admittedOffers = new CopyOnWriteArrayList<>();
             Awaits.until(() -> {
-                Offer probe = offer(front, darkHello);
+                Offer probe = offer(front, hello);
                 if (probe.admitted()) {
                     admittedOffers.add(probe);
                 }
@@ -1132,6 +1191,65 @@ class SniFrontListenerTest {
 
     /** A connection offered to the front, and whether the front admitted it into a backend dial. */
     private record Offer(ClientLeg leg, boolean admitted) {
+    }
+
+    /**
+     * The key a passthrough target's dial budget is counted under, {@link SniFrontListener#dialBudgetKeyOf}:
+     * a host name is keyed without regard to letter case, the port stays part of the key, and an IP literal
+     * is kept as declared. That the budget is claimed and returned under this key is driven through a live
+     * front by {@link DialBudget#caseVariantsOfOneHostNameShareOneDialBudget()}.
+     */
+    @Nested
+    @DisplayName("dial budget key")
+    class DialBudgetKey {
+
+        private static final int PORT = 8443;
+
+        @Test
+        @DisplayName("keys a target named by host name on the lowered name, so its spellings are one target")
+        void keysAHostNameWithoutRegardToCase() {
+            RelayTarget mixedCase = new RelayTarget("Backend.Example.TEST", PORT);
+            RelayTarget lowerCase = new RelayTarget("backend.example.test", PORT);
+
+            RelayTarget key = SniFrontListener.dialBudgetKeyOf(mixedCase);
+
+            assertAll("one backend named in two spellings",
+                    () -> assertEquals(lowerCase, key, "the key carries the lowered host name and the port"),
+                    () -> assertEquals(key, SniFrontListener.dialBudgetKeyOf(lowerCase),
+                            "both spellings are counted under one key"));
+        }
+
+        @Test
+        @DisplayName("lowers the host name in the root locale, whatever the default locale is")
+        void lowersInTheRootLocale() {
+            Locale defaultLocale = Locale.getDefault();
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+            try {
+                assertEquals(new RelayTarget("internal.example.test", PORT),
+                        SniFrontListener.dialBudgetKeyOf(new RelayTarget("INTERNAL.example.test", PORT)),
+                        "a locale that lowers I to a dotless i must not reach a host name");
+            } finally {
+                Locale.setDefault(defaultLocale);
+            }
+        }
+
+        @Test
+        @DisplayName("control: keeps the port in the key, so two ports of one host are two targets")
+        void keepsThePortInTheKey() {
+            assertNotEquals(SniFrontListener.dialBudgetKeyOf(new RelayTarget("backend.example.test", PORT)),
+                    SniFrontListener.dialBudgetKeyOf(new RelayTarget("backend.example.test", PORT + 1)),
+                    "another port of the same host is another backend");
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"fe80::1%Eth0", "[fe80::1%Eth0]", "192.0.2.7"})
+        @DisplayName("keeps an IP literal as declared: an IPv6 zone index names an interface and is case-sensitive")
+        void keepsAnIpLiteralAsDeclared(String literal) {
+            RelayTarget declared = new RelayTarget(literal, PORT);
+
+            assertEquals(declared, SniFrontListener.dialBudgetKeyOf(declared),
+                    "an IP literal is its own key, exactly as its target declares it");
+        }
     }
 
     @Nested

@@ -435,14 +435,14 @@ class DispatchStageTest {
 
             assertAll("the accepted deadlines",
                     () -> assertDoesNotThrow(() -> new DispatchStage.ByteCappedBodyStream(new TestReadStream(), BODY_CAP,
-                            DispatchStage.NO_DECLARED_LENGTH, () -> fail("a body that is only built aborts nothing"), _ -> {
-                                // Nothing is forwarded by a body that is only built.
-                            }, DispatchStage.IdleClock.UNARMED, deadline, clock, STALL_MILLIS),
+                                    DispatchStage.NO_DECLARED_LENGTH, () -> fail("a body that is only built aborts nothing"), _ -> {
+                                        // Nothing is forwarded by a body that is only built.
+                                    }, DispatchStage.IdleClock.UNARMED, deadline, clock, STALL_MILLIS),
                             "a pre-response deadline with a positive stall threshold"),
                     () -> assertDoesNotThrow(() -> new DispatchStage.ByteCappedBodyStream(new TestReadStream(), BODY_CAP,
-                            DispatchStage.NO_DECLARED_LENGTH, () -> fail("a body that is only built aborts nothing"), _ -> {
-                                // Nothing is forwarded by a body that is only built.
-                            }, clock, deadline, DispatchStage.IdleClock.UNARMED, DispatchStage.NO_UPSTREAM_STALL),
+                                    DispatchStage.NO_DECLARED_LENGTH, () -> fail("a body that is only built aborts nothing"), _ -> {
+                                        // Nothing is forwarded by a body that is only built.
+                                    }, clock, deadline, DispatchStage.IdleClock.UNARMED, DispatchStage.NO_UPSTREAM_STALL),
                             "a whole-body deadline needs no stall threshold"));
         }
     }
@@ -858,6 +858,38 @@ class DispatchStageTest {
                     () -> assertTrue(probe.source.paused(),
                             "the inbound stream stays paused: the read that ended the body never reaches it"),
                     () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
+        /**
+         * A timer never fires early, but it may fire late. The whole-body deadline has no attribution to decide,
+         * yet a read that ends a pause still ends the body itself once the deadline's instant has passed — also
+         * when the deadline's timer has not run yet, so the read does not hand a body past its deadline back to
+         * the inbound stream first.
+         */
+        @ParameterizedTest(name = "read again by {0}")
+        @ValueSource(strings = {"resume", "fetch"})
+        @DisplayName("a read after the deadline's instant ends the paused body although the deadline's late timer has not run")
+        void readAfterTheDeadlineInstantEndsThePausedBodyBeforeItsLateTimerRan(String restart) {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            probe.capped.startIdleClock();
+            probe.capped.pause();
+            probe.time.advanceMillisHoldingTimers(DEADLINE_MILLIS);
+            boolean quietBeforeTheRead = probe.failure.get() == null && probe.aborts.get() == 0;
+            int pendingBeforeTheRead = probe.time.pendingCount();
+
+            readAgain(probe, restart);
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a paused body read again after its deadline's instant, the deadline's timer still pending",
+                    () -> assertTrue(quietBeforeTheRead, "nothing ends the body before it is read again"),
+                    () -> assertEquals(2, pendingBeforeTheRead, "the idle timer and the deadline's timer have not run"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the read ends the body at its deadline without waiting for the late timer"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(),
+                            "the inbound stream stays paused: the read that ended the body never reaches it"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "the claim cancelled both late timers"));
         }
 
         @Test
@@ -1775,6 +1807,61 @@ class DispatchStageTest {
         }
 
         /**
+         * A timer never fires early, but it may fire late: its delay is rounded up to a whole millisecond, and it
+         * runs on the upstream request's event loop, which can be busy while the read that ends the pause runs on
+         * the inbound connection's. The upstream stops taking data {@link #PAUSED_AT_MILLIS} after the clock's
+         * start and reads again a whole stall threshold later — after the deadline's instant has passed, and before
+         * the deadline's timer has run. The pause that read ends spans the deadline and has lasted the threshold,
+         * so the read ends the body as the upstream's stall. Left to the late timer, the deadline would be found
+         * with the stream being read again and charged to the client, however long the upstream had held it.
+         */
+        @Test
+        @DisplayName("a read ending a stall across the deadline before the deadline's late timer has run is the upstream's stall")
+        void readEndingAStallBeforeTheLateDeadlineTimerRanIsTheUpstreamsStall() {
+            IdleProbe probe = pausedAcrossTheDeadlineWithItsTimerLate(STALL_MILLIS);
+
+            probe.capped.resume();
+            Throwable endedByTheRead = probe.failure.get();
+            int pendingAfterTheRead = probe.time.pendingCount();
+            probe.time.advanceMillis(0);
+
+            assertAll("a stall the read ends after the deadline's instant, before the deadline's timer ran",
+                    () -> assertInstanceOf(DispatchStage.UpstreamStalledRequest.class, endedByTheRead,
+                            "the read ends the body as the upstream's stall: the pause spans the deadline and "
+                                    + "lasted the threshold"),
+                    () -> assertSame(endedByTheRead, probe.capped.upstreamStall(),
+                            "the stall is the stream's recorded abort, the one the dispatch reports"),
+                    () -> assertNull(probe.capped.clientAbort(), "the upstream's stall is never a client abort"),
+                    () -> assertEquals(0, pendingAfterTheRead, "the claim cancelled the late timers"),
+                    () -> assertSame(endedByTheRead, probe.failure.get(), "nothing that was overdue changes the end"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the read that ended the body never reaches the inbound stream"));
+        }
+
+        /**
+         * Matched control below the threshold: the same late timer, the pause one millisecond short of the stall
+         * threshold when the read ends it. That pause is flow control, so the deadline stays the client's, once,
+         * whatever the overdue timers find when they run.
+         */
+        @Test
+        @DisplayName("control — a read ending a pause short of the stall threshold before the late timer has run leaves the deadline the client's")
+        void readEndingAShortPauseBeforeTheLateDeadlineTimerRanIsTheClients() {
+            IdleProbe probe = pausedAcrossTheDeadlineWithItsTimerLate(STALL_MILLIS - 1);
+
+            probe.capped.resume();
+            probe.time.advanceMillis(0);
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a pause below the threshold the read ends after the deadline's instant, before its timer ran",
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "a pause below the threshold is not the upstream's stall"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertNull(probe.capped.upstreamStall(), "nothing is charged to the upstream"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the ended body is not read on"));
+        }
+
+        /**
          * A resume ends a pause: the next pause measures its stall from its own start. The upstream holds the
          * stream longer than the threshold, reads again before the deadline, and stops again; the deadline passes
          * in the second pause, which is shorter than the threshold when it ends. The two pauses together are far
@@ -1897,6 +1984,26 @@ class DispatchStageTest {
             assertTrue(probe.failure.get() == null && probe.aborts.get() == 0,
                     "a deadline passing during the pause ends nothing until the body is read again");
             probe.capped.resume();
+            return probe;
+        }
+
+        /**
+         * Runs a pause across the deadline whose timers are late: the clock starts, a steady sender sends until
+         * {@link #PAUSED_AT_MILLIS}, the upstream then stops taking data, and {@code pauseMillis} pass without any
+         * timer running — so the deadline's instant passes during the pause while its timer is still pending.
+         *
+         * @return the probe, still paused, before the read that ends the pause
+         */
+        private IdleProbe pausedAcrossTheDeadlineWithItsTimerLate(long pauseMillis) {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            long pausedAt = sendSteadily(probe, PAUSED_AT_MILLIS);
+            probe.capped.pause();
+            probe.time.advanceMillisHoldingTimers(pauseMillis);
+            assertTrue(pausedAt < DEADLINE_MILLIS && pausedAt + pauseMillis > DEADLINE_MILLIS,
+                    "the deadline's instant passes during the pause");
+            assertTrue(probe.failure.get() == null && probe.aborts.get() == 0 && probe.time.pendingCount() > 0,
+                    "nothing has ended the body yet: the deadline's timer is overdue and has not run");
             return probe;
         }
 
@@ -2090,6 +2197,15 @@ class DispatchStageTest {
             nowNanos = target;
         }
 
+        /**
+         * Moves time forward by {@code millis} without running any task that falls due on the way, as when
+         * every timer due in that span fires late. The tasks stay pending and run with the next
+         * {@link #advanceMillis(long)} — {@code advanceMillis(0)} runs exactly those that are overdue.
+         */
+        void advanceMillisHoldingTimers(long millis) {
+            nowNanos += TimeUnit.MILLISECONDS.toNanos(millis);
+        }
+
         /** @return the tasks scheduled and neither run nor cancelled yet */
         int pendingCount() {
             return pending.size();
@@ -2236,6 +2352,96 @@ class DispatchStageTest {
             assertAll("the gateway-reset cause",
                     () -> assertSame(DispatchStage.GatewayStreamReset.INSTANCE, delivered.get()),
                     () -> assertEquals(0, DispatchStage.GatewayStreamReset.INSTANCE.getStackTrace().length));
+        }
+    }
+
+    /**
+     * The frame observer of {@link DispatchStage.InboundBody}: how a party that has to see the request
+     * frames on their way to the dispatch — the gRPC stream-idle bound — does so without wrapping the
+     * armed body, which the dispatch has to be handed itself to learn of a client's departure. That the
+     * gRPC path hands the dispatch the armed body is pinned by {@code ResponseStageTest} and, through the
+     * dispatch itself, by {@code TerminalDispatchGrpcClientDepartureTest}.
+     */
+    @Nested
+    @DisplayName("frame observer of the armed inbound body")
+    class InboundFrameObserver {
+
+        private static final String OBSERVED = "observed";
+
+        private final TestReadStream source = new TestReadStream();
+        private final DispatchStage.InboundBody inbound = DispatchStage.InboundBody.arm(source);
+        /** The observer's runs and the frames the consumer read, in the order they happened. */
+        private final List<String> sequence = new ArrayList<>();
+
+        @Test
+        @DisplayName("the observer is run for every frame, before the consumer reads it")
+        void observerRunsBeforeTheConsumerReadsEachFrame() {
+            String first = Generators.letterStrings(2, 6).next();
+            String second = Generators.letterStrings(2, 6).next();
+            inbound.frameObserver(() -> sequence.add(OBSERVED));
+            inbound.handler(frame -> sequence.add(frame.toString()));
+
+            source.emit(Buffer.buffer(first));
+            source.emit(Buffer.buffer(second));
+
+            assertEquals(List.of(OBSERVED, first, OBSERVED, second), sequence,
+                    "every frame is shown to the observer first, then read by the consumer unchanged");
+        }
+
+        /**
+         * The observer must not change what the dispatch makes of the body: a byte-capped body subscribed to
+         * an observed armed body forwards its frames, and still learns of an inbound failure through it.
+         */
+        @Test
+        @DisplayName("a byte-capped body over an observed armed body forwards every frame and still learns of its failure")
+        void observedBodyStillFeedsAndFailsTheByteCappedBody() {
+            String frame = Generators.letterStrings(2, 6).next();
+            List<Buffer> forwarded = new ArrayList<>();
+            AtomicInteger aborts = new AtomicInteger();
+            inbound.frameObserver(() -> sequence.add(OBSERVED));
+            DispatchStage.ByteCappedBodyStream capped = new DispatchStage.ByteCappedBodyStream(inbound, BODY_CAP,
+                    aborts::incrementAndGet);
+            capped.handler(forwarded::add);
+
+            source.emit(Buffer.buffer(frame));
+            source.fail(new IllegalStateException(Generators.letterStrings(4, 12).next()));
+
+            assertAll("an observed armed body under the dispatch's own decorator",
+                    () -> assertEquals(List.of(Buffer.buffer(frame)), forwarded, "the frame crosses to the upstream"),
+                    () -> assertEquals(List.of(OBSERVED), sequence, "the observer saw that one frame"),
+                    () -> assertEquals(EventType.INBOUND_BODY_ABORTED,
+                            assertInstanceOf(GatewayException.class, capped.clientAbort()).getEventType(),
+                            "the inbound failure still reaches the byte-capped body"),
+                    () -> assertEquals(1, aborts.get(), "and resets the upstream request once"));
+        }
+
+        @Test
+        @DisplayName("control — without an observer the consumer reads every frame as before")
+        void withoutAnObserverTheConsumerReadsEveryFrame() {
+            String frame = Generators.letterStrings(2, 6).next();
+            inbound.handler(read -> sequence.add(read.toString()));
+
+            source.emit(Buffer.buffer(frame));
+
+            assertEquals(List.of(frame), sequence);
+        }
+
+        @Test
+        @DisplayName("clearing the consumer's handler stops the observer with it")
+        void clearedHandlerStopsTheObserver() {
+            inbound.frameObserver(() -> sequence.add(OBSERVED));
+            inbound.handler(frame -> sequence.add(frame.toString()));
+
+            inbound.handler(null);
+            source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+
+            assertEquals(List.of(), sequence, "a frame nobody reads is not counted as observed either");
+        }
+
+        @Test
+        @DisplayName("refuses a null observer")
+        void refusesANullObserver() {
+            assertThrows(NullPointerException.class, () -> inbound.frameObserver(null));
         }
     }
 

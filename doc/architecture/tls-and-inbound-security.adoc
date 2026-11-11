@@ -189,6 +189,18 @@ receives `INVALID_ARGUMENT` in a trailers-only `200` (<<_grpc_message_bound>>). 
 disposition. Client-ended dispatches are never retried and are not counted as a failure by the
 upstream circuit breaker.
 
+[[_client_departure]]
+*A client that leaves before it is answered.* A request stream reports a reset or a closed connection
+only while its body is open. Once the body has ended, only the response learns that it can no longer
+be answered; the edge reports that to the request body it armed (`DispatchStage.InboundBody`), and the
+dispatch that is still waiting for its upstream answer releases the upstream request at once and ends
+as `INBOUND_BODY_ABORTED` with the disposition `client-left`. The dispatch reads the departure from the
+armed body it is handed, so it must be handed that body itself. That holds on a `protocol: grpc` route
+too: the call's stream-idle bound observes the armed body's frames in place rather than wrapping it
+(`ResponseStage.GrpcStreamIdleBound.watch`), so a gRPC client that resets its call after ending its
+request stream, before the upstream answers, ends the call as its own departure instead of leaving it
+to the guard's timeout as an upstream failure.
+
 [[_request_body_idle_timeout]]
 *Request-body idle timeout (10 s).* Once a proxied dispatch holds an upstream connection and is
 reading the body, 10 s without a forwarded body byte resets the upstream request and answers `408`
@@ -266,11 +278,15 @@ complete request, the guard ends the call as `UPSTREAM_TIMEOUT`, which the circu
 guard's timeout is therefore reached in three ways, all the upstream's: by an upstream holding a
 complete, half-closed request it does not answer; by a wait for an upstream connection or HTTP/2 stream
 slot that itself lasts the 30 s, before any body is handed over; and by an upstream that stops taking
-data mid-request and takes no more within the 30 s. While that backpressure pauses the request stream,
+data mid-request and takes no more within the 30 s. Each holds only while the client stays: a client
+that leaves before the upstream answers ends the call at once, as its own departure
+(<<_client_departure>>). While that backpressure pauses the request stream,
 the message bound is not counted, and the pre-response deadline keeps counting but does not end the
 call at once: a deadline that passes during the pause ends the call the moment the upstream takes data
 again — no later than a deadline end during a read would. That read decides whose failure it is, by the
-length the pause has reached: a pause of at least the 10 s stall threshold without a break is the
+length the pause has reached. It takes the deadline's instant from the clock, not only from the
+deadline's timer, so a timer that fires late leaves the decision with the read that ends the pause. A
+pause of at least the 10 s stall threshold without a break is the
 upstream's stall: the expiry resets the upstream request and fails the attempt with a
 `DispatchStage.UpstreamStalledRequest`, a `TimeoutException` the breaker counts and the failure mapper
 reports as `UPSTREAM_TIMEOUT`, rendered `DEADLINE_EXCEEDED` with `grpc-message: upstream`; a shorter pause leaves the

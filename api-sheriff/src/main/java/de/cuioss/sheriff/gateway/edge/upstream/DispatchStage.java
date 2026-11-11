@@ -240,7 +240,9 @@ import org.jspecify.annotations.Nullable;
  * ends when the pool hands the connection over, which reports the client's abort, or when the guard's
  * timeout fires, which is an ordinary upstream timeout. A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
- * departure is left to it.
+ * departure is left to it. All of this holds only for a dispatch handed the armed {@link InboundBody}
+ * itself — the HTTP dispatch and the gRPC dispatch both are; a decorator around the body would hide the
+ * departure from the dispatch.
  * <p>
  * <strong>The gateway's own upstream reset is not logged as an error.</strong> Every attempt's
  * upstream request carries an exception handler from the moment it is obtained. Without one, Vert.x
@@ -545,7 +547,9 @@ public final class DispatchStage {
      *                       the shared client and guard from the {@link UpstreamClients}
      * @param requestUri     the upstream request URI (see {@link #upstreamRequestUri})
      * @param forwardHeaders the mode-filtered header set computed by stage 5
-     * @param requestBody    the inbound request body as a live read stream
+     * @param requestBody    the inbound request body as a live read stream — where the edge armed one,
+     *                       the {@link InboundBody} itself: the dispatch reads a client's departure from
+     *                       it, and a decorator around it would hide that departure
      * @param framing        how the body is framed towards the upstream (see {@link BodyFraming})
      * @return the upstream response (body still streaming)
      * @throws GatewayException      carrying the mapped error-contract event on any dispatch failure
@@ -1515,10 +1519,19 @@ public final class DispatchStage {
      * request releases it (see {@link DispatchStage}, which also states when a wait for a pooled
      * connection ends). A stream the gateway reset itself records no departure.
      * <p>
+     * <strong>The dispatch is handed this body itself, never a decorator around it.</strong> The dispatch
+     * finds the departure by the type of the stream it is handed, so a decorator between the two would
+     * hide it: a client that left before the dispatch began would still have an upstream request asked
+     * for, and one that left once its body had ended would hold that request until the upstream answered
+     * or the guard's timeout ended the attempt as the upstream's. Whoever has to see the body's frames
+     * on their way to the dispatch therefore registers a {@linkplain #frameObserver(Runnable) frame
+     * observer} here instead of wrapping the body — the gRPC stream-idle bound does
+     * ({@link de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound#watch}).
+     * <p>
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
      * registered from another thread; both go through the same monitor, as do the departure and its
      * handler. The pause is pinned without holding that monitor: a resume racing the mark is followed by
-     * a pause again.
+     * a pause again. The frame observer is published through a volatile field.
      */
     public static final class InboundBody implements ReadStream<Buffer> {
 
@@ -1528,6 +1541,8 @@ public final class DispatchStage {
         private volatile boolean resetByGateway;
         private @Nullable Throwable departure;
         private @Nullable Handler<Throwable> departureHandler;
+        /** Runs for every frame before the consumer's handler; {@code null} while none is registered. */
+        private volatile @Nullable Runnable frameObserver;
 
         private InboundBody(ReadStream<Buffer> delegate) {
             this.delegate = delegate;
@@ -1637,6 +1652,23 @@ public final class DispatchStage {
             }
         }
 
+        /**
+         * Registers the one observer that is run for every frame this body delivers, before the frame
+         * reaches the consumer's handler. It is how a party that has to see the request frames on their
+         * way to the dispatch does so without wrapping the body, which would hide the body — and with it
+         * the client's departure — from the dispatch (see the class description).
+         * <p>
+         * Register it before the body is handed to its consumer: the observer in force when the consumer
+         * registers its handler is the one that sees the frames, and a handler registered earlier is not
+         * observed.
+         *
+         * @param observer run on the inbound connection's event loop for every frame, before the consumer
+         *                 reads it; it must not block
+         */
+        public void frameObserver(Runnable observer) {
+            this.frameObserver = Objects.requireNonNull(observer, "observer");
+        }
+
         @Override
         public synchronized ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
             this.failureHandler = handler;
@@ -1646,9 +1678,22 @@ public final class DispatchStage {
             return this;
         }
 
+        /**
+         * Registers the consumer's frame handler on the inbound stream. With a
+         * {@linkplain #frameObserver(Runnable) frame observer} in force, every frame is shown to it
+         * first.
+         */
         @Override
         public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
-            delegate.handler(handler);
+            Runnable observer = frameObserver;
+            if (handler == null || observer == null) {
+                delegate.handler(handler);
+            } else {
+                delegate.handler(frame -> {
+                    observer.run();
+                    handler.handle(frame);
+                });
+            }
             return this;
         }
 
@@ -2772,6 +2817,17 @@ public final class DispatchStage {
         }
 
         /**
+         * @return {@code true} when the request-body deadline is still in force and its instant has passed while
+         *         its timer is still pending: the timer is late and has not recorded the passed deadline yet. A
+         *         deadline that has ended is never late, as its timer does nothing once it fires. Called holding
+         *         {@link #clockLock}
+         */
+        private boolean deadlineTimerIsLate() {
+            return !deadlineEnded && deadlineTimer != NO_TIMER
+                    && deadlineNanos.orElseThrow() - deadlineClock.nanoTime().getAsLong() <= 0;
+        }
+
+        /**
          * The consumer paused the stream: no gap is counted until it resumes. A pause already in force keeps the
          * moment it began, so the stall it measures is the whole unbroken pause.
          */
@@ -2791,12 +2847,21 @@ public final class DispatchStage {
          * The consumer resumed the stream: every gap restarts from now, and its timer is pending again. A deadline
          * that passed during the pause now ending is decided by the pause's length first, as the pause ends, for
          * the read's second passed-deadline check to act on; the next pause measures its stall from its own start.
+         * <p>
+         * Whether the deadline passed during the pause is read from the clock, not only from the deadline's
+         * timer: a timer never fires early, but it may fire late, so a read can end a pause after the deadline's
+         * instant and before that timer has run. The deadline is then recorded as passed here, exactly as the
+         * timer would have recorded it during the pause. Left to the late timer, it would find the stream being
+         * read again and charge the deadline to the client, however long the upstream had held the stream.
          */
         private void resumeClocks() {
             if (!tracksPause()) {
                 return;
             }
             synchronized (clockLock) {
+                if (pausedByConsumer && deadlineTimerIsLate()) {
+                    deadlinePassed = true;
+                }
                 if (deadlinePassed) {
                     deadlinePassedHeldByUpstream = upstreamStalledPastThreshold();
                 }
@@ -2918,7 +2983,9 @@ public final class DispatchStage {
          * The passed deadline is checked before the clock resumes and again once it has. Until the clock
          * has resumed, the stream is still marked paused, so a deadline timer firing in between only records
          * that the deadline passed; the second check ends the body. A timer firing after the clock resumed
-         * finds the stream no longer paused and ends the body itself.
+         * finds the stream no longer paused and ends the body itself. A deadline whose instant has passed
+         * while its timer is late is recorded as passed by the clock's resume, so the second check ends that
+         * body as well — by the length the pause has reached — instead of leaving it to the late timer.
          *
          * @param inReadWindow runs between the first passed-deadline check and the clock's resume
          * @return {@code true} when the read may reach the inbound stream

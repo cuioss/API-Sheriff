@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
+import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders;
@@ -490,11 +491,25 @@ public final class ResponseStage {
 
         /**
          * Watches the call's request stream: every frame it delivers counts as activity.
+         * <p>
+         * <strong>The armed request body is watched in place.</strong> The dispatch reads a client's
+         * departure from the {@link DispatchStage.InboundBody} it is handed, so that body must reach the
+         * dispatch itself: the bound registers as its
+         * {@linkplain DispatchStage.InboundBody#frameObserver(Runnable) frame observer} and hands the
+         * same body back. A decorator around it would hide the body, and a client that left before its
+         * upstream answered would hold the upstream request until the upstream answered or the guard's
+         * timeout ended the attempt as the upstream's. Any other stream carries no observer of its own
+         * and is wrapped in a decorator that delegates everything else to it.
          *
          * @param inbound the request body stream to be dispatched upstream
-         * @return the stream to dispatch in its place; it delegates everything else to {@code inbound}
+         * @return the stream to dispatch in its place: {@code inbound} itself when it is the armed request
+         *         body, otherwise a decorator around it
          */
         public ReadStream<Buffer> watch(ReadStream<Buffer> inbound) {
+            if (inbound instanceof DispatchStage.InboundBody armed) {
+                armed.frameObserver(this::recordActivity);
+                return armed;
+            }
             return new WatchedStream(inbound, this::recordActivity);
         }
 

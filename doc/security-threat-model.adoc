@@ -1595,6 +1595,19 @@ stream-idle bound]):
   threshold across the deadline is charged with that stall. A stall that ends before the deadline
   passes is not: that deadline is the client's, however long the stall was, as the residual below
   records (link:architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline]).
+* *A gRPC call whose client leaves before its upstream answers.* A request stream reports a reset or a
+  closed connection only while its body is open. Once the client has ended its request stream -- as a
+  unary or client-streaming call normally has before it is answered -- only the response learns that it
+  can no longer be answered; the edge reports that to the request body it armed, and the dispatch reads the
+  departure from the body it is handed. The gRPC dispatch is handed the armed body itself: the call's
+  stream-idle bound observes that body's frames in place instead of wrapping it. A client that resets
+  its call or closes its connection before the upstream answers therefore releases the upstream request
+  at once and ends the dispatch as its own abort (`INBOUND_BODY_ABORTED`, disposition `client-left`, or
+  `body-stream-failed` while its request stream was still open), which the breaker does not count -- on
+  a gRPC route exactly as on an HTTP route. A dispatch handed a decorator around the armed body would
+  not learn of the departure, and the call would run on until the upstream answered or the guard's
+  30 s timeout ended it as the upstream's failure
+  (link:architecture/tls-and-inbound-security.adoc#_client_departure[Architecture -- a client that leaves before it is answered]).
 * *A gRPC call that goes quiet.* A gRPC call arms no request-body idle timeout. Until its upstream
   sends the response headers, the message bound, the pre-response deadline and the guard's 30 s
   timeout bound it;
@@ -1751,7 +1764,15 @@ after a long one is the client's (`resumeRestartsTheStallMeasuredByTheNextPause`
 re-asserted during a pause keeps its start (`pauseWhilePausedKeepsTheStallsStart`); one passing after
 an earlier pause has ended is the client's (`pausedEarlierThenReadAgainBeforeTheDeadlineIsTheClients`),
 and the whole-body deadline of an HTTP dispatch stays the client's
-(`wholeBodyDeadlinePausedByTheUpstreamStaysTheClients`).
+(`wholeBodyDeadlinePausedByTheUpstreamStaysTheClients`). A timer never fires early but may fire late,
+so the same rule is driven with the deadline's instant passed and its timer still pending: a read that
+ends a stall of the threshold then ends the body as the upstream's stall itself
+(`readEndingAStallBeforeTheLateDeadlineTimerRanIsTheUpstreamsStall`, red while only the timer recorded
+a passed deadline -- the late timer found the stream being read again and charged the client), a pause
+one millisecond short of the threshold stays the client's
+(`readEndingAShortPauseBeforeTheLateDeadlineTimerRanIsTheClients`), and the `BodyDeadline` case
+`readAfterTheDeadlineInstantEndsThePausedBodyBeforeItsLateTimerRan` asserts that an HTTP dispatch's
+read ends the paused body without waiting for the late timer either.
 `GrpcStatusMapperTest` asserts the `DEADLINE_EXCEEDED` rendering of `REQUEST_BODY_TIMEOUT`
 (`rendersRequestBodyTimeoutAsDeadlineExceeded`). `GrpcProxyIT` drives a call that sends HEADERS only
 and one that stalls inside its first message through the native image, each ended as
@@ -1763,6 +1784,18 @@ whose complete, half-closed message is answered by the upstream
 each disposition on a route is its own `INFO`, a repeat stays at `DEBUG`
 (`idleClientAfterADepartureIsItsOwnInfo`, `repeatIdleClientStaysAtDebug`) -- and the count of every end
 under its disposition (`everyEndIsCountedUnderItsDisposition`).
+`TerminalDispatchGrpcClientDepartureTest` runs a call through the public `TerminalDispatch.dispatchGrpc`
+behind a front handler that arms the request body and reports a response ended unwritten as the edge
+root does: a client that resets its call once its request stream has ended ends the dispatch as
+`DispatchStage.ClientDeparted`, the upstream call is released, and a guard that opens on the first
+failure it counts makes no transition (`clientLeavingAfterItsRequestStreamEndedIsItsOwnDeparture`, red
+while the dispatch was handed a decorator around the armed body: the call ran to the guard's timeout,
+ended as `UPSTREAM_TIMEOUT` and opened the breaker); its matched control, an upstream that resets the
+call, opens that breaker (`upstreamResettingTheCallIsAnUpstreamFailure`). `ResponseStageTest` pins that
+the stream-idle bound hands the armed body back itself (`armedRequestBodyIsWatchedInPlace`), and
+`DispatchStageTest.InboundFrameObserver` that the body's frame observer sees every frame before the
+consumer reads it. The edge root's own report of the departure is driven over HTTP only, by
+`GatewayEdgeHttp2AbuseTest`; no test runs a gRPC departure through `GatewayEdgeRoute`.
 `GatewayEdgeEarlyResponseResetTest` asserts
 the release of credit and permit (`admissionRefusedUploadReturnsItsConnectionWindow`,
 `uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit`). The trickle and pool-wait
@@ -1825,14 +1858,17 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   at the route decision without being dialed, and its slots of the cap and of its source's share come
   back at once. A backend that never answers the dial therefore holds at most 128 slots of the cap, each
   for at most one dial window, and leaves seven eighths of it to terminated handshakes and every other
-  backend. The terminated hand-off target is exempt: its dial goes to the gateway's own loopback
-  listener and settles at once.
+  backend. A backend is the host and port a passthrough alias resolves to, not an SNI hostname: every
+  hostname that resolves to it shares its budget, and its host name is compared without regard to
+  letter case, so two aliases that spell one backend's name differently cannot hold a budget each. The
+  terminated hand-off target is exempt: its dial goes to the gateway's own loopback listener and settles
+  at once.
 * *A visible refusal.* Every connection closed at accept, beyond the cap or beyond its source's share,
   and every connection closed at its route decision beyond its backend's dial budget, is counted on
   `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged
   as `WARN ApiSheriff-146` at most once per 60 s per reason, every repeat inside the window at `DEBUG`
   (CWE-779). Neither carries the peer address or a received byte. A saturated front is therefore
-  reported rather than visible only as handshakes that wait.
+  reported rather than visible only as connections that are closed without an answer.
 * *An incremental parse.* Each connection owns its own parser and offers it every received chunk
   exactly once; the parser consumes only the TLS records a chunk completes. A ClientHello split into
   many one-byte records therefore costs work linear in its length, where re-parsing the whole buffer
@@ -1846,10 +1882,11 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   directly; it moves only with the values it is derived from.
 
 *Residual (accepted).* A single source can hold only its 256-connection share, so holding the whole
-cap of 1024 takes at least four sources. Sources that together fill the cap with silent sockets make
-new handshakes wait: a connection accepted while the cap is full is closed, and the deadline frees
-each held slot again within one 10 s window. That bounded delay is preferred over unbounded pre-route
-memory. The source is the TCP peer address, because nothing else exists before the ClientHello; behind
+cap of 1024 takes at least four sources. Sources that together fill the cap with silent sockets turn
+new handshakes away: a connection accepted while the cap is full is not queued but closed, so its
+client has to connect again, and the deadline frees each held slot again within one 10 s window.
+Refusing new connections for that bounded time is preferred over unbounded pre-route memory. The
+source is the TCP peer address, because nothing else exists before the ClientHello; behind
 an L4 load balancer or NAT that does not keep client addresses on the connection, every client shares
 one source and the share acts as a gateway-wide sub-cap of 256 undecided connections -- still tens of
 thousands of one-round-trip handshakes per second. While a backend silently drops the relay's dial,
@@ -1886,7 +1923,12 @@ budget and leaves the rest of the cap to terminated handshakes
 (`aDarkTargetLeavesTheCapToTerminatedHandshakes`, with the matched control
 `aBudgetAtTheCapLetsADarkTargetTakeTheWholeCap`), and that the dial slot comes back after a dial
 success, a dial failure and a relay that throws (`returnsTheDialSlotAfterADialSuccess`,
-`returnsTheDialSlotAfterADialFailure`, `returnsTheDialSlotWhenTheRelayThrows`).
+`returnsTheDialSlotAfterADialFailure`, `returnsTheDialSlotWhenTheRelayThrows`). Two targets that spell
+one host name in different letter case share one budget, the slot claimed under one spelling is
+returned and taken by the other, and each dial still names the host as its target declares it
+(`caseVariantsOfOneHostNameShareOneDialBudget`, red while the budget was keyed by the target as
+declared); `SniFrontListenerTest.DialBudgetKey` pins the key itself -- a host name lowered in the root
+locale, the port kept, an IP literal kept as declared.
 `SheriffMetricsTest` pins the three `reason` values of `sheriff_front_connections_refused_total`. And a
 relay that carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`), also when
 only the front server or only the relay's dial client carries that timeout

@@ -440,7 +440,9 @@ public final class TerminalDispatch {
      * and a call that carried no frame in either direction for its fixed five minutes is ended by the
      * relay — the upstream request is reset, and the client response ends through the one end rule with
      * {@code grpc-status: 4} ({@code DEADLINE_EXCEEDED}) in its trailers. Such an end is logged as
-     * {@code ApiSheriff-25}, latched per route.
+     * {@code ApiSheriff-25}, latched per route. A client that leaves before the upstream answers does not
+     * wait for any of these: the dispatch releases the upstream request at once and ends as the client's
+     * own abort, exactly as an HTTP dispatch does (see {@link DispatchStage}).
      *
      * @param ctx     the request
      * @param request the pipeline request, through stage 5
@@ -488,6 +490,13 @@ public final class TerminalDispatch {
      * upstream URI and the body cap are resolved. The dispatch is handed the request body the bound
      * {@linkplain ResponseStage.GrpcStreamIdleBound#watch watches}, the bound is passed to
      * {@link ResponseStage#relayWithTrailers}, and its expiry is logged as {@code ApiSheriff-25}.
+     * <p>
+     * <strong>The watched body is the armed body itself.</strong> The bound watches the armed
+     * {@link DispatchStage.InboundBody} in place and hands it back, so the dispatch still reads a client's
+     * departure from it: a client that resets its call or closes its connection before the upstream
+     * answers — also once it has ended its request stream, when only the response still reports it —
+     * releases the upstream request at once and ends the dispatch as the client's own abort, which the
+     * breaker skips, instead of holding it until the guard's timeout.
      */
     private void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
             ResponseStage.GrpcStreamIdleBound idleBound, Function<ReadStream<Buffer>, HttpClientResponse> dispatch) {
@@ -650,6 +659,17 @@ public final class TerminalDispatch {
      * the relay outcome and reach the one reset site, where the reset of an exchange already read to its
      * end is a no-op, but they are not answered by {@code failRelay}: there is no truncated answer to
      * complete, and its end would be a second one.
+     * <p>
+     * <strong>Nothing is left open by not answering them.</strong> After the hand-over the outcome fails in
+     * two ways only, and neither leaves a client waiting on this response. <em>The end itself failed.</em>
+     * Vert.x marks a response ended before it writes its last frame, so behind a failed end there is no
+     * response left that could still be ended — a second end is refused — and the end fails only on a
+     * stream already reset or a connection already closed, or on a write error, which the transport
+     * answers itself by resetting the stream (HTTP/2) or closing the connection (an HTTP/1.x I/O failure).
+     * A deferred end that finds the response ended by another writer fails as well, and that response is
+     * ended. <em>The response reported an exception or a close before it ended.</em> It does so for a
+     * stream its client reset, for a stream or connection error — which the transport answers with a reset
+     * or a close of its own — and for a closed connection.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
@@ -691,7 +711,8 @@ public final class TerminalDispatch {
                     // The relay had already handed its end to the one end rule — on HTTP/2 still waiting
                     // for request data to stop — so the client left an answer that was relayed whole.
                     // That end stays the only one: answering this as a failed relay would end the
-                    // response a second time.
+                    // response a second time. No client is left waiting behind it: a failed end leaves a
+                    // response Vert.x already counts as ended, on a stream or connection that is gone.
                     LOGGER.debug("Client left while the end of its relayed response waited: %s", failure.getMessage());
                     return;
                 }

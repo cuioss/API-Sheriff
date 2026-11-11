@@ -173,7 +173,10 @@ upstream's. The guard's timeout, which the breaker records as an upstream failur
 in three ways, all the upstream's: by an upstream that holds a complete, half-closed request it does
 not answer; by a wait for an upstream connection or HTTP/2 stream slot that itself lasts the guard's
 30 s, before any body is handed over; and by an upstream that stops taking data mid-request and takes
-no more within the guard's 30 s. A flow-control pause is not a stall: a client that sends faster than a
+no more within the guard's 30 s. Each holds only while the client stays: a client that leaves before the
+upstream answers ends the call at once, as its own departure, on a gRPC route as on any other
+(link:../architecture/tls-and-inbound-security.adoc#_client_departure[Architecture -- a client that
+leaves before it is answered]). A flow-control pause is not a stall: a client that sends faster than a
 healthy upstream reads is not given the upstream's breaker to open. The step-by-step behaviour of every
 clock below is in
 link:../architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message
@@ -466,6 +469,8 @@ for the property.
   threshold, or for a sum of pauses a resume separated, which lets a client that out-sends a healthy
   upstream open its breaker;
 * dropping a passed deadline, or leaving the clocks of an ended attempt running;
+* handing a dispatch a decorator around the armed request body instead of the body itself, which hides
+  a client's departure from the dispatch and leaves a call its client has left to the guard's timeout;
 * counting only one direction for the gRPC stream-idle bound.
 
 What the tests assert of the stream-idle bound, and the one hand-over line no test asserts, is in

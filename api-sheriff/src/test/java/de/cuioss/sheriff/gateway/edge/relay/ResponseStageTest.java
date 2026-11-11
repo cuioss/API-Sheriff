@@ -28,21 +28,25 @@ import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
+import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.streams.ReadStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -70,6 +74,84 @@ class ResponseStageTest {
                     () -> ResponseStage.GrpcStreamIdleBound.withTimeout(vertx, timeoutMillis));
         } finally {
             vertx.close();
+        }
+    }
+
+    /**
+     * What the gRPC stream-idle bound hands the dispatch in place of the request stream it watches. The
+     * dispatch reads a client's departure from the armed request body it is handed, so the armed body
+     * has to come back itself; a decorator around it would hide it, and with it the departure. That a
+     * watched body's frames count as activity is driven through the dispatch itself, by
+     * {@code TerminalDispatchGrpcStreamIdleTest} and {@code GrpcDispatchStageTest}.
+     */
+    @Nested
+    @DisplayName("the gRPC stream-idle bound watching a request stream")
+    class WatchedRequestStream {
+
+        @Test
+        @DisplayName("an armed request body is watched in place: the stream to dispatch is the armed body itself")
+        void armedRequestBodyIsWatchedInPlace() {
+            Vertx vertx = Vertx.vertx();
+            try {
+                DispatchStage.InboundBody armed = DispatchStage.InboundBody.arm(new SilentStream());
+
+                ReadStream<Buffer> toDispatch = ResponseStage.GrpcStreamIdleBound.on(vertx).watch(armed);
+
+                assertSame(armed, toDispatch,
+                        "the dispatch must be handed the armed request body itself: it reads the client's departure "
+                                + "from it, and a decorator around it would hide that departure");
+            } finally {
+                vertx.close();
+            }
+        }
+
+        @Test
+        @DisplayName("control — any other stream is watched through a decorator around it")
+        void otherStreamIsWatchedThroughADecorator() {
+            Vertx vertx = Vertx.vertx();
+            try {
+                SilentStream bare = new SilentStream();
+
+                ReadStream<Buffer> toDispatch = ResponseStage.GrpcStreamIdleBound.on(vertx).watch(bare);
+
+                assertNotSame(bare, toDispatch, "a stream that carries no frame observer of its own is decorated");
+            } finally {
+                vertx.close();
+            }
+        }
+
+        /** A request stream that never emits anything. */
+        private static final class SilentStream implements ReadStream<Buffer> {
+
+            @Override
+            public ReadStream<Buffer> exceptionHandler(Handler<Throwable> handler) {
+                return this;
+            }
+
+            @Override
+            public ReadStream<Buffer> handler(Handler<Buffer> handler) {
+                return this;
+            }
+
+            @Override
+            public ReadStream<Buffer> pause() {
+                return this;
+            }
+
+            @Override
+            public ReadStream<Buffer> resume() {
+                return this;
+            }
+
+            @Override
+            public ReadStream<Buffer> fetch(long amount) {
+                return this;
+            }
+
+            @Override
+            public ReadStream<Buffer> endHandler(Handler<Void> endHandler) {
+                return this;
+            }
         }
     }
 

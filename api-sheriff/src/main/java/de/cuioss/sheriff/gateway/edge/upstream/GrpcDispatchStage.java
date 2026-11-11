@@ -68,6 +68,14 @@ import io.vertx.core.streams.ReadStream;
  * upstream's timeout earlier still, before a byte of its body is read. Every way a call can wait on its client is
  * ended first, as the client's own abort, which the breaker skips.
  * <p>
+ * <strong>A client that leaves ends the call at once.</strong> Each of those three ways holds only while the
+ * client stays. A client that resets its call or closes its connection before the upstream answers — also once
+ * it has ended its request stream, when only the response still reports it — releases the upstream request at
+ * once and ends the dispatch as its own abort ({@link DispatchStage.ClientDeparted}, or a failed body while the
+ * stream was still open), exactly as on an HTTP dispatch. That depends on this stage being handed the armed
+ * {@link DispatchStage.InboundBody} itself, which the edge does: the call's stream-idle bound observes that
+ * body's frames in place instead of wrapping it.
+ * <p>
  * <strong>Only a sustained upstream stall makes the deadline the upstream's.</strong> The pre-response deadline
  * is acted on when it passes while the request stream is being read, or, when it passes while the upstream's
  * backpressure has the stream paused, at the read that ends that pause. It is the upstream's
@@ -320,7 +328,9 @@ public final class GrpcDispatchStage {
      * @param method         the request method (gRPC is always {@code POST})
      * @param requestUri     the upstream request URI
      * @param forwardHeaders the mode-filtered header set computed by stage 5
-     * @param requestBody    the inbound request body as a live read stream
+     * @param requestBody    the inbound request body as a live read stream — where the edge armed one,
+     *                       the {@link DispatchStage.InboundBody} itself, from which the dispatch reads a
+     *                       client's departure
      * @param declaredLength the request's checked declared {@code Content-Length}, or a negative
      *                       value when it declares none
      * @return the upstream response (body and trailers still streaming)

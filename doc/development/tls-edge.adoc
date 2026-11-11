@@ -60,8 +60,9 @@ single-threaded and need no synchronization. Four states are shared across the f
   touched the cap, and one refused for the cap holds no share: every refusal names the bound that
   refused it.
 * *The per-target dial counts of the dial budget* are claimed and returned the same way, inside
-  `ConcurrentHashMap.compute` on the passthrough target, so no read-then-write window lets two dials
-  take a budget's last slot. A target is removed when no dial to it is in flight.
+  `ConcurrentHashMap.compute` on the passthrough target's budget key
+  (`SniFrontListener.dialBudgetKeyOf`), so no read-then-write window lets two dials take a budget's
+  last slot. A key is removed when no dial to it is in flight.
 * *The time of the last refusal `WARN` per reason* is advanced with a compare-and-set, so of two
   concurrent refusals at most one logs at `WARN`.
 
@@ -102,10 +103,11 @@ configurable.
   bounds the front's pre-route buffer memory at 1024 x 3 x 32 KiB = 96 MiB. The trade-off is
   deliberate: a slot held by a connection that never completes its ClientHello is held for at most one
   deadline window -- the deadline frees it again -- and a slot held by a dialing connection for at most
-  one dial window, and that bounded delay for new handshakes is preferred over unbounded pre-route
-  memory. No single party can take the whole cap: one source holds at most its share, a quarter of the
-  cap, and the connections dialing one passthrough target at most that target's dial budget, an eighth
-  of it.
+  one dial window. While the cap is full a new connection is not queued: it is closed, and its client
+  has to connect again. Refusing new connections for that bounded time is preferred over unbounded
+  pre-route memory. No single party can take the whole cap: one source holds at most its share, a
+  quarter of the cap, and the connections dialing one passthrough target at most that target's dial
+  budget, an eighth of it.
 +
 *What the 96 MiB does not include.* Two amounts lie outside it. Each is stated for the transport's
 default read sizing: Netty's adaptive receive allocator, whose largest single read is 64 KiB. The
@@ -157,6 +159,15 @@ window, and leaves seven eighths of the cap to terminated handshakes and to ever
 than as a second bound beside it, so the cap stays the one memory bound of the front and there is no
 second one to reason about. The value is a fixed constant derived from the cap, like the share, and is
 not configurable.
++
+*What a target is.* A target is a backend -- the host and port a `passthrough_sni` alias resolves to --
+not an SNI hostname: every entry that resolves to the same host and port shares one budget. The count
+is keyed by `SniFrontListener.dialBudgetKeyOf(target)`, which lowers a host *name* in the root locale,
+because host names compare without regard to letter case: two aliases that spell one backend's name
+differently dial the same backend, and keyed as declared each spelling would hold a budget of its own.
+A host holding a colon is an IPv6 literal and is kept as declared, since a zone index names an
+interface and is case-sensitive; an IPv4 literal has no letter case. Only the count is keyed this way:
+the relay dials the target exactly as it was declared.
 +
 *Several dark targets add up.* The budget bounds what one unreachable backend can take, not what a set
 of them can: two dark targets hold at most a quarter of the cap, four at most half, and eight could hold

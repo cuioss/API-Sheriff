@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.tls;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -122,6 +123,30 @@ final class RelayTestProxies {
                             && args[0] instanceof Integer && args[1] instanceof String
                             && failed.compareAndSet(false, true)) {
                         return Future.failedFuture(failure);
+                    }
+                    return invokeOn(delegate, method, args);
+                });
+    }
+
+    /**
+     * A dial client whose {@code connect(int, String)} — the one the relay calls — records the host it was
+     * asked to dial and dials {@code loopback} on the same port in its place. A relay target named by a
+     * host name no resolver knows can so be dialled in a test, and the test can read which name the relay
+     * asked for. Every other call goes to {@code delegate}.
+     *
+     * @param delegate     the dial client the redirected dials go to
+     * @param loopback     the address dialled in place of every requested host
+     * @param dialledHosts receives the host of every dial the relay requests, in order; written from the
+     *                     requesting event loop, so it must be safe to read from the test thread
+     * @return the recording dial client
+     */
+    static NetClient recordingLoopbackDials(NetClient delegate, String loopback, List<String> dialledHosts) {
+        return (NetClient) Proxy.newProxyInstance(NetClient.class.getClassLoader(), new Class<?>[]{NetClient.class},
+                (proxy, method, args) -> {
+                    if ("connect".equals(method.getName()) && args != null && args.length == 2
+                            && args[0] instanceof Integer port && args[1] instanceof String host) {
+                        dialledHosts.add(host);
+                        return delegate.connect(port, loopback);
                     }
                     return invokeOn(delegate, method, args);
                 });
