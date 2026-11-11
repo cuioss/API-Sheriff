@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt handed the body over, never later than 29 s after the attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, and an attempt whose upstream connection wait leaves less than a fixed 1 s hand-over grace before that 29 s cap is ended unsent as the upstream's UPSTREAM_TIMEOUT, so the guard's timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection wait that lasts it, or by an upstream that stops taking data mid-request, during which the message bound is not counted and the deadline, which keeps counting, ends the call only once the upstream takes data again; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
+// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt handed the body over, never later than 29 s after the attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, and an attempt whose upstream connection wait leaves less than a fixed 1 s hand-over grace before that 29 s cap is ended unsent as the upstream's UPSTREAM_TIMEOUT, so the guard's timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection wait that lasts it, or by an upstream that stops taking data mid-request, during which the message bound is not counted and the deadline, which keeps counting, ends the call only once the upstream takes data again, then as the upstream's UPSTREAM_TIMEOUT because the upstream held the stream when the deadline passed; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
 // tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, request-body-deadline, grpc-message-bound, grpc-pre-response-deadline, grpc-stream-idle-timeout, upstream-connection
 // affects: api-sheriff
 // supersedes:
@@ -182,9 +182,10 @@ in three ways, all the upstream's: by an upstream that holds a complete, half-cl
 not answer; by a wait for an upstream connection or HTTP/2 stream slot that itself lasts the guard's
 30 s, before any body is handed over; and by an upstream that stops taking data mid-request and takes
 no more within the guard's 30 s. While that backpressure pauses the request stream, the message bound
-is not counted, and the pre-response deadline keeps counting but does not end the call: a deadline
-that passes during the pause ends it only once the upstream takes data again, then as the client's
-`REQUEST_BODY_TIMEOUT` (below). A connection wait that leaves less than the one-second hand-over grace before the cap is
+is not counted, and the pre-response deadline keeps counting but does not end the call at once: a
+deadline that passes during the pause passed while the upstream held the stream, and it ends the call the
+moment the upstream takes data again as the upstream's `UPSTREAM_TIMEOUT`, counted by the breaker
+(below). A connection wait that leaves less than the one-second hand-over grace before the cap is
 ended as the upstream's timeout earlier still, unsent (below).
 
 *Why a bound is needed at all.* The forced-HTTP/2 upstream request head is written only with the first
@@ -237,11 +238,26 @@ deadline that can pass before an end the client already sent is delivered, and e
 own `REQUEST_BODY_TIMEOUT`, which the breaker skips: a connection stall charged to the client. The
 deadline stops when the upstream answers, when the body ends, on any
 abort and when the attempt ends; it never runs after the response was handed over, so a bidirectional
-stream the upstream has answered is never ended by it. When it passes, the expiry takes the abort claim
-with a `DispatchStage.RequestBodyDeadlineExceeded` (`REQUEST_BODY_TIMEOUT`, `408`) and resets the
-upstream request. The client receives `DEADLINE_EXCEEDED` in a trailers-only answer, with
-`grpc-message: input-validation`
+stream the upstream has answered is never ended by it. When it passes while the client holds the
+stream, the expiry takes the abort claim with a `DispatchStage.RequestBodyDeadlineExceeded`
+(`REQUEST_BODY_TIMEOUT`, `408`) and resets the upstream request. The client receives
+`DEADLINE_EXCEEDED` in a trailers-only answer, with `grpc-message: input-validation`
 (link:0016-grpc-trailers-only-rejection-mapping.adoc#grpc-pre-response-deadline[ADR-0016]).
+
+*Who held the stream when the deadline passed decides whose failure it is.* The pre-response deadline is
+attributed by the state of the request stream at the moment it passes, never by what came before. When
+it passes while the upstream's backpressure has the request stream paused, the upstream held the stream:
+the call is ended the moment the upstream takes data again — no later than a deadline end during a read
+would have ended it — and the expiry takes the abort claim with a `DispatchStage.UpstreamStalledRequest`,
+resets the upstream request and fails the attempt with that `TimeoutException`. The breaker counts it,
+the failure mapper reports it as `UPSTREAM_TIMEOUT` (`504`), and the client receives `DEADLINE_EXCEEDED`
+with `grpc-message: upstream`. When it passes while the stream is being read, the client held the
+stream, and the call is the client's `REQUEST_BODY_TIMEOUT` above, however long the upstream had paused
+the stream earlier: the upstream took data again, and the client still had not ended its stream. The
+moment the deadline passes is the moment the gateway's deadline timer finds it passed, a few
+milliseconds at most after it. An upstream that takes no data again before the guard's 30 s is still
+ended by the guard. Only the attribution depends on the pause; when the call ends does not, and the
+whole-body deadline of an HTTP route keeps ending a body read again after a pause as the request's.
 
 *Why not translate the guard's timeout instead (option (b)).* The first option considered was to let
 the guard fire and then report a call whose request stream was still open as the client's abort. It is
@@ -265,9 +281,10 @@ is keyed by route and disposition, so the first end of each disposition on a rou
 `client-left`, `body-stream-failed` — is its own `INFO`, and a repeat of the same disposition on the
 route is a `DEBUG` diagnostic. `sheriff_inbound_body_aborts_total{route,disposition}` counts every
 `INBOUND_BODY_ABORTED` end by its disposition, so an idle-client flood is countable apart from
-departures and failed body streams. `sheriff_errors_total` is unchanged. A pre-response deadline end is
-recorded like any passed request-body deadline: `ApiSheriff-24`, and
-`sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`.
+departures and failed body streams. `sheriff_errors_total` is unchanged. A pre-response deadline end
+the client held is recorded like any passed request-body deadline: `ApiSheriff-24`, and
+`sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`. One the upstream held is recorded as the upstream
+timeout it is, under `sheriff_errors_total{event="UPSTREAM_TIMEOUT"}`, never as `ApiSheriff-24`.
 
 Every HTTP dispatch is built without the message bound, and so arms neither the message bound nor the
 pre-response deadline.

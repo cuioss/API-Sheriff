@@ -274,19 +274,25 @@ it as the client's own abort, which the upstream's circuit breaker does not coun
   client-streaming call that the upstream answers only after the client ends its stream must therefore
   end its stream within 25 s. Waiting for the upstream connection does not count against the client,
   but the deadline never passes later than 29 s after the gateway started the attempt, a second before
-  the upstream guard's timeout, so behind a slow connection the client has less than 25 s.
+  the upstream guard's timeout, so behind a slow connection the client has less than 25 s. The
+  deadline is the client's only when the client was holding its stream open when it passed (see below).
 
 Both bounds stop as soon as the upstream sends its response headers. The upstream guard's 30 s
 timeout runs from the start of the attempt and ends a call whose upstream holds the complete,
 half-closed request and does not answer, a call whose wait for an upstream connection or HTTP/2
 stream slot itself lasts the 30 s, and a call whose upstream stops taking data mid-request and takes
 no more within the 30 s; each ends with `DEADLINE_EXCEEDED` and `grpc-message: upstream`, and the
-breaker counts it. While an upstream is not taking data, the 10 s message bound does not run and the
-25 s deadline does not end the call; a deadline that passed meanwhile ends it only once the upstream
-takes data again, and then as the client's `REQUEST_BODY_TIMEOUT`. So does a call whose upstream connection took longer than 28 s: the
+breaker counts it. So does a call whose upstream connection took longer than 28 s: the
 deadline always leaves the client at least one second after the gateway hands the call over, so a call
 that would get less than that before the 29 s cap is ended without being sent, before the guard would
-end it the same way. A client that had already ended its request stream is therefore not ended by the
+end it the same way. While an upstream is not taking data, the 10 s message bound does not run and the
+25 s deadline does not end the call at once. Who was holding the request stream when the deadline
+passed decides whose failure the call is: a deadline that passed while the upstream was not taking data
+ends the call the moment the upstream takes data again, as the upstream's `UPSTREAM_TIMEOUT` --
+`DEADLINE_EXCEEDED` with `grpc-message: upstream`, counted by the breaker -- however slowly the client
+sent before; a deadline that passes while the gateway is reading the stream is the client's
+`REQUEST_BODY_TIMEOUT`, however long the upstream paused it earlier. Because of the one-second grace, a
+client that had already ended its request stream is not ended by the
 deadline unless the gateway takes longer than that second to pass its end on. After the response
 headers, a client-streaming or bidirectional call may pause between its messages: the call stays
 open while a frame travels in either direction, and a call that carries no frame for five minutes is ended with `grpc-status: 4`

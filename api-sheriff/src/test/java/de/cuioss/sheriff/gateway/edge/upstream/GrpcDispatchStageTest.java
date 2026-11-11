@@ -436,7 +436,9 @@ class GrpcDispatchStageTest {
      * without ending its stream is ended at the message bound as a {@link DispatchStage.RequestMessageTimeout};
      * a client that keeps sending complete messages, each within the bound, without ever ending its stream is
      * ended at the deadline as a {@link DispatchStage.RequestBodyDeadlineExceeded}. Both are the client's own
-     * aborts, which the breaker skips, instead of the guard's timeout, an upstream failure the breaker counts.
+     * aborts, which the breaker skips, instead of the guard's timeout, an upstream failure the breaker counts —
+     * unless the upstream's backpressure held the stream when the deadline passed, which ends the call as the
+     * upstream's timeout once the upstream reads again.
      * That timeout is reached by an upstream holding a complete, half-closed request it does not answer, and by
      * a connection wait that itself lasts it; an attempt whose connection wait leaves less than the hand-over
      * grace before the cap, or reaches the cap, is ended as the same upstream timeout without its body being
@@ -471,7 +473,10 @@ class GrpcDispatchStageTest {
      * {@value #TICKING} is answered like {@value #BIDI} and then sends one more frame every
      * {@value #TICK_MILLIS} ms until the request stream has ended; a call to {@value #LATE_ANSWER} is
      * answered {@value #LATE_ANSWER_MILLIS} ms after its request stream has ended; a call to
-     * {@value #NEVER_ANSWERS} reads its request stream to its end and is never answered. Every answered call
+     * {@value #NEVER_ANSWERS} reads its request stream to its end and is never answered; a call to
+     * {@value #STOPS_READING} reads nothing of its request stream for {@value #UPSTREAM_STALL_MILLIS} ms after its
+     * head arrived, so a client sending more than the HTTP/2 window meets backpressure, and is never answered.
+     * Every answered call
      * ends with a {@code grpc-status: 0} trailer. The stub reassembles the request stream into its gRPC messages and
      * records the payload of every complete one, and whether the request stream ended or failed — a failed
      * stream is how it observes the gateway resetting the call.
@@ -485,6 +490,7 @@ class GrpcDispatchStageTest {
         private static final String TICKING = "/svc.Service/Ticking";
         private static final String LATE_ANSWER = "/svc.Service/LateAnswer";
         private static final String NEVER_ANSWERS = "/svc.Service/NeverAnswers";
+        private static final String STOPS_READING = "/svc.Service/StopsReading";
         /** The test-only message bound the message-bound cases shorten the fixed bound to. */
         private static final long MESSAGE_BOUND_MILLIS = 400L;
         /**
@@ -548,6 +554,19 @@ class GrpcDispatchStageTest {
         private static final String GRPC_STATUS = "grpc-status";
         private static final String GRPC_MESSAGE = "grpc-message";
         private static final String GRPC_OK = "0";
+        /**
+         * How long the stub upstream reads nothing of a call to {@value #STOPS_READING} after its request head
+         * arrived: past the shortened deadline, which the head arrives after, and short of the breaker guard's
+         * timeout, so it takes data again in between.
+         */
+        private static final long UPSTREAM_STALL_MILLIS = DEADLINE_MILLIS + 200L;
+        /**
+         * The payload of each large message the backpressure case sends: sixteen KiB, so a few of them exhaust
+         * the 64 KiB HTTP/2 flow-control window the stub upstream grants and, not reading, never returns.
+         */
+        private static final int LARGE_MESSAGE_CHARS = 16 * 1024;
+        /** How many large messages the backpressure case sends: twice the stub upstream's window and more. */
+        private static final int LARGE_MESSAGES = 8;
         /** The request-body cap of every case but the cap case: far above anything a case sends. */
         private static final long ROOMY_CAP_BYTES = 1024L * 1024L;
         /**
@@ -635,6 +654,12 @@ class GrpcDispatchStageTest {
             });
             if (ticking || BIDI.equals(request.path())) {
                 response.write("head");
+            }
+            if (STOPS_READING.equals(request.path())) {
+                // Not reading returns no HTTP/2 flow-control credit, so once the client has sent the window the
+                // upstream granted, the gateway's upstream request stops being writable: backpressure.
+                request.pause();
+                vertx.setTimer(UPSTREAM_STALL_MILLIS, fired -> request.resume());
             }
         }
 
@@ -1033,6 +1058,126 @@ class GrpcDispatchStageTest {
                     () -> assertEquals(List.of(), breakerTransitions, "the breaker stays closed"),
                     () -> assertTrue(upstreamFailed.isDone(), "the gateway reset the open upstream calls"),
                     () -> assertEquals(200, response.statusCode(), "the call behind them is answered"));
+        }
+
+        /**
+         * A client-streaming call whose upstream stops reading as soon as the request head arrives and reads again
+         * {@value #UPSTREAM_STALL_MILLIS} ms later — past the pre-response deadline, before the guard's timeout.
+         * The client sends large messages steadily, more than the upstream's flow-control window, so the gateway's
+         * upstream request stops being writable and the forwarding pipe pauses the request stream: the upstream
+         * holds the stream when the deadline passes. The deadline passing in that pause is the upstream's, so each
+         * call ends when the upstream reads again as the upstream's timeout, counted by the breaker, which opens at
+         * its threshold — never as the client's {@code REQUEST_BODY_TIMEOUT}, which the breaker would skip.
+         */
+        @Test
+        @DisplayName("an upstream whose backpressure holds the stream past the deadline and then reads again ends the call as the upstream's timeout, counted by the breaker")
+        void deadlinePassingWhileTheUpstreamHoldsTheStreamIsTheUpstreamsTimeoutAndOpensTheBreaker() throws Exception {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = boundedStage(route, breakerGuard());
+            String largePayload = "a".repeat(LARGE_MESSAGE_CHARS);
+            List<Throwable> ended = new ArrayList<>();
+            List<Long> endedAfterMillis = new ArrayList<>();
+            List<Boolean> heldBack = new ArrayList<>();
+
+            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
+                PushedBody large = new PushedBody();
+                large.push(largePayload);
+                long started = System.nanoTime();
+                CompletableFuture<HttpClientResponse> answered = CompletableFuture.supplyAsync(
+                        () -> stage.dispatch(route, HttpMethod.POST, STOPS_READING, Map.of(), large, -1L));
+                for (int message = 1; message < LARGE_MESSAGES; message++) {
+                    Awaits.connect(pause(STEADY_GAP_MILLIS), "the gap before the next message");
+                    large.push(largePayload);
+                }
+                heldBack.add(large.heldBack());
+                ended.add(assertThrows(ExecutionException.class,
+                        () -> Awaits.connect(answered, "the call the upstream held to end"),
+                        "a call the upstream held past its deadline is not answered").getCause());
+                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+            }
+            PushedBody behind = new PushedBody();
+            behind.push("behind");
+            behind.end();
+            Throwable behindTheThreshold = Awaits.connect(CompletableFuture
+                    .supplyAsync(() -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), behind, -1L))
+                    .handle((answer, refusal) -> refusal), "the call behind the threshold to end");
+
+            assertAll("calls whose upstream held the request stream when the deadline passed",
+                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, true), heldBack,
+                            "the upstream's backpressure paused every request stream before its deadline"),
+                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, EventType.UPSTREAM_TIMEOUT),
+                            ended.stream().map(failure -> assertInstanceOf(GatewayException.class, failure).getEventType())
+                                    .toList(),
+                            () -> "each call is the upstream's timeout, never the client's deadline: " + ended),
+                    () -> assertTrue(ended.stream().allMatch(
+                                    failure -> failure.getCause() instanceof DispatchStage.UpstreamStalledRequest),
+                            () -> "each call was ended by the stall, not by the guard's timeout or the connection: " + ended),
+                    () -> assertTrue(endedAfterMillis.stream().allMatch(
+                                    millis -> millis >= UPSTREAM_STALL_MILLIS && millis < BREAKER_GUARD_MILLIS),
+                            () -> "each call ends when the upstream reads again, before the guard's timeout: "
+                                    + endedAfterMillis),
+                    () -> assertEquals(GrpcStatusMapper.DEADLINE_EXCEEDED,
+                            grpcStatusMapper.toGrpcStatus(EventType.UPSTREAM_TIMEOUT),
+                            "the upstream's timeout renders as DEADLINE_EXCEEDED"),
+                    () -> assertTrue(upstreamFailed.isDone(), "the gateway reset the held upstream calls"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), breakerTransitions,
+                            "the breaker counts the upstream's stalls and opens at its threshold"),
+                    () -> assertEquals(EventType.UPSTREAM_CIRCUIT_OPEN,
+                            assertInstanceOf(GatewayException.class,
+                                    behindTheThreshold == null ? null : behindTheThreshold.getCause(),
+                                    "the call behind the threshold is refused, not answered").getEventType(),
+                            "the call behind the threshold is refused by the open breaker"));
+        }
+
+        /**
+         * Matched control of the backpressure case: the same upstream, which stops reading at the request head and
+         * reads again only after the deadline, but a client whose small messages never fill the upstream's
+         * flow-control window. The gateway's upstream request stays writable, the request stream is never paused,
+         * and the client holds it open when the deadline passes: each call is the client's
+         * {@code REQUEST_BODY_TIMEOUT} at the deadline, which the breaker skips.
+         */
+        @Test
+        @DisplayName("control — a client holding its stream open within the upstream's window is ended at the deadline as the client's, and never moves the breaker")
+        void clientHoldingTheStreamWithinTheWindowIsTheClientsDeadlineAndLeavesTheBreakerClosed() throws Exception {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = boundedStage(route, breakerGuard());
+            List<Throwable> refusals = new ArrayList<>();
+            List<Long> endedAfterMillis = new ArrayList<>();
+            List<Boolean> heldBack = new ArrayList<>();
+            long mostMessages = 2 * BREAKER_GUARD_MILLIS / STEADY_GAP_MILLIS;
+
+            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
+                PushedBody small = new PushedBody();
+                small.push("first");
+                long started = System.nanoTime();
+                CompletableFuture<HttpClientResponse> answered = CompletableFuture.supplyAsync(
+                        () -> stage.dispatch(route, HttpMethod.POST, STOPS_READING, Map.of(), small, -1L));
+                boolean heldBeforeTheDeadline = false;
+                for (long message = 0; !answered.isDone() && message < mostMessages; message++) {
+                    Awaits.connect(pause(STEADY_GAP_MILLIS), "the gap before the next message");
+                    small.push("small-" + message);
+                    // Read only well before the deadline: the deadline's own end pauses the stream too.
+                    if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < DEADLINE_MILLIS - STEADY_GAP_MILLIS) {
+                        heldBeforeTheDeadline = small.heldBack();
+                    }
+                }
+                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+                heldBack.add(heldBeforeTheDeadline);
+                refusals.add(assertThrows(ExecutionException.class,
+                        () -> Awaits.connect(answered, "the call the client held open to end"),
+                        "a call whose stream never ends is not answered").getCause());
+            }
+
+            assertAll("calls whose client held the request stream when the deadline passed",
+                    () -> assertTrue(refusals.stream().allMatch(DispatchStage.RequestBodyDeadlineExceeded.class::isInstance),
+                            () -> "every such call ends at the pre-response deadline as the client's: " + refusals),
+                    () -> assertTrue(endedAfterMillis.stream().allMatch(
+                                    millis -> millis >= DEADLINE_MILLIS && millis < BREAKER_GUARD_MILLIS),
+                            () -> "each call ends at the deadline, before the guard's timeout: " + endedAfterMillis),
+                    () -> assertTrue(heldBack.stream().noneMatch(Boolean::booleanValue),
+                            "the small messages never filled the window: no request stream was paused"),
+                    () -> assertEquals(List.of(), breakerTransitions, "the breaker stays closed"),
+                    () -> assertTrue(upstreamFailed.isDone(), "the gateway reset the open upstream calls"));
         }
 
         /**
@@ -1462,6 +1607,8 @@ class GrpcDispatchStageTest {
         private @Nullable Handler<Buffer> handler;
         private @Nullable Handler<Void> endHandler;
         private boolean paused = true;
+        private boolean resumedOnce;
+        private boolean heldBack;
         private boolean ended;
         private boolean endDelivered;
 
@@ -1472,8 +1619,19 @@ class GrpcDispatchStageTest {
 
         /** Pushes {@code bytes} as they are — part of a message, when a case needs one. */
         synchronized void pushBytes(Buffer bytes) {
+            if (paused && resumedOnce) {
+                heldBack = true;
+            }
             pending.add(bytes);
             drain();
+        }
+
+        /**
+         * @return {@code true} once a message was pushed while the consumer, having read the stream, had paused
+         *         it again — the forwarding pipe does so when the upstream request stops being writable
+         */
+        synchronized boolean heldBack() {
+            return heldBack;
         }
 
         synchronized void end() {
@@ -1512,6 +1670,7 @@ class GrpcDispatchStageTest {
         @Override
         public synchronized ReadStream<Buffer> resume() {
             paused = false;
+            resumedOnce = true;
             drain();
             return this;
         }
@@ -1519,6 +1678,7 @@ class GrpcDispatchStageTest {
         @Override
         public synchronized ReadStream<Buffer> fetch(long amount) {
             paused = false;
+            resumedOnce = true;
             drain();
             return this;
         }

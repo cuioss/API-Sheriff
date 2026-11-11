@@ -1513,12 +1513,13 @@ class DispatchStageTest {
 
         /**
          * A client whose stream the consumer paused because the upstream is not taking data is not ended by the
-         * message bound — the pause is the upstream's, not the client's — but the deadline still bounds it: it
-         * passes during the pause and ends the body the moment the upstream reads it again.
+         * message bound — the pause is the upstream's, not the client's — and the deadline that passes during
+         * the pause is the upstream's too: the upstream held the stream when it passed. It ends the body the
+         * moment the upstream reads it again, as the upstream's timeout, never as a client abort.
          */
         @Test
-        @DisplayName("paused by the upstream: never ended by the message bound, but ended by the deadline at the next read")
-        void pausedByTheUpstreamIsEndedByTheDeadlineNotTheBound() {
+        @DisplayName("paused by the upstream when the deadline passes: never ended by the bound, ended at the next read as the upstream's stall")
+        void pausedByTheUpstreamAtTheDeadlineIsTheUpstreamsStall() {
             IdleProbe probe = deadlineProbe();
             probe.capped.startMessageClock();
             probe.time.advanceMillis(BOUND_MILLIS / 2);
@@ -1531,18 +1532,99 @@ class DispatchStageTest {
             boolean quietWhilePausedPastTheDeadline = probe.failure.get() == null && probe.aborts.get() == 0;
             probe.capped.resume();
 
-            GatewayException refusal = probe.capped.clientAbort();
-            assertAll("a request stream paused by the upstream past both bounds",
+            assertAll("a request stream the upstream held paused past both bounds",
                     () -> assertTrue(quietPastTheBound,
                             "gaps far longer than the bound are not charged to the client while the upstream pauses it"),
                     () -> assertTrue(quietWhilePausedPastTheDeadline,
                             "a deadline passing during the pause ends nothing until the body is read again"),
-                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
-                            "the read after the deadline ends the body at the deadline, not at the bound"),
-                    () -> assertSame(refusal, probe.failure.get()),
+                    () -> assertInstanceOf(DispatchStage.UpstreamStalledRequest.class, probe.failure.get(),
+                            "the read after the deadline ends the body as the upstream's timeout"),
+                    () -> assertSame(probe.capped.upstreamStall(), probe.failure.get(),
+                            "the stall is the stream's recorded abort, the one the dispatch reports"),
+                    () -> assertNull(probe.capped.clientAbort(), "the upstream's stall is never a client abort"),
                     () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
                     () -> assertTrue(probe.source.paused(), "the read that ended the body never reaches the inbound stream"),
                     () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
+        /**
+         * The mixed case from the other side: the upstream paused the stream for longer than the bound, then took
+         * data again, and the client still held its stream open, within the bound, when the deadline passed. The
+         * client held the stream when the deadline passed, so the deadline is the client's, however long the
+         * upstream's pause before it was.
+         */
+        @Test
+        @DisplayName("paused by the upstream earlier, read again before the deadline: the deadline is the client's")
+        void pausedEarlierThenReadAgainBeforeTheDeadlineIsTheClients() {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            probe.source.emit(grpcMessage(Generators.letterStrings(2, 6).next()));
+            probe.capped.pause();
+            probe.time.advanceMillis(2 * BOUND_MILLIS);
+            probe.capped.resume();
+            probe.time.advanceMillis(DEADLINE_MILLIS - 2 * BOUND_MILLIS - 1);
+            boolean openJustBeforeTheDeadline = probe.failure.get() == null && probe.aborts.get() == 0;
+
+            probe.time.advanceMillis(1);
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a request stream the client held when the deadline passed, after an earlier upstream pause",
+                    () -> assertTrue(openJustBeforeTheDeadline,
+                            "neither the pause nor the gap after it ended the stream before the deadline"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the client held the stream when the deadline passed"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
+        /**
+         * The read that resumes the stream checks for a passed deadline before the message clock resumes and again
+         * once it has. A deadline timer firing between the two still finds the stream paused by the upstream, so
+         * the deadline passed while the upstream held it: the second check ends the body as the upstream's.
+         */
+        @Test
+        @DisplayName("a deadline passing inside the read that resumes the stream is the upstream's stall")
+        void deadlinePassingInsideTheResumingReadIsTheUpstreamsStall() {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            probe.source.emit(grpcMessage(Generators.letterStrings(2, 6).next()));
+            probe.capped.pause();
+            probe.time.advanceMillis(DEADLINE_MILLIS - 1);
+
+            probe.capped.resume(() -> probe.time.advanceMillis(1));
+
+            assertAll("a deadline passing between the read's two passed-deadline checks",
+                    () -> assertInstanceOf(DispatchStage.UpstreamStalledRequest.class, probe.failure.get(),
+                            "the stream was still paused by the upstream when the deadline passed"),
+                    () -> assertSame(probe.capped.upstreamStall(), probe.failure.get()),
+                    () -> assertNull(probe.capped.clientAbort(), "the upstream's stall is never a client abort"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the read that ended the body never reaches the inbound stream"));
+        }
+
+        /**
+         * Matched control on the whole-body deadline of an HTTP dispatch: the same pause by the upstream past the
+         * deadline and the same read afterwards end the body as the client's, exactly as before the pre-response
+         * deadline was attributed by who held the stream.
+         */
+        @Test
+        @DisplayName("control — the whole-body deadline of an HTTP dispatch stays the client's after an upstream pause")
+        void wholeBodyDeadlinePausedByTheUpstreamStaysTheClients() {
+            IdleProbe probe = new IdleProbe(BOUND_MILLIS, DispatchStage.NO_DECLARED_LENGTH,
+                    OptionalLong.of(DEADLINE_MILLIS));
+            probe.capped.startIdleClock();
+            probe.capped.pause();
+            probe.time.advanceMillis(2 * DEADLINE_MILLIS);
+
+            probe.capped.resume();
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a whole-body deadline that passed while the upstream paused the body",
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the whole-body deadline is the client's whoever held the body"),
+                    () -> assertSame(refusal, probe.failure.get()),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"));
         }
 
         @Test

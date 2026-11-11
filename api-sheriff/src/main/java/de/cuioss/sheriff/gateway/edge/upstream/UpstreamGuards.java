@@ -70,7 +70,9 @@ public final class UpstreamGuards {
      * wait for an upstream connection or HTTP/2 stream slot that itself lasts this whole timeout, before any body
      * is handed over; and by an upstream that stops taking data mid-request and does not take any more before
      * this timeout. While that backpressure pauses the request stream the message bound is not counted, and the
-     * pre-response deadline, which keeps counting, ends the call only once the upstream takes data again.
+     * pre-response deadline, which keeps counting, ends the call only once the upstream takes data again — then as
+     * the upstream's timeout ({@link DispatchStage.UpstreamStalledRequest}), because the upstream held the stream
+     * when the deadline passed. A deadline that passes while the stream is being read is the client's.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -94,8 +96,8 @@ public final class UpstreamGuards {
      * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
      * length, a body that made no progress for the request-body idle timeout, a body still arriving at
      * the request-body deadline, a gRPC call whose client did not send its next complete request message
-     * within the message bound ({@link DispatchStage.RequestMessageTimeout}), a gRPC request stream still
-     * open at its pre-response deadline — reaches the guard as such a skipped {@link GatewayException} (see
+     * within the message bound ({@link DispatchStage.RequestMessageTimeout}), a gRPC request stream its client
+     * still held open at its pre-response deadline — reaches the guard as such a skipped {@link GatewayException} (see
      * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records a
      * skipped exception as a success; keeping these dispatches out of its window would need the guarded call
      * to be restructured. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each attempt: it is
@@ -110,7 +112,9 @@ public final class UpstreamGuards {
      * ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_CAP_MILLIS}), that is, one that obtains its connection later
      * than 28 s after its start, as {@link DispatchStage.UpstreamConnectionTooLate}; a connection wait lasting
      * the whole {@value #UPSTREAM_TIMEOUT_SECONDS} seconds without a hand-over is ended by this guard itself.
-     * Both are {@link de.cuioss.sheriff.gateway.events.EventType#UPSTREAM_TIMEOUT}, counted by the breaker.
+     * A gRPC call whose pre-response deadline passed while its upstream's backpressure had the request stream
+     * paused is ended when the upstream takes data again, as {@link DispatchStage.UpstreamStalledRequest}. All
+     * three are {@link de.cuioss.sheriff.gateway.events.EventType#UPSTREAM_TIMEOUT}, counted by the breaker.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard

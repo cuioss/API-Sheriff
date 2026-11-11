@@ -231,11 +231,13 @@ so until the upstream answers the request side of a call is bounded twice
   messages, each within the message bound, without ever ending its request stream is ended there: the
   upstream request is reset and the call ends as `DispatchStage.RequestBodyDeadlineExceeded`
   (`REQUEST_BODY_TIMEOUT`, `408`), rendered trailers-only as `DEADLINE_EXCEEDED` with
-  `grpc-message: input-validation`.
+  `grpc-message: input-validation`. Who held the stream when the deadline passed decides whose failure
+  it is: a deadline that passes while the upstream's backpressure has the request stream paused is the
+  upstream's (below).
 
 Both stop when the upstream answers, when the request stream ends, on any abort and when the attempt
 ends, so a bidirectional stream the upstream has answered is bounded by neither. Neither counts as a
-failure for the circuit breaker, and neither is retried. Both are fixed. An HTTP dispatch arms neither;
+failure for the circuit breaker when it ends a call its client held, and neither is retried. Both are fixed. An HTTP dispatch arms neither;
 it keeps the idle timeout and the whole-body deadline above. Because the 30 s guard timeout runs from
 the start of the attempt and so counts the connection wait, the pre-response deadline is held to
 `GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS`, 29 s from the start of the attempt: a hand-over within
@@ -254,8 +256,13 @@ complete, half-closed request it does not answer; by a wait for an upstream conn
 slot that itself lasts the 30 s, before any body is handed over; and by an upstream that stops taking
 data mid-request and takes no more within the 30 s. While that backpressure pauses the request stream,
 the message bound is not counted, and the pre-response deadline keeps counting but does not end the
-call: a deadline that passes during the pause ends it only once the upstream takes data again, then as
-the client's `REQUEST_BODY_TIMEOUT`.
+call at once. A deadline that passes during the pause passed while the upstream held the stream: it ends
+the call the moment the upstream takes data again — no later than a deadline end during a read would — as
+`DispatchStage.UpstreamStalledRequest`, an `UPSTREAM_TIMEOUT` the breaker counts, rendered
+`DEADLINE_EXCEEDED` with `grpc-message: upstream`. A deadline that passes while the request stream is
+being read is the client's `REQUEST_BODY_TIMEOUT`, however long the upstream paused the stream before;
+the moment it passes is when the gateway's deadline timer finds it passed, a few milliseconds at most
+after it. Only the attribution follows the pause; when the call ends does not.
 
 [[_grpc_stream_idle_bound]]
 *gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages, a

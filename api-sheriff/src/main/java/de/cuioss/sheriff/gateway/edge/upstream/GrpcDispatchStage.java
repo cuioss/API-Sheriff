@@ -59,12 +59,24 @@ import io.vertx.core.streams.ReadStream;
  * HTTP/2 stream slot that itself lasts the guard's whole timeout, before any body is handed over; and by an
  * upstream that stops taking data mid-request and does not take any more before the guard's timeout. While
  * that backpressure pauses the request stream the message bound is not counted, and the pre-response
- * deadline, which keeps counting, does not end the call: a deadline that passes during the pause ends it only
- * when the upstream takes data again, as the client's
- * {@link DispatchStage.RequestBodyDeadlineExceeded}. An attempt whose connection wait
+ * deadline, which keeps counting, does not end the call at once: a deadline that passes during the pause ends
+ * it the moment the upstream takes data again — no later than the deadline would have ended a client holding
+ * the stream open — as the upstream's {@link DispatchStage.UpstreamStalledRequest}, a timeout the breaker counts
+ * and the failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. An attempt whose connection wait
  * leaves less than the hand-over grace below before the pre-response cap is ended as the upstream's timeout
  * earlier still, before a byte of its body is read. Every way a call can wait on its client is ended first,
- * as the client's own abort, which the breaker skips. The forced-HTTP/2 upstream request head is
+ * as the client's own abort, which the breaker skips.
+ * <p>
+ * <strong>Who held the stream when the deadline passed decides whose failure it is.</strong> The pre-response
+ * deadline is attributed by the state of the request stream at the moment it passes, never by what came
+ * before: a deadline that passes while the upstream's backpressure has the stream paused is the upstream's
+ * {@link DispatchStage.UpstreamStalledRequest}, however slowly the client sent before the pause; a deadline that
+ * passes while the stream is being read is the client's {@link DispatchStage.RequestBodyDeadlineExceeded},
+ * however long the upstream had paused it earlier — the upstream took data again, and the client still held its
+ * stream open when the deadline passed. The moment the deadline passes is the moment the gateway's deadline timer
+ * finds it passed, at most a few milliseconds after it. Either way the call ends when it ended before this rule:
+ * at once when the deadline passes during a read, at the upstream's next read when it passes during a pause, and
+ * at the guard's timeout when the upstream takes no data again before it. The forced-HTTP/2 upstream request head is
  * written only with the first body chunk, and an upstream cannot act on a request message it holds only part
  * of, so the request side of a call is bounded twice, before the upstream answers. Both bounds are counted
  * from the moment the attempt hands its body to the upstream request, so neither counts the wait for an
@@ -86,7 +98,8 @@ import io.vertx.core.streams.ReadStream;
  *       ending its request stream, is ended there as a {@link DispatchStage.RequestBodyDeadlineExceeded}
  *       ({@link EventType#REQUEST_BODY_TIMEOUT}), rendered to the client as gRPC {@code DEADLINE_EXCEEDED}.
  *       A client stream the upstream answers only after the client ends it must therefore end within that
- *       deadline.</li>
+ *       deadline. A deadline that passes while the upstream's backpressure has the stream paused is the
+ *       upstream's instead (see above), rendered as {@code DEADLINE_EXCEEDED} too.</li>
  * </ul>
  * <strong>The pre-response cap, {@value #GRPC_PRE_RESPONSE_CAP_MILLIS} ms from the start of the
  * attempt.</strong> The guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds) is counted
