@@ -2241,7 +2241,7 @@ public final class DispatchStage {
                 throw new IllegalArgumentException(
                         "a pre-response deadline needs a positive upstream stall threshold: " + upstreamStallMillis);
             }
-            this.upstreamStallNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(NO_UPSTREAM_STALL, upstreamStallMillis));
+            this.upstreamStallNanos = TimeUnit.MILLISECONDS.toNanos(upstreamStallMillis);
             delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
         }
