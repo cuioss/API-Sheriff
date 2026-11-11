@@ -5,7 +5,7 @@
   },
   "plan": {
     "effort": "level-3",
-    "open_in_ide": true,
+    "open_in_ide": false,
     "coverage": {
       "thoroughness": "inherit",
       "scope": "inherit"
@@ -19,18 +19,18 @@
       "escalation": "auto",
       "auto_route_recipe": true,
       "auto_route_recipe_threshold": 0.6,
-      "lane_selection": "ask",
+      "lane_selection": "auto",
       "lane_prune_thresholds": {
         "confidence_complete": 95,
         "linear_change_max_deliverables": 1
       }
     },
     "phase-2-refine": {
-      "confidence_threshold": 95,
       "compatibility": "breaking",
       "simplicity": "lean",
       "effort": "level-5",
-      "revalidation": "auto"
+      "revalidation": "auto",
+      "confidence_threshold": 95
     },
     "phase-3-outline": {
       "plan_without_asking": true,
@@ -263,7 +263,7 @@
       "project_key": "cuioss_API-Sheriff"
     }
   },
-  "interaction_mode": "advanced",
+  "interaction_mode": "basic",
   "project": {
     "default_base_branch": "main",
     "working_prefixes": [
@@ -386,7 +386,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.2088",
+    "provisioned_version": "0.1.2106",
     "config_seed_fingerprint": "9aaf980d"
   }
 }
