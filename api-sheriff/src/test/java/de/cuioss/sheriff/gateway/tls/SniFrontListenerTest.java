@@ -394,7 +394,7 @@ class SniFrontListenerTest {
                             "the WARN names the reason token: " + warnings.getFirst().getMessage()),
                     () -> assertFalse(warnings.getFirst().getMessage().contains(HOST),
                             "the WARN never names the peer address: " + warnings.getFirst().getMessage()),
-                    () -> assertEquals(2, debugLines("Front connection refused at accept (cap)").size(),
+                    () -> assertEquals(2, debugLines("Front connection refused (cap)").size(),
                             "every further refusal inside the window is a DEBUG diagnostic"),
                     () -> assertFalse(held.closedNanos().isDone(), "the connection holding the cap stays open"));
 

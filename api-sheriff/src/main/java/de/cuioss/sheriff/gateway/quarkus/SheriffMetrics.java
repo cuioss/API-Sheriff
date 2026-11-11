@@ -86,8 +86,11 @@ import org.jspecify.annotations.Nullable;
  * {@value #STATUS_FAMILY_OTHER} placeholder for a status outside {@code 100..599}, the
  * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, the {@code action}
  * label of {@value #SOURCE_TRIPS_TOTAL} has exactly three, the source address a trip concerns is never
- * a label, the {@code reason} label of {@value #FRONT_CONNECTIONS_REFUSED_TOTAL} has exactly two values
- * fixed by its two record methods, the {@code disposition} label of {@value #INBOUND_BODY_ABORTS_TOTAL} has
+ * a label, the {@code reason} label of {@value #FRONT_CONNECTIONS_REFUSED_TOTAL} has exactly three values
+ * ({@value #REFUSAL_REASON_CAP}, {@value #REFUSAL_REASON_SOURCE_SHARE} and {@value #REFUSAL_REASON_DIAL_BUDGET})
+ * fixed by its three record methods {@link #recordFrontConnectionRefusedAtCap()},
+ * {@link #recordFrontConnectionRefusedAtSourceShare()} and {@link #recordFrontConnectionRefusedAtDialBudget()},
+ * the {@code disposition} label of {@value #INBOUND_BODY_ABORTS_TOTAL} has
  * exactly three values fixed by the {@link InboundBodyAbortDisposition} parameter type of its record method,
  * and the {@code event}
  * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries

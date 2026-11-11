@@ -175,8 +175,9 @@ HTTP/2 `PING` frames are not frames of the call and do not count.
 client was going to send. Time the client holds its request open is the client's. The guard's
 timeout, which the breaker records as an upstream failure, is therefore reached only by an upstream
 that holds a complete, half-closed request. The one exception is an attempt whose wait for an
-upstream connection consumed the margin between the bounds below and the guard: the guard counts that
-wait, and the bounds do not.
+upstream connection consumed the margin between the message bound below and the guard: the guard
+counts that wait, and so does the pre-response deadline, which is counted from the start of the
+attempt like the guard's timeout; only the message bound does not.
 
 *Why a bound is needed at all.* The forced-HTTP/2 upstream request head is written only with the first
 body chunk, and an upstream cannot act on a request message it holds only part of. A client that opens

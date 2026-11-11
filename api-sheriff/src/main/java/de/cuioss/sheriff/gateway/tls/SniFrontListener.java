@@ -546,7 +546,7 @@ public final class SniFrontListener {
                 LOGGER.warn(ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED, refusal.token(), bound,
                         Long.toString(warnInterval.toSeconds()));
             } else {
-                LOGGER.debug("Front connection refused at accept (%s): the bound of %s undecided connections is full",
+                LOGGER.debug("Front connection refused (%s): the bound of %s connections for this reason is full",
                         refusal.token(), bound);
             }
             refusalRecorder.accept(refusal);
