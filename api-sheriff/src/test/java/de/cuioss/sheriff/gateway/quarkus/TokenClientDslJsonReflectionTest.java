@@ -56,9 +56,21 @@ import org.junit.jupiter.api.Test;
  */
 class TokenClientDslJsonReflectionTest {
 
-    /** Jar-entry path of a top-level generated DSL-JSON converter inside the client engine. */
+    /**
+     * Jar-entry path of a generated DSL-JSON converter inside the client engine, nested-type converters
+     * ({@code _Outer$Inner_DslJsonConverter}) included. The converters' own nested
+     * {@code $ObjectFormatConverter} classes end in another suffix and never match.
+     */
     private static final Pattern CONVERTER_ENTRY =
-            Pattern.compile("de/cuioss/sheriff/token/client/(?:[^/]+/)*_[^/$]+_DslJsonConverter\\.class");
+            Pattern.compile("de/cuioss/sheriff/token/client/(?:[^/]+/)*_[^/]+_DslJsonConverter\\.class");
+
+    /**
+     * A converter of a nested DTO. Its absence is silent and fails open: the engine's DPoP issuance check
+     * reads the access token through it, and an unreadable payload is treated as "not a JWT", which
+     * skips the {@code cnf.jkt} comparison.
+     */
+    private static final String NESTED_PROBE_CONVERTER =
+            "de.cuioss.sheriff.token.client.internal._AccessTokenConfirmation$JsonObjectProbe_DslJsonConverter";
 
     /** The converter whose absence caused the native credential-rejection misclassification. */
     private static final String TOKEN_ERROR_RESPONSE_CONVERTER =
@@ -95,6 +107,8 @@ class TokenClientDslJsonReflectionTest {
         assertFalse(converters.isEmpty(), "the client engine jar must yield at least one generated converter");
         assertTrue(converters.contains(TOKEN_ERROR_RESPONSE_CONVERTER),
                 "the enumeration must find " + TOKEN_ERROR_RESPONSE_CONVERTER + ", found: " + converters);
+        assertTrue(converters.contains(NESTED_PROBE_CONVERTER),
+                "the enumeration must reach nested-type converters, found: " + converters);
     }
 
     /** Reads the target list off the holder class; requires the annotation's RUNTIME retention. */
@@ -106,7 +120,7 @@ class TokenClientDslJsonReflectionTest {
     }
 
     /**
-     * Lists the fully qualified names of every top-level {@code _*_DslJsonConverter} class in the
+     * Lists the fully qualified names of every {@code _*_DslJsonConverter} class, nested-type ones included, in the
      * code source that ships the client engine, skipping the nested {@code $ObjectFormatConverter}
      * classes.
      */

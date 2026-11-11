@@ -20,6 +20,8 @@ import de.cuioss.sheriff.token.client.discovery._ProviderMetadata_DslJsonConvert
 import de.cuioss.sheriff.token.client.flow.ParResponse;
 import de.cuioss.sheriff.token.client.flow._ParResponse_DslJsonConverter;
 import de.cuioss.sheriff.token.client.internal.AccessTokenConfirmation;
+import de.cuioss.sheriff.token.client.internal._AccessTokenConfirmation$Confirmation_DslJsonConverter;
+import de.cuioss.sheriff.token.client.internal._AccessTokenConfirmation$JsonObjectProbe_DslJsonConverter;
 import de.cuioss.sheriff.token.client.internal._AccessTokenConfirmation_DslJsonConverter;
 import de.cuioss.sheriff.token.client.token.TokenErrorResponse;
 import de.cuioss.sheriff.token.client.token.TokenResponse;
@@ -36,7 +38,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * <p>
  * The engine parses every back-channel IdP response (OIDC discovery, the token
  * endpoint success response, the token endpoint error response, PAR, userinfo, and the
- * {@code cnf} confirmation of a sender-constrained access token)
+ * {@code cnf} confirmation of a sender-constrained access token and its nested types)
  * with a DSL-JSON instance built by
  * {@code de.cuioss.sheriff.token.commons.transport.ParserConfig}. For each response
  * type the DSL-JSON annotation processor emits a compile-time
@@ -68,6 +70,11 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * succeeds there; {@code TokenClientDslJsonReflectionTest} guards it by asserting every
  * generated converter in the engine jar is registered here.
  * <p>
+ * <strong>A missing DPoP-binding converter fails open.</strong> The engine's DPoP issuance check reads the
+ * access token's payload through {@code _AccessTokenConfirmation$JsonObjectProbe_DslJsonConverter}; when
+ * that read fails it treats the token as not a JWT and skips the {@code cnf.jkt} comparison, so without
+ * the registration a native image accepts a token bound to another key. Only a native run shows it.
+ * <p>
  * The class has no runtime behavior; it exists solely to carry the
  * {@link RegisterForReflection} targets. Referencing the generated converter classes by
  * symbol (rather than by string) makes any future rename in the client engine fail the
@@ -83,12 +90,16 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         _TokenErrorResponse_DslJsonConverter.class,
         _UserInfoResponse_DslJsonConverter.class,
         _AccessTokenConfirmation_DslJsonConverter.class,
+        _AccessTokenConfirmation$Confirmation_DslJsonConverter.class,
+        _AccessTokenConfirmation$JsonObjectProbe_DslJsonConverter.class,
         ProviderMetadata.class,
         ParResponse.class,
         TokenResponse.class,
         TokenErrorResponse.class,
         UserInfoResponse.class,
-        AccessTokenConfirmation.class
+        AccessTokenConfirmation.class,
+        AccessTokenConfirmation.Confirmation.class,
+        AccessTokenConfirmation.JsonObjectProbe.class
 })
 public final class TokenClientDslJsonReflection {
 
