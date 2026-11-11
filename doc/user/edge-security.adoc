@@ -617,8 +617,9 @@ deployment that never writes it keeps the behaviour shown here.
   `grpc-message: stream-idle-timeout`. A frame in either direction keeps the call open; HTTP/2 `PING`
   frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
   gRPC message bound and the request-body deadline bound the call instead, and the upstream guard's
-  30 s timeout an upstream that holds the complete, half-closed request, or a connection or
-  stream-slot wait that lasts the 30 s. Not configurable. See
+  30 s timeout an upstream that holds the complete, half-closed request, a connection or
+  stream-slot wait that lasts the 30 s, or an upstream that stops taking data mid-request and takes
+  no more within the 30 s. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 | Unrouted-`404` response floor

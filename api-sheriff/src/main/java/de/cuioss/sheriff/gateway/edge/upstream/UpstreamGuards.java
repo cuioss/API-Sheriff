@@ -65,10 +65,12 @@ public final class UpstreamGuards {
      * The wait for an upstream connection is counted by this timeout alone, and an attempt whose wait leaves
      * less than the hand-over grace ({@link GrpcDispatchStage#GRPC_HAND_OVER_GRACE_MILLIS}) before the cap, or
      * reaches the cap, is ended as the upstream's timeout ({@link DispatchStage.UpstreamConnectionTooLate})
-     * without its request being sent or its body read. On a gRPC call this timeout is therefore reached in two
-     * ways, both the upstream's: by an upstream holding a complete, half-closed request it does not answer, and
-     * by a wait for an upstream connection or HTTP/2 stream slot that itself lasts this whole timeout, before
-     * any body is handed over.
+     * without its request being sent or its body read. On a gRPC call this timeout is therefore reached in three
+     * ways, all the upstream's: by an upstream holding a complete, half-closed request it does not answer; by a
+     * wait for an upstream connection or HTTP/2 stream slot that itself lasts this whole timeout, before any body
+     * is handed over; and by an upstream that stops taking data mid-request and does not take any more before
+     * this timeout. While that backpressure pauses the request stream the message bound is not counted, and the
+     * pre-response deadline, which keeps counting, ends the call only once the upstream takes data again.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -101,9 +103,14 @@ public final class UpstreamGuards {
      * retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The request-body idle
      * timeout, the request-body deadline and the gRPC message bound and pre-response deadline are shorter,
      * so a body the gateway is still waiting for ends as the request's, and the timeout ends an attempt the
-     * upstream holds up — on a gRPC call, one whose request stream has ended, or one whose connection wait
-     * reached the pre-response cap, which the gRPC dispatch ends a moment earlier as the same upstream
-     * timeout.
+     * upstream holds up — on a gRPC call, one whose request stream has ended, one whose upstream stopped taking
+     * data mid-request, or one whose connection wait lasts this whole timeout. The gRPC dispatch itself refuses
+     * an attempt whose hand-over leaves less than the hand-over grace
+     * ({@link GrpcDispatchStage#GRPC_HAND_OVER_GRACE_MILLIS}) before the pre-response cap
+     * ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_CAP_MILLIS}), that is, one that obtains its connection later
+     * than 28 s after its start, as {@link DispatchStage.UpstreamConnectionTooLate}; a connection wait lasting
+     * the whole {@value #UPSTREAM_TIMEOUT_SECONDS} seconds without a hand-over is ended by this guard itself.
+     * Both are {@link de.cuioss.sheriff.gateway.events.EventType#UPSTREAM_TIMEOUT}, counted by the breaker.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard

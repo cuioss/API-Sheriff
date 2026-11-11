@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt handed the body over, never later than 29 s after the attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, and an attempt whose upstream connection wait leaves less than a fixed 1 s hand-over grace before that 29 s cap is ended unsent as the upstream's UPSTREAM_TIMEOUT, so the guard's timeout is reached only as the upstream's, by an upstream holding a complete, half-closed request or by a connection wait that lasts it; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
+// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt handed the body over, never later than 29 s after the attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, and an attempt whose upstream connection wait leaves less than a fixed 1 s hand-over grace before that 29 s cap is ended unsent as the upstream's UPSTREAM_TIMEOUT, so the guard's timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection wait that lasts it, or by an upstream that stops taking data mid-request, during which the message bound is not counted and the deadline, which keeps counting, ends the call only once the upstream takes data again; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
 // tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, request-body-deadline, grpc-message-bound, grpc-pre-response-deadline, grpc-stream-idle-timeout, upstream-connection
 // affects: api-sheriff
 // supersedes:
@@ -162,8 +162,8 @@ route arms it only until its upstream answers, and counts it from the hand-over 
 A gRPC call arms no request-body idle timeout. Until its upstream sends its response headers, the
 call is bounded by the message bound and the pre-response deadline (<<grpc-message-bound>>), and the
 guard's 30 s timeout is reached only as the upstream's: by an upstream that holds a complete,
-half-closed request it does not answer, or by a connection or stream-slot wait that itself lasts the
-30 s. After
+half-closed request it does not answer, by a connection or stream-slot wait that itself lasts the
+30 s, or by an upstream that stops taking data mid-request and takes no more within the 30 s. After
 the response headers the gRPC relay carries a stream-idle bound of five minutes, the default stream idle
 timeout of Envoy. Every request frame the dispatch reads and every
 upstream frame the relay writes restarts it. When five minutes pass with no frame in either
@@ -175,12 +175,16 @@ HTTP/2 `PING` frames are not frames of the call and do not count.
 === Amendment: until its upstream answers, a gRPC call is bounded per complete request message, and a request stream still open before the guard ends as the client's
 
 *The invariant.* A gRPC call ends as an upstream failure only when the upstream had everything the
-client was going to send, or never gave the client the time to send it. Time the client holds its
-request open is the client's; time spent reaching the upstream is the upstream's. The guard's timeout,
-which the breaker records as an upstream failure, is therefore reached in two ways, both the
-upstream's: by an upstream that holds a complete, half-closed request it does not answer, and by a wait
-for an upstream connection or HTTP/2 stream slot that itself lasts the guard's 30 s, before any body is
-handed over. A connection wait that leaves less than the one-second hand-over grace before the cap is
+client was going to send, never gave the client the time to send it, or stopped taking what the client
+sent. Time the client holds its request open is the client's; time spent reaching the upstream is the
+upstream's. The guard's timeout, which the breaker records as an upstream failure, is therefore reached
+in three ways, all the upstream's: by an upstream that holds a complete, half-closed request it does
+not answer; by a wait for an upstream connection or HTTP/2 stream slot that itself lasts the guard's
+30 s, before any body is handed over; and by an upstream that stops taking data mid-request and takes
+no more within the guard's 30 s. While that backpressure pauses the request stream, the message bound
+is not counted, and the pre-response deadline keeps counting but does not end the call: a deadline
+that passes during the pause ends it only once the upstream takes data again, then as the client's
+`REQUEST_BODY_TIMEOUT` (below). A connection wait that leaves less than the one-second hand-over grace before the cap is
 ended as the upstream's timeout earlier still, unsent (below).
 
 *Why a bound is needed at all.* The forced-HTTP/2 upstream request head is written only with the first
@@ -250,7 +254,8 @@ so the breaker sees the client's own `GatewayException`.
 
 *ADR-0064 is unchanged.* The guard, its fixed 30 s timeout and its rule that the breaker skips a
 gateway rejection are untouched. The guard's 30 s stays the bound for an upstream holding a complete,
-half-closed request, and for a connection or stream-slot wait that lasts it.
+half-closed request, for a connection or stream-slot wait that lasts it, and for an upstream that stops
+taking data mid-request and takes no more within it.
 
 *No configuration key.* Both bounds, the cap and the grace are fixed constants of `GrpcDispatchStage`, for the reason
 this record gives for every bound it owns. A call's `grpc-timeout` header is still not honoured.

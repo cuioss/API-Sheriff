@@ -53,10 +53,15 @@ import io.vertx.core.streams.ReadStream;
  * <p>
  * <strong>Time the client holds the request open is the client's; time spent reaching the upstream is
  * the upstream's.</strong> A gRPC call ends as an upstream failure only when the upstream had everything the
- * client was going to send, or never gave the client the time to send it. The guard's timeout, which the
- * breaker records as an upstream failure, is reached in two ways: by an upstream holding a complete,
- * half-closed request it does not answer, and by a wait for an upstream connection or HTTP/2 stream slot that
- * itself lasts the guard's whole timeout, before any body is handed over. An attempt whose connection wait
+ * client was going to send, never gave the client the time to send it, or stopped taking what the client sent.
+ * The guard's timeout, which the breaker records as an upstream failure, is reached in three ways: by an
+ * upstream holding a complete, half-closed request it does not answer; by a wait for an upstream connection or
+ * HTTP/2 stream slot that itself lasts the guard's whole timeout, before any body is handed over; and by an
+ * upstream that stops taking data mid-request and does not take any more before the guard's timeout. While
+ * that backpressure pauses the request stream the message bound is not counted, and the pre-response
+ * deadline, which keeps counting, does not end the call: a deadline that passes during the pause ends it only
+ * when the upstream takes data again, as the client's
+ * {@link DispatchStage.RequestBodyDeadlineExceeded}. An attempt whose connection wait
  * leaves less than the hand-over grace below before the pre-response cap is ended as the upstream's timeout
  * earlier still, before a byte of its body is read. Every way a call can wait on its client is ended first,
  * as the client's own abort, which the breaker skips. The forced-HTTP/2 upstream request head is
