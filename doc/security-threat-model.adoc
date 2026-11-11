@@ -1580,13 +1580,19 @@ stream-idle bound]):
   for an upstream connection or HTTP/2 stream slot that itself lasts the 30 s; and by an upstream that
   stops taking data mid-request and takes no more within the 30 s. While that backpressure pauses the
   request stream, the message bound is not counted, and the pre-response deadline keeps counting but
-  does not end the call at once. Who held the stream when the deadline passed decides whose failure it
-  is: a deadline that passes during the pause passed while the upstream held the stream, and the call
-  ends the moment the upstream takes data again as the upstream's `UPSTREAM_TIMEOUT`
-  (`DispatchStage.UpstreamStalledRequest`), which the breaker counts; a deadline that passes while the
-  stream is being read is the client's `REQUEST_BODY_TIMEOUT`, however long the upstream paused the
-  stream before. So a slow-reading upstream cannot have its own stall charged to its clients, and its
-  clients cannot keep it out of the breaker's count
+  does not end the call at once: a deadline that passes during the pause ends the call the moment the
+  upstream takes data again. Only a sustained stall makes that the upstream's failure: when the pause
+  has lasted without a break at least the fixed 10 s upstream stall threshold
+  (`GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS`, equal to the message bound) at that read, the call
+  ends as the upstream's `UPSTREAM_TIMEOUT` (`DispatchStage.UpstreamStalledRequest`), which the breaker
+  counts; a shorter pause, and a deadline that passes while the stream is being read, however long the
+  upstream paused the stream before, leave the deadline the client's `REQUEST_BODY_TIMEOUT`, which the
+  breaker skips. The threshold is the line between a stall and flow control: a client that sends
+  faster than a healthy upstream reads, and never ends its stream, is paused for brief waits most of
+  the time, and were any pause at the deadline charged to the upstream, that client could open the
+  route's breaker for every caller by repeating such calls (CWE-400). So a client cannot get its own
+  deadline counted against the upstream, and an upstream that stalls for the threshold cannot have that
+  stall charged to its clients
   (link:architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline]).
 * *A gRPC call that goes quiet.* A gRPC call arms no request-body idle timeout. Until its upstream
   sends the response headers, the message bound, the pre-response deadline and the guard's 30 s
@@ -1604,8 +1610,9 @@ stream-idle bound]):
 The idle timeout and the deadline, the gRPC pre-response deadline its client held included, are
 recorded as `INFO` `ApiSheriff-23` and `ApiSheriff-24` and counted under
 `sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`; a gRPC pre-response deadline that passed while the
-upstream held the stream is counted under `sheriff_errors_total{event="UPSTREAM_TIMEOUT"}` and by the
-breaker instead; a call ended by the stream-idle bound is
+upstream had stalled the stream for at least the stall threshold is counted under
+`sheriff_errors_total{event="UPSTREAM_TIMEOUT"}` and by the breaker instead; a call ended by the
+stream-idle bound is
 recorded as `INFO` `ApiSheriff-25`; a gRPC call ended by the message bound is recorded as `INFO`
 `ApiSheriff-22` with the disposition `client-idle`, counted under
 `sheriff_errors_total{event="INBOUND_BODY_ABORTED"}` and, apart from client departures and failed
@@ -1617,8 +1624,12 @@ end on a route is recorded at `INFO` even after a departure there (CWE-779).
 attempt while it keeps arriving. A body the upstream is not taking data for when the deadline passes
 is ended only once the upstream reads it again; until then the upstream holds it, and before the
 response head the guard's 30 s timeout ends that attempt. On a gRPC call that end is the upstream's
-`UPSTREAM_TIMEOUT`; on an HTTP route the whole-body deadline still ends such a body as the request's
-`REQUEST_BODY_TIMEOUT`, which the breaker does not count. A gRPC call has no bound on its total
+`UPSTREAM_TIMEOUT` only when the upstream had then held the stream paused without a break for at least
+the 10 s stall threshold; an upstream stall shorter than the threshold across the deadline is still
+recorded as the client's `REQUEST_BODY_TIMEOUT` and skipped by the breaker, so an upstream that pauses
+its readers for several seconds at a time, but less than 10 s, is never counted for it. On an HTTP route
+the whole-body deadline still ends such a body as the request's `REQUEST_BODY_TIMEOUT`, which the breaker
+does not count. A gRPC call has no bound on its total
 duration: a call that carries a frame at least every five minutes stays open, as long-lived streaming
 calls are normal for gRPC (ADR-0060).
 
@@ -1696,27 +1707,42 @@ breaker (`halfClosedRequestBehindASlowConnectionIsTheGuardTimeoutAndOpensTheBrea
 `steadySenderBehindASlowConnectionEndsAtTheCapAndLeavesTheBreakerClosed`,
 `connectionPastTheCapIsTheUpstreamsTimeoutAndOpensTheBreaker`,
 `connectionInsideTheGraceBeforeTheCapIsTheUpstreamsTimeoutAndOpensTheBreaker`); the grace case was red
-while the refusal fired only past the cap. An upstream that stops reading at the request head and
-reads again after the deadline, before the guard, behind a client sending more than its HTTP/2 window,
-holds the stream when the deadline passes: each call ends when the upstream reads again as
-`UPSTREAM_TIMEOUT` through `DispatchStage.UpstreamStalledRequest`, and the breaker opens at its
-threshold (`deadlinePassingWhileTheUpstreamHoldsTheStreamIsTheUpstreamsTimeoutAndOpensTheBreaker`, red
-while such a call ended as the client's `REQUEST_BODY_TIMEOUT` with the breaker closed); its matched
-control, a client whose small messages never fill that window, keeps the stream being read and ends at
-the deadline as the client's `REQUEST_BODY_TIMEOUT` with the breaker closed
-(`clientHoldingTheStreamWithinTheWindowIsTheClientsDeadlineAndLeavesTheBreakerClosed`). A call whose stream ends without a byte is not ended
+while the refusal fired only past the cap. With the stall threshold shortened to 500 ms, an upstream
+that stops reading at the request head and reads again after the deadline, before the guard, behind a
+client sending more than its HTTP/2 window, has stalled the stream past the threshold by then: each
+call ends when the upstream reads again as `UPSTREAM_TIMEOUT` through
+`DispatchStage.UpstreamStalledRequest`, and the breaker opens at its threshold
+(`deadlinePassingWhileTheUpstreamHoldsTheStreamIsTheUpstreamsTimeoutAndOpensTheBreaker`, red while such
+a call ended as the client's `REQUEST_BODY_TIMEOUT` with the breaker closed); its matched control, a
+client whose small messages never fill that window, keeps the stream being read and ends at the
+deadline as the client's `REQUEST_BODY_TIMEOUT` with the breaker closed
+(`clientHoldingTheStreamWithinTheWindowIsTheClientsDeadlineAndLeavesTheBreakerClosed`). The flow-control
+attack is driven too: a client sending large messages faster than an upstream that reads all the time,
+but slower, is paused by flow control again and again, never for long, and never ends its stream; each
+such call ends at the deadline as the client's `REQUEST_BODY_TIMEOUT` and the breaker stays closed
+(`clientOutpacingAHealthyUpstreamIsTheClientsDeadlineAndLeavesTheBreakerClosed`, red while any pause at
+the deadline was charged to the upstream: a call ended as `UPSTREAM_TIMEOUT`, the breaker opened and
+the call behind was refused `UPSTREAM_CIRCUIT_OPEN`). A stall claimed in the moment the upstream answers
+ends the call as the upstream's timeout and the answer is not relayed
+(`answerArrivingJustAfterTheStallWasClaimedIsTheUpstreamsTimeout`). A call whose stream ends without a byte is not ended
 (`bodyEndingWithoutAMessageIsNotAborted`); and the `ConstructorContract` cases pin the fixed 10 s and
-25 s below the 30 s guard timeout, the 29 s cap one second below it, the 1 s grace, and the 25 s equal
-to the request-body deadline (`messageBoundDeadlineAndCapAreBelowTheGuardTimeout`,
-`preResponseDeadlineEqualsTheRequestBodyDeadline`). `DispatchStageTest` asserts the frame reading of
+25 s below the 30 s guard timeout, the 29 s cap one second below it, the 1 s grace, the 25 s equal
+to the request-body deadline, and the 10 s stall threshold equal to the message bound and below the
+deadline (`messageBoundDeadlineAndCapAreBelowTheGuardTimeout`,
+`preResponseDeadlineEqualsTheRequestBodyDeadline`, `upstreamStallThresholdIsTheMessageBoundBelowTheDeadline`). `DispatchStageTest` asserts the frame reading of
 the message bound -- a prefix or payload split across chunks, a zero-length message, a partial first
 message -- that the bound stops when the send completes, the body ends or the attempt is abandoned,
 and that the pre-response deadline ends a steady sender and stops when the send completes or the
 body ends (`MessageClock`, `CompleteMessage`, `PreResponseDeadline`); its `PreResponseDeadline` cases
-also pin the attribution rule: a deadline passing while the upstream has the stream paused, or inside
-the read that resumes it, is the upstream's stall, never a client abort
-(`pausedByTheUpstreamAtTheDeadlineIsTheUpstreamsStall`,
-`deadlinePassingInsideTheResumingReadIsTheUpstreamsStall`, both red before the rule), one passing after
+also pin the attribution rule: a deadline passing while the upstream has held the stream paused past
+the stall threshold, or inside the read that resumes such a pause, is the upstream's stall, never a
+client abort (`pausedByTheUpstreamAtTheDeadlineIsTheUpstreamsStall`,
+`deadlinePassingInsideTheResumingReadIsTheUpstreamsStall`); the threshold's edge is decided by the
+pause's length at the read that ends it -- one millisecond short is the client's, reaching it is the
+upstream's (`pauseJustShortOfTheStallThresholdLeavesTheDeadlineTheClients`,
+`pauseReachingTheStallThresholdIsTheUpstreamsStall`); a resume restarts the stall, so a short pause
+after a long one is the client's (`resumeRestartsTheStallMeasuredByTheNextPause`), while a pause
+re-asserted during a pause keeps its start (`pauseWhilePausedKeepsTheStallsStart`); one passing after
 an earlier pause has ended is the client's (`pausedEarlierThenReadAgainBeforeTheDeadlineIsTheClients`),
 and the whole-body deadline of an HTTP dispatch stays the client's
 (`wholeBodyDeadlinePausedByTheUpstreamStaysTheClients`).
@@ -4579,7 +4605,7 @@ outstanding hardening work (next section).
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
-| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose client still holds its request stream open 25 s after its attempt handed the body over, never later than 29 s after the attempt started, ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, neither counted by the breaker as a failure; one whose upstream connection wait leaves less than the 1 s hand-over grace before that 29 s cap, or reaches it, ends unsent as the upstream's `UPSTREAM_TIMEOUT`, counted by the breaker, so a dispatched call always has at least the grace to deliver an end its client already sent; the guard's 30 s timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection or stream-slot wait that lasts the 30 s, or by an upstream that stops taking data mid-request and takes no more within the 30 s -- while that backpressure pauses the request stream the message bound is not counted, and the pre-response deadline keeps counting but ends the call only once the upstream takes data again, then as the upstream's `UPSTREAM_TIMEOUT` (`UpstreamStalledRequest`), counted by the breaker, because the upstream held the stream when the deadline passed; one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
+| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose client still holds its request stream open 25 s after its attempt handed the body over, never later than 29 s after the attempt started, ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, neither counted by the breaker as a failure; one whose upstream connection wait leaves less than the 1 s hand-over grace before that 29 s cap, or reaches it, ends unsent as the upstream's `UPSTREAM_TIMEOUT`, counted by the breaker, so a dispatched call always has at least the grace to deliver an end its client already sent; the guard's 30 s timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection or stream-slot wait that lasts the 30 s, or by an upstream that stops taking data mid-request and takes no more within the 30 s -- while that backpressure pauses the request stream the message bound is not counted, and the pre-response deadline keeps counting but ends the call only once the upstream takes data again, then as the upstream's `UPSTREAM_TIMEOUT` (`UpstreamStalledRequest`), counted by the breaker, only when the upstream had held the stream paused without a break for at least the fixed 10 s stall threshold, and as the client's `REQUEST_BODY_TIMEOUT` after a shorter, flow-control pause -- so a client out-sending a healthy upstream cannot open its breaker; one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
 | <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED

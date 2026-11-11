@@ -130,7 +130,11 @@ public enum EventType {
      * A {@code protocol: grpc} route is never watched by the idle timeout — its message bound ends a
      * client idle between request messages as an {@link #INBOUND_BODY_ABORTED} instead — and is watched by
      * the deadline only until the upstream answers: a request stream still open at that pre-response
-     * deadline is reported as this event, which a gRPC route renders as {@code DEADLINE_EXCEEDED}.
+     * deadline is reported as this event, which a gRPC route renders as {@code DEADLINE_EXCEEDED} — unless the
+     * upstream's backpressure had paused the stream without a break for at least the gRPC upstream stall
+     * threshold when the deadline was acted on, which is an {@link #UPSTREAM_TIMEOUT} instead. A shorter pause,
+     * such as the flow-control waits of a client sending faster than a healthy upstream reads, leaves it this
+     * event.
      * <p>
      * Contrast {@link #INBOUND_BODY_ABORTED}, which is a body stream that failed — this event is a body
      * that is still open but stopped arriving — and {@link #UPSTREAM_TIMEOUT}, which is the whole

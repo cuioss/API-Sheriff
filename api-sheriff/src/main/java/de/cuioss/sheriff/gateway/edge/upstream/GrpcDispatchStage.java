@@ -61,22 +61,28 @@ import io.vertx.core.streams.ReadStream;
  * that backpressure pauses the request stream the message bound is not counted, and the pre-response
  * deadline, which keeps counting, does not end the call at once: a deadline that passes during the pause ends
  * it the moment the upstream takes data again — no later than the deadline would have ended a client holding
- * the stream open — as the upstream's {@link DispatchStage.UpstreamStalledRequest}, a timeout the breaker counts
- * and the failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. An attempt whose connection wait
- * leaves less than the hand-over grace below before the pre-response cap is ended as the upstream's timeout
- * earlier still, before a byte of its body is read. Every way a call can wait on its client is ended first,
- * as the client's own abort, which the breaker skips.
+ * the stream open — and when the upstream had by then stalled the stream without a break for at least the
+ * upstream stall threshold below, as the upstream's {@link DispatchStage.UpstreamStalledRequest}, a timeout the
+ * breaker counts and the failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. An attempt whose
+ * connection wait leaves less than the hand-over grace below before the pre-response cap is ended as the
+ * upstream's timeout earlier still, before a byte of its body is read. Every way a call can wait on its client is
+ * ended first, as the client's own abort, which the breaker skips.
  * <p>
- * <strong>Who held the stream when the deadline passed decides whose failure it is.</strong> The pre-response
- * deadline is attributed by the state of the request stream at the moment it passes, never by what came
- * before: a deadline that passes while the upstream's backpressure has the stream paused is the upstream's
- * {@link DispatchStage.UpstreamStalledRequest}, however slowly the client sent before the pause; a deadline that
- * passes while the stream is being read is the client's {@link DispatchStage.RequestBodyDeadlineExceeded},
- * however long the upstream had paused it earlier — the upstream took data again, and the client still held its
- * stream open when the deadline passed. The moment the deadline passes is the moment the gateway's deadline timer
- * finds it passed, at most a few milliseconds after it. Either way the call ends when it ended before this rule:
- * at once when the deadline passes during a read, at the upstream's next read when it passes during a pause, and
- * at the guard's timeout when the upstream takes no data again before it. The forced-HTTP/2 upstream request head is
+ * <strong>Only a sustained upstream stall makes the deadline the upstream's.</strong> The pre-response deadline
+ * is acted on when it passes while the request stream is being read, or, when it passes while the upstream's
+ * backpressure has the stream paused, at the read that ends that pause. It is the upstream's
+ * {@link DispatchStage.UpstreamStalledRequest} exactly when, at that moment, the stream has been paused without a
+ * break for at least the upstream stall threshold, {@value #GRPC_UPSTREAM_STALL_MILLIS} ms — however slowly the
+ * client sent before the pause. Every other passed deadline is the client's
+ * {@link DispatchStage.RequestBodyDeadlineExceeded}: one that passes while the stream is being read, however long
+ * the upstream had paused it earlier, and one that passes during a shorter pause. HTTP/2 flow control pauses a
+ * stream whenever its sender gets ahead of its reader, so a client that sends faster than a healthy upstream
+ * reads, and never ends its stream, sits paused for brief waits most of the time; were any pause at the deadline
+ * charged to the upstream, that client could open the route's breaker for every caller by repeating such calls.
+ * The threshold keeps those calls the client's, as the breaker skips them. Either way the call ends when it ended
+ * before the deadline was ever charged to the upstream: at once when the deadline passes during a read, at the
+ * upstream's next read when it passes during a pause, and at the guard's timeout when the upstream takes no data
+ * again before it; only who answers for it differs. The forced-HTTP/2 upstream request head is
  * written only with the first body chunk, and an upstream cannot act on a request message it holds only part
  * of, so the request side of a call is bounded twice, before the upstream answers. Both bounds are counted
  * from the moment the attempt hands its body to the upstream request, so neither counts the wait for an
@@ -98,8 +104,13 @@ import io.vertx.core.streams.ReadStream;
  *       ending its request stream, is ended there as a {@link DispatchStage.RequestBodyDeadlineExceeded}
  *       ({@link EventType#REQUEST_BODY_TIMEOUT}), rendered to the client as gRPC {@code DEADLINE_EXCEEDED}.
  *       A client stream the upstream answers only after the client ends it must therefore end within that
- *       deadline. A deadline that passes while the upstream's backpressure has the stream paused is the
- *       upstream's instead (see above), rendered as {@code DEADLINE_EXCEEDED} too.</li>
+ *       deadline. A deadline that passes while the upstream's backpressure has had the stream paused for at
+ *       least the upstream stall threshold is the upstream's instead (see above), rendered as
+ *       {@code DEADLINE_EXCEEDED} too.</li>
+ *   <li><strong>The upstream stall threshold, {@value #GRPC_UPSTREAM_STALL_MILLIS} ms.</strong> Equal to the
+ *       message bound: the span the gateway already treats as no progress on the client's side is the span it
+ *       treats as no progress on the upstream's. It is not a bound and ends nothing; it only decides whose failure
+ *       a passed pre-response deadline is.</li>
  * </ul>
  * <strong>The pre-response cap, {@value #GRPC_PRE_RESPONSE_CAP_MILLIS} ms from the start of the
  * attempt.</strong> The guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds) is counted
@@ -129,7 +140,8 @@ import io.vertx.core.streams.ReadStream;
  * </ul>
  * Both stop when the upstream answers — the attempt's send completes — so a bidirectional stream the
  * upstream has answered is bounded by neither. A request stream whose end reached the dispatch is not ended by
- * either. The bound, the deadline, the cap and the grace are all fixed and derived, never configured. No
+ * either. The bound, the deadline, the cap, the grace and the stall threshold are all fixed and derived, never
+ * configured. No
  * request-body idle timeout is armed: client-streaming and bidirectional RPCs legitimately pause between
  * messages, the message bound is what bounds those pauses, and a forced-HTTP/2 upstream multiplexes the call
  * on a shared connection instead of holding a pooled connection of its own.
@@ -170,7 +182,8 @@ public final class GrpcDispatchStage {
      * The latest moment, in milliseconds from the start of its attempt, a gRPC call's pre-response deadline
      * passes: one second shorter than the guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS}
      * seconds), which starts at the same moment, so a request stream still open when the guard would fire is
-     * always ended as the client's first. Fixed and derived, never configured.
+     * always ended at the deadline first — as the client's, unless the upstream had stalled the stream for at
+     * least {@link #GRPC_UPSTREAM_STALL_MILLIS} by then. Fixed and derived, never configured.
      */
     public static final long GRPC_PRE_RESPONSE_CAP_MILLIS = UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS * 1_000L - 1_000L;
 
@@ -185,12 +198,31 @@ public final class GrpcDispatchStage {
      */
     public static final long GRPC_HAND_OVER_GRACE_MILLIS = 1_000;
 
+    /**
+     * How long, in milliseconds, the upstream must have held a gRPC call's request stream without a break — its
+     * HTTP/2 backpressure pausing the stream — when a passed pre-response deadline is acted on, for the deadline to
+     * be charged to the upstream as an {@link DispatchStage.UpstreamStalledRequest} ({@link EventType#UPSTREAM_TIMEOUT},
+     * counted by the breaker) instead of to the client as a {@link DispatchStage.RequestBodyDeadlineExceeded}
+     * ({@link EventType#REQUEST_BODY_TIMEOUT}, skipped by the breaker).
+     * <p>
+     * Equal to {@link #GRPC_MESSAGE_TIMEOUT_MILLIS}: ten seconds without a complete message is what the gateway
+     * already treats as a client making no progress, so ten seconds without taking any data is what it treats as
+     * an upstream making none. A healthy upstream's flow control returns window within a few round-trips — a
+     * client that sends faster than it reads is paused for milliseconds at a time, never for seconds — so the
+     * threshold sits far above any flow-control pause, and a client cannot get its own deadline counted against
+     * the upstream by out-sending it. It sits well below {@link #GRPC_PRE_RESPONSE_DEADLINE_MILLIS}, so a stall
+     * that starts before the deadline can still reach it within the call. Fixed, never configured; positive and
+     * shorter than {@link #GRPC_PRE_RESPONSE_DEADLINE_MILLIS}.
+     */
+    public static final long GRPC_UPSTREAM_STALL_MILLIS = GRPC_MESSAGE_TIMEOUT_MILLIS;
+
     private final DispatchStage dispatchStage;
 
     /**
      * A gRPC dispatch with the production message bound, {@value #GRPC_MESSAGE_TIMEOUT_MILLIS} ms,
      * pre-response deadline, {@value #GRPC_PRE_RESPONSE_DEADLINE_MILLIS} ms, pre-response cap,
-     * {@value #GRPC_PRE_RESPONSE_CAP_MILLIS} ms, and hand-over grace, {@value #GRPC_HAND_OVER_GRACE_MILLIS} ms.
+     * {@value #GRPC_PRE_RESPONSE_CAP_MILLIS} ms, hand-over grace, {@value #GRPC_HAND_OVER_GRACE_MILLIS} ms, and
+     * upstream stall threshold, {@value #GRPC_UPSTREAM_STALL_MILLIS} ms.
      *
      * @param upstreamClients the boot-built lookup the route's shared forced-h2 client and guard are
      *                        resolved from
@@ -201,12 +233,13 @@ public final class GrpcDispatchStage {
     public GrpcDispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             UpstreamFailureMapper failureMapper) {
         this(upstreamClients, maxBodyBytes, failureMapper, GRPC_MESSAGE_TIMEOUT_MILLIS,
-                GRPC_PRE_RESPONSE_DEADLINE_MILLIS, GRPC_PRE_RESPONSE_CAP_MILLIS, GRPC_HAND_OVER_GRACE_MILLIS);
+                GRPC_PRE_RESPONSE_DEADLINE_MILLIS, GRPC_PRE_RESPONSE_CAP_MILLIS, GRPC_HAND_OVER_GRACE_MILLIS,
+                GRPC_UPSTREAM_STALL_MILLIS);
     }
 
     /**
-     * A gRPC dispatch with the given message bound, pre-response deadline, pre-response cap and hand-over
-     * grace — the seam a test shortens all four through.
+     * A gRPC dispatch with the given message bound, pre-response deadline, pre-response cap, hand-over grace and
+     * upstream stall threshold — the seam a test shortens all five through.
      *
      * @param upstreamClients           the boot-built lookup the route's shared forced-h2 client and guard
      *                                  are resolved from
@@ -225,15 +258,20 @@ public final class GrpcDispatchStage {
      *                                  the hand-over: an attempt handing its body over with less than this
      *                                  left before the cap is ended as the upstream's timeout, unsent;
      *                                  positive and shorter than {@code preResponseDeadlineMillis}
+     * @param upstreamStallMillis       how long, in milliseconds, the upstream must have held the request stream
+     *                                  without a break when a passed pre-response deadline is acted on, for the
+     *                                  deadline to be the upstream's timeout rather than the client's; positive
+     *                                  and shorter than {@code preResponseDeadlineMillis}
      * @throws IllegalArgumentException when {@code messageTimeoutMillis} is not positive,
      *                                  {@code preResponseDeadlineMillis} is not longer than it,
      *                                  {@code preResponseCapMillis} is shorter than the deadline, or
-     *                                  {@code handOverGraceMillis} is not positive or not shorter than the
-     *                                  deadline
+     *                                  {@code handOverGraceMillis} or {@code upstreamStallMillis} is not positive
+     *                                  or not shorter than the deadline
      */
+    @SuppressWarnings("java:S107") // package-private test seam; each bound is a distinct fixed value the public constructor derives
     GrpcDispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, UpstreamFailureMapper failureMapper,
             long messageTimeoutMillis, long preResponseDeadlineMillis, long preResponseCapMillis,
-            long handOverGraceMillis) {
+            long handOverGraceMillis, long upstreamStallMillis) {
         if (messageTimeoutMillis <= DispatchStage.NO_FIRST_MESSAGE_TIMEOUT) {
             throw new IllegalArgumentException("messageTimeoutMillis must be positive: " + messageTimeoutMillis);
         }
@@ -250,9 +288,14 @@ public final class GrpcDispatchStage {
                     "handOverGraceMillis must be positive and shorter than the pre-response deadline: "
                             + handOverGraceMillis);
         }
+        if (upstreamStallMillis <= DispatchStage.NO_UPSTREAM_STALL || upstreamStallMillis >= preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "upstreamStallMillis must be positive and shorter than the pre-response deadline: "
+                            + upstreamStallMillis);
+        }
         this.dispatchStage = new DispatchStage(upstreamClients, maxBodyBytes, DispatchStage.NO_BODY_IDLE_TIMEOUT,
                 preResponseDeadlineMillis, messageTimeoutMillis, preResponseCapMillis, handOverGraceMillis,
-                Objects.requireNonNull(failureMapper, "failureMapper"));
+                upstreamStallMillis, Objects.requireNonNull(failureMapper, "failureMapper"));
     }
 
     /**

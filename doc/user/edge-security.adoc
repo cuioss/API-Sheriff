@@ -593,8 +593,11 @@ deployment that never writes it keeps the behaviour shown here.
   client -- but it passes no later than 29 s after the upstream attempt started, a second before the
   upstream guard's timeout: a call whose client still holds its request stream open then is ended with
   `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message: input-validation`. A deadline that passes
-  while the upstream is not taking data is the upstream's: the call is ended when the upstream reads
-  again, with `grpc-message: upstream`, and the upstream's circuit breaker counts it. The deadline always
+  while the upstream is not taking data ends the call when the upstream reads again; it is the
+  upstream's only when the upstream had then taken no data for at least 10 s without a break -- the call
+  ends with `grpc-message: upstream` and the upstream's circuit breaker counts it. A shorter pause is
+  ordinary flow control, as when a client sends faster than its upstream reads, and stays the client's
+  `input-validation`, so a client cannot open the breaker by out-sending a healthy upstream. The deadline always
   leaves at least 1 s after the hand-over, so a call whose upstream connection took longer than 28 s
   -- less than that second before the 29 s cap, or past it -- is ended without being sent, as the
   upstream's timeout (`grpc-status: 4`, `grpc-message: upstream`). Not configurable. See
@@ -622,7 +625,8 @@ deployment that never writes it keeps the behaviour shown here.
   30 s timeout an upstream that holds the complete, half-closed request, a connection or
   stream-slot wait that lasts the 30 s, or an upstream that stops taking data mid-request and takes
   no more within the 30 s; one that takes data again after the request-body deadline passed ends the
-  call then, as the upstream's timeout. Not configurable. See
+  call then, as the upstream's timeout when it had taken no data for at least 10 s, as the client's
+  otherwise. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 | Unrouted-`404` response floor

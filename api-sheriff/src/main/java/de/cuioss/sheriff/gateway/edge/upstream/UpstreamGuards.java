@@ -71,8 +71,10 @@ public final class UpstreamGuards {
      * is handed over; and by an upstream that stops taking data mid-request and does not take any more before
      * this timeout. While that backpressure pauses the request stream the message bound is not counted, and the
      * pre-response deadline, which keeps counting, ends the call only once the upstream takes data again — then as
-     * the upstream's timeout ({@link DispatchStage.UpstreamStalledRequest}), because the upstream held the stream
-     * when the deadline passed. A deadline that passes while the stream is being read is the client's.
+     * the upstream's timeout ({@link DispatchStage.UpstreamStalledRequest}) when the upstream had held the stream
+     * without a break for at least the upstream stall threshold
+     * ({@link GrpcDispatchStage#GRPC_UPSTREAM_STALL_MILLIS}), as the client's otherwise. A deadline that passes
+     * while the stream is being read is the client's.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -113,8 +115,10 @@ public final class UpstreamGuards {
      * than 28 s after its start, as {@link DispatchStage.UpstreamConnectionTooLate}; a connection wait lasting
      * the whole {@value #UPSTREAM_TIMEOUT_SECONDS} seconds without a hand-over is ended by this guard itself.
      * A gRPC call whose pre-response deadline passed while its upstream's backpressure had the request stream
-     * paused is ended when the upstream takes data again, as {@link DispatchStage.UpstreamStalledRequest}. All
-     * three are {@link de.cuioss.sheriff.gateway.events.EventType#UPSTREAM_TIMEOUT}, counted by the breaker.
+     * paused, and had kept it paused without a break for at least the upstream stall threshold
+     * ({@link GrpcDispatchStage#GRPC_UPSTREAM_STALL_MILLIS}) when the upstream takes data again, is ended then, as
+     * {@link DispatchStage.UpstreamStalledRequest}; a shorter pause leaves the deadline the client's. All three are
+     * {@link de.cuioss.sheriff.gateway.events.EventType#UPSTREAM_TIMEOUT}, counted by the breaker.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard

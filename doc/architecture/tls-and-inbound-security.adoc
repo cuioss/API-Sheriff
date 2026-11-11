@@ -231,13 +231,19 @@ so until the upstream answers the request side of a call is bounded twice
   messages, each within the message bound, without ever ending its request stream is ended there: the
   upstream request is reset and the call ends as `DispatchStage.RequestBodyDeadlineExceeded`
   (`REQUEST_BODY_TIMEOUT`, `408`), rendered trailers-only as `DEADLINE_EXCEEDED` with
-  `grpc-message: input-validation`. Who held the stream when the deadline passed decides whose failure
-  it is: a deadline that passes while the upstream's backpressure has the request stream paused is the
-  upstream's (below).
+  `grpc-message: input-validation`. Only a sustained upstream stall makes the deadline the upstream's:
+  one that passes while the upstream's backpressure has held the request stream paused without a break
+  for at least the upstream stall threshold is the upstream's (below).
+* *The upstream stall threshold*, `GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS` (10 s, equal to the
+  message bound). It is not a bound and ends nothing: it decides whose failure a passed pre-response
+  deadline is. HTTP/2 flow control pauses a request stream whenever the client gets ahead of the
+  upstream, for a few round-trips at a time while a healthy upstream keeps reading; only a pause lasting
+  the threshold is the upstream's stall.
 
-Both stop when the upstream answers, when the request stream ends, on any abort and when the attempt
-ends, so a bidirectional stream the upstream has answered is bounded by neither. Neither counts as a
-failure for the circuit breaker when it ends a call its client held, and neither is retried. Both are fixed. An HTTP dispatch arms neither;
+The two bounds stop when the upstream answers, when the request stream ends, on any abort and when the
+attempt ends, so a bidirectional stream the upstream has answered is bounded by neither. Neither counts as a
+failure for the circuit breaker when it ends a call its client held, and neither is retried. Both bounds and
+the stall threshold are fixed. An HTTP dispatch arms neither bound;
 it keeps the idle timeout and the whole-body deadline above. Because the 30 s guard timeout runs from
 the start of the attempt and so counts the connection wait, the pre-response deadline is held to
 `GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS`, 29 s from the start of the attempt: a hand-over within
@@ -256,13 +262,18 @@ complete, half-closed request it does not answer; by a wait for an upstream conn
 slot that itself lasts the 30 s, before any body is handed over; and by an upstream that stops taking
 data mid-request and takes no more within the 30 s. While that backpressure pauses the request stream,
 the message bound is not counted, and the pre-response deadline keeps counting but does not end the
-call at once. A deadline that passes during the pause passed while the upstream held the stream: it ends
-the call the moment the upstream takes data again — no later than a deadline end during a read would — as
-`DispatchStage.UpstreamStalledRequest`, an `UPSTREAM_TIMEOUT` the breaker counts, rendered
-`DEADLINE_EXCEEDED` with `grpc-message: upstream`. A deadline that passes while the request stream is
-being read is the client's `REQUEST_BODY_TIMEOUT`, however long the upstream paused the stream before;
-the moment it passes is when the gateway's deadline timer finds it passed, a few milliseconds at most
-after it. Only the attribution follows the pause; when the call ends does not.
+call at once: a deadline that passes during the pause ends the call the moment the upstream takes data
+again — no later than a deadline end during a read would. That read decides whose failure it is, by the
+length the pause has reached: a pause of at least the 10 s stall threshold without a break is the
+upstream's stall, and the call ends as `DispatchStage.UpstreamStalledRequest`, an `UPSTREAM_TIMEOUT` the
+breaker counts, rendered `DEADLINE_EXCEEDED` with `grpc-message: upstream`; a shorter pause leaves the
+deadline the client's `REQUEST_BODY_TIMEOUT`. A deadline that passes while the request stream is being
+read is the client's too, however long the upstream paused the stream before. A resume ends a pause, so
+the stall is always one unbroken pause, never a sum of short ones. The threshold is what keeps the
+breaker out of a client's reach: a client that sends faster than a healthy upstream reads, and never ends
+its request stream, is paused by flow control for brief waits most of the time, so were any pause at the
+deadline charged to the upstream, repeating such calls would open the route's breaker for every caller.
+Only the attribution depends on the pause; when the call ends does not.
 
 [[_grpc_stream_idle_bound]]
 *gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages, a

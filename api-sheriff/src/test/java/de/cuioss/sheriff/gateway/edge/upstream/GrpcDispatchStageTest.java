@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge.upstream;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
@@ -155,7 +156,8 @@ class GrpcDispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper, messageTimeoutMillis,
                             GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
-                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS));
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS,
+                            GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
 
             assertTrue(refused.getMessage().contains("messageTimeoutMillis"), "the refusal names the bound");
         }
@@ -175,7 +177,7 @@ class GrpcDispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper, messageTimeoutMillis,
                             messageTimeoutMillis + pastTheBoundMillis, GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS,
-                            GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS));
+                            GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS, GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
 
             assertTrue(refused.getMessage().contains("preResponseDeadlineMillis"), "the refusal names the deadline");
         }
@@ -194,7 +196,7 @@ class GrpcDispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper,
                             GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS, deadlineMillis, deadlineMillis - 1,
-                            GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS));
+                            GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS, GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
 
             assertTrue(refused.getMessage().contains("preResponseCapMillis"), "the refusal names the cap");
         }
@@ -215,9 +217,32 @@ class GrpcDispatchStageTest {
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper,
                             GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS,
                             GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
-                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, handOverGraceMillis));
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, handOverGraceMillis,
+                            GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
 
             assertTrue(refused.getMessage().contains("handOverGraceMillis"), "the refusal names the grace");
+        }
+
+        /**
+         * An upstream stall threshold that is not positive would charge every flow-control pause at the deadline
+         * to the upstream — a client out-sending a healthy upstream could open its breaker; one no shorter than
+         * the deadline could never be reached by a stall that starts within the call.
+         */
+        @ParameterizedTest(name = "a stall threshold of {0} ms")
+        @ValueSource(longs = {DispatchStage.NO_UPSTREAM_STALL, -1L, GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS})
+        @DisplayName("refuses an upstream stall threshold that is not positive or not shorter than the pre-response deadline")
+        void refusesAStallThresholdNotPositiveOrNotShorterThanTheDeadline(long upstreamStallMillis) {
+            UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
+            UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new GrpcDispatchStage(noClients, 1024L, failureMapper,
+                            GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS,
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS,
+                            upstreamStallMillis));
+
+            assertTrue(refused.getMessage().contains("upstreamStallMillis"), "the refusal names the stall threshold");
         }
 
         /**
@@ -246,6 +271,24 @@ class GrpcDispatchStageTest {
                                     + UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS + " s timeout"),
                     () -> assertEquals(1_000L, GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS,
                             "a dispatched attempt keeps at least one second between its hand-over and its deadline"));
+        }
+
+        /**
+         * The upstream stall threshold decides whose failure a passed pre-response deadline is: ten seconds, the
+         * span the message bound already treats as no progress — far above any flow-control pause, so a client
+         * out-sending a healthy upstream keeps its deadline, and well below the deadline itself.
+         */
+        @Test
+        @DisplayName("the production upstream stall threshold is ten seconds, the message bound, below the pre-response deadline")
+        void upstreamStallThresholdIsTheMessageBoundBelowTheDeadline() {
+            assertAll("the fixed upstream stall threshold of a gRPC call",
+                    () -> assertEquals(10_000L, GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS,
+                            "only a stall of ten seconds without a break is charged to the upstream"),
+                    () -> assertEquals(GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS, GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS,
+                            "the threshold is the span the message bound treats as no progress"),
+                    () -> assertTrue(GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS
+                            < GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
+                            "a stall starting within the call can still reach the threshold"));
         }
 
         /**
@@ -437,15 +480,18 @@ class GrpcDispatchStageTest {
      * a client that keeps sending complete messages, each within the bound, without ever ending its stream is
      * ended at the deadline as a {@link DispatchStage.RequestBodyDeadlineExceeded}. Both are the client's own
      * aborts, which the breaker skips, instead of the guard's timeout, an upstream failure the breaker counts —
-     * unless the upstream's backpressure held the stream when the deadline passed, which ends the call as the
-     * upstream's timeout once the upstream reads again.
+     * unless the upstream's backpressure had stalled the stream without a break for at least the upstream stall
+     * threshold when the deadline was acted on, which ends the call as the upstream's timeout once the upstream
+     * reads again. The brief flow-control pauses of a client sending faster than a healthy upstream reads stay far
+     * below that threshold, so such a client's deadline stays its own.
      * That timeout is reached by an upstream holding a complete, half-closed request it does not answer, and by
      * a connection wait that itself lasts it; an attempt whose connection wait leaves less than the hand-over
      * grace before the cap, or reaches the cap, is ended as the same upstream timeout without its body being
      * read. The cases on the two bounds build the stage with the bound shortened to
      * {@value #MESSAGE_BOUND_MILLIS} ms, the deadline to {@value #DEADLINE_MILLIS} ms, the cap to
-     * {@value #DEADLINE_CAP_MILLIS} ms and the grace to {@value #HAND_OVER_GRACE_MILLIS} ms, all under the
-     * {@value #BREAKER_GUARD_MILLIS} ms timeout of a guard
+     * {@value #DEADLINE_CAP_MILLIS} ms, the grace to {@value #HAND_OVER_GRACE_MILLIS} ms and the stall threshold to
+     * {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all under the {@value #BREAKER_GUARD_MILLIS} ms timeout of a
+     * guard
      * carrying the production breaker rules, beside a matched control whose upstream reads every call's one
      * complete message to the half-close and never answers. The connection-wait cases stand in for a slow
      * upstream connection with a client that hands the dispatch its upstream request only a set time after the
@@ -475,7 +521,9 @@ class GrpcDispatchStageTest {
      * answered {@value #LATE_ANSWER_MILLIS} ms after its request stream has ended; a call to
      * {@value #NEVER_ANSWERS} reads its request stream to its end and is never answered; a call to
      * {@value #STOPS_READING} reads nothing of its request stream for {@value #UPSTREAM_STALL_MILLIS} ms after its
-     * head arrived, so a client sending more than the HTTP/2 window meets backpressure, and is never answered.
+     * head arrived, so a client sending more than the HTTP/2 window meets backpressure, and is never answered; a
+     * call to {@value #SLOW_READER} is read all the time, but only two DATA frames every {@value #SLOW_READ_MILLIS}
+     * ms, so a client sending faster meets brief backpressure again and again, and is never answered.
      * Every answered call
      * ends with a {@code grpc-status: 0} trailer. The stub reassembles the request stream into its gRPC messages and
      * records the payload of every complete one, and whether the request stream ended or failed — a failed
@@ -491,6 +539,7 @@ class GrpcDispatchStageTest {
         private static final String LATE_ANSWER = "/svc.Service/LateAnswer";
         private static final String NEVER_ANSWERS = "/svc.Service/NeverAnswers";
         private static final String STOPS_READING = "/svc.Service/StopsReading";
+        private static final String SLOW_READER = "/svc.Service/SlowReader";
         /** The test-only message bound the message-bound cases shorten the fixed bound to. */
         private static final long MESSAGE_BOUND_MILLIS = 400L;
         /**
@@ -514,6 +563,28 @@ class GrpcDispatchStageTest {
          * cap — later than {@value #DEADLINE_CAP_MILLIS} ms less this after its start — is refused unsent.
          */
         private static final long HAND_OVER_GRACE_MILLIS = 100L;
+        /**
+         * The test-only upstream stall threshold: shorter than the shortened deadline, as the production threshold
+         * is, and far above the flow-control pauses of a client outpacing the {@value #SLOW_READER} upstream — a
+         * few tens of milliseconds each — while the {@value #STOPS_READING} upstream holds its stream for more than
+         * twice as long.
+         */
+        private static final long UPSTREAM_STALL_THRESHOLD_MILLIS = 500L;
+        /**
+         * How often the {@value #SLOW_READER} upstream reads: it takes two DATA frames — one large message — every
+         * this many milliseconds, a rate the outpacing client's {@value #OUTPACING_GAP_MILLIS} ms gap exceeds.
+         */
+        private static final long SLOW_READ_MILLIS = 40L;
+        /**
+         * The gap between the outpacing client's large messages: shorter than {@value #SLOW_READ_MILLIS}, so it
+         * sends faster than the {@value #SLOW_READER} upstream reads.
+         */
+        private static final long OUTPACING_GAP_MILLIS = 20L;
+        /**
+         * How many large messages an outpacing call sends at most: their framed bytes stay under the roomy cap, and
+         * they last longer than the deadline at {@value #OUTPACING_GAP_MILLIS} ms apart.
+         */
+        private static final int MOST_OUTPACING_MESSAGES = 60;
         /**
          * A connection wait longer than the shortened deadline and shorter than the cap less the grace: a
          * deadline counted from the start of the attempt would already have passed at the hand-over, the one
@@ -630,7 +701,7 @@ class GrpcDispatchStageTest {
             upstreamCalls.incrementAndGet();
             HttpServerResponse response = request.response().setChunked(true);
             boolean ticking = TICKING.equals(request.path());
-            long ticker = ticking ? vertx.setPeriodic(TICK_MILLIS, fired -> response.write("tick")) : -1L;
+            long ticker = periodicTask(request, response);
             // The request arrives as length-prefixed gRPC messages, split into DATA frames however the
             // transport chose; the stub reassembles them and records each message's payload.
             MessageReassembler messages = new MessageReassembler(upstreamFrames::add);
@@ -661,6 +732,25 @@ class GrpcDispatchStageTest {
                 request.pause();
                 vertx.setTimer(UPSTREAM_STALL_MILLIS, fired -> request.resume());
             }
+        }
+
+        /**
+         * Starts the stub's periodic task for a call: a call to {@value #TICKING} sends a frame every
+         * {@value #TICK_MILLIS} ms; a call to {@value #SLOW_READER} is read continuously but slowly — paused, and
+         * two DATA frames fetched every {@value #SLOW_READ_MILLIS} ms, so HTTP/2 flow-control credit flows back
+         * all the time, only slower than an outpacing client spends it.
+         *
+         * @return the periodic timer's id, or {@code -1} for a call that has none
+         */
+        private long periodicTask(HttpServerRequest request, HttpServerResponse response) {
+            if (TICKING.equals(request.path())) {
+                return vertx.setPeriodic(TICK_MILLIS, fired -> response.write("tick"));
+            }
+            if (SLOW_READER.equals(request.path())) {
+                request.pause();
+                return vertx.setPeriodic(SLOW_READ_MILLIS, fired -> request.fetch(2));
+            }
+            return -1L;
         }
 
         private static void answerOk(HttpServerResponse response) {
@@ -1065,12 +1155,14 @@ class GrpcDispatchStageTest {
          * {@value #UPSTREAM_STALL_MILLIS} ms later — past the pre-response deadline, before the guard's timeout.
          * The client sends large messages steadily, more than the upstream's flow-control window, so the gateway's
          * upstream request stops being writable and the forwarding pipe pauses the request stream: the upstream
-         * holds the stream when the deadline passes. The deadline passing in that pause is the upstream's, so each
-         * call ends when the upstream reads again as the upstream's timeout, counted by the breaker, which opens at
-         * its threshold — never as the client's {@code REQUEST_BODY_TIMEOUT}, which the breaker would skip.
+         * holds the stream when the deadline passes, and by the time it reads again it has held it without a break
+         * for well over the {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms stall threshold. That sustained stall is the
+         * upstream's, so each call ends when the upstream reads again as the upstream's timeout, counted by the
+         * breaker, which opens at its threshold — never as the client's {@code REQUEST_BODY_TIMEOUT}, which the
+         * breaker would skip.
          */
         @Test
-        @DisplayName("an upstream whose backpressure holds the stream past the deadline and then reads again ends the call as the upstream's timeout, counted by the breaker")
+        @DisplayName("an upstream whose backpressure stalls the stream past the deadline and the stall threshold, then reads again, ends the call as the upstream's timeout, counted by the breaker")
         void deadlinePassingWhileTheUpstreamHoldsTheStreamIsTheUpstreamsTimeoutAndOpensTheBreaker() throws Exception {
             Route route = grpcRoute();
             GrpcDispatchStage stage = boundedStage(route, breakerGuard());
@@ -1102,7 +1194,7 @@ class GrpcDispatchStageTest {
                     .supplyAsync(() -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), behind, -1L))
                     .handle((answer, refusal) -> refusal), "the call behind the threshold to end");
 
-            assertAll("calls whose upstream held the request stream when the deadline passed",
+            assertAll("calls whose upstream stalled the request stream past the threshold across the deadline",
                     () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, true), heldBack,
                             "the upstream's backpressure paused every request stream before its deadline"),
                     () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, EventType.UPSTREAM_TIMEOUT),
@@ -1127,6 +1219,163 @@ class GrpcDispatchStageTest {
                                     behindTheThreshold == null ? null : behindTheThreshold.getCause(),
                                     "the call behind the threshold is refused, not answered").getEventType(),
                             "the call behind the threshold is refused by the open breaker"));
+        }
+
+        /**
+         * The flow-control attack the stall threshold exists for: a client that sends large messages faster than a
+         * healthy upstream reads them, and never ends its request stream. The {@value #SLOW_READER} upstream reads
+         * all the time, two DATA frames every {@value #SLOW_READ_MILLIS} ms; the client sends a large message every
+         * {@value #OUTPACING_GAP_MILLIS} ms. HTTP/2 flow control therefore keeps pausing the request stream — it is
+         * paused whenever the deadline passes — but each pause lasts only until the upstream's next reads return
+         * window, far below the {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms stall threshold. The call is the
+         * client's: each ends at the pre-response deadline as its {@code REQUEST_BODY_TIMEOUT}, which the breaker
+         * skips, so as many such calls as the breaker's threshold leave it closed and a call behind them is
+         * answered. Were any pause at the deadline charged to the upstream, each call would be an upstream timeout
+         * and these calls would open the breaker for every caller of the route.
+         */
+        @Test
+        @DisplayName("a client outpacing a healthy upstream past the deadline ends as its own REQUEST_BODY_TIMEOUT and never opens the breaker")
+        void clientOutpacingAHealthyUpstreamIsTheClientsDeadlineAndLeavesTheBreakerClosed() throws Exception {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = boundedStage(route, breakerGuard());
+            String largePayload = "o".repeat(LARGE_MESSAGE_CHARS);
+            List<Throwable> refusals = new ArrayList<>();
+            List<Long> endedAfterMillis = new ArrayList<>();
+            List<Boolean> heldBack = new ArrayList<>();
+
+            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
+                PushedBody outpacing = new PushedBody();
+                outpacing.push(largePayload);
+                long started = System.nanoTime();
+                CompletableFuture<HttpClientResponse> answered = CompletableFuture.supplyAsync(
+                        () -> stage.dispatch(route, HttpMethod.POST, SLOW_READER, Map.of(), outpacing, -1L));
+                for (int message = 1; !answered.isDone() && message < MOST_OUTPACING_MESSAGES; message++) {
+                    Awaits.connect(pause(OUTPACING_GAP_MILLIS), "the gap before the next message");
+                    outpacing.push(largePayload);
+                }
+                heldBack.add(outpacing.heldBack());
+                refusals.add(Awaits.connect(answered.handle((answer, refusal) -> refusal),
+                        "the outpacing client's call to end"));
+                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+            }
+            PushedBody behind = new PushedBody();
+            behind.push("behind");
+            behind.end();
+            Object behindTheCalls = Awaits.connect(CompletableFuture
+                    .supplyAsync(() -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), behind, -1L))
+                    .handle((answer, refusal) -> refusal == null ? answer.statusCode() : refusal.getCause()),
+                    "the call behind the outpacing calls to end");
+
+            assertAll("clients outpacing a healthy upstream, as many as the breaker's threshold",
+                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, true), heldBack,
+                            "the upstream's flow control paused every request stream: the client outpaced it"),
+                    () -> assertTrue(refusals.stream().map(refusal -> refusal == null ? null : refusal.getCause())
+                                    .allMatch(DispatchStage.RequestBodyDeadlineExceeded.class::isInstance),
+                            () -> "every such call ends at the pre-response deadline as the client's: " + refusals),
+                    () -> assertTrue(endedAfterMillis.stream().allMatch(
+                                    millis -> millis >= DEADLINE_MILLIS && millis < BREAKER_GUARD_MILLIS),
+                            () -> "each call ends at the deadline, before the guard's timeout: " + endedAfterMillis),
+                    () -> assertEquals(List.of(), breakerTransitions, "the breaker stays closed"),
+                    () -> assertTrue(upstreamFailed.isDone(), "the gateway reset the open upstream calls"),
+                    () -> assertEquals(200, behindTheCalls, "the call behind them is answered"));
+        }
+
+        /**
+         * The upstream's stall claimed in the moment the upstream answers. The read that claims a stall may run on
+         * the inbound connection's event loop while the answer completes the send on the upstream request's, before
+         * the reset the claim sent reaches the stream. The client here stands in for that race: its upstream request
+         * holds the body paused — the upstream not taking data — past the deadline and the stall threshold, reads it
+         * again, which claims the stall and resets the request, and only then completes the send with an answer.
+         * The answer is never relayed: the call ends as the upstream's timeout, from the stall the dispatch reads
+         * before handing the response over.
+         */
+        @Test
+        @DisplayName("an answer that arrives just after the upstream's stall was claimed is not relayed: the call is the upstream's timeout")
+        void answerArrivingJustAfterTheStallWasClaimedIsTheUpstreamsTimeout() throws Exception {
+            Route route = grpcRoute();
+            AnswerAfterTheStall upstreamRequest = new AnswerAfterTheStall();
+            GrpcDispatchStage stage = boundedStage(route, upstreamRequest.client(), breakerGuard());
+            PushedBody body = new PushedBody();
+            body.push("first");
+
+            CompletableFuture<HttpClientResponse> answered = CompletableFuture.supplyAsync(
+                    () -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), body, -1L));
+            ReadStream<?> handedOver = Awaits.connect(upstreamRequest.handedOver,
+                    "the dispatch to hand its body to the upstream request");
+            Awaits.connect(pause(DEADLINE_MILLIS + PAUSE_MARGIN_MILLIS),
+                    "the deadline and the stall threshold to pass while the upstream holds the body");
+            boolean openWhileHeld = !answered.isDone() && upstreamRequest.resets.get() == 0;
+            handedOver.resume();
+            int resetsByTheStall = upstreamRequest.resets.get();
+            upstreamRequest.answer();
+            Throwable ended = Awaits.connect(answered.handle((answer, refusal) -> refusal),
+                    "the call whose stall was claimed to end");
+
+            GatewayException timeout = assertInstanceOf(GatewayException.class,
+                    ended == null ? null : ended.getCause(), "the answered call still fails the dispatch");
+            assertAll("an answer arriving after the upstream's stall was claimed",
+                    () -> assertTrue(openWhileHeld, "the held stream was not ended before it was read again"),
+                    () -> assertEquals(1, resetsByTheStall, "the read again claimed the stall and reset the request"),
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, timeout.getEventType(),
+                            "the call is the upstream's timeout"),
+                    () -> assertInstanceOf(DispatchStage.UpstreamStalledRequest.class, timeout.getCause(),
+                            "it was ended by the stall read before the hand-over, not by the guard"),
+                    () -> assertTrue(upstreamRequest.resets.get() > resetsByTheStall,
+                            "the attempt holding the answer was released instead of handing it on for relay"));
+        }
+
+        /**
+         * The forced-h2 client of {@link #answerArrivingJustAfterTheStallWasClaimedIsTheUpstreamsTimeout}: every
+         * upstream request it hands the dispatch pauses the body it is sent, as an upstream not taking data does,
+         * and sends nothing upstream; its send is answered only once the case calls {@link #answer()}. Every reset
+         * of the request is counted.
+         */
+        private final class AnswerAfterTheStall {
+
+            private final CompletableFuture<ReadStream<?>> handedOver = new CompletableFuture<>();
+            private final Promise<HttpClientResponse> sendAnswered = Promise.promise();
+            private final AtomicInteger resets = new AtomicInteger();
+
+            HttpClient client() {
+                return (HttpClient) Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                        new Class<?>[]{HttpClient.class}, (_, method, args) -> {
+                            if ("request".equals(method.getName()) && args != null && args.length == 1
+                                    && args[0] instanceof RequestOptions options) {
+                                return forcedH2.request(options).map(this::holding);
+                            }
+                            return invokeOn(forcedH2, method, args);
+                        });
+            }
+
+            private HttpClientRequest holding(HttpClientRequest real) {
+                return (HttpClientRequest) Proxy.newProxyInstance(HttpClientRequest.class.getClassLoader(),
+                        new Class<?>[]{HttpClientRequest.class}, (_, method, args) -> {
+                            if ("send".equals(method.getName()) && args != null && args.length == 1
+                                    && args[0] instanceof ReadStream<?> sent) {
+                                sent.pause();
+                                handedOver.complete(sent);
+                                return sendAnswered.future();
+                            }
+                            if ("reset".equals(method.getName())) {
+                                resets.incrementAndGet();
+                            }
+                            return invokeOn(real, method, args);
+                        });
+            }
+
+            /** Completes the held send with an answer: a response whose only use here is being paused. */
+            void answer() {
+                sendAnswered.complete((HttpClientResponse) Proxy.newProxyInstance(
+                        HttpClientResponse.class.getClassLoader(), new Class<?>[]{HttpClientResponse.class},
+                        (response, method, args) -> switch (method.getName()) {
+                            case "pause" -> response;
+                            case "hashCode" -> System.identityHashCode(response);
+                            case "equals" -> response == args[0];
+                            case "toString" -> "the answer that arrived after the stall";
+                            default -> throw new AssertionError(
+                                    "the answer is only paused before the call fails: " + method.getName());
+                        }));
+            }
         }
 
         /**
@@ -1469,8 +1718,9 @@ class GrpcDispatchStageTest {
         /**
          * A stage whose message bound is shortened to {@value #MESSAGE_BOUND_MILLIS} ms, whose pre-response
          * deadline is shortened to {@value #DEADLINE_MILLIS} ms, whose pre-response cap is shortened to
-         * {@value #DEADLINE_CAP_MILLIS} ms and whose hand-over grace is shortened to
-         * {@value #HAND_OVER_GRACE_MILLIS} ms, all below {@value #BREAKER_GUARD_MILLIS} ms.
+         * {@value #DEADLINE_CAP_MILLIS} ms, whose hand-over grace is shortened to {@value #HAND_OVER_GRACE_MILLIS} ms
+         * and whose upstream stall threshold is shortened to {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all
+         * below {@value #BREAKER_GUARD_MILLIS} ms.
          */
         private GrpcDispatchStage boundedStage(Route route, Guard guard) {
             return boundedStage(route, forcedH2, guard);
@@ -1482,7 +1732,7 @@ class GrpcDispatchStageTest {
             UpstreamClients clients = new UpstreamClients(Map.of(target, client),
                     Map.of(new ResilienceShape(target, route.retryEnabled()), guard));
             return new GrpcDispatchStage(clients, ROOMY_CAP_BYTES, failureMapper, MESSAGE_BOUND_MILLIS,
-                    DEADLINE_MILLIS, DEADLINE_CAP_MILLIS, HAND_OVER_GRACE_MILLIS);
+                    DEADLINE_MILLIS, DEADLINE_CAP_MILLIS, HAND_OVER_GRACE_MILLIS, UPSTREAM_STALL_THRESHOLD_MILLIS);
         }
 
         /**
@@ -1499,12 +1749,17 @@ class GrpcDispatchStageTest {
                             vertx.setTimer(connectionWaitMillis, _ -> connected.complete());
                             return connected.future().compose(_ -> forcedH2.request(options));
                         }
-                        try {
-                            return method.invoke(forcedH2, args);
-                        } catch (InvocationTargetException failure) {
-                            throw failure.getCause();
-                        }
+                        return invokeOn(forcedH2, method, args);
                     });
+        }
+
+        /** Invokes {@code method} on {@code target}, rethrowing what it throws unwrapped. */
+        private static Object invokeOn(Object target, Method method, Object[] args) throws Throwable {
+            try {
+                return method.invoke(target, args);
+            } catch (InvocationTargetException failure) {
+                throw failure.getCause();
+            }
         }
 
         /**

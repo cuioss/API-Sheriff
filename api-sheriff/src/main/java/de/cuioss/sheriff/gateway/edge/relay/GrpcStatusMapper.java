@@ -43,17 +43,19 @@ import io.vertx.core.http.HttpServerResponse;
  *   <li>{@code 403} → {@code PERMISSION_DENIED} (7)</li>
  *   <li>{@code 404} → {@code NOT_FOUND} (5)</li>
  *   <li>{@code 405} → {@code UNIMPLEMENTED} (12)</li>
- *   <li>{@code 408} → {@code DEADLINE_EXCEEDED} (4) — a gRPC request stream still open at its pre-response
- *       deadline ({@link EventType#REQUEST_BODY_TIMEOUT})</li>
+ *   <li>{@code 408} → {@code DEADLINE_EXCEEDED} (4) — a gRPC request stream its client still held open at its
+ *       pre-response deadline ({@link EventType#REQUEST_BODY_TIMEOUT})</li>
  *   <li>{@code 413} → {@code RESOURCE_EXHAUSTED} (8)</li>
  *   <li>{@code 502} / {@code 503} → {@code UNAVAILABLE} (14) — also an h2-negotiation failure</li>
  *   <li>{@code 504} → {@code DEADLINE_EXCEEDED} (4)</li>
  *   <li>anything else → {@code UNKNOWN} (2)</li>
  * </ul>
  * The {@code grpc-message} carries the failure category slug only — never internal detail — exactly as
- * the problem+json contract does for HTTP routes. It is what tells the two {@code DEADLINE_EXCEEDED} ends
- * apart: the pre-response deadline carries {@code input-validation}, the upstream guard's timeout
- * {@code upstream}.
+ * the problem+json contract does for HTTP routes. It is what tells the {@code DEADLINE_EXCEEDED} ends
+ * apart: a pre-response deadline the client held its request stream open to carries {@code input-validation};
+ * the upstream guard's timeout, and a pre-response deadline the upstream held — its backpressure had paused the
+ * request stream without a break for at least the upstream stall threshold when the deadline was acted on —
+ * carry {@code upstream}.
  *
  * @author API Sheriff Team
  * @since 1.0

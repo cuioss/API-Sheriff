@@ -36,7 +36,7 @@ The gateway's standard rejection envelope is an `application/problem+json` respo
 | `UNIMPLEMENTED`      | 12 | `405`: method not in the route's effective `allowed_methods`
 | `RESOURCE_EXHAUSTED` | 8  | `413`: body over the body cap
 | `UNAVAILABLE`        | 14 | `502` and `503`: upstream connection failure or open circuit; also an HTTP/2 negotiation failure at the forced HTTP/2 dispatch
-| `DEADLINE_EXCEEDED`  | 4  | `504`: upstream timeout; `408`: a gRPC request stream still open at its pre-response deadline (<<grpc-pre-response-deadline>>)
+| `DEADLINE_EXCEEDED`  | 4  | `504`: upstream timeout, including a gRPC pre-response deadline the upstream stalled the request stream across for at least the 10 s stall threshold; `408`: a gRPC request stream its client still held open at its pre-response deadline (<<grpc-pre-response-deadline>>)
 |===
 
 Any other status maps to `UNKNOWN` (2). The trailers carry the category name only, never internal detail, the same no-leak rule the problem document enforces.
@@ -54,7 +54,12 @@ A pre-route-floor inbound-filter violation and `PARAMETER_LIMIT_EXCEEDED`, which
 A gRPC call whose request stream is still open 25 s after its attempt handed the body over — never later
 than 29 s after the attempt started — before its upstream answered, is ended by the gateway's
 pre-response deadline as `REQUEST_BODY_TIMEOUT`, `408`
-(link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-message-bound[ADR-0060]).
+(link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-message-bound[ADR-0060]),
+unless the upstream's backpressure had held the stream paused without a break for at least the fixed
+10 s upstream stall threshold when the deadline was acted on: that end is the upstream's
+`UPSTREAM_TIMEOUT`, `504`, rendered by the existing `504` row
+(link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-upstream-stall-threshold[ADR-0060 -- the stall threshold]).
+A shorter, flow-control pause leaves the end the client's `408`.
 The table had no `408` row, so that end would have rendered as `UNKNOWN` (2), a status that tells the
 client nothing. `408` now maps to `DEADLINE_EXCEEDED` (4):
 
@@ -65,7 +70,8 @@ client nothing. `408` now maps to `DEADLINE_EXCEEDED` (4):
 * `INVALID_ARGUMENT` (3) is not chosen. Nothing the client sent was malformed.
 
 The trailers carry the category name `input-validation`, which tells this end apart from the upstream
-guard's `DEADLINE_EXCEEDED` (`upstream`) and from the stream-idle bound's (`stream-idle-timeout`).
+guard's `DEADLINE_EXCEEDED` and an upstream-stalled pre-response deadline's (both `upstream`) and from
+the stream-idle bound's (`stream-idle-timeout`).
 `REQUEST_BODY_TIMEOUT` is the only cause that renders `408`, so the new row changes no other end. The
 message-bound end of the same call, an idle client between two request messages, stays
 `INBOUND_BODY_ABORTED`, `400`, rendered `INVALID_ARGUMENT`: it is an aborted body, not a timeout.

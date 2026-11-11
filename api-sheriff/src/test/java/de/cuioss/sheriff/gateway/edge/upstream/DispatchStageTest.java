@@ -158,7 +158,8 @@ class DispatchStageTest {
             Route route = route(id, upstream, false);
             return new Routed(route, new DispatchStage(clientsFor(route, client, guard), BODY_CAP,
                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, messageTimeoutMillis,
-                    DispatchStage.NO_PRE_RESPONSE_CAP, DispatchStage.NO_HAND_OVER_GRACE, failureMapper));
+                    DispatchStage.NO_PRE_RESPONSE_CAP, DispatchStage.NO_HAND_OVER_GRACE, DispatchStage.NO_UPSTREAM_STALL,
+                    failureMapper));
         }
 
         private static Route route(String id, ResolvedUpstream upstream, boolean retryEnabled) {
@@ -245,6 +246,8 @@ class DispatchStageTest {
         private static final long DEADLINE_MILLIS = 6 * IDLE_TIMEOUT_MILLIS;
         /** A hand-over grace a pre-response deadline accepts: positive and shorter than the deadline. */
         private static final long GRACE_MILLIS = IDLE_TIMEOUT_MILLIS / 3;
+        /** An upstream stall threshold a pre-response deadline accepts: positive and shorter than the deadline. */
+        private static final long STALL_MILLIS = IDLE_TIMEOUT_MILLIS;
 
         private final UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
@@ -272,7 +275,7 @@ class DispatchStageTest {
                             DEADLINE_MILLIS, failureMapper)),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, IDLE_TIMEOUT_MILLIS,
-                                    DEADLINE_MILLIS, GRACE_MILLIS, failureMapper),
+                                    DEADLINE_MILLIS, GRACE_MILLIS, STALL_MILLIS, failureMapper),
                             "a message bound carries the deadline as the pre-response deadline, held to a cap"),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                             DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, failureMapper)));
@@ -289,7 +292,8 @@ class DispatchStageTest {
         void refusesAPreResponseCapShorterThanTheDeadline(long shortOfTheDeadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS - shortOfTheDeadlineMillis, GRACE_MILLIS, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS - shortOfTheDeadlineMillis, GRACE_MILLIS, STALL_MILLIS,
+                            failureMapper));
 
             assertTrue(refused.getMessage().contains("pre-response deadline needs a cap"), refused::getMessage);
         }
@@ -305,9 +309,38 @@ class DispatchStageTest {
         void refusesAPreResponseGraceNotPositiveOrNotShorterThanTheDeadline(long graceMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, graceMillis, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, graceMillis, STALL_MILLIS, failureMapper));
 
             assertTrue(refused.getMessage().contains("positive hand-over grace"), refused::getMessage);
+        }
+
+        /**
+         * An upstream stall threshold that is not positive would charge every flow-control pause at the deadline to
+         * the upstream; one no shorter than the deadline could never be reached by a stall that starts within it.
+         */
+        @ParameterizedTest(name = "a stall threshold of {0} ms")
+        @ValueSource(longs = {DispatchStage.NO_UPSTREAM_STALL, -1L, DEADLINE_MILLIS})
+        @DisplayName("refuses a pre-response deadline with an upstream stall threshold that is not positive or not shorter than itself")
+        void refusesAPreResponseStallThresholdNotPositiveOrNotShorterThanTheDeadline(long stallMillis) {
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, GRACE_MILLIS, stallMillis, failureMapper));
+
+            assertTrue(refused.getMessage().contains("positive upstream stall threshold"), refused::getMessage);
+        }
+
+        /** A stall threshold with no pre-response deadline to attribute would be silently ignored, so it is refused. */
+        @ParameterizedTest(name = "idle timeout {0} ms, deadline {1} ms")
+        @CsvSource({"300, 1800", "0, 0"})
+        @DisplayName("refuses an upstream stall threshold on a stage that arms no pre-response deadline")
+        void refusesAStallThresholdWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
+                            IDLE_TIMEOUT_MILLIS, DispatchStage.NO_PRE_RESPONSE_CAP, DispatchStage.NO_HAND_OVER_GRACE,
+                            STALL_MILLIS, failureMapper));
+
+            assertTrue(refused.getMessage().contains("stall threshold needs a pre-response deadline"),
+                    refused::getMessage);
         }
 
         /** A grace with no pre-response deadline to hold would be silently ignored, so it is refused. */
@@ -317,7 +350,8 @@ class DispatchStageTest {
         void refusesAGraceWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
-                            IDLE_TIMEOUT_MILLIS, DispatchStage.NO_PRE_RESPONSE_CAP, GRACE_MILLIS, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DispatchStage.NO_PRE_RESPONSE_CAP, GRACE_MILLIS,
+                            DispatchStage.NO_UPSTREAM_STALL, failureMapper));
 
             assertTrue(refused.getMessage().contains("hand-over grace needs a pre-response deadline"),
                     refused::getMessage);
@@ -330,7 +364,8 @@ class DispatchStageTest {
         void refusesACapWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, DispatchStage.NO_HAND_OVER_GRACE, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, DispatchStage.NO_HAND_OVER_GRACE,
+                            DispatchStage.NO_UPSTREAM_STALL, failureMapper));
 
             assertTrue(refused.getMessage().contains("needs a pre-response deadline"), refused::getMessage);
         }
@@ -350,7 +385,8 @@ class DispatchStageTest {
                     () -> new DispatchStage.ByteCappedBodyStream(source, BODY_CAP, DispatchStage.NO_DECLARED_LENGTH,
                             () -> fail("a refused body never aborts anything"), _ -> {
                                 // Nothing is forwarded by a body that is never built.
-                            }, DispatchStage.IdleClock.UNARMED, deadline, DispatchStage.IdleClock.UNARMED));
+                            }, DispatchStage.IdleClock.UNARMED, deadline, DispatchStage.IdleClock.UNARMED,
+                            DispatchStage.NO_UPSTREAM_STALL));
 
             assertAll("a deadline with no armed clock to schedule it",
                     () -> assertTrue(refused.getMessage().contains("needs an armed idle or message clock"),
@@ -1264,7 +1300,7 @@ class DispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
                             DispatchStage.NO_BODY_DEADLINE, -1L, DispatchStage.NO_PRE_RESPONSE_CAP,
-                            DispatchStage.NO_HAND_OVER_GRACE, failureMapper));
+                            DispatchStage.NO_HAND_OVER_GRACE, DispatchStage.NO_UPSTREAM_STALL, failureMapper));
 
             assertAll("the message bound of a stage",
                     () -> assertTrue(refused.getMessage().contains("messageTimeoutMillis"),
@@ -1272,7 +1308,7 @@ class DispatchStageTest {
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE,
                                     DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, DispatchStage.NO_PRE_RESPONSE_CAP,
-                                    DispatchStage.NO_HAND_OVER_GRACE, failureMapper),
+                                    DispatchStage.NO_HAND_OVER_GRACE, DispatchStage.NO_UPSTREAM_STALL, failureMapper),
                             "the unarmed bound is a valid bound"));
         }
 
@@ -1407,8 +1443,16 @@ class DispatchStageTest {
 
         private static final long BOUND_MILLIS = 1_000L;
         private static final long DEADLINE_MILLIS = 2_500L;
+        /** The upstream stall threshold: equal to the bound, as the production threshold is. */
+        private static final long STALL_MILLIS = BOUND_MILLIS;
         /** The gap between the steady sender's complete messages: shorter than the bound. */
         private static final long STEADY_GAP_MILLIS = 600L;
+        /**
+         * When the threshold-edge cases' upstream stops taking data: after three steady messages, before the
+         * deadline and less than the stall threshold before it, so the deadline passes early in the pause and only
+         * the pause's length at the read decides.
+         */
+        private static final long PAUSED_AT_MILLIS = 3 * STEADY_GAP_MILLIS;
 
         @Test
         @DisplayName("a steady sender that never ends its stream is ended at the deadline as RequestBodyDeadlineExceeded, before the guard")
@@ -1514,8 +1558,9 @@ class DispatchStageTest {
         /**
          * A client whose stream the consumer paused because the upstream is not taking data is not ended by the
          * message bound — the pause is the upstream's, not the client's — and the deadline that passes during
-         * the pause is the upstream's too: the upstream held the stream when it passed. It ends the body the
-         * moment the upstream reads it again, as the upstream's timeout, never as a client abort.
+         * the pause is the upstream's too: by the time the upstream reads again the pause has lasted far longer
+         * than the stall threshold. It ends the body the moment the upstream reads it again, as the upstream's
+         * timeout, never as a client abort.
          */
         @Test
         @DisplayName("paused by the upstream when the deadline passes: never ended by the bound, ended at the next read as the upstream's stall")
@@ -1580,8 +1625,9 @@ class DispatchStageTest {
 
         /**
          * The read that resumes the stream checks for a passed deadline before the message clock resumes and again
-         * once it has. A deadline timer firing between the two still finds the stream paused by the upstream, so
-         * the deadline passed while the upstream held it: the second check ends the body as the upstream's.
+         * once it has. A deadline timer firing between the two still finds the stream paused by the upstream, and
+         * the pause the read ends has lasted the whole deadline, past the stall threshold: the resume decides that
+         * as the pause ends, and the second check ends the body as the upstream's.
          */
         @Test
         @DisplayName("a deadline passing inside the read that resumes the stream is the upstream's stall")
@@ -1604,9 +1650,112 @@ class DispatchStageTest {
         }
 
         /**
+         * The stall threshold's edge from below. The upstream stops taking data {@link #PAUSED_AT_MILLIS} after the
+         * clock's start, the deadline passes during the pause, and the upstream reads again one millisecond short
+         * of the threshold after the pause began. A pause that short is the flow control of a client sending faster
+         * than a healthy upstream reads, not a stall: the deadline is the client's, exactly as before a deadline
+         * could be charged to the upstream at all.
+         */
+        @Test
+        @DisplayName("a pause one millisecond short of the stall threshold when it ends leaves the passed deadline the client's")
+        void pauseJustShortOfTheStallThresholdLeavesTheDeadlineTheClients() {
+            IdleProbe probe = pausedThroughTheDeadlineAndReadAfter(STALL_MILLIS - 1);
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a deadline that passed in a pause shorter than the stall threshold",
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "a pause below the threshold is not the upstream's stall"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertNull(probe.capped.upstreamStall(), "nothing is charged to the upstream"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the read that ended the body never reaches the inbound stream"));
+        }
+
+        /**
+         * The stall threshold's edge reached: the same pause, the upstream reading again exactly the threshold after
+         * the pause began. When the deadline passed the pause was still shorter than the threshold; the read that
+         * ends it decides, by the length the pause has reached by then, and it has reached the threshold: the
+         * upstream's stall.
+         */
+        @Test
+        @DisplayName("a pause that reaches the stall threshold by the read that ends it makes the passed deadline the upstream's stall")
+        void pauseReachingTheStallThresholdIsTheUpstreamsStall() {
+            IdleProbe probe = pausedThroughTheDeadlineAndReadAfter(STALL_MILLIS);
+
+            assertAll("a deadline that passed in a pause lasting the stall threshold",
+                    () -> assertInstanceOf(DispatchStage.UpstreamStalledRequest.class, probe.failure.get(),
+                            "a pause of the whole threshold is the upstream's stall"),
+                    () -> assertSame(probe.capped.upstreamStall(), probe.failure.get()),
+                    () -> assertNull(probe.capped.clientAbort(), "the upstream's stall is never a client abort"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"));
+        }
+
+        /**
+         * A resume ends a pause: the next pause measures its stall from its own start. The upstream holds the
+         * stream longer than the threshold, reads again before the deadline, and stops again; the deadline passes
+         * in the second pause, which is shorter than the threshold when it ends. The two pauses together are far
+         * longer than the threshold, but neither the earlier one nor their sum is a stall at the deadline.
+         */
+        @Test
+        @DisplayName("a resume restarts the stall: a short pause after a long one leaves the passed deadline the client's")
+        void resumeRestartsTheStallMeasuredByTheNextPause() {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            probe.source.emit(grpcMessage(Generators.letterStrings(2, 6).next()));
+            probe.capped.pause();
+            long secondPauseMillis = STALL_MILLIS - 100;
+            long firstPauseMillis = DEADLINE_MILLIS - secondPauseMillis + 100;
+            probe.time.advanceMillis(firstPauseMillis);
+            probe.capped.resume();
+            boolean openAfterTheLongPause = probe.failure.get() == null && probe.aborts.get() == 0;
+            probe.capped.pause();
+            probe.time.advanceMillis(secondPauseMillis);
+            boolean quietWhilePausedPastTheDeadline = probe.failure.get() == null && probe.aborts.get() == 0;
+
+            probe.capped.resume();
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a deadline that passed in a short pause after a long one",
+                    () -> assertTrue(firstPauseMillis > STALL_MILLIS && firstPauseMillis < DEADLINE_MILLIS,
+                            "the first pause outlasts the threshold and ends before the deadline"),
+                    () -> assertTrue(openAfterTheLongPause, "the long pause ended before the deadline ended nothing"),
+                    () -> assertTrue(quietWhilePausedPastTheDeadline,
+                            "the deadline passing in the second pause ends nothing until the body is read again"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the second pause alone is measured, and it is shorter than the threshold"),
+                    () -> assertNull(probe.capped.upstreamStall(), "nothing is charged to the upstream"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"));
+        }
+
+        /**
+         * A pause already in force is not restarted by another pause — the forwarding pipe may pause a paused stream
+         * again: the stall is measured from the first, so a pause re-asserted half-way through still reaches the
+         * threshold.
+         */
+        @Test
+        @DisplayName("pausing a stream already paused keeps the stall measured from the first pause")
+        void pauseWhilePausedKeepsTheStallsStart() {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            sendSteadily(probe, PAUSED_AT_MILLIS);
+            probe.capped.pause();
+            probe.time.advanceMillis(STALL_MILLIS / 2);
+            probe.capped.pause();
+            probe.time.advanceMillis(STALL_MILLIS - STALL_MILLIS / 2);
+
+            probe.capped.resume();
+
+            assertAll("a pause re-asserted while in force",
+                    () -> assertInstanceOf(DispatchStage.UpstreamStalledRequest.class, probe.failure.get(),
+                            "the stall counts from the first pause and reaches the threshold"),
+                    () -> assertNull(probe.capped.clientAbort(), "the upstream's stall is never a client abort"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"));
+        }
+
+        /**
          * Matched control on the whole-body deadline of an HTTP dispatch: the same pause by the upstream past the
          * deadline and the same read afterwards end the body as the client's, exactly as before the pre-response
-         * deadline was attributed by who held the stream.
+         * deadline could be charged to an upstream that stalled the stream.
          */
         @Test
         @DisplayName("control — the whole-body deadline of an HTTP dispatch stays the client's after an upstream pause")
@@ -1647,6 +1796,27 @@ class DispatchStageTest {
         }
 
         /**
+         * Runs the threshold-edge case: the clock starts, a steady sender sends until {@link #PAUSED_AT_MILLIS}, the
+         * upstream then stops taking data — the deadline passes during that pause — and reads again
+         * {@code pauseMillis} after the pause began.
+         *
+         * @return the probe, after the read that ends the pause
+         */
+        private IdleProbe pausedThroughTheDeadlineAndReadAfter(long pauseMillis) {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            long pausedAt = sendSteadily(probe, PAUSED_AT_MILLIS);
+            probe.capped.pause();
+            probe.time.advanceMillis(pauseMillis);
+            assertTrue(pausedAt < DEADLINE_MILLIS && pausedAt + pauseMillis > DEADLINE_MILLIS,
+                    "the deadline passes during the pause");
+            assertTrue(probe.failure.get() == null && probe.aborts.get() == 0,
+                    "a deadline passing during the pause ends nothing until the body is read again");
+            probe.capped.resume();
+            return probe;
+        }
+
+        /**
          * Sends a complete message every {@link #STEADY_GAP_MILLIS} while the next one still falls before
          * {@code untilMillis} after the clock's start.
          *
@@ -1664,11 +1834,12 @@ class DispatchStageTest {
 
         /**
          * A probe as the gRPC dispatch builds one: no idle clock, the message clock bounded by
-         * {@link #BOUND_MILLIS}, and the deadline passing {@link #DEADLINE_MILLIS} after the probe's creation.
+         * {@link #BOUND_MILLIS}, the deadline passing {@link #DEADLINE_MILLIS} after the probe's creation, and the
+         * upstream stall threshold {@link #STALL_MILLIS}.
          */
         private IdleProbe deadlineProbe() {
             return new IdleProbe(DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_DECLARED_LENGTH,
-                    OptionalLong.of(DEADLINE_MILLIS), BOUND_MILLIS);
+                    OptionalLong.of(DEADLINE_MILLIS), BOUND_MILLIS, STALL_MILLIS);
         }
     }
 
@@ -1743,6 +1914,17 @@ class DispatchStageTest {
          *                       {@link DispatchStage#NO_FIRST_MESSAGE_TIMEOUT} for an unarmed clock
          */
         IdleProbe(long timeoutMillis, long declaredLength, OptionalLong deadlineMillis, long messageMillis) {
+            this(timeoutMillis, declaredLength, deadlineMillis, messageMillis, DispatchStage.NO_UPSTREAM_STALL);
+        }
+
+        /**
+         * @param deadlineMillis the request-body deadline, as for the constructor without a stall threshold
+         * @param messageMillis  the message bound, as for the constructor without a stall threshold
+         * @param stallMillis    the upstream stall threshold of a pre-response deadline, timed on the same
+         *                       {@link ManualTime}, or {@link DispatchStage#NO_UPSTREAM_STALL} for a probe without one
+         */
+        IdleProbe(long timeoutMillis, long declaredLength, OptionalLong deadlineMillis, long messageMillis,
+                long stallMillis) {
             OptionalLong deadlineNanos = deadlineMillis.isPresent()
                     ? OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis.getAsLong()))
                     : OptionalLong.empty();
@@ -1752,7 +1934,7 @@ class DispatchStageTest {
                     }, _ -> {
                         // The forwarded count feeds the retry gate, which these cases do not exercise.
                     }, new DispatchStage.IdleClock(timeoutMillis, time, time::nanoTime), deadlineNanos,
-                    new DispatchStage.IdleClock(messageMillis, time, time::nanoTime));
+                    new DispatchStage.IdleClock(messageMillis, time, time::nanoTime), stallMillis);
             capped.handler(forwarded::add);
             capped.exceptionHandler(failure::set);
             capped.endHandler(_ -> ended.set(true));

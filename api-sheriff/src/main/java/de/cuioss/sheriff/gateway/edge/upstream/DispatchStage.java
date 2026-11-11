@@ -151,7 +151,8 @@ import org.jspecify.annotations.Nullable;
  * ends the call as its own abort, never as the guard's timeout. Once the send completed — the upstream
  * answered — the bound no longer applies.
  * <p>
- * <strong>A request stream still open before the guard would fire is ended as the client's.</strong> A
+ * <strong>A request stream still open before the guard would fire is ended at the pre-response
+ * deadline — as the client's, unless the upstream had stalled it for at least the stall threshold.</strong> A
  * dispatch with a message bound and a request-body deadline arms that deadline as a pre-response deadline,
  * held to a pre-response cap. Unlike the whole-body deadline it is counted from the moment the attempt hands
  * its body to the upstream request, where the message bound starts too, so the wait for an upstream
@@ -160,12 +161,15 @@ import org.jspecify.annotations.Nullable;
  * shorter than the guard's timeout, so the deadline always passes before the guard could fire. It ends a
  * request stream that is still open when it passes — a client sending complete messages steadily, each
  * within the message bound, without ever ending its stream — as a {@link RequestBodyDeadlineExceeded}
- * ({@link EventType#REQUEST_BODY_TIMEOUT}) and resets the upstream request. Who held the stream when it passed
- * decides whose failure that is: a deadline that passes while the upstream is not taking data, so its
- * backpressure has paused the stream, ends the stream the moment the upstream takes data again — no later than a
- * client's deadline end would — as an {@link UpstreamStalledRequest}, a timeout the breaker counts and the failure
- * mapper reports as {@link EventType#UPSTREAM_TIMEOUT}; one that passes while the stream is being read is the
- * client's, however long the upstream paused it before. It stops when the attempt's send
+ * ({@link EventType#REQUEST_BODY_TIMEOUT}) and resets the upstream request. A deadline that passes while the
+ * upstream is not taking data, so its backpressure has paused the stream, ends the stream the moment the
+ * upstream takes data again — no later than a client's deadline end would — and only a sustained stall makes
+ * that the upstream's failure: when the pause has lasted, without a break, at least the upstream stall threshold
+ * at that read, the stream is ended as an {@link UpstreamStalledRequest}, a timeout the breaker counts and the
+ * failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. A shorter pause — ordinary flow control, as when
+ * a client sends faster than a healthy upstream reads — leaves the deadline the client's, and so does a deadline
+ * that passes while the stream is being read, however long the upstream paused it before. It stops when the
+ * attempt's send
  * completes, so it never runs after the hand-over and a stream the upstream has answered is never ended by
  * it. An attempt that obtains its upstream connection with less than a hand-over grace left before the cap,
  * or only once the cap has passed — the connection wait used up the guard's timeout but for the margin the
@@ -317,6 +321,12 @@ public final class DispatchStage {
     static final long NO_HAND_OVER_GRACE = 0L;
 
     /**
+     * The upstream stall threshold of a dispatch that arms no pre-response deadline — every dispatch but the gRPC
+     * one ({@link GrpcDispatchStage}): no deadline is ever charged to the upstream, so no stall is measured.
+     */
+    static final long NO_UPSTREAM_STALL = 0L;
+
+    /**
      * Fixed disposition of an attempt whose upstream connection came too close to, or past, its pre-response
      * cap.
      */
@@ -324,11 +334,11 @@ public final class DispatchStage {
             "The upstream connection was obtained too close to the pre-response cap; the request was not sent";
 
     /**
-     * Fixed disposition of an attempt whose pre-response deadline passed while the upstream was not taking its
-     * request stream.
+     * Fixed disposition of an attempt whose pre-response deadline passed while the upstream had not taken its
+     * request stream for at least the upstream stall threshold.
      */
     private static final String STALLED_BY_UPSTREAM =
-            "The upstream was not taking the request stream when its pre-response deadline passed; the upstream request was aborted";
+            "The upstream had stopped taking the request stream for at least the stall threshold when its pre-response deadline passed; the upstream request was aborted";
 
     /**
      * The retry state of the dispatch the guard is running, bound on the dispatching thread for the
@@ -344,6 +354,7 @@ public final class DispatchStage {
     private final long messageTimeoutMillis;
     private final long preResponseCapMillis;
     private final long handOverGraceMillis;
+    private final long upstreamStallMillis;
     private final UpstreamFailureMapper failureMapper;
 
     /**
@@ -387,7 +398,7 @@ public final class DispatchStage {
     public DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
         this(upstreamClients, maxBodyBytes, bodyIdleTimeoutMillis, bodyDeadlineMillis, NO_FIRST_MESSAGE_TIMEOUT,
-                NO_PRE_RESPONSE_CAP, NO_HAND_OVER_GRACE, failureMapper);
+                NO_PRE_RESPONSE_CAP, NO_HAND_OVER_GRACE, NO_UPSTREAM_STALL, failureMapper);
     }
 
     /**
@@ -423,17 +434,25 @@ public final class DispatchStage {
      *                              before the cap is refused, unsent, as an {@link UpstreamConnectionTooLate};
      *                              positive and shorter than {@code bodyDeadlineMillis} when a pre-response
      *                              deadline is armed, {@link #NO_HAND_OVER_GRACE} exactly when none is
+     * @param upstreamStallMillis   how long, in milliseconds, the upstream must have held the request stream
+     *                              without a break — its backpressure pausing the stream — when a passed
+     *                              pre-response deadline is acted on, for the deadline to be charged to the
+     *                              upstream as an {@link UpstreamStalledRequest} rather than to the client as a
+     *                              {@link RequestBodyDeadlineExceeded}; positive and shorter than
+     *                              {@code bodyDeadlineMillis} when a pre-response deadline is armed,
+     *                              {@link #NO_UPSTREAM_STALL} exactly when none is
      * @param failureMapper         the mapper turning guarded-dispatch failures into the error contract
      * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis}, {@code bodyDeadlineMillis} or
      *                                  {@code messageTimeoutMillis} is negative, a deadline is given with
      *                                  neither an idle timeout nor a message bound, a pre-response deadline
-     *                                  is given a cap shorter than itself or a grace that is not positive or
-     *                                  not shorter than itself, or a cap or a grace is given with no
-     *                                  pre-response deadline to hold
+     *                                  is given a cap shorter than itself, or a grace or a stall threshold
+     *                                  that is not positive or not shorter than itself, or a cap, a grace or
+     *                                  a stall threshold is given with no pre-response deadline to hold
      */
+    @SuppressWarnings("java:S107") // package-private test seam; every bound is a distinct fixed value the gRPC stage derives, and a holder type would only re-bundle them for this one call
     DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, long bodyIdleTimeoutMillis,
             long bodyDeadlineMillis, long messageTimeoutMillis, long preResponseCapMillis, long handOverGraceMillis,
-            UpstreamFailureMapper failureMapper) {
+            long upstreamStallMillis, UpstreamFailureMapper failureMapper) {
         if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
         }
@@ -468,6 +487,16 @@ public final class DispatchStage {
             throw new IllegalArgumentException(
                     "a hand-over grace needs a pre-response deadline to hold: " + handOverGraceMillis);
         }
+        if (preResponseDeadline && (upstreamStallMillis <= NO_UPSTREAM_STALL
+                || upstreamStallMillis >= bodyDeadlineMillis)) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a positive upstream stall threshold shorter than itself: "
+                            + upstreamStallMillis);
+        }
+        if (!preResponseDeadline && upstreamStallMillis != NO_UPSTREAM_STALL) {
+            throw new IllegalArgumentException(
+                    "an upstream stall threshold needs a pre-response deadline to hold: " + upstreamStallMillis);
+        }
         this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
         this.bodyIdleTimeoutMillis = bodyIdleTimeoutMillis;
@@ -475,6 +504,7 @@ public final class DispatchStage {
         this.messageTimeoutMillis = messageTimeoutMillis;
         this.preResponseCapMillis = preResponseCapMillis;
         this.handOverGraceMillis = handOverGraceMillis;
+        this.upstreamStallMillis = upstreamStallMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
     }
 
@@ -757,8 +787,9 @@ public final class DispatchStage {
             // leaves no snapshot and is the upstream's failure as well. An attempt released before its
             // request was sent arrives here too, as an AttemptReleasedUnsent: never a cancellation,
             // which get() would throw past this catch (see AttemptReleasedUnsent). NOSONAR java:S125 - explanatory prose, not commented-out code
-            // A reset the body stream made because the upstream held the request stream when its pre-response
-            // deadline passed is the upstream's failure instead: it is surfaced as the upstream timeout it is,
+            // A reset the body stream made because the upstream had stalled the request stream for at least the
+            // stall threshold when its pre-response deadline was acted on is the upstream's failure instead: it is
+            // surfaced as the upstream timeout it is,
             // which the guard counts. It took the stream's single abort claim, so no client abort of the body
             // stream can stand beside it, and a departure after it came too late to have caused the failure.
             UpstreamStalledRequest upstreamStall = upstreamStallAtFailure.get();
@@ -777,7 +808,10 @@ public final class DispatchStage {
         // and the edge answers 400 or 408. So is a message bound or a pre-response deadline that passed in
         // that window; both stop with the send, so neither fires after the hand-over. A pre-response deadline
         // that ended the body in that window as the upstream's stall is the upstream's timeout, read before the
-        // hand-over for the same reason: nothing can claim it once the send has completed.
+        // hand-over for the same reason: nothing can claim it once the send has completed. That window is real: the
+        // read that claims the stall may run on the inbound connection's event loop — a chunk crossing — while the
+        // answer completes the send on the upstream request's, before the reset the claim sent reaches the stream.
+        // The response is then never relayed: the attempt is released and the call ends as the upstream's timeout.
         ByteCappedBodyStream sentBody = cappedBody.get();
         UpstreamStalledRequest stalledBeforeHandOver = sentBody == null ? null : sentBody.upstreamStall();
         if (stalledBeforeHandOver != null) {
@@ -1091,7 +1125,7 @@ public final class DispatchStage {
             // stall) — see allowsRetryAfter.
             subscribed.set(true);
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
-                    request::reset, bytesSent::addAndGet, idleClock(), deadline, messageClock());
+                    request::reset, bytesSent::addAndGet, idleClock(), deadline, messageClock(), upstreamStallMillis);
             cappedBody.set(body);
             attempt.attachBody(body);
             body.startIdleClock();
@@ -1731,20 +1765,25 @@ public final class DispatchStage {
     }
 
     /**
-     * The failure of an attempt whose pre-response deadline passed while the upstream held its request stream:
-     * the upstream had stopped taking data, so its backpressure had paused the stream, when the deadline passed.
-     * The stream is ended the moment the upstream takes data again, exactly when a client's
-     * {@link RequestBodyDeadlineExceeded} would have ended it, and the attempt's upstream request is reset. The
-     * time the call ran past its deadline was spent waiting on the upstream, not on the client, so the failure is
-     * the upstream's. It is a {@link TimeoutException}, not a {@link GatewayException}: the breaker counts it as an
-     * upstream failure, and the failure mapper reports it as {@link EventType#UPSTREAM_TIMEOUT}, as the guard's
-     * own timeout would have been had the upstream taken no more data until it fired.
+     * The failure of an attempt whose pre-response deadline passed while the upstream had stalled its request
+     * stream: the upstream had stopped taking data, so its backpressure had paused the stream, and had not taken
+     * any for at least the upstream stall threshold when the deadline was acted on. The stream is ended the
+     * moment the upstream takes data again, exactly when a client's {@link RequestBodyDeadlineExceeded} would have
+     * ended it, and the attempt's upstream request is reset. The time the call ran past its deadline was spent
+     * waiting on the upstream, not on the client, so the failure is the upstream's. It is a
+     * {@link TimeoutException}, not a {@link GatewayException}: the breaker counts it as an upstream failure, and
+     * the failure mapper reports it as {@link EventType#UPSTREAM_TIMEOUT}, as the guard's own timeout would have
+     * been had the upstream taken no more data until it fired.
      * <p>
-     * <strong>Attributed by who held the stream when the deadline passed.</strong> A deadline that passes while
-     * the stream is being read is the client's {@link RequestBodyDeadlineExceeded}, however long the upstream had
-     * paused the stream earlier; one that passes while the upstream has it paused is this failure, however slowly
-     * the client sent before the pause. The moment the deadline passes is the moment the gateway's deadline timer
-     * finds it passed, which the timer's millisecond granularity places at most a few milliseconds after it.
+     * <strong>Attributed to the upstream only for a sustained stall.</strong> The deadline is acted on when the
+     * gateway's deadline timer finds it passed while the stream is being read, or, when it passed during a pause,
+     * at the read that ends the pause. It is this failure exactly when, at that moment, the stream has been paused
+     * without a break for at least the stall threshold — however slowly the client sent before the pause. A
+     * deadline that passes while the stream is being read is the client's {@link RequestBodyDeadlineExceeded},
+     * however long the upstream had paused the stream earlier, and so is one that passed during a pause shorter
+     * than the threshold. Ordinary HTTP/2 flow control pauses the stream for a few round-trips at a time, so a
+     * client that sends faster than a healthy upstream reads, and never ends its stream, keeps the deadline its
+     * own: it cannot have its own deadline counted against the upstream's breaker.
      * <p>
      * Only the pre-response deadline, which only the gRPC dispatch arms, raises it. The whole-body deadline of an
      * HTTP dispatch keeps ending a body read again after it passed as the client's
@@ -1794,9 +1833,10 @@ public final class DispatchStage {
      * </ul>
      * In the last two cases the body is ended by that read itself, which never reaches the inbound stream.
      * On a gRPC dispatch the same refusal ends a request stream still open at its pre-response deadline as
-     * long as the upstream has not answered, but only in the first case: the client was holding the stream
-     * when the deadline passed. In the second the upstream was holding it, and the read that ends the stream
-     * ends it as an {@link UpstreamStalledRequest}, the upstream's timeout, instead. The third does not arise
+     * long as the upstream has not answered, in the first case and in the second when the pause the deadline
+     * passed in is shorter than the upstream stall threshold at the read that ends it. A pause that has lasted the
+     * threshold by then was the upstream's stall, and that read ends the stream as an
+     * {@link UpstreamStalledRequest}, the upstream's timeout, instead. The third does not arise
      * there: the pre-response deadline is counted from the moment the attempt hands its body over, so the wait
      * for the connection is not counted against it, and an attempt whose connection came only after its
      * pre-response cap is ended as an {@link UpstreamConnectionTooLate}, the upstream's timeout, instead.
@@ -1954,11 +1994,15 @@ public final class DispatchStage {
      * whole-body deadline would — at once while the body is read, or at the next read when it passed while
      * the consumer had paused the stream — but {@link #stopMessageClock()} stops it as well, so it never
      * fires once the attempt's send has completed, and therefore never after the hand-over. Unlike the
-     * whole-body deadline, it is attributed by who held the stream when it passed: one that passed while the
-     * consumer had paused the stream because the upstream was not taking data is ended at the next read as the
-     * upstream's {@link UpstreamStalledRequest}, readable through {@link #upstreamStall()} and never a client
-     * abort; one that passed while the stream was being read is the client's {@link RequestBodyDeadlineExceeded},
-     * whatever pauses came before.
+     * whole-body deadline, it can be charged to the upstream, but only for a sustained stall: when it is acted
+     * on — at once when it passes while the stream is being read, at the next read when it passed during a pause
+     * — it is the upstream's {@link UpstreamStalledRequest}, readable through {@link #upstreamStall()} and never a
+     * client abort, exactly when the consumer has had the stream paused without a break, because the upstream
+     * was not taking data, for at least the upstream stall threshold at that moment. Every other passed
+     * pre-response deadline is the client's {@link RequestBodyDeadlineExceeded}: one that passes while the stream
+     * is being read, whatever pauses came before, and one that passed during a pause shorter than the threshold —
+     * the brief flow-control waits of a client sending faster than a healthy upstream reads. A resume ends the
+     * pause, so the next pause measures its stall from its own start.
      * <p>
      * Thread-safe: chunks arrive on the inbound connection's event loop, the consumer pauses and
      * resumes from either loop, and the timers fire on the loop they were scheduled from. The last
@@ -2026,12 +2070,26 @@ public final class DispatchStage {
          */
         private volatile boolean deadlinePassed;
         /**
-         * Whether a passed pre-response deadline passed while the upstream held the request stream — the consumer
-         * had paused it because the upstream was not taking data — so the body is ended as the upstream's
+         * Whether a pre-response deadline that passed during a pause by the consumer is the upstream's, decided by
+         * the read that ends that pause from the pause's length at that moment: the read's second passed-deadline
+         * check, which runs once the pause has ended, then ends the body as the upstream's
          * {@link UpstreamStalledRequest} rather than the client's {@link RequestBodyDeadlineExceeded}. Never set
          * for the whole-body deadline. Written and read holding {@link #clockLock}.
          */
         private boolean deadlinePassedHeldByUpstream;
+        /**
+         * How long, in nanoseconds, the consumer must have paused the stream without a break — the upstream not
+         * taking data — when a passed pre-response deadline is acted on, for it to be the upstream's; zero for a
+         * stream that arms no pre-response deadline.
+         */
+        private final long upstreamStallNanos;
+        /**
+         * The {@link #deadlineClock}'s reading when the current pause by the consumer began; meaningful only while
+         * {@link #pausedByConsumer} holds, and recorded only for a pre-response deadline. A pause that is already
+         * in force is not restarted by another pause; a resume ends it. Written and read holding
+         * {@link #clockLock}.
+         */
+        private long pauseStartNanos;
         private long deadlineTimer = NO_TIMER;
         /** The message clock, {@link IdleClock#UNARMED} for a body whose messages are not awaited. */
         private final IdleClock messageClock;
@@ -2132,7 +2190,7 @@ public final class DispatchStage {
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos) {
             this(delegate, maxBytes, declaredLength, abortAction, bytesForwarded, idleClock, deadlineNanos,
-                    IdleClock.UNARMED);
+                    IdleClock.UNARMED, NO_UPSTREAM_STALL);
         }
 
         /**
@@ -2155,12 +2213,18 @@ public final class DispatchStage {
          *                          timer, for the clock's timeout, is scheduled through its own scheduler
          *                          once {@link #startMessageClock()} is called and again after every
          *                          complete message
-         * @throws IllegalArgumentException when a deadline is given and neither clock is armed
+         * @param upstreamStallMillis how long, in milliseconds, the consumer must have paused the stream without
+         *                          a break when a passed pre-response deadline is acted on, for the deadline to
+         *                          be the upstream's {@link UpstreamStalledRequest}; positive when the deadline
+         *                          is a pre-response deadline, otherwise {@link #NO_UPSTREAM_STALL}, and never
+         *                          read
+         * @throws IllegalArgumentException when a deadline is given and neither clock is armed, or a pre-response
+         *                                  deadline is given without a positive upstream stall threshold
          */
-        @SuppressWarnings("java:S107") // internal stream; the three clocks are distinct per-attempt bounds built separately by the dispatch, and a holder type would only re-bundle them for this one call
+        @SuppressWarnings("java:S107") // internal stream; the three clocks and the stall threshold are distinct per-attempt bounds built separately by the dispatch, and a holder type would only re-bundle them for this one call
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos,
-                IdleClock messageClock) {
+                IdleClock messageClock, long upstreamStallMillis) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
             this.maxBytes = maxBytes;
             this.declaredLength = declaredLength;
@@ -2173,6 +2237,11 @@ public final class DispatchStage {
             if (deadlineNanos.isPresent() && !deadlineClock.armed()) {
                 throw new IllegalArgumentException("a request-body deadline needs an armed idle or message clock");
             }
+            if (preResponseDeadline() && upstreamStallMillis <= NO_UPSTREAM_STALL) {
+                throw new IllegalArgumentException(
+                        "a pre-response deadline needs a positive upstream stall threshold: " + upstreamStallMillis);
+            }
+            this.upstreamStallNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(NO_UPSTREAM_STALL, upstreamStallMillis));
             delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
         }
@@ -2221,8 +2290,8 @@ public final class DispatchStage {
 
         /**
          * @return the upstream's stall this stream aborted the upstream request for — a pre-response deadline
-         *         that passed while the upstream held the stream — or {@code null} when it did not abort it for
-         *         that
+         *         acted on while the upstream had held the stream paused for at least the stall threshold — or
+         *         {@code null} when it did not abort it for that
          */
         @Nullable
         UpstreamStalledRequest upstreamStall() {
@@ -2566,9 +2635,9 @@ public final class DispatchStage {
          * passed it ends the body: at once, by refusing it as a {@link RequestBodyDeadlineExceeded}
          * through the single abort claim — handed to the late-violation callback first when the response
          * was already handed over — or, while the consumer has paused the stream because the upstream is
-         * not taking data, the moment the body is read again. A pre-response deadline that passes during
-         * such a pause passed while the upstream held the stream, so that read ends it as the upstream's
-         * {@link UpstreamStalledRequest} instead; a whole-body deadline is ended as the client's either way.
+         * not taking data, the moment the body is read again. Whose failure a pre-response deadline that
+         * passed during such a pause is, that read decides (see {@link #claimDeadlineExpiry()}); a whole-body
+         * deadline is ended as the client's either way.
          */
         private void onDeadlineTimer() {
             @Nullable DeadlineExpiry expiry;
@@ -2584,10 +2653,8 @@ public final class DispatchStage {
                 }
                 if (pausedByConsumer) {
                     // The upstream is not taking data: the deadline stays in force, and the body is ended
-                    // the moment the consumer reads it again. A pre-response deadline — armed with the message
-                    // clock, never with the idle clock — passed while the upstream held the stream.
+                    // the moment the consumer reads it again — by the length the pause has reached then.
                     deadlinePassed = true;
-                    deadlinePassedHeldByUpstream = !idleClock.armed();
                     return;
                 }
                 expiry = claimDeadlineExpiry();
@@ -2600,7 +2667,7 @@ public final class DispatchStage {
         /**
          * Ends the body at a deadline that passed while it was not being read, now that it is read again —
          * on the same path as an expiry on time, as the upstream's {@link UpstreamStalledRequest} when it was a
-         * pre-response deadline that passed while the upstream held the stream.
+         * pre-response deadline and the upstream had held the stream for at least the stall threshold.
          *
          * @return {@code true} when this call ended the body: the read must not reach the inbound stream
          */
@@ -2624,14 +2691,18 @@ public final class DispatchStage {
 
         /**
          * Ends the deadline and takes the single abort claim for its expiry — the upstream's
-         * {@link UpstreamStalledRequest} when a pre-response deadline passed while the upstream held the stream,
-         * the client's {@link RequestBodyDeadlineExceeded} otherwise; called holding {@link #clockLock}, so the
-         * claim and the choice of the late-violation callback are made together with the hand-over.
+         * {@link UpstreamStalledRequest} when it is a pre-response deadline and the upstream has held the stream
+         * without a break for at least the stall threshold at this moment, the moment the deadline is acted on;
+         * the client's {@link RequestBodyDeadlineExceeded} otherwise. A pause shorter than the threshold —
+         * ordinary flow control, a client sending faster than a healthy upstream reads — leaves the deadline the
+         * client's, as does a deadline that passes while the stream is being read. Called holding
+         * {@link #clockLock}, so the claim and the choice of the late-violation callback are made together with
+         * the hand-over.
          *
          * @return the expiry to carry out, or {@code null} when another abort was claimed first
          */
         private @Nullable DeadlineExpiry claimDeadlineExpiry() {
-            Exception reason = deadlinePassedHeldByUpstream
+            Exception reason = deadlinePassedHeldByUpstream || upstreamStalledPastThreshold()
                     ? new UpstreamStalledRequest()
                     : new RequestBodyDeadlineExceeded();
             deadlineEnded = true;
@@ -2680,22 +2751,53 @@ public final class DispatchStage {
             return idleClock.armed() || messageClock.armed();
         }
 
-        /** The consumer paused the stream: no gap is counted until it resumes. */
+        /**
+         * @return {@code true} when the request-body deadline is a pre-response deadline: armed with the message
+         *         clock because no idle clock is — the only deadline that can be charged to the upstream
+         */
+        private boolean preResponseDeadline() {
+            return deadlineNanos.isPresent() && !idleClock.armed();
+        }
+
+        /**
+         * @return {@code true} when the stream's pre-response deadline is the upstream's to answer for: the
+         *         consumer has the stream paused — the upstream is not taking data — and has had it paused without
+         *         a break for at least the stall threshold; called holding {@link #clockLock}
+         */
+        private boolean upstreamStalledPastThreshold() {
+            return pausedByConsumer && preResponseDeadline()
+                    && deadlineClock.nanoTime().getAsLong() - pauseStartNanos >= upstreamStallNanos;
+        }
+
+        /**
+         * The consumer paused the stream: no gap is counted until it resumes. A pause already in force keeps the
+         * moment it began, so the stall it measures is the whole unbroken pause.
+         */
         private void suspendClocks() {
             if (!tracksPause()) {
                 return;
             }
             synchronized (clockLock) {
+                if (!pausedByConsumer && preResponseDeadline()) {
+                    pauseStartNanos = deadlineClock.nanoTime().getAsLong();
+                }
                 pausedByConsumer = true;
             }
         }
 
-        /** The consumer resumed the stream: every gap restarts from now, and its timer is pending again. */
+        /**
+         * The consumer resumed the stream: every gap restarts from now, and its timer is pending again. A deadline
+         * that passed during the pause now ending is decided by the pause's length first, as the pause ends, for
+         * the read's second passed-deadline check to act on; the next pause measures its stall from its own start.
+         */
         private void resumeClocks() {
             if (!tracksPause()) {
                 return;
             }
             synchronized (clockLock) {
+                if (deadlinePassed) {
+                    deadlinePassedHeldByUpstream = upstreamStalledPastThreshold();
+                }
                 pausedByConsumer = false;
                 resumeMessageClock();
                 if (!idleClock.armed() || !clockStarted || clockStopped) {
