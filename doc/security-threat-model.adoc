@@ -1370,11 +1370,18 @@ refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
 * *The request thread never fetches.* The lookup that triggered the refresh is answered from the key
   sets held at that moment, so the flood ties up no request thread on the identity provider's
   latency. The refresh is started from a scheduler, never from a request thread.
-* *A flood cannot evict valid keys.* A refreshed key set replaces the loaded one only when it holds
-  the key id that triggered the refresh. A refresh triggered by an invented key id is discarded, so
-  it displaces neither the loaded key set nor a replaced one still inside its key-rotation grace
-  period, and it cannot end that grace period early. A failed refresh changes nothing either and
-  does not start the failed-load retry.
+* *A flood cannot evict valid keys.* A refreshed key set replaces the loaded one only when its key
+  ids include one the loaded set lacks, compared when the refresh settles; the per-case rule is
+  recorded once, in
+  link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc#_publish_rule[ADR-0063, the publish rule].
+  An unchanged, shrunk or empty key set is discarded, so a flood against an unchanged identity
+  provider displaces neither the loaded key set nor a replaced one still inside its key-rotation
+  grace period, and moves no grace deadline. A refresh triggered by an invented key id *can* be
+  published, but only when the key set the identity provider serves has genuinely gained a key id,
+  and then at most once per issuer per window, because the claim bound above is unchanged. Such a
+  publication retires the loaded key set for its grace period and closes an older replaced one, as
+  every publication does. A failed refresh changes nothing and does not start the failed-load
+  retry.
 
 * *A clock step moves neither bound.* The window and the grace deadline of
   `jwks.key_rotation_grace_period_seconds` (`0`-`3600`) are durations the gateway enforces, so both
@@ -1396,29 +1403,34 @@ do to every other JWKS fetch. A `file`-sourced issuer has nothing to fetch and s
 *Residual (accepted).* Two limits remain. Within one window after an abrupt key change, tokens signed
 with the new key are rejected: the request that triggers the refresh is itself rejected (the
 unrouted `404` on the shipped default, `401` with `security_defaults.uniform_not_found: false`), and
-when the window was already claimed the next refresh waits for it to pass. And a caller who keeps
-presenting invented key ids can claim an issuer's window ahead of legitimate tokens. The refresh such
-a claim triggers is discarded even when the key set it fetched holds a newly rotated key, so for as
-long as that caller wins the claim, the new key is picked up only by a window a token signed with it
-claims or, at the latest, by the background refresh. In that worst case the gateway behaves as it
-would without the on-demand refresh; the flood buys a delay of the rotation pick-up bounded by
-`jwks.refresh_interval_seconds`, never the acceptance of a token and never the loss of a key that
-was valid. Closing this residual exactly requires the refresh to compare the key ids the fetched key
-set holds with those of the current one. The token library exposes them since 0.9.7
-(`JwksLoader.getKeyIds()`), but the refresh does not use them: it publishes a fetched key set only
-when that set resolves the key id that triggered it. A replaced key set is closed only when its grace period ends, so until then its loader
-keeps running its own background refresh beside the current one; at most one replaced key set is
-held per issuer.
+when a window claimed before the identity provider published its new key is still running, the next
+refresh waits for it to pass. A claim by an invented key id does not delay the pick-up of a key the
+identity provider already serves: whichever key id claims the window, its refresh publishes a key set
+that gained a key id. And a caller presenting invented key ids can bring forward -- never cause --
+the end of an older replaced key set's grace period: a publication their refresh triggers closes that
+older key set, but only when the identity provider's served key set genuinely changed, and at most
+once per issuer per window. An identity provider whose replicas serve diverging key sets looks like
+one that keeps changing, so alternating answers can cause at most one publication per window. None
+of this accepts a token that is not validly signed. A replaced key set is closed only when its grace
+period ends, so until then its loader keeps running its own background refresh beside the current
+one; at most one replaced key set is held per issuer.
 
 *Status of this control:* COVERED. `RetryingJwksLoaderTest` drives the window, the discarded and the
 published refresh, the grace period, steps of the wall clock in both directions and the record with
-controlled clocks and scheduler, and
+controlled clocks and scheduler. It pins the publish rule case by case: an invented key id publishes
+a rotated key set, a superset is published, a key set equal to the loaded one -- under a flood of
+invented key ids as well -- a set that only drops key ids and an empty set are discarded, and a
+populated set is published over a loaded one that reports no key id.
 `TokenValidationRulesJwksRefreshTest` pins the 5 s floor. Against the native image, `JwksKeyRotationIT`
 sends 200 requests naming 200 distinct invented key ids over more than one window and asserts that
 the identity provider recorded no more key-set requests, and the gateway no more `ApiSheriff-136`
 records, than `floor(elapsed / window) + 1`, and that a token signed with the current key and one
-signed with the replaced key are both still accepted afterwards. That suite runs a 5 s window and
-does not prove the 30 s default, the expiry of the grace period, or a refresh whose fetch fails.
+signed with the replaced key are both still accepted afterwards. Its combined leg then replaces the
+key and presents a single token naming an invented key id: the identity provider records exactly one
+key-set request, a token signed with the new key is accepted inside the window that invented key id
+claimed, and a token signed with the key just replaced is still accepted. That suite runs a 5 s
+window and does not prove the 30 s default, the expiry of the grace period, or a refresh whose fetch
+fails.
 
 [#gw-07-upstream-ports]
 *A client's uploads cannot use up the gateway's local ports through the gateway's own upstream
@@ -4670,7 +4682,7 @@ outstanding hardening work (next section).
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on the mapped egress TLS clients) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
-| <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
+| <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when its key ids include one the loaded set lacks, compared at settle time (an equal, shrunk or empty set discarded); the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED (an invented key id can bring forward the end of an older replaced key set's grace period on a real key-set change, at most once per issuer per window, accepted)
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose client still holds its request stream open 25 s after its attempt handed the body over, never later than 29 s after the attempt started, ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, neither counted by the breaker as a failure; one whose upstream connection wait leaves less than the 1 s hand-over grace before that 29 s cap, or reaches it, ends unsent as the upstream's `UPSTREAM_TIMEOUT`, counted by the breaker, so a dispatched call always has at least the grace to deliver an end its client already sent; the guard's 30 s timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection or stream-slot wait that lasts the 30 s, or by an upstream that stops taking data mid-request and takes no more within the 30 s -- while that backpressure pauses the request stream the message bound is not counted, and the pre-response deadline keeps counting but ends the call only once the upstream takes data again, then as the upstream's `UPSTREAM_TIMEOUT` (`UpstreamStalledRequest`), counted by the breaker, only when the upstream had held the stream paused without a break for at least the fixed 10 s stall threshold, and as the client's `REQUEST_BODY_TIMEOUT` after a shorter, flow-control pause -- so a client out-sending a healthy upstream cannot open its breaker; one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)

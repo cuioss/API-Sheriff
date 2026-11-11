@@ -1009,7 +1009,7 @@ class RetryingJwksLoaderTest {
             drainScheduler(Duration.ZERO);
 
             // Assert — the rotated key set gains a key id the loaded one lacks, so it is published
-            // although it does not hold the key id that triggered the refresh
+            // although the key id that triggered the refresh is not among its key ids
             assertTrue(triggering.isEmpty(), "the lookup that triggers a refresh never waits for it");
             assertEquals(Set.of(ROTATED_KEY_ID), loader.getKeyIds(), "the rotated key set is the published one");
             assertEquals(2, built.size(), "the first delegate and exactly one refresh");

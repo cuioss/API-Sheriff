@@ -296,16 +296,18 @@ When the issuer's key set is loaded, the lookup also tries to claim the issuer's
   request thread, unless an earlier window's refresh is still running. The request is still rejected.
 * *Further unknown key ids in the window* -- schedule nothing; logged at `DEBUG`. The window is
   claimed on arrival, so the bound holds regardless of refresh outcome, rate or number of key ids.
-* *The refresh replaces the key set only if it holds the triggering key id.* Otherwise (or on
-  failure) nothing changes.
+* *The refresh replaces the key set only if it holds a key id the current set lacks.* An unchanged,
+  shrunk or empty key set, or a failed refresh, changes nothing. The key id that triggered the
+  refresh plays no part; the rule and its cases are recorded in
+  link:../adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc#_publish_rule[ADR-0063, the publish rule].
 * *A replaced key set stays in service for the grace period*, then is dropped. At most one replaced
   key set is held per issuer; a second replacement inside the grace period drops the older one.
 
-A token signed with a new key is accepted once a refresh it triggered has loaded the key: after the
-fetch when the window was free, after at most one further window otherwise. A rejected client
-succeeds by retrying. A refresh triggered by a key id the IdP never published is discarded even if
-it fetched a newly rotated key; that key is picked up by the next claimed window or the background
-refresh. BFF ID tokens from an issuer declared here recover the same way.
+A token signed with a new key is accepted once a claimed refresh has loaded the key: after the fetch
+when the window was free, after at most one further window otherwise. A rejected client
+succeeds by retrying. Any claimed refresh picks up a key the IdP already serves, whichever key id
+triggered it, even one the IdP never published. BFF ID tokens from an issuer declared here recover
+the same way.
 
 *`ApiSheriff-136` signals a stalled rotation* (readiness stays `UP`). It names the issuer's `name` and
 the instant the gateway's own loader last loaded that issuer's key set (first load, retry or
