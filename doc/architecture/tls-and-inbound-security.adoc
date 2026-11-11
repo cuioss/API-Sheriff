@@ -204,13 +204,14 @@ a fixed 25 s deadline from the start of the upstream attempt (including pool wai
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[ADR-0060]).
 Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`); expiry after the
 response head preserves the upstream status and resets/closes the stream. A `protocol: grpc` call is
-bounded by the same deadline too, but only until its upstream answers, and the end is rendered to its
-client as `DEADLINE_EXCEEDED` (<<_grpc_message_bound>>).
+bounded by a deadline of the same length too, but counted from the hand-over and only until its upstream
+answers, and the end is rendered to its client as `DEADLINE_EXCEEDED` (<<_grpc_message_bound>>).
 
 [[_grpc_message_bound]]
-*gRPC message bound (10 s) and pre-response deadline (25 s).* A `protocol: grpc` call ends as an
-upstream failure only when the upstream had everything the client was going to send: time the client
-holds its request open is the client's. The forced-HTTP/2 upstream request head is written only with
+*gRPC message bound (10 s) and pre-response deadline (25 s, capped at 29 s).* A `protocol: grpc` call
+ends as an upstream failure only when the upstream had everything the client was going to send, or never
+gave the client the time to send it: time the client holds its request open is the client's, time spent
+reaching the upstream is the upstream's. The forced-HTTP/2 upstream request head is written only with
 the first request body chunk, and an upstream cannot act on a request message it holds only part of,
 so until the upstream answers the request side of a call is bounded twice
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-message-bound[ADR-0060]):
@@ -224,22 +225,28 @@ so until the upstream answers the request side of a call is bounded twice
   request stream — the upstream request is reset and the call ends as the client's abort,
   `DispatchStage.RequestMessageTimeout` (`INBOUND_BODY_ABORTED`, disposition `client-idle`, rendered
   `INVALID_ARGUMENT`).
-* *The pre-response deadline*, `GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS` (25 s), counted
-  from the start of the attempt like the guard's timeout and equal to the request-body deadline. A
-  client that keeps sending complete messages, each within the message bound, without ever ending its
-  request stream is ended there: the upstream request is reset and the call ends as
-  `DispatchStage.RequestBodyDeadlineExceeded` (`REQUEST_BODY_TIMEOUT`, `408`), rendered trailers-only
-  as `DEADLINE_EXCEEDED` with `grpc-message: input-validation`.
+* *The pre-response deadline*, `GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS` (25 s, equal to
+  the request-body deadline), counted like the message bound from the hand-over, so neither bound
+  charges the wait for an upstream connection to the client. A client that keeps sending complete
+  messages, each within the message bound, without ever ending its request stream is ended there: the
+  upstream request is reset and the call ends as `DispatchStage.RequestBodyDeadlineExceeded`
+  (`REQUEST_BODY_TIMEOUT`, `408`), rendered trailers-only as `DEADLINE_EXCEEDED` with
+  `grpc-message: input-validation`.
 
 Both stop when the upstream answers, when the request stream ends, on any abort and when the attempt
 ends, so a bidirectional stream the upstream has answered is bounded by neither. Neither counts as a
-failure for the circuit breaker, and neither is retried. Both are fixed and below the 30 s upstream
-guard timeout. An HTTP dispatch arms neither; it keeps the idle timeout and the whole-body deadline
-above. The guard's timeout is therefore reached only by an
-upstream holding a complete, half-closed request — or by an attempt whose wait for an upstream
-connection consumed the margin between the message bound and the guard's timeout. The guard counts
-that wait, and so does the pre-response deadline, counted from the start of the attempt; only the
-message bound does not. That call ends as an upstream timeout, which the circuit breaker counts.
+failure for the circuit breaker, and neither is retried. Both are fixed. An HTTP dispatch arms neither;
+it keeps the idle timeout and the whole-body deadline above. Because the 30 s guard timeout runs from
+the start of the attempt and so counts the connection wait, the pre-response deadline is held to
+`GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS`, 29 s from the start of the attempt: a hand-over within
+the first 4 s keeps the whole 25 s, a later one has its deadline at the cap, so a client still holding
+its stream open is always ended as the client's a second before the guard. A client that has ended its
+stream is never ended by the deadline, however long the connection took; if the upstream then does not
+answer, the guard ends the call as `UPSTREAM_TIMEOUT`, which the circuit breaker counts. An attempt that
+obtains its connection only once the cap has passed is ended at once, its request unsent and its body
+unread, as `DispatchStage.UpstreamConnectionTooLate` — the same `UPSTREAM_TIMEOUT`, counted by the
+breaker. The guard's timeout is therefore reached only by an upstream holding a complete, half-closed
+request.
 
 [[_grpc_stream_idle_bound]]
 *gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages, a

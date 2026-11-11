@@ -51,8 +51,9 @@ A pre-route-floor inbound-filter violation and `PARAMETER_LIMIT_EXCEEDED`, which
 [[grpc-pre-response-deadline]]
 === Amendment: the gRPC pre-response deadline end maps `408` to `DEADLINE_EXCEEDED`
 
-A gRPC call whose request stream is still open 25 s after its attempt started, before its upstream
-answered, is ended by the gateway's pre-response deadline as `REQUEST_BODY_TIMEOUT`, `408`
+A gRPC call whose request stream is still open 25 s after its attempt handed the body over — never later
+than 29 s after the attempt started — before its upstream answered, is ended by the gateway's
+pre-response deadline as `REQUEST_BODY_TIMEOUT`, `408`
 (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-message-bound[ADR-0060]).
 The table had no `408` row, so that end would have rendered as `UNKNOWN` (2), a status that tells the
 client nothing. `408` now maps to `DEADLINE_EXCEEDED` (4):

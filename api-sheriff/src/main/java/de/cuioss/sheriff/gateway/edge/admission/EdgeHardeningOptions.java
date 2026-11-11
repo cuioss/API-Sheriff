@@ -60,8 +60,9 @@ import io.vertx.core.http.HttpServerOptions;
  * when the guard would end the attempt, is ended and attributed to the request before the guard would
  * end it as an upstream timeout. A bodyless request is watched by neither. A gRPC route is not watched
  * by the idle timeout — its message bound ends a client idle between request messages instead — and its
- * pre-response deadline in {@code GrpcDispatchStage} equals the request-body deadline but stops once the
- * upstream answers.
+ * pre-response deadline in {@code GrpcDispatchStage} equals the request-body deadline in length, but is
+ * counted from the moment the attempt hands its body over, is held to a cap one second short of the
+ * guard's timeout, and stops once the upstream answers.
  * <p>
  * <strong>The inbound HTTP/2 concurrent streams and connection window are transport bounds too.</strong>
  * A listener admits at most 100 concurrent streams per connection (the Vert.x listener default): a listener announcing more, or announcing no limit at all, is lowered to that bound, and

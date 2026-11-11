@@ -56,13 +56,16 @@ public final class UpstreamGuards {
      * counted from the start of the attempt like this timeout, so a body still arriving when this timeout
      * would end the attempt is ended as the request's first. So are the two request bounds of a gRPC call,
      * the message bound ({@link GrpcDispatchStage#GRPC_MESSAGE_TIMEOUT_MILLIS}) and the pre-response
-     * deadline ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_DEADLINE_MILLIS}): a gRPC call whose client does
-     * not send its next complete request message in time, or still holds its request stream open at the
-     * deadline, is ended as the client's abort ({@link DispatchStage.RequestMessageTimeout} or
-     * {@link DispatchStage.RequestBodyDeadlineExceeded}) before this timeout could end it as the upstream's,
-     * unless waiting for an upstream connection, which this timeout counts and the message bound does not,
-     * used up the difference. On a gRPC call this timeout is therefore reached only once the request stream
-     * has ended: it bounds an upstream holding a complete, half-closed request.
+     * deadline ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_DEADLINE_MILLIS}), both counted from the moment the
+     * attempt hands its body over and the deadline held to the pre-response cap
+     * ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_CAP_MILLIS}), one second short of this timeout: a gRPC call
+     * whose client does not send its next complete request message in time, or still holds its request
+     * stream open at the deadline, is ended as the client's abort ({@link DispatchStage.RequestMessageTimeout}
+     * or {@link DispatchStage.RequestBodyDeadlineExceeded}) before this timeout could end it as the upstream's.
+     * The wait for an upstream connection is counted by this timeout alone, and an attempt whose wait reaches
+     * the cap is ended as the upstream's timeout ({@link DispatchStage.UpstreamConnectionTooLate}) without its
+     * body being read. On a gRPC call this timeout is therefore reached only once the request stream has
+     * ended: it bounds an upstream holding a complete, half-closed request.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 
@@ -94,9 +97,10 @@ public final class UpstreamGuards {
      * nested inside the retry, so a route that enables retry gives each of up to three attempts (two
      * retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The request-body idle
      * timeout, the request-body deadline and the gRPC message bound and pre-response deadline are shorter,
-     * so a body the gateway is still waiting for ends as the request's (for the gRPC message bound, unless
-     * an upstream connection wait used up the difference), and the timeout ends an attempt the upstream
-     * holds up — on a gRPC call, one whose request stream has ended.
+     * so a body the gateway is still waiting for ends as the request's, and the timeout ends an attempt the
+     * upstream holds up — on a gRPC call, one whose request stream has ended, or one whose connection wait
+     * reached the pre-response cap, which the gRPC dispatch ends a moment earlier as the same upstream
+     * timeout.
      *
      * @param shape the resilience shape the guard is built for
      * @return the new guard

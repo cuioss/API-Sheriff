@@ -263,19 +263,25 @@ answers, the time a client holds its request stream open is the client's, and tw
 it as the client's own abort, which the upstream's circuit breaker does not count as a failure:
 
 * *One complete request message every 10 s.* Each request message must arrive whole -- its 5-byte
-  length prefix and every payload byte the prefix declares -- within 10 s of the attempt's start or of
-  the message before it, until the client ends its request stream. Part of a message does not count.
-  A call that sends nothing, only part of a message, or stops between two messages without ending its
-  stream is ended with `grpc-status: 3` (`INVALID_ARGUMENT`; `INBOUND_BODY_ABORTED`).
-* *The request stream ended within 25 s.* A call whose request stream is still open 25 s after its
-  attempt started -- however steadily it sends -- is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`)
-  and `grpc-message: input-validation` (`REQUEST_BODY_TIMEOUT`). A client-streaming call that the
-  upstream answers only after the client ends its stream must therefore end its stream within 25 s.
+  length prefix and every payload byte the prefix declares -- within 10 s of the moment the gateway
+  hands the call to the upstream or of the message before it, until the client ends its request
+  stream. Part of a message does not count. A call that sends nothing, only part of a message, or
+  stops between two messages without ending its stream is ended with `grpc-status: 3`
+  (`INVALID_ARGUMENT`; `INBOUND_BODY_ABORTED`).
+* *The request stream ended within 25 s.* A call whose request stream is still open 25 s after the
+  gateway handed it to the upstream -- however steadily it sends -- is ended with `grpc-status: 4`
+  (`DEADLINE_EXCEEDED`) and `grpc-message: input-validation` (`REQUEST_BODY_TIMEOUT`). A
+  client-streaming call that the upstream answers only after the client ends its stream must therefore
+  end its stream within 25 s. Waiting for the upstream connection does not count against the client,
+  but the deadline never passes later than 29 s after the gateway started the attempt, a second before
+  the upstream guard's timeout, so behind a slow connection the client has less than 25 s.
 
 Both bounds stop as soon as the upstream sends its response headers. The upstream guard's 30 s
 timeout runs from the start of the attempt and ends a call whose upstream holds the complete,
-half-closed request and does not answer; that call ends with `DEADLINE_EXCEEDED` and
-`grpc-message: upstream`, and the breaker counts it. After the response headers, a client-streaming
+half-closed request and does not answer, however long its connection took; that call ends with
+`DEADLINE_EXCEEDED` and `grpc-message: upstream`, and the breaker counts it. So does a call whose
+upstream connection took 29 s: it is ended without being sent, a second before the guard would end it
+the same way. After the response headers, a client-streaming
 or bidirectional call may pause between its messages: the call stays open while a frame travels in
 either direction, and a call that carries no frame for five minutes is ended with `grpc-status: 4`
 (`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout` in place of the upstream's trailers.

@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -115,8 +116,8 @@ import org.jspecify.annotations.Nullable;
  * {@link #NO_BODY_IDLE_TIMEOUT} never arms the clock.
  * <p>
  * <strong>A body that does not end in time is ended at the request-body deadline.</strong> A dispatch
- * constructed with a request-body deadline also bounds how long it waits for the whole body. The
- * deadline is counted from the start of the attempt — the moment the guard's timeout, which bounds each
+ * constructed with a request-body deadline and a request-body idle timeout also bounds how long it waits
+ * for the whole body. This whole-body deadline is counted from the start of the attempt — the moment the guard's timeout, which bounds each
  * attempt rather than the whole dispatch, starts too — and is shorter than that timeout. When it passes
  * while the gateway is still waiting for body bytes, the attempt's upstream request is reset and the body
  * is refused as a {@link RequestBodyDeadlineExceeded} ({@link EventType#REQUEST_BODY_TIMEOUT},
@@ -151,14 +152,24 @@ import org.jspecify.annotations.Nullable;
  * answered — the bound no longer applies.
  * <p>
  * <strong>A request stream still open before the guard would fire is ended as the client's.</strong> A
- * dispatch with a message bound and a request-body deadline arms that deadline as a pre-response deadline:
- * counted from the start of the attempt, like the whole-body deadline, it ends a request stream that is
- * still open when it passes — a client sending complete messages steadily, each within the message bound,
- * without ever ending its stream — as a {@link RequestBodyDeadlineExceeded}
- * ({@link EventType#REQUEST_BODY_TIMEOUT}) and resets the upstream request. It stops when the attempt's
- * send completes, so it never runs after the hand-over and a stream the upstream has answered is never
- * ended by it. A dispatch constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — arms
- * neither the message bound nor the pre-response deadline.
+ * dispatch with a message bound and a request-body deadline arms that deadline as a pre-response deadline,
+ * held to a pre-response cap. Unlike the whole-body deadline it is counted from the moment the attempt hands
+ * its body to the upstream request, where the message bound starts too, so the wait for an upstream
+ * connection, which the guard's timeout counts, is never charged to the client. It passes at the earlier of
+ * two moments: the deadline after that hand-over, and the cap after the start of the attempt — the cap is
+ * shorter than the guard's timeout, so the deadline always passes before the guard could fire. It ends a
+ * request stream that is still open when it passes — a client sending complete messages steadily, each
+ * within the message bound, without ever ending its stream — as a {@link RequestBodyDeadlineExceeded}
+ * ({@link EventType#REQUEST_BODY_TIMEOUT}) and resets the upstream request. A client that has ended its
+ * stream is not ended by it, however long the connection took: the guard's timeout then ends a call the
+ * upstream does not answer, as the upstream's. It stops when the attempt's send completes, so it never runs
+ * after the hand-over and a stream the upstream has answered is never ended by it. An attempt that obtains
+ * its upstream connection only once the cap has passed — the connection wait used up the guard's timeout but
+ * for the margin the cap leaves — gives its client no time to send anything: it is refused at once, before
+ * its request is sent or a byte of its body is read, as an {@link UpstreamConnectionTooLate}, a timeout the
+ * breaker counts and the failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. A dispatch
+ * constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — arms neither the message bound
+ * nor the pre-response deadline.
  * <p>
  * The dispatch is awaited synchronously on the caller's virtual thread inside the guard so the
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
@@ -284,6 +295,16 @@ public final class DispatchStage {
     static final long NO_FIRST_MESSAGE_TIMEOUT = NO_BODY_IDLE_TIMEOUT;
 
     /**
+     * The pre-response cap of a dispatch that arms no pre-response deadline — every dispatch but the gRPC
+     * one ({@link GrpcDispatchStage}), whose request-body deadline, if any, is the whole-body deadline.
+     */
+    static final long NO_PRE_RESPONSE_CAP = 0L;
+
+    /** Fixed disposition of an attempt whose upstream connection came only after its pre-response cap. */
+    private static final String CONNECTION_TOO_LATE =
+            "The upstream connection was obtained only after the pre-response cap; the request was not sent";
+
+    /**
      * The retry state of the dispatch the guard is running, bound on the dispatching thread for the
      * duration of its guard call. The guard is shared by every route of one resilience shape, so this
      * is how its retry predicate learns which dispatch failed.
@@ -295,6 +316,7 @@ public final class DispatchStage {
     private final long bodyIdleTimeoutMillis;
     private final long bodyDeadlineMillis;
     private final long messageTimeoutMillis;
+    private final long preResponseCapMillis;
     private final UpstreamFailureMapper failureMapper;
 
     /**
@@ -338,7 +360,7 @@ public final class DispatchStage {
     public DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
         this(upstreamClients, maxBodyBytes, bodyIdleTimeoutMillis, bodyDeadlineMillis, NO_FIRST_MESSAGE_TIMEOUT,
-                failureMapper);
+                NO_PRE_RESPONSE_CAP, failureMapper);
     }
 
     /**
@@ -349,28 +371,38 @@ public final class DispatchStage {
      *                              connection may go without request-body progress before it is ended as
      *                              {@link EventType#REQUEST_BODY_TIMEOUT}, or {@link #NO_BODY_IDLE_TIMEOUT}
      *                              when the body is not watched
-     * @param bodyDeadlineMillis    how long, in milliseconds from the start of its attempt, a body-carrying
-     *                              dispatch may wait before it is ended as a
-     *                              {@link RequestBodyDeadlineExceeded}, or {@link #NO_BODY_DEADLINE} when it
-     *                              is not bounded in time. With an armed idle timeout it is the whole-body
-     *                              deadline, which keeps running after the response head until the body
-     *                              ends; with an armed message bound and no idle timeout it is the
-     *                              pre-response deadline, which stops when the attempt's send completes. It
-     *                              shares the timer seam of the clock it is armed with, so it needs one of
-     *                              the two
+     * @param bodyDeadlineMillis    how long, in milliseconds, a body-carrying dispatch may wait before it is
+     *                              ended as a {@link RequestBodyDeadlineExceeded}, or
+     *                              {@link #NO_BODY_DEADLINE} when it is not bounded in time. With an armed
+     *                              idle timeout it is the whole-body deadline, counted from the start of the
+     *                              attempt, which keeps running after the response head until the body ends;
+     *                              with an armed message bound and no idle timeout it is the pre-response
+     *                              deadline, counted from the moment the attempt hands its body to the
+     *                              upstream request, held to {@code preResponseCapMillis}, and stopped when
+     *                              the attempt's send completes. It shares the timer seam of the clock it is
+     *                              armed with, so it needs one of the two
      * @param messageTimeoutMillis  how long, in milliseconds, a body-carrying attempt may wait for each
      *                              complete gRPC request message — the first counted from the moment the
      *                              attempt hands its body to the upstream request, every further one from
      *                              the message before it — before it is ended as a
      *                              {@link RequestMessageTimeout}, or {@link #NO_FIRST_MESSAGE_TIMEOUT} when
      *                              that wait is not bounded
+     * @param preResponseCapMillis  the latest the pre-response deadline passes, in milliseconds from the
+     *                              start of the attempt, and the moment from which an attempt that only then
+     *                              obtains its upstream connection is refused as an
+     *                              {@link UpstreamConnectionTooLate}; shorter than the guard's timeout and no
+     *                              shorter than {@code bodyDeadlineMillis}. {@link #NO_PRE_RESPONSE_CAP}
+     *                              exactly when no pre-response deadline is armed
      * @param failureMapper         the mapper turning guarded-dispatch failures into the error contract
      * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis}, {@code bodyDeadlineMillis} or
-     *                                  {@code messageTimeoutMillis} is negative, or a deadline is given
-     *                                  with neither an idle timeout nor a message bound
+     *                                  {@code messageTimeoutMillis} is negative, a deadline is given with
+     *                                  neither an idle timeout nor a message bound, a pre-response deadline
+     *                                  is given a cap shorter than itself, or a cap is given with no
+     *                                  pre-response deadline to hold
      */
     DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, long bodyIdleTimeoutMillis,
-            long bodyDeadlineMillis, long messageTimeoutMillis, UpstreamFailureMapper failureMapper) {
+            long bodyDeadlineMillis, long messageTimeoutMillis, long preResponseCapMillis,
+            UpstreamFailureMapper failureMapper) {
         if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
         }
@@ -385,11 +417,22 @@ public final class DispatchStage {
             throw new IllegalArgumentException(
                     "a request-body deadline needs a request-body idle timeout or a message bound");
         }
+        boolean preResponseDeadline = bodyDeadlineMillis != NO_BODY_DEADLINE
+                && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT;
+        if (preResponseDeadline && preResponseCapMillis < bodyDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a cap no shorter than itself: " + preResponseCapMillis);
+        }
+        if (!preResponseDeadline && preResponseCapMillis != NO_PRE_RESPONSE_CAP) {
+            throw new IllegalArgumentException(
+                    "a pre-response cap needs a pre-response deadline to hold: " + preResponseCapMillis);
+        }
         this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
         this.bodyIdleTimeoutMillis = bodyIdleTimeoutMillis;
         this.bodyDeadlineMillis = bodyDeadlineMillis;
         this.messageTimeoutMillis = messageTimeoutMillis;
+        this.preResponseCapMillis = preResponseCapMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
     }
 
@@ -939,12 +982,15 @@ public final class DispatchStage {
          * counted — and stops it as soon as the attempt's send completes, whether its response arrived
          * or the send failed. The clock therefore never runs once the response is handed over. The
          * message clock is armed and stopped at the same two moments. The request-body deadline is armed
-         * at the same moment, counted from the start of {@code attempt}: armed with the idle clock it keeps
-         * running after the send completed, until the body ends; armed with the message clock — the gRPC
-         * pre-response deadline — it stops with that clock when the send completes. The body is attached
-         * to {@code attempt} before any of them is armed, so an attempt the dispatch no longer waits for
-         * stops them all. Every timer is scheduled through the Vert.x instance owning the context this
-         * callback runs on, the upstream request's own.
+         * at the same moment. Armed with the idle clock — the whole-body deadline — it is counted from the
+         * start of {@code attempt} and keeps running after the send completed, until the body ends. Armed
+         * with the message clock — the gRPC pre-response deadline — it is counted from now, the hand-over,
+         * passes no later than the pre-response cap after the start of {@code attempt}, and stops with
+         * that clock when the send completes; when the cap has already passed, the request is reset unsent
+         * and the send fails as an {@link UpstreamConnectionTooLate} instead, before the inbound stream is
+         * subscribed. The body is attached to {@code attempt} before any clock is armed, so an attempt the
+         * dispatch no longer waits for stops them all. Every timer is scheduled through the Vert.x instance
+         * owning the context this callback runs on, the upstream request's own.
          *
          * @throws IllegalStateException when the idle clock or the message clock is to be armed and no
          *                               Vert.x context is current — the send callback always runs on one
@@ -962,6 +1008,14 @@ public final class DispatchStage {
                 // keeps treating the attempt as bodyless.
                 return request.send();
             }
+            long handOverNanos = System.nanoTime();
+            OptionalLong deadline = bodyDeadlineOf(attempt, handOverNanos);
+            if (preResponseCapMillis != NO_PRE_RESPONSE_CAP && deadline.orElseThrow() - handOverNanos <= 0) {
+                // The connection wait used up the pre-response cap: the client was given no time to send,
+                // so the attempt ends as the upstream's timeout, its request unsent and its body unread.
+                request.reset();
+                return Future.failedFuture(new UpstreamConnectionTooLate());
+            }
             if (declaredLength >= 0) {
                 request.putHeader(CONTENT_LENGTH, Long.toString(declaredLength));
             }
@@ -970,7 +1024,7 @@ public final class DispatchStage {
             // stall) — see allowsRetryAfter.
             subscribed.set(true);
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
-                    request::reset, bytesSent::addAndGet, idleClock(), bodyDeadlineOf(attempt), messageClock());
+                    request::reset, bytesSent::addAndGet, idleClock(), deadline, messageClock());
             cappedBody.set(body);
             attempt.attachBody(body);
             body.startIdleClock();
@@ -1021,14 +1075,26 @@ public final class DispatchStage {
         }
 
         /**
+         * @param attempt       the attempt handing its body over
+         * @param handOverNanos the {@link System#nanoTime()} reading of the hand-over
          * @return the {@link System#nanoTime()} reading at which {@code attempt}'s request-body deadline
-         *         passes, or empty for a dispatch constructed with {@link #NO_BODY_DEADLINE}
+         *         passes — the whole-body deadline counted from the start of {@code attempt}, or the
+         *         pre-response deadline counted from {@code handOverNanos} and held to the pre-response cap
+         *         counted from the start of {@code attempt} — or empty for a dispatch constructed with
+         *         {@link #NO_BODY_DEADLINE}
          */
-        private OptionalLong bodyDeadlineOf(UpstreamAttempt attempt) {
+        private OptionalLong bodyDeadlineOf(UpstreamAttempt attempt, long handOverNanos) {
             if (bodyDeadlineMillis == NO_BODY_DEADLINE) {
                 return OptionalLong.empty();
             }
-            return OptionalLong.of(attempt.startNanos() + TimeUnit.MILLISECONDS.toNanos(bodyDeadlineMillis));
+            long deadlineNanos = TimeUnit.MILLISECONDS.toNanos(bodyDeadlineMillis);
+            if (preResponseCapMillis == NO_PRE_RESPONSE_CAP) {
+                return OptionalLong.of(attempt.startNanos() + deadlineNanos);
+            }
+            // Compared as differences, never as absolute readings: System.nanoTime() may wrap.
+            long sinceStartNanos = handOverNanos - attempt.startNanos();
+            long untilCapNanos = TimeUnit.MILLISECONDS.toNanos(preResponseCapMillis) - sinceStartNanos;
+            return OptionalLong.of(handOverNanos + Math.min(deadlineNanos, untilCapNanos));
         }
 
         /**
@@ -1574,6 +1640,28 @@ public final class DispatchStage {
     }
 
     /**
+     * The failure of an attempt that obtained its upstream connection only once its pre-response cap had
+     * passed: the wait for the connection used up the guard's timeout but for the margin the cap leaves, so
+     * no time is left in which the client could send its request. The attempt's request is reset unsent and
+     * its body never read, so nothing the client did or did not send contributes to the failure — it is the
+     * upstream's. It is a {@link TimeoutException}, not a {@link GatewayException}: the breaker counts it as
+     * an upstream failure, and the failure mapper reports it as {@link EventType#UPSTREAM_TIMEOUT}, exactly as
+     * the guard's own timeout a moment later would have been reported. Only a dispatch that arms a
+     * pre-response deadline — the gRPC dispatch — raises it.
+     * <p>
+     * Carries no request-specific state.
+     */
+    static final class UpstreamConnectionTooLate extends TimeoutException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        UpstreamConnectionTooLate() {
+            super(CONNECTION_TOO_LATE);
+        }
+    }
+
+    /**
      * The client abort of a dispatch whose client left — reset its stream or closed its connection —
      * before the response was handed over for relay (see {@link InboundBody#clientDeparted(Throwable)}).
      * It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told
@@ -1605,7 +1693,10 @@ public final class DispatchStage {
      * </ul>
      * In the last two cases the body is ended by that read itself, which never reaches the inbound stream.
      * On a gRPC dispatch the same refusal ends a request stream still open at its pre-response deadline, in
-     * the same three cases, as long as the upstream has not answered.
+     * the first two cases, as long as the upstream has not answered. The third does not arise there: the
+     * pre-response deadline is counted from the moment the attempt hands its body over, so the wait for the
+     * connection is not counted against it, and an attempt whose connection came only after its pre-response
+     * cap is ended as an {@link UpstreamConnectionTooLate}, the upstream's timeout, instead.
      * The refusal is an {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) like the idle timeout's,
      * told apart from it by its type so it is reported with its own record: the body did not end within the
      * deadline, whether or not it was still making progress. Like every client-ended dispatch it is a

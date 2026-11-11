@@ -158,7 +158,7 @@ class DispatchStageTest {
             Route route = route(id, upstream, false);
             return new Routed(route, new DispatchStage(clientsFor(route, client, guard), BODY_CAP,
                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, messageTimeoutMillis,
-                    failureMapper));
+                    DispatchStage.NO_PRE_RESPONSE_CAP, failureMapper));
         }
 
         private static Route route(String id, ResolvedUpstream upstream, boolean retryEnabled) {
@@ -269,10 +269,62 @@ class DispatchStageTest {
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP, IDLE_TIMEOUT_MILLIS,
                             DEADLINE_MILLIS, failureMapper)),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
-                                    DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, IDLE_TIMEOUT_MILLIS, failureMapper),
-                            "a message bound carries the deadline as the pre-response deadline"),
+                                    DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, IDLE_TIMEOUT_MILLIS,
+                                    DEADLINE_MILLIS, failureMapper),
+                            "a message bound carries the deadline as the pre-response deadline, held to a cap"),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                             DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, failureMapper)));
+        }
+
+        /**
+         * A pre-response cap shorter than the deadline would cut the deadline down for every attempt, however
+         * promptly it handed its body over; one at {@link DispatchStage#NO_PRE_RESPONSE_CAP} would leave the
+         * deadline uncapped, free to run past the guard's timeout.
+         */
+        @ParameterizedTest(name = "a cap {0} ms short of the deadline")
+        @ValueSource(longs = {1L, DEADLINE_MILLIS})
+        @DisplayName("refuses a pre-response deadline held to a cap shorter than itself, or to none")
+        void refusesAPreResponseCapShorterThanTheDeadline(long shortOfTheDeadlineMillis) {
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS - shortOfTheDeadlineMillis, failureMapper));
+
+            assertTrue(refused.getMessage().contains("pre-response deadline needs a cap"), refused::getMessage);
+        }
+
+        /** A cap with no pre-response deadline to hold would be silently ignored, so it is refused. */
+        @ParameterizedTest(name = "idle timeout {0} ms, deadline {1} ms")
+        @CsvSource({"300, 1800", "0, 0"})
+        @DisplayName("refuses a pre-response cap on a stage that arms no pre-response deadline")
+        void refusesACapWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, failureMapper));
+
+            assertTrue(refused.getMessage().contains("needs a pre-response deadline"), refused::getMessage);
+        }
+
+        /**
+         * The byte-capped body schedules its request-body deadline through the clock it is armed with, so a
+         * deadline handed to a body that arms neither the idle clock nor the message clock could never fire;
+         * the body refuses it when it is built rather than carrying a deadline that is silently never enforced.
+         */
+        @Test
+        @DisplayName("a byte-capped body refuses a request-body deadline when neither its idle clock nor its message clock is armed")
+        void byteCappedBodyRefusesADeadlineWithoutAnArmedClock() {
+            TestReadStream source = new TestReadStream();
+            OptionalLong deadline = OptionalLong.of(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DEADLINE_MILLIS));
+
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage.ByteCappedBodyStream(source, BODY_CAP, DispatchStage.NO_DECLARED_LENGTH,
+                            () -> fail("a refused body never aborts anything"), _ -> {
+                                // Nothing is forwarded by a body that is never built.
+                            }, DispatchStage.IdleClock.UNARMED, deadline, DispatchStage.IdleClock.UNARMED));
+
+            assertAll("a deadline with no armed clock to schedule it",
+                    () -> assertTrue(refused.getMessage().contains("needs an armed idle or message clock"),
+                            refused::getMessage),
+                    () -> assertFalse(source.subscribed(), "the refused body never subscribes the inbound stream"));
         }
     }
 
@@ -1180,14 +1232,15 @@ class DispatchStageTest {
 
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                            DispatchStage.NO_BODY_DEADLINE, -1L, failureMapper));
+                            DispatchStage.NO_BODY_DEADLINE, -1L, DispatchStage.NO_PRE_RESPONSE_CAP, failureMapper));
 
             assertAll("the message bound of a stage",
                     () -> assertTrue(refused.getMessage().contains("messageTimeoutMillis"),
                             "the refusal names the bound"),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE,
-                                    DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, failureMapper),
+                                    DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, DispatchStage.NO_PRE_RESPONSE_CAP,
+                                    failureMapper),
                             "the unarmed bound is a valid bound"));
         }
 

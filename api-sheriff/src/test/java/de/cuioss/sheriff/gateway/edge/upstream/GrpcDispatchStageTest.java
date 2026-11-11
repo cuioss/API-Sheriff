@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge.upstream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
@@ -64,6 +65,7 @@ import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -75,6 +77,7 @@ import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
@@ -151,7 +154,8 @@ class GrpcDispatchStageTest {
 
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper, messageTimeoutMillis,
-                            GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS));
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS));
 
             assertTrue(refused.getMessage().contains("messageTimeoutMillis"), "the refusal names the bound");
         }
@@ -170,19 +174,39 @@ class GrpcDispatchStageTest {
 
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper, messageTimeoutMillis,
-                            messageTimeoutMillis + pastTheBoundMillis));
+                            messageTimeoutMillis + pastTheBoundMillis, GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS));
 
             assertTrue(refused.getMessage().contains("preResponseDeadlineMillis"), "the refusal names the deadline");
         }
 
         /**
-         * Both request-side bounds exist so that a client holding its request stream open is ended as its own
-         * abort before the guard's timeout could end it as the upstream's: the message bound is below the
-         * pre-response deadline, and the deadline below the guard's timeout.
+         * A pre-response cap shorter than the deadline would shorten the deadline of every call, however
+         * promptly its attempt handed the body over.
          */
         @Test
-        @DisplayName("the production message bound is below the pre-response deadline, and the deadline below the guard's timeout")
-        void messageBoundAndDeadlineAreBelowTheGuardTimeout() {
+        @DisplayName("refuses a pre-response cap shorter than the pre-response deadline")
+        void refusesACapShorterThanTheDeadline() {
+            UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
+            UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+            long deadlineMillis = GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS;
+
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new GrpcDispatchStage(noClients, 1024L, failureMapper,
+                            GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS, deadlineMillis, deadlineMillis - 1));
+
+            assertTrue(refused.getMessage().contains("preResponseCapMillis"), "the refusal names the cap");
+        }
+
+        /**
+         * Both request-side bounds exist so that a client holding its request stream open is ended as its own
+         * abort before the guard's timeout could end it as the upstream's. Both are counted from the hand-over,
+         * the guard's timeout from the start of the attempt, so the deadline alone cannot promise that; the cap
+         * does: the deadline never passes later than the cap after the start of the attempt, and the cap is
+         * shorter than the guard's timeout, which starts at the same moment.
+         */
+        @Test
+        @DisplayName("the production message bound is below the pre-response deadline, the deadline within the cap, and the cap below the guard's timeout")
+        void messageBoundDeadlineAndCapAreBelowTheGuardTimeout() {
             long guardMillis = TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS);
 
             assertAll("the fixed request-side bounds of a gRPC call",
@@ -190,10 +214,13 @@ class GrpcDispatchStageTest {
                             < GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
                             () -> "the message bound of " + GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS
                                     + " ms must be shorter than the pre-response deadline"),
-                    () -> assertTrue(GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS < guardMillis,
-                            () -> "the pre-response deadline of " + GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS
-                                    + " ms must fire before the guard's " + UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS
-                                    + " s timeout"));
+                    () -> assertTrue(GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS
+                            <= GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS,
+                            () -> "a prompt hand-over must keep the whole pre-response deadline of "
+                                    + GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS + " ms"),
+                    () -> assertEquals(guardMillis - 1_000L, GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS,
+                            () -> "the pre-response cap must pass one second before the guard's "
+                                    + UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS + " s timeout"));
         }
 
         /**
@@ -379,17 +406,21 @@ class GrpcDispatchStageTest {
      * <strong>The message bound and the pre-response deadline.</strong> Until the upstream answers, every
      * complete request message must arrive within the message bound of the one before it — the first within
      * the bound of the attempt handing its body over — and the request stream must end within the pre-response
-     * deadline, counted from the start of the attempt. A client that sends nothing, only part of a message, or
-     * stops between two messages without ending its stream is ended at the message bound as a
-     * {@link DispatchStage.RequestMessageTimeout}; a client that keeps sending complete messages, each within
-     * the bound, without ever ending its stream is ended at the deadline as a
-     * {@link DispatchStage.RequestBodyDeadlineExceeded}. Both are the client's own aborts, which the breaker
-     * skips, instead of the guard's timeout, an upstream failure the breaker counts. That timeout is reached
-     * only by an upstream holding a complete, half-closed request. The cases on the two bounds build the stage
-     * with the bound shortened to {@value #MESSAGE_BOUND_MILLIS} ms and the deadline to
-     * {@value #DEADLINE_MILLIS} ms, both under the {@value #BREAKER_GUARD_MILLIS} ms timeout of a guard carrying
-     * the production breaker rules, beside a matched control whose upstream reads every call's one complete
-     * message to the half-close and never answers.
+     * deadline, also counted from that hand-over and passing no later than the pre-response cap after the start
+     * of the attempt. A client that sends nothing, only part of a message, or stops between two messages
+     * without ending its stream is ended at the message bound as a {@link DispatchStage.RequestMessageTimeout};
+     * a client that keeps sending complete messages, each within the bound, without ever ending its stream is
+     * ended at the deadline as a {@link DispatchStage.RequestBodyDeadlineExceeded}. Both are the client's own
+     * aborts, which the breaker skips, instead of the guard's timeout, an upstream failure the breaker counts.
+     * That timeout is reached only by an upstream holding a complete, half-closed request — however long the
+     * upstream connection took — and an attempt whose connection wait reaches the cap is ended as the same
+     * upstream timeout without its body being read. The cases on the two bounds build the stage with the bound
+     * shortened to {@value #MESSAGE_BOUND_MILLIS} ms, the deadline to {@value #DEADLINE_MILLIS} ms and the cap
+     * to {@value #DEADLINE_CAP_MILLIS} ms, all under the {@value #BREAKER_GUARD_MILLIS} ms timeout of a guard
+     * carrying the production breaker rules, beside a matched control whose upstream reads every call's one
+     * complete message to the half-close and never answers. The connection-wait cases stand in for a slow
+     * upstream connection with a client that hands the dispatch its upstream request only a set time after the
+     * dispatch asked for it.
      * <p>
      * <strong>Every request payload is a gRPC message.</strong> The dispatch reads the length prefix of every
      * request message to tell when it is complete, so every payload a case sends is framed by
@@ -440,6 +471,19 @@ class GrpcDispatchStageTest {
          * and at this timeout only if they are not.
          */
         private static final long BREAKER_GUARD_MILLIS = 2_000L;
+        /**
+         * The test-only pre-response cap: as the production cap does, it leaves a prompt hand-over the whole
+         * shortened deadline and passes well before the breaker guard's timeout.
+         */
+        private static final long DEADLINE_CAP_MILLIS = 1_600L;
+        /**
+         * A connection wait longer than the shortened deadline and shorter than the cap: a deadline counted from
+         * the start of the attempt would already have passed at the hand-over, the one counted from the
+         * hand-over is held to the cap.
+         */
+        private static final long SLOW_CONNECTION_MILLIS = 1_350L;
+        /** A connection wait past the cap and short of the breaker guard's timeout. */
+        private static final long PAST_THE_CAP_CONNECTION_MILLIS = 1_700L;
         /** The gap between a steady sender's complete messages: a quarter of the shortened bound. */
         private static final long STEADY_GAP_MILLIS = MESSAGE_BOUND_MILLIS / 4;
         /** The request-volume threshold of the breaker guard: this many counted failures open it. */
@@ -1000,6 +1044,136 @@ class GrpcDispatchStageTest {
         }
 
         /**
+         * A client that sent its whole request and half-closed, behind an upstream connection that took
+         * {@value #SLOW_CONNECTION_MILLIS} ms — longer than the shortened deadline, so a deadline counted from
+         * the start of the attempt had passed before the body was handed over and ended the call at its first
+         * read as the client's. Counted from the hand-over, the deadline finds the request stream already ended:
+         * the upstream holds a complete request it never answers, and each call ends at the guard's timeout as
+         * the upstream's, counted by the breaker until it opens.
+         */
+        @Test
+        @DisplayName("a half-closed request behind a slow upstream connection is the guard's timeout, counted until the breaker opens")
+        void halfClosedRequestBehindASlowConnectionIsTheGuardTimeoutAndOpensTheBreaker() {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = boundedStage(route, slowToConnect(SLOW_CONNECTION_MILLIS), breakerGuard());
+            List<GatewayException> ended = new ArrayList<>();
+            List<Long> endedAfterMillis = new ArrayList<>();
+
+            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
+                PushedBody halfClosed = new PushedBody();
+                halfClosed.push("first");
+                halfClosed.end();
+                long started = System.nanoTime();
+                ended.add(assertThrows(GatewayException.class,
+                        () -> stage.dispatch(route, HttpMethod.POST, NEVER_ANSWERS, Map.of(), halfClosed, -1L),
+                        "an unanswered call is not answered"));
+                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+            }
+            EventType behindTheThreshold = assertThrows(GatewayException.class,
+                    () -> stage.dispatch(route, HttpMethod.POST, NEVER_ANSWERS, Map.of(), new PushedBody(), -1L),
+                    "the call behind the threshold is refused").getEventType();
+
+            assertAll("half-closed calls behind a slow upstream connection, up to the breaker's threshold",
+                    () -> assertTrue(ended.stream().noneMatch(DispatchStage.RequestBodyDeadlineExceeded.class::isInstance),
+                            () -> "the slow connection is never charged to the client as its deadline: " + ended),
+                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, EventType.UPSTREAM_TIMEOUT),
+                            ended.stream().map(GatewayException::getEventType).toList(),
+                            "each call is the guard's timeout, an upstream failure"),
+                    () -> assertTrue(endedAfterMillis.stream().allMatch(millis -> millis >= BREAKER_GUARD_MILLIS),
+                            () -> "each call ran to the guard's timeout: " + endedAfterMillis),
+                    () -> assertTrue(upstreamEnded.isDone(), "the upstream read the request to its half-close"),
+                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, "first"), upstreamFrames,
+                            "each client's whole request reached the upstream"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), breakerTransitions,
+                            "the breaker counts the upstream timeouts and opens at its threshold"),
+                    () -> assertEquals(EventType.UPSTREAM_CIRCUIT_OPEN, behindTheThreshold,
+                            "the call behind the threshold is refused by the open breaker"));
+        }
+
+        /**
+         * The cap's side of the same slow connection: a client that keeps sending complete messages, each well
+         * within the message bound, and never ends its stream. Counted from the hand-over alone, the deadline
+         * would pass only after the guard's timeout, which would then end the call as the upstream's; held to the
+         * cap, it ends each call there, as the client's own abort, before the guard, and the breaker skips it.
+         */
+        @Test
+        @DisplayName("a steady sender that never half-closes behind a slow upstream connection is ended at the cap as the client's, and never moves the breaker")
+        void steadySenderBehindASlowConnectionEndsAtTheCapAndLeavesTheBreakerClosed() throws Exception {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = boundedStage(route, slowToConnect(SLOW_CONNECTION_MILLIS), breakerGuard());
+            List<Throwable> refusals = new ArrayList<>();
+            List<Long> endedAfterMillis = new ArrayList<>();
+            long mostMessages = 2 * BREAKER_GUARD_MILLIS / STEADY_GAP_MILLIS;
+
+            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
+                PushedBody steady = new PushedBody();
+                long started = System.nanoTime();
+                CompletableFuture<HttpClientResponse> answered = CompletableFuture.supplyAsync(
+                        () -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), steady, -1L));
+                for (long message = 0; !answered.isDone() && message < mostMessages; message++) {
+                    Awaits.connect(pause(STEADY_GAP_MILLIS), "the gap before the next message");
+                    steady.push("steady-" + message);
+                }
+                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+                refusals.add(assertThrows(ExecutionException.class,
+                        () -> Awaits.connect(answered, "the steady sender's call to end"),
+                        "a call whose stream never ends is not answered").getCause());
+            }
+
+            assertAll("steady senders behind a slow upstream connection, as many as the breaker's threshold",
+                    () -> assertTrue(refusals.stream().allMatch(DispatchStage.RequestBodyDeadlineExceeded.class::isInstance),
+                            () -> "every such call ends at the pre-response deadline as the client's: " + refusals),
+                    () -> assertTrue(endedAfterMillis.stream().allMatch(
+                                    millis -> millis >= DEADLINE_CAP_MILLIS && millis < BREAKER_GUARD_MILLIS),
+                            () -> "each call ends at the cap, after the hand-over and before the guard's timeout: "
+                                    + endedAfterMillis),
+                    () -> assertEquals(List.of(), breakerTransitions, "the breaker stays closed"),
+                    () -> assertTrue(upstreamFailed.isDone(), "the gateway reset the open upstream calls"));
+        }
+
+        /**
+         * An upstream connection that took {@value #PAST_THE_CAP_CONNECTION_MILLIS} ms — past the cap: the
+         * client is given no time to send anything before the guard's timeout. The attempt is ended the moment
+         * it obtains its connection, as the upstream's timeout, before its request is sent or its body read, and
+         * the breaker counts it — however complete the client's request was.
+         */
+        @Test
+        @DisplayName("a connection obtained only past the cap ends the call at once as the upstream's timeout, unsent, counted by the breaker")
+        void connectionPastTheCapIsTheUpstreamsTimeoutAndOpensTheBreaker() {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = boundedStage(route, slowToConnect(PAST_THE_CAP_CONNECTION_MILLIS),
+                    breakerGuard());
+            List<GatewayException> ended = new ArrayList<>();
+            List<Long> endedAfterMillis = new ArrayList<>();
+
+            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
+                PushedBody halfClosed = new PushedBody();
+                halfClosed.push("first");
+                halfClosed.end();
+                long started = System.nanoTime();
+                ended.add(assertThrows(GatewayException.class,
+                        () -> stage.dispatch(route, HttpMethod.POST, NEVER_ANSWERS, Map.of(), halfClosed, -1L),
+                        "a call whose connection came past the cap is not answered"));
+                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+            }
+
+            assertAll("calls whose upstream connection came only past the cap",
+                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, EventType.UPSTREAM_TIMEOUT),
+                            ended.stream().map(GatewayException::getEventType).toList(),
+                            () -> "each call is the upstream's timeout, never the client's deadline: " + ended),
+                    () -> assertTrue(ended.stream().allMatch(
+                                    timeout -> timeout.getCause() instanceof DispatchStage.UpstreamConnectionTooLate),
+                            () -> "each call was ended at its hand-over, not by the guard's own timeout: " + ended),
+                    () -> assertTrue(endedAfterMillis.stream().allMatch(
+                                    millis -> millis >= PAST_THE_CAP_CONNECTION_MILLIS && millis < BREAKER_GUARD_MILLIS),
+                            () -> "each call ends when its connection came, before the guard's timeout: "
+                                    + endedAfterMillis),
+                    () -> assertEquals(0, upstreamCalls.get(), "no request was ever sent to the upstream"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), breakerTransitions,
+                            "the breaker counts the upstream timeouts and opens at its threshold"));
+        }
+
+        /**
          * A request stream that ends without any message — END_STREAM only — is not an idle client. The
          * stub upstream answers {@value #LATE_ANSWER} three bounds after the stream ended — as long as the
          * shortened deadline — so the call is still waiting for its answer when the bound passes: only the end
@@ -1063,15 +1237,43 @@ class GrpcDispatchStageTest {
         }
 
         /**
-         * A stage whose message bound is shortened to {@value #MESSAGE_BOUND_MILLIS} ms and whose pre-response
-         * deadline is shortened to {@value #DEADLINE_MILLIS} ms, both below {@value #BREAKER_GUARD_MILLIS} ms.
+         * A stage whose message bound is shortened to {@value #MESSAGE_BOUND_MILLIS} ms, whose pre-response
+         * deadline is shortened to {@value #DEADLINE_MILLIS} ms and whose pre-response cap is shortened to
+         * {@value #DEADLINE_CAP_MILLIS} ms, all below {@value #BREAKER_GUARD_MILLIS} ms.
          */
         private GrpcDispatchStage boundedStage(Route route, Guard guard) {
+            return boundedStage(route, forcedH2, guard);
+        }
+
+        /** {@link #boundedStage(Route, Guard)} over {@code client} in place of the plain forced-h2 client. */
+        private GrpcDispatchStage boundedStage(Route route, HttpClient client, Guard guard) {
             UpstreamTarget target = UpstreamTarget.of(route);
-            UpstreamClients clients = new UpstreamClients(Map.of(target, forcedH2),
+            UpstreamClients clients = new UpstreamClients(Map.of(target, client),
                     Map.of(new ResilienceShape(target, route.retryEnabled()), guard));
             return new GrpcDispatchStage(clients, ROOMY_CAP_BYTES, failureMapper, MESSAGE_BOUND_MILLIS,
-                    DEADLINE_MILLIS);
+                    DEADLINE_MILLIS, DEADLINE_CAP_MILLIS);
+        }
+
+        /**
+         * The forced-h2 client, slow to connect: every upstream request it is asked for is handed to the
+         * dispatch only {@code connectionWaitMillis} after the dispatch asked for it, as a pool or a dial that
+         * takes that long would hand it over.
+         */
+        private HttpClient slowToConnect(long connectionWaitMillis) {
+            return (HttpClient) Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                    new Class<?>[]{HttpClient.class}, (_, method, args) -> {
+                        if ("request".equals(method.getName()) && args != null && args.length == 1
+                                && args[0] instanceof RequestOptions options) {
+                            Promise<Void> connected = Promise.promise();
+                            vertx.setTimer(connectionWaitMillis, _ -> connected.complete());
+                            return connected.future().compose(_ -> forcedH2.request(options));
+                        }
+                        try {
+                            return method.invoke(forcedH2, args);
+                        } catch (InvocationTargetException failure) {
+                            throw failure.getCause();
+                        }
+                    });
         }
 
         /**

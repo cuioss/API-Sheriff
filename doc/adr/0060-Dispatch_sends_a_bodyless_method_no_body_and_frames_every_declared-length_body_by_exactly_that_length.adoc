@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, so the guard's timeout is reached only by an upstream holding a complete, half-closed request; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
+// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt handed the body over, never later than 29 s after the attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, so the guard's timeout is reached only by an upstream holding a complete, half-closed request, and an attempt whose upstream connection took 29 s is ended unsent as the upstream's UPSTREAM_TIMEOUT; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
 // tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, request-body-deadline, grpc-message-bound, grpc-pre-response-deadline, grpc-stream-idle-timeout, upstream-connection
 // affects: api-sheriff
 // supersedes:
@@ -153,7 +153,8 @@ as soon as it starts to be read, before any byte crosses.
 The deadline stops when the body ends and when another abort claims the stream first. It also stops
 when the attempt ends without handing its response back: its send failed, the next attempt began, or
 the dispatch failed. A stopped deadline reports nothing. A bodyless request does not arm it. A gRPC
-route arms it only until its upstream answers (<<grpc-message-bound>>).
+route arms it only until its upstream answers, and counts it from the hand-over instead
+(<<grpc-message-bound>>).
 
 [[grpc-stream-idle-bound]]
 === A gRPC call silent for five minutes is ended
@@ -172,12 +173,10 @@ HTTP/2 `PING` frames are not frames of the call and do not count.
 === Amendment: until its upstream answers, a gRPC call is bounded per complete request message, and a request stream still open before the guard ends as the client's
 
 *The invariant.* A gRPC call ends as an upstream failure only when the upstream had everything the
-client was going to send. Time the client holds its request open is the client's. The guard's
-timeout, which the breaker records as an upstream failure, is therefore reached only by an upstream
-that holds a complete, half-closed request. The one exception is an attempt whose wait for an
-upstream connection consumed the margin between the message bound below and the guard: the guard
-counts that wait, and so does the pre-response deadline, which is counted from the start of the
-attempt like the guard's timeout; only the message bound does not.
+client was going to send, or never gave the client the time to send it. Time the client holds its
+request open is the client's; time spent reaching the upstream is the upstream's. The guard's timeout,
+which the breaker records as an upstream failure, is therefore reached only by an upstream that holds a
+complete, half-closed request, however long its connection took.
 
 *Why a bound is needed at all.* The forced-HTTP/2 upstream request head is written only with the first
 body chunk, and an upstream cannot act on a request message it holds only part of. A client that opens
@@ -203,17 +202,28 @@ failure, and the retry predicate does not retry it. The client receives `INVALID
 trailers-only answer
 (link:0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016]).
 
-*The pre-response deadline (25 s from the start of the attempt).* A message bound alone does not hold
-the invariant for a steady sender. A client that sends a complete message every few seconds and never
-ends its request stream stays inside the message bound and would still reach the guard. The gRPC
-dispatch therefore also arms the request-body deadline, as a pre-response deadline:
-`GRPC_PRE_RESPONSE_DEADLINE_MILLIS` (25 s), counted from the start of the attempt like the guard's
-timeout, and equal to the HTTP request-body deadline, 5 s under the guard. It stops when the upstream
-answers, when the body ends, on any abort and when the attempt ends; it never runs after the response
-was handed over, so a bidirectional stream the upstream has answered is never ended by it. When it
-passes, the expiry takes the abort claim with a `DispatchStage.RequestBodyDeadlineExceeded`
-(`REQUEST_BODY_TIMEOUT`, `408`) and resets the upstream request. The client receives
-`DEADLINE_EXCEEDED` in a trailers-only answer, with `grpc-message: input-validation`
+*The pre-response deadline (25 s from the hand-over, held to a 29 s cap).* A message bound alone does
+not hold the invariant for a steady sender. A client that sends a complete message every few seconds
+and never ends its request stream stays inside the message bound and would still reach the guard. The
+gRPC dispatch therefore also arms the request-body deadline, as a pre-response deadline:
+`GRPC_PRE_RESPONSE_DEADLINE_MILLIS` (25 s, equal to the HTTP request-body deadline), counted, like the
+message bound, from the moment the attempt hands its body to the upstream request, so the wait for an
+upstream connection is never charged to the client. Because the guard's 30 s is counted from the start
+of the attempt, the deadline is held to a cap, `GRPC_PRE_RESPONSE_CAP_MILLIS` (29 s from the start of
+the attempt, one second under the guard), and passes at whichever comes first. The rule: a hand-over
+within the first 4 s keeps the whole 25 s; a later hand-over has its deadline at the cap, so a client
+still holding its stream open there is ended as the client's a second before the guard could end it as
+the upstream's, and no client stall in that window is charged to the upstream; a client that has ended
+its stream is never ended by the deadline, so a slow connection followed by an upstream that does not
+answer ends at the guard as `UPSTREAM_TIMEOUT`, counted by the breaker; and an attempt that obtains its
+connection only once the cap has passed is ended at once, its request unsent and its body unread, as
+`DispatchStage.UpstreamConnectionTooLate` — the same `UPSTREAM_TIMEOUT` the guard would report a second
+later, counted by the breaker. The deadline stops when the upstream answers, when the body ends, on any
+abort and when the attempt ends; it never runs after the response was handed over, so a bidirectional
+stream the upstream has answered is never ended by it. When it passes, the expiry takes the abort claim
+with a `DispatchStage.RequestBodyDeadlineExceeded` (`REQUEST_BODY_TIMEOUT`, `408`) and resets the
+upstream request. The client receives `DEADLINE_EXCEEDED` in a trailers-only answer, with
+`grpc-message: input-validation`
 (link:0016-grpc-trailers-only-rejection-mapping.adoc#grpc-pre-response-deadline[ADR-0016]).
 
 *Why not translate the guard's timeout instead (option (b)).* The first option considered was to let
@@ -229,7 +239,7 @@ so the breaker sees the client's own `GatewayException`.
 gateway rejection are untouched. The guard's 30 s stays the bound for an upstream holding a complete,
 half-closed request.
 
-*No configuration key.* Both bounds are fixed, derived constants of `GrpcDispatchStage`, for the reason
+*No configuration key.* Both bounds and the cap are fixed, derived constants of `GrpcDispatchStage`, for the reason
 this record gives for every bound it owns. A call's `grpc-timeout` header is still not honoured.
 
 *Recording.* `ApiSheriff-22` records a message-bound end under the disposition `client-idle`. Its latch
@@ -268,7 +278,7 @@ measurement].
 === Fixed values, retry and recording
 
 The 10 s idle timeout, the 25 s deadline, the 10 s gRPC message bound, the 25 s gRPC pre-response
-deadline and the five-minute stream-idle bound are gateway constants.
+deadline with its 29 s cap and the five-minute stream-idle bound are gateway constants.
 No configuration key or system property reaches them. They follow ADR-0064: the guard they sit under
 is a fixed policy of the gateway. Both request-body bounds are shorter than the guard's timeout, so
 the gateway ends a stalled or trickling body as the request's before the guard would end it as the
@@ -411,7 +421,11 @@ for the property.
   send messages to stay open.
 * Before its upstream answers, a gRPC client must complete each request message within 10 s of the
   one before it, and a client stream the upstream answers only after the client ends it must end within
-  25 s of its attempt's start, 5 s earlier than the guard's timeout that ended it before.
+  25 s of the hand-over and before the 29 s cap, earlier than the guard's timeout that ended it before.
+  Behind an upstream connection slower than 4 s that leaves the client less than 25 s.
+* An attempt whose upstream connection took 29 s ends as `UPSTREAM_TIMEOUT` a second before the guard
+  would have ended it, so an upstream that connects that slowly and would then answer within the last
+  second is not given that second.
 * The gRPC body stream reads every message's length prefix as it crosses, which adds per-chunk work on
   the gRPC path. It copies no payload.
 * Each body stream carries a timer and the state to judge it. One timer is pending per stream at a
@@ -431,8 +445,10 @@ for the property.
   pre-response deadline run after the upstream answered, which ends a long client-streaming call the
   upstream serves;
 * stopping the gRPC message bound at a forwarded byte rather than at a complete message, or dropping
-  the pre-response deadline, either of which lets a client's open request stream reach the guard and
-  be counted against the upstream;
+  the pre-response deadline or its cap, any of which lets a client's open request stream reach the
+  guard and be counted against the upstream;
+* counting the gRPC pre-response deadline from the start of the attempt, which charges a slow upstream
+  connection to a client that had already sent its whole request;
 * resetting the upstream request at the deadline while the upstream takes no data;
 * dropping a passed deadline, or leaving the clocks of an ended attempt running;
 * counting only one direction for the gRPC stream-idle bound.
@@ -452,7 +468,7 @@ link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body boun
 * link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap] -- the streaming counter that also holds a declared-length body to its length.
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] and link:0008-data-plane-transport.adoc[ADR-0008 -- Data-plane transport] -- the never-buffered body model.
 * link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the fixed guard and its 30 s timeout every bound of this record sits below.
-* `GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS`, `DispatchStage.RequestMessageTimeout` -- the message bound; `GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS` -- the pre-response deadline; `GrpcDispatchStageTest` -- the idle-client, partial-message, steady-sender and never-half-closed tests and their guard-timeout control; `GrpcProxyIT` -- the same through the native image.
+* `GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS`, `DispatchStage.RequestMessageTimeout` -- the message bound; `GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS` -- the pre-response deadline; `GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS`, `DispatchStage.UpstreamConnectionTooLate` -- its cap and the connection wait that reaches it; `GrpcDispatchStageTest` -- the idle-client, partial-message, steady-sender and never-half-closed tests, their guard-timeout control, and the slow-connection, cap and past-the-cap tests; `GrpcProxyIT` -- the same through the native image.
 * link:0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016 -- gRPC trailers-only rejection mapping] -- the `DEADLINE_EXCEEDED` rendering of the pre-response deadline end.
 * link:../architecture/tls-and-inbound-security.adoc#_dispatch_body_framing[Architecture -- dispatch body framing], link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[request-body idle timeout], link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[request-body deadline], link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound], link:../architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[unread upload release] and link:../architecture/tls-and-inbound-security.adoc#_http2_connection_window_measurement[connection-window measurement].
 * link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class (GW-02), and link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds].

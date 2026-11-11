@@ -588,17 +588,22 @@ deployment that never writes it keeps the behaviour shown here.
   25 s: a request that obtains its connection only after the deadline is answered `408` as soon as its
   body is read. The deadline does not reset an upstream that is not taking data, but a body that
   upstream reads again after the deadline is ended then. Not applied to bodyless requests. On a
-  `protocol: grpc` route it applies only until the upstream answers: a call whose request stream is
-  still open then is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
-  `grpc-message: input-validation`. Not configurable. See
+  `protocol: grpc` route it applies only until the upstream answers, and it counts from the moment the
+  gateway hands the body to the upstream, so the wait for an upstream connection is not charged to the
+  client -- but it passes no later than 29 s after the upstream attempt started, a second before the
+  upstream guard's timeout: a call whose request stream is still open then is ended with
+  `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message: input-validation`, and a call whose
+  upstream connection itself took 29 s is ended without being sent, as the upstream's timeout
+  (`grpc-status: 4`, `grpc-message: upstream`). Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline].
 
 | gRPC message bound
 | 10 s +
   (per complete request message)
 | Until the upstream answers, each request message of a `protocol: grpc` call -- its length prefix and
-  every payload byte it declares -- must arrive within this long of the attempt's start or of the
-  message before it, until the client ends its request stream; part of a message does not count. A
+  every payload byte it declares -- must arrive within this long of the moment the gateway hands the
+  body to the upstream or of the message before it, until the client ends its request stream; part of
+  a message does not count. A
   call that sends nothing, only part of a message, or stops between two messages is ended with
   `grpc-status: 3` (`INVALID_ARGUMENT`) as the client's abort, which the upstream's circuit breaker does
   not count as a failure. Not configurable. See

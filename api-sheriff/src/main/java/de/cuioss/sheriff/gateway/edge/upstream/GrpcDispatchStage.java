@@ -51,16 +51,17 @@ import io.vertx.core.streams.ReadStream;
  * inside all three. The forced-h2 upstream leg opens at most one upstream stream per admitted inbound
  * request, so the stream and reset rates it can produce upstream inherit the inbound bounds.
  * <p>
- * <strong>Time the client holds the request open is the client's.</strong> A gRPC call ends as an upstream
- * failure only when the upstream had everything the client was going to send: the guard's timeout, which
- * the breaker records as an upstream failure, is reached only by an upstream holding a complete, half-closed
- * request — or by an attempt whose wait for an upstream connection consumed the margin between the message
- * bound below and the guard's timeout: the guard counts that wait, and so does the pre-response deadline,
- * which is counted from the start of the attempt like the guard's timeout; only the message bound does not.
- * Every other way a call can wait on its client is
+ * <strong>Time the client holds the request open is the client's; time spent reaching the upstream is
+ * the upstream's.</strong> A gRPC call ends as an upstream failure only when the upstream had everything the
+ * client was going to send, or never gave the client the time to send it: the guard's timeout, which the
+ * breaker records as an upstream failure, is reached only by an upstream holding a complete, half-closed
+ * request, and an attempt whose wait for an upstream connection reaches the pre-response cap below is ended
+ * as the upstream's timeout before a byte of its body is read. Every way a call can wait on its client is
  * ended first, as the client's own abort, which the breaker skips. The forced-HTTP/2 upstream request head is
  * written only with the first body chunk, and an upstream cannot act on a request message it holds only part
- * of, so the request side of a call is bounded twice, before the upstream answers:
+ * of, so the request side of a call is bounded twice, before the upstream answers. Both bounds are counted
+ * from the moment the attempt hands its body to the upstream request, so neither counts the wait for an
+ * upstream connection:
  * <ul>
  *   <li><strong>The message bound, {@value #GRPC_MESSAGE_TIMEOUT_MILLIS} ms per message.</strong> Counted
  *       from the moment the attempt hands its body to the upstream request, and again from every complete
@@ -70,15 +71,34 @@ import io.vertx.core.streams.ReadStream;
  *       it, the gateway resets the upstream request and ends the call as a
  *       {@link DispatchStage.RequestMessageTimeout} ({@link EventType#INBOUND_BODY_ABORTED}) — whether the
  *       client sent nothing, only part of a message, or stopped between two messages.</li>
- *   <li><strong>The pre-response deadline, {@value #GRPC_PRE_RESPONSE_DEADLINE_MILLIS} ms.</strong> Counted
- *       from the start of the attempt, like the guard's timeout, and equal to the HTTP request-body deadline
+ *   <li><strong>The pre-response deadline, {@value #GRPC_PRE_RESPONSE_DEADLINE_MILLIS} ms.</strong> Equal to
+ *       the HTTP request-body deadline
  *       ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}),
- *       5 s shorter than the guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds). A
- *       client that keeps sending
- *       complete messages, each within the message bound, without ever ending its request stream, is ended
- *       there as a {@link DispatchStage.RequestBodyDeadlineExceeded} ({@link EventType#REQUEST_BODY_TIMEOUT}),
- *       rendered to the client as gRPC {@code DEADLINE_EXCEEDED}. A client stream the upstream answers only
- *       after the client ends it must therefore end within that deadline.</li>
+ *       and counted, like the message bound, from the moment the attempt hands its body to the upstream
+ *       request. A client that keeps sending complete messages, each within the message bound, without ever
+ *       ending its request stream, is ended there as a {@link DispatchStage.RequestBodyDeadlineExceeded}
+ *       ({@link EventType#REQUEST_BODY_TIMEOUT}), rendered to the client as gRPC {@code DEADLINE_EXCEEDED}.
+ *       A client stream the upstream answers only after the client ends it must therefore end within that
+ *       deadline.</li>
+ * </ul>
+ * <strong>The pre-response cap, {@value #GRPC_PRE_RESPONSE_CAP_MILLIS} ms from the start of the
+ * attempt.</strong> The guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds) is counted
+ * from the start of the attempt, so it counts the connection wait as well; the cap is one second shorter, and
+ * the pre-response deadline never passes later than it. The rule, in full:
+ * <ul>
+ *   <li>An attempt that hands its body over no later than the cap less the deadline — four seconds — after
+ *       its start has the whole pre-response deadline.</li>
+ *   <li>An attempt that hands it over later — where hand-over time plus the deadline would run past the
+ *       guard's timeout — has its deadline at the cap: a client still holding its stream open is ended
+ *       there as its own abort, a second before the guard could end the call as the upstream's, so no client
+ *       stall in that window is ever charged to the upstream. A client that has ended its stream is not ended
+ *       by the deadline at all, however long the connection took: the guard's timeout ends a call the
+ *       upstream then does not answer, as {@link EventType#UPSTREAM_TIMEOUT}, counted by the breaker.</li>
+ *   <li>An attempt whose connection wait reaches the cap is refused when it obtains the connection, before
+ *       its request is sent or a byte of its body is read, as {@link DispatchStage.UpstreamConnectionTooLate}:
+ *       the client was given no time to send anything, so the call is the upstream's
+ *       {@link EventType#UPSTREAM_TIMEOUT}, counted by the breaker — a second before the guard would have
+ *       ended it the same way.</li>
  * </ul>
  * Both stop when the upstream answers — the attempt's send completes — so a bidirectional stream the
  * upstream has answered is bounded by neither. A request stream that ended is not ended by either. Both are
@@ -111,21 +131,30 @@ public final class GrpcDispatchStage {
     public static final long GRPC_MESSAGE_TIMEOUT_MILLIS = 10_000;
 
     /**
-     * How long, in milliseconds from the start of its attempt, a gRPC call's request stream may stay open
-     * before the upstream answers, before it is ended as a {@link DispatchStage.RequestBodyDeadlineExceeded}.
-     * Fixed and derived, never configured: equal to the HTTP request-body deadline
-     * ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}),
-     * 5 s shorter than the guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds), which
-     * starts at the same moment, so a request stream still open when the guard would fire is ended as the
-     * client's first.
+     * How long, in milliseconds from the moment its attempt hands the body to the upstream request, a gRPC
+     * call's request stream may stay open before the upstream answers, before it is ended as a
+     * {@link DispatchStage.RequestBodyDeadlineExceeded} — never later than {@link #GRPC_PRE_RESPONSE_CAP_MILLIS}
+     * after the start of the attempt. Fixed and derived, never configured: equal to the HTTP request-body
+     * deadline ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}).
      */
     public static final long GRPC_PRE_RESPONSE_DEADLINE_MILLIS = 25_000;
+
+    /**
+     * The latest moment, in milliseconds from the start of its attempt, a gRPC call's pre-response deadline
+     * passes, and the connection wait at which an attempt is ended as the upstream's timeout
+     * ({@link DispatchStage.UpstreamConnectionTooLate}) without its body being read: one second shorter than
+     * the guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS} seconds), which starts at the same
+     * moment, so a request stream still open when the guard would fire is always ended as the client's first.
+     * Fixed and derived, never configured.
+     */
+    public static final long GRPC_PRE_RESPONSE_CAP_MILLIS = UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS * 1_000L - 1_000L;
 
     private final DispatchStage dispatchStage;
 
     /**
-     * A gRPC dispatch with the production message bound, {@value #GRPC_MESSAGE_TIMEOUT_MILLIS} ms, and
-     * pre-response deadline, {@value #GRPC_PRE_RESPONSE_DEADLINE_MILLIS} ms.
+     * A gRPC dispatch with the production message bound, {@value #GRPC_MESSAGE_TIMEOUT_MILLIS} ms,
+     * pre-response deadline, {@value #GRPC_PRE_RESPONSE_DEADLINE_MILLIS} ms, and pre-response cap,
+     * {@value #GRPC_PRE_RESPONSE_CAP_MILLIS} ms.
      *
      * @param upstreamClients the boot-built lookup the route's shared forced-h2 client and guard are
      *                        resolved from
@@ -136,12 +165,12 @@ public final class GrpcDispatchStage {
     public GrpcDispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             UpstreamFailureMapper failureMapper) {
         this(upstreamClients, maxBodyBytes, failureMapper, GRPC_MESSAGE_TIMEOUT_MILLIS,
-                GRPC_PRE_RESPONSE_DEADLINE_MILLIS);
+                GRPC_PRE_RESPONSE_DEADLINE_MILLIS, GRPC_PRE_RESPONSE_CAP_MILLIS);
     }
 
     /**
-     * A gRPC dispatch with the given message bound and pre-response deadline — the seam a test shortens
-     * both through.
+     * A gRPC dispatch with the given message bound, pre-response deadline and pre-response cap — the seam a
+     * test shortens all three through.
      *
      * @param upstreamClients           the boot-built lookup the route's shared forced-h2 client and guard
      *                                  are resolved from
@@ -150,14 +179,20 @@ public final class GrpcDispatchStage {
      *                                  failure into the error contract
      * @param messageTimeoutMillis      how long, in milliseconds, the call may wait for each complete
      *                                  request message; positive
-     * @param preResponseDeadlineMillis how long, in milliseconds from the start of its attempt, the call's
-     *                                  request stream may stay open before the upstream answers; longer
-     *                                  than {@code messageTimeoutMillis}
-     * @throws IllegalArgumentException when {@code messageTimeoutMillis} is not positive, or
-     *                                  {@code preResponseDeadlineMillis} is not longer than it
+     * @param preResponseDeadlineMillis how long, in milliseconds from the moment its attempt hands the body
+     *                                  over, the call's request stream may stay open before the upstream
+     *                                  answers; longer than {@code messageTimeoutMillis}
+     * @param preResponseCapMillis      the latest the pre-response deadline passes, in milliseconds from the
+     *                                  start of the attempt, and the connection wait at which the attempt is
+     *                                  ended as the upstream's timeout; no shorter than
+     *                                  {@code preResponseDeadlineMillis}, and shorter than the timeout of the
+     *                                  route's guard
+     * @throws IllegalArgumentException when {@code messageTimeoutMillis} is not positive,
+     *                                  {@code preResponseDeadlineMillis} is not longer than it, or
+     *                                  {@code preResponseCapMillis} is shorter than the deadline
      */
     GrpcDispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, UpstreamFailureMapper failureMapper,
-            long messageTimeoutMillis, long preResponseDeadlineMillis) {
+            long messageTimeoutMillis, long preResponseDeadlineMillis, long preResponseCapMillis) {
         if (messageTimeoutMillis <= DispatchStage.NO_FIRST_MESSAGE_TIMEOUT) {
             throw new IllegalArgumentException("messageTimeoutMillis must be positive: " + messageTimeoutMillis);
         }
@@ -165,8 +200,12 @@ public final class GrpcDispatchStage {
             throw new IllegalArgumentException(
                     "preResponseDeadlineMillis must be longer than the message bound: " + preResponseDeadlineMillis);
         }
+        if (preResponseCapMillis < preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "preResponseCapMillis must not be shorter than the pre-response deadline: " + preResponseCapMillis);
+        }
         this.dispatchStage = new DispatchStage(upstreamClients, maxBodyBytes, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                preResponseDeadlineMillis, messageTimeoutMillis,
+                preResponseDeadlineMillis, messageTimeoutMillis, preResponseCapMillis,
                 Objects.requireNonNull(failureMapper, "failureMapper"));
     }
 
