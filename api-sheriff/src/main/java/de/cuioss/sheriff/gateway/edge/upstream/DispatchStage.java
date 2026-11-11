@@ -151,8 +151,9 @@ import org.jspecify.annotations.Nullable;
  * ends the call as its own abort, never as the guard's timeout. Once the send completed — the upstream
  * answered — the bound no longer applies.
  * <p>
- * <strong>A request stream still open before the guard would fire is ended at the pre-response
- * deadline — as the client's, unless the upstream had stalled it for at least the stall threshold.</strong> A
+ * <strong>The pre-response deadline ends a request stream still open when it passes — as the client's, unless
+ * the upstream had stalled it for at least the stall threshold; only a stream the upstream holds paused until the
+ * guard fires is ended by the guard.</strong> A
  * dispatch with a message bound and a request-body deadline arms that deadline as a pre-response deadline,
  * held to a pre-response cap. Unlike the whole-body deadline it is counted from the moment the attempt hands
  * its body to the upstream request, where the message bound starts too, so the wait for an upstream
@@ -168,8 +169,9 @@ import org.jspecify.annotations.Nullable;
  * at that read, the stream is ended as an {@link UpstreamStalledRequest}, a timeout the breaker counts and the
  * failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. A shorter pause — ordinary flow control, as when
  * a client sends faster than a healthy upstream reads — leaves the deadline the client's, and so does a deadline
- * that passes while the stream is being read, however long the upstream paused it before. It stops when the
- * attempt's send
+ * that passes while the stream is being read, however long the upstream paused it before. A stream the upstream
+ * takes no data for again before the guard's timeout is not ended by the deadline at all: the guard's timeout ends
+ * it, as the upstream's {@link EventType#UPSTREAM_TIMEOUT}. The deadline stops when the attempt's send
  * completes, so it never runs after the hand-over and a stream the upstream has answered is never ended by
  * it. An attempt that obtains its upstream connection with less than a hand-over grace left before the cap,
  * or only once the cap has passed — the connection wait used up the guard's timeout but for the margin the
@@ -334,8 +336,8 @@ public final class DispatchStage {
             "The upstream connection was obtained too close to the pre-response cap; the request was not sent";
 
     /**
-     * Fixed disposition of an attempt whose pre-response deadline passed while the upstream had not taken its
-     * request stream for at least the upstream stall threshold.
+     * Fixed disposition of an attempt whose pre-response deadline passed while the upstream was not taking its
+     * request stream, in a pause that had lasted at least the upstream stall threshold by the read that ended it.
      */
     private static final String STALLED_BY_UPSTREAM =
             "The upstream had stopped taking the request stream for at least the stall threshold when its pre-response deadline passed; the upstream request was aborted";

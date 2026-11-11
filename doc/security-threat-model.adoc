@@ -1591,9 +1591,10 @@ stream-idle bound]):
   faster than a healthy upstream reads, and never ends its stream, is paused for brief waits most of
   the time, and were any pause at the deadline charged to the upstream, that client could open the
   route's breaker for every caller by repeating such calls (CWE-400). So a client cannot get its own
-  deadline counted against the upstream, and an upstream that stalls for the threshold cannot have that
-  stall charged to its clients
-  (link:architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline]).
+  deadline counted against the upstream, and an upstream that holds the stream paused for the
+  threshold across the deadline is charged with that stall. A stall that ends before the deadline
+  passes is not: that deadline is the client's, however long the stall was, as the residual below
+  records (link:architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline]).
 * *A gRPC call that goes quiet.* A gRPC call arms no request-body idle timeout. Until its upstream
   sends the response headers, the message bound, the pre-response deadline and the guard's 30 s
   timeout bound it;
@@ -1610,7 +1611,8 @@ stream-idle bound]):
 The idle timeout and the deadline, the gRPC pre-response deadline its client held included, are
 recorded as `INFO` `ApiSheriff-23` and `ApiSheriff-24` and counted under
 `sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`; a gRPC pre-response deadline that passed while the
-upstream had stalled the stream for at least the stall threshold is counted under
+upstream had the stream paused, in a pause that had lasted at least the stall threshold by the read
+that ended it, is counted under
 `sheriff_errors_total{event="UPSTREAM_TIMEOUT"}` and by the breaker instead; a call ended by the
 stream-idle bound is
 recorded as `INFO` `ApiSheriff-25`; a gRPC call ended by the message bound is recorded as `INFO`
@@ -1627,7 +1629,11 @@ response head the guard's 30 s timeout ends that attempt. On a gRPC call that en
 `UPSTREAM_TIMEOUT` only when the upstream had then held the stream paused without a break for at least
 the 10 s stall threshold; an upstream stall shorter than the threshold across the deadline is still
 recorded as the client's `REQUEST_BODY_TIMEOUT` and skipped by the breaker, so an upstream that pauses
-its readers for several seconds at a time, but less than 10 s, is never counted for it. On an HTTP route
+its readers for several seconds at a time, but less than 10 s, is never counted for it. Nor is a stall
+of any length that ends before the deadline passes: a deadline that passes while the stream is being
+read is the client's, however long the upstream paused the stream earlier, so an upstream that stalls a
+call for 10 s or more and reads again before the deadline leaves that call's deadline end recorded as
+its client's `REQUEST_BODY_TIMEOUT`, skipped by the breaker. On an HTTP route
 the whole-body deadline still ends such a body as the request's `REQUEST_BODY_TIMEOUT`, which the breaker
 does not count. A gRPC call has no bound on its total
 duration: a call that carries a frame at least every five minutes stays open, as long-lived streaming

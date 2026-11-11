@@ -237,8 +237,9 @@ so until the upstream answers the request side of a call is bounded twice
   upstream request is reset and the call ends as `DispatchStage.RequestBodyDeadlineExceeded`
   (`REQUEST_BODY_TIMEOUT`, `408`), rendered trailers-only as `DEADLINE_EXCEEDED` with
   `grpc-message: input-validation`. Only a sustained upstream stall makes the deadline the upstream's:
-  one that passes while the upstream's backpressure has held the request stream paused without a break
-  for at least the upstream stall threshold is the upstream's (below).
+  one that passes while the upstream's backpressure has the request stream paused is the upstream's
+  when, at the read that ends the pause, the pause has lasted without a break at least the upstream
+  stall threshold (below).
 * *The upstream stall threshold*, `GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS` (10 s, equal to the
   message bound). It is not a bound and ends nothing: it decides whose failure a passed pre-response
   deadline is. HTTP/2 flow control pauses a request stream whenever the client gets ahead of the
@@ -304,7 +305,8 @@ the first end of each disposition on a route -- `client-idle`, `client-left`, `b
 is its own `INFO`, and a repeat of the same disposition on the route is a `DEBUG` diagnostic.
 `sheriff_inbound_body_aborts_total{route,disposition}` counts every `INBOUND_BODY_ABORTED` end by its
 disposition, so an idle-client flood is countable apart from departures and failed body streams;
-`sheriff_errors_total` does not count a message-bound end. A gRPC pre-response deadline end the client
+`sheriff_errors_total` still counts every such end, a message-bound end included, under its one
+`event="INBOUND_BODY_ABORTED"` series. A gRPC pre-response deadline end the client
 held is recorded like any passed request-body deadline: `ApiSheriff-24` and
 `sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`. One the upstream stalled for the threshold is
 recorded as the upstream timeout it is, under `sheriff_errors_total{event="UPSTREAM_TIMEOUT"}`, never

@@ -275,8 +275,8 @@ it as the client's own abort, which the upstream's circuit breaker does not coun
   end its stream within 25 s. Waiting for the upstream connection does not count against the client,
   but the deadline never passes later than 29 s after the gateway started the attempt, a second before
   the upstream guard's timeout, so behind a slow connection the client has less than 25 s. The
-  deadline is the client's unless the upstream had stopped taking data for at least 10 s without a
-  break when it passed (see below).
+  deadline is the client's unless it passes while the upstream has stopped taking data and, by the
+  time the upstream takes data again, it has taken none for at least 10 s without a break (see below).
 
 Both bounds stop as soon as the upstream sends its response headers. The upstream guard's 30 s
 timeout runs from the start of the attempt and ends a call whose upstream holds the complete,

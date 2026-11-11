@@ -393,6 +393,58 @@ class DispatchStageTest {
                             refused::getMessage),
                     () -> assertFalse(source.subscribed(), "the refused body never subscribes the inbound stream"));
         }
+
+        /**
+         * The byte-capped body decides by its upstream stall threshold whose failure a passed pre-response deadline
+         * is, so a pre-response deadline — armed with the message clock, no idle clock — handed to a body whose
+         * threshold is not positive would charge every pause at the deadline, however brief, to the upstream. The
+         * body refuses it when it is built, whoever built it: this reaches the body's own check, not the stage's.
+         */
+        @ParameterizedTest(name = "a stall threshold of {0} ms")
+        @ValueSource(longs = {DispatchStage.NO_UPSTREAM_STALL, -1L})
+        @DisplayName("a byte-capped body refuses a pre-response deadline without a positive upstream stall threshold")
+        void byteCappedBodyRefusesAPreResponseDeadlineWithoutAPositiveStallThreshold(long stallMillis) {
+            TestReadStream source = new TestReadStream();
+            ManualTime time = new ManualTime();
+            OptionalLong deadline = OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DEADLINE_MILLIS));
+            DispatchStage.IdleClock messageClock = new DispatchStage.IdleClock(IDLE_TIMEOUT_MILLIS, time, time::nanoTime);
+
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage.ByteCappedBodyStream(source, BODY_CAP, DispatchStage.NO_DECLARED_LENGTH,
+                            () -> fail("a refused body never aborts anything"), _ -> {
+                                // Nothing is forwarded by a body that is never built.
+                            }, DispatchStage.IdleClock.UNARMED, deadline, messageClock, stallMillis));
+
+            assertAll("a pre-response deadline with no positive stall threshold to attribute it by",
+                    () -> assertTrue(refused.getMessage().contains("positive upstream stall threshold"),
+                            refused::getMessage),
+                    () -> assertFalse(source.subscribed(), "the refused body never subscribes the inbound stream"));
+        }
+
+        /**
+         * Matched control: the refusal belongs to the pre-response deadline alone. The same body builds once its
+         * threshold is positive, and a whole-body deadline — armed with the idle clock, never charged to the
+         * upstream — builds without a threshold.
+         */
+        @Test
+        @DisplayName("control: a byte-capped body builds a pre-response deadline with a positive stall threshold, and a whole-body deadline without one")
+        void byteCappedBodyBuildsEachDeadlineWithTheThresholdItNeeds() {
+            ManualTime time = new ManualTime();
+            OptionalLong deadline = OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DEADLINE_MILLIS));
+            DispatchStage.IdleClock clock = new DispatchStage.IdleClock(IDLE_TIMEOUT_MILLIS, time, time::nanoTime);
+
+            assertAll("the accepted deadlines",
+                    () -> assertDoesNotThrow(() -> new DispatchStage.ByteCappedBodyStream(new TestReadStream(), BODY_CAP,
+                            DispatchStage.NO_DECLARED_LENGTH, () -> fail("a body that is only built aborts nothing"), _ -> {
+                                // Nothing is forwarded by a body that is only built.
+                            }, DispatchStage.IdleClock.UNARMED, deadline, clock, STALL_MILLIS),
+                            "a pre-response deadline with a positive stall threshold"),
+                    () -> assertDoesNotThrow(() -> new DispatchStage.ByteCappedBodyStream(new TestReadStream(), BODY_CAP,
+                            DispatchStage.NO_DECLARED_LENGTH, () -> fail("a body that is only built aborts nothing"), _ -> {
+                                // Nothing is forwarded by a body that is only built.
+                            }, clock, deadline, DispatchStage.IdleClock.UNARMED, DispatchStage.NO_UPSTREAM_STALL),
+                            "a whole-body deadline needs no stall threshold"));
+        }
     }
 
     @Nested
@@ -1645,6 +1697,38 @@ class DispatchStageTest {
                             "the stream was still paused by the upstream when the deadline passed"),
                     () -> assertSame(probe.capped.upstreamStall(), probe.failure.get()),
                     () -> assertNull(probe.capped.clientAbort(), "the upstream's stall is never a client abort"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the read that ended the body never reaches the inbound stream"));
+        }
+
+        /**
+         * The same window from below the stall threshold. The upstream stops taking data {@link #PAUSED_AT_MILLIS}
+         * after the clock's start, less than the threshold before the deadline, and the deadline timer fires between
+         * the two passed-deadline checks of the read that ends the pause. The resume decides the passed deadline by
+         * the length the pause has reached as it ends, and a pause that short is flow control: the second check ends
+         * the body as the client's, never as the upstream's stall.
+         */
+        @Test
+        @DisplayName("a deadline passing inside the read that ends a pause shorter than the stall threshold is the client's")
+        void deadlinePassingInsideTheReadEndingAShortPauseIsTheClients() {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            long pausedAt = sendSteadily(probe, PAUSED_AT_MILLIS);
+            probe.capped.pause();
+            long pauseMillis = DEADLINE_MILLIS - pausedAt;
+            probe.time.advanceMillis(pauseMillis - 1);
+            boolean quietBeforeTheDeadline = probe.failure.get() == null && probe.aborts.get() == 0;
+
+            probe.capped.resume(() -> probe.time.advanceMillis(1));
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a deadline passing between the passed-deadline checks of the read ending a short pause",
+                    () -> assertTrue(pauseMillis < STALL_MILLIS, "the pause the read ends is shorter than the threshold"),
+                    () -> assertTrue(quietBeforeTheDeadline, "nothing ends the body before its deadline"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "a pause below the threshold is not the upstream's stall, even inside the resuming read"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertNull(probe.capped.upstreamStall(), "nothing is charged to the upstream"),
                     () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
                     () -> assertTrue(probe.source.paused(), "the read that ended the body never reaches the inbound stream"));
         }

@@ -164,7 +164,7 @@ upstream request. It ends the client response with `grpc-status: 4` (`DEADLINE_E
 `grpc-message: stream-idle-timeout`. Connection-level HTTP/2 `PING` frames do not count.
 
 [[grpc-message-bound]]
-=== Amendment: until its upstream answers, a gRPC call is bounded per complete request message, and a request stream still open before the guard ends at the pre-response deadline, as the client's unless the upstream stalled it for the stall threshold
+=== Amendment: until its upstream answers, a gRPC call is bounded per complete request message and by a pre-response deadline, which is the client's unless the upstream stalled the request stream for the stall threshold
 
 *The invariant.* A gRPC call ends as an upstream failure only when the upstream had everything the
 client was going to send, never gave the client the time to send it, or stopped taking what the client
@@ -430,10 +430,11 @@ for the property.
 * An attempt whose upstream connection took longer than 28 s ends as `UPSTREAM_TIMEOUT` before the
   guard would have ended it, so an upstream that connects that slowly and would then answer within the
   last two seconds is not given them.
-* An upstream stall shorter than the 10 s threshold across the pre-response deadline is still the
-  client's `REQUEST_BODY_TIMEOUT`, which the breaker skips: an upstream that stops reading for several
-  seconds at a time, but never for 10 s, is not counted for it, and its clients see `input-validation`
-  where the wait was partly the upstream's.
+* An upstream stall shorter than the 10 s threshold across the pre-response deadline, or one of any
+  length that ends before the deadline passes, leaves the deadline the client's `REQUEST_BODY_TIMEOUT`,
+  which the breaker skips: an upstream that stops reading for several seconds at a time, but never for
+  10 s across the deadline, is not counted for it, and its clients see `input-validation` where the wait
+  was partly the upstream's.
 * The gRPC body stream reads every message's length prefix as it crosses, which adds per-chunk work on
   the gRPC path. It copies no payload.
 * Each body stream carries a timer and the state to judge it. One timer is pending per stream at a

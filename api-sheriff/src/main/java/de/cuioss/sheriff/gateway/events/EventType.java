@@ -137,8 +137,10 @@ public enum EventType {
      * event.
      * <p>
      * Contrast {@link #INBOUND_BODY_ABORTED}, which is a body stream that failed — this event is a body
-     * that is still open but stopped arriving — and {@link #UPSTREAM_TIMEOUT}, which is the whole
-     * dispatch exceeding the upstream guard's timeout and is attributed to the upstream. This event is
+     * that is still open but stopped arriving — and {@link #UPSTREAM_TIMEOUT}, which is attributed to the
+     * upstream: an attempt exceeding the upstream guard's timeout, and on a gRPC route also the upstream's
+     * sustained stall at the pre-response deadline above and an upstream connection obtained too late to
+     * leave the client time to send. This event is
      * attributed to the request, never to the upstream, which was given no request bytes to answer: it
      * is not counted as a failure by the route's circuit breaker and is recorded by it as a success,
      * and it is never retried.
@@ -165,7 +167,16 @@ public enum EventType {
     UPSTREAM_ERROR(EventCategory.UPSTREAM, 502),
     /** The circuit breaker is open; the upstream was not called. */
     UPSTREAM_CIRCUIT_OPEN(EventCategory.UPSTREAM, 503),
-    /** The upstream call exceeded its configured timeout. */
+    /**
+     * An attempt to the upstream timed out: the upstream guard's fixed per-attempt timeout, or another timeout
+     * the attempt failed with, passed. On a {@code protocol: grpc} route the same event reports two earlier
+     * ends the gRPC dispatch attributes to the upstream: a pre-response deadline acted on while the upstream's
+     * backpressure had held the request stream paused, without a break, for at least the gRPC upstream stall
+     * threshold ({@code DispatchStage.UpstreamStalledRequest}), and an attempt whose upstream connection came
+     * too close to, or past, the pre-response cap to leave the client time to send, refused unsent
+     * ({@code DispatchStage.UpstreamConnectionTooLate}). It is attributed to the upstream: the route's circuit
+     * breaker counts it as a failure.
+     */
     UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504),
 
     // --- Pre-trust internal failure (counted, never rendered as itself) ---

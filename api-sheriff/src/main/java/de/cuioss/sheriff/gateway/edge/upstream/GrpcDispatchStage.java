@@ -104,9 +104,9 @@ import io.vertx.core.streams.ReadStream;
  *       ending its request stream, is ended there as a {@link DispatchStage.RequestBodyDeadlineExceeded}
  *       ({@link EventType#REQUEST_BODY_TIMEOUT}), rendered to the client as gRPC {@code DEADLINE_EXCEEDED}.
  *       A client stream the upstream answers only after the client ends it must therefore end within that
- *       deadline. A deadline that passes while the upstream's backpressure has had the stream paused for at
- *       least the upstream stall threshold is the upstream's instead (see above), rendered as
- *       {@code DEADLINE_EXCEEDED} too.</li>
+ *       deadline. A deadline that passes while the upstream's backpressure has the stream paused is the
+ *       upstream's instead when, at the read that ends the pause, the pause has lasted at least the upstream
+ *       stall threshold (see above), rendered as {@code DEADLINE_EXCEEDED} too.</li>
  *   <li><strong>The upstream stall threshold, {@value #GRPC_UPSTREAM_STALL_MILLIS} ms.</strong> Equal to the
  *       message bound: the span the gateway already treats as no progress on the client's side is the span it
  *       treats as no progress on the upstream's. It is not a bound and ends nothing; it only decides whose failure
@@ -171,19 +171,27 @@ public final class GrpcDispatchStage {
 
     /**
      * How long, in milliseconds from the moment its attempt hands the body to the upstream request, a gRPC
-     * call's request stream may stay open before the upstream answers, before it is ended as a
-     * {@link DispatchStage.RequestBodyDeadlineExceeded} — never later than {@link #GRPC_PRE_RESPONSE_CAP_MILLIS}
-     * after the start of the attempt. Fixed and derived, never configured: equal to the HTTP request-body
-     * deadline ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}).
+     * call's request stream may stay open before the upstream answers; the deadline then passes, never later
+     * than {@link #GRPC_PRE_RESPONSE_CAP_MILLIS} after the start of the attempt. A stream being read when it
+     * passes is ended at once as the client's {@link DispatchStage.RequestBodyDeadlineExceeded}. A stream the
+     * upstream's backpressure has paused then is ended at the upstream's next read: as the upstream's
+     * {@link DispatchStage.UpstreamStalledRequest} when the pause has by then lasted, without a break, at least
+     * {@link #GRPC_UPSTREAM_STALL_MILLIS}, as the client's {@link DispatchStage.RequestBodyDeadlineExceeded}
+     * otherwise; when the upstream reads no more before the guard's timeout, that timeout ends it. Fixed and
+     * derived, never configured: equal to the HTTP request-body deadline
+     * ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()}).
      */
     public static final long GRPC_PRE_RESPONSE_DEADLINE_MILLIS = 25_000;
 
     /**
      * The latest moment, in milliseconds from the start of its attempt, a gRPC call's pre-response deadline
      * passes: one second shorter than the guard's timeout ({@link UpstreamGuards#UPSTREAM_TIMEOUT_SECONDS}
-     * seconds), which starts at the same moment, so a request stream still open when the guard would fire is
-     * always ended at the deadline first — as the client's, unless the upstream had stalled the stream for at
-     * least {@link #GRPC_UPSTREAM_STALL_MILLIS} by then. Fixed and derived, never configured.
+     * seconds), which starts at the same moment, so the deadline always passes before the guard would fire. A
+     * request stream being read when it passes is ended there, as the client's; one the upstream's backpressure
+     * has paused is ended at the upstream's next read, as the client's unless the pause has lasted at least
+     * {@link #GRPC_UPSTREAM_STALL_MILLIS} by then; and one the upstream holds paused from before the deadline
+     * until the guard fires is ended by the guard's timeout, as the upstream's. Fixed and derived, never
+     * configured.
      */
     public static final long GRPC_PRE_RESPONSE_CAP_MILLIS = UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS * 1_000L - 1_000L;
 
