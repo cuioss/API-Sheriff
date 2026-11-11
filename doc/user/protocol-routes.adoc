@@ -278,12 +278,15 @@ it as the client's own abort, which the upstream's circuit breaker does not coun
 
 Both bounds stop as soon as the upstream sends its response headers. The upstream guard's 30 s
 timeout runs from the start of the attempt and ends a call whose upstream holds the complete,
-half-closed request and does not answer, however long its connection took; that call ends with
-`DEADLINE_EXCEEDED` and `grpc-message: upstream`, and the breaker counts it. So does a call whose
-upstream connection took 29 s: it is ended without being sent, a second before the guard would end it
-the same way. After the response headers, a client-streaming
-or bidirectional call may pause between its messages: the call stays open while a frame travels in
-either direction, and a call that carries no frame for five minutes is ended with `grpc-status: 4`
+half-closed request and does not answer, and a call whose wait for an upstream connection or HTTP/2
+stream slot itself lasts the 30 s; either ends with `DEADLINE_EXCEEDED` and `grpc-message: upstream`,
+and the breaker counts it. So does a call whose upstream connection took longer than 28 s: the
+deadline always leaves the client at least one second after the gateway hands the call over, so a call
+that would get less than that before the 29 s cap is ended without being sent, before the guard would
+end it the same way. A client that had already ended its request stream is therefore not ended by the
+deadline unless the gateway takes longer than that second to pass its end on. After the response
+headers, a client-streaming or bidirectional call may pause between its messages: the call stays
+open while a frame travels in either direction, and a call that carries no frame for five minutes is ended with `grpc-status: 4`
 (`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout` in place of the upstream's trailers.
 HTTP/2 `PING` frames do not count, and the call's `grpc-timeout` is not honoured. A service whose
 calls stay silent for longer than five minutes has to send messages to keep them open; every bound

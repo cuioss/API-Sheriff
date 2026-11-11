@@ -239,21 +239,27 @@ failure for the circuit breaker, and neither is retried. Both are fixed. An HTTP
 it keeps the idle timeout and the whole-body deadline above. Because the 30 s guard timeout runs from
 the start of the attempt and so counts the connection wait, the pre-response deadline is held to
 `GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS`, 29 s from the start of the attempt: a hand-over within
-the first 4 s keeps the whole 25 s, a later one has its deadline at the cap, so a client still holding
-its stream open is always ended as the client's a second before the guard. A client that has ended its
-stream is never ended by the deadline, however long the connection took; if the upstream then does not
-answer, the guard ends the call as `UPSTREAM_TIMEOUT`, which the circuit breaker counts. An attempt that
-obtains its connection only once the cap has passed is ended at once, its request unsent and its body
-unread, as `DispatchStage.UpstreamConnectionTooLate` — the same `UPSTREAM_TIMEOUT`, counted by the
-breaker. The guard's timeout is therefore reached only by an upstream holding a complete, half-closed
-request.
+the first 4 s keeps the whole 25 s, a later one no later than 28 s has its deadline at the cap, so a
+client still holding its stream open is always ended as the client's a second before the guard. The
+deadline never leaves less than the fixed hand-over grace,
+`GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS` (1 s), after the hand-over: an attempt that obtains its
+connection later than 28 s — less than the grace before the cap, or past it — is ended at once, its
+request unsent and its body unread, as `DispatchStage.UpstreamConnectionTooLate`, an `UPSTREAM_TIMEOUT`
+the breaker counts. The deadline ends only a request stream whose end has not reached the dispatch when
+it passes, so a client that had already ended its stream at the hand-over is ended by it only if the
+gateway takes longer than the grace to deliver that end; if the upstream then does not answer the
+complete request, the guard ends the call as `UPSTREAM_TIMEOUT`, which the circuit breaker counts. The
+guard's timeout is therefore reached in two ways, both the upstream's: by an upstream holding a complete,
+half-closed request it does not answer, and by a wait for an upstream connection or HTTP/2 stream slot
+that itself lasts the 30 s, before any body is handed over.
 
 [[_grpc_stream_idle_bound]]
 *gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages, a
 `protocol: grpc` call arms no request-body idle timeout. Until its response headers arrive it is
 bounded by the message bound and the pre-response deadline (<<_grpc_message_bound>>), and by the
 upstream guard's fixed 30 s per-attempt timeout, which runs from the start of the attempt and bounds
-an upstream that holds a complete, half-closed request. From then on a 5-minute
+an upstream that holds a complete, half-closed request, and a connection or stream-slot wait that
+lasts it. From then on a 5-minute
 bidirectional frame-idle timer (HTTP/2 `PING` excluded) bounds the call. Expiry resets the upstream request
 and ends the client stream with trailers `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message:
 stream-idle-timeout`

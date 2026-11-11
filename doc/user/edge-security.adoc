@@ -592,9 +592,10 @@ deployment that never writes it keeps the behaviour shown here.
   gateway hands the body to the upstream, so the wait for an upstream connection is not charged to the
   client -- but it passes no later than 29 s after the upstream attempt started, a second before the
   upstream guard's timeout: a call whose request stream is still open then is ended with
-  `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message: input-validation`, and a call whose
-  upstream connection itself took 29 s is ended without being sent, as the upstream's timeout
-  (`grpc-status: 4`, `grpc-message: upstream`). Not configurable. See
+  `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message: input-validation`. The deadline always
+  leaves at least 1 s after the hand-over, so a call whose upstream connection took longer than 28 s
+  -- less than that second before the 29 s cap, or past it -- is ended without being sent, as the
+  upstream's timeout (`grpc-status: 4`, `grpc-message: upstream`). Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline].
 
 | gRPC message bound
@@ -616,7 +617,8 @@ deployment that never writes it keeps the behaviour shown here.
   `grpc-message: stream-idle-timeout`. A frame in either direction keeps the call open; HTTP/2 `PING`
   frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
   gRPC message bound and the request-body deadline bound the call instead, and the upstream guard's
-  30 s timeout an upstream that holds the complete, half-closed request. Not configurable. See
+  30 s timeout an upstream that holds the complete, half-closed request, or a connection or
+  stream-slot wait that lasts the 30 s. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 | Unrouted-`404` response floor

@@ -62,10 +62,13 @@ public final class UpstreamGuards {
      * whose client does not send its next complete request message in time, or still holds its request
      * stream open at the deadline, is ended as the client's abort ({@link DispatchStage.RequestMessageTimeout}
      * or {@link DispatchStage.RequestBodyDeadlineExceeded}) before this timeout could end it as the upstream's.
-     * The wait for an upstream connection is counted by this timeout alone, and an attempt whose wait reaches
-     * the cap is ended as the upstream's timeout ({@link DispatchStage.UpstreamConnectionTooLate}) without its
-     * body being read. On a gRPC call this timeout is therefore reached only once the request stream has
-     * ended: it bounds an upstream holding a complete, half-closed request.
+     * The wait for an upstream connection is counted by this timeout alone, and an attempt whose wait leaves
+     * less than the hand-over grace ({@link GrpcDispatchStage#GRPC_HAND_OVER_GRACE_MILLIS}) before the cap, or
+     * reaches the cap, is ended as the upstream's timeout ({@link DispatchStage.UpstreamConnectionTooLate})
+     * without its request being sent or its body read. On a gRPC call this timeout is therefore reached in two
+     * ways, both the upstream's: by an upstream holding a complete, half-closed request it does not answer, and
+     * by a wait for an upstream connection or HTTP/2 stream slot that itself lasts this whole timeout, before
+     * any body is handed over.
      */
     public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
 

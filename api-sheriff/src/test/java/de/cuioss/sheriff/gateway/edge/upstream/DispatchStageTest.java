@@ -158,7 +158,7 @@ class DispatchStageTest {
             Route route = route(id, upstream, false);
             return new Routed(route, new DispatchStage(clientsFor(route, client, guard), BODY_CAP,
                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, messageTimeoutMillis,
-                    DispatchStage.NO_PRE_RESPONSE_CAP, failureMapper));
+                    DispatchStage.NO_PRE_RESPONSE_CAP, DispatchStage.NO_HAND_OVER_GRACE, failureMapper));
         }
 
         private static Route route(String id, ResolvedUpstream upstream, boolean retryEnabled) {
@@ -243,6 +243,8 @@ class DispatchStageTest {
 
         private static final long IDLE_TIMEOUT_MILLIS = 300L;
         private static final long DEADLINE_MILLIS = 6 * IDLE_TIMEOUT_MILLIS;
+        /** A hand-over grace a pre-response deadline accepts: positive and shorter than the deadline. */
+        private static final long GRACE_MILLIS = IDLE_TIMEOUT_MILLIS / 3;
 
         private final UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
@@ -270,7 +272,7 @@ class DispatchStageTest {
                             DEADLINE_MILLIS, failureMapper)),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, IDLE_TIMEOUT_MILLIS,
-                                    DEADLINE_MILLIS, failureMapper),
+                                    DEADLINE_MILLIS, GRACE_MILLIS, failureMapper),
                             "a message bound carries the deadline as the pre-response deadline, held to a cap"),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                             DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, failureMapper)));
@@ -287,9 +289,38 @@ class DispatchStageTest {
         void refusesAPreResponseCapShorterThanTheDeadline(long shortOfTheDeadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS - shortOfTheDeadlineMillis, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS - shortOfTheDeadlineMillis, GRACE_MILLIS, failureMapper));
 
             assertTrue(refused.getMessage().contains("pre-response deadline needs a cap"), refused::getMessage);
+        }
+
+        /**
+         * A hand-over grace that is not positive would dispatch a hand-over just short of the cap with a deadline
+         * too short for an end the client already sent to arrive; one no shorter than the deadline would refuse
+         * even a prompt hand-over.
+         */
+        @ParameterizedTest(name = "a grace of {0} ms")
+        @ValueSource(longs = {DispatchStage.NO_HAND_OVER_GRACE, -1L, DEADLINE_MILLIS})
+        @DisplayName("refuses a pre-response deadline with a hand-over grace that is not positive or not shorter than itself")
+        void refusesAPreResponseGraceNotPositiveOrNotShorterThanTheDeadline(long graceMillis) {
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, graceMillis, failureMapper));
+
+            assertTrue(refused.getMessage().contains("positive hand-over grace"), refused::getMessage);
+        }
+
+        /** A grace with no pre-response deadline to hold would be silently ignored, so it is refused. */
+        @ParameterizedTest(name = "idle timeout {0} ms, deadline {1} ms")
+        @CsvSource({"300, 1800", "0, 0"})
+        @DisplayName("refuses a hand-over grace on a stage that arms no pre-response deadline")
+        void refusesAGraceWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
+                            IDLE_TIMEOUT_MILLIS, DispatchStage.NO_PRE_RESPONSE_CAP, GRACE_MILLIS, failureMapper));
+
+            assertTrue(refused.getMessage().contains("hand-over grace needs a pre-response deadline"),
+                    refused::getMessage);
         }
 
         /** A cap with no pre-response deadline to hold would be silently ignored, so it is refused. */
@@ -299,7 +330,7 @@ class DispatchStageTest {
         void refusesACapWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, DispatchStage.NO_HAND_OVER_GRACE, failureMapper));
 
             assertTrue(refused.getMessage().contains("needs a pre-response deadline"), refused::getMessage);
         }
@@ -1232,7 +1263,8 @@ class DispatchStageTest {
 
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                            DispatchStage.NO_BODY_DEADLINE, -1L, DispatchStage.NO_PRE_RESPONSE_CAP, failureMapper));
+                            DispatchStage.NO_BODY_DEADLINE, -1L, DispatchStage.NO_PRE_RESPONSE_CAP,
+                            DispatchStage.NO_HAND_OVER_GRACE, failureMapper));
 
             assertAll("the message bound of a stage",
                     () -> assertTrue(refused.getMessage().contains("messageTimeoutMillis"),
@@ -1240,7 +1272,7 @@ class DispatchStageTest {
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE,
                                     DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, DispatchStage.NO_PRE_RESPONSE_CAP,
-                                    failureMapper),
+                                    DispatchStage.NO_HAND_OVER_GRACE, failureMapper),
                             "the unarmed bound is a valid bound"));
         }
 
