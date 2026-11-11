@@ -9,7 +9,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">BFF runtime request dispatch flow, SessionBinding seam, and IdP-facing controls</title>
-  <desc id="desc">A multi-track flow diagram of the BFF runtime. On the left, BffRuntime (built at boot by BffRuntimeProducer, or inert without a global oidc block) splits incoming requests into two tracks. The top track matches ReservedPathRegistry by exact path before the route table (login, callback, widening, user, logout on the OIDC host; backchannel-logout and /bff/jwks on every host; bypassing the URL-parameter value pipeline). The bottom track mediates routed requests via SessionAuthenticationStage and CsrfDefence. Both tracks converge on the SessionBinding seam (bind, persist, persistReissuingCookie with absolute and idle deadlines), realized either by server mode (opaque handle + bounded InMemorySessionStore + 1-minute sweep) or cookie mode (AES-256-GCM sealed cookie + HMAC-SHA-256 activity cookie), and drive token-sheriff-client with boot-assembled IdP controls: private_key_jwt (or client_secret_basic), Pushed Authorization Requests (PAR) on every authorization seam, DPoP SenderConstraint, and BoundTokenEndpointClient requiring token_type DPoP with matching cnf.jkt (RFC 9470 step-up is assembled but not currently driven by the live edge).</desc>
+  <desc id="desc">A multi-track flow diagram of the BFF runtime. On the left, BffRuntime (built at boot by BffRuntimeProducer, or inert without a global oidc block) splits incoming requests into two tracks. The top track matches ReservedPathRegistry by exact path before the route table (login, callback, widening, user, logout on the OIDC host; backchannel-logout and /bff/jwks on every host; bypassing the URL-parameter value pipeline). The bottom track mediates routed requests via SessionAuthenticationStage and CsrfDefence. Both tracks converge on the SessionBinding seam (bind, persist, persistReissuingCookie with absolute and idle deadlines), realized either by server mode (opaque handle + bounded InMemorySessionStore + 1-minute sweep) or cookie mode (AES-256-GCM sealed cookie + HMAC-SHA-256 activity cookie), and drive token-sheriff-client with boot-assembled IdP controls: private_key_jwt (or client_secret_basic), Pushed Authorization Requests (PAR) on every authorization seam, DPoP SenderConstraint, and TokenEndpointClient requiring token_type DPoP with matching cnf.jkt (RFC 9470 step-up is assembled but not currently driven by the live edge).</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -100,9 +100,9 @@
   <text x="1008" y="208" class="sub">every auth seam; fail → 502 (132)</text>
   <line class="dash" x1="892" y1="220" x2="1124" y2="220"/>
   <text x="1008" y="240" class="mono">3. DPoP SenderConstraint</text>
-  <text x="1008" y="258" class="mono">4. BoundTokenEndpointClient</text>
+  <text x="1008" y="258" class="mono">4. TokenEndpointClient (engine)</text>
   <text x="1008" y="274" class="sub">requires token_type=DPoP + cnf.jkt</text>
-  <text x="1008" y="290" class="sub">unbound callback → 400 (WARN 134)</text>
+  <text x="1008" y="290" class="sub">unbound callback → 400</text>
 
   <!-- Footer caption -->
   <text x="580" y="346" class="caption">OIDC discovery metadata is resolved lazily on first engine use so the gateway boots without a live IdP; GatewayJson serializes BFF JSON bodies.</text>

@@ -797,6 +797,7 @@ class PushedAuthorizationRequestsTest {
                 .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
                 .scopes(SCOPES).redirectUri(REDIRECT_URI)
                 .allowInsecureHttp(true)
+                .allowLoopbackEgress(true)
                 .build();
     }
 
@@ -811,6 +812,7 @@ class PushedAuthorizationRequestsTest {
                 .authMethod(ClientAuthMethod.PRIVATE_KEY_JWT)
                 .scopes(SCOPES).redirectUri(REDIRECT_URI)
                 .allowInsecureHttp(true)
+                .allowLoopbackEgress(true)
                 .readTimeoutSeconds(readTimeoutSeconds)
                 .build();
     }

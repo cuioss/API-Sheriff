@@ -611,6 +611,21 @@ An omitted block and an omitted key both mean verification on.
 *RP-initiated logout is not on this leg*: it hands the browser an `end_session_endpoint` redirect and
 opens no connection to the identity provider.
 
+[[_oidc_back_channel_address_policy]]
+==== Which addresses the back-channel may dial
+
+Since token-sheriff 0.9.9 the engine applies a host-address SSRF guard to every call of this leg, on
+the host actually dialled (after the `oidc.back_channel_origin` re-targeting). It refuses a host that
+resolves to a loopback, link-local, site-local, unique-local, shared-address, any-local or multicast
+address. An identity provider on a private network -- the usual cluster-internal deployment -- is
+therefore reachable only when its host is listed in
+link:authentication-and-oidc.adoc#_oidc_allowed_egress_hosts[`oidc.allowed_egress_hosts`]. The
+gateway derives nothing for this leg: an omitted list leaves the secure default in force, and a
+deployment that relied on the earlier, unguarded behaviour must add the entry. The failure surfaces at
+the first discovery or login as `SSRF egress blocked`, and neither TLS posture key above changes it.
+TLS (`oidc_verify_hostname`, `oidc_tls_profile`) decides whether a certificate is trusted;
+`allowed_egress_hosts` decides whether an address may be dialled. Neither widens the other.
+
 [[_oidc_verify_hostname_scope]]
 ==== What disabling OIDC hostname verification does and does not do
 

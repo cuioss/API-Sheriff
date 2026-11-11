@@ -19,6 +19,8 @@ import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.discovery._ProviderMetadata_DslJsonConverter;
 import de.cuioss.sheriff.token.client.flow.ParResponse;
 import de.cuioss.sheriff.token.client.flow._ParResponse_DslJsonConverter;
+import de.cuioss.sheriff.token.client.internal.AccessTokenConfirmation;
+import de.cuioss.sheriff.token.client.internal._AccessTokenConfirmation_DslJsonConverter;
 import de.cuioss.sheriff.token.client.token.TokenErrorResponse;
 import de.cuioss.sheriff.token.client.token.TokenResponse;
 import de.cuioss.sheriff.token.client.token.UserInfoResponse;
@@ -33,7 +35,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * deserialize IdP responses in a GraalVM native image.
  * <p>
  * The engine parses every back-channel IdP response (OIDC discovery, the token
- * endpoint success response, the token endpoint error response, PAR, and userinfo)
+ * endpoint success response, the token endpoint error response, PAR, userinfo, and the
+ * {@code cnf} confirmation of a sender-constrained access token)
  * with a DSL-JSON instance built by
  * {@code de.cuioss.sheriff.token.commons.transport.ParserConfig}. For each response
  * type the DSL-JSON annotation processor emits a compile-time
@@ -79,11 +82,13 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         _TokenResponse_DslJsonConverter.class,
         _TokenErrorResponse_DslJsonConverter.class,
         _UserInfoResponse_DslJsonConverter.class,
+        _AccessTokenConfirmation_DslJsonConverter.class,
         ProviderMetadata.class,
         ParResponse.class,
         TokenResponse.class,
         TokenErrorResponse.class,
-        UserInfoResponse.class
+        UserInfoResponse.class,
+        AccessTokenConfirmation.class
 })
 public final class TokenClientDslJsonReflection {
 

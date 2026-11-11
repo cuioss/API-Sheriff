@@ -175,7 +175,7 @@ public final class LogoutTokenValidator {
 
     private static List<String> audience(TokenContent token) {
         ClaimValue aud = token.getClaims().get(CLAIM_AUD);
-        if (aud == null || aud.isNotPresentForClaimValueType()) {
+        if (aud == null) {
             return List.of();
         }
         if (aud.getType() == ClaimValueType.STRING_LIST) {
@@ -192,7 +192,7 @@ public final class LogoutTokenValidator {
     /** Reads a date-typed claim; empty when the claim is absent or carries no date. */
     private static Optional<Instant> instantClaim(TokenContent token, String name) {
         ClaimValue value = token.getClaims().get(name);
-        if (value == null || value.isNotPresentForClaimValueType()) {
+        if (value == null) {
             return Optional.empty();
         }
         OffsetDateTime dateTime = value.getDateTime();
@@ -282,7 +282,7 @@ public final class LogoutTokenValidator {
 
     private static Optional<String> claim(TokenContent token, String name) {
         ClaimValue value = token.getClaims().get(name);
-        if (value == null || value.isNotPresentForClaimValueType()) {
+        if (value == null) {
             return Optional.empty();
         }
         String original = value.getOriginalString();

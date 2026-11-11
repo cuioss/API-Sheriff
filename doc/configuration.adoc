@@ -490,6 +490,11 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   code exchange, refresh and revocation are sent to this origin.
                                    #   An origin only (scheme, host, optional port), https unless
                                    #   back_channel_allow_insecure_http: true (ADR-0069)
+  # allowed_egress_hosts: [idp.internal]   # OPTIONAL. Hosts the GATEWAY may dial although they resolve
+                                   #   to a private or loopback address, which is refused by default.
+                                   #   Host-exact, no port; nothing is derived from issuer or
+                                   #   back_channel_origin, so an IdP on a private network needs this
+                                   #   (ADR-0082)
   client_id: api-sheriff
   client_authentication:           # private_key_jwt client authentication (the default)
     key_file: /etc/sheriff/keys/client-auth.pem   # PEM file on a mount: one unencrypted PKCS#8

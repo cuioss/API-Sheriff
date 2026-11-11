@@ -73,6 +73,12 @@ token_validation:
   issuer's own origin; an endpoint advertised on another origin is dialled as advertised. It is an
   origin only, and `https` unless `back_channel_allow_insecure_http: true`.
 * *`token_validation.issuers[].jwks.url`* points at the internal host directly.
+* *`allowed_egress_hosts`* names the internal host (`idp.internal` above) when it resolves to a private
+  address. The gateway refuses to dial a loopback, link-local or private address for its own calls to
+  the identity provider unless the host is listed, and it derives nothing from `issuer` or
+  `back_channel_origin`. A gateway whose identity provider sits on a private network and omits the
+  list cannot discover, push, exchange or refresh; the log shows `SSRF egress blocked`. Host only, no
+  port.
 
 No DNS trick is needed: neither the browser nor the gateway has to resolve a name the other uses.
 The identity provider must publish one static identity -- for Keycloak a full-URL `KC_HOSTNAME` and
@@ -341,12 +347,13 @@ Otherwise:
   and the session stays as it was.
 * *At a refresh* -- near expiry, or for a scope a route needs -- the session ends (in cookie mode its
   cookie is cleared), and the request is answered as `oidc.session.refresh.on_failure` says.
-* *In the log* the gateway writes `WARN` `ApiSheriff-134`, naming the leg and the reason and no token
-  material.
+* *In the log* a login or widening refusal is a `DEBUG` line of the callback, and a refresh refusal is
+  the session end `ApiSheriff-111` with the reason `redeemed-response-refused`. The refusal is the
+  token engine's own and writes no record of its own.
 
-An identity provider that issues *opaque* access tokens is refused the same way: there is no `cnf`
-to read. The fix is at the identity provider: require DPoP-bound access tokens for the client. This
-holds in both client-authentication modes.
+An identity provider that issues *opaque* access tokens fails every login: the engine validates the
+access token as a JWT. The fix is at the identity provider: require DPoP-bound access tokens for the
+client. This holds in both client-authentication modes.
 
 [[replacing-a-key]]
 == Replacing a signing key

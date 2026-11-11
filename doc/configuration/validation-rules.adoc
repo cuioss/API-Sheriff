@@ -155,12 +155,13 @@ Part of the link:../configuration.adoc[Configuration Model]; the annotated link:
   named relative to its `endpoint` block.
 +
 --
-In `gateway.yaml` the schema declares 19 such keys, of which 18 declare string items and are the
+In `gateway.yaml` the schema declares 20 such keys, of which 19 declare string items and are the
 usable set: `allowed_methods` (global and anchor), `security_filter.allowed_paths`, `security_filter.allowed_header_names`,
 `security_filter.blocked_header_names`, `security_filter.allowed_content_types`,
 `security_headers.cors.allowed_origins`, `security_headers.cors.allowed_methods`,
 `security_headers.cors.allowed_headers`, `tls.cipher_suites`, `tls.alpn`,
 `forwarded.trusted_proxies`, `token_validation.issuers[].jwks.allowed_egress_hosts`, `oidc.scopes`,
+`oidc.allowed_egress_hosts`,
 `oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims`,
 `oidc.user_info.default_view`, `cookies.allow` (global and anchor) and `cookies.additional_origins`.
 
@@ -261,6 +262,11 @@ bare-reference check has read the document.
   unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime
   builds its identity-provider client, before any dial (see
   link:tls-and-egress.adoc#_oidc_back_channel_posture[The BFF OIDC back-channel]).
+* An `oidc.allowed_egress_hosts` entry that is blank, whitespace-only or carries a `:port` suffix
+  fails the boot at `/oidc/allowed_egress_hosts`, naming the entry (escaped); a bare IPv6 literal is
+  admitted. An omitted or empty list is admitted and exempts no host: the token engine's SSRF egress
+  guard then refuses every IdP call to a loopback or private address at runtime (see the
+  link:authentication-and-oidc.adoc#_oidc_allowed_egress_hosts[`allowed_egress_hosts`] field reference).
 * A `token_validation.issuers[].jwks.allowed_egress_hosts` entry of an `http`-sourced issuer that is
   blank, whitespace-only or carries a `:port` suffix fails the boot, naming the entry (a bare IPv6
   literal is admitted). An `http`-sourced issuer that declares no list must name a host in its

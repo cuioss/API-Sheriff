@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.JWKS_PATH;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.MEDIATED_PATH;
-import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.TOKEN_NOT_BOUND_RECORD;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.TOKEN_REFRESHED_RECORD;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.WAIT_INTO_REFRESH_WINDOW_SECONDS;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.assertFrontChannelRequestRefused;
@@ -86,8 +85,8 @@ import org.junit.jupiter.api.Test;
  *       {@code client_secret_basic} <em>and</em> a DPoP proof, and Keycloak bound both tokens. Because
  *       this gateway refuses an unbound token response, the completed login and rotation are the proof
  *       in client-secret mode that the bound response is accepted on both token legs; the gateway's
- *       output gains a token-refreshed record ({@value BffFapiControlsIT#TOKEN_REFRESHED_RECORD}) and
- *       carries no refused-response record ({@value BffFapiControlsIT#TOKEN_NOT_BOUND_RECORD}).</li>
+ *       output gains a token-refreshed record ({@value BffFapiControlsIT#TOKEN_REFRESHED_RECORD}), which
+ *       shows the rotation was not refused.</li>
  *   <li><em>The key set.</em> {@code GET} and {@code POST} on {@code /bff/jwks} of this gateway
  *       answer {@code 404}: there is no client-authentication key to publish. The control is the
  *       primary instance, which answers {@code 200} to {@code GET} on the same path.</li>
@@ -255,12 +254,10 @@ class BffClientSecretModeIT {
                         "the code exchange carried a proof: its token must name the committed RSA proof key"),
                 () -> assertEquals(proofKey, confirmationThumbprint(rotated),
                         "the refresh grant carried a proof: its token must name the same key"));
-        assertTrue(refreshedAfter > refreshedBefore, () -> "the rotation must be recorded, or the absence asserted "
-                + "next was read from a log that shows nothing: expected a new " + TOKEN_REFRESHED_RECORD
+        assertTrue(refreshedAfter > refreshedBefore, () -> "the rotation must be recorded, which also shows the "
+                + "gateway accepted Keycloak's bound responses on both legs: expected a new " + TOKEN_REFRESHED_RECORD
                 + " line in the output of " + GATEWAY + " (count before " + refreshedBefore + ", after "
                 + refreshedAfter + ")");
-        assertEquals(0, gatewayLogLineCount(GATEWAY, TOKEN_NOT_BOUND_RECORD),
-                "the gateway accepted Keycloak's bound responses on both legs, so it recorded no refusal");
     }
 
     @Test

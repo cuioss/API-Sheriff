@@ -51,7 +51,6 @@ All BFF code is in the `api-sheriff` module under `de.cuioss.sheriff.gateway`:
 | `bff.login`
 | `LoginFlow` -- auth-code initiation over the engine's authorization seam;
   `PushedAuthorizationRequests` -- the adapter that pushes every authorization request;
-  `BoundTokenEndpointClient` -- the token-endpoint client that refuses an unbound token response;
   `ScopedEngineFlows` -- the per-scope-set engine flows;
   `SessionWidening` -- the widening of a live session, silent attempt and interactive re-drive.
 
@@ -257,13 +256,17 @@ nothing half-started.
 One `SenderConstraint` is built from the sender-constraint key and handed to the base
 `AuthorizationCodeFlow` and to `ScopedEngineFlows`, which passes it to every per-scope login flow,
 every per-call widening flow and every refresh flow, near-expiry and scope-driven. A code exchange or a refresh sent without it would carry no proof, and
-`BoundTokenEndpointClient` would refuse its response.
+the engine's token-endpoint client would then judge nothing about the binding of its response.
 
-=== The bound token-endpoint client
+=== The token-endpoint client and the binding check
 
-`BoundTokenEndpointClient` extends the engine's `TokenEndpointClient` and overrides the one method
-every token response passes. It accepts a response only when `token_type` is `DPoP` and the access
-token's `cnf.jkt` equals the proof key's thumbprint.
+The runtime builds one plain `TokenEndpointClient` over the base back-channel configuration. Under the
+DPoP sender constraint every flow passes it, the engine accepts a response only when `token_type` is
+`DPoP` and, when the access token is a JWT, its `cnf.jkt` equals the proof key's thumbprint (the
+check is the engine's since token-sheriff 0.9.9; the gateway carried its own until then). An access
+token that is not a JWT skips only the `cnf.jkt` comparison; the engine validates it as a JWT at the
+code exchange and at every refresh, so an identity provider issuing opaque access tokens never
+completes a login.
 
 *Why the refusal is the engine's `RedeemedResponseException`.* The check runs after the identity
 provider answered with success, so the grant is already redeemed. The two callers read the exception
@@ -276,8 +279,8 @@ type, not the message:
   the provider never processed, and the session would be kept on a refresh token that is already
   spent.
 
-For the same reason nothing that goes wrong while reading the token may escape unclassified: every
-failure of the read is the `unreadable-access-token` refusal.
+The refusal leaves no gateway log record of its own: the callback records it at `DEBUG` with the
+exception, and a refresh records the session end as `ApiSheriff-111` (`redeemed-response-refused`).
 
 === The step-up coordinator
 

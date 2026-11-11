@@ -1,0 +1,79 @@
+= ADR-0082: The BFF OIDC back-channel inherits the engine's host-address egress guard and relaxes it only for declared hosts
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: token-sheriff 0.9.9 applies an SSRF host-address guard to every discovery and back-channel call of its confidential client, refusing loopback, link-local, site-local and other internal addresses. The gateway adopts it unrelaxed and exposes one explicit list, oidc.allowed_egress_hosts, that exempts exactly the hosts it names, host-exact. Nothing is derived from oidc.issuer or oidc.back_channel_origin, and the engine's blanket loopback relaxation is not exposed.
+// tags: oidc, bff, back-channel, egress, ssrf, configuration-surface, secure-defaults, dependency-pinning, rejected-alternatives
+// affects: api-sheriff, integration-tests, deployment, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+The BFF dials its identity provider for discovery, the pushed authorization request, the authorization-code exchange, refresh and refresh-token revocation. Until token-sheriff 0.9.8 the
+engine dialled whatever address those calls resolved to. From 0.9.9 every such call passes a host-address guard (`EgressPolicy`) on the URL actually contacted, after the
+`oidc.back_channel_origin` re-targeting (ADR-0069). The guard refuses a host that resolves to a loopback, link-local, site-local, unique-local, shared-address, any-local or
+multicast address.
+
+The guard is the right default for a URL an attacker can influence: a spoofed discovery document can advertise a token endpoint at `169.254.169.254`. It also refuses the most common
+real deployment of a gateway, an identity provider on a private network. The gateway had no key for this leg, so adopting 0.9.9 as it stood would have broken every such login with
+`SSRF egress blocked`, with no remedy in `gateway.yaml`.
+
+=== One explicit list, nothing derived
+
+The gateway adopts the guard unrelaxed (`technical_aspects.adoc`, "Adopting Upstream Security-Default Changes") and adds one key, `oidc.allowed_egress_hosts`. It is a list of bare host names or
+IP literals that the engine exempts from the address refusal, host-exact, against the host actually dialled. The producer hands the list to the engine on every build, the empty list included.
+
+* *Nothing is derived.* An omitted or empty list exempts no host. The host of `oidc.issuer` and of `oidc.back_channel_origin` are not exempted implicitly.
+* *The list is the whole relaxation.* The engine's blanket `allowLoopbackEgress` is not exposed: it would relax every loopback address at once, where an entry names one host.
+* *Boot refuses an entry that can never match.* A blank entry and an entry carrying a port are refused at `/oidc/allowed_egress_hosts`, by the review the JWKS list is held to (ADR-0011).
+
+=== Why the JWKS rule is not copied
+
+`token_validation.issuers[].jwks.allowed_egress_hosts` derives its single host from `jwks.url` when the list is omitted (ADR-0011). That derivation is safe there because the URL is an operator-declared
+key endpoint of one issuer. The OIDC leg reaches endpoints the identity provider advertises in its discovery document. An allowance derived from `oidc.issuer` would be consulted for every
+endpoint advertised on that origin, and a re-targeted call is judged on the back-channel host instead, so the derived value would not even name the host that is dialled. Declaring the host
+makes the relaxation a reviewable, one-line operator decision with a name on it.
+
+== Alternatives rejected
+
+*Derive the allowance from `oidc.issuer` and `oidc.back_channel_origin`, as the JWKS list does.* The deployment would keep working without a new key. Rejected: it restores the permissive
+behaviour the engine withdrew for the common case, silently, which is what the adoption policy rules out, and the issuer host is the browser-facing name, often not the host the gateway dials.
+
+*Expose `allowLoopbackEgress`.* Rejected for the reason ADR-0011 gives for the JWKS leg: a host-exact entry covers the legitimate cases, and a boolean widens every loopback address.
+
+*Adopt the default and document only.* Rejected: a private-network identity provider could then not be configured at all. The policy asks for an escalation of a default the gateway cannot
+accommodate, and this is that escalation, answered with a key.
+
+*Pin 0.9.8.* Rejected: the same release carries the engine-side DPoP issuance binding (ADR-0058) and the refresh classification for `invalid_scope`, and the pin would only postpone this decision.
+
+== Consequences
+
+* A deployment whose identity provider resolves to a private address must add the host to `oidc.allowed_egress_hosts` when it moves to this version. Without it, discovery, login and refresh
+  fail with `SSRF egress blocked`; neither `oidc.egress_tls` key changes that, because TLS decides whether a certificate is trusted and the list decides whether an address may be dialled.
+* The compose sample and every integration-test descriptor that dials `keycloak:8443` declares `allowed_egress_hosts: [keycloak]`, and a wiring test holds each descriptor to it.
+* The unit-test fixtures that dial a loopback stub declare `127.0.0.1` in the same key, so the key is exercised by the production producer path. A matched control shows a loopback identity
+  provider refused when the list names nothing.
+* The DNS-rebinding window the engine documents stays: the guard resolves the host before the connection and the HTTP client resolves it again. The list does not narrow it.
+
+== Links
+
+* link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]
+  -- the back-channel origin whose host the guard judges
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the JWKS egress allowance this record departs from on derivation
+* link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
+  -- the DPoP binding check the same release moved into the engine
+* link:../technical_aspects.adoc#_upstream_security_default_changes[Adopting Upstream Security-Default Changes]
+* link:../configuration/authentication-and-oidc.adoc#_oidc_allowed_egress_hosts[Configuration -- `oidc.allowed_egress_hosts`]
+* link:../configuration/tls-and-egress.adoc#_oidc_back_channel_address_policy[Which addresses the back-channel may dial]

@@ -82,6 +82,13 @@ public class OidcClientRules {
     @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER = "/oidc/login/default_return_url";
     private static final String OIDC_BACK_CHANNEL_ORIGIN_POINTER = "/oidc/back_channel_origin";
+
+    /** Where a refused {@code oidc.allowed_egress_hosts} entry is reported. */
+    private static final String OIDC_ALLOWED_EGRESS_HOSTS_POINTER = "/oidc/allowed_egress_hosts";
+
+    /** What the operator does about a blank {@code oidc.allowed_egress_hosts} entry. */
+    private static final String ALLOWED_EGRESS_HOSTS_BLANK_REMEDY =
+            "remove it, or omit oidc.allowed_egress_hosts to keep the secure default, which exempts no host";
     private static final String OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER =
             "/oidc/back_channel_allow_insecure_http";
     private static final String HTTP_SCHEME = "http";
@@ -438,6 +445,39 @@ public class OidcClientRules {
         } else if (!cleartext && optIn) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER,
                     BACK_CHANNEL_OPT_IN_WITH_HTTPS_DETAIL));
+        }
+    }
+
+    /**
+     * Rule: every {@code oidc.allowed_egress_hosts} entry must name a bare host.
+     * <p>
+     * The list is handed to token-sheriff's egress guard, which exempts exactly the host an entry names
+     * from the refusal of loopback and private addresses and matches it host-exact, so the shape review
+     * is the one every {@code allowed_egress_hosts} list is held to
+     * ({@link RuleSupport#egressHostRefusal}): a blank entry names no host and an entry carrying a port
+     * names a host the guard never compares against. Either leaves the operator believing an
+     * identity provider is reachable that every dial then refuses at runtime, so it is refused at boot
+     * instead. The engine would refuse a blank entry at construction anyway, but only when the BFF
+     * runtime is first built, and with a message that cannot name the key.
+     * <p>
+     * An absent block, an absent key and an empty list are admitted: they leave the secure default in
+     * force. The entry is echoed through {@link RuleSupport#renderForMessage}, so a hostile value cannot
+     * forge boot log lines (CWE-117), and every offending entry is collected rather than failing on the
+     * first, per ADR-0009.
+     *
+     * @param gateway the bound gateway document, whose {@code oidc} block is judged
+     * @param errors  the shared violation list every refusal is appended to
+     */
+    public static void validateAllowedEgressHosts(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null) {
+            return;
+        }
+        for (String entry : oidc.allowedEgressHosts()) {
+            RuleSupport.egressHostRefusal(entry, ALLOWED_EGRESS_HOSTS_BLANK_REMEDY)
+                    .ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE, OIDC_ALLOWED_EGRESS_HOSTS_POINTER,
+                            "oidc.allowed_egress_hosts entry '%s' is refused: %s"
+                                    .formatted(renderForMessage(entry), reason))));
         }
     }
 

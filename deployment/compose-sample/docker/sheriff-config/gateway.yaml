@@ -147,6 +147,10 @@ oidc:
   # untouched and every issuer check still compares against https://localhost:1443 (ADR-0069). A bare
   # https origin: no path, no query, no user-info — the boot refuses anything else.
   back_channel_origin: https://keycloak:8443
+  # keycloak resolves to a private address, which the token engine's SSRF egress guard refuses for the
+  # gateway's own IdP calls unless the host is named here. Host-exact, no port; nothing is derived
+  # from the issuer or the origin above, so an omitted list would exempt no host.
+  allowed_egress_hosts: [keycloak]
   client_id: sample-client
   # NO client_secret, deliberately: its absence is what selects private_key_jwt. The assertion is
   # signed with the key below; Keycloak verifies it against the public half the gateway publishes at

@@ -105,7 +105,7 @@ public final class SignatureOnlyTokenVerifier {
                     new TokenHeaderValidator(issuer, securityEventCounter),
                     new TokenSignatureValidator(issuer.getJwksLoader(), securityEventCounter,
                             new SignatureTemplateManager(issuer.getAlgorithmPreferences())),
-                    new TokenBuilder(issuer)));
+                    new TokenBuilder(issuer, securityEventCounter)));
         }
         this.issuers = Map.copyOf(resolved);
     }

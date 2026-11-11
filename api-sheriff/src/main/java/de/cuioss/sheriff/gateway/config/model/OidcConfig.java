@@ -82,6 +82,16 @@ import org.jspecify.annotations.Nullable;
  *                             validation refuses it when there is nothing to opt in for — no origin,
  *                             or an {@code https} origin. When in effect it lets the whole OIDC
  *                             client use cleartext, not just the back-channel origin
+ * @param allowedEgressHosts   the hosts the gateway's server-to-server calls to the identity provider
+ *                             may dial although they resolve to a loopback, link-local, site-local or
+ *                             other internal address ({@code oidc.allowed_egress_hosts}), empty when
+ *                             omitted. token-sheriff's SSRF egress guard refuses those addresses by
+ *                             default, so an identity provider on a private network is reachable only
+ *                             through an entry here. Matched host-exact against the host actually
+ *                             dialled — the {@link #backChannelOrigin()} host when the origin is
+ *                             declared and the endpoint sits on the issuer's origin, otherwise the host
+ *                             the endpoint is advertised on — and nothing is derived from
+ *                             {@link #issuer()} or the origin: an omitted list exempts no host
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -101,13 +111,16 @@ List<String> scopes,
 @Nullable ClientAuthenticationSettings clientAuthentication,
 @Nullable SenderConstraintSettings senderConstraint,
 @Nullable String backChannelOrigin,
-@Nullable Boolean backChannelAllowInsecureHttp) {
+@Nullable Boolean backChannelAllowInsecureHttp,
+List<String> allowedEgressHosts) {
 
     /**
-     * Canonical constructor defensively copying {@code scopes}.
+     * Canonical constructor defensively copying {@code scopes} and {@code allowedEgressHosts}; an
+     * absent allow-list normalizes to {@link List#of()}, the secure default.
      */
     public OidcConfig {
         scopes = scopes == null ? List.of() : List.copyOf(scopes);
+        allowedEgressHosts = allowedEgressHosts == null ? List.of() : List.copyOf(allowedEgressHosts);
     }
 
     /**
@@ -153,17 +166,17 @@ List<String> scopes,
      * key file is a path, not a secret. {@link #backChannelOrigin()} is rendered with any user-info
      * masked: boot validation refuses an origin that carries one, but this rendering can be reached
      * before that refusal is reported, and a user-info component may hold a credential.
-     * {@link #backChannelAllowInsecureHttp()} is rendered as it is.
+     * {@link #backChannelAllowInsecureHttp()} and {@link #allowedEgressHosts()} are rendered as they are.
      *
      * @return a string representation with {@code clientSecret} redacted and any user-info of
      *         {@code backChannelOrigin} masked
      */
     @Override
     public String toString() {
-        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s, backChannelOrigin=%s, backChannelAllowInsecureHttp=%s]"
+        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s, backChannelOrigin=%s, backChannelAllowInsecureHttp=%s, allowedEgressHosts=%s]"
                 .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp, userInfo,
                         login, clientAuthentication, senderConstraint, maskUserInfo(backChannelOrigin),
-                        backChannelAllowInsecureHttp);
+                        backChannelAllowInsecureHttp, allowedEgressHosts);
     }
 
     /** A leading RFC 3986 scheme followed by {@code ://}; anything else is masked from the start. */

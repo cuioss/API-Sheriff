@@ -156,7 +156,9 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * back-channel origin rule ({@link OidcClientRules#validateBackChannelOrigin}) holds
  * {@code oidc.back_channel_origin} to a bare {@code http}/{@code https} origin, admits an {@code http}
  * origin only under {@code oidc.back_channel_allow_insecure_http: true}, and refuses that opt-in when
- * there is nothing to opt in for — each refusal on its key's own pointer, in fixed text.
+ * there is nothing to opt in for — each refusal on its key's own pointer, in fixed text. The
+ * egress-allowance rule ({@link OidcClientRules#validateAllowedEgressHosts}) holds every
+ * {@code oidc.allowed_egress_hosts} entry to a bare host, as the JWKS allow-list is.
  * <p>
  * The reserved-path rules (owned by {@link ReservedPathRules}) add four more: the client JWKS path
  * must be a canonical reserved path that no other reserved OIDC endpoint claims, and
@@ -259,6 +261,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> ReservedPathRules.validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> ReservedPathRules.validateStepUpPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcClientRules.validateBackChannelOrigin(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcClientRules.validateAllowedEgressHosts(gateway, errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughHostCollision(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughAliasResolvable(gateway, topology,

@@ -55,8 +55,6 @@ The back-channel logout path is the only path that uses `LogoutRejectionLog`. Tw
 * `PushedAuthorizationRequests` records `ApiSheriff-132` for a refused push, reachable through login initiation.
 * `SealedSessionCookieCodec` records `ApiSheriff-113` for a cookie that fails to unseal.
 
-`BoundTokenEndpointClient` records `ApiSheriff-134` on every occurrence, under the second arm of mechanism (2).
-
 `CallbackEndpoint` does not apply the rule. It records a rejection ahead of the code exchange at `DEBUG` only, so the failure mode "silence is indistinguishable from absence" still
 holds on the callback. A CSRF rejection is also `DEBUG` only, and its event counter carries the signal.
 

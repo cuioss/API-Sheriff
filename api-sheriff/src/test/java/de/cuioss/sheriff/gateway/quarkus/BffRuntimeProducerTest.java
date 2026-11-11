@@ -94,7 +94,6 @@ import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
-import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
@@ -961,7 +960,7 @@ class BffRuntimeProducerTest {
             return new OidcConfig(base.issuer(), base.clientId(), base.clientSecret(), base.scopes(),
                     base.redirectUri(), base.logout(), base.session(), OidcConfig.StepUp.builder().path(path).build(),
                     base.userInfo(), base.login(), base.clientAuthentication(), base.senderConstraint(),
-                    base.backChannelOrigin(), base.backChannelAllowInsecureHttp());
+                    base.backChannelOrigin(), base.backChannelAllowInsecureHttp(), base.allowedEgressHosts());
         }
 
         @Test
@@ -2172,6 +2171,7 @@ class BffRuntimeProducerTest {
         void loginAgainstAProviderWithoutPushedRequestEndpointIsRefused() {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(server.issuer())
+                    .allowedEgressHosts(List.of(LoopbackHost.ADDRESS))
                     .clientId("gateway-client")
                     .clientSecret("secret")
                     .scopes(List.of("openid"))
@@ -2261,6 +2261,7 @@ class BffRuntimeProducerTest {
         void wideningAgainstAProviderWithoutPushedRequestEndpointIsRefused() {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(server.issuer())
+                    .allowedEgressHosts(List.of(LoopbackHost.ADDRESS))
                     .clientId("gateway-client")
                     .clientSecret("secret")
                     .scopes(List.of("openid"))
@@ -2325,6 +2326,7 @@ class BffRuntimeProducerTest {
         private RecordingProducer recordingProducer() {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(server.issuer())
+                    .allowedEgressHosts(List.of(LoopbackHost.ADDRESS))
                     .clientId("gateway-client")
                     .clientSecret("secret")
                     .scopes(List.of("openid"))
@@ -2339,6 +2341,7 @@ class BffRuntimeProducerTest {
         private ClientConfiguration backChannelFor(SanMismatchedJwksServer target, @Nullable EgressTlsConfig egressTls) {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(target.issuer())
+                    .allowedEgressHosts(List.of(LoopbackHost.ADDRESS))
                     .clientId("gateway-client")
                     .clientSecret("secret")
                     .scopes(List.of("openid"))
@@ -2457,6 +2460,8 @@ class BffRuntimeProducerTest {
         private static final String DPOP_NONCE_HEADER = "DPoP-Nonce";
         private static final String TYPE_DPOP = "DPoP";
         private static final String TYPE_BEARER = "Bearer";
+        private static final String WITHOUT_CNF = "without cnf";
+        private static final String OTHER_KEY = "cnf.jkt of another key";
         /** An RFC 7638 SHA-256 thumbprint: 32 bytes, base64url without padding. */
         private static final String THUMBPRINT_SHAPE = "[A-Za-z0-9_-]{43}";
         private static final String EC_KEY_TYPE = "EC";
@@ -2621,6 +2626,39 @@ class BffRuntimeProducerTest {
 
             assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.DISCOVERY),
                     "a refused handshake sends no request — the profile is what reaches the stub");
+        }
+
+        @Test
+        @DisplayName("Should refuse a loopback identity provider the allowance does not name, before anything is sent (matched control)")
+        void discoveryIsRefusedWithoutTheEgressAllowance() {
+            OidcConfig oidc = stubOidc().allowedEgressHosts(List.of()).build();
+            DiscoveryResolver withoutAllowance = new DiscoveryResolver(
+                    assembledBackChannel(stubProducer(oidc), oidc, oidc.scopes()));
+
+            TransportException refused = assertThrows(TransportException.class, withoutAllowance::resolve);
+
+            assertAll("the engine's SSRF egress guard stays in force when oidc.allowed_egress_hosts names nothing",
+                    () -> assertTrue(refused.getMessage().contains("SSRF egress blocked"),
+                            () -> "refused by the egress guard, not by TLS or the scheme: " + refused.getMessage()),
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.DISCOVERY),
+                            "a refused dial sends no request — the allowance is what reaches the stub"));
+        }
+
+        @Test
+        @DisplayName("Should hand exactly the declared hosts to the engine and derive none from the issuer or the origin")
+        void shouldHandTheDeclaredEgressHostsToTheEngine() {
+            OidcConfig declared = stubOidc().allowedEgressHosts(List.of("keycloak", "idp.internal")).build();
+            OidcConfig omitted = stubOidc().allowedEgressHosts(null).backChannelOrigin("https://keycloak:8443").build();
+
+            ClientConfiguration withHosts = assembledBackChannel(stubProducer(declared), declared, declared.scopes());
+            ClientConfiguration withoutHosts = assembledBackChannel(stubProducer(omitted), omitted, omitted.scopes());
+
+            assertAll("the allowance is the declared list alone",
+                    () -> assertEquals(List.of("keycloak", "idp.internal"), withHosts.getAllowedEgressHosts()),
+                    () -> assertEquals(List.of(), withoutHosts.getAllowedEgressHosts(),
+                            "an omitted list exempts nothing, whatever issuer and back_channel_origin name"),
+                    () -> assertFalse(withHosts.isAllowLoopbackEgress(),
+                            "the gateway never opens the blanket loopback relaxation"));
         }
 
         @Test
@@ -3087,18 +3125,11 @@ class BffRuntimeProducerTest {
 
             BffRuntime.ReservedHttpResponse answered =
                     wideningAnsweredWithABearerToken(runtime, sessionCookie).answered();
-
-            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
-                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
             SessionRecord after = liveSessionOf(runtime, sessionCookie);
             assertAll("a widening whose tokens are not bound to the proof key",
                     () -> assertEquals(400, answered.status(), "the widening is refused"),
                     () -> assertEquals(List.of(), answered.setCookieHeaders(), "no cookie is set"),
                     () -> assertEquals(Optional.empty(), answered.locationOptional(), "and no redirect issued"),
-                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
-                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage())
-                                    .contains("on the code-exchange leg"),
-                            "under the leg of the code exchange: " + refusals.getFirst().getMessage()),
                     () -> assertEquals(0, recordsContaining(TestLogLevel.INFO,
                             BffLogMessages.INFO.SESSION_WIDENED.resolveIdentifierString()),
                             "nothing was merged into the session"),
@@ -3129,8 +3160,6 @@ class BffRuntimeProducerTest {
                     () -> result.set(scopeSeam.refreshForScopes(live, sessionCookie, requested, NOW)));
 
             String proof = proofOf(grant);
-            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
-                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
             assertAll("the grant of a scope-driven refresh",
                     () -> assertEquals("refresh_token", grant.form().get("grant_type")),
                     () -> assertEquals(refreshToken, grant.form().get("refresh_token")),
@@ -3143,9 +3172,6 @@ class BffRuntimeProducerTest {
             assertAll("a scope-driven refresh whose tokens are not bound to the proof key",
                     () -> assertInstanceOf(SessionAuthenticationStage.RefreshResult.SessionEnded.class, result.get(),
                             "the identity provider consumed the grant, so the session is not kept"),
-                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
-                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage()).contains("on the refresh leg"),
-                            "under the leg of the refresh grant: " + refusals.getFirst().getMessage()),
                     () -> assertEquals(1, recordsContaining(TestLogLevel.WARN, "redeemed-response-refused"),
                             "the session end is recorded as a redeemed refusal"),
                     () -> assertEquals(Optional.empty(), sessionBindingOf(runtime).resolve(sessionCookie, NOW),
@@ -3176,9 +3202,7 @@ class BffRuntimeProducerTest {
             assertAll("a bound token response passes the check on the scope-driven leg",
                     () -> assertEquals(accessToken, mediated.accessToken(), "the session holds the rotated token"),
                     () -> assertEquals(accessToken, liveSessionOf(runtime, sessionCookie).accessToken(),
-                            "and it was persisted"),
-                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN, tokenResponseNotBound()),
-                            "an accepted response is not recorded as a refusal"));
+                            "and it was persisted"));
         }
 
         /**
@@ -3219,9 +3243,9 @@ class BffRuntimeProducerTest {
                             "the step-up path starts its widening through the runtime's one SessionWidening"),
                     () -> assertEquals(1, tokenEndpointClients.size(),
                             "exactly one token-endpoint client is constructed — a second one would be a path "
-                                    + "to a token the binding check does not sit on"),
-                    () -> assertInstanceOf(BoundTokenEndpointClient.class, tokenEndpointClients.getFirst(),
-                            "and it is the one that refuses an unbound response"),
+                                    + "to a token the engine's issuance binding check does not sit on"),
+                    () -> assertEquals(TokenEndpointClient.class, tokenEndpointClients.getFirst().getClass(),
+                            "and it is the engine's own, which refuses an unbound response"),
                     () -> assertEquals(1, reachableInstancesOf(runtime, ClientAuthentication.class).size(),
                             "every authenticated leg presents the one client authentication"));
         }
@@ -3600,9 +3624,7 @@ class BffRuntimeProducerTest {
             assertAll("a bound token response passes the check and the engine's validation",
                     () -> assertEquals(accessToken, rotated.accessToken().getRawToken()),
                     () -> assertEquals(refreshToken, rotated.refreshToken(),
-                            "the response rotated nothing, so the presented refresh token stays in use"),
-                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN, tokenResponseNotBound()),
-                            "an accepted response is not recorded as a refusal"));
+                            "the response rotated nothing, so the presented refresh token stays in use"));
         }
 
         @Test
@@ -3719,8 +3741,8 @@ class BffRuntimeProducerTest {
          * break it, a flow built over the engine's own client does.
          */
         @Test
-        @DisplayName("Should hand every flow the one token-endpoint client that refuses an unbound response")
-        void shouldWireTheBoundTokenEndpointClientIntoEveryFlow() {
+        @DisplayName("Should hand every flow the engine's one token-endpoint client, which refuses an unbound response")
+        void shouldWireTheEngineTokenEndpointClientIntoEveryFlow() {
             List<TokenEndpointClient> keyMode = reachableInstancesOf(
                     stubProducer(stubOidc().build()).bffRuntime(), TokenEndpointClient.class);
             List<TokenEndpointClient> secretMode = reachableInstancesOf(
@@ -3731,10 +3753,11 @@ class BffRuntimeProducerTest {
                             "no TokenEndpointClient was reachable from the assembled runtime — this test must "
                                     + "never pass vacuously; if the producer's wiring moved, retarget the walk"),
                     () -> assertEquals(1, keyMode.size(), "key mode shares exactly one client between its flows"),
-                    () -> assertInstanceOf(BoundTokenEndpointClient.class, keyMode.getFirst()),
+                    () -> assertEquals(TokenEndpointClient.class, keyMode.getFirst().getClass(),
+                            "the engine's own client, not a subclass that could bypass its binding check"),
                     () -> assertEquals(1, secretMode.size(),
                             "client-secret mode shares exactly one client between its flows"),
-                    () -> assertInstanceOf(BoundTokenEndpointClient.class, secretMode.getFirst(),
+                    () -> assertEquals(TokenEndpointClient.class, secretMode.getFirst().getClass(),
                             "the check does not depend on how the client authenticates"));
         }
 
@@ -3745,17 +3768,10 @@ class BffRuntimeProducerTest {
             stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_BEARER, token()));
 
             BffRuntime.ReservedHttpResponse callback = loginAndCallback(runtime, token());
-
-            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
-                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
             assertAll("a login whose tokens are not bound to the proof key",
                     () -> assertEquals(400, callback.status(), "the login is refused"),
                     () -> assertEquals(List.of(), callback.setCookieHeaders(), "and no session cookie is set"),
                     () -> assertEquals(Optional.empty(), callback.locationOptional(), "nor a redirect issued"),
-                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
-                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage())
-                                    .contains("on the code-exchange leg"),
-                            "under the leg of the code exchange: " + refusals.getFirst().getMessage()),
                     () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.TOKEN).size(),
                             "the token endpoint did answer — the refusal is the gateway's"));
         }
@@ -3777,16 +3793,57 @@ class BffRuntimeProducerTest {
 
             RuntimeException failure = assertThrows(RuntimeException.class,
                     () -> exchange.exchange(refreshToken, scopes));
-
-            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
-                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
             assertAll("a refresh whose tokens are not bound to the proof key",
                     () -> assertEquals(RefreshFailureClassification.Kind.REDEEMED,
                             RefreshFlow.classify(failure).kind(),
-                            "the identity provider consumed the grant, so the session must not be kept"),
-                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
-                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage()).contains("on the refresh leg"),
-                            "under the leg of the refresh grant: " + refusals.getFirst().getMessage()));
+                            "the identity provider consumed the grant, so the session must not be kept"));
+        }
+
+        /**
+         * The shapes of an access token a {@code DPoP}-typed answer can carry without naming the proof
+         * key: a token with no {@code cnf} claim, and one whose {@code cnf.jkt} names another key. The
+         * engine refuses both at its token-endpoint seam, whatever the leg.
+         */
+        private String accessTokenNotBoundToTheProofKey(String shape) throws Exception {
+            return WITHOUT_CNF.equals(shape)
+                    ? TestTokenGenerators.accessTokens().next().getRawToken()
+                    : accessTokenBoundTo(Generators.letterStrings(43, 43).next());
+        }
+
+        @ParameterizedTest(name = "access token: {0}")
+        @ValueSource(strings = {WITHOUT_CNF, OTHER_KEY})
+        @DisplayName("Should answer a callback 400 without a session cookie when a DPoP token response carries an access token not bound to the proof key")
+        void shouldRefuseALoginWhoseAccessTokenIsNotBoundToTheProofKey(String shape) throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            stub.script(StubIdentityProvider.Endpoint.TOKEN,
+                    tokenAnswer(TYPE_DPOP, accessTokenNotBoundToTheProofKey(shape)));
+
+            BffRuntime.ReservedHttpResponse callback = loginAndCallback(runtime, token());
+
+            assertAll("a login whose access token is not bound to the proof key",
+                    () -> assertEquals(400, callback.status(), "the login is refused"),
+                    () -> assertEquals(List.of(), callback.setCookieHeaders(), "and no session cookie is set"),
+                    () -> assertEquals(Optional.empty(), callback.locationOptional(), "nor a redirect issued"),
+                    () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.TOKEN).size(),
+                            "the token endpoint did answer — the refusal is the engine's"));
+        }
+
+        @ParameterizedTest(name = "access token: {0}")
+        @ValueSource(strings = {WITHOUT_CNF, OTHER_KEY})
+        @DisplayName("Should fail a refresh whose DPoP access token is not bound to the proof key as a redeemed grant")
+        void shouldFailARefreshWhoseAccessTokenIsNotBoundToTheProofKeyAsRedeemed(String shape) throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            TokenRefreshCoordinator.RefreshExchange exchange = refreshExchangeOf(runtime);
+            stub.script(StubIdentityProvider.Endpoint.TOKEN,
+                    tokenAnswer(TYPE_DPOP, accessTokenNotBoundToTheProofKey(shape)));
+            String refreshToken = token();
+            Set<String> scopes = Set.of("openid");
+
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> exchange.exchange(refreshToken, scopes));
+
+            assertEquals(RefreshFailureClassification.Kind.REDEEMED, RefreshFlow.classify(failure).kind(),
+                    "the identity provider consumed the grant, so the session must not be kept");
         }
 
         // Client-secret authentication together with pushed requests and DPoP. Only the client
@@ -4141,22 +4198,16 @@ class BffRuntimeProducerTest {
 
             RuntimeException failure = assertThrows(RuntimeException.class,
                     () -> exchange.exchange(refreshToken, scopes));
-
-            List<LogRecord> refusals = TestLoggerFactory.getTestHandler()
-                    .resolveLogMessagesContaining(TestLogLevel.WARN, tokenResponseNotBound());
             StubIdentityProvider.ReceivedRequest refused =
                     stub.received(StubIdentityProvider.Endpoint.TOKEN).getLast();
             assertPresentsTheBasicCredentialOnly(fixture, refused, "the refused refresh grant");
             assertCarriesAProof(refused, mode);
             assertAll("the binding check of a client-secret runtime",
-                    () -> assertInstanceOf(BoundTokenEndpointClient.class, tokenEndpointClient,
-                            "the one token-endpoint client of the runtime is the refusing one"),
+                    () -> assertEquals(TokenEndpointClient.class, tokenEndpointClient.getClass(),
+                            "the one token-endpoint client of the runtime is the engine's own, which refuses"),
                     () -> assertEquals(RefreshFailureClassification.Kind.REDEEMED,
                             RefreshFlow.classify(failure).kind(),
-                            "the identity provider consumed the grant, so the session must not be kept"),
-                    () -> assertEquals(1, refusals.size(), "the refusal is recorded exactly once"),
-                    () -> assertTrue(String.valueOf(refusals.getFirst().getMessage()).contains("on the refresh leg"),
-                            "under the leg of the refresh grant: " + refusals.getFirst().getMessage()));
+                            "the identity provider consumed the grant, so the session must not be kept"));
             assertNoRecordCarriesTheSecret(fixture);
         }
 
@@ -4181,9 +4232,7 @@ class BffRuntimeProducerTest {
                     stub.received(StubIdentityProvider.Endpoint.TOKEN).getLast();
             assertPresentsTheBasicCredentialOnly(fixture, accepted, "the accepted refresh grant");
             assertAll("a bound token response passes the check in client-secret mode",
-                    () -> assertEquals(accessToken, rotated.accessToken().getRawToken()),
-                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN, tokenResponseNotBound()),
-                            "an accepted response is not recorded as a refusal"));
+                    () -> assertEquals(accessToken, rotated.accessToken().getRawToken()));
             assertNoRecordCarriesTheSecret(fixture);
         }
 
@@ -4593,10 +4642,6 @@ class BffRuntimeProducerTest {
             return new OidcConfig.SenderConstraintSettings(keyFile.toString());
         }
 
-        private static String tokenResponseNotBound() {
-            return BffLogMessages.WARN.TOKEN_RESPONSE_NOT_BOUND.resolveIdentifierString();
-        }
-
         private StubIdentityProvider.ReceivedRequest refreshGrant(BffRuntime runtime) {
             String refreshToken = token();
             Set<String> scopes = Set.of("openid");
@@ -4643,6 +4688,7 @@ class BffRuntimeProducerTest {
         private OidcConfig.OidcConfigBuilder stubOidc() {
             return OidcConfig.builder()
                     .issuer(stub.issuer())
+                    .allowedEgressHosts(List.of(LoopbackHost.ADDRESS))
                     .clientId(CLIENT_ID)
                     .scopes(List.of("openid"))
                     .redirectUri(REDIRECT_URI)
@@ -4816,14 +4862,14 @@ class BffRuntimeProducerTest {
          * written, nor form-encoded, nor inside the Basic credential — in its message or in the message
          * of a throwable it chains.
          * <p>
-         * The control comes first: a {@code DEBUG} record of the producer, of the two gateway classes on
-         * the pushed-request and token legs, and of the two engine clients those legs send through is
+         * The control comes first: a {@code DEBUG} record of the producer, of the gateway class on
+         * the pushed-request leg, and of the two engine clients those legs send through is
          * captured, so the records read below include the {@code DEBUG} output of the code that holds
          * the secret.
          */
         private void assertNoRecordCarriesTheSecret(SecretFixture fixture) {
             SheriffDebugCapture.assertDebugIsCaptured(BffRuntimeProducer.class, PushedAuthorizationRequests.class,
-                    BoundTokenEndpointClient.class, ParClient.class, TokenEndpointClient.class);
+                    ParClient.class, TokenEndpointClient.class);
             List<LogRecord> records = SheriffDebugCapture.capturedRecords();
             assertFalse(records.isEmpty(),
                     "no record was captured at all, so the absence of the secret would prove nothing");
@@ -5052,6 +5098,7 @@ class BffRuntimeProducerTest {
         private static OidcConfig publicIssuerOidc(@Nullable String origin) {
             return OidcConfig.builder()
                     .issuer(PUBLIC_ISSUER)
+                    .allowedEgressHosts(List.of(LoopbackHost.ADDRESS))
                     .clientId("gateway-client")
                     .scopes(List.of("openid"))
                     .redirectUri(REDIRECT_URI)
@@ -5065,7 +5112,8 @@ class BffRuntimeProducerTest {
                 @Nullable Boolean allowInsecureHttp) {
             return new OidcConfig(base.issuer(), base.clientId(), base.clientSecret(), base.scopes(),
                     base.redirectUri(), base.logout(), base.session(), base.stepUp(), base.userInfo(), base.login(),
-                    base.clientAuthentication(), base.senderConstraint(), origin, allowInsecureHttp);
+                    base.clientAuthentication(), base.senderConstraint(), origin, allowInsecureHttp,
+                    base.allowedEgressHosts());
         }
 
         /** A producer whose back channel trusts the stub's root through the named profile alone. */

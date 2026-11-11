@@ -510,6 +510,22 @@ validates that spelling, and any canonical gateway path works.
   `WARN` `ApiSheriff-138` because cleartext is then allowed for the *whole* IdP client. *Refused at
   boot* when `true` without a `back_channel_origin` or with an `https` one.
 
+[[_oidc_allowed_egress_hosts]]
+| `allowed_egress_hosts`
+| *Optional* list of strings, default empty. The hosts the *gateway's own* calls to the IdP -- discovery,
+  the pushed authorization request, code exchange, refresh and RFC 7009 revocation -- may dial although
+  they resolve to a loopback, link-local, site-local (`10/8`, `172.16/12`, `192.168/16`), unique-local,
+  shared-address (`100.64/10`), any-local or multicast address. The token engine refuses such a call
+  by default (SSRF egress guard, threat model GW-05), so an IdP on a private network is reachable
+  *only* through an entry here. Entries are bare host names or IP literals, matched *host-exact*
+  against the host actually dialled: the `back_channel_origin` host for a call re-targeted to it,
+  otherwise the host the endpoint is advertised on. *Nothing is derived* from `issuer` or
+  `back_channel_origin`: an omitted or empty list exempts no host, unlike
+  `token_validation.issuers[].jwks.allowed_egress_hosts`, which derives its host from `jwks.url`.
+  *Refused at boot* (the entry is echoed escaped): a blank entry, and an entry carrying a port (a
+  bare IPv6 literal is a host and is admitted). The blanket loopback relaxation of the engine is
+  deliberately not exposed. See link:../adr/0082-The_BFF_OIDC_back-channel_inherits_the_engines_host-address_egress_guard_and_relaxes_it_only_for_declared_hosts.adoc[ADR-0082].
+
 | `client_authentication.key_file`
 | *Optional* string, at least one character. Path of a PEM file holding the `private_key_jwt`
   signing key. Omitted, a key is generated at startup (single node only). A location, not a secret:
@@ -1096,9 +1112,8 @@ accepted only when its `token_type` is `DPoP` (case-insensitive) *and* the acces
   and scope-driven refresh alike.
 
 | Log
-| `WARN` `ApiSheriff-134` on every occurrence, naming the leg (`code-exchange`, `refresh` or `other`)
-  and the reason (`token-type`, `unreadable-access-token`, `cnf-absent` or `cnf-mismatch`). No token
-  material.
+| The refusal is the token engine's own and writes no record of its own. A login or widening refusal
+  is a `DEBUG` line of the callback; a refresh refusal is the session end `ApiSheriff-111`.
 
 | Refresh token
 | A refresh token issued alongside a refused response is discarded, not revoked.
@@ -1107,9 +1122,9 @@ accepted only when its `token_type` is `DPoP` (case-insensitive) *and* the acces
 Consequences for the IdP:
 
 * It must issue DPoP-bound access tokens; a provider answering with a `Bearer` token fails every login.
-* It must issue JWT access tokens; an opaque token is refused as `unreadable-access-token` (as is any
-  read failure). A response with no access token is refused earlier by the token engine, with the
-  same effect and without `ApiSheriff-134`.
+* It must issue JWT access tokens: the token engine validates the access token as a JWT at the code
+  exchange and at every refresh, so an opaque token fails every login. A response with no access
+  token is refused by the engine too.
 * Only token responses are judged: a session bound to an earlier key is not re-checked, so replacing
   the proof key does not by itself end a session.
 
@@ -1142,9 +1157,8 @@ token is answered.
 | `ApiSheriff-111` (`credential-rejected`)
 
 | *Redeemed* -- the provider redeemed the grant, but the gateway refused its response. A token
-  response that is not bound to the gateway's DPoP proof key is refused this way, and
-  `ApiSheriff-134` is logged first (see link:#_oidc_sender_constraint[The sender constraint and the
-  token-binding check])
+  response that is not bound to the gateway's DPoP proof key is refused this way (see
+  link:#_oidc_sender_constraint[The sender constraint and the token-binding check])
 | *Ended*, as above.
 | Best-effort, the one live token the gateway can name: the successor when the provider rotated,
   the presented token when it did not, none when rotation is unknown.

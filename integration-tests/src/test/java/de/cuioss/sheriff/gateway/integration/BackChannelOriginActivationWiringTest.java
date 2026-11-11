@@ -127,6 +127,13 @@ class BackChannelOriginActivationWiringTest {
     /** The compose-network address every gateway dials Keycloak at, through its back channel. */
     private static final String BACK_CHANNEL_ORIGIN = "https://keycloak:8443";
 
+    /**
+     * The host the egress allowance names. The token engine refuses the gateway's own IdP calls to a
+     * private address, and {@code keycloak} resolves to one on the compose network, so a descriptor that
+     * dials the {@value #BACK_CHANNEL_ORIGIN} must declare it in {@code oidc.allowed_egress_hosts}.
+     */
+    private static final String EGRESS_ALLOWED_HOST = "keycloak";
+
     /** The authority of {@link #BACK_CHANNEL_ORIGIN}, which no issuer may carry. */
     private static final String BACK_CHANNEL_AUTHORITY = "keycloak:8443";
 
@@ -155,6 +162,12 @@ class BackChannelOriginActivationWiringTest {
                     + " declares an oidc block whose back_channel_origin is not " + BACK_CHANNEL_ORIGIN + ". Without"
                     + " it the gateway dials the published identity " + PUBLISHED_ORIGIN + " from inside its"
                     + " container, where that name is the container itself.");
+
+            assertEquals(List.of(EGRESS_ALLOWED_HOST), oidc.get("allowed_egress_hosts"), descriptor
+                    + " declares an oidc block that dials " + BACK_CHANNEL_ORIGIN + " without naming "
+                    + EGRESS_ALLOWED_HOST + " in oidc.allowed_egress_hosts. The token engine's SSRF egress guard"
+                    + " refuses a private address, so the first discovery, push, exchange or refresh would fail"
+                    + " on a running stack.");
 
             String issuer = assertInstanceOf(String.class, oidc.get("issuer"),
                     descriptor + " declares an oidc block without a textual issuer");
