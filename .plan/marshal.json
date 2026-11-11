@@ -26,11 +26,11 @@
       }
     },
     "phase-2-refine": {
-      "confidence_threshold": 95,
       "compatibility": "breaking",
       "simplicity": "lean",
       "effort": "level-5",
-      "revalidation": "auto"
+      "revalidation": "auto",
+      "confidence_threshold": 95
     },
     "phase-3-outline": {
       "plan_without_asking": true,
@@ -386,7 +386,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.2088",
+    "provisioned_version": "0.1.2106",
     "config_seed_fingerprint": "9aaf980d"
   }
 }
