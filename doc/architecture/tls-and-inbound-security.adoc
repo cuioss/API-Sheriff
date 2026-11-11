@@ -237,8 +237,9 @@ failure for the circuit breaker, and neither is retried. Both are fixed and belo
 guard timeout. An HTTP dispatch arms neither; it keeps the idle timeout and the whole-body deadline
 above. The guard's timeout is therefore reached only by an
 upstream holding a complete, half-closed request — or by an attempt whose wait for an upstream
-connection, which the guard counts and these bounds do not, consumed the margin between them; that
-call ends as an upstream timeout, which the circuit breaker counts.
+connection consumed the margin between the message bound and the guard's timeout. The guard counts
+that wait, and so does the pre-response deadline, counted from the start of the attempt; only the
+message bound does not. That call ends as an upstream timeout, which the circuit breaker counts.
 
 [[_grpc_stream_idle_bound]]
 *gRPC stream-idle bound (5 min).* Because streaming RPCs legitimately pause between messages, a
