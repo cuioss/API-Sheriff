@@ -203,7 +203,11 @@ has its own bound (<<_grpc_message_bound>>).
 a fixed 25 s deadline from the start of the upstream attempt (including pool wait;
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[ADR-0060]).
 Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`); expiry after the
-response head preserves the upstream status and resets/closes the stream. A `protocol: grpc` call is
+response head preserves the upstream status and resets/closes the stream. A passed deadline stays in
+force while upstream backpressure pauses the body: it ends the body as the request's when the pause
+ends, whatever the pause's length. The deadline stops when the body ends, when another abort claims
+the stream first, and when the attempt ends without handing its response back (its send failed, the
+next attempt began, or the dispatch failed); a stopped deadline reports nothing. A `protocol: grpc` call is
 bounded by a deadline of the same length too, but counted from the hand-over and only until its upstream
 answers, and the end is rendered to its client as `DEADLINE_EXCEEDED` (<<_grpc_message_bound>>).
 
@@ -219,7 +223,8 @@ so until the upstream answers the request side of a call is bounded twice
 * *The message bound*, `GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS` (10 s per message). The clock
   starts when the attempt hands its body to the upstream request and starts again after every complete
   message — the 5-byte length prefix and every payload byte it declares, read as the bytes cross and
-  never buffered. A forwarded byte of an incomplete message does not stop it, and a pause while the
+  never buffered. The prefix and the payload may be split across any number of chunks, and a
+  zero-length message completes at its prefix. A forwarded byte of an incomplete message does not stop it, and a pause while the
   upstream takes no data is not counted. When the next complete message does not arrive in time —
   the client sent nothing, only part of a message, or stopped between two messages without ending its
   request stream — the upstream request is reset and the call ends as the client's abort,
@@ -265,8 +270,9 @@ the message bound is not counted, and the pre-response deadline keeps counting b
 call at once: a deadline that passes during the pause ends the call the moment the upstream takes data
 again — no later than a deadline end during a read would. That read decides whose failure it is, by the
 length the pause has reached: a pause of at least the 10 s stall threshold without a break is the
-upstream's stall, and the call ends as `DispatchStage.UpstreamStalledRequest`, an `UPSTREAM_TIMEOUT` the
-breaker counts, rendered `DEADLINE_EXCEEDED` with `grpc-message: upstream`; a shorter pause leaves the
+upstream's stall: the expiry resets the upstream request and fails the attempt with a
+`DispatchStage.UpstreamStalledRequest`, a `TimeoutException` the breaker counts and the failure mapper
+reports as `UPSTREAM_TIMEOUT`, rendered `DEADLINE_EXCEEDED` with `grpc-message: upstream`; a shorter pause leaves the
 deadline the client's `REQUEST_BODY_TIMEOUT`. A deadline that passes while the request stream is being
 read is the client's too, however long the upstream paused the stream before. A resume ends a pause, so
 the stall is always one unbroken pause, never a sum of short ones. The threshold is what keeps the
@@ -286,6 +292,24 @@ bidirectional frame-idle timer (HTTP/2 `PING` excluded) bounds the call. Expiry 
 and ends the client stream with trailers `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message:
 stream-idle-timeout`
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-stream-idle-bound[ADR-0060]).
+
+[[_request_body_bound_recording]]
+*Recording of the request-body bounds.* `INFO` `ApiSheriff-23` records an idle timeout,
+`ApiSheriff-24` a passed request-body deadline and `ApiSheriff-25` a call the gRPC stream-idle bound
+ended. Each carries the route id and the fixed value only and is latched per route.
+`sheriff_errors_total` counts both request-body bounds under `event="REQUEST_BODY_TIMEOUT"`; no error
+counter counts a call the stream-idle bound ended. A gRPC message-bound end is recorded by
+`ApiSheriff-22` under the disposition `client-idle`. That latch is keyed by route and disposition, so
+the first end of each disposition on a route -- `client-idle`, `client-left`, `body-stream-failed` --
+is its own `INFO`, and a repeat of the same disposition on the route is a `DEBUG` diagnostic.
+`sheriff_inbound_body_aborts_total{route,disposition}` counts every `INBOUND_BODY_ABORTED` end by its
+disposition, so an idle-client flood is countable apart from departures and failed body streams;
+`sheriff_errors_total` does not count a message-bound end. A gRPC pre-response deadline end the client
+held is recorded like any passed request-body deadline: `ApiSheriff-24` and
+`sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`. One the upstream stalled for the threshold is
+recorded as the upstream timeout it is, under `sheriff_errors_total{event="UPSTREAM_TIMEOUT"}`, never
+as `ApiSheriff-24`
+(link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-message-bound[ADR-0060]).
 
 [[_per_source_detection]]
 == Per-Source Detection (Enumeration Detection)
