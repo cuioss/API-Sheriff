@@ -629,7 +629,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     private void settleRefresh(JwksLoader fresh, @Nullable LoaderStatus status, RefreshBasis basis) {
         try {
             if (closed.get() || status != LoaderStatus.OK
-                    || !gainsKeyId(fresh.getKeyIds(), basis.keyIds())
+                    || basis.keyIds().containsAll(fresh.getKeyIds())
                     || !basis.isCurrent(snapshot.get().delegate())) {
                 LOGGER.debug("JWKS refresh for issuer '%s' discarded (status %s)", issuerName, status);
                 closeDelegate(fresh);
@@ -640,18 +640,6 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             loadingRefresh.compareAndSet(fresh, null);
             refreshInFlight.set(false);
         }
-    }
-
-    /**
-     * The publish rule of an unknown-key-id refresh, in one place: whether {@code fresh} holds at least
-     * one key id {@code current} lacks. An empty {@code fresh} never does.
-     *
-     * @param fresh   the key ids the refresh loaded
-     * @param current the basis's key ids: those of the delegate current when the refresh was claimed
-     * @return {@code true} when publishing {@code fresh} gains a key id
-     */
-    private static boolean gainsKeyId(Set<String> fresh, Set<String> current) {
-        return !current.containsAll(fresh);
     }
 
     /**

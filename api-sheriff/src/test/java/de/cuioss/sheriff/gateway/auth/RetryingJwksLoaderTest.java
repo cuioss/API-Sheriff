@@ -779,13 +779,12 @@ class RetryingJwksLoaderTest {
      * The refresh an unknown key id schedules, and its publish rule: a fresh key set replaces the
      * loaded one exactly when its key ids include one the loaded set lacked when the window was
      * claimed and the loaded set has not moved since, whichever key id triggered the refresh. Every leg
-     * runs the real library loader against the local endpoint, except the one whose loaded delegate
-     * must report no key id, which uses the hand-written {@link IdLessLoader}, and the ones whose
-     * loaded key set must move while a refresh's fetch is held, which use the hand-written
-     * {@link MovingKeySetLoader}; the HTTP delegates are {@link TrackedLoader}s so a test can tell
-     * which one was closed, both clocks are the fixture's own, and the refresh runs on the fixture's
-     * scheduler. The window and the grace deadline are crossed on the monotonic clock; the wall clock
-     * is stepped only to show that neither follows it.
+     * runs the real library loader against the local endpoint, except the ones whose loaded delegate
+     * must report no key id or whose loaded key set must move while a refresh's fetch is held, which
+     * use the hand-written {@link MovingKeySetLoader}; the HTTP delegates are {@link TrackedLoader}s so
+     * a test can tell which one was closed, both clocks are the fixture's own, and the refresh runs on
+     * the fixture's scheduler. The window and the grace deadline are crossed on the monotonic clock; the
+     * wall clock is stepped only to show that neither follows it.
      */
     @Nested
     @DisplayName("bounded refresh on an unknown key id")
@@ -1141,7 +1140,7 @@ class RetryingJwksLoaderTest {
             // Arrange — the first delegate loads OK but reports no key id; every later one is HTTP
             AtomicInteger builds = new AtomicInteger();
             RetryingJwksLoader loader = loader(() -> builds.incrementAndGet() == 1
-                    ? new IdLessLoader()
+                    ? new MovingKeySetLoader(Set.of())
                     : trackedDelegate());
             initialise(loader);
             assertEquals(KeySetState.LOADED, loader.keySetState(), "precondition: the id-less key set is loaded");
@@ -1639,43 +1638,10 @@ class RetryingJwksLoaderTest {
         }
     }
 
-    /** A hand-written loader whose load succeeds while it reports no key id and resolves none. */
-    private static final class IdLessLoader implements JwksLoader {
-
-        @Override
-        public Optional<KeyInfo> getKeyInfo(String kid) {
-            return Optional.empty();
-        }
-
-        @Override
-        public Set<String> getKeyIds() {
-            return Set.of();
-        }
-
-        @Override
-        public JwksType getJwksType() {
-            return JwksType.HTTP;
-        }
-
-        @Override
-        public Optional<String> getIssuerIdentifier() {
-            return Optional.empty();
-        }
-
-        @Override
-        public CompletableFuture<LoaderStatus> initJWKSLoader(SecurityEventCounter securityEventCounter) {
-            return CompletableFuture.completedFuture(LoaderStatus.OK);
-        }
-
-        @Override
-        public LoaderStatus getLoaderStatus() {
-            return LoaderStatus.OK;
-        }
-    }
-
     /**
-     * A hand-written loader whose load succeeds and whose key ids a test moves, playing the delegate's
-     * own background refresh; it resolves no key, so a key id it reports never verifies a token.
+     * A hand-written loader whose load succeeds and whose key ids a test sets and moves, playing the
+     * delegate's own background refresh; it resolves no key, so a key id it reports never verifies a
+     * token. Built with no key ids, it is a loaded delegate that reports none.
      */
     private static final class MovingKeySetLoader implements JwksLoader {
 
