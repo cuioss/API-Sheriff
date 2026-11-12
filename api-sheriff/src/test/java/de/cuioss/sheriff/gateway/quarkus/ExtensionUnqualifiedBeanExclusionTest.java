@@ -17,8 +17,11 @@ package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
@@ -35,6 +38,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
+import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduler;
 import io.quarkus.scheduler.Trigger;
 import io.quarkus.test.junit.QuarkusTest;
@@ -74,8 +78,10 @@ import org.junit.jupiter.api.Test;
  * lands.</li>
  * <li>The extension's startup initializer (new in token-sheriff 0.9.9) is a bean but inert: it builds the
  * extension's own validator on {@code StartupEvent} only when {@code IssuerConfigResolver.hasEnabledIssuers}
- * is true, and for the effective configuration it is false. A matched control shows the same probe reading
- * an issuer enabled through the environment, so the assertion cannot pass on a probe that sees nothing.</li>
+ * is true, and for the effective configuration it is false. The test runs the real startup observer over both
+ * configurations and counts how often it resolves the validator handle; the control is an issuer enabled
+ * through the environment, where it must resolve it exactly once, so the assertion cannot pass on an
+ * initializer that never builds anything.</li>
  * <li>The token-validation metrics proof: after the gateway validator rejects a malformed token, a
  * collector tick moves a {@code sheriff.token.validation.errors} counter in the
  * {@link MeterRegistry}.</li>
@@ -235,7 +241,7 @@ class ExtensionUnqualifiedBeanExclusionTest {
 
     @Test
     @DisplayName("Should leave the extension's startup initializer inert: no enabled sheriff.token.issuers.* issuer")
-    void shouldLeaveTheExtensionStartupInitializerInert() {
+    void shouldLeaveTheExtensionStartupInitializerInert() throws ReflectiveOperationException {
         // Arrange — the initializer is registered unremovable, so it IS a bean; its only gate is the probe.
         assertTrue(startupInitializer.isResolvable(),
                 "guard: " + TokenValidatorStartupInitializer.class.getName() + " must be a bean, otherwise "
@@ -245,18 +251,47 @@ class ExtensionUnqualifiedBeanExclusionTest {
                 .withSources(new EnvConfigSource(Map.of("SHERIFF_TOKEN_ISSUERS_DEFAULT_ENABLED", "true"), 300))
                 .build();
 
-        // Act
-        boolean gateOnEffectiveConfig = IssuerConfigResolver.hasEnabledIssuers(effective);
-        boolean gateOnEnvironmentIssuer = IssuerConfigResolver.hasEnabledIssuers(environmentIssuer);
+        // Act — run the real startup observer over each configuration with a validator handle that counts
+        // how often the initializer resolves it. The observer is package-private, so it is invoked reflectively.
+        int resolvedOnEffectiveConfig = validatorResolutionsAtStartup(effective);
+        int resolvedOnEnvironmentIssuer = validatorResolutionsAtStartup(environmentIssuer);
 
         // Assert
-        assertFalse(gateOnEffectiveConfig,
+        assertFalse(IssuerConfigResolver.hasEnabledIssuers(effective),
                 "an enabled sheriff.token.issuers.* issuer makes the extension build its own validator at "
-                        + "boot and observe that one instead of the gateway's (ADR-0074, Risks); the shipped "
-                        + "configuration must declare none");
-        assertTrue(gateOnEnvironmentIssuer,
-                "control: the same probe must see an issuer enabled through the environment, otherwise the "
-                        + "assertion above cannot tell an empty namespace from a probe that reads nothing");
+                        + "boot and observe that one instead of the gateway's (ADR-0074, Risks); neither the "
+                        + "shipped configuration nor the environment this test runs in may declare one — check "
+                        + "for SHERIFF_TOKEN_ISSUERS_* variables");
+        assertEquals(0, resolvedOnEffectiveConfig,
+                "with no enabled issuer the initializer must not touch the validator handle at startup");
+        assertEquals(1, resolvedOnEnvironmentIssuer,
+                "control: with an issuer enabled through the environment the same initializer must resolve the "
+                        + "validator handle once, otherwise the assertion above cannot tell a closed gate from "
+                        + "an initializer that never builds anything");
+    }
+
+    /**
+     * Runs {@link TokenValidatorStartupInitializer}'s {@code StartupEvent} observer over {@code config} and
+     * returns how many times it resolved the validator handle it was given. The handle answers with the
+     * gateway validator, so an initializer that does resolve it completes instead of failing.
+     */
+    @SuppressWarnings("unchecked")
+    private int validatorResolutionsAtStartup(Config config) throws ReflectiveOperationException {
+        AtomicInteger resolutions = new AtomicInteger();
+        Instance<TokenValidator> handle = (Instance<TokenValidator>) Proxy.newProxyInstance(
+                Instance.class.getClassLoader(), new Class<?>[] {Instance.class},
+                (proxy, method, args) -> {
+                    if ("get".equals(method.getName())) {
+                        resolutions.incrementAndGet();
+                        return gatewayValidator;
+                    }
+                    throw new UnsupportedOperationException(method.getName());
+                });
+        TokenValidatorStartupInitializer initializer = new TokenValidatorStartupInitializer(config, handle);
+        Method observer = TokenValidatorStartupInitializer.class.getDeclaredMethod("onStartup", StartupEvent.class);
+        observer.setAccessible(true);
+        observer.invoke(initializer, new StartupEvent());
+        return resolutions.get();
     }
 
     @Test

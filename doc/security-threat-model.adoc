@@ -100,10 +100,12 @@ and state verify (`PostLogoutRedirectValidator`); RFC 9470 step-up parsing/re-dr
 callback HPP defence (`CallbackParameters.parse(rawQuery)` rejects duplicate `code`/`state`);
 pushed authorization requests (`ParClient`, RFC 9126); `private_key_jwt` client authentication
 (`PrivateKeyJwtAuth`); and DPoP sender-constraint *requesting* (`SenderConstraint`: the proof on the
-token request and one retry on a `DPoP-Nonce` challenge). At the pinned version the engine does *not*
-compare the token type or `cnf` of a token response with the constraint it sent -- a `Bearer` answer
-to a request that carried a proof is accepted -- so the downgrade refusal is the gateway's
-(<<bff-14>>). Its mutual-TLS client authentication is not constructible at that version.
+token request and one retry on a `DPoP-Nonce` challenge). Since 0.9.9 the engine also *judges the
+answer*: it refuses a token response to a DPoP-constrained request unless its `token_type` is `DPoP`
+and a JWT access token carries a `cnf.jkt` equal to the thumbprint of the proof key it sent
+(`RedeemedResponseException`, <<bff-14>>); up to 0.9.8 it accepted a `Bearer` answer and the gateway
+carried the downgrade refusal itself. Its mutual-TLS client authentication is not constructible at
+the pinned version.
 
 *The engine/validation libs deliberately leave to the gateway* (the true BFF residual): the
 *back-channel logout-token receiver and its `events`/`sub`/`sid`-required + `nonce`-forbidden
@@ -113,8 +115,7 @@ shape, not the store); the *concrete `TokenStore`* (server session vs encrypted 
 *scope enforcement* (the lib exposes `providesScopes()`/`getScopes()` but enforces nothing);
 and calling `CallbackParameters.parse(rawQuery)` on the *raw* query (the `of(Map)` path cannot
 re-detect duplicates); the *disposition* of a classified refresh failure and the per-session
-single-flight around the refresh (`TokenRefreshCoordinator`); the *refusal of a token response that
-is not bound* to the proof key (the engine's `TokenEndpointClient`, <<bff-14>>); and the *signing keys* --
+single-flight around the refresh (`TokenRefreshCoordinator`); and the *signing keys* --
 reading or generating them, and publishing the client key (<<bff-18>>, <<bff-19>>).
 *Refresh-token reuse detection* is
 owned by neither the libraries nor the gateway: it is the identity provider's strict rotation
