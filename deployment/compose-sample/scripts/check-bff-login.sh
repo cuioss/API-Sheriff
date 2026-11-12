@@ -25,20 +25,23 @@
 #      and the cookie jar must hold the gateway's __Host- session cookie under its configured name.
 #   6. EXPOSURE (opt-in, --idp-prefix PREFIX only). For a variant whose gateway FRONTS the identity
 #      provider under PREFIX (`start-sample.sh --auth-fronted`, PREFIX /auth). The login above already
-#      proved the allowed paths work for a browser; this step proves the gateway exposes nothing else.
-#      Each allowed path must answer from Keycloak — the realm's discovery document and the realm's
-#      RFC 8414 authorization-server metadata (PREFIX/.well-known/oauth-authorization-server/realms/
-#      REALM), each with the issuer the gateway's origin plus PREFIX names, and the resources namespace
-#      with any answer that is not the gateway's own. Then a DISCRIMINATOR CONTROL: a page that does not
-#      exist under the realm route (PREFIX/realms/REALM/no-such-page) is routed by the gateway and
-#      answered by Keycloak, and that answer must NOT be classified as the gateway's own — otherwise the
-#      classification cannot tell the two sources apart and the refusals below would pass whoever
-#      answered them. Only then is every path outside the allowlist probed — the admin console, the
-#      master realm and its server-level well-known document, the bare well-known namespace, Keycloak's
-#      metrics and health paths, and the console reached through dot-segment, encoded, doubled-slash,
-#      matrix-parameter and backslash spellings, sent verbatim with --path-as-is — and each must get the
-#      gateway's OWN answer: an RFC 9457 problem document or a bodiless refusal, never a page Keycloak
-#      rendered.
+#      proved the login flow's paths work for a browser; this step proves the gateway exposes nothing
+#      else. The gateway routes ONLY the login flow — the realm's authorization endpoint, its
+#      login-actions, its end-session endpoint and the theme resources. Two of those are asserted to be
+#      answered by Keycloak rather than by the gateway: the resources namespace, and the authorization
+#      endpoint, which is the MATCHED CONTROL for the token endpoint refused below — the two sit side by
+#      side under PREFIX/realms/REALM/protocol/openid-connect, so a refusal of the one beside an answer
+#      from the other shows the gateway draws the line between them. Then a DISCRIMINATOR CONTROL: a
+#      page that does not exist under a still-routed prefix (PREFIX/realms/REALM/login-actions/
+#      no-such-page) is forwarded by the gateway and answered by Keycloak, and that answer must NOT be
+#      classified as the gateway's own — otherwise the classification cannot tell the two sources apart
+#      and the refusals below would pass whoever answered them. Only then is every path outside the
+#      allowlist probed — the admin console, the master realm and its server-level well-known document,
+#      the bare well-known namespace, Keycloak's metrics and health paths, the sample realm's own
+#      account console, token endpoint, discovery document and RFC 8414 metadata, and the console and
+#      the account console reached through dot-segment, encoded, doubled-slash, matrix-parameter and
+#      backslash spellings, sent verbatim with --path-as-is — and each must get the gateway's OWN
+#      answer: an RFC 9457 problem document or a bodiless refusal, never a page Keycloak rendered.
 #
 # What it never does: skip TLS verification (every request verifies against the sample's generated
 # certificate with --cacert — never -k), wait without bound (every request carries --max-time), or
@@ -276,17 +279,6 @@ elif command == "form-action":
     if not actions:
         sys.exit(1)
     sys.stdout.write(urljoin(args[1], actions[0]))
-elif command == "json-field":
-    # json-field FILE KEY -> the string value of a top-level KEY of the JSON document in FILE, or exit 1.
-    import json
-    try:
-        with open(args[0], encoding="utf-8") as handle:
-            value = json.load(handle).get(args[1])
-    except (ValueError, AttributeError):
-        sys.exit(1)
-    if not isinstance(value, str):
-        sys.exit(1)
-    sys.stdout.write(value)
 elif command == "gateway-answer":
     # gateway-answer HEADERS BODY -> exit 0 when the response is the gateway's OWN answer: an RFC 9457
     # problem document, or a status with no body at all (the gateway's bare-status refusals). The
@@ -472,41 +464,7 @@ fi
 # and with --path-as-is, so curl hands the gateway the spelling written here instead of normalising a
 # dot-segment away first — the gateway's canonicalisation is what is under test, not curl's.
 if [[ -n "$IDP_PREFIX" ]]; then
-    step "Step 6/${STEPS}: only the allowlisted identity-provider paths are reachable under ${IDP_PREFIX}"
-
-    # The realm route: the discovery document must come from Keycloak and name the issuer the gateway
-    # validates — its own origin plus the prefix. A 200 from anything else, or an issuer on another
-    # origin, means the route does not reach the IdP the gateway trusts. The origin is compared
-    # without regard to case, as every other origin comparison in this script is, so a --base-url
-    # spelled https://LOCALHOST:8443 still matches the lowercase issuer Keycloak emits; the path is
-    # compared exactly.
-    EXPECTED_ISSUER="${BASE_URL}${IDP_PREFIX}/realms/${REALM}"
-    request "${EXPECTED_ISSUER}/.well-known/openid-configuration" --path-as-is \
-        --header "Accept: application/json"
-    if [[ "${STATUS}" != "200" ]]; then
-        fail "expected the realm's discovery document (200) through ${IDP_PREFIX}/realms/${REALM}, got ${STATUS}"
-    fi
-    if ! ISSUER="$(helper json-field "${BODY}" issuer)" \
-            || [[ "$(helper origin "${ISSUER}")" != "$(helper origin "${EXPECTED_ISSUER}")" \
-                || "$(helper path "${ISSUER}")" != "$(helper path "${EXPECTED_ISSUER}")" ]]; then
-        fail "the discovery document names issuer '${ISSUER:-<none>}', not ${EXPECTED_ISSUER}"
-    fi
-
-    # The well-known route: the ONE server-level document it routes, the sample realm's RFC 8414
-    # authorization-server metadata, must come from Keycloak and name the same issuer. Asserted as a
-    # document rather than as "any answer that is not the gateway's", so this step is also what
-    # establishes that the pinned Keycloak serves the path insertion at all: a Keycloak that did not
-    # would answer 404 here, and the route would be fronting nothing.
-    METADATA_PATH="${IDP_PREFIX}/.well-known/oauth-authorization-server/realms/${REALM}"
-    request "${BASE_URL}${METADATA_PATH}" --path-as-is --header "Accept: application/json"
-    if [[ "${STATUS}" != "200" ]]; then
-        fail "expected the realm's authorization-server metadata (200) at ${METADATA_PATH}, got ${STATUS}"
-    fi
-    if ! ISSUER="$(helper json-field "${BODY}" issuer)" \
-            || [[ "$(helper origin "${ISSUER}")" != "$(helper origin "${EXPECTED_ISSUER}")" \
-                || "$(helper path "${ISSUER}")" != "$(helper path "${EXPECTED_ISSUER}")" ]]; then
-        fail "the authorization-server metadata names issuer '${ISSUER:-<none>}', not ${EXPECTED_ISSUER}"
-    fi
+    step "Step 6/${STEPS}: only the login flow's identity-provider paths are reachable under ${IDP_PREFIX}"
 
     # The resources namespace has no one stable document to ask for — the theme's paths carry
     # Keycloak's version — so the assertion is that the gateway routed the request: whatever answers,
@@ -516,21 +474,37 @@ if [[ -n "$IDP_PREFIX" ]]; then
         fail "${IDP_PREFIX}/resources/ got the gateway's own ${STATUS} — the allowlisted namespace is not routed to the identity provider"
     fi
 
-    # THE DISCRIMINATOR CONTROL, before any refusal below is believed. gateway-answer classifies a
-    # response by its shape — a problem document or no body — on the premise that Keycloak never
-    # answers in either. This page does not exist, but it lies under the realm route, so the gateway
-    # forwards it and the answer is Keycloak's own refusal: exactly the kind of answer a denied probe
-    # would get had it crossed the gateway. If gateway-answer took it for the gateway's, a crossed probe
-    # would pass the loop below unseen, so the step fails here and the classification must be tightened
-    # before the exposure check means anything.
-    request "${BASE_URL}${IDP_PREFIX}/realms/${REALM}/no-such-page" --path-as-is
+    # THE MATCHED CONTROL for the token endpoint denied below. The authorization endpoint is its
+    # sibling under the same protocol/openid-connect namespace and IS routed, so it must be answered by
+    # Keycloak — without a pushed request it renders its own error page, which is the point: whatever
+    # Keycloak says, it is not the gateway's refusal. A gateway that refused this path too would make
+    # the token endpoint's refusal below say nothing about where the allowlist draws its line.
+    AUTHORIZATION_PATH="${IDP_PREFIX}/realms/${REALM}/protocol/openid-connect/auth"
+    request "${BASE_URL}${AUTHORIZATION_PATH}" --path-as-is --header "Accept: text/html"
     if helper gateway-answer "${HEADERS}" "${BODY}"; then
-        fail "${IDP_PREFIX}/realms/${REALM}/no-such-page — forwarded to the identity provider — answered ${STATUS} in the gateway's own shape (problem document or no body), so gateway-answer cannot tell Keycloak's refusals from the gateway's and the denied probes below would prove nothing"
+        fail "${AUTHORIZATION_PATH} got the gateway's own ${STATUS} — the login flow's authorization endpoint is not routed to the identity provider"
     fi
 
-    # Everything else. The first six are the namespaces the allowlist exists to keep out; the rest
-    # spell the admin console so a gateway that resolved them AFTER choosing the realm route would
-    # carry them into Keycloak through it. Each must be answered by the gateway itself.
+    # THE DISCRIMINATOR CONTROL, before any refusal below is believed. gateway-answer classifies a
+    # response by its shape — a problem document or no body — on the premise that Keycloak never
+    # answers in either. This page does not exist, but it lies under the still-routed login-actions
+    # prefix, so the gateway forwards it and the answer is Keycloak's own refusal: exactly the kind of
+    # answer a denied probe would get had it crossed the gateway. If gateway-answer took it for the
+    # gateway's, a crossed probe would pass the loop below unseen, so the step fails here and the
+    # classification must be tightened before the exposure check means anything.
+    DISCRIMINATOR_PATH="${IDP_PREFIX}/realms/${REALM}/login-actions/no-such-page"
+    request "${BASE_URL}${DISCRIMINATOR_PATH}" --path-as-is
+    if helper gateway-answer "${HEADERS}" "${BODY}"; then
+        fail "${DISCRIMINATOR_PATH} — forwarded to the identity provider — answered ${STATUS} in the gateway's own shape (problem document or no body), so gateway-answer cannot tell Keycloak's refusals from the gateway's and the denied probes below would prove nothing"
+    fi
+
+    # Everything else. The first six are the namespaces the allowlist exists to keep out. The next five
+    # are the sample realm's own paths the login flow never needs — the account console, the token
+    # endpoint (the gateway's back channel calls it, the browser never does), the realm's discovery
+    # document and its RFC 8414 metadata. The rest spell the admin console or the account console so
+    # that a gateway which resolved them AFTER choosing a route would carry them into Keycloak through
+    # it: first through the login-actions route, which is still routed, then from the realm root. Each
+    # must be answered by the gateway itself.
     DENIED=(
         "${IDP_PREFIX}/admin/"
         "${IDP_PREFIX}/realms/master/"
@@ -538,6 +512,16 @@ if [[ -n "$IDP_PREFIX" ]]; then
         "${IDP_PREFIX}/.well-known/"
         "${IDP_PREFIX}/metrics"
         "${IDP_PREFIX}/health"
+        "${IDP_PREFIX}/realms/${REALM}/account"
+        "${IDP_PREFIX}/realms/${REALM}/account/"
+        "${IDP_PREFIX}/realms/${REALM}/protocol/openid-connect/token"
+        "${IDP_PREFIX}/realms/${REALM}/.well-known/openid-configuration"
+        "${IDP_PREFIX}/.well-known/oauth-authorization-server/realms/${REALM}"
+        "${IDP_PREFIX}/realms/${REALM}/login-actions/../../../admin/"
+        "${IDP_PREFIX}/realms/${REALM}/login-actions/%2F..%2F..%2F..%2Fadmin/"
+        "${IDP_PREFIX}/realms/${REALM}/login-actions/..;/..;/..;/admin/"
+        "${IDP_PREFIX}/realms/${REALM}/login-actions/..\\..\\..\\admin/"
+        "${IDP_PREFIX}/realms/${REALM}/login-actions/../account"
         "${IDP_PREFIX}/realms/${REALM}/../../admin/"
         "${IDP_PREFIX}/%2e%2e/admin/"
         "${IDP_PREFIX}/realms/${REALM}/%2F..%2F..%2Fadmin/"
@@ -560,5 +544,5 @@ fi
 echo ""
 echo "✅ Logged in through the BFF: ${START_PATH} answered 200 from demo-api over the ${SESSION_COOKIE} session."
 if [[ -n "$IDP_PREFIX" ]]; then
-    echo "✅ Under ${IDP_PREFIX} the gateway serves the allowlisted identity-provider paths and refuses every other one."
+    echo "✅ Under ${IDP_PREFIX} the gateway serves the login flow's identity-provider paths and refuses every other one."
 fi

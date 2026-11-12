@@ -144,7 +144,9 @@ fi
 # For plain-HTTP the gateway then publishes 8443 alongside the terminator's binding on the same host
 # port, which surfaces as an opaque port conflict; for /auth-fronted Keycloak's admin console stays
 # published on 127.0.0.1:1443, which surfaces as nothing at all — the one exposure the variant exists
-# to remove would quietly remain. Checking the version here turns both into one line naming the cause.
+# to remove would quietly remain. Checking the version here turns both into one line naming the cause;
+# for /auth-fronted the merged model is ALSO read back below (0a), so that the effect, not the version
+# string, decides.
 #
 # Compared with `sort -V` rather than lexically: "2.9.0" is NEWER than "2.24.0" lexically and older
 # numerically, which is exactly the comparison a string test gets wrong.
@@ -160,6 +162,9 @@ if [[ "$VARIANT" != "default" ]]; then
     COMPOSE_VERSION="$("${COMPOSE_CMD[@]}" version --short 2>/dev/null || echo "")"
     COMPOSE_VERSION="${COMPOSE_VERSION#v}"
     if [[ -z "$COMPOSE_VERSION" ]]; then
+        # A warning, not a refusal, because the version string is only a proxy for the tag's effect.
+        # For --auth-fronted that is not where it ends: the effect itself is checked against the
+        # merged model below, and that check decides.
         echo "⚠️  Could not determine the Docker Compose version; --${VARIANT} needs"
         echo "   ${COMPOSE_MERGE_TAG_MIN_VERSION} or newer for the !override merge tag."
     elif [[ "$(printf '%s\n%s\n' "$COMPOSE_MERGE_TAG_MIN_VERSION" "$COMPOSE_VERSION" \
@@ -177,6 +182,40 @@ fi
 # Every compose invocation below reads the selected file set. Appended AFTER the version guard above,
 # which needs the bare command only.
 COMPOSE_CMD+=("${COMPOSE_FILES[@]}")
+
+# ---- 0a. /auth-fronted: check the EFFECT of the merge tag, not the version ----------------------
+# The version guard above infers the merge from a version string, and lets an unreadable one pass
+# with a warning. For this variant that is not enough: the one thing it exists to take away is
+# Keycloak's published admin console, and a Compose that ignored `!override` would leave it published
+# with nothing on screen to say so. So the merged model Compose will actually start is read back, and
+# Keycloak's port list in it must be empty — whatever version produced it.
+if [[ "$VARIANT" == "auth-fronted" ]]; then
+    if ! "${COMPOSE_CMD[@]}" config --format json | python3 -c '
+import json
+import sys
+
+try:
+    model = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
+             "version supporting `config --format json`." % exc)
+
+keycloak = (model.get("services") or {}).get("keycloak")
+if keycloak is None:
+    # No keycloak service means the model is not the one this check is about -- fail rather than pass
+    # a check that looked at nothing.
+    sys.exit("the resolved Compose model carries no keycloak service")
+ports = keycloak.get("ports") or []
+if ports:
+    published = ", ".join("%s:%s->%s" % (entry.get("host_ip") or "*", entry.get("published"), entry.get("target"))
+                          for entry in ports)
+    sys.exit("--auth-fronted refused: Keycloak still publishes %s in the merged Compose model, so "
+             "this Compose ignored the !override tag that empties its port list" % published)
+'; then
+        # The one-line cause is already on stderr, written by the check itself.
+        exit 1
+    fi
+fi
 
 if ! docker info >/dev/null 2>&1; then
     echo "❌ Docker daemon not running — start Docker/Rancher Desktop first"
@@ -502,10 +541,11 @@ if [[ "$VARIANT" == "plain-http" ]]; then
 elif [[ "$VARIANT" == "auth-fronted" ]]; then
     echo "🎉 The API Sheriff compose sample is ready (/auth-fronted variant)."
     echo "   Try it:  curl -k https://localhost:8443/api"
-    # The login page now lives under the gateway's own origin. Keycloak publishes no port, so this is
-    # the only address it answers on from the host.
-    echo "   The identity provider's login pages are served by the gateway at"
-    echo "   https://localhost:8443/auth/realms/sample/ — Keycloak publishes no host port."
+    # The login page now lives under the gateway's own origin. Keycloak publishes no port, and the
+    # gateway routes only the login flow's own paths (endpoints/idp.yaml) — so the realm root is not
+    # an address to offer; the login form is, reached by opening /app below.
+    echo "   The identity provider's login form is served by the gateway under"
+    echo "   https://localhost:8443/auth/realms/sample/login-actions/ — Keycloak publishes no host port."
 else
     echo "🎉 The API Sheriff compose sample is ready."
     echo "   Try it:  curl -k https://localhost:8443/api"
