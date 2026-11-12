@@ -297,9 +297,12 @@ class JwksKeyRotationIT {
         publishedKeyIds.add(rig.replaceSigningKey());
         int keySetRequestsBefore = keySetRequests(rig);
 
+        String inventedKeyIdToken = rig.accessTokenNamingKeyId(SCOPES, TOKEN_LIFETIME, UUID.randomUUID().toString());
+        // Read after the token is minted and before the request is sent: the gateway claims the window
+        // while that request is in flight, so only a reading taken before sending is a lower bound on the
+        // claim, and a deadline derived from it never lies beyond the window's end.
         long claimedAt = System.nanoTime();
         long deadline = claimedAt + WINDOW.toNanos() - Duration.ofMillis(IN_WINDOW_SAFETY_MILLIS).toNanos();
-        String inventedKeyIdToken = rig.accessTokenNamingKeyId(SCOPES, TOKEN_LIFETIME, UUID.randomUUID().toString());
         assertEquals(REFUSED, securedAssetStatus(origin, inventedKeyIdToken), () -> "a token naming a key id "
                 + "the stub never published must be refused. " + rig.gatewayOutput());
 
@@ -328,7 +331,7 @@ class JwksKeyRotationIT {
         awaitWithinTheBound(rig, "a login whose ID token is signed with the new key to complete at the callback",
                 () -> rig.loginStatus(SESSION_PATH, TOKEN_LIFETIME) == 302);
         assertTrue(keySetRequests(rig) > keySetRequestsBefore, "the completed login must be one the gateway "
-                + "refreshed its key set for: the stub must have recorded a key-set request after the second "
+                + "refreshed its key set for: the stub must have recorded a key-set request after the third "
                 + "replacement");
     }
 
@@ -399,7 +402,9 @@ class JwksKeyRotationIT {
      * Repeats {@code condition} until it holds, and fails when it does not before {@code deadline}, a
      * {@link System#nanoTime()} reading that lies a safety margin inside the window the third leg's
      * invented key id claimed. No evaluation starts at or after the deadline, so none can find the
-     * window free and claim a refresh of its own.
+     * window free and claim a refresh of its own. The clock is read again once {@code condition} holds:
+     * an evaluation that started before the deadline but completed at or after it fails as well, because
+     * the leg claims the outcome inside the window, not merely a request started inside it.
      */
     private static void awaitInsideTheWindow(StubIdentityProviderRig rig, long deadline, String what,
             BooleanSupplier condition) {
@@ -407,6 +412,12 @@ class JwksKeyRotationIT {
         while (System.nanoTime() < deadline) {
             evaluations++;
             if (condition.getAsBoolean()) {
+                if (System.nanoTime() >= deadline) {
+                    fail("evaluation " + evaluations + " waiting for " + what + " started before the deadline, "
+                            + IN_WINDOW_SAFETY_MILLIS + " ms before the " + WINDOW.toSeconds() + "s window an "
+                            + "invented key id claimed had passed, but completed only after it: the outcome is "
+                            + "not shown inside the window. " + rig.gatewayOutput());
+                }
                 return;
             }
             pause(IN_WINDOW_POLL_INTERVAL);
