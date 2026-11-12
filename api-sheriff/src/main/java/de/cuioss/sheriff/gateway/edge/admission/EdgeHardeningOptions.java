@@ -29,8 +29,11 @@ import io.vertx.core.http.HttpServerOptions;
  * <p>
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
- * rejected by the Vert.x codec, and an idle connection is reaped so a slow-loris / h2 abuse load
- * cannot pin connection slots. Eight further limits are consumed by
+ * rejected by the Vert.x codec, and a connection that carries no bytes for the idle window is closed.
+ * The idle timeout is reset by any inbound byte, so a client that keeps sending, however slowly, keeps
+ * its connection open; the bound on open connections is the connection cap
+ * {@code quarkus.http.limits.max-connections}, declared in the shipped {@code application.properties}
+ * rather than set here. Eight further limits are consumed by
  * {@code de.cuioss.sheriff.gateway.edge} and its sub-packages rather
  * than the transport: the {@linkplain #admissionCap() admission cap} bounds the number of requests
  * that may be in flight at once (rejected with {@code 503} <em>before</em> a virtual thread is
@@ -115,7 +118,11 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     /** Maximum size of a single chunked-transfer chunk in bytes. */
     private static final int MAX_CHUNK_SIZE_BYTES = 16 * 1024;
 
-    /** Idle-connection reap threshold in seconds — an idle connection is closed after this. */
+    /**
+     * Idle-connection reap threshold in seconds — a connection that carries no bytes for this long is
+     * closed. Any byte restarts the window, so it frees idle connections and does not bound how many
+     * may be open.
+     */
     private static final int IDLE_TIMEOUT_SECONDS = 60;
 
     /**

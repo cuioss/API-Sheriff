@@ -1331,19 +1331,25 @@ MIME quadratic, CVE-2025-61723 PEM quadratic). A relay that buffers unbounded re
 bodies with no timeout exhausts a memory-capped container.
 
 *Control.* Bound everything an attacker inflates: inbound header/line-size limits, an
-inbound idle/read timeout (slowloris), a max-in-flight admission cap, `max_body_bytes` as a
+inbound idle timeout that closes a connection carrying no bytes (any byte the connection carries
+starts it again, so it does not end a connection that keeps trickling), a connection cap
+(`quarkus.http.limits.max-connections`) that bounds how many connections the Quarkus-terminated
+side holds open at once (one counter shared by the plain-HTTP redirect listener and the HTTPS
+listener; the SNI front listener of `passthrough_sni` and the management interface are not
+counted), a max-in-flight admission cap, `max_body_bytes` as a
 *streaming* counter (never buffer the body -- link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]),
 and streamed responses (never materialized). The gateway is an *opaque* passthrough -- it does
 not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must
 still cap body bytes. Explicit YAML `StreamReadConstraints` are applied at config load.
 
 *Status:* PARTIAL. Streaming + the `max_body_bytes` counter is ADR-0006 + pipeline
-stage 6; edge limits, idle timeout, admission cap and graceful drain are delivered as the
-edge-hardening bounds; YAML limits are applied at config load. The individual controls are
+stage 6; edge limits, idle timeout, connection cap, admission cap and graceful drain are delivered
+as the edge-hardening bounds; YAML limits are applied at config load. The individual controls are
 delivered, but the assertion below is not yet pinned across the whole set, which is what keeps
 the entry at PARTIAL rather than COVERED.
 
-*Assertion.* A slow-drip request is evicted at the idle timeout; a body exceeding
+*Assertion.* A connection that carries no bytes is closed at the idle timeout; a connection beyond
+the connection cap is closed while the connections already open are served; a body exceeding
 `max_body_bytes` aborts mid-stream without full buffering; concurrent large requests do not
 grow heap without bound (admission cap holds); an oversized/alias-bomb config fails boot
 gracefully.
@@ -1371,10 +1377,15 @@ refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
   sets held at that moment, so the flood ties up no request thread on the identity provider's
   latency. The refresh is started from a scheduler, never from a request thread.
 * *A flood cannot evict valid keys.* A refreshed key set replaces the loaded one only when it holds
-  the key id that triggered the refresh. A refresh triggered by an invented key id is discarded, so
-  it displaces neither the loaded key set nor a replaced one still inside its key-rotation grace
-  period, and it cannot end that grace period early. A failed refresh changes nothing either and
-  does not start the failed-load retry.
+  the key id that triggered the refresh, or a key id that neither the loaded key set nor a replaced
+  one still inside its key-rotation grace period holds. What decides is the key set the identity
+  provider serves, not the key id the caller named. A refresh triggered by an invented key id that
+  fetches the keys the gateway already holds is discarded, so it displaces neither the loaded key set
+  nor the replaced one, and it cannot end that grace period early. One that fetches a newly rotated
+  key is published, exactly as a refresh triggered by a token signed with that key would be; once the
+  key is held, the next refresh brings nothing new and is discarded, so a flood replaces the key set
+  at most once per key the identity provider introduces. A failed refresh changes nothing and does
+  not start the failed-load retry.
 
 * *A clock step moves neither bound.* The window and the grace deadline of
   `jwks.key_rotation_grace_period_seconds` (`0`-`3600`) are durations the gateway enforces, so both
@@ -1398,17 +1409,15 @@ with the new key are rejected: the request that triggers the refresh is itself r
 unrouted `404` on the shipped default, `401` with `security_defaults.uniform_not_found: false`), and
 when the window was already claimed the next refresh waits for it to pass. And a caller who keeps
 presenting invented key ids can claim an issuer's window ahead of legitimate tokens. The refresh such
-a claim triggers is discarded even when the key set it fetched holds a newly rotated key, so for as
-long as that caller wins the claim, the new key is picked up only by a window a token signed with it
-claims or, at the latest, by the background refresh. In that worst case the gateway behaves as it
-would without the on-demand refresh; the flood buys a delay of the rotation pick-up bounded by
-`jwks.refresh_interval_seconds`, never the acceptance of a token and never the loss of a key that
-was valid. Closing this residual exactly requires the refresh to compare the key ids the fetched key
-set holds with those of the current one. The token library exposes them since 0.9.7
-(`JwksLoader.getKeyIds()`), but the refresh does not use them: it publishes a fetched key set only
-when that set resolves the key id that triggered it. A replaced key set is closed only when its grace period ends, so until then its loader
-keeps running its own background refresh beside the current one; at most one replaced key set is
-held per issuer.
+a claim triggers compares the key ids of the fetched key set with those the loaded and the replaced
+key set hold (`JwksLoader.getKeyIds()`) and publishes a set that brings a new one, so a newly rotated
+key is picked up whichever token claimed the window. What the caller still decides is when the
+window is claimed: a refresh claimed just before the identity provider starts serving the new key
+fetches the old set and is discarded, and the next window's refresh picks the key up. The flood buys
+a delay of the rotation pick-up of about one window, never the acceptance of a token and never the
+loss of a key that was valid. A replaced key set is closed only when its grace period ends, so until
+then its loader keeps running its own background refresh beside the current one; at most one
+replaced key set is held per issuer.
 
 *Status of this control:* COVERED. `RetryingJwksLoaderTest` drives the window, the discarded and the
 published refresh, the grace period, steps of the wall clock in both directions and the record with

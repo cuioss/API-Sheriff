@@ -495,12 +495,14 @@ Neither case has a wire effect: an ALERT is a signal to look at, not a refusal
 
 The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
 
-The *transport bounds* -- the framing limits, the HTTP/2 stream, header-list, reset and
-connection-window bounds, the request-body idle timeout and deadline, the gRPC message bound and
-stream-idle timeout,
+The *transport bounds* -- the framing limits, the idle-connection reap and the connection cap, the
+HTTP/2 stream, header-list, reset and connection-window bounds, the request-body idle timeout and
+deadline, the gRPC message bound and stream-idle timeout,
 the unrouted-`404` response floor and the drain window -- are fixed secure defaults and are not
-operator-configurable. The header-block and request-line limits fail fast on abusive framing before
-a request is admitted to the pipeline. This table is the documented contract for those constants.
+operator-configurable in `gateway.yaml`. The connection cap is the one among them set as a Quarkus
+property in the shipped `application.properties` rather than as a gateway constant. The header-block
+and request-line limits fail fast on abusive framing before a request is admitted to the pipeline.
+This table is the documented contract for those constants.
 
 The *admission budgets* -- how many requests, and how many WebSocket relays, may be in flight at
 once -- are configurable through the optional
@@ -537,8 +539,30 @@ deployment that never writes it keeps the behaviour shown here.
 
 | Idle-connection reap
 | 60 s
-| An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin
-  connection slots.
+| A connection that carries no bytes for this window is closed. Any byte the connection carries, in
+  either direction, starts the window again, so a client that keeps sending -- however slowly --
+  keeps its connection open. The reap frees connections nobody uses; the bound on how many
+  connections may be open at once is the connection cap below.
+
+| Connection cap (open connections) +
+  [`quarkus.http.limits.max-connections`]
+| 2048
+| How many connections the Quarkus-terminated side holds open at once. A connection beyond the cap
+  is closed without being served, while the connections already open are served on. It bounds open
+  connections whatever they carry; the admission cap below bounds the requests in flight on them.
+  The cap is one counter shared by the plain-HTTP redirect listener and the HTTPS listener of the
+  Quarkus-terminated side, so a connection to the redirect listener counts toward it too. The SNI
+  front listener of `passthrough_sni` and the management interface are not counted. The value is set
+  in the shipped `application.properties`, not in `gateway.yaml`, and is not configurable there.
+
+  *Derivation.* `Dockerfile.native` declares no file-descriptor limit, so the process runs under
+  whatever limit the container runtime grants, and the image cannot derive a value from it. The cap
+  is therefore held at its floor, the default `edge_hardening.admission_cap` of 2048, so admission
+  keeps governing the requests in flight while the cap bounds the connections open. Each in-flight
+  request may hold an upstream and a back-channel descriptor besides its own connection, so at the
+  defaults the gateway needs a descriptor limit of at least 2048 + 2 × 2048 = 6,144 plus its
+  listeners and files: give the container a `nofile` limit of 8192 or more. Under a lower limit the
+  process runs out of descriptors before the cap is reached.
 
 | HTTP/2 concurrent streams per connection
 | 100

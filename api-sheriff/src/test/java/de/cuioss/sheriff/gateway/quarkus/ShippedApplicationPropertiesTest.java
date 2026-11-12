@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -66,6 +67,12 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The class also guards one packaging fact the native integration tests cannot observe: that
  * {@code quarkus.native.resources.includes} covers the built-in portal template.
+ * <p>
+ * And it guards the connection cap of the terminated listener: the shipped file must declare
+ * {@code quarkus.http.limits.max-connections} at the value its derivation gives — the default
+ * {@code edge_hardening.admission_cap} — because Quarkus applies no cap at all when the key is absent.
+ * Deleting the key turns this class red; {@code MainListenerConnectionCapTest} proves the key acts on
+ * the listener.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -82,6 +89,8 @@ class ShippedApplicationPropertiesTest {
     private static final Path PACKAGED_APPLICATION_PROPERTIES = Path.of("target/classes/application.properties");
 
     private static final String NATIVE_RESOURCE_INCLUDES = "quarkus.native.resources.includes";
+
+    private static final String MAX_CONNECTIONS = "quarkus.http.limits.max-connections";
 
     /** The built-in portal template's classpath location, as loaded by {@code PortalRenderer.builtIn()}. */
     private static final String BUILT_IN_PORTAL_TEMPLATE = "portal/portal.html";
@@ -133,6 +142,33 @@ class ShippedApplicationPropertiesTest {
                 () -> NATIVE_RESOURCE_INCLUDES + "=" + includes + " includes no glob matching "
                         + BUILT_IN_PORTAL_TEMPLATE + " — the native image would boot without the built-in portal "
                         + "template, and PortalRenderer.builtIn() would refuse startup there");
+    }
+
+    /**
+     * The terminated listener's connection cap. Quarkus bounds open connections only when
+     * {@code quarkus.http.limits.max-connections} is set, so an absent key is an unbounded listener.
+     * The value is derived rather than chosen: with no file-descriptor limit the image could derive a
+     * value from, the cap is held at its floor, the default admission cap (see the Connection cap row of
+     * {@code doc/user/edge-security.adoc}).
+     */
+    @Test
+    @DisplayName("The packaged file caps the terminated listener's open connections at the default admission cap")
+    void packagedFileDeclaresTheConnectionCap() throws Exception {
+        Properties shipped = new Properties();
+        try (Reader reader = Files.newBufferedReader(PACKAGED_APPLICATION_PROPERTIES, StandardCharsets.UTF_8)) {
+            shipped.load(reader);
+        }
+
+        String declared = shipped.getProperty(MAX_CONNECTIONS);
+
+        assertAll("the connection cap of the terminated listener",
+                () -> assertNotNull(declared, () -> MAX_CONNECTIONS + " is not declared in the shipped "
+                        + "application.properties, so Quarkus applies no connection cap and the terminated "
+                        + "listener holds any number of connections open"),
+                () -> assertEquals(String.valueOf(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP), declared,
+                        "the cap is held at its floor, the default edge_hardening.admission_cap"),
+                () -> assertEquals("2048", declared,
+                        "the value the Connection cap row of doc/user/edge-security.adoc documents"));
     }
 
     @Test
