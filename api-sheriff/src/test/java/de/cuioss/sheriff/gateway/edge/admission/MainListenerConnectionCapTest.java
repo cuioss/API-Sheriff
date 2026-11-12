@@ -187,9 +187,9 @@ class MainListenerConnectionCapTest {
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
             String statusLine = in.readLine();
             return statusLine != null && statusLine.startsWith("HTTP/1.1 ") ? Outcome.SERVED : Outcome.CLOSED;
-        } catch (SocketTimeoutException timeout) {
+        } catch (SocketTimeoutException _) {
             return Outcome.TIMED_OUT;
-        } catch (IOException closed) {
+        } catch (IOException _) {
             return Outcome.CLOSED;
         }
     }

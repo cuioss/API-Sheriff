@@ -372,14 +372,18 @@ link:../configuration/tls-and-egress.adoc#_client_ca_carve_out[the `client_ca` c
 
 `client_ca` names one PEM file, and it is the *single global trust store* for the terminated
 listener. The TLS stack loads it as a PEM trust bundle (Vert.x `KeyStoreHelper.loadCA`), which trusts
-*every* certificate in the bundle, so the file may hold more than one root:
+*every* certificate in the bundle, so the file may hold more than one root. The terminated listener
+reads the file once, when it starts (`MtlsServerCustomizer` binds it into the listener options), so
+every change to it -- adding a root or removing one -- takes effect only when the gateway restarts:
 
-* *A gradual cutover ships both roots.* Put the new root into the file beside the old one, stage the
-  new client certificates to every client, then remove the old root once no client presents a
-  certificate under it. While both are in the file, a certificate under either root completes the
-  handshake.
-* *An emergency cut-off drops the old root from the file.* Every certificate under the removed root
-  is then rejected at once, with no per-client exemption.
+* *A gradual cutover ships both roots.* Put the new root into the file beside the old one and
+  restart, stage the new client certificates to every client, then remove the old root and restart
+  once no client presents a certificate under it. While both are in the loaded file, a certificate
+  under either root completes the handshake.
+* *An emergency cut-off drops the old root from the file and restarts the gateway.* Until the
+  restart, the removed root stays trusted. The restart closes every open connection, so none
+  established under the removed root survives it; from then on every certificate under that root is
+  rejected at the handshake, with no per-client exemption.
 * *There is no per-certificate revocation.* Neither CRL nor OCSP is checked, so the only revocation
   lever is removing the root a certificate chains to.
 

@@ -549,9 +549,9 @@ enforces it and the test that pins it:
   `FramingGateTest.AmbiguousTransferEncoding`
 
 | More than one `Content-Length` (CL.CL), or a comma-separated `Content-Length` value
-| `FramingGate`; on HTTP/2 the transport refuses `Content-Length` fields declaring different lengths
-  and collapses fields repeating the *same* length into one value, so that shape reaches the gate as a
-  single length and is not rejected on HTTP/2
+| `FramingGate`; on HTTP/2 the transport refuses differing `Content-Length` values and collapses
+  identical ones -- repeated fields and a comma-separated list alike -- into one value, so that shape
+  reaches the gate as a single length and is not rejected on HTTP/2
 | `GatewayEdgeFramingCorpusTest` (`repeatedContentLengthIsRefusedOnHttp2`); `FramingGateTest`
   (`rejectsMultipleContentLength`, `rejectsCommaSeparatedContentLength`)
 

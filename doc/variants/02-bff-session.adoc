@@ -294,7 +294,7 @@ endpoint:
 
 | State | Stateful -- a server-side token store (`memory`; one node or sticky sessions).
 | Token custody | The token never leaves the server in any form; the browser holds an opaque handle.
-| Revocation | Per replica: logout and back-channel logout destroy the session in the store of the replica that received them, and the store is per process; RP-initiated logout also revokes the session's refresh token at the IdP, never the access token.
+| Revocation | Per replica: logout and back-channel logout destroy the session in the store of the replica that received them, and the store is per process; RP-initiated logout also attempts to revoke the session's refresh token at the IdP, never the access token -- the attempt can fail, and a session without a refresh token or an IdP without a `revocation_endpoint` gets no revocation request (see Logout above).
 | OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
 | CSRF | Fixed origin verification on unsafe methods (<<_csrf_defence>>).
 |===

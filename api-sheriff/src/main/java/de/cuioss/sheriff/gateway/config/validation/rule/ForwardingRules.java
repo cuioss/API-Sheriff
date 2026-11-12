@@ -284,7 +284,7 @@ public class ForwardingRules {
                                     + "forward.headers_allow, but declares no websocket.allowed_origins; the upstream "
                                     + "never sees the browser's Origin, so that allowlist is the route's only origin "
                                     + "check — declare websocket.allowed_origins, or drop Authorization from "
-                                    + "headers_allow").formatted(route.id())));
+                                    + "headers_allow").formatted(RuleSupport.renderForMessage(route.id()))));
                 }
             }
         }

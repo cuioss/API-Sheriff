@@ -844,8 +844,10 @@ The receiver destroys the matching sessions in its own local store and answers `
 destroyed none, so the IdP cannot tell from the answer whether a session ended. Behind several
 replicas, a session held by a replica that did not receive the token stays alive. Where back-channel
 revocation matters, run a single replica (see <<multi-replica>>). Cookie mode is no substitute: it
-holds no server-side session, so `backchannel_path` answers `404` there and an IdP-side termination
-takes effect only at the next transparent refresh.
+holds no server-side session, so `backchannel_path` answers `404` there. An IdP-side termination
+reaches a cookie session only through a transparent refresh, and only when the IdP then refuses the
+session's refresh token; a session that holds no refresh token, or that is never refreshed, stays
+usable until its own expiry.
 
 *That memory is per gateway instance.* It is held in memory, is not shared between instances and
 does not survive a restart. It holds 10 000 tokens; when it is full of tokens still inside their

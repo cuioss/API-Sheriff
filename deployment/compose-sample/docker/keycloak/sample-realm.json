@@ -55,7 +55,7 @@
     },
     {
       "clientId": "account",
-      "description": "Keycloak's default account client, DISABLED. The sample's users manage nothing about their account, and the gateway's /auth fronting routes no account path. Listed rather than omitted because an import that omits it makes Keycloak re-create it enabled; disabling it is the only removal that holds.",
+      "description": "Keycloak's default account client, DISABLED: listed rather than omitted, because an import that omits it makes Keycloak re-create it enabled.",
       "enabled": false,
       "protocol": "openid-connect",
       "publicClient": true,

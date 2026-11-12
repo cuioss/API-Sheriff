@@ -196,9 +196,11 @@ rejected `400` when it carries:
   one, so the relaxation is drawn where the security value is rather than where the convenience is.
 * both `Content-Length` and `Transfer-Encoding` -- the CL+TE desync primer, checked before this leg.
 * a comma-separated `Content-Length` value, or more than one `Content-Length` header with differing
-  values. A `Content-Length` repeated with the *same* value is refused on HTTP/1.1; on HTTP/2 the
-  transport (Netty) collapses the identical copies into one value before the gateway sees the
-  request, so such a request is not rejected there -- it reaches the gate with one unambiguous length.
+  values. On HTTP/1.1 identical values are refused as well, whether repeated as headers or listed in
+  one comma-separated value. On HTTP/2 the transport (Netty) collapses identical values -- repeated
+  headers and a comma-separated list such as `0, 0` alike -- into one value before the gateway sees
+  the request, so such a request is not rejected there -- it reaches the gate with one unambiguous
+  length. Differing values are refused on HTTP/2 too.
 * a `Connection` header naming a framing or trust header (the hop-by-hop strip vector).
 
 And `HEAD` is unaffected on every leg -- a body on `HEAD` stays rejected whatever this key says.

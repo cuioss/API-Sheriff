@@ -686,9 +686,10 @@ rejection preserved.
 | Rejected (checked before the bodyless-method rule).
 
 | Multiple `Content-Length` headers, or a comma-separated value
-| Rejected -- with one exception on HTTP/2: `Content-Length` headers repeating the *same* value are
-  collapsed into one by the transport (Netty) before the gateway sees the request, so they are not
-  rejected there. Differing values are refused on every protocol.
+| Rejected -- with one exception on HTTP/2: identical `Content-Length` values, whether repeated as
+  headers or listed in one comma-separated value such as `5, 5`, are collapsed into one by the
+  transport (Netty) before the gateway sees the request, so they are not rejected there. Differing
+  values are refused on every protocol.
 
 | `Connection` naming a framing or trust header
 | Rejected.
