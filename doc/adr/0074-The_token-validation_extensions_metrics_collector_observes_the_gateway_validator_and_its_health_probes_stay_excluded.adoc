@@ -246,12 +246,13 @@ this record decides.
 | Numerically identical for event counts.
 | No effect.
 
-| `ProblemDetailExceptionMapper` (validation extension) and `ClientExceptionMapper` (client extension) are now
-  registered as JAX-RS providers, on RESTEasy Classic only
-| The gateway runs RESTEasy Classic, but `api-sheriff` declares no `@Path` resource and no `ExceptionMapper`; the
-  public edge is the Vert.x route. A mapper no request can reach changes no answer.
-| Inert. If a JAX-RS resource is ever added, a `TokenSheriffException` escaping it renders as `application/problem+json`
-  with fixed text rather than through the gateway's own error contract.
+| `ProblemDetailExceptionMapper` (validation extension) and `ClientExceptionMapper` (client extension) are registered
+  as JAX-RS providers, on RESTEasy Classic only
+| The gateway declares no `@Path` resource and no `ExceptionMapper`; the public edge is the Vert.x route. It also
+  no longer depends on `quarkus-resteasy`, which the extensions declare as optional, so neither mapper is
+  registered at all. `quarkus-jackson` supplies the platform `ObjectMapper` the gateway injects.
+| No effect. If a JAX-RS runtime and resource are ever added, a `TokenSheriffException` escaping it renders as
+  `application/problem+json` with fixed text, not through a gateway error contract.
 |===
 
 === Upstream

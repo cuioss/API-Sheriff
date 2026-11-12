@@ -69,21 +69,16 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>
-        <!-- quarkus-resteasy: RETAINED after the Plan-04 data-plane cutover (the JAX-RS
-             GatewayResource placeholder was removed; the public edge is now the Vert.x
-             GatewayEdgeRoute). The gateway declares no JAX-RS resource and no ExceptionMapper of its own any
-             more (the GatewayExceptionMapper this comment used to name no longer exists). What still needs a
-             JAX-RS runtime is the RFC 9457 mappers token-sheriff-client-quarkus and, since 0.9.9,
-             token-sheriff-validation-quarkus register as providers (RESTEasy Classic only); no request reaches
-             them here (ADR-0074). Whether the dependency can go is a separate decision, and dropping it needs
-             explicit approval per the dependency rule. -->
+        <!-- quarkus-jackson: the platform ObjectMapper bean GatewayJson injects. It replaces
+             quarkus-resteasy and quarkus-resteasy-jackson, which supplied it only transitively. The gateway declares no JAX-RS resource and no ExceptionMapper, and the public
+             edge is the Vert.x GatewayEdgeRoute, so no JAX-RS runtime is needed. The token-sheriff
+             extensions declare quarkus-resteasy as optional and register their RFC 9457 JAX-RS mappers
+             through it; without it those mappers are not registered here, which changes no answer because
+             no request reached them (ADR-0074). jakarta.ws.rs-api stays on the classpath through
+             quarkus-hibernate-validator, which is what the extension classes that name its types need. -->
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-resteasy</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-resteasy-jackson</artifactId>
+            <artifactId>quarkus-jackson</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
