@@ -382,10 +382,14 @@ every change to it -- adding a root or removing one -- takes effect only when th
   under either root completes the handshake.
 * *An emergency cut-off drops the old root from the file and restarts the gateway.* Until the
   restart, the removed root stays trusted. The restart closes every open connection, so none
-  established under the removed root survives it; from then on every certificate under that root is
-  rejected at the handshake, with no per-client exemption.
+  established under the removed root survives it. From then on a certificate under that root is
+  rejected at the handshake, with no per-client exemption, unless a root that stays in the file still
+  provides a path to it. A cross-certificate is such a path: if a remaining root has cross-signed the
+  removed root or one of its intermediates, a client that presents that cross-certificate can still
+  complete the handshake. Before relying on the cut-off, make sure no root left in the file certifies
+  the removed one, and confirm the cut-off with a client certificate issued under the removed root.
 * *There is no per-certificate revocation.* Neither CRL nor OCSP is checked, so the only revocation
-  lever is removing the root a certificate chains to.
+  lever is removing every root a certificate chains to.
 
 To cut off a single compromised client without rotating the fleet, drop it at the network perimeter.
 

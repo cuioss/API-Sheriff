@@ -93,7 +93,7 @@ One projected policy key is reachable from the environment as well, deliberately
 [#two-doors-onto-one-lever]
 === Management HTTPS is the intended posture, and the opt-out is runtime-native
 
-The management interface serves over TLS on the deployment-bound management port when key material is supplied; without key material the port falls back to plain HTTP and the audit only warns. Taking it to plain HTTP stays possible, because running operations endpoints in the clear behind a trusted boundary is a legitimate deployment, but it stops being silent. Two doors lead onto one lever:
+The management interface serves over TLS on the deployment-bound management port when the TLS configuration it resolves carries key material. When it does not, the port serves plain HTTP and the audit only warns. That covers a deployment that supplies no key material, and also one where either door below selects a named bucket without key material: selecting that bucket replaces any certificate the deployment supplies rather than adding to it. Taking it to plain HTTP stays possible, because running operations endpoints in the clear behind a trusted boundary is a legitimate deployment, but it stops being silent. Two doors lead onto one lever:
 
 * *The neutral door:* `management.tls.enabled: false` in the gateway configuration. The config source projects it onto the runtime's management TLS-configuration-name key, selecting a named TLS bucket that carries no key material.
 * *The deployment door:* setting that same runtime key as an environment variable.
