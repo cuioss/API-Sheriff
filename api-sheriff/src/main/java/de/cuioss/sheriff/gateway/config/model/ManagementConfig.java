@@ -51,14 +51,19 @@ public record ManagementConfig(@Nullable ManagementTls tls) {
      * <p>
      * Unlike the main HTTP listener, the management interface has exactly <em>one</em> port —
      * Quarkus' management configuration declares no {@code ssl-port} and no
-     * {@code insecure-requests} key — so this toggle governs the whole management surface. There is
-     * no simultaneous HTTPS listener to fall back to: taking management off TLS takes health and
-     * metrics to plain HTTP in their entirety, which is why the downgrade is audited with a loud
-     * {@code WARN} at startup rather than passing silently.
+     * {@code insecure-requests} key — so whatever the port resolves to governs the whole management
+     * surface. There is no simultaneous HTTPS listener to fall back to: a port on plain HTTP serves
+     * health and metrics on plain HTTP in their entirety.
      * <p>
-     * {@code true} is the secure default and the shipped posture.
+     * {@code true} is the shipped value, and it enforces nothing by itself: it projects no key
+     * material, and the management port serves HTTPS only when the deployment supplies key material
+     * for it. Without key material the port falls back to plain HTTP. {@code false} selects a key-less
+     * named TLS bucket and so forces plain HTTP. Whenever the port resolved to plain HTTP, by either
+     * route, {@code ManagementPlainHttpAudit} logs {@code WARN ApiSheriff-115} at startup and the
+     * gateway still starts — the audit only warns, it never refuses.
      *
-     * @param enabled whether the management interface serves over TLS
+     * @param enabled {@code false} to force the management interface onto plain HTTP; {@code true}
+     *                leaves the protocol to the key material the deployment supplies
      * @author API Sheriff Team
      * @since 1.0
      */

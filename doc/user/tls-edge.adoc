@@ -370,16 +370,20 @@ link:../configuration/tls-and-egress.adoc#_client_ca_carve_out[the `client_ca` c
 
 == Operator Consideration: Emergency Trust-Root Replacement
 
-`client_ca` is a *single global trust anchor* for the terminated listener, so replacing it has a
-global blast radius:
+`client_ca` names one PEM file, and it is the *single global trust store* for the terminated
+listener. The TLS stack loads it as a PEM trust bundle (Vert.x `KeyStoreHelper.loadCA`), which trusts
+*every* certificate in the bundle, so the file may hold more than one root:
 
-* *Swapping `client_ca` rejects every certificate under the old root at once.* There is no gradual
-  cutover and no per-client exemption.
+* *A gradual cutover ships both roots.* Put the new root into the file beside the old one, stage the
+  new client certificates to every client, then remove the old root once no client presents a
+  certificate under it. While both are in the file, a certificate under either root completes the
+  handshake.
+* *An emergency cut-off drops the old root from the file.* Every certificate under the removed root
+  is then rejected at once, with no per-client exemption.
 * *There is no per-certificate revocation.* Neither CRL nor OCSP is checked, so the only revocation
-  lever is replacing the trust root.
+  lever is removing the root a certificate chains to.
 
-Stage the new client certificates to every client *before* switching `client_ca`. To cut off a single
-compromised client without rotating the fleet, drop it at the network perimeter.
+To cut off a single compromised client without rotating the fleet, drop it at the network perimeter.
 
 [[_egress_tls]]
 == Egress TLS (`egress_tls`)
@@ -533,7 +537,11 @@ link:../adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_r
 == The management interface (health and metrics)
 
 Health and metrics are served on a separate port -- `9000` by default -- so operations endpoints are
-not exposed on the public listener. That port serves HTTPS by default. The field contract is in
+not exposed on the public listener. That port serves HTTPS only when the deployment supplies key
+material for it. Without key material it falls back to plain HTTP: `management.tls.enabled: true`, the
+shipped value, enforces nothing by itself, and `ManagementPlainHttpAudit` only logs
+`WARN ApiSheriff-115` for the plain listener -- the gateway still starts. Supply the key material and
+check that the warning is absent. The field contract is in
 link:../configuration/tls-and-egress.adoc#_management[the `management` reference].
 
 === The single-port constraint
@@ -551,7 +559,8 @@ nor readiness.
 
 Plain-HTTP management behind a trusted network boundary is a legitimate deployment, so the downgrade
 is possible but never silent: the boot logs `WARN ApiSheriff-115`, naming the port. The record
-reports the listener's resolved state, so it fires whichever door you used. The gateway still starts.
+reports the listener's resolved state, so it fires whichever door you used -- and also when no door
+was used but no key material was supplied. The gateway still starts.
 
 There are *two doors onto one lever*. Use exactly one:
 

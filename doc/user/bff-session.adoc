@@ -839,6 +839,12 @@ two-minute window has passed, and refuses a second delivery of the same token.
 *A back-channel logout revokes no token.* It destroys the matching sessions only; the IdP that sent
 the logout token has already ended its own session.
 
+*It ends sessions on the receiving replica only.* In server mode the session store is per process.
+The receiver destroys the matching sessions in its own local store and answers `200` even when it
+destroyed none, so the IdP cannot tell from the answer whether a session ended. Behind several
+replicas, a session held by a replica that did not receive the token stays alive. Where back-channel
+revocation matters, run a single replica, or use cookie mode (see <<multi-replica>>).
+
 *That memory is per gateway instance.* It is held in memory, is not shared between instances and
 does not survive a restart. It holds 10 000 tokens; when it is full of tokens still inside their
 window, a further token is refused until one leaves it, and the IdP's retry then succeeds.
@@ -891,6 +897,11 @@ replica that holds its session.
   the callback is held by the replica that started it.
 * *A replica that restarts or fails over ends the sessions it held.* Those users log in again.
   Nothing is replicated.
+* *A back-channel logout ends sessions on one replica only.* The IdP posts the logout token to
+  whichever replica the balancer picks, and that replica destroys the matching sessions in its own
+  store only and answers `200` even when it destroyed none. A session held by another replica stays
+  alive. Where back-channel revocation matters, run a single replica or use cookie mode (see
+  <<backchannel-logout>>).
 * *Give every replica the same two signing key files* (see
   link:bff-oidc-common.adoc#key-material[Shared Setup -- Key material]).
 

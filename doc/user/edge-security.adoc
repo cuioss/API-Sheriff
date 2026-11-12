@@ -195,7 +195,10 @@ rejected `400` when it carries:
   the use case nothing: an Elasticsearch client sends a `Content-Length`-framed body, never a chunked
   one, so the relaxation is drawn where the security value is rather than where the convenience is.
 * both `Content-Length` and `Transfer-Encoding` -- the CL+TE desync primer, checked before this leg.
-* more than one `Content-Length` header, or a comma-separated `Content-Length` value.
+* a comma-separated `Content-Length` value, or more than one `Content-Length` header with differing
+  values. A `Content-Length` repeated with the *same* value is refused on HTTP/1.1; on HTTP/2 the
+  transport (Netty) collapses the identical copies into one value before the gateway sees the
+  request, so such a request is not rejected there -- it reaches the gate with one unambiguous length.
 * a `Connection` header naming a framing or trust header (the hop-by-hop strip vector).
 
 And `HEAD` is unaffected on every leg -- a body on `HEAD` stays rejected whatever this key says.
@@ -588,8 +591,12 @@ deployment that never writes it keeps the behaviour shown here.
 | 200 per 30 s
 | The Rapid-Reset guard: a connection whose client sends more `RST_STREAM` frames than this inside one
   window is ended with `GOAWAY ENHANCE_YOUR_CALM`, and every other connection is served on. Pinned at
-  the transport's own default and never raised. Only resets the client sends count, never the
-  gateway's own. Not configurable. See
+  the transport's own default and never raised. Resets the transport *sends* count too, against
+  Netty's encoder-side reset limit: every reset it writes except `NO_ERROR` and `CANCEL` -- including
+  the `STREAM_CLOSED` reset for a DATA frame that arrives after an early answer, `REFUSED_STREAM`, and
+  the reset after a `431`. The gateway's own reset of an early answer is `NO_ERROR` and does not count
+  (link:../adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
+  Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[Architecture -- HTTP/2 transport bounds].
 
 | Request-body idle timeout

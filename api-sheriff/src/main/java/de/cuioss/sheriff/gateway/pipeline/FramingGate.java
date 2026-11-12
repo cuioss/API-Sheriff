@@ -33,8 +33,12 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  * <ul>
  *   <li><strong>CL+TE</strong>: {@code Content-Length} and {@code Transfer-Encoding} both present,
  *       the classic front-end/back-end desync primer;</li>
- *   <li><strong>CL.CL</strong>: more than one {@code Content-Length} field, or a single field
- *       carrying a comma-separated value list;</li>
+ *   <li><strong>CL.CL</strong>: more than one {@code Content-Length} field in the headers the gate
+ *       receives, or a single field carrying a comma-separated value list. What reaches the gate
+ *       differs per protocol: on HTTP/1.1 a repeated {@code Content-Length} is refused with a 400
+ *       whether or not the values match; on HTTP/2 the transport (Netty) refuses fields declaring
+ *       different lengths itself and collapses fields repeating the same length into one value, so
+ *       that shape arrives here as a single unambiguous length and is not rejected;</li>
  *   <li><strong>non-decimal Content-Length</strong>: a single {@code Content-Length} that is not
  *       {@code 1*DIGIT} as received — empty, signed, or carrying any character other than an ASCII
  *       digit — or whose value does not fit a {@code long}. Leading zeros are valid syntax and are

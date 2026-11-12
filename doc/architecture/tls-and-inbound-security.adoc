@@ -127,8 +127,12 @@ completed WebSocket upgrade and L4 passthrough bypass it:
   returning no further flow-control window.
 
 . *Wait until request data settles.* Hold `END_STREAM` until the stream or connection window is
-  exhausted (or the stream ended), the window is quiet for 50 ms, or the 1 s cap elapses --
-  preventing client-triggered `STREAM_CLOSED` resets from counting against the Rapid-Reset limit.
+  exhausted (or the stream ended), the window is quiet for 50 ms, or the 1 s cap elapses. The wait
+  reduces, but does not remove, the transport's own resets: a DATA frame that still arrives after the
+  stream was reset is answered with `RST_STREAM(STREAM_CLOSED)`, and Netty's encoder-side reset limit
+  counts every reset the transport sends except `NO_ERROR` and `CANCEL` -- that `STREAM_CLOSED` reset,
+  `REFUSED_STREAM` and the reset after a `431` included. Only the 1 s cap can end the wait while data
+  is still in flight.
 
 . *Emit end and `NO_ERROR` reset together.* Write `END_STREAM` followed immediately by `RST_STREAM
   (NO_ERROR)` (RFC 9113 §8.1) so other streams on the connection continue unaffected.
