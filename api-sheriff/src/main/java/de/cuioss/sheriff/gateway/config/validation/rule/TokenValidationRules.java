@@ -19,9 +19,7 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEW
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Function;
-import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -61,15 +59,9 @@ public class TokenValidationRules {
     /** The {@code jwks.source} whose {@code allowed_egress_hosts} feed token-sheriff's egress guard. */
     private static final String JWKS_SOURCE_HTTP = "http";
 
-    /**
-     * An {@code allowed_egress_hosts} entry carrying a port, matched against the WHOLE entry
-     * ({@link java.util.regex.Matcher#matches()}): a single-colon {@code name:digits} form, or a
-     * bracketed {@code [v6]:digits} form. The name part of the first alternative excludes every colon,
-     * so a bare IPv6 literal such as {@code fd00::1} — whose second colon cannot be followed by digits
-     * only — never matches. Every quantifier is possessive; the character classes are disjoint from
-     * the delimiters that follow them, so no give-back could ever succeed.
-     */
-    private static final Pattern HOST_WITH_PORT = Pattern.compile("[^:\\[\\]]*+:\\d++|\\[[^\\]]*+\\]:\\d++");
+    /** What the operator does about a blank {@code jwks.allowed_egress_hosts} entry. */
+    private static final String JWKS_BLANK_ENTRY_REMEDY =
+            "remove it, or omit allowed_egress_hosts to derive the host of jwks.url";
 
     /**
      * Rule: every {@code allowed_egress_hosts} entry of an {@code http}-sourced issuer must name a
@@ -82,7 +74,7 @@ public class TokenValidationRules {
      * <ul>
      *   <li>a <strong>blank or whitespace-only</strong> entry names no host at all;</li>
      *   <li>a <strong>{@code host:port}</strong> entry — a single-colon {@code name:digits} form or a
-     *       bracketed {@code [v6]:digits} form ({@code HOST_WITH_PORT}) — names a host the guard never
+     *       bracketed {@code [v6]:digits} form ({@link RuleSupport#egressHostRefusal}) — names a host the guard never
      *       compares against. A bare IPv6 literal such as {@code fd00::1} is a host, not a
      *       {@code host:port} pair, and is admitted.</li>
      * </ul>
@@ -114,29 +106,11 @@ public class TokenValidationRules {
             }
             String pointer = "/token_validation/issuers/%d/jwks/allowed_egress_hosts".formatted(index);
             for (String entry : jwks.allowedEgressHosts()) {
-                jwksEgressHostRefusal(entry).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                RuleSupport.egressHostRefusal(entry, JWKS_BLANK_ENTRY_REMEDY).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE, pointer,
                         "issuer '%s' jwks.allowed_egress_hosts entry '%s' is refused: %s"
                                 .formatted(renderForMessage(issuer.name()), renderForMessage(entry), reason))));
             }
         }
-    }
-
-    /**
-     * The shape review of one {@code allowed_egress_hosts} entry; see {@link #validateJwksEgressHosts}
-     * for the rules and why each exists.
-     *
-     * @return the refusal reason, or empty when the entry names a bare host
-     */
-    private static Optional<String> jwksEgressHostRefusal(String entry) {
-        if (entry.isBlank()) {
-            return Optional.of("a blank entry names no host to exempt from the SSRF egress guard — remove it, "
-                    + "or omit allowed_egress_hosts to derive the host of jwks.url");
-        }
-        if (HOST_WITH_PORT.matcher(entry).matches()) {
-            return Optional.of("the allowlist matches hosts only (host-exact), so an entry carrying a port "
-                    + "never matches — declare the bare host");
-        }
-        return Optional.empty();
     }
 
     /**

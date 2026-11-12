@@ -69,9 +69,10 @@ Two terms are used throughout:
   That one instance is handed to the base `AuthorizationCodeFlow`, whose code exchange -- of a login
   callback and of a session-widening callback alike -- presents it, and to `ScopedEngineFlows`,
   whose refresh grants, near-expiry and scope-driven, present it. The
-  runtime's one token-endpoint client is `BoundTokenEndpointClient`. It refuses a token response
-  that is not of type `DPoP`, or whose access token does not carry a `cnf.jkt` equal to the RFC 7638
-  thumbprint of the gateway's proof key. A refused response fails the login (`400`, no session),
+  runtime's one token-endpoint client is the engine's own `TokenEndpointClient`. Under the DPoP
+  sender constraint it refuses a token response that is not of type `DPoP`, or whose JWT access token
+  does not carry a `cnf.jkt` equal to the RFC 7638 thumbprint of the gateway's proof key (the check
+  is the engine's since token-sheriff 0.9.9). A refused response fails the login (`400`, no session),
   fails the widening (`400`, the live session unchanged) or ends the session at refresh.
 
 | Pushed Authorization Requests (RFC 9126) (§5.3.3.2)
@@ -300,7 +301,7 @@ gateway that refuses an unbound response -- the test cannot compute the thumbpri
 never published.
 
 Not shown by any of the three: a token response being *refused* on the stack (Keycloak binds every
-access token of these clients, so the refusal is proven at unit level, in `BoundTokenEndpointClientTest` and
+access token of these clients, so the refusal is proven at unit level, in
 `BffRuntimeProducerTest`), and what Keycloak's FAPI 2.0 client profiles enforce (the realm sets its
 client attributes explicitly and does not apply those profiles).
 
@@ -385,13 +386,11 @@ unit level only:
 
 The following sit inside the pinned `token-sheriff-client`, below the seams the gateway wires.
 
-*The engine accepts an unbound token response.* The engine accepts a token response of type `Bearer` to a request that carried a DPoP proof. It
-compares neither the token type nor `cnf` with the sender constraint it sent. The gateway closes this
-itself: `BoundTokenEndpointClient` refuses such a response at the gateway's own token-endpoint seam,
-in both client-authentication modes. The check is owed upstream. There it would also do one thing
-the gateway's check cannot: a refused refresh could name the refresh token to revoke. Today a
-refresh token issued alongside a refused response is discarded and not revoked at the identity
-provider.
+*A refused response leaves its refresh token behind.* Since token-sheriff 0.9.9 the engine refuses a
+token response of type `Bearer`, or whose JWT access token is not bound to the proof key, to a request
+that carried a DPoP proof; the gateway's own check was retired in favour of it. The engine's refusal
+carries no redemption state, so a refresh token issued alongside a refused response is discarded and
+not revoked at the identity provider. Naming it for revocation is owed upstream.
 
 *The nonce retry resends the client assertion.* The engine retries a token request once when a non-success response carries `DPoP-Nonce`. The retry
 resends the same request, which in key mode includes the same client assertion. An authorization

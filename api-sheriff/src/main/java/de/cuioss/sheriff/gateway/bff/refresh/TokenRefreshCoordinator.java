@@ -565,9 +565,12 @@ public final class TokenRefreshCoordinator {
     private Disposition disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
             RuntimeException refreshFailure, Instant now, Admission admission) {
         RefreshFailureClassification classification = RefreshFlow.classify(refreshFailure);
-        // A switch expression, not a statement: javac rejects it the moment the engine adds a fourth kind.
+        // A switch expression, not a statement: javac rejects it the moment the engine adds a further kind.
+        // SCOPE_REFUSED (an invalid_scope answer) joins PRE_REDEMPTION: the identity provider issued no grant
+        // and rotated nothing, so the session is kept; the same request would be refused again, so the
+        // bounded back-off, not an immediate retry, is what keeps the provider from being hammered.
         return switch (classification.kind()) {
-            case PRE_REDEMPTION -> Disposition.of(backOff(sessionId, latest, refreshFailure, now, admission));
+            case PRE_REDEMPTION, SCOPE_REFUSED -> Disposition.of(backOff(sessionId, latest, refreshFailure, now, admission));
             case CREDENTIAL_REJECTED -> {
                 releaseProbe(admission);
                 yield endSession(sessionId, latest, now, refreshFailure, REASON_CREDENTIAL_REJECTED, null);

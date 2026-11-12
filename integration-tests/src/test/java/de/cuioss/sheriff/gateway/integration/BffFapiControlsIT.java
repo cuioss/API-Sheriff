@@ -110,8 +110,8 @@ import org.junit.jupiter.api.Test;
  * here complete, so they are the proof in key mode that Keycloak's bound response is accepted on the
  * authorization-code exchange and on the refresh grant. The rotation leg therefore also reads the
  * output of the gateway that rotated: it must have gained a token-refreshed record
- * ({@value #TOKEN_REFRESHED_RECORD}), which is the control that the log was read and the rotation ran,
- * and it must carry no record of a refused token response ({@value #TOKEN_NOT_BOUND_RECORD}).
+ * ({@value #TOKEN_REFRESHED_RECORD}), which shows that the rotation ran and was not refused. The
+ * refusal itself is the engine's {@code RedeemedResponseException}, which leaves no record of its own.
  * <p>
  * <strong>The rotation leg runs on a gateway of its own.</strong> A record carries nothing that tells
  * which request caused it, and the compose instance {@code api-sheriff-cookie-refresh} also serves
@@ -135,7 +135,7 @@ import org.junit.jupiter.api.Test;
  * <em>refused</em>: Keycloak binds every access token of these clients. The refusal on the
  * authorization-code exchange is proven against a running gateway by {@link BffUnboundTokenResponseIT},
  * whose stub identity provider answers with an unbound token; the refusal on the refresh grant is
- * proven at unit level ({@code BoundTokenEndpointClientTest}, {@code BffRuntimeProducerTest}). It
+ * proven at unit level ({@code BffRuntimeProducerTest}). It
  * does not prove that an upstream ignores {@code cnf} — the echo
  * upstream checks nothing. The client-secret mode is {@code BffClientSecretModeIT}'s, and generated
  * keys are {@code BffGeneratedKeysIT}'s. Like every {@code Bff*IT} it replays a cookie map and asserts
@@ -161,9 +161,6 @@ class BffFapiControlsIT {
      * of every identifier from 120 to 129.
      */
     static final String TOKEN_REFRESHED_RECORD = "ApiSheriff-12:";
-
-    /** WARN — a token response was refused because it is not bound to the gateway's proof key. */
-    static final String TOKEN_NOT_BOUND_RECORD = "ApiSheriff-134";
 
     /**
      * Seconds to wait before a call that must land inside the near-expiry window of a 45-second
@@ -335,12 +332,10 @@ class BffFapiControlsIT {
                             "the token of the code exchange must carry the thumbprint of the committed RSA proof key"),
                     () -> assertEquals(proofKey, confirmationThumbprint(rotated),
                             "the token of the refresh grant must carry the same thumbprint"));
-            assertTrue(refreshedAfter > refreshedBefore, () -> "the rotation must be recorded, or the absence "
-                    + "asserted next was read from a log that shows nothing: expected a new " + TOKEN_REFRESHED_RECORD
-                    + " line in the output of " + GATEWAY + " (count before " + refreshedBefore + ", after "
-                    + refreshedAfter + "). " + gatewayLog(GATEWAY));
-            assertEquals(0, gatewayLogLineCount(GATEWAY, TOKEN_NOT_BOUND_RECORD),
-                    "the gateway accepted Keycloak's bound responses on both legs, so it recorded no refusal");
+            assertTrue(refreshedAfter > refreshedBefore, () -> "the rotation must be recorded, which also shows "
+                    + "the gateway accepted Keycloak's bound responses on both legs: expected a new "
+                    + TOKEN_REFRESHED_RECORD + " line in the output of " + GATEWAY + " (count before "
+                    + refreshedBefore + ", after " + refreshedAfter + "). " + gatewayLog(GATEWAY));
         } finally {
             removeContainer(GATEWAY);
         }

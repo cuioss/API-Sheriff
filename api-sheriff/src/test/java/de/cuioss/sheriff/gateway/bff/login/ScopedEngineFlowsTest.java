@@ -143,6 +143,7 @@ class ScopedEngineFlowsTest {
                 .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
                 .scopes(scopes).redirectUri(REDIRECT_URI)
                 .allowInsecureHttp(true)
+                .allowLoopbackEgress(true)
                 .build();
     }
 
@@ -152,6 +153,7 @@ class ScopedEngineFlowsTest {
                 .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
                 .scopes(BASE_SCOPES).redirectUri(REDIRECT_URI)
                 .allowInsecureHttp(true)
+                .allowLoopbackEgress(true)
                 .build();
         return new ScopedEngineFlows(this::configuration, new TokenEndpointClient(base),
                 new TokenValidationBridge(tokenValidator), new IdTokenValidationBridge(tokenValidator),

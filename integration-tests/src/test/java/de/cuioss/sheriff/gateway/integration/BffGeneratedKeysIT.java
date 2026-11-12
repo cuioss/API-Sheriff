@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.MEDIATED_PATH;
-import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.TOKEN_NOT_BOUND_RECORD;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.TOKEN_REFRESHED_RECORD;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.WAIT_INTO_REFRESH_WINDOW_SECONDS;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.bearerToken;
@@ -294,9 +293,8 @@ class BffGeneratedKeysIT {
                     () -> assertNotEquals(keyIdAfter, confirmationThumbprint(tokenAfter),
                             "which is still not the client-authentication key"),
                     () -> assertTrue(logAfter.contains(TOKEN_REFRESHED_RECORD),
-                            () -> "the refresh must be recorded. " + gatewayLog(NETWORK_ALIAS)),
-                    () -> assertFalse(logAfter.contains(TOKEN_NOT_BOUND_RECORD),
-                            () -> "no token response may have been refused. " + gatewayLog(NETWORK_ALIAS)));
+                            () -> "the refresh must be recorded, so no token response was refused. "
+                                    + gatewayLog(NETWORK_ALIAS)));
         } finally {
             dockerQuietly("rm", "-f", NETWORK_ALIAS);
         }

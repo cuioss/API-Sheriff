@@ -151,7 +151,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 134, 135, 145
+     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 135, 145
      * and 147).
      */
     @UtilityClass
@@ -262,35 +262,6 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(131)
                 .template("Session widening refused (%s) — no grant was merged into a session")
-                .build();
-
-        /**
-         * The identity provider answered a token request with success, and the gateway refused the
-         * response because the token is not bound to the gateway's DPoP proof key: the login or the
-         * widening is refused, or the session is ended.
-         * <p>
-         * The first substitution is the leg, a closed set mapped from the request's
-         * {@code grant_type} by an allow-list: {@code code-exchange} (the callback of a login and of
-         * a session widening alike), {@code refresh} (the near-expiry and the scope-driven refresh
-         * alike) or {@code other}. The second is the reason, a closed set: {@code token-type} (the response's
-         * {@code token_type} is not {@code DPoP}), {@code unreadable-access-token} (the access token
-         * is absent, is not a compact JWS with a parsable JSON payload, or could not be read for any
-         * other reason), {@code cnf-absent} (the access token carries no {@code cnf.jkt}) or
-         * {@code cnf-mismatch} (its {@code cnf.jkt} names another key).
-         * <p>
-         * <strong>Never carries token material.</strong> Neither the access token, the refresh
-         * token, the ID token, a claim value, the received {@code jkt} nor the received token type
-         * appears in the record — both substitutions are fixed tokens chosen by the gateway.
-         * <p>
-         * <strong>Not latched.</strong> The refusal is reached only on a success answer of the token
-         * endpoint, which takes an authorization code or a refresh token the identity provider
-         * issued. A caller without such a credential cannot reach it, so the record is no
-         * log-amplification lever and is emitted on every occurrence (ADR-0051).
-         */
-        public static final LogRecord TOKEN_RESPONSE_NOT_BOUND = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(134)
-                .template("Token response on the %s leg refused — the token is not bound to the gateway's DPoP proof key (%s)")
                 .build();
 
         /**

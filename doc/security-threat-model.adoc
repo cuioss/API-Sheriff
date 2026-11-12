@@ -113,7 +113,7 @@ shape, not the store); the *concrete `TokenStore`* (server session vs encrypted 
 and calling `CallbackParameters.parse(rawQuery)` on the *raw* query (the `of(Map)` path cannot
 re-detect duplicates); the *disposition* of a classified refresh failure and the per-session
 single-flight around the refresh (`TokenRefreshCoordinator`); the *refusal of a token response that
-is not bound* to the proof key (`BoundTokenEndpointClient`, <<bff-14>>); and the *signing keys* --
+is not bound* to the proof key (the engine's `TokenEndpointClient`, <<bff-14>>); and the *signing keys* --
 reading or generating them, and publishing the client key (<<bff-18>>, <<bff-19>>).
 *Refresh-token reuse detection* is
 owned by neither the libraries nor the gateway: it is the identity provider's strict rotation
@@ -1194,6 +1194,19 @@ way as its siblings: the default is `false`; boot validation admits the opt-in o
 `WARN ApiSheriff-138`. It is meant for an identity provider reached over a trusted internal network;
 the mitigation is to serve the identity provider over TLS and declare an `https` origin (see
 link:adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]).
+
+*Control -- the OIDC back-channel refuses internal addresses unless a host is declared.* Since
+token-sheriff 0.9.9 the engine applies a host-address SSRF guard to every discovery and back-channel call,
+on the host actually dialled, refusing loopback, link-local, site-local, unique-local, shared-address,
+any-local and multicast addresses. The discovery document is attacker-influenceable if the identity
+provider or its transport is compromised, so an endpoint it advertises cannot redirect the gateway's
+credential-bearing calls to `169.254.169.254` or to an internal service. The gateway adopts the guard
+unrelaxed. `oidc.allowed_egress_hosts` exempts exactly the hosts it names, host-exact; nothing is derived
+from `oidc.issuer` or `oidc.back_channel_origin`, and the engine's blanket loopback relaxation is not
+exposed. A listed host is trusted for the address check alone: TLS still decides whether its certificate
+is accepted. The residual the engine documents stays -- it resolves the host before the connection and
+the HTTP client resolves it again, so a DNS answer that changes in between is not seen
+(link:adr/0082-The_BFF_OIDC_back-channel_inherits_the_engines_host-address_egress_guard_and_relaxes_it_only_for_declared_hosts.adoc[ADR-0082]).
 
 *No deployment-activation instance is owed for the relaxation keys -- recorded, not a gap.* The hostname
 keys are proven at the level they are asserted at, and those levels differ.
@@ -3259,37 +3272,34 @@ token request carries a DPoP proof signed with the same key. This holds in both
 client-authentication modes (<<bff-18>>).
 Mutual TLS binding (RFC 8705) is not offered.
 
-*Control -- an identity provider that ignores the DPoP proof is refused.* The engine does not judge
-the answer: at the pinned version it accepts a token response of type `Bearer` to a request that
-carried a proof. The gateway therefore checks every token response itself, at the code exchange and
-at every refresh, in `BoundTokenEndpointClient` -- the runtime's one token-endpoint client. A
-response is accepted only when its `token_type` is `DPoP` (compared without regard to case) *and*
-the access token carries a `cnf.jkt` equal to the RFC 7638 thumbprint of the gateway's own proof
-key. Anything else is refused:
+*Control -- an identity provider that ignores the DPoP proof is refused.* The engine judges the
+answer: since token-sheriff 0.9.9 its `TokenEndpointClient` -- the runtime's one token-endpoint
+client -- refuses, at the code exchange and at every refresh, a token response to a DPoP-constrained
+request unless its `token_type` is `DPoP` (compared without regard to case) *and* a JWT access token
+carries a `cnf.jkt` equal to the RFC 7638 thumbprint of the gateway's own proof key. (Until 0.9.9
+the engine accepted a `Bearer` response and the gateway carried the check itself, in a subclass that
+has been retired.) Anything else is refused as a `RedeemedResponseException`:
 
 * at the code exchange the callback answers `400` and creates no session and no session cookie; on a
   widening callback it answers the same `400` and merges nothing into the live session, which is
   left as it was. The status was reviewed and kept: it is the answer to every failed code exchange,
   so the callback does not tell whoever drives it which check failed, and the operator reads the
-  cause from `ApiSheriff-134`; ADR-0058 decision 19 records the reasoning;
+  cause from the callback's `DEBUG` line and the engine's exception message; ADR-0058 decision 19
+  records the reasoning;
 * at a refresh -- near-expiry or scope-driven -- the session ends (`ApiSheriff-111`, reason
   `redeemed-response-refused`), the session cookie is cleared and `oidc.session.refresh.on_failure`
   applies;
-* the refusal is recorded as `WARN ApiSheriff-134` with two bounded tokens -- the leg
-  (`code-exchange`, `refresh`, `other`) and the reason (`token-type`, `unreadable-access-token`,
-  `cnf-absent`, `cnf-mismatch`). Neither the record nor the exception carries the access token, the
-  refresh token, the ID token, a claim value, the received `jkt` or the received token type;
-* an identity provider that issues opaque access tokens is refused the same way
-  (`unreadable-access-token`): there is no `cnf` to read.
+* the refusal writes no gateway log record of its own. The gateway's former `WARN ApiSheriff-134`,
+  which named the leg and the reason, was retired with the subclass it belonged to; the engine's
+  exception message carries fixed text and sanitised authorization-server values, never a token;
+* an identity provider that issues opaque access tokens skips only the `cnf.jkt` comparison in the
+  engine's check, and then fails every login and refresh: the engine validates the access token as a
+  JWT.
 
-The `cnf` claim is read from the unverified payload of the access token. No trust decision rests on
-that read: the engine validates the signature over the same bytes directly afterwards, nothing is
-accepted unless both pass, and a refusal on an unverified payload only refuses. The record is not
-latched, because the refusal is reached only on a success answer of the token endpoint, which needs
-an authorization code or a refresh token the identity provider issued -- a caller without one cannot
-produce it. A response that carries no access token at all does not reach the check: it is
-refused one step earlier by the engine, with the same outcome and without the `ApiSheriff-134`
-record.
+The engine reads the `cnf` claim from the unverified payload of the access token. No trust decision
+rests on that read: the engine validates the signature over the same bytes directly afterwards,
+nothing is accepted unless both pass, and a refusal on an unverified payload only refuses. A response
+that carries no access token at all is refused by the engine too.
 
 *Control -- where the binding ends.* A proof is checked at the identity provider's token
 endpoint and nowhere else:
@@ -3311,7 +3321,7 @@ endpoint and nowhere else:
   the enforcement does not.
 
 *Status:* PARTIAL. The request for a bound token and the refusal of an unbound answer are delivered
-and tested. Enforcement of the binding at the point of use -- on the gateway's own bearer routes and
+and tested; the refusal is the engine's, and the gateway no longer records it as a `WARN` of its own. Enforcement of the binding at the point of use -- on the gateway's own bearer routes and
 at the upstream -- is absent, and is recorded as an accepted residual rather than as a gap in the
 delivered control.
 
@@ -3332,11 +3342,9 @@ sends no `dpop_jkt` with the pushed authorization request. The code stays protec
 the browser binding (<<bff-02>>, <<bff-03>>).
 
 *Assertion.* A token response of type `Bearer`, one whose access token carries no `cnf`, one whose
-`cnf.jkt` names another key and one whose access token is not a readable JWT are each refused with
-the matching `ApiSheriff-134` reason, and no record or exception carries token material
-(`BoundTokenEndpointClientTest`, and `BffRuntimeProducerTest` for the assembled runtime, where the
-code exchange of a login and of a widening callback and both refresh legs are each driven against an
-unbound answer). Against the pinned Keycloak image (`integration-tests/docker-compose.yml`) and the
+`cnf.jkt` names another key are each refused by the engine's own token-endpoint client
+(`BffRuntimeProducerTest` for the assembled runtime, where the code exchange of a login and of a
+widening callback and both refresh legs are each driven against an unbound answer). Against the pinned Keycloak image (`integration-tests/docker-compose.yml`) and the
 native image, the token forwarded upstream carries the `jkt` of the
 gateway's proof key and arrives as `Authorization: Bearer` with no proof beside it, for an EC and
 for an RSA proof key, and a token rotated by a refresh carries the same `jkt`
@@ -4492,7 +4500,7 @@ outstanding hardening work (next section).
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED
 | <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- gateway usage rule | COVERED
-| <<bff-14>> | DPoP: a proof on every token leg; a token response not bound to the gateway's proof key is refused (login and widening callback `400`, either refresh leg ends the session); the binding ends at the gateway -- upstream `cnf` contract, own bearer routes accept a bound token without a proof | Engine `SenderConstraint` + gateway `BoundTokenEndpointClient` / `BffRuntimeProducer` -- ADR-0058 | PARTIAL (no proof check at the point of use, accepted)
+| <<bff-14>> | DPoP: a proof on every token leg; a token response not bound to the gateway's proof key is refused (login and widening callback `400`, either refresh leg ends the session); the binding ends at the gateway -- upstream `cnf` contract, own bearer routes accept a bound token without a proof | Engine `SenderConstraint` and `TokenEndpointClient` (0.9.9) + gateway `BffRuntimeProducer` -- ADR-0058 | PARTIAL (no proof check at the point of use, accepted)
 | <<bff-15>> | One boot-derived `neededScopes` per route: login requests it, bearer `403 insufficient_scope` checks it, a session route compares it on every request and refreshes, widens or refuses `403`, a near-expiry refresh requests the active set | Gateway (`RouteTableBuilder`, `AuthenticationStage`, `SessionAuthenticationStage`, `ReturnTargetScopes`, `ScopedEngineFlows`, `TokenRefreshCoordinator`) -- ADR-0048, ADR-0057 | PARTIAL (session-wide scope growth accepted)
 | <<bff-16>> | `session_fallback` branch chosen from `Authorization` presence only; no session fallback on a failed bearer; CSRF on the session branch only; one resolver for CSRF and authentication | Gateway (`AuthBranch`, `AuthenticationStage`, `GatewayEdgeRoute`) + configuration validator -- ADR-0055 | COVERED
 | <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay; granted set kept truthful so a scope the provider stopped granting reaches the refusal; merged session indexed under the grant's `sid`; in server mode a session terminated before the merge is written is not brought back | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `TokenRefreshCoordinator`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)

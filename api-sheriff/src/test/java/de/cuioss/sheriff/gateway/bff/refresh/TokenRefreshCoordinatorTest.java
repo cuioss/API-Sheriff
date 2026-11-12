@@ -63,6 +63,7 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
+import de.cuioss.sheriff.token.client.flow.InvalidScopeException;
 import de.cuioss.sheriff.token.client.flow.RedeemedResponseException;
 import de.cuioss.sheriff.token.client.flow.RedeemedScopeRefusalException;
 import de.cuioss.sheriff.token.client.flow.RefreshRedemption;
@@ -2214,9 +2215,9 @@ class TokenRefreshCoordinatorTest {
      * reports a grant that is still short of the set as {@code SCOPE_REFUSED} without arming the back-off.
      * Such a processed, narrower grant also takes every requested scope it did not return out of the
      * granted set {@code S}.
-     * An outright {@code invalid_scope} refusal reaches the coordinator as the bare transport failure
-     * {@code token-sheriff-client} raises for it, so it takes the pre-redemption back-off
-     * (TokenSheriff#763).
+     * An outright {@code invalid_scope} refusal reaches the coordinator as the typed
+     * {@code InvalidScopeException} {@code token-sheriff-client} raises for it, which the engine classifies
+     * {@code SCOPE_REFUSED}, so it takes the pre-redemption back-off (TokenSheriff#763).
      */
     @Nested
     @DisplayName("Scope-driven refresh leg")
@@ -2363,22 +2364,23 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should take the pre-redemption back-off on an invalid_scope refusal, which the engine surfaces as a bare transport failure")
+        @DisplayName("Should take the pre-redemption back-off on an invalid_scope refusal, which the engine classifies SCOPE_REFUSED")
         void shouldBackOffOnInvalidScopeRefusal() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
             TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
                 calls.incrementAndGet();
-                // What token-sheriff-client raises for an OAuth invalid_scope answer: the error code is
-                // not carried, so the refusal is indistinguishable from any other 4xx (TokenSheriff#763).
-                throw new TransportException("Token endpoint returned unexpected HTTP status 400");
+                // What token-sheriff-client raises for an OAuth invalid_scope answer: the typed refusal the
+                // engine classifies SCOPE_REFUSED (TokenSheriff#763).
+                throw new InvalidScopeException("Token endpoint refused the requested scope",
+                        InvalidScopeException.ERROR_CODE, "scope not allowed");
             });
 
             RefreshOutcome refused = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
             RefreshOutcome insideWindow = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED,
                     NOW.plusSeconds(2));
 
-            assertAll("an unclassifiable scope refusal keeps the session and backs off like any pre-redemption failure",
+            assertAll("an invalid_scope refusal keeps the session and backs off like any pre-redemption failure",
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, refused.kind()),
                     () -> assertEquals(live, refused.session(), "the unchanged session, still short of the scope"),
                     () -> assertEquals(GRANTED_SCOPES, resolveById(store, SESSION_ID, NOW).orElseThrow().grantedScopes(),

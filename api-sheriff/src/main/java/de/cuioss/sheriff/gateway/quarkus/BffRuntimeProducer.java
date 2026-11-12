@@ -38,7 +38,6 @@ import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
-import de.cuioss.sheriff.gateway.bff.login.BoundTokenEndpointClient;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
@@ -177,14 +176,16 @@ import org.jspecify.annotations.Nullable;
  * provided in two files, a copy — with {@code CONFIG_INVALID}, naming both fields and no
  * key id. In client-secret mode there is no client-authentication key to compare.
  * <p>
- * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
- * token-endpoint client is a {@link BoundTokenEndpointClient} over the base back-channel
- * configuration and the key id of the sender-constraint key. It is the single instance handed to the
- * base flow and to {@link ScopedEngineFlows}, so the code exchange of a login and of a widening and
- * every refresh grant, near-expiry and scope-driven, read their token response through it; the
- * producer does not read the client-authentication mode for it. The refusal surfaces where the
- * response was requested: the callback answers {@code 400}, creates no session and merges nothing
- * into a live one, and a refresh ends the session and follows
+ * <strong>A token response that is not bound to the proof key is refused by the engine.</strong> The
+ * runtime's one token-endpoint client is the engine's own {@link TokenEndpointClient} over the base
+ * back-channel configuration. Under the DPoP sender constraint every flow passes it, the engine refuses
+ * a response whose {@code token_type} is not {@code DPoP} and a JWT access token whose {@code cnf.jkt}
+ * is absent, malformed or another key's, as a {@code RedeemedResponseException}. It is the single
+ * instance handed to the base flow and to {@link ScopedEngineFlows}, so the code exchange of a login
+ * and of a widening and every refresh grant, near-expiry and scope-driven, read their token response
+ * through it; the producer does not read the client-authentication mode for it. The refusal surfaces
+ * where the response was requested: the callback answers {@code 400}, creates no session and merges
+ * nothing into a live one, and a refresh ends the session and follows
  * {@code oidc.session.refresh.on_failure}. The check judges token responses only — a session whose
  * token is bound to an earlier key is never re-checked, so replacing the key does not by itself end a
  * session.
@@ -542,11 +543,11 @@ public class BffRuntimeProducer {
         TokenValidator validator = tokenValidator.get();
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
         IdTokenValidationBridge idBridge = new IdTokenValidationBridge(validator);
-        // The one token-endpoint client of the runtime. It refuses a token response that is not bound
-        // to the proof key, and because the base flow, every per-scope flow and every refresh grant hold
-        // this single instance, none of them can obtain a token that bypasses the check.
-        TokenEndpointClient tokenEndpointClient = new BoundTokenEndpointClient(clientConfiguration,
-                senderConstraintKey.keyId());
+        // The one token-endpoint client of the runtime. The engine's own client refuses a token response
+        // that is not bound to the proof key of the DPoP sender constraint, and because the base flow,
+        // every per-scope flow and every refresh grant hold this single instance, none of them can obtain
+        // a token that bypasses the check.
+        TokenEndpointClient tokenEndpointClient = new TokenEndpointClient(clientConfiguration);
         // The gateway drives response_mode=query, NOT the engine's built-in form_post: the callback has
         // to be a top-level GET navigation so the SameSite=Lax browser-binding cookie is actually sent
         // on it (a Lax cookie is dropped on the cross-site POST a form_post callback performs, which
@@ -847,14 +848,17 @@ public class BffRuntimeProducer {
      * cleartext posture follows the explicit opt-in alone: {@code allowInsecureHttp} is set only when
      * {@code oidc.back_channel_allow_insecure_http} is {@code true}, which boot validation admits only
      * together with an {@code http} origin. The engine applies that flag to the whole client, not just
-     * the origin — the widening {@link #reportBackChannelPosture(OidcConfig)} reports.
+     * the origin — the widening {@link #reportBackChannelPosture(OidcConfig)} reports. The engine's SSRF
+     * egress guard is relaxed for exactly the hosts {@code oidc.allowed_egress_hosts} declares and for no
+     * other: an absent list leaves the secure default in force, and no host is derived from the issuer or
+     * the origin.
      *
      * @param oidc   the global {@code oidc} block, already cleared by the BFF-mode activation predicate
      * @param scopes the scope list the configuration carries — the {@code scope} value the engine
      *               sends on the authorization request and the refresh grant it drives with it
      * @return the back-channel client configuration carrying {@code scopes}, the resolved hostname
-     *         posture, the declared back-channel origin and cleartext opt-in and, when a profile is
-     *         named, its trust anchors
+     *         posture, the declared back-channel origin, cleartext opt-in and egress allowance and,
+     *         when a profile is named, its trust anchors
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when
      *                          {@code egress_tls.oidc_verify_hostname} is {@code false} while
      *                          {@code egress_tls.oidc_tls_profile} is named, or when the named profile
@@ -900,6 +904,10 @@ public class BffRuntimeProducer {
         if (Boolean.TRUE.equals(oidc.backChannelAllowInsecureHttp())) {
             builder.allowInsecureHttp(true);
         }
+        // The engine's host-address egress policy refuses an identity provider on a loopback or private
+        // address by default; only the hosts the operator declared are exempted, host-exact, and nothing
+        // is derived from the issuer or the back-channel origin.
+        builder.allowedEgressHosts(oidc.allowedEgressHosts());
         return builder.build();
     }
 

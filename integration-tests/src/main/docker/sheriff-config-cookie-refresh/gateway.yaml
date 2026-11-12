@@ -149,6 +149,10 @@ token_validation:
 oidc:
   issuer: https://localhost:1443/realms/integration
   back_channel_origin: https://keycloak:8443
+  # keycloak resolves to a private address, which the token engine's SSRF egress guard refuses for the
+  # gateway's own IdP calls unless the host is named here. Host-exact, no port; nothing is derived
+  # from the issuer or the origin above, so an omitted list would exempt no host.
+  allowed_egress_hosts: [keycloak]
   # Difference 1 of 4. See the header: this client's 45-second access-token lifespan is the only
   # thing that puts the near-expiry refresh window inside a test's patience.
   client_id: cookie-refresh-client

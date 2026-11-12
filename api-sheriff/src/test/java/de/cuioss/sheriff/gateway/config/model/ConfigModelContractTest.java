@@ -198,6 +198,7 @@ class ConfigModelContractTest {
                 .login(new OidcConfig.Login("/session/login", null))
                 .backChannelOrigin(BACK_CHANNEL_ORIGIN)
                 .backChannelAllowInsecureHttp(false)
+                .allowedEgressHosts(List.of("keycloak"))
                 .build();
     }
 
@@ -507,6 +508,10 @@ class ConfigModelContractTest {
                             OidcConfig.builder().backChannelOrigin("http://keycloak:8080")
                                     .backChannelAllowInsecureHttp(true).build(),
                             OidcConfig.builder().backChannelOrigin("http://keycloak:8080").build()),
+                    voCase("OidcConfig (allowed_egress_hosts)",
+                            OidcConfig.builder().allowedEgressHosts(List.of("keycloak")).build(),
+                            OidcConfig.builder().allowedEgressHosts(List.of("keycloak")).build(),
+                            OidcConfig.builder().allowedEgressHosts(List.of("idp.internal")).build()),
                     voCase("UpstreamDefaultsConfig",
                             UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(),
                             UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(),
@@ -751,12 +756,13 @@ class ConfigModelContractTest {
         void oidcConfigBuilderMatchesConstructorAndCarriesTheBackChannelKeys() {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             OidcConfig viaCtor = new OidcConfig("https://idp.example.com/realms/demo", null, null, List.of("openid"),
-                    null, null, null, null, null, null, null, null, "http://keycloak:8080", true);
+                    null, null, null, null, null, null, null, null, "http://keycloak:8080", true,
+                    List.of("keycloak"));
             OidcConfig viaBuilder = OidcConfig.builder().issuer("https://idp.example.com/realms/demo")
                     .scopes(List.of("openid")).backChannelOrigin("http://keycloak:8080")
-                    .backChannelAllowInsecureHttp(true).build();
+                    .backChannelAllowInsecureHttp(true).allowedEgressHosts(List.of("keycloak")).build();
             OidcConfig omitted = OidcConfig.builder().issuer("https://idp.example.com/realms/demo").build();
-            assertAll("the back-channel origin and its opt-in are the last two components, in that order",
+            assertAll("the back-channel origin, its opt-in and the egress allowance are the last three components, in that order",
                     () -> assertEquals(viaCtor, viaBuilder),
                     () -> assertEquals("http://keycloak:8080", viaCtor.backChannelOrigin()),
                     () -> assertEquals(Boolean.TRUE, viaCtor.backChannelAllowInsecureHttp()),
@@ -764,7 +770,10 @@ class ConfigModelContractTest {
                             "the origin is transport; the issuer stays the identity"),
                     () -> assertNull(omitted.backChannelOrigin(), "an omitted back_channel_origin stays absent"),
                     () -> assertNull(omitted.backChannelAllowInsecureHttp(),
-                            "an omitted opt-in stays absent; it reads as false where it is consumed"));
+                            "an omitted opt-in stays absent; it reads as false where it is consumed"),
+                    () -> assertEquals(List.of("keycloak"), viaCtor.allowedEgressHosts()),
+                    () -> assertEquals(List.of(), omitted.allowedEgressHosts(),
+                            "an omitted allowed_egress_hosts is the empty list, which exempts no host"));
         }
 
         @Test
@@ -1974,8 +1983,24 @@ class ConfigModelContractTest {
                     "an origin without user-info is an address, not a secret, so toString renders it: " + rendered);
             assertTrue(rendered.contains("backChannelAllowInsecureHttp=false"),
                     "toString must surface the cleartext opt-in: " + rendered);
+            assertTrue(rendered.contains("allowedEgressHosts=[keycloak]"),
+                    "toString must surface the egress allowance: " + rendered);
             assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted");
             assertFalse(rendered.contains("${OIDC_SECRET}"), "the raw client-secret reference must never appear");
+        }
+
+        @Test
+        void oidcAllowedEgressHostsIsCopiedDefensivelyAndNormalizesNull() {
+            java.util.ArrayList<String> mutable = new java.util.ArrayList<>(List.of("keycloak"));
+            OidcConfig copied = OidcConfig.builder().allowedEgressHosts(mutable).build();
+            mutable.add("injected");
+            assertAll("the allow-list is an immutable copy and an absent list is empty",
+                    () -> assertEquals(List.of("keycloak"), copied.allowedEgressHosts(),
+                            "a later mutation of the caller's list must not widen the allowance"),
+                    () -> assertThrows(UnsupportedOperationException.class,
+                            () -> copied.allowedEgressHosts().add("injected")),
+                    () -> assertEquals(List.of(), OidcConfig.builder().allowedEgressHosts(null).build()
+                            .allowedEgressHosts()));
         }
 
         @Test

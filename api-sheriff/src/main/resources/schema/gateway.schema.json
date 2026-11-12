@@ -513,6 +513,11 @@
           "type": "boolean",
           "description": "Admits an http back_channel_origin; defaults to false. The token engine applies the opt-in to the whole OIDC client rather than to the origin alone, so every endpoint the client dials may then be reached over cleartext http, carrying the client credential and every token unencrypted; the gateway logs a WARN at every boot while it is in effect. Setting it true without a back_channel_origin, or together with an https one, is refused at boot (enforced in code), because there is then nothing to opt in for."
         },
+        "allowed_egress_hosts": {
+          "type": "array",
+          "description": "SSRF egress allowance for the gateway's own server-to-server calls to the identity provider — discovery, the pushed authorization request, the authorization-code exchange, refresh and refresh-token revocation. The token engine refuses a call whose host resolves to a loopback, link-local, site-local, unique-local, shared-address, any-local or multicast address, except for the hosts listed here, so an identity provider on a private network is reachable only through an entry. Entries are bare host names or IP literals, matched host-exact against the host actually dialled (the back_channel_origin host when the call is re-targeted to it), with no port, no scheme and no pattern. Omitted or empty exempts no host: nothing is derived from issuer or back_channel_origin, so a deployment whose identity provider sits on a private address must declare it.",
+          "items": { "type": "string" }
+        },
         "client_id": { "type": "string" },
         "client_secret": {
           "type": "string",

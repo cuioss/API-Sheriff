@@ -15,6 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import java.util.Optional;
+import java.util.regex.Pattern;
+
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -50,6 +53,16 @@ import org.jspecify.annotations.Nullable;
  */
 @UtilityClass
 public class RuleSupport {
+
+    /**
+     * An {@code allowed_egress_hosts} entry carrying a port, matched against the WHOLE entry
+     * ({@link java.util.regex.Matcher#matches()}): a single-colon {@code name:digits} form, or a
+     * bracketed {@code [v6]:digits} form. The name part of the first alternative excludes every colon,
+     * so a bare IPv6 literal such as {@code fd00::1} — whose second colon cannot be followed by digits
+     * only — never matches. Every quantifier is possessive; the character classes are disjoint from
+     * the delimiters that follow them, so no give-back could ever succeed.
+     */
+    private static final Pattern HOST_WITH_PORT = Pattern.compile("[^:\\[\\]]*+:\\d++|\\[[^\\]]*+\\]:\\d++");
 
     /** The file name every refusal of a {@code gateway.yaml} key is reported against. */
     public static final String GATEWAY_FILE = "gateway.yaml";
@@ -126,6 +139,36 @@ public class RuleSupport {
             rendered.append("...");
         }
         return rendered.toString();
+    }
+
+    /**
+     * The shape review every {@code allowed_egress_hosts} list is held to, whichever block declares it:
+     * each entry is handed to token-sheriff's egress guard, which exempts exactly the host it names from
+     * the private-address refusal and matches it host-exact. Two shapes can therefore never match
+     * anything, and an operator declaring one believes an exemption is in force that no dial ever meets:
+     * <ul>
+     *   <li>a <strong>blank or whitespace-only</strong> entry names no host at all;</li>
+     *   <li>a <strong>{@code host:port}</strong> entry — a single-colon {@code name:digits} form or a
+     *       bracketed {@code [v6]:digits} form — names a host the guard never compares against. A bare
+     *       IPv6 literal such as {@code fd00::1} is a host, not a {@code host:port} pair, and is
+     *       admitted.</li>
+     * </ul>
+     * The refusal reason is fixed text and echoes nothing of the entry.
+     *
+     * @param entry       the configured entry
+     * @param blankRemedy what the operator does about a blank entry, completing the sentence
+     *                    {@code "a blank entry names no host to exempt from the SSRF egress guard — "}
+     * @return the refusal reason, or empty when the entry names a bare host
+     */
+    public static Optional<String> egressHostRefusal(String entry, String blankRemedy) {
+        if (entry.isBlank()) {
+            return Optional.of("a blank entry names no host to exempt from the SSRF egress guard — " + blankRemedy);
+        }
+        if (HOST_WITH_PORT.matcher(entry).matches()) {
+            return Optional.of("the allowlist matches hosts only (host-exact), so an entry carrying a port "
+                    + "never matches — declare the bare host");
+        }
+        return Optional.empty();
     }
 
     /**

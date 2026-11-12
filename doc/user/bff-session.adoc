@@ -475,7 +475,7 @@ request to the step-up path, is answered `502` and `ApiSheriff-132` is logged (s
 link:bff-oidc-common.adoc#_what_the_browser_sees_at_login[Shared Setup -- What the browser sees at login]).
 A widening started while the gateway holds its maximum of unfinished logins is answered `503` with
 `Retry-After: 30` (see <<pending-logins>>). A grant whose token is not bound to the proof key is
-answered `400` on the callback and logged as `ApiSheriff-134`. In all three cases the session is left
+answered `400` on the callback. In all three cases the session is left
 as it was.
 
 *A logout during a widening wins.* If the user logs out, or the IdP delivers a back-channel logout,
