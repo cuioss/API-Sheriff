@@ -182,7 +182,7 @@ The unifying principle: work an uncredentialed caller can trigger is bounded by 
 * The gateway follows an abrupt signing-key change at the identity provider within about one window instead of one background refresh interval, on bearer routes and on BFF logins alike, with no restart.
 * An operator-set number, floored by the validator, bounds per issuer the cost an uncredentialed caller can impose through invented key ids: at most `floor(t / window) + 1` refreshes over an interval `t`.
 * A flood of invented key ids cannot install an equal, shrunk or empty key set. It can make the gateway adopt a key set only when the identity provider actually serves it and it gains a key id the held set lacks, and then at most once per issuer per window.
-* Whichever unknown key id claims the window, its refresh picks up a key the identity provider already serves.
+* Whichever unknown key id claims the window, a refresh that completes while the held key set has not moved picks up a key the identity provider already serves. A claim made while a refresh is in flight schedules nothing, and a refresh outrun by the held key set is discarded.
 * Tokens signed with the previous key stay valid for the grace period across an on-demand refresh.
 * The refresh cadence and the rotation tolerance are tunable per issuer, and a deployment that declares nothing behaves as before.
 * No request thread and no readiness probe performs or awaits a JWKS request.
