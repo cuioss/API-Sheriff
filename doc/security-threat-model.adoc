@@ -1371,8 +1371,8 @@ refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
   sets held at that moment, so the flood ties up no request thread on the identity provider's
   latency. The refresh is started from a scheduler, never from a request thread.
 * *A flood cannot evict valid keys.* A refreshed key set replaces the loaded one only when its key
-  ids include one the loaded set lacks, compared when the refresh settles; the per-case rule is
-  recorded once, in
+  ids include one the loaded set lacked when the window was claimed, and only when the loaded set
+  has not moved between that claim and the refresh settling; the per-case rule is recorded once, in
   link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc#_publish_rule[ADR-0063, the publish rule].
   An unchanged, shrunk or empty key set is discarded, so a flood against an unchanged identity
   provider displaces neither the loaded key set nor a replaced one still inside its key-rotation
@@ -1380,8 +1380,9 @@ refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
   published, but only when the key set the identity provider serves has genuinely gained a key id,
   and then at most once per issuer per window, because the claim bound above is unchanged. Such a
   publication retires the loaded key set for its grace period and closes an older replaced one, as
-  every publication does. A failed refresh changes nothing and does not start the failed-load
-  retry.
+  every publication does. A refresh whose fetch is outrun by the loaded key set's own background
+  refresh is discarded, so a key the identity provider dropped meanwhile is not brought back by an
+  older fetched set. A failed refresh changes nothing and does not start the failed-load retry.
 
 * *A clock step moves neither bound.* The window and the grace deadline of
   `jwks.key_rotation_grace_period_seconds` (`0`-`3600`) are durations the gateway enforces, so both
