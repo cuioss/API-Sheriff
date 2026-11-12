@@ -15,7 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.edge.admission;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -36,6 +37,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.TrustManagerFactory;
 
 
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -43,9 +47,6 @@ import io.quarkus.test.common.http.TestHTTPResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocket;
-import javax.net.ssl.TrustManagerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -143,7 +144,7 @@ class MainListenerConnectionCapTest {
         assertAll("a listener capped at " + CAP + " connections",
                 () -> assertEquals(List.of(Outcome.SERVED, Outcome.SERVED, Outcome.SERVED, Outcome.SERVED),
                         withinTheCap, "the matched control: every connection within the cap is served, so the "
-                                + "listener, the TLS trust and the request are sound"),
+                        + "listener, the TLS trust and the request are sound"),
                 () -> assertEquals(Outcome.CLOSED, beyondTheCap,
                         "the connection beyond the cap is closed without being served while the first "
                                 + CAP + " stay open"));
@@ -152,9 +153,9 @@ class MainListenerConnectionCapTest {
 
         AtomicReference<Outcome> afterTheRelease = new AtomicReference<>();
         Awaits.until(() -> {
-            afterTheRelease.set(exchangeOnNewConnection(trustingTheListener));
-            return afterTheRelease.get() == Outcome.SERVED;
-        }, "a new connection is served once a connection within the cap has closed",
+                    afterTheRelease.set(exchangeOnNewConnection(trustingTheListener));
+                    return afterTheRelease.get() == Outcome.SERVED;
+                }, "a new connection is served once a connection within the cap has closed",
                 Awaits.CONNECT_CEILING_SECONDS);
 
         Outcome onceTheFreedSlotIsTaken = exchangeOnNewConnection(trustingTheListener);

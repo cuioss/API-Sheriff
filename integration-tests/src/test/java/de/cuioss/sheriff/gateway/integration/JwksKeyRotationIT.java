@@ -36,7 +36,8 @@ import org.junit.jupiter.api.Test;
  * Proves, end to end in the shipped native image, that a gateway survives its identity provider
  * replacing the signing key abruptly: a token signed with a key the gateway had not loaded is accepted
  * within seconds and without a restart, a flood of invented key ids costs the identity provider a
- * bounded number of key-set requests and displaces nothing, and a BFF login recovers the same way.
+ * bounded number of key-set requests and displaces nothing, a BFF login recovers the same way, and an
+ * invented key id that claims the refresh window does not hold a rotated key back.
  * <p>
  * <strong>The topology.</strong> The key-rotation variant of {@link StubIdentityProviderRig}: a stub
  * identity provider whose signing key the test replaces, and one gateway on a dedicated network whose
@@ -68,13 +69,23 @@ import org.junit.jupiter.api.Test;
  *       further key-set requests of the issuer, and the gateway logs
  *       {@value #UNKNOWN_KEY_ID_RECORD} no more often than that. Afterwards a token signed with the
  *       current key and one signed with the replaced key are both still answered {@code 200}: a
- *       refresh that does not hold the key id that triggered it displaces neither the loaded key set
- *       nor the retired one.</li>
+ *       refresh that brings no new key id displaces neither the loaded key set nor the retired one.
+ *       This leg is the control of the fourth: the key set the stub serves throughout it is
+ *       unchanged.</li>
  *   <li><em>A BFF login recovers.</em> The key is replaced a second time. Logins whose ID token is
  *       signed with the new key are attempted until one completes at the callback with {@code 302},
  *       which must happen within the same bound; an attempt before that may be refused. The stub
  *       must have recorded a further key-set request of the issuer during the leg, so the completed
  *       login is one the gateway had to refresh for.</li>
+ *   <li><em>An invented key id does not hold a rotated key back.</em> After a full window has passed,
+ *       so the window is free, the key is replaced a third time and the gateway is not told. A token
+ *       naming an invented key id is then refused, and it claims the window: the refresh it triggers
+ *       fetches the key set, which holds the new key and not the invented id. A token signed with the
+ *       new key must then be answered {@code 200} before that window ends — well within the
+ *       acceptance bound, and with the background refresh nowhere near due. A window claimed by a
+ *       rotated-key request alone would admit nothing sooner, so the acceptance can only come from the
+ *       key set the invented key id's refresh fetched, which the gateway published because it holds a
+ *       key id it did not know. The stub must have recorded a key-set request after the replacement.</li>
  * </ol>
  * The gateway container's start time is read before the first leg and after the last and must be the
  * same: nothing above was achieved by a restart.
@@ -102,7 +113,8 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
-@DisplayName("JWKS key rotation: a rotated key is accepted without a restart, invented key ids are bounded, a login recovers")
+@DisplayName("JWKS key rotation: a rotated key is accepted without a restart, invented key ids are bounded and hold "
+        + "no rotated key back, a login recovers")
 class JwksKeyRotationIT {
 
     /** WARN — a token named a key id that is in no key set the gateway holds. */
@@ -154,8 +166,9 @@ class JwksKeyRotationIT {
     private static final Duration LOG_VISIBILITY = Duration.ofSeconds(5);
 
     @Test
-    @DisplayName("a rotated key is accepted within the bound, a flood of key ids is bounded, and a login recovers")
-    void rotatedKeyIsAcceptedTheFloodIsBoundedAndALoginRecovers() {
+    @DisplayName("a rotated key is accepted within the bound, a flood of key ids is bounded, a login recovers, and "
+            + "an invented key id holds no rotated key back")
+    void rotatedKeyIsAcceptedTheFloodIsBoundedALoginRecoversAndAnInventedKeyIdHoldsNothingBack() {
         try (StubIdentityProviderRig rig = StubIdentityProviderRig.startForKeyRotation()) {
             String startedAt = rig.gatewayStartedAt();
             Set<String> publishedKeyIds = new LinkedHashSet<>();
@@ -164,6 +177,7 @@ class JwksKeyRotationIT {
             String replacedKeyTokenForTheFlood = rotatedKeyIsAccepted(rig, publishedKeyIds);
             inventedKeyIdsAreBounded(rig, replacedKeyTokenForTheFlood);
             loginRecovers(rig, publishedKeyIds);
+            inventedKeyIdHoldsNoRotatedKeyBack(rig, publishedKeyIds);
 
             assertEquals(startedAt, rig.gatewayStartedAt(), "the gateway container must be the one that was "
                     + "started before the first key replacement: no leg may have been achieved by a restart");
@@ -248,8 +262,8 @@ class JwksKeyRotationIT {
                 () -> assertEquals(200, securedAssetStatus(origin, rig.accessToken(SCOPES, TOKEN_LIFETIME)),
                         () -> "a token signed with the current key must still be accepted. " + rig.gatewayOutput()),
                 () -> assertEquals(200, securedAssetStatus(origin, replacedKeyToken), () -> "a token signed with "
-                        + "the replaced key must still be accepted: a refresh that does not hold the key id "
-                        + "that triggered it must not end the grace period. " + rig.gatewayOutput()));
+                        + "the replaced key must still be accepted: a refresh that brings no new key id must "
+                        + "not end the grace period. " + rig.gatewayOutput()));
     }
 
     /** Leg 3. */
@@ -263,6 +277,42 @@ class JwksKeyRotationIT {
         assertTrue(keySetRequests(rig) > keySetRequestsBefore, "the completed login must be one the gateway "
                 + "refreshed its key set for: the stub must have recorded a key-set request after the second "
                 + "replacement");
+    }
+
+    /** Leg 4. */
+    private static void inventedKeyIdHoldsNoRotatedKeyBack(StubIdentityProviderRig rig, Set<String> publishedKeyIds) {
+        String origin = rig.origin();
+        // Whatever the legs before claimed has run out: the invented key id below finds the window free.
+        pause(WINDOW.plus(SETTLE));
+        int keySetRequestsBefore = keySetRequests(rig);
+
+        publishedKeyIds.add(rig.replaceSigningKey());
+
+        long windowClaimed = System.nanoTime();
+        assertEquals(REFUSED, securedAssetStatus(origin, rig.accessTokenNamingKeyId(SCOPES, TOKEN_LIFETIME,
+                UUID.randomUUID().toString())), () -> "a token naming an invented key id must be refused; it "
+                + "claims the window and triggers the refresh. " + rig.gatewayOutput());
+        long windowEnds = windowClaimed + WINDOW.toNanos();
+        int evaluations = 0;
+        boolean accepted = false;
+        while (!accepted && System.nanoTime() < windowEnds) {
+            evaluations++;
+            accepted = securedAssetStatus(origin, rig.accessToken(SCOPES, TOKEN_LIFETIME)) == 200;
+            if (!accepted) {
+                pause(POLL_INTERVAL);
+            }
+        }
+        int evaluationsInTotal = evaluations;
+        boolean acceptedInTheWindow = accepted;
+
+        assertAll("after an invented key id claimed the window over a rotated key set",
+                () -> assertTrue(acceptedInTheWindow, () -> "a token signed with the new key must be accepted "
+                        + "before the " + WINDOW.toSeconds() + "s window the invented key id claimed ends, over "
+                        + evaluationsInTotal + " attempts: the refresh it triggered fetched a key set holding a key "
+                        + "id the gateway did not know, and that set must be published although it lacks the "
+                        + "invented id. " + rig.gatewayOutput()),
+                () -> assertTrue(keySetRequests(rig) > keySetRequestsBefore, "the acceptance must be caused by "
+                        + "a key-set request the stub recorded after the third replacement"));
     }
 
     /**

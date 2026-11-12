@@ -230,7 +230,25 @@ final class OneOffGatewayContainers {
      *                            It also fixes the management host port
      */
     static void startGateway(String gateway, String network, Path descriptor, int applicationHostPort) {
-        List<String> arguments = gatewayRunArguments(gateway, network, descriptor, applicationHostPort);
+        startGateway(gateway, network, descriptor, applicationHostPort, List.of());
+    }
+
+    /**
+     * Starts a one-off gateway exactly as {@link #startGateway(String, String, Path, int)} does, with
+     * further environment entries handed to the gateway process — such as a Quarkus runtime setting a
+     * suite proves acts in the native image, which no descriptor key reaches.
+     *
+     * @param gateway             the unique container name
+     * @param network             the docker network the container joins
+     * @param descriptor          the standalone {@code gateway.yaml}; must carry
+     *                            {@link PosixFilePermission#OTHERS_READ}
+     * @param applicationHostPort the fixed host port the application listener is published on
+     * @param environment         further environment entries, in {@code NAME=value} form, placed after
+     *                            the harness's own; possibly empty
+     */
+    static void startGateway(String gateway, String network, Path descriptor, int applicationHostPort,
+            List<String> environment) {
+        List<String> arguments = gatewayRunArguments(gateway, network, descriptor, applicationHostPort, environment);
         docker("start the one-off gateway " + gateway, arguments.toArray(String[]::new));
     }
 
@@ -248,8 +266,25 @@ final class OneOffGatewayContainers {
      */
     static List<String> gatewayRunArguments(String gateway, String network, Path descriptor,
             int applicationHostPort) {
+        return gatewayRunArguments(gateway, network, descriptor, applicationHostPort, List.of());
+    }
+
+    /**
+     * Assembles — without running anything — the complete {@code docker run} argument list
+     * {@link #startGateway(String, String, Path, int, List)} executes, after the refusals that start
+     * owes. Each further environment entry follows the harness's own entries as one more {@code -e}.
+     *
+     * @param gateway             the unique container name
+     * @param network             the docker network the container joins
+     * @param descriptor          the standalone {@code gateway.yaml}
+     * @param applicationHostPort the fixed host port of the application listener
+     * @param environment         further environment entries, in {@code NAME=value} form
+     * @return the docker arguments, beginning with {@code run}
+     */
+    static List<String> gatewayRunArguments(String gateway, String network, Path descriptor,
+            int applicationHostPort, List<String> environment) {
         assertReadableByTheGatewayUser(descriptor);
-        List<String> arguments = List.of("run", "-d",
+        List<String> arguments = new ArrayList<>(List.of("run", "-d",
                 "--name", gateway,
                 NETWORK_OPTION, network,
                 PUBLISH_OPTION, applicationPortPublication(applicationHostPort),
@@ -261,12 +296,17 @@ final class OneOffGatewayContainers {
                 "-e", "QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key",
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt",
                 "-e", "QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key",
-                "-e", "SHERIFF_CONFIG_DIR=/app/sheriff-config",
+                "-e", "SHERIFF_CONFIG_DIR=/app/sheriff-config"));
+        for (String entry : environment) {
+            arguments.add("-e");
+            arguments.add(entry);
+        }
+        arguments.addAll(List.of(
                 "-v", CERTIFICATES.toAbsolutePath() + ":/app/certificates:ro",
                 "-v", descriptor.toAbsolutePath() + ":/app/sheriff-config/gateway.yaml:ro",
                 "-v", ASSETS_SECURE_ENDPOINT.toAbsolutePath() + ":/app/sheriff-config/endpoints/assets-secure.yaml:ro",
                 "-v", ASSETS.toAbsolutePath() + ":/app/assets:ro",
-                IMAGE);
+                IMAGE));
         assertLeavesNoDeadHostPort(gateway, arguments, 0);
         return arguments;
     }
