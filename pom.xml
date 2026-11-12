@@ -110,8 +110,8 @@
             <!-- Token Sheriff BOM: supplies token-sheriff-client / -client-quarkus / -validation-quarkus
                  versions. Declared after quarkus-bom on purpose: quarkus-bom is imported first, so it wins
                  every artifact the two BOMs both manage. Re-measured against the resolved dependency graph
-                 at token-sheriff 0.9.8 / Quarkus 3.40.1 (cui-quarkus-parent 1.7.7): the two Quarkus lines
-                 AGREE. token-sheriff-parent 0.9.8 declares no version.quarkus of its own; it inherits it
+                 at token-sheriff 0.9.9 / Quarkus 3.40.1 (cui-quarkus-parent 1.7.7): the two Quarkus lines
+                 AGREE. token-sheriff-parent 0.9.9 declares no version.quarkus of its own; it inherits it
                  from the same cui-quarkus-parent 1.7.7 this project inherits, so both sides are on 3.40.1.
                  The resolved graph lands token-sheriff's Quarkus artifacts (quarkus-config-yaml,
                  quarkus-hibernate-validator) on 3.40.1, and io.smallrye.config converges on a single

@@ -66,6 +66,42 @@ accommodate, and this is that escalation, answered with a key.
   provider refused when the list names nothing.
 * The DNS-rebinding window the engine documents stays: the guard resolves the host before the connection and the HTTP client resolves it again. The list does not narrow it.
 
+== The rest of the 0.9.8 to 0.9.9 range
+
+The repository's upstream-default policy asks for an explicit verdict on every change of the range, not only on the one this record is about. The whole delta was read; these are the
+changes that touch the gateway.
+
+[cols="3,4"]
+|===
+| Change in 0.9.9 | Verdict
+
+| Host-address egress guard on the back-channel
+| Adopted unrelaxed; relaxed per host by `oidc.allowed_egress_hosts` (this record).
+
+| Engine-side DPoP issuance binding (`token_type` and `cnf.jkt`)
+| Adopted; the gateway's own duplicate check and `ApiSheriff-134` are retired (ADR-0058). The nested DSL-JSON converters it reads the access token through are registered for native, and
+  `TokenClientDslJsonReflectionTest` enumerates the client jar so the next one cannot be missed. Exactly three converters are new in the range, and all three are registered.
+
+| Refresh refusal `invalid_scope` classified as `SCOPE_REFUSED`
+| Adopted: backed off like a pre-redemption failure, the session and its refresh token are kept.
+
+| An empty `aud` is present-but-mismatched (`isNotPresentForClaimValueType` removed)
+| Adopted in the logout-token validator; the empty-audience case is refused as a mismatch.
+
+| `TokenBuilder` takes a `SecurityEventCounter`
+| Adopted by the signature-only verifier.
+
+| Every JSON answer must declare `application/json`; front-channel endpoints must be `https`
+| Adopted, no key. Documented as the operator contract in link:../configuration/tls-and-egress.adoc#_oidc_idp_response_contract[What the engine requires of the identity provider's answers]. The gateway's end-session guard
+  was aligned to the engine's https-only rule, so a cleartext endpoint is reported as `ApiSheriff-135` instead of failing inside the engine.
+
+| Startup initializer, JAX-RS mappers and further changes of the token-validation extension
+| Inert on this gateway; verdicts in ADR-0074.
+
+| JWKS loader failure handling, JWE size and decoding limits, the token lifecycle manager
+| The gateway builds its own JWKS loaders and does not use the lifecycle manager; no gateway change.
+|===
+
 == Links
 
 * link:0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]

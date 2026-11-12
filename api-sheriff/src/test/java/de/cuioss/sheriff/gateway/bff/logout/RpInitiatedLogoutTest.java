@@ -493,8 +493,9 @@ class RpInitiatedLogoutTest {
 
         @ParameterizedTest(name = "end_session_endpoint \"{0}\"")
         @ValueSource(strings = {"", "   ", "javascript:alert(1)", "/protocol/openid-connect/logout",
-                "idp.example.com/logout", "ftp://idp.example.com/logout", "https:///logout", "not a uri"})
-        @DisplayName("Should yield no redirect for an endpoint that is no absolute http(s) address")
+                "idp.example.com/logout", "ftp://idp.example.com/logout", "https:///logout", "not a uri",
+                "http://idp.example.com/logout"})
+        @DisplayName("Should yield no redirect, and report it, for an endpoint that is no absolute https address")
         void shouldYieldNoRedirectForUnusableEndpoint(String published) {
             RpInitiatedLogout local = logoutOver(() -> Optional.of(published));
 

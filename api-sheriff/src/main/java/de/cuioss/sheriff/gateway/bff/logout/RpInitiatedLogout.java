@@ -104,7 +104,6 @@ public final class RpInitiatedLogout {
     private static final int BAD_REQUEST = 400;
     private static final int FOUND = 302;
     private static final String SCHEME_HTTPS = "https";
-    private static final String SCHEME_HTTP = "http";
     private static final String CAUSE_SEPARATOR = " caused by ";
 
     private final EndSessionFlow endSessionFlow;
@@ -165,7 +164,10 @@ public final class RpInitiatedLogout {
      * <p>
      * The result is empty — and the caller completes the logout locally — when the session holds no ID
      * token, when the end-session endpoint cannot be resolved, or when the provider publishes none
-     * that is an absolute {@code http} or {@code https} URI. None of these raises.
+     * that is an absolute {@code https} URI — the engine refuses every other scheme because the request
+     * carries the ID token, so the gateway judges the same rule up front and reports the endpoint as
+     * unusable ({@code ApiSheriff-135}) instead of letting the engine's refusal surface as a bare
+     * {@code DEBUG} line in the caller. None of these raises.
      * <p>
      * {@code session} is the record whose refresh token is revoked, so the caller passes the record its
      * local destruction removed — the session as it stood when it was destroyed — rather than one it
@@ -203,7 +205,7 @@ public final class RpInitiatedLogout {
             return Optional.empty();
         }
         String endpoint = resolvedEndpoint.get();
-        if (!isAbsoluteHttpUri(endpoint)) {
+        if (!isAbsoluteHttpsUri(endpoint)) {
             reportMissingEndpoint();
             return Optional.empty();
         }
@@ -284,11 +286,13 @@ public final class RpInitiatedLogout {
     }
 
     /**
-     * Whether the candidate is an absolute {@code http} or {@code https} URI with a host. Anything
-     * else — a relative reference, another scheme, a URI without a host, or text that is no URI at
-     * all — is not an address the browser may be redirected to.
+     * Whether the candidate is an absolute {@code https} URI with a host. Anything else — a relative
+     * reference, {@code http} or another scheme, a URI without a host, or text that is no URI at all —
+     * is not an address the browser may be redirected to with the ID token in the query. This mirrors
+     * the engine's own TLS-only rule for the {@code end_session_endpoint} (token-sheriff 0.9.9), which
+     * the gateway never relaxes: the gateway's flow is built without the cleartext allowance.
      */
-    private static boolean isAbsoluteHttpUri(String candidate) {
+    private static boolean isAbsoluteHttpsUri(String candidate) {
         URI uri;
         try {
             uri = URI.create(candidate);
@@ -296,8 +300,7 @@ public final class RpInitiatedLogout {
             return false;
         }
         String scheme = uri.getScheme();
-        return uri.getHost() != null
-                && (SCHEME_HTTPS.equalsIgnoreCase(scheme) || SCHEME_HTTP.equalsIgnoreCase(scheme));
+        return uri.getHost() != null && SCHEME_HTTPS.equalsIgnoreCase(scheme);
     }
 
     /**

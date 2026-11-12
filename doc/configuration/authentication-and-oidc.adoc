@@ -505,6 +505,7 @@ validates that spelling, and any canonical gateway path works.
   goes to the advertised endpoints. See
   link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069].
 
+[[_oidc_back_channel_allow_insecure_http]]
 | `back_channel_allow_insecure_http`
 | *Optional* boolean, default `false`. Admits an `http` `back_channel_origin`, which boots with
   `WARN` `ApiSheriff-138` because cleartext is then allowed for the *whole* IdP client. *Refused at
@@ -610,8 +611,8 @@ link:#_oidc_client_authentication[Client authentication].
   is a `DEBUG` line. See
   link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080].
 
-  Without a usable `end_session_endpoint` (none, blank, or not an absolute `http`/`https` URI with a
-  host) the answer is a `302` to `logout.final_redirect` and `WARN` `ApiSheriff-135` is logged once
+  Without a usable `end_session_endpoint` (none, blank, or not an absolute `https` URI with a
+  host; a literal `http` endpoint is refused because the request carries the ID token) the answer is a `302` to `logout.final_redirect` and `WARN` `ApiSheriff-135` is logged once
   per process (repeats at `DEBUG`). A discovery failure, a session without an ID token or any failure
   building the redirect lands there too, logged at `DEBUG`; discovery is retried at the next logout.
   In these cases the IdP session is not ended, but the refresh-token revocation is still attempted.

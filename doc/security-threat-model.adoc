@@ -46,10 +46,11 @@ API Sheriff is not implementing these controls from scratch -- two audited libra
 large parts of the catalogue, and the residual gateway work is exactly the part they
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
 of the local `cui-http` and `TokenSheriff` trees; the statements that depend on the `TokenSheriff`
-version were re-checked against the 0.9.8 source. The versions this project resolves are
+version were re-checked against the 0.9.9 source (the 0.9.8 to 0.9.9 delta was audited change by change; ADR-0082 and
+ADR-0074 record the verdicts). The versions this project resolves are
 `cui-http` 3.1 -- managed by `cui-java-bom` through `cui-quarkus-parent`, with no override in this
 repository; 3.1 is the release carrying the parameter-value line-break switch the `strict` profile
-sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.8, read from the `version.token-sheriff` property in
+sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.9, read from the `version.token-sheriff` property in
 the root `pom.xml`, which is the authoritative source this number mirrors. Its JWKS-loader and
 client-configuration builders both carry the hostname-verification passthrough the gateway binds its
 two identity-provider back-channels through (see <<gw-06>>).
@@ -2990,7 +2991,8 @@ acted on unremembered. Every refusal is the `400` of a rejected logout token, se
 *An RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
 endpoint destroys the session and clears its cookies first and builds the redirect to the provider's
 `end_session_endpoint` afterwards. When that redirect cannot be built -- the provider publishes no
-endpoint, publishes one that is not an absolute `http` or `https` URI, its metadata cannot be
+endpoint, publishes one that is not an absolute `https` URI (a literal `http` endpoint is refused, since the
+redirect carries the ID token), its metadata cannot be
 obtained, or the session holds no ID token -- the browser is sent to `oidc.logout.final_redirect`.
 No such condition answers a logout with an error, and none leaves the session in place.
 `ApiSheriff-135` records once per process that the provider offers no usable endpoint.

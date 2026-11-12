@@ -626,6 +626,34 @@ the first discovery or login as `SSRF egress blocked`, and neither TLS posture k
 TLS (`oidc_verify_hostname`, `oidc_tls_profile`) decides whether a certificate is trusted;
 `allowed_egress_hosts` decides whether an address may be dialled. Neither widens the other.
 
+[[_oidc_idp_response_contract]]
+==== What the engine requires of the identity provider's answers
+
+Since token-sheriff 0.9.9 the engine judges the answers of this leg before it parses them, and refuses
+what it used to tolerate. There is no key for any of it; an identity provider that does not meet the
+contract cannot serve the gateway, and the refusal surfaces as a protocol error of the call, not as a
+degraded login.
+
+* *Every JSON answer must declare `application/json`.* Discovery, the pushed authorization request and
+  the token endpoint are held to it. A missing `Content-Type`, any other media type -- a structured-syntax
+  suffix such as `application/jrd+json` included --, a second conflicting `Content-Type` line, and a value
+  carrying CR, LF or NUL are refused. Parameters such as `charset=utf-8` are fine.
+* *The front-channel endpoints must be `https`.* The `authorization_endpoint` and the `end_session_endpoint`
+  carry `state`, `nonce`, the PKCE challenge and the ID token hint, so a literal `http` endpoint is refused
+  and so is any other scheme, a relative reference, or a URL without a host. The single exception is for
+  the `authorization_endpoint`: the cleartext allowance of
+  link:authentication-and-oidc.adoc#_oidc_back_channel_allow_insecure_http[`oidc.back_channel_allow_insecure_http`]
+  is client-wide and so reaches it; it is meant for a local test setup. The gateway builds its
+  end-session flow without any allowance, so an `http` `end_session_endpoint` is refused in every
+  configuration: the gateway judges it itself, reports it once as `ApiSheriff-135`, and the logout lands on
+  `final_redirect`.
+* *The issued access token must be bound to the proof key.* See
+  link:authentication-and-oidc.adoc#_oidc_sender_constraint[The sender constraint and the token-binding check].
+
+Check an identity provider against the first two points before moving a deployment to this version:
+`curl -sI <issuer>/.well-known/openid-configuration` must show exactly one `Content-Type` of
+`application/json`, and the advertised front-channel endpoints must start with `https://`.
+
 [[_oidc_verify_hostname_scope]]
 ==== What disabling OIDC hostname verification does and does not do
 
