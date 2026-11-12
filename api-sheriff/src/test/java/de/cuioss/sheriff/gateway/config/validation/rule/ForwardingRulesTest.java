@@ -30,9 +30,13 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.jspecify.annotations.Nullable;
@@ -217,6 +221,116 @@ class ForwardingRulesTest {
             assertAll(
                     () -> assertFalse(hasConflict(validateSessionRoute(null, List.of("Authorization")))),
                     () -> assertFalse(hasConflict(validateSessionRoute(true, List.of("Authorization")))));
+        }
+    }
+
+    /**
+     * A {@code require: none} WebSocket route whose effective {@code forward.headers_allow} re-admits
+     * {@code Authorization} must declare {@code websocket.allowed_origins}: the gateway strips the
+     * browser's {@code Origin} and the upstream sees the WebSocket client's own, so the allowlist is the
+     * only origin check such a route has. Each refusal has matched controls that still load.
+     */
+    @Nested
+    @DisplayName("An unauthenticated WebSocket route re-admitting Authorization needs allowed_origins")
+    class WebSocketAuthorizationOrigins {
+
+        private static final String ENDPOINT_ID = "live";
+        private static final String ALIAS = "LIVE";
+        private static final String ROUTE_ID = "stream";
+        private static final String REFUSAL = "re-admits Authorization through forward.headers_allow";
+        private static final String WEBSOCKET_POINTER = "/endpoint/routes/0/websocket";
+
+        private List<ConfigError> validate(AuthConfig endpointAuth, @Nullable ForwardConfig endpointForward,
+                @Nullable ForwardConfig routeForward, @Nullable WebSocketConfig websocket) {
+            RouteConfig route = RouteConfig.builder().id(ROUTE_ID).protocol(Protocol.WEBSOCKET)
+                    .match(match("/" + ROUTE_ID, HttpMethod.GET)).forward(routeForward).websocket(websocket)
+                    .build();
+            EndpointConfig endpoint = EndpointConfig.builder().id(ENDPOINT_ID).enabled(true).baseUrl(ALIAS)
+                    .auth(endpointAuth).forward(endpointForward).routes(List.of(route)).build();
+            GatewayConfig gateway = validGateway().tokenValidation(new TokenValidationConfig(List.of(
+                    IssuerConfig.builder().name("main").issuer("https://idp.example").build()))).build();
+            return validator.validate(gateway, List.of(endpoint), topologyWith(ALIAS));
+        }
+
+        private static ForwardConfig allowing(String... headers) {
+            return ForwardConfig.builder().headersAllow(List.of(headers)).build();
+        }
+
+        private static WebSocketConfig allowlist() {
+            return WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com")).build();
+        }
+
+        private static boolean refused(List<ConfigError> errors) {
+            return errors.stream().anyMatch(error -> error.message().contains(REFUSAL));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"Authorization", "authorization", "AUTHORIZATION"})
+        @DisplayName("Should refuse a route-level headers_allow naming Authorization without allowed_origins")
+        void shouldRefuseRouteLevelAuthorization(String spelling) {
+            List<ConfigError> errors = validate(auth(Require.NONE), null, allowing("Accept", spelling), null);
+
+            ConfigError refusal = singleRefusalAt(errors, WEBSOCKET_POINTER);
+            assertAll("the refusal names the route and both fixes",
+                    () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
+                    () -> assertTrue(refusal.message().contains("websocket route '" + ROUTE_ID + "'"),
+                            refusal::message),
+                    () -> assertTrue(refusal.message().contains(REFUSAL), refusal::message),
+                    () -> assertTrue(refusal.message().contains("declare websocket.allowed_origins"),
+                            refusal::message),
+                    () -> assertTrue(refusal.message().contains("drop Authorization from headers_allow"),
+                            refusal::message),
+                    () -> assertEquals("endpoints/" + ENDPOINT_ID + ".yaml", refusal.file()));
+        }
+
+        @Test
+        @DisplayName("Should refuse Authorization inherited from an endpoint-level headers_allow")
+        void shouldRefuseEndpointLevelAuthorization() {
+            List<ConfigError> errors = validate(auth(Require.NONE), allowing("authorization"), null,
+                    WebSocketConfig.builder().idleTimeoutSeconds(60).build());
+
+            ConfigError refusal = singleRefusalAt(errors, WEBSOCKET_POINTER);
+            assertTrue(refusal.message().contains("websocket route '" + ROUTE_ID + "'"), refusal::message);
+        }
+
+        @Test
+        @DisplayName("Should accept the same route when it declares allowed_origins (matched control)")
+        void shouldAcceptWithAllowedOrigins() {
+            assertAll(
+                    () -> assertTrue(validate(auth(Require.NONE), null, allowing("Authorization"), allowlist())
+                            .isEmpty(), "a route-level re-admission with an allowlist loads"),
+                    () -> assertTrue(validate(auth(Require.NONE), allowing("Authorization"), null, allowlist())
+                            .isEmpty(), "an endpoint-level re-admission with an allowlist loads"));
+        }
+
+        @Test
+        @DisplayName("Should accept the same route when headers_allow does not name Authorization (matched control)")
+        void shouldAcceptWithoutAuthorization() {
+            assertAll(
+                    () -> assertTrue(validate(auth(Require.NONE), null, allowing("Accept"), null).isEmpty(),
+                            "a route-level list without Authorization loads"),
+                    () -> assertTrue(validate(auth(Require.NONE), null, null, null).isEmpty(),
+                            "a route without any forward block loads"));
+        }
+
+        @Test
+        @DisplayName("Should accept a route-level list replacing an endpoint list that re-admitted Authorization")
+        void shouldAcceptRouteListReplacingEndpointAuthorization() {
+            List<ConfigError> errors = validate(auth(Require.NONE), allowing("Authorization"), allowing("Accept"),
+                    null);
+
+            assertTrue(errors.isEmpty(),
+                    () -> "the route-level block replaces the endpoint block wholesale, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should leave an authenticated route to the ADR-0015 allowlist rule")
+        void shouldNotDoubleReportAuthenticatedRoute() {
+            List<ConfigError> errors = validate(auth(Require.BEARER), null, allowing("Authorization"), null);
+
+            assertAll("the bearer route is refused once, by the fail-closed allowlist rule",
+                    () -> assertHasError(errors, "/endpoint/routes", "must declare a non-empty allowed_origins"),
+                    () -> assertFalse(refused(errors), () -> "no second refusal, got: " + errors));
         }
     }
 

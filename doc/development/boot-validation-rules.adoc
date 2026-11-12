@@ -148,8 +148,9 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 
 | `ForwardingRules`
 | `validateForwardModeExclusivity`, `validateTokenRelayForwardConflict`,
-  `validateCookieOutsideCookiesBlock`
-| endpoint and route `forward` blocks, against `auth.token_relay` and the `cookies` block
+  `validateWebSocketAuthorizationOrigins`, `validateCookieOutsideCookiesBlock`
+| endpoint and route `forward` blocks, against `auth.token_relay`, against a `require: none`
+  WebSocket route's `websocket.allowed_origins`, and against the `cookies` block
 | extracted
 
 | `CookieRules`

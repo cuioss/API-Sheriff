@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A protocol websocket route carries websocket.allowed_origins, a per-route allowlist of full origins matched exactly with no wildcards; on a route that lists origins the handshake Origin must match one or the upgrade is rejected before any upstream dial, and an absent or empty list on a route whose effective auth is require bearer or require session is a boot refusal. A session route declares its own list and does not reuse session.csrf.trusted_origins, and CORS allowed_origins stays a separate trust decision.
+// summary: A protocol websocket route carries websocket.allowed_origins, a per-route allowlist of full origins matched exactly with no wildcards; on a route that lists origins the handshake Origin must match one or the upgrade is rejected before any upstream dial, and an absent or empty list on a route whose effective auth is require bearer or require session is a boot refusal, as it is on a require none route that forwards a cookie or re-admits Authorization through forward.headers_allow. A session route declares its own list and does not reuse session.csrf.trusted_origins, and CORS allowed_origins stays a separate trust decision.
 // tags: websocket, origin, cswsh, csrf, fail-closed, boot-validation
 // affects: api-sheriff
 // supersedes:
@@ -48,7 +48,7 @@ The boot refuses a `protocol: websocket` route whose effective auth is `require:
 
 A session route's credential is a cookie the browser attaches to the upgrade on its own, and the handshake `Origin` tells the gateway which page opened the socket. A session route without an allowlist would have no origin check at all. The route declares the list explicitly, so one field and one boot rule cover both authenticated postures, and `session.csrf.trusted_origins` keeps its one meaning: the CSRF check on unsafe methods.
 
-A `require: none` route may omit the list, unless its effective `cookies` block forwards a cookie (link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]). A declared allowlist is enforced at the handshake on every route, whatever its auth posture, and every entry is held to the exact-match rule.
+A `require: none` route may omit the list, unless its effective `cookies` block forwards a cookie (link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]) or its effective `forward.headers_allow` re-admits `Authorization`, in any letter case. Both carry a client credential to the upstream, and the upstream cannot check the page that opened the socket: the gateway strips the browser's `Origin` (a member of the request-direction never-forward set, ADR-0037), and the WebSocket client that dials the upstream sends its own `Origin` on the upgrade. The allowlist is therefore the only origin check such a route has, and the boot refuses the `Authorization` case without one, naming the route and the fix: declare `websocket.allowed_origins`, or drop `Authorization` from `headers_allow`. A declared allowlist is enforced at the handshake on every route, whatever its auth posture, and every entry is held to the exact-match rule.
 
 The session cookie is `SameSite=Lax` in both session modes (link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]). The attribute and the allowlist are separate controls, and neither replaces the other.
 
@@ -97,4 +97,5 @@ A `require: session` WebSocket route could reuse that set, since the origin chec
 * link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]: the bearer-posture `session_fallback` route
 * link:../LogMessages.adoc[Log Messages]: `ApiSheriff-105`
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ProtocolRules.java`: the boot check
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ForwardingRules.java`: the boot check for a `require: none` route that re-admits `Authorization`
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/OriginValidationStage.java`: the handshake check

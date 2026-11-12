@@ -43,16 +43,28 @@ A session route does not inherit `oidc.session.csrf.trusted_origins`.
 
 | Required
 | *Mandatory and non-empty* when the route's *effective* auth is `require: bearer` or
-  `require: session`, and on any WebSocket route whose effective `cookies` block forwards a cookie
-  (see link:#_cookies_same_origin_check[The same-origin check]). Optional otherwise: a `require: none`
-  route that omits it upgrades without an `Origin` check; a list it declares is enforced.
+  `require: session`, on any WebSocket route whose effective `cookies` block forwards a cookie
+  (see link:#_cookies_same_origin_check[The same-origin check]), and on a `require: none` WebSocket
+  route whose effective `forward.headers_allow` -- declared on the route or inherited from the
+  endpoint -- names `Authorization` in any letter case. Optional otherwise: a `require: none` route
+  that omits it upgrades without an `Origin` check; a list it declares is enforced.
 
 | Runtime | An upgrade whose `Origin` matches no listed origin is rejected before any upstream dial.
 
 | Boot refusal
 | An absent or empty list where it is mandatory fails the boot, naming the route and its effective
-  auth. A `websocket` block on a non-`websocket` route fails the boot.
+  auth. On a `require: none` route that re-admits `Authorization`, the refusal names the route and
+  the fix: declare `websocket.allowed_origins`, or drop `Authorization` from `headers_allow`. A
+  `websocket` block on a non-`websocket` route fails the boot.
 |===
+
+*The upstream never sees the browser's `Origin`.* `origin` is in the gateway-owned request-direction
+never-forward set, so the gateway strips the browser's header, and the WebSocket client that dials
+the upstream sends its own `Origin` on the upgrade instead. An upstream therefore cannot check which
+page opened the socket, and `allowed_origins` is the only origin check a WebSocket route has. That
+is why a `require: none` route that re-admits `Authorization` must declare it: without the
+allowlist, nothing on the path checks which page opened a socket whose `Authorization` header
+reaches the upstream.
 
 [source,yaml]
 ----

@@ -27,7 +27,10 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
@@ -40,7 +43,11 @@ import org.jspecify.annotations.Nullable;
  * because each dimension resolves exactly one of the three modes (positive-list, negative-list,
  * forward-all). The token-relay conflict rule ({@link #validateTokenRelayForwardConflict}) refuses a
  * route resolving {@code auth.token_relay: false} whose effective {@code forward.headers_allow}
- * re-admits {@code Authorization}. The cookie-header rule ({@link #validateCookieOutsideCookiesBlock})
+ * re-admits {@code Authorization}. The WebSocket authorization-origin rule
+ * ({@link #validateWebSocketAuthorizationOrigins}) refuses a {@code require: none} WebSocket route whose
+ * effective {@code forward.headers_allow} re-admits {@code Authorization} while it declares no
+ * {@code websocket.allowed_origins}, since the upstream never sees the browser's {@code Origin}. The
+ * cookie-header rule ({@link #validateCookieOutsideCookiesBlock})
  * refuses a {@code forward.headers_allow}, {@code forward.headers_deny} or {@code forward.set_headers}
  * naming {@code Cookie}, which only the {@code cookies} block governs.
  * <p>
@@ -58,7 +65,11 @@ public class ForwardingRules {
 
     private static final String ENDPOINT_FORWARD_POINTER = "/endpoint/forward";
 
-    /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
+    /**
+     * The request header a {@code headers_allow} entry re-admits past the never-forward set: refused on a
+     * {@code token_relay: false} route, and on a {@code require: none} WebSocket route without
+     * {@code allowed_origins}.
+     */
     private static final String AUTHORIZATION_HEADER = "Authorization";
 
     /** The request header only the {@code cookies} block governs, never a {@code forward} list. */
@@ -228,5 +239,64 @@ public class ForwardingRules {
                 }
             }
         }
+    }
+
+    /**
+     * Rule: a {@code protocol: websocket} proxy route whose effective auth is {@code require: none} and
+     * whose effective {@code forward.headers_allow} names {@code Authorization} (in any letter case)
+     * must declare a non-empty {@code websocket.allowed_origins}.
+     * <p>
+     * Naming {@code Authorization} in {@code headers_allow} is the one way an inbound
+     * {@code Authorization} header is re-admitted past the gateway-owned never-forward set, so such a
+     * route hands the client's credential to its upstream on the upgrade. The upstream cannot tell
+     * which page opened the socket: {@code origin} is a never-forward member, so the gateway strips the
+     * browser's {@code Origin}, and the WebSocket client that dials the upstream sends its own. The
+     * {@code allowed_origins} allowlist is therefore the only origin check the route has, and a
+     * {@code require: none} route may otherwise boot with it empty (ADR-0015). An authenticated route
+     * is not judged here: the fail-closed allowlist rule of {@code ProtocolRules} already refuses it
+     * without the list. The effective auth and the effective {@code forward} block are resolved through
+     * {@link PolicyBlock#AUTH} and {@link PolicyBlock#FORWARD}, so an {@code Authorization} re-admitted
+     * by an endpoint-level block is refused exactly like a route-level one, and a route-level block
+     * that replaces it without {@code Authorization} is not. The refusal points at the route's
+     * {@code websocket} block and names the route and both fixes. Every violation collects into the
+     * shared list; the rule never fails fast (ADR-0009).
+     *
+     * @param gateway   the bound gateway document
+     * @param endpoints the enabled endpoints
+     * @param errors    the shared list every violation is appended to
+     */
+    public static void validateWebSocketAuthorizationOrigins(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            List<RouteConfig> routes = endpoint.routes();
+            for (int index = 0; index < routes.size(); index++) {
+                RouteConfig route = routes.get(index);
+                if (route.protocol() != Protocol.WEBSOCKET || !route.isProxyRoute()) {
+                    continue;
+                }
+                ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
+                if (RuleSupport.requireOf(chain) == Require.NONE
+                        && namesAuthorization(PolicyBlock.FORWARD.resolve(chain).headersAllow())
+                        && lacksAllowlist(route.websocket())) {
+                    errors.add(new ConfigError(endpointFile(endpoint),
+                            ENDPOINT_ROUTES_POINTER + "/" + index + "/websocket",
+                            ("websocket route '%s' resolves auth.require: none and re-admits Authorization through "
+                                    + "forward.headers_allow, but declares no websocket.allowed_origins; the upstream "
+                                    + "never sees the browser's Origin, so that allowlist is the route's only origin "
+                                    + "check — declare websocket.allowed_origins, or drop Authorization from "
+                                    + "headers_allow").formatted(route.id())));
+                }
+            }
+        }
+    }
+
+    /** Whether a resolved {@code headers_allow} names {@code Authorization}; an undeclared list names nothing. */
+    private static boolean namesAuthorization(@Nullable List<String> headersAllow) {
+        return headersAllow != null && headersAllow.stream().anyMatch(AUTHORIZATION_HEADER::equalsIgnoreCase);
+    }
+
+    /** Whether a route's {@code websocket} block declares no allowed origin; an absent block declares none. */
+    private static boolean lacksAllowlist(@Nullable WebSocketConfig websocket) {
+        return websocket == null || websocket.allowedOrigins().isEmpty();
     }
 }
