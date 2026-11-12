@@ -132,7 +132,9 @@ import org.jspecify.annotations.Nullable;
  * is not being read: a body the upstream is not taking data for when it passes is ended the moment the
  * upstream reads it again, and an attempt that obtained its pooled connection only after the deadline —
  * the wait for the connection counts against it — is ended as soon as its body starts to be read; either
- * way on the same path, before or after the hand-over, as a body still arriving when it passes. An attempt
+ * way on the same path, before or after the hand-over, as a body still arriving when it passes. A body whose
+ * end reaches the dispatch only after the deadline has passed is ended at the deadline as well: the
+ * deadline's instant decides, not the moment its timer, which may fire late, happens to run. An attempt
  * the dispatch no longer waits for stops the deadline and every other clock of its body (see
  * {@link UpstreamAttempt}), so none of them reports anything afterwards. A dispatch constructed without a
  * deadline ({@link #NO_BODY_DEADLINE}) never arms it.
@@ -471,35 +473,10 @@ public final class DispatchStage {
             throw new IllegalArgumentException(
                     "a request-body deadline needs a request-body idle timeout or a message bound");
         }
-        boolean preResponseDeadline = bodyDeadlineMillis != NO_BODY_DEADLINE
-                && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT;
-        if (preResponseDeadline && preResponseCapMillis < bodyDeadlineMillis) {
-            throw new IllegalArgumentException(
-                    "a pre-response deadline needs a cap no shorter than itself: " + preResponseCapMillis);
-        }
-        if (preResponseDeadline && (handOverGraceMillis <= NO_HAND_OVER_GRACE
-                || handOverGraceMillis >= bodyDeadlineMillis)) {
-            throw new IllegalArgumentException(
-                    "a pre-response deadline needs a positive hand-over grace shorter than itself: "
-                            + handOverGraceMillis);
-        }
-        if (!preResponseDeadline && preResponseCapMillis != NO_PRE_RESPONSE_CAP) {
-            throw new IllegalArgumentException(
-                    "a pre-response cap needs a pre-response deadline to hold: " + preResponseCapMillis);
-        }
-        if (!preResponseDeadline && handOverGraceMillis != NO_HAND_OVER_GRACE) {
-            throw new IllegalArgumentException(
-                    "a hand-over grace needs a pre-response deadline to hold: " + handOverGraceMillis);
-        }
-        if (preResponseDeadline && (upstreamStallMillis <= NO_UPSTREAM_STALL
-                || upstreamStallMillis >= bodyDeadlineMillis)) {
-            throw new IllegalArgumentException(
-                    "a pre-response deadline needs a positive upstream stall threshold shorter than itself: "
-                            + upstreamStallMillis);
-        }
-        if (!preResponseDeadline && upstreamStallMillis != NO_UPSTREAM_STALL) {
-            throw new IllegalArgumentException(
-                    "an upstream stall threshold needs a pre-response deadline to hold: " + upstreamStallMillis);
+        if (bodyDeadlineMillis != NO_BODY_DEADLINE && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
+            requirePreResponseBounds(bodyDeadlineMillis, preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
+        } else {
+            requireNoPreResponseBounds(preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
         }
         this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
@@ -510,6 +487,60 @@ public final class DispatchStage {
         this.handOverGraceMillis = handOverGraceMillis;
         this.upstreamStallMillis = upstreamStallMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
+    }
+
+    /**
+     * Checks the bounds that hold a pre-response deadline — the request-body deadline of a dispatch that arms
+     * no idle timeout, so the deadline is armed with the message bound.
+     *
+     * @param preResponseDeadlineMillis the pre-response deadline in milliseconds, positive
+     * @param preResponseCapMillis      the latest the deadline passes, counted from the start of the attempt
+     * @param handOverGraceMillis       the least time the deadline leaves after the hand-over
+     * @param upstreamStallMillis       the upstream stall threshold
+     * @throws IllegalArgumentException when the cap is shorter than the deadline, or the grace or the stall
+     *                                  threshold is not positive or not shorter than the deadline
+     */
+    private static void requirePreResponseBounds(long preResponseDeadlineMillis, long preResponseCapMillis,
+            long handOverGraceMillis, long upstreamStallMillis) {
+        if (preResponseCapMillis < preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a cap no shorter than itself: " + preResponseCapMillis);
+        }
+        if (handOverGraceMillis <= NO_HAND_OVER_GRACE || handOverGraceMillis >= preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a positive hand-over grace shorter than itself: "
+                            + handOverGraceMillis);
+        }
+        if (upstreamStallMillis <= NO_UPSTREAM_STALL || upstreamStallMillis >= preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a positive upstream stall threshold shorter than itself: "
+                            + upstreamStallMillis);
+        }
+    }
+
+    /**
+     * Checks that a dispatch arming no pre-response deadline is given none of the bounds that hold one: each
+     * would be silently ignored.
+     *
+     * @param preResponseCapMillis the pre-response cap, to be {@link #NO_PRE_RESPONSE_CAP}
+     * @param handOverGraceMillis  the hand-over grace, to be {@link #NO_HAND_OVER_GRACE}
+     * @param upstreamStallMillis  the upstream stall threshold, to be {@link #NO_UPSTREAM_STALL}
+     * @throws IllegalArgumentException when a cap, a grace or a stall threshold is given
+     */
+    private static void requireNoPreResponseBounds(long preResponseCapMillis, long handOverGraceMillis,
+            long upstreamStallMillis) {
+        if (preResponseCapMillis != NO_PRE_RESPONSE_CAP) {
+            throw new IllegalArgumentException(
+                    "a pre-response cap needs a pre-response deadline to hold: " + preResponseCapMillis);
+        }
+        if (handOverGraceMillis != NO_HAND_OVER_GRACE) {
+            throw new IllegalArgumentException(
+                    "a hand-over grace needs a pre-response deadline to hold: " + handOverGraceMillis);
+        }
+        if (upstreamStallMillis != NO_UPSTREAM_STALL) {
+            throw new IllegalArgumentException(
+                    "an upstream stall threshold needs a pre-response deadline to hold: " + upstreamStallMillis);
+        }
     }
 
     /**
@@ -902,8 +933,9 @@ public final class DispatchStage {
      *                       the {@link RequestBodyDeadlineExceeded} of a body still arriving at the
      *                       request-body deadline or read again after it passed, invoked on the event
      *                       loop that observed it — the upstream request's for the deadline's timer and
-     *                       a read the upstream resumes; either way once, before the upstream request is
-     *                       reset
+     *                       a read the upstream resumes, the inbound request's for a chunk or an end that
+     *                       arrived after the deadline had passed; either way once, before the upstream
+     *                       request is reset
      * @since 1.0
      */
     public record BodyFraming(boolean bodyless, long declaredLength, Consumer<GatewayException> lateViolation) {
@@ -1531,7 +1563,8 @@ public final class DispatchStage {
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
      * registered from another thread; both go through the same monitor, as do the departure and its
      * handler. The pause is pinned without holding that monitor: a resume racing the mark is followed by
-     * a pause again. The frame observer is published through a volatile field.
+     * a pause again. The frame observer is published through an atomic reference and read once, when the
+     * consumer registers its handler.
      */
     public static final class InboundBody implements ReadStream<Buffer> {
 
@@ -1541,8 +1574,8 @@ public final class DispatchStage {
         private volatile boolean resetByGateway;
         private @Nullable Throwable departure;
         private @Nullable Handler<Throwable> departureHandler;
-        /** Runs for every frame before the consumer's handler; {@code null} while none is registered. */
-        private volatile @Nullable Runnable frameObserver;
+        /** Runs for every frame before the consumer's handler; holds {@code null} while none is registered. */
+        private final AtomicReference<@Nullable Runnable> frameObserver = new AtomicReference<>();
 
         private InboundBody(ReadStream<Buffer> delegate) {
             this.delegate = delegate;
@@ -1666,7 +1699,7 @@ public final class DispatchStage {
          *                 reads it; it must not block
          */
         public void frameObserver(Runnable observer) {
-            this.frameObserver = Objects.requireNonNull(observer, "observer");
+            frameObserver.set(Objects.requireNonNull(observer, "observer"));
         }
 
         @Override
@@ -1685,7 +1718,7 @@ public final class DispatchStage {
          */
         @Override
         public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
-            Runnable observer = frameObserver;
+            Runnable observer = frameObserver.get();
             if (handler == null || observer == null) {
                 delegate.handler(handler);
             } else {
@@ -1999,7 +2032,7 @@ public final class DispatchStage {
      * <strong>A body that does not end by the deadline is ended there.</strong> A stream constructed
      * with a request-body deadline and an armed idle clock arms one more timer when
      * {@link #startIdleClock()} is called, for the deadline's moment. Unlike the idle clock it keeps running once {@link #stopIdleClock()} was called
-     * — after the response head — and stops only when the inbound body ends or an abort is claimed. When
+     * — after the response head — and stops only when the inbound body ends in time or an abort is claimed. When
      * it fires while the gateway is reading the body, the expiry takes the single abort claim with a
      * {@link RequestBodyDeadlineExceeded}, pauses the inbound stream, hands the refusal to the
      * late-violation callback when the response was already {@linkplain #handOver handed over}, runs the
@@ -2008,8 +2041,12 @@ public final class DispatchStage {
      * a {@link #fetch(long)} or a forwarded chunk, none of which then reaches the inbound stream. That
      * covers a stream the consumer had paused because the upstream was not taking data, and a deadline
      * that had already passed at {@link #startIdleClock()} because the connection was obtained only after
-     * it. {@link #stopClocks()} — the end of the body, an abort, or an attempt the dispatch no longer waits
-     * for — cancels every timer and drops a passed deadline: a stopped clock reports nothing.
+     * it. An inbound end that arrives only after the deadline's instant comes too late to end the body in
+     * time: while the deadline is still in force — recorded as passed, or its instant passed and its timer,
+     * which may fire late, not run yet — the body is ended at it the same way, but for the pause of a stream
+     * that has ended, and the end is not passed on. {@link #stopClocks()} — the end of a body in time, an
+     * abort, or an attempt the dispatch no longer waits for — cancels every timer, and the abort and the
+     * attempt no longer waited for drop a passed deadline with them: a stopped clock reports nothing.
      * <p>
      * <strong>A body whose next complete message does not arrive is ended at the message bound.</strong> A
      * stream constructed with an armed message clock arms one more timer at {@link #startMessageClock()},
@@ -2382,6 +2419,9 @@ public final class DispatchStage {
 
         /**
          * The inbound stream ended, which stops the idle clock, the deadline and the message clock.
+         * An end that arrives only after the request-body deadline's instant comes too late to end the body:
+         * while that deadline is still in force the body is ended at it instead, and the end is not passed on
+         * (see {@link #endAtOverdueDeadline()}).
          * A body short of its declared length did not arrive whole: the upstream request is aborted
          * instead of being ended on a message shorter than its framing. After an abort the end is not
          * passed on — the consumer has already been told the body failed, or the gateway reset the stream
@@ -2390,6 +2430,9 @@ public final class DispatchStage {
          */
         private void onInboundEnd(@Nullable Void end) {
             inboundEnded = true;
+            if (endAtOverdueDeadline()) {
+                return;
+            }
             stopClocks();
             if (abortReason.get() != null) {
                 return;
@@ -2479,8 +2522,10 @@ public final class DispatchStage {
 
         /**
          * Stops the idle clock, the request-body deadline and the message clock for good and cancels their
-         * timers: the body ended or was aborted, or its attempt is no longer waited for. A stopped clock
-         * reports nothing — a deadline that had already passed unread is dropped with it. Idempotent.
+         * timers: the body ended in time or was aborted, or its attempt is no longer waited for. A stopped clock
+         * reports nothing — a deadline that had already passed unread is dropped with it, which is why an
+         * inbound end is held against the deadline before it gets here (see {@link #endAtOverdueDeadline()}).
+         * Idempotent.
          */
         private void stopClocks() {
             stopIdleClock();
@@ -2737,6 +2782,43 @@ public final class DispatchStage {
         }
 
         /**
+         * Ends the body at its deadline when the inbound end arrived only after the deadline's instant: the body
+         * had not ended when its deadline passed, so the end comes too late. The deadline is overdue while it is
+         * still in force and either was recorded as passed and has not been acted on yet, or its instant has
+         * passed while its timer — which never fires early, but may fire late — has not run. The instant is read
+         * from the clock, as the read that ends a pause reads it (see {@link #resumeClocks()}). Left to
+         * {@link #stopClocks()}, the end would cancel the late timer and drop the passed deadline, and a body
+         * that did not end in time would be passed on as one that did.
+         * <p>
+         * The expiry is claimed exactly as on every other path — {@link #claimDeadlineExpiry()} decides whose
+         * failure it is — and carried out without pausing the inbound stream: the stream has ended, so nothing
+         * is left to pause, and Vert.x refuses to pause an HTTP/2 request that has ended.
+         * <p>
+         * An end that arrived in time ends the deadline in the same hold of the monitor, so the deadline's
+         * timer cannot claim it between this check and the stop of the clocks that follows.
+         *
+         * @return {@code true} when this call ended the body: the end must not be passed on
+         */
+        private boolean endAtOverdueDeadline() {
+            if (deadlineNanos.isEmpty()) {
+                return false;
+            }
+            @Nullable DeadlineExpiry expiry;
+            synchronized (clockLock) {
+                if (!deadlinePassed && !deadlineTimerIsLate()) {
+                    endDeadline();
+                    return false;
+                }
+                expiry = claimDeadlineExpiry();
+            }
+            if (expiry == null) {
+                return false;
+            }
+            abortFor(expiry);
+            return true;
+        }
+
+        /**
          * Ends the deadline and takes the single abort claim for its expiry — the upstream's
          * {@link UpstreamStalledRequest} when it is a pre-response deadline and the upstream has held the stream
          * without a break for at least the stall threshold at this moment, the moment the deadline is acted on;
@@ -2762,14 +2844,24 @@ public final class DispatchStage {
         }
 
         /**
-         * Carries out a claimed deadline expiry, outside the monitor: pauses the inbound stream, tells the
-         * edge when the response is already being relayed, resets the upstream request and propagates the
-         * failure. Only the client's refusal can meet a late-violation callback: the upstream's stall arises
-         * on the pre-response deadline alone, which ends when the attempt's send completes, before the
-         * hand-over.
+         * Carries out a claimed deadline expiry of a body whose inbound stream is still open, outside the
+         * monitor: pauses the inbound stream, then aborts the upstream request for the expiry (see
+         * {@link #abortFor}).
          */
         private void expire(DeadlineExpiry expiry) {
             delegate.pause();
+            abortFor(expiry);
+        }
+
+        /**
+         * Aborts the upstream request for a claimed deadline expiry, outside the monitor: tells the edge when
+         * the response is already being relayed, resets the upstream request and propagates the failure. Only
+         * the client's refusal can meet a late-violation callback: the upstream's stall arises on the
+         * pre-response deadline alone, which ends when the attempt's send completes, before the hand-over.
+         * The inbound stream is not touched, so this is all an expiry claimed at the inbound end carries out
+         * (see {@link #endAtOverdueDeadline()}).
+         */
+        private void abortFor(DeadlineExpiry expiry) {
             Consumer<GatewayException> late = expiry.lateViolation();
             if (late != null && expiry.reason() instanceof GatewayException refusal) {
                 late.accept(refusal);
@@ -3043,31 +3135,41 @@ public final class DispatchStage {
             int index = 0;
             int length = chunk.length();
             while (index < length) {
+                boolean messageComplete;
                 if (prefixBytesRead < PREFIX_LENGTH) {
-                    byte next = chunk.getByte(index++);
-                    if (prefixBytesRead > 0) {
-                        // Bytes 2-5 carry the length, most significant first; the flag byte carries none.
-                        declaredLength = (declaredLength << Byte.SIZE) | (next & 0xFF);
-                    }
-                    prefixBytesRead++;
-                    if (prefixBytesRead == PREFIX_LENGTH) {
-                        payloadBytesOwed = declaredLength;
-                        if (payloadBytesOwed == 0) {
-                            completed++;
-                            nextMessage();
-                        }
-                    }
+                    messageComplete = readPrefixByte(chunk.getByte(index++));
                 } else {
                     long crossing = Math.min(payloadBytesOwed, (long) length - index);
                     payloadBytesOwed -= crossing;
                     index += (int) crossing;
-                    if (payloadBytesOwed == 0) {
-                        completed++;
-                        nextMessage();
-                    }
+                    messageComplete = payloadBytesOwed == 0;
+                }
+                if (messageComplete) {
+                    completed++;
+                    nextMessage();
                 }
             }
             return completed;
+        }
+
+        /**
+         * Reads the next byte of the current message's prefix.
+         *
+         * @param next the next prefix byte
+         * @return {@code true} when the byte completes the message: it is the prefix's last, and the prefix
+         *         declares no payload
+         */
+        private boolean readPrefixByte(byte next) {
+            if (prefixBytesRead > 0) {
+                // Bytes 2-5 carry the length, most significant first; the flag byte carries none.
+                declaredLength = (declaredLength << Byte.SIZE) | (next & 0xFF);
+            }
+            prefixBytesRead++;
+            if (prefixBytesRead < PREFIX_LENGTH) {
+                return false;
+            }
+            payloadBytesOwed = declaredLength;
+            return payloadBytesOwed == 0;
         }
 
         /** The current message is complete: the next byte starts the next message's prefix. */

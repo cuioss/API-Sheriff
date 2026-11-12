@@ -1500,8 +1500,9 @@ class GrpcDispatchStageTest {
                         "an unanswered call is not answered"));
                 endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             }
+            PushedBody behind = new PushedBody();
             EventType behindTheThreshold = assertThrows(GatewayException.class,
-                    () -> stage.dispatch(route, HttpMethod.POST, NEVER_ANSWERS, Map.of(), new PushedBody(), -1L),
+                    () -> stage.dispatch(route, HttpMethod.POST, NEVER_ANSWERS, Map.of(), behind, -1L),
                     "the call behind the threshold is refused").getEventType();
 
             assertAll("half-closed calls behind a slow upstream connection, up to the breaker's threshold",

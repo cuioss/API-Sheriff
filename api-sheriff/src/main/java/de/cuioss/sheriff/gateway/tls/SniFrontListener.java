@@ -810,36 +810,36 @@ public final class SniFrontListener {
             }
             return true;
         }
-    }
 
-    /**
-     * Claims one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#compute}, atomic per
-     * {@linkplain #dialBudgetKeyOf budget key}: the count is read and written in one step, so two dials can
-     * never both take the budget's last slot.
-     *
-     * @param target the passthrough target the connection is routed to
-     * @return {@code true} when the slot was claimed, {@code false} when the budget is full
-     */
-    private boolean claimDial(RelayTarget target) {
-        AtomicBoolean claimed = new AtomicBoolean();
-        dialsPerTarget.compute(dialBudgetKeyOf(target), (key, held) -> {
-            int count = held == null ? 0 : held;
-            if (count >= maxDialsPerTarget) {
-                return held;
-            }
-            claimed.set(true);
-            return count + 1;
-        });
-        return claimed.get();
-    }
+        /**
+         * Claims one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#compute}, atomic per
+         * {@linkplain SniFrontListener#dialBudgetKeyOf budget key}: the count is read and written in one step,
+         * so two dials can never both take the budget's last slot.
+         *
+         * @param target the passthrough target the connection is routed to
+         * @return {@code true} when the slot was claimed, {@code false} when the budget is full
+         */
+        private boolean claimDial(RelayTarget target) {
+            AtomicBoolean claimed = new AtomicBoolean();
+            dialsPerTarget.compute(dialBudgetKeyOf(target), (key, held) -> {
+                int count = held == null ? 0 : held;
+                if (count >= maxDialsPerTarget) {
+                    return held;
+                }
+                claimed.set(true);
+                return count + 1;
+            });
+            return claimed.get();
+        }
 
-    /**
-     * Returns one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#computeIfPresent},
-     * under the same {@linkplain #dialBudgetKeyOf budget key} it was claimed under; the key is removed once
-     * no dial to it is in flight.
-     */
-    private void releaseDial(RelayTarget target) {
-        dialsPerTarget.computeIfPresent(dialBudgetKeyOf(target), (key, held) -> held <= 1 ? null : held - 1);
+        /**
+         * Returns one dial slot of {@code target}'s budget inside {@link ConcurrentHashMap#computeIfPresent},
+         * under the same {@linkplain SniFrontListener#dialBudgetKeyOf budget key} it was claimed under; the key
+         * is removed once no dial to it is in flight.
+         */
+        private void releaseDial(RelayTarget target) {
+            dialsPerTarget.computeIfPresent(dialBudgetKeyOf(target), (key, held) -> held <= 1 ? null : held - 1);
+        }
     }
 
     /**

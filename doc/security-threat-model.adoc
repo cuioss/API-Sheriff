@@ -1772,7 +1772,21 @@ a passed deadline -- the late timer found the stream being read again and charge
 one millisecond short of the threshold stays the client's
 (`readEndingAShortPauseBeforeTheLateDeadlineTimerRanIsTheClients`), and the `BodyDeadline` case
 `readAfterTheDeadlineInstantEndsThePausedBodyBeforeItsLateTimerRan` asserts that an HTTP dispatch's
-read ends the paused body without waiting for the late timer either.
+read ends the paused body without waiting for the late timer either. The same instant decides whether a
+body ended in time: an end that arrives at or after it while the deadline's timer is still pending is
+not passed on, and the stream, read all along, is ended at the deadline as the client's
+(`inboundEndAfterTheDeadlineInstantBeforeItsLateTimerRanIsTheClientsDeadline`, red while the end
+cancelled the late timer and the stream was passed on as one that had ended in time); an end one
+millisecond before the instant is passed on (`inboundEndJustBeforeTheDeadlineInstantIsPassedOn`). The
+`BodyDeadline` cases assert the same end after the hand-over, where it reaches the late-violation
+callback before the reset, and for a deadline already recorded as passed
+(`inboundEndAfterTheDeadlineInstantAfterTheHandOverGoesToTheLateCallback`,
+`inboundEndDoesNotDropADeadlineRecordedAsPassed`). Each of the three asserts that the ended inbound
+stream is not paused, and `LateEndOverALiveRequest` shows why against the transport: it drives the same
+end through a live HTTP/1.1 and a live HTTP/2 request, where the expiry runs inside the request's own
+end handler (`endOfALiveRequestPastItsDeadlineEndsTheBodyAtTheDeadline`). Its HTTP/2 case is red when
+the expiry pauses the inbound stream first: Vert.x refuses to pause a request that has ended, so the
+upstream request is never reset and the failure never propagated.
 `GrpcStatusMapperTest` asserts the `DEADLINE_EXCEEDED` rendering of `REQUEST_BODY_TIMEOUT`
 (`rendersRequestBodyTimeoutAsDeadlineExceeded`). `GrpcProxyIT` drives a call that sends HEADERS only
 and one that stalls inside its first message through the native image, each ended as

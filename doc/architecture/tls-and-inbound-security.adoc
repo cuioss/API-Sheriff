@@ -217,9 +217,12 @@ link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_decla
 Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`); expiry after the
 response head preserves the upstream status and resets/closes the stream. A passed deadline stays in
 force while upstream backpressure pauses the body: it ends the body as the request's when the pause
-ends, whatever the pause's length. The deadline stops when the body ends, when another abort claims
-the stream first, and when the attempt ends without handing its response back (its send failed, the
-next attempt began, or the dispatch failed); a stopped deadline reports nothing. A `protocol: grpc` call is
+ends, whatever the pause's length. The deadline stops when the body ends before it, when another abort
+claims the stream first, and when the attempt ends without handing its response back (its send failed, the
+next attempt began, or the dispatch failed); a stopped deadline reports nothing. A body whose end reaches
+the dispatch only after the deadline's instant does not stop it: that body is ended at the deadline all
+the same. The instant is taken from the clock, not only from the deadline's timer, so a timer that fires
+late does not let a late end pass as one in time. A `protocol: grpc` call is
 bounded by a deadline of the same length too, but counted from the hand-over and only until its upstream
 answers, and the end is rendered to its client as `DEADLINE_EXCEEDED` (<<_grpc_message_bound>>).
 
@@ -272,7 +275,9 @@ deadline never leaves less than the fixed hand-over grace,
 connection later than 28 s — less than the grace before the cap, or past it — is ended at once, its
 request unsent and its body unread, as `DispatchStage.UpstreamConnectionTooLate`, an `UPSTREAM_TIMEOUT`
 the breaker counts. The deadline ends only a request stream whose end has not reached the dispatch when
-it passes, so a client that had already ended its stream at the hand-over is ended by it only if the
+it passes — at its instant, read from the clock, so an end that arrives after it is too late even while
+the deadline's timer has not run yet (<<_request_body_deadline>>). A client that had already ended its
+stream at the hand-over is therefore ended by it only if the
 gateway takes longer than the grace to deliver that end; if the upstream then does not answer the
 complete request, the guard ends the call as `UPSTREAM_TIMEOUT`, which the circuit breaker counts. The
 guard's timeout is therefore reached in three ways, all the upstream's: by an upstream holding a

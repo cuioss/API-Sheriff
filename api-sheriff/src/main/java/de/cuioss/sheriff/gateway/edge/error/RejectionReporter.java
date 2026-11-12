@@ -65,7 +65,7 @@ public final class RejectionReporter {
     private final long requestBodyDeadlineMillis;
     /**
      * The route and disposition pairs an aborted inbound body has already been reported for at
-     * {@code INFO} (see {@link #logInboundBodyAborted}). Bounded by the number of configured routes times
+     * {@code INFO} (see {@link #reportInboundBodyAborted}). Bounded by the number of configured routes times
      * the three {@link InboundBodyAbortDisposition} values.
      */
     private final Set<InboundBodyAbortLatch> inboundBodyAbortReported = ConcurrentHashMap.newKeySet();

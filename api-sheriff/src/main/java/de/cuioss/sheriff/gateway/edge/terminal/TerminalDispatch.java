@@ -431,12 +431,16 @@ public final class TerminalDispatch {
      * A dispatch failure (including an h2-negotiation failure) surfaces as a {@link GatewayException}
      * that {@link ErrorResponseWriter} renders as a trailers-only gRPC status rather than problem+json.
      * <p>
-     * <strong>What bounds the call.</strong> The dispatch arms neither the request-body idle timeout nor
-     * the request-body deadline, so a client-streaming or bidirectional call may pause between its
-     * messages. Until the upstream sends its response headers the guard's timeout bounds the call: that
-     * timeout bounds each attempt, and a gRPC call is a {@code POST}, which is never retried, so its one
-     * attempt is the whole call. From then on the call's {@linkplain ResponseStage.GrpcStreamIdleBound stream-idle bound}
-     * does: every request frame the dispatch reads and every upstream frame the relay writes restarts it,
+     * <strong>What bounds the call.</strong> The dispatch arms no request-body idle timeout, so a
+     * client-streaming or bidirectional call may pause between its messages. Until the upstream sends its
+     * response headers the request side of the call is bounded twice by the dispatch (see
+     * {@link GrpcDispatchStage}) — by the message bound, the wait for each complete request message
+     * ({@link GrpcDispatchStage#GRPC_MESSAGE_TIMEOUT_MILLIS}), and by the pre-response deadline, the
+     * request-body deadline counted from the hand-over of the body
+     * ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_DEADLINE_MILLIS}) — and the call as a whole by the guard's
+     * timeout: that timeout bounds each attempt, and a gRPC call is a {@code POST}, which is never retried,
+     * so its one attempt is the whole call. From then on the call's {@linkplain ResponseStage.GrpcStreamIdleBound stream-idle bound}
+     * bounds it: every request frame the dispatch reads and every upstream frame the relay writes restarts it,
      * and a call that carried no frame in either direction for its fixed five minutes is ended by the
      * relay — the upstream request is reset, and the client response ends through the one end rule with
      * {@code grpc-status: 4} ({@code DEADLINE_EXCEEDED}) in its trailers. Such an end is logged as

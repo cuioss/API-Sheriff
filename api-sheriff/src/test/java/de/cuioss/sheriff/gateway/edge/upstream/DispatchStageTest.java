@@ -96,6 +96,7 @@ import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.PoolOptions;
 import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
@@ -915,6 +916,71 @@ class DispatchStageTest {
                             "the edge learns of the refusal before the upstream request is reset"));
         }
 
+        /**
+         * A timer never fires early, but it may fire late, and the body's end can arrive in between: after the
+         * deadline's instant, before the deadline's timer has run. The body was still arriving when its deadline
+         * passed, so that end comes too late and the body is ended at its deadline — after the hand-over through
+         * the late-violation callback, before the reset, exactly as the timer would have ended it on time. Left to
+         * the end itself, the late timer would be cancelled and the body passed on as one that had ended in time.
+         */
+        @Test
+        @DisplayName("after the hand-over, an end arriving after the deadline's instant, before the deadline's late timer has run, reaches the late-violation callback before the reset")
+        void inboundEndAfterTheDeadlineInstantAfterTheHandOverGoesToTheLateCallback() {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            probe.capped.startIdleClock();
+            // The attempt's send completed with the response head: the idle clock stops, the deadline runs on.
+            probe.capped.stopIdleClock();
+            GatewayException atTheHandOver = probe.handOver();
+            probe.time.advanceMillisHoldingTimers(DEADLINE_MILLIS);
+            int pendingBeforeTheEnd = probe.time.pendingCount();
+
+            probe.source.end();
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a relayed answer whose body ends after its deadline's instant, the deadline's timer still pending",
+                    () -> assertNull(atTheHandOver, "nothing was refused when the response was handed over"),
+                    () -> assertEquals(1, pendingBeforeTheEnd, "the deadline's timer has not run"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the body was still arriving at its deadline's instant: the end comes too late"),
+                    () -> assertEquals(Collections.singletonList(refusal), probe.lateViolations,
+                            "the refusal reaches the late-violation callback once"),
+                    () -> assertEquals(List.of(IdleProbe.LATE, IdleProbe.ABORT), probe.sequence,
+                            "the edge learns of the refusal before the upstream request is reset"),
+                    () -> assertFalse(probe.ended.get(), "the late end is not passed on"),
+                    () -> assertEquals(0, probe.source.pauseCount(),
+                            "the ended inbound stream is not paused: an ended HTTP/2 request refuses a pause"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "the claim cancelled the late timer"));
+        }
+
+        /**
+         * The end of the body never drops a passed deadline. A stream its consumer has paused delivers no end
+         * before it is read again, and that read ends the body first; this stream delivers one all the same, and
+         * the deadline recorded as passed during the pause still ends the body.
+         */
+        @Test
+        @DisplayName("an end delivered while a deadline recorded as passed is still in force does not drop it: the body is ended at its deadline")
+        void inboundEndDoesNotDropADeadlineRecordedAsPassed() {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            probe.capped.startIdleClock();
+            probe.capped.pause();
+            probe.time.advanceMillis(2 * DEADLINE_MILLIS);
+            boolean quietWhilePaused = probe.failure.get() == null && probe.aborts.get() == 0;
+
+            probe.source.end();
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a body whose end is delivered after its deadline was recorded as passed",
+                    () -> assertTrue(quietWhilePaused, "nothing ends the body while the upstream is not taking data"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the passed deadline ends the body: its end comes too late"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertFalse(probe.ended.get(), "the late end is not passed on"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertEquals(1, probe.source.pauseCount(),
+                            "the consumer's pause stays the only one: the ended inbound stream is not paused again"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
         @Test
         @DisplayName("a deadline that passed before the attempt held its connection ends the body as soon as it is first read")
         void deadlinePassedBeforeTheClockStartedEndsTheBodyWhenItIsFirstRead() {
@@ -992,6 +1058,90 @@ class DispatchStageTest {
             } else {
                 probe.capped.fetch(1);
             }
+        }
+    }
+
+    /**
+     * The late-end rule of the request-body deadline against the inbound transport itself. A byte-capped body
+     * reads a live request while its clocks are driven by hand: the deadline's instant has passed and its timer
+     * has not run when the client ends the request, so the expiry is claimed and carried out inside that
+     * request's own end handler. Vert.x refuses to pause an HTTP/2 request there, because it has ended; an
+     * expiry that paused the inbound stream first would throw before the upstream request was reset or the
+     * failure propagated, and leave the dispatch to the guard's timeout. The stream fake of the cases above
+     * accepts any call, so only a live request can show that.
+     */
+    @Nested
+    @DisplayName("an inbound end past the request-body deadline over a live request")
+    class LateEndOverALiveRequest {
+
+        private static final long TIMEOUT_MILLIS = 1_000L;
+        private static final long DEADLINE_MILLIS = 4 * TIMEOUT_MILLIS;
+
+        private Vertx vertx;
+        private HttpServer inbound;
+        private @Nullable HttpClient client;
+        /** The failure the body stream propagated to its consumer. */
+        private final CompletableFuture<Throwable> propagated = new CompletableFuture<>();
+        private final AtomicInteger aborts = new AtomicInteger();
+        private final AtomicBoolean endPassedOn = new AtomicBoolean();
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            inbound = Awaits.connect(vertx.createHttpServer().requestHandler(this::readPastItsDeadline)
+                    .listen(0, LoopbackHost.ADDRESS), "the inbound server to start listening");
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            if (client != null) {
+                Awaits.teardown(client.close(), "the client to close");
+            }
+            Awaits.teardown(inbound.close(), "the inbound server to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        /**
+         * Reads {@code request} through a byte-capped body whose deadline's instant has passed while its timer,
+         * held by the {@link ManualTime}, never runs: only the request's end can act on the deadline. Everything
+         * here, and every callback of the body, runs on the request's event loop.
+         */
+        private void readPastItsDeadline(HttpServerRequest request) {
+            request.pause();
+            ManualTime time = new ManualTime();
+            DispatchStage.ByteCappedBodyStream capped = new DispatchStage.ByteCappedBodyStream(
+                    DispatchStage.InboundBody.arm(request), BODY_CAP, DispatchStage.NO_DECLARED_LENGTH,
+                    aborts::incrementAndGet, _ -> {
+                        // The forwarded count feeds the retry gate, which this case does not exercise.
+                    }, new DispatchStage.IdleClock(TIMEOUT_MILLIS, time, time::nanoTime),
+                    OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DEADLINE_MILLIS)));
+            capped.handler(_ -> {
+                // The body's bytes are not what this case observes.
+            });
+            capped.exceptionHandler(propagated::complete);
+            capped.endHandler(_ -> endPassedOn.set(true));
+            capped.startIdleClock();
+            time.advanceMillisHoldingTimers(DEADLINE_MILLIS);
+            capped.resume();
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(value = HttpVersion.class, names = {"HTTP_1_1", "HTTP_2"})
+        @DisplayName("the request's end, arriving after the deadline's instant, ends the body at its deadline from inside the end handler")
+        void endOfALiveRequestPastItsDeadlineEndsTheBodyAtTheDeadline(HttpVersion version) throws Exception {
+            client = vertx.createHttpClient(new HttpClientOptions().setProtocolVersion(version)
+                    .setHttp2ClearTextUpgrade(false));
+            HttpClientRequest upload = Awaits.connect(client.request(io.vertx.core.http.HttpMethod.POST,
+                    inbound.actualPort(), LoopbackHost.ADDRESS, "/late"), "the upload to open");
+
+            Awaits.connect(upload.end(Generators.letterStrings(2, 6).next()), "the upload to be sent and ended");
+
+            Throwable refusal = Awaits.connect(propagated, "the body past its deadline to be ended");
+            assertAll("a live " + version + " request ended after its deadline's instant, the deadline's timer pending",
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the end comes too late: the body is ended at its deadline"),
+                    () -> assertEquals(1, aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertFalse(endPassedOn.get(), "the late end is not passed on"));
         }
     }
 
@@ -1516,6 +1666,74 @@ class DispatchStageTest {
     }
 
     /**
+     * The frame reader behind the message clock, {@link DispatchStage.GrpcMessageFrames}, on its own: how many
+     * messages each chunk completes, however the chunks split the 5-byte prefixes and the payloads. The cases
+     * above pin what a completed message does to the clock; these pin the count the reader returns.
+     */
+    @Nested
+    @DisplayName("gRPC message frames read as their chunks cross")
+    class MessageFrames {
+
+        private final DispatchStage.GrpcMessageFrames frames = new DispatchStage.GrpcMessageFrames();
+
+        @Test
+        @DisplayName("counts every message a chunk completes and carries the one it only starts into the next chunk")
+        void countsEveryMessageAChunkCompletes() {
+            Buffer started = grpcMessage(Generators.letterStrings(4, 12).next());
+            int split = GRPC_PREFIX_LENGTH + 1;
+            Buffer twoMessagesAndAStart = grpcMessage(Generators.letterStrings(2, 6).next())
+                    .appendBuffer(grpcMessage(""))
+                    .appendBuffer(started.slice(0, split));
+
+            int completedByTheFirstChunk = frames.completedBy(twoMessagesAndAStart);
+            int completedByAnEmptyChunk = frames.completedBy(Buffer.buffer());
+            int completedByTheRest = frames.completedBy(started.slice(split, started.length()));
+
+            assertAll("a chunk carrying two whole messages and the start of a third, then the third's rest",
+                    () -> assertEquals(2, completedByTheFirstChunk,
+                            "both whole messages, the second of length zero, are complete; the started one is not"),
+                    () -> assertEquals(0, completedByAnEmptyChunk, "a chunk without a byte completes nothing"),
+                    () -> assertEquals(1, completedByTheRest, "the rest of the third message completes it"));
+        }
+
+        @Test
+        @DisplayName("a message arriving one byte per chunk is complete only at its last byte")
+        void messageSplitByteByByteCompletesAtItsLastByte() {
+            Buffer message = grpcMessage(Generators.letterStrings(2, 6).next());
+            List<Integer> completedPerByte = new ArrayList<>();
+
+            for (int index = 0; index < message.length(); index++) {
+                completedPerByte.add(frames.completedBy(message.slice(index, index + 1)));
+            }
+
+            List<Integer> onlyTheLastByte = new ArrayList<>(Collections.nCopies(message.length() - 1, 0));
+            onlyTheLastByte.add(1);
+            assertEquals(onlyTheLastByte, completedPerByte,
+                    "no prefix byte and no payload byte but the last completes the message");
+        }
+
+        /**
+         * The payload length is the unsigned big-endian integer of the four bytes after the compressed flag. A
+         * length above 255 spans more than one of them, and a set flag must not be read as part of it.
+         */
+        @Test
+        @DisplayName("reads the payload length from the four bytes after the compressed flag, most significant first")
+        void readsThePayloadLengthFromTheFourBytesAfterTheFlag() {
+            int payloadLength = Generators.integers(256, 1024).next();
+            Buffer compressed = Buffer.buffer().appendByte((byte) 1).appendInt(payloadLength)
+                    .appendBytes(new byte[payloadLength]);
+            int lastByte = compressed.length() - 1;
+
+            int completedShortOfTheLastByte = frames.completedBy(compressed.slice(0, lastByte));
+            int completedByTheLastByte = frames.completedBy(compressed.slice(lastByte, compressed.length()));
+
+            assertAll("a compressed message of " + payloadLength + " payload bytes",
+                    () -> assertEquals(0, completedShortOfTheLastByte, "one payload byte is still owed"),
+                    () -> assertEquals(1, completedByTheLastByte, "the last payload byte completes the message"));
+        }
+    }
+
+    /**
      * The pre-response deadline of {@link DispatchStage.ByteCappedBodyStream}: the request-body deadline armed
      * with the message clock when no idle clock is armed — the gRPC dispatch's bound on a request stream still
      * open before the upstream answers — driven by hand on a {@link ManualTime}. It is armed when the message
@@ -1964,6 +2182,69 @@ class DispatchStageTest {
                     () -> assertNull(probe.capped.clientAbort()),
                     () -> assertNull(probe.failure.get()),
                     () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        /**
+         * A timer never fires early, but it may fire late, and the client's end can arrive in between: after the
+         * deadline's instant, before the deadline's timer has run. The request stream was still open when its
+         * deadline passed, so that end comes too late: the stream is ended at its deadline, as the timer would
+         * have ended it on time. It was being read all along, so the deadline is the client's. Left to the end
+         * itself, the late timer would be cancelled and the stream passed on as one that had ended in time.
+         */
+        @ParameterizedTest(name = "the end arrives {0} ms after the deadline's instant")
+        @ValueSource(longs = {0L, 1L})
+        @DisplayName("an end arriving after the deadline's instant, before the deadline's late timer has run, is ended at the deadline as the client's")
+        void inboundEndAfterTheDeadlineInstantBeforeItsLateTimerRanIsTheClientsDeadline(long endAfterTheInstant) {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            long sent = sendSteadily(probe, DEADLINE_MILLIS - 1);
+            probe.time.advanceMillis(DEADLINE_MILLIS - 1 - sent);
+            boolean openJustBeforeTheDeadline = probe.failure.get() == null && probe.aborts.get() == 0;
+            probe.time.advanceMillisHoldingTimers(1 + endAfterTheInstant);
+            int pendingBeforeTheEnd = probe.time.pendingCount();
+
+            probe.source.end();
+            GatewayException refusal = probe.capped.clientAbort();
+            int pendingAfterTheEnd = probe.time.pendingCount();
+            probe.time.advanceMillis(0);
+
+            assertAll("a request stream ended after its deadline's instant, the deadline's timer still pending",
+                    () -> assertTrue(openJustBeforeTheDeadline, "nothing ends the stream before its deadline"),
+                    () -> assertEquals(2, pendingBeforeTheEnd, "the message timer and the deadline's timer have not run"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the stream was still open at its deadline's instant: the end comes too late"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertNull(probe.capped.upstreamStall(),
+                            "the stream was being read when the deadline passed: nothing is charged to the upstream"),
+                    () -> assertFalse(probe.ended.get(), "the late end is not passed on"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertEquals(0, probe.source.pauseCount(),
+                            "the ended inbound stream is not paused: an ended HTTP/2 request refuses a pause"),
+                    () -> assertEquals(0, pendingAfterTheEnd, "the claim cancelled the late timers"));
+        }
+
+        /**
+         * Matched control on the other side of the instant: the same steady sender, its end one millisecond before
+         * the deadline's instant. A request stream that ends before its deadline stops it, and the end is passed on.
+         */
+        @Test
+        @DisplayName("control — an end arriving one millisecond before the deadline's instant is passed on and stops the deadline")
+        void inboundEndJustBeforeTheDeadlineInstantIsPassedOn() {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            long sent = sendSteadily(probe, DEADLINE_MILLIS - 1);
+            probe.time.advanceMillis(DEADLINE_MILLIS - 1 - sent);
+
+            probe.source.end();
+            int pendingAfterTheEnd = probe.time.pendingCount();
+            probe.time.advanceMillis(2 * DEADLINE_MILLIS);
+
+            assertAll("a request stream ended one millisecond before its deadline's instant",
+                    () -> assertTrue(probe.ended.get(), "the end is passed on"),
+                    () -> assertEquals(0, pendingAfterTheEnd, "the end cancels the message timer and the deadline"),
+                    () -> assertNull(probe.capped.clientAbort(), "a stream that ended in time is not refused"),
+                    () -> assertNull(probe.failure.get(), "nothing is reported to the consumer"),
+                    () -> assertEquals(0, probe.aborts.get(), "the upstream request is not reset"));
         }
 
         /**

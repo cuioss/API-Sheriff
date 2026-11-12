@@ -629,7 +629,7 @@ class SniFrontListenerTest {
 
         @Test
         @DisplayName("keys two IPv6 peers of one /64 on one source, and peers of two /64s on two")
-        void keysAnIpv6PeerOnItsSlash64() throws Exception {
+        void keysAnIpv6PeerOnItsSlash64() {
             NetSocket hostInSubnet = withPeer(SocketAddress.inetSocketAddress(new InetSocketAddress(
                     InetAddress.ofLiteral("2001:db8:1:2::a"), 40001)));
             NetSocket otherHostInSubnet = withPeer(SocketAddress.inetSocketAddress(new InetSocketAddress(
