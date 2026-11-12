@@ -45,6 +45,17 @@ decision.
 
 <!-- ANNOTATION ZONE — hand-written, and deliberately OUTSIDE the generated table markers. -->
 
+- PLAN-33 — staged 2026-11-12, WS-05; the operator's next plan to run. Overlaps the RUNNING PLAN-31 on
+  `RetryingJwksLoader` and its test: start after PLAN-31 merges, or put the overlap to the operator at
+  the gate. Staged PLAN-SEC-06 (sibling epic) deliverable 3 also edits `RetryingJwksLoader.settleRefresh`.
+  Operator decisions at outline: expose `maxStaleness` as a gateway key (and its default), drop
+  `token-sheriff-client-quarkus` (it interacts with PLAN-34 D1: TokenSheriff's native-image plan would put
+  the registration into that extension), readiness for a stale-degraded issuer.
+- PLAN-34 — staged 2026-11-12, WS-05; BLOCKED until TokenSheriff 0.9.10 is released and `main` pins it
+  (the bump is the release workflow's PR). Depends on PLAN-33 and on TokenSheriff epic
+  `api-sheriff-seams`; every TokenSheriff API name in it is a proposal to re-verify against the
+  released jar. Shares `BffRuntimeProducer` with PLAN-20; the order of PLAN-20 and PLAN-34 is open.
+
 - PLAN-24 — shipped #430. Ran alone; nothing collided.
 - PLAN-27 — shipped #433. Ran alone; nothing collided. Its post-merge benchmark run failed (Open
   Defects). The native integration job took about 20 minutes with its one new suite.
@@ -286,6 +297,25 @@ decision.
   per-route scopes, by downstream decision. Alternative considered: keep the pre-check as a second trigger
   — rejected, because a per-route scope list in the gateway drifts from the backend's own knowledge.
 > ↪ Relocated to `settled.md` § "Drain 2 and the landings of PLAN-13 and PLAN-14 (2026-09-17 to 2026-09-22)" — PLAN-13 and PLAN-14 shipped and reconciled
+
+- 2026-11-12 — **TokenSheriff separation staged as WS-05 (PLAN-33, PLAN-34) plus a TokenSheriff epic.**
+  Operator asked for full separation of concerns with TokenSheriff after the 0.9.9 bump removed one
+  duplicate. Decisions: (1) the work that needs only the pinned 0.9.9 is one plan, PLAN-33 (five
+  deliverables: truthful JWKS status through `RetryingJwksLoader` with a failing test first, the
+  library's `ErrorTextSanitizer` in `SignatureOnlyTokenVerifier`, documentation 0.9.9 made false, the
+  unused `token-sheriff-client-quarkus` dependency, and a verify-first check of the refresh-versus-
+  widening race); the operator named it the next plan to run. (2) Everything that needs a new
+  TokenSheriff seam is NOT planned here: it is the TokenSheriff epic `api-sheriff-seams` (seven plans,
+  target 0.9.10, in `/home/oliver/git/TokenSheriff`'s own ledger, not landed), and PLAN-34 deletes the
+  gateway copies against the released 0.9.10, one droppable deliverable per TokenSheriff plan. The
+  version bump is the release workflow's PR, never PLAN-34's. (3) Split-or-proceed: PLAN-34 carries
+  seven deliverables, under the 12 cap, because each is independently droppable and a deliverable
+  whose TokenSheriff plan did not ship is removed at outline rather than waited on. (4) The audit's
+  "StepUpCoordinator is dead code" is rejected: PLAN-20 wires it, and PLAN-20 must also call the
+  step-up result verifier. (5) Corrections the drafting made to the audit: the `pom.xml` comment on
+  `GatewayExceptionMapper` was already fixed by `0c0680b3`; the race in PLAN-33 D5 involves the
+  widening/step-up landing, not login (login mints a new session id). Alternative considered: one
+  large plan covering both; rejected because PLAN-34 cannot start before a TokenSheriff release.
 
 ## Open Defects
 
@@ -647,3 +677,36 @@ decision.
 - Source-document claims ("measured", code line references) were measured against API Sheriff
   0.2.1 — re-verify each against HEAD at decompose / outline; HEAD may already have moved
   (e.g. AS-10 references API-Sheriff#194). — trigger: every spec's verify-first clause.
+
+- **TokenSheriff separation audit (2026-11-12, main at `26e34cd4`, TS 0.9.9).** Operator goal: API Sheriff
+  duplicates nothing TokenSheriff provides; generic code moves to TokenSheriff. Four read-only audits
+  (validation, OIDC client flow, session/runtime/config, generic utilities) each read both sides. The
+  `BoundTokenEndpointClient` class of duplicate is gone; what remains is mostly a missing TS seam, so most
+  work is **TS first, then delete here**. Not a plan yet; findings (AS = API Sheriff):
+  - *Do now, 0.9.9 only (AS side):* `RetryingJwksLoader.getLoaderStatus` (:644-647) returns `OK` whenever
+    its own state is `LOADED`, masking the delegate's `UNDEFINED`; the gateway never sets `maxStaleness`
+    (#844), so the staleness bound is unreachable. The class Javadoc :56-65 still claims the library status
+    is untruthful (fixed in TS #830). Read on one side only and from code, not run.
+  - *Security gap, TS seam private:* `TokenRefreshCoordinator.rotate` (:817-823) stores the refreshed ID
+    token unverified and keeps the old `sub`; TS `TokenLifecycleManager` checks OIDC 12.2 iss/sub (private
+    static, :1272-1294). Also AS never calls `StepUpResultVerifier`, so `acr`/`max_age` is not enforced
+    after step-up. The latter belongs in PLAN-20 (which wires `StepUpCoordinator`, today with no caller;
+    do NOT delete it as dead code).
+  - *Move to TS (then delete here):* native-image reflection for the client DSL-JSON converters
+    (`TokenClientDslJsonReflection`, ~110); authorization-request parameters/`response_mode`/PAR/per-call
+    scope (`QueryResponseModeAuthorizationRequestBuilder`, `PushedAuthorizationRequests`,
+    `ScopedEngineFlows`, ~560); client signing-key PEM load and public-JWK export (`ClientSigningKey`,
+    ~200-400); `SignatureOnlyTokenVerifier` (uses TS-internal classes, ~200); back-channel
+    `LogoutTokenValidator` (~330, needs a TS scope decision: TS docs call receivers the BFF's concern,
+    CLIENT-19); `IdTokenClaimProjection` (native JSON claims, ~180); unknown-kid bounded refresh in
+    `RetryingJwksLoader` (~330, medium-high risk, flood bound); OIDC discovery cache (~190); readiness over
+    JWKS state (`IssuerKeySetStatus`, ~130, needs `TokenValidator` to expose issuer configs).
+  - *Small or optional:* RFC 6750 challenge build and Bearer extraction (TS private, JAX-RS-bound);
+    `renderForMessage`/`sanitizeForLog` vs TS `ErrorTextSanitizer` (`SignatureOnlyTokenVerifier`'s strip
+    misses U+2028/2029 and bidi controls); IdP egress-host validators (TS private); bounded body handler.
+  - *Not TS:* `TokenRefreshCoordinator` single-flight stays (ADR-0046; TS manager is store-keyed, no
+    cookie mode); two intra-AS duplicates (CIDR parse in `TcpPeerGate` and `EdgeRules`; the Cookie-header
+    parse loop copied 5 times; the trust-all guard in `EgressTrustProfileResolver`/`JwksTrustProfileResolver`).
+  - *Unused dependency:* `token-sheriff-client-quarkus` (`api-sheriff/pom.xml` :123-125); no import of
+    `de.cuioss.sheriff.token.client.quarkus` in main (re-checked). Dropping needs operator approval.
+  — trigger: operator decides scope (see anchor); verify each row against HEAD before a spec cites it.

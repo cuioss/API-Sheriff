@@ -22,6 +22,11 @@
       "id": "WS-04",
       "slug": "session-and-scopes",
       "status": "active"
+    },
+    {
+      "id": "WS-05",
+      "slug": "token-sheriff-separation",
+      "status": "active"
     }
   ],
   "metadata": {
