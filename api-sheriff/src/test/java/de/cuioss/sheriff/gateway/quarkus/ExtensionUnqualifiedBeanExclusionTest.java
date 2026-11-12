@@ -23,7 +23,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
-
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.token.quarkus.config.IssuerConfigResolver;
 import de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck;
@@ -36,12 +35,12 @@ import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.smallrye.config.EnvConfigSource;
-import io.smallrye.config.SmallRyeConfigBuilder;
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduler;
 import io.quarkus.scheduler.Trigger;
 import io.quarkus.test.junit.QuarkusTest;
+import io.smallrye.config.EnvConfigSource;
+import io.smallrye.config.SmallRyeConfigBuilder;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.Config;
@@ -241,7 +240,7 @@ class ExtensionUnqualifiedBeanExclusionTest {
 
     @Test
     @DisplayName("Should leave the extension's startup initializer inert: no enabled sheriff.token.issuers.* issuer")
-    void shouldLeaveTheExtensionStartupInitializerInert() throws ReflectiveOperationException {
+    void shouldLeaveTheExtensionStartupInitializerInert() throws Exception {
         // Arrange — the initializer is registered unremovable, so it IS a bean; its only gate is the probe.
         assertTrue(startupInitializer.isResolvable(),
                 "guard: " + TokenValidatorStartupInitializer.class.getName() + " must be a bean, otherwise "
@@ -279,7 +278,7 @@ class ExtensionUnqualifiedBeanExclusionTest {
     private int validatorResolutionsAtStartup(Config config) throws ReflectiveOperationException {
         AtomicInteger resolutions = new AtomicInteger();
         Instance<TokenValidator> handle = (Instance<TokenValidator>) Proxy.newProxyInstance(
-                Instance.class.getClassLoader(), new Class<?>[] {Instance.class},
+                Instance.class.getClassLoader(), new Class<?>[]{Instance.class},
                 (proxy, method, args) -> {
                     if ("get".equals(method.getName())) {
                         resolutions.incrementAndGet();

@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.routing;
 
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 
 /**

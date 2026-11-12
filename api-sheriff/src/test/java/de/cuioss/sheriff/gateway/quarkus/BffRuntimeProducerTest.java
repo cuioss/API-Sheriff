@@ -77,7 +77,6 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
-
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -4031,7 +4030,7 @@ class BffRuntimeProducerTest {
                             "nothing is sent to the identity provider"),
                     () -> assertEquals(0, metadataReads.get(), "and the provider metadata is not even read"),
                     () -> assertEquals(1, recordsContaining(TestLogLevel.DEBUG,
-                                    "nothing to revoke at the identity provider"),
+                            "nothing to revoke at the identity provider"),
                             "the absence is recorded at DEBUG"));
         }
 
@@ -4131,7 +4130,7 @@ class BffRuntimeProducerTest {
                     () -> assertEquals(Optional.empty(), sessionBindingOf(runtime).resolve(sessionCookie, NOW),
                             "the local session is ended"),
                     () -> assertEquals(0, recordsContaining(TestLogLevel.WARN,
-                                    BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.resolveIdentifierString()),
+                            BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.resolveIdentifierString()),
                             "a revocation the provider accepted is not reported as failed"));
         }
 

@@ -25,7 +25,6 @@ import java.util.Set;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;

@@ -22,7 +22,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 
-
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.detection.SourceTrip;

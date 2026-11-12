@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.portal;
 
 import java.util.Optional;
 
-
 import org.jspecify.annotations.Nullable;
 
 /**

@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.edge.end;
 import java.util.List;
 import java.util.function.Supplier;
 
-
 import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
 import de.cuioss.sheriff.gateway.events.EventType;
 import io.vertx.core.Future;

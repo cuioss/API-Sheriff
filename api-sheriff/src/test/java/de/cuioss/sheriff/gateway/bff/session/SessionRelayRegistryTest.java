@@ -33,7 +33,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry.Tracked;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

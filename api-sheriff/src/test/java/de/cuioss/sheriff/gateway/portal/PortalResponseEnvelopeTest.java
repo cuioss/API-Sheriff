@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.portal.PortalResponseEnvelope.Cacheability;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;

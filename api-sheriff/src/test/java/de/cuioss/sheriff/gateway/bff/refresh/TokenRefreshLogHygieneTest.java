@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.logging.LogRecord;
 
-
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;

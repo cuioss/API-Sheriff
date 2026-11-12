@@ -25,7 +25,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpMethod;

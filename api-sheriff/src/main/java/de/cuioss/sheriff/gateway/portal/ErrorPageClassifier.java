@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.portal;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.events.EventType;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;

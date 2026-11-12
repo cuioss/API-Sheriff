@@ -25,7 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.logging.LogRecord;
 
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;

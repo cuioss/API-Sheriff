@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;

@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.edge.assembly;
 import java.nio.file.Path;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;

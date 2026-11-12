@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.tls;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
-
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.core.Future;

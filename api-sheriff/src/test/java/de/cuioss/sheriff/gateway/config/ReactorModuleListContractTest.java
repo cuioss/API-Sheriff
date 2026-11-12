@@ -34,7 +34,6 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
-
 import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

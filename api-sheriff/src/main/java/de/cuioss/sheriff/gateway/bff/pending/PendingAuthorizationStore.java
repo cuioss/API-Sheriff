@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.bff.pending;
 import java.time.Instant;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 

@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.edge.end;
 
 import java.util.function.Supplier;
 
-
 import io.vertx.core.Future;
 
 /**

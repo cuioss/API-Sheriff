@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import io.vertx.core.http.Http2Settings;

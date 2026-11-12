@@ -26,7 +26,6 @@ import java.util.Optional;
 import java.util.SequencedSet;
 import java.util.TreeSet;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
