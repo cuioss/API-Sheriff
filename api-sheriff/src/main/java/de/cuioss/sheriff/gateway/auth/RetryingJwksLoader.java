@@ -83,10 +83,14 @@ import org.jspecify.annotations.Nullable;
  * rate and the number of distinct key ids presented — any caller can present a token naming an
  * arbitrary key id, so the bound must not depend on what is asked for. The claimed refresh runs on the
  * scheduler: it builds a fresh delegate and loads it <em>off to the side</em>, while the current
- * delegate keeps answering. A load that fails, completes exceptionally, or yields a key set that does
- * not hold the triggering key id closes the fresh delegate and changes nothing, so a flood of invented
- * key ids can neither displace the loaded key set nor start the failed-load retry. Only a fresh
- * delegate that holds the triggering key id is published.
+ * delegate keeps answering. A fresh delegate is published when its key set holds the triggering key
+ * id, or holds a key id that neither the current nor the retired delegate holds: the window an
+ * invented key id claimed therefore still picks up a key the identity provider has genuinely rotated
+ * in, instead of leaving that key unanswered until the next window. A load that fails, completes
+ * exceptionally, or yields a key set that adds no key id to those already held closes the fresh
+ * delegate and changes nothing, so a flood of invented key ids can neither displace the loaded key set
+ * with an unchanged one nor start the failed-load retry. Every key set published is one the identity
+ * provider itself served.
  * <p>
  * <strong>The replaced key set stays valid for the grace period.</strong> A fresh library loader knows
  * only the identity provider's current keys, so publishing it would at once reject every token signed
@@ -544,15 +548,17 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     }
 
     /**
-     * Settles one refresh: publishes {@code fresh} when it loaded a key set holding the triggering key
-     * id, and closes it otherwise. A discarded refresh leaves the snapshot untouched and never starts
-     * the failed-load retry.
+     * Settles one refresh: publishes {@code fresh} when it loaded a key set that holds the triggering
+     * key id or holds a key id neither the current nor the retired delegate holds, and closes it
+     * otherwise. A refresh claimed by an invented key id thus still publishes a key the identity
+     * provider has rotated in, while an unchanged key set is discarded. A discarded refresh leaves the
+     * snapshot untouched and never starts the failed-load retry.
      *
      * @param status the load's status, or {@code null} when it completed exceptionally
      */
     private void settleRefresh(JwksLoader fresh, String kid, @Nullable LoaderStatus status) {
         try {
-            if (closed.get() || status != LoaderStatus.OK || fresh.getKeyInfo(kid).isEmpty()) {
+            if (closed.get() || status != LoaderStatus.OK || !carriesNewKey(fresh, kid)) {
                 LOGGER.debug("JWKS refresh for issuer '%s' discarded (status %s)", issuerName, status);
                 closeDelegate(fresh);
                 return;
@@ -562,6 +568,27 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             loadingRefresh.compareAndSet(fresh, null);
             refreshInFlight.set(false);
         }
+    }
+
+    /**
+     * Whether {@code fresh}'s loaded key set is worth publishing: it holds the triggering key id, or it
+     * holds a key id that neither the current nor the retired delegate holds. Reads only the key sets
+     * already loaded; it never fetches.
+     *
+     * @param fresh the refresh's delegate, whose load completed with {@link LoaderStatus#OK}
+     * @param kid   the key id that triggered the refresh
+     * @return {@code true} when publishing {@code fresh} makes a key resolvable that is not now
+     */
+    private boolean carriesNewKey(JwksLoader fresh, String kid) {
+        if (fresh.getKeyInfo(kid).isPresent()) {
+            return true;
+        }
+        Snapshot current = snapshot.get();
+        Set<String> currentKeyIds = current.delegate().getKeyIds();
+        JwksLoader retired = current.retired();
+        Set<String> retiredKeyIds = retired == null ? Set.of() : retired.getKeyIds();
+        return fresh.getKeyIds().stream()
+                .anyMatch(keyId -> !currentKeyIds.contains(keyId) && !retiredKeyIds.contains(keyId));
     }
 
     /**

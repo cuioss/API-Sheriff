@@ -296,16 +296,17 @@ When the issuer's key set is loaded, the lookup also tries to claim the issuer's
   request thread, unless an earlier window's refresh is still running. The request is still rejected.
 * *Further unknown key ids in the window* -- schedule nothing; logged at `DEBUG`. The window is
   claimed on arrival, so the bound holds regardless of refresh outcome, rate or number of key ids.
-* *The refresh replaces the key set only if it holds the triggering key id.* Otherwise (or on
-  failure) nothing changes.
+* *The refresh replaces the key set only if it holds the triggering key id, or a key id neither the
+  current nor the replaced key set holds.* A fetched key set that brings no new key id is discarded,
+  and so is a failed fetch; either way nothing changes.
 * *A replaced key set stays in service for the grace period*, then is dropped. At most one replaced
   key set is held per issuer; a second replacement inside the grace period drops the older one.
 
-A token signed with a new key is accepted once a refresh it triggered has loaded the key: after the
-fetch when the window was free, after at most one further window otherwise. A rejected client
-succeeds by retrying. A refresh triggered by a key id the IdP never published is discarded even if
-it fetched a newly rotated key; that key is picked up by the next claimed window or the background
-refresh. BFF ID tokens from an issuer declared here recover the same way.
+A token signed with a new key is accepted once a refresh has loaded the key: after the fetch when the
+window was free, after at most one further window otherwise. A rejected client succeeds by retrying.
+Which token claimed the window does not matter: a refresh triggered by a key id the IdP never
+published still publishes a fetched key set that holds a newly rotated key. BFF ID tokens from an
+issuer declared here recover the same way.
 
 *`ApiSheriff-136` signals a stalled rotation* (readiness stays `UP`). It names the issuer's `name` and
 the instant the gateway's own loader last loaded that issuer's key set (first load, retry or

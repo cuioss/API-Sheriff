@@ -977,19 +977,76 @@ class RetryingJwksLoaderTest {
         }
 
         @Test
-        @DisplayName("a refresh whose key set lacks the triggering key id leaves the loaded delegate published")
-        void refreshWithoutTheTriggeringKeyIdChangesNothing() throws Exception {
-            // Arrange — the endpoint did rotate, but the lookup names a key id it never published
+        @DisplayName("a refresh claimed by an invented key id still publishes a key set holding a newly rotated key id")
+        void inventedKeyIdRefreshPublishesANewlyRotatedKey() throws Exception {
+            // Arrange — the endpoint did rotate, but the lookup that claims the window names a key id
+            // it never published: the window is spent on the invented key id, and the genuine
+            // rotation must not then wait for the next window to be picked up
             RetryingJwksLoader loader = refreshingLoader();
             initialise(loader);
             rotateSigningKey();
 
+            // Act — wait until the refresh has settled either way; getKeyIds() never claims a window
+            Optional<KeyInfo> triggering = loader.getKeyInfo("invented");
+            awaitBuilt(2);
+            Awaits.until(() -> loader.getKeyIds().contains(ROTATED_KEY_ID) || built.get(1).closed.get(),
+                    "the refresh to settle", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert — the fresh key set holds a key id no held delegate holds, so it is published
+            assertTrue(triggering.isEmpty(), "the lookup that triggers a refresh never waits for it");
+            assertEquals(2, built.size(), "exactly one refresh was built");
+            assertFalse(built.get(1).closed.get(), "the refreshed delegate is published, not discarded");
+            assertEquals(Set.of(ROTATED_KEY_ID), loader.getKeyIds(), "the rotated key set is the current one");
+            assertTrue(loader.getKeyInfo(ROTATED_KEY_ID).isPresent(), "the rotated key resolves after the refresh");
+            assertTrue(loader.getKeyInfo("invented").isEmpty(), "the invented key id still resolves nothing");
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
+                    "the replaced key set keeps answering inside the grace period");
+            assertFalse(built.getFirst().closed.get(), "the replaced delegate is retired, not closed");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a refresh claimed by an invented key id whose key set adds no key id is discarded")
+        void inventedKeyIdRefreshWithoutANewKeyIdChangesNothing() throws Exception {
+            // Arrange — the endpoint keeps serving the loaded key set
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            Set<String> beforeRefresh = loader.getKeyIds();
+
             // Act
             loader.getKeyInfo("invented");
 
-            // Assert — an invented key id cannot displace the loaded key set, however fresh the fetch
+            // Assert — an invented key id cannot displace the loaded key set with an unchanged one
             assertRefreshDiscarded(loader);
-            assertTrue(loader.getKeyInfo(ROTATED_KEY_ID).isEmpty(), "the discarded key set answers nothing");
+            assertEquals(beforeRefresh, loader.getKeyIds(), "the current key set is unchanged");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a refresh whose key set holds only key ids of the retired delegate is discarded")
+        void refreshHoldingOnlyRetiredKeyIdsChangesNothing() throws Exception {
+            // Arrange — one replacement done: the rotated key set is current, the original one retired
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            rotateSigningKey();
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+            // ... and the endpoint reverts to the original key set, which only the retired delegate holds
+            jwksBody.set(InMemoryKeyMaterialHandler.createDefaultJwks());
+
+            // Act — an invented key id claims the next window
+            tick(WINDOW);
+            loader.getKeyInfo("invented");
+            awaitClosed(2);
+            drainScheduler(Duration.ZERO);
+
+            // Assert — the reverted key set adds no key id beyond the held ones, so nothing changes
+            assertEquals(3, built.size(), "the first delegate, the rotation and the discarded refresh");
+            assertEquals(Set.of(ROTATED_KEY_ID), loader.getKeyIds(), "the current key set is unchanged");
+            assertFalse(built.get(1).closed.get(), "the current delegate stays published");
+            assertFalse(built.getFirst().closed.get(), "the retired delegate stays retired");
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
+                    "the retired delegate keeps answering its own key id");
             loader.close();
         }
 
