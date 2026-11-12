@@ -46,10 +46,11 @@ API Sheriff is not implementing these controls from scratch -- two audited libra
 large parts of the catalogue, and the residual gateway work is exactly the part they
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
 of the local `cui-http` and `TokenSheriff` trees; the statements that depend on the `TokenSheriff`
-version were re-checked against the 0.9.8 source. The versions this project resolves are
+version were re-checked against the 0.9.9 source (the 0.9.8 to 0.9.9 delta was audited change by change; ADR-0082 and
+ADR-0074 record the verdicts). The versions this project resolves are
 `cui-http` 3.1 -- managed by `cui-java-bom` through `cui-quarkus-parent`, with no override in this
 repository; 3.1 is the release carrying the parameter-value line-break switch the `strict` profile
-sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.8, read from the `version.token-sheriff` property in
+sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.9, read from the `version.token-sheriff` property in
 the root `pom.xml`, which is the authoritative source this number mirrors. Its JWKS-loader and
 client-configuration builders both carry the hostname-verification passthrough the gateway binds its
 two identity-provider back-channels through (see <<gw-06>>).
@@ -99,10 +100,12 @@ and state verify (`PostLogoutRedirectValidator`); RFC 9470 step-up parsing/re-dr
 callback HPP defence (`CallbackParameters.parse(rawQuery)` rejects duplicate `code`/`state`);
 pushed authorization requests (`ParClient`, RFC 9126); `private_key_jwt` client authentication
 (`PrivateKeyJwtAuth`); and DPoP sender-constraint *requesting* (`SenderConstraint`: the proof on the
-token request and one retry on a `DPoP-Nonce` challenge). At the pinned version the engine does *not*
-compare the token type or `cnf` of a token response with the constraint it sent -- a `Bearer` answer
-to a request that carried a proof is accepted -- so the downgrade refusal is the gateway's
-(<<bff-14>>). Its mutual-TLS client authentication is not constructible at that version.
+token request and one retry on a `DPoP-Nonce` challenge). Since 0.9.9 the engine also *judges the
+answer*: it refuses a token response to a DPoP-constrained request unless its `token_type` is `DPoP`
+and a JWT access token carries a `cnf.jkt` equal to the thumbprint of the proof key it sent
+(`RedeemedResponseException`, <<bff-14>>); up to 0.9.8 it accepted a `Bearer` answer and the gateway
+carried the downgrade refusal itself. Its mutual-TLS client authentication is not constructible at
+the pinned version.
 
 *The engine/validation libs deliberately leave to the gateway* (the true BFF residual): the
 *back-channel logout-token receiver and its `events`/`sub`/`sid`-required + `nonce`-forbidden
@@ -112,8 +115,7 @@ shape, not the store); the *concrete `TokenStore`* (server session vs encrypted 
 *scope enforcement* (the lib exposes `providesScopes()`/`getScopes()` but enforces nothing);
 and calling `CallbackParameters.parse(rawQuery)` on the *raw* query (the `of(Map)` path cannot
 re-detect duplicates); the *disposition* of a classified refresh failure and the per-session
-single-flight around the refresh (`TokenRefreshCoordinator`); the *refusal of a token response that
-is not bound* to the proof key (the engine's `TokenEndpointClient`, <<bff-14>>); and the *signing keys* --
+single-flight around the refresh (`TokenRefreshCoordinator`); and the *signing keys* --
 reading or generating them, and publishing the client key (<<bff-18>>, <<bff-19>>).
 *Refresh-token reuse detection* is
 owned by neither the libraries nor the gateway: it is the identity provider's strict rotation
@@ -3184,7 +3186,8 @@ acted on unremembered. Every refusal is the `400` of a rejected logout token, se
 *An RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
 endpoint destroys the session and clears its cookies first and builds the redirect to the provider's
 `end_session_endpoint` afterwards. When that redirect cannot be built -- the provider publishes no
-endpoint, publishes one that is not an absolute `http` or `https` URI, its metadata cannot be
+endpoint, publishes one that is not an absolute `https` URI (a literal `http` endpoint is refused, since the
+redirect carries the ID token), its metadata cannot be
 obtained, or the session holds no ID token -- the browser is sent to `oidc.logout.final_redirect`.
 No such condition answers a logout with an error, and none leaves the session in place.
 `ApiSheriff-135` records once per process that the provider offers no usable endpoint.

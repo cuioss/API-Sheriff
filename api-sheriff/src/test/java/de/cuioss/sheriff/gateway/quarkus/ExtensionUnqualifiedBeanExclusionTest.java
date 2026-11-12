@@ -17,24 +17,35 @@ package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.token.quarkus.config.IssuerConfigResolver;
 import de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck;
 import de.cuioss.sheriff.token.quarkus.health.TokenValidatorHealthCheck;
 import de.cuioss.sheriff.token.quarkus.metrics.JwtMetricsCollector;
 import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
+import de.cuioss.sheriff.token.quarkus.producer.TokenValidatorStartupInitializer;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.smallrye.config.EnvConfigSource;
+import io.smallrye.config.SmallRyeConfigBuilder;
+import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduler;
 import io.quarkus.scheduler.Trigger;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -65,6 +76,12 @@ import org.junit.jupiter.api.Test;
  * collector, the collector's job is registered, and one collector tick completes without throwing.
  * A future extension bean that lands eagerly driven by the scheduler fails this the moment it
  * lands.</li>
+ * <li>The extension's startup initializer (new in token-sheriff 0.9.9) is a bean but inert: it builds the
+ * extension's own validator on {@code StartupEvent} only when {@code IssuerConfigResolver.hasEnabledIssuers}
+ * is true, and for the effective configuration it is false. The test runs the real startup observer over both
+ * configurations and counts how often it resolves the validator handle; the control is an issuer enabled
+ * through the environment, where it must resolve it exactly once, so the assertion cannot pass on an
+ * initializer that never builds anything.</li>
  * <li>The token-validation metrics proof: after the gateway validator rejects a malformed token, a
  * collector tick moves a {@code sheriff.token.validation.errors} counter in the
  * {@link MeterRegistry}.</li>
@@ -72,8 +89,9 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The fitness function observes registered scheduled jobs only, so it catches an eagerly-driven
  * extension bean only when the scheduler is what drives it. An extension bean driven by a startup
- * observer or by an HTTP endpoint would pass it. The exclusion remains a reviewed decision rather
- * than something these assertions can derive. The job filter carries its own matched
+ * observer or by an HTTP endpoint would pass it; the startup observer 0.9.9 added is pinned separately
+ * by the initializer test below, and any further one still has to be read on the upgrade. The exclusion
+ * remains a reviewed decision rather than something these assertions can derive. The job filter carries its own matched
  * positive/negative control, so a filter that had stopped matching could not pass unnoticed.
  *
  * @author API Sheriff Team
@@ -124,6 +142,9 @@ class ExtensionUnqualifiedBeanExclusionTest {
 
     @Inject
     Instance<Scheduler> scheduler;
+
+    @Inject
+    Instance<TokenValidatorStartupInitializer> startupInitializer;
 
     @Inject
     @GatewayValidator
@@ -216,6 +237,61 @@ class ExtensionUnqualifiedBeanExclusionTest {
         JwtMetricsCollector collector = extensionMetricsCollector.get();
         assertDoesNotThrow(collector::updateCounters,
                 "one collector tick must complete without throwing");
+    }
+
+    @Test
+    @DisplayName("Should leave the extension's startup initializer inert: no enabled sheriff.token.issuers.* issuer")
+    void shouldLeaveTheExtensionStartupInitializerInert() throws ReflectiveOperationException {
+        // Arrange — the initializer is registered unremovable, so it IS a bean; its only gate is the probe.
+        assertTrue(startupInitializer.isResolvable(),
+                "guard: " + TokenValidatorStartupInitializer.class.getName() + " must be a bean, otherwise "
+                        + "the inertness asserted below is a missing bean and not a closed gate");
+        Config effective = ConfigProvider.getConfig();
+        Config environmentIssuer = new SmallRyeConfigBuilder()
+                .withSources(new EnvConfigSource(Map.of("SHERIFF_TOKEN_ISSUERS_DEFAULT_ENABLED", "true"), 300))
+                .build();
+
+        // Act — run the real startup observer over each configuration with a validator handle that counts
+        // how often the initializer resolves it. The observer is package-private, so it is invoked reflectively.
+        int resolvedOnEffectiveConfig = validatorResolutionsAtStartup(effective);
+        int resolvedOnEnvironmentIssuer = validatorResolutionsAtStartup(environmentIssuer);
+
+        // Assert
+        assertFalse(IssuerConfigResolver.hasEnabledIssuers(effective),
+                "an enabled sheriff.token.issuers.* issuer makes the extension build its own validator at "
+                        + "boot and observe that one instead of the gateway's (ADR-0074, Risks); neither the "
+                        + "shipped configuration nor the environment this test runs in may declare one — check "
+                        + "for SHERIFF_TOKEN_ISSUERS_* variables");
+        assertEquals(0, resolvedOnEffectiveConfig,
+                "with no enabled issuer the initializer must not touch the validator handle at startup");
+        assertEquals(1, resolvedOnEnvironmentIssuer,
+                "control: with an issuer enabled through the environment the same initializer must resolve the "
+                        + "validator handle once, otherwise the assertion above cannot tell a closed gate from "
+                        + "an initializer that never builds anything");
+    }
+
+    /**
+     * Runs {@link TokenValidatorStartupInitializer}'s {@code StartupEvent} observer over {@code config} and
+     * returns how many times it resolved the validator handle it was given. The handle answers with the
+     * gateway validator, so an initializer that does resolve it completes instead of failing.
+     */
+    @SuppressWarnings("unchecked")
+    private int validatorResolutionsAtStartup(Config config) throws ReflectiveOperationException {
+        AtomicInteger resolutions = new AtomicInteger();
+        Instance<TokenValidator> handle = (Instance<TokenValidator>) Proxy.newProxyInstance(
+                Instance.class.getClassLoader(), new Class<?>[] {Instance.class},
+                (proxy, method, args) -> {
+                    if ("get".equals(method.getName())) {
+                        resolutions.incrementAndGet();
+                        return gatewayValidator;
+                    }
+                    throw new UnsupportedOperationException(method.getName());
+                });
+        TokenValidatorStartupInitializer initializer = new TokenValidatorStartupInitializer(config, handle);
+        Method observer = TokenValidatorStartupInitializer.class.getDeclaredMethod("onStartup", StartupEvent.class);
+        observer.setAccessible(true);
+        observer.invoke(initializer, new StartupEvent());
+        return resolutions.get();
     }
 
     @Test

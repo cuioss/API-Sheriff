@@ -296,7 +296,8 @@ public final class BffLogMessages {
         /**
          * An RP-initiated logout found that the identity provider publishes no usable
          * {@code end_session_endpoint} — none at all, a blank one, or one that is not an absolute
-         * {@code http} or {@code https} URI. The gateway's own session was ended and its cookies
+         * {@code https} URI (a cleartext {@code http} endpoint is refused: the redirect carries the ID
+         * token, and the engine accepts only TLS here). The gateway's own session was ended and its cookies
          * were cleared, and the browser was sent to {@code final_redirect}; no end-session redirect
          * was sent, so the session at the identity provider is still open. The template takes no
          * substitution and therefore carries no value at all.

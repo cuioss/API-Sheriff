@@ -56,7 +56,7 @@ import org.junit.jupiter.api.Test;
  * {@code sheriff.token.issuers.*} namespace, and that producer fails on an empty namespace. From
  * 0.9.5 on both probes read through the extension's {@code ObservedValidatorResolver}, which observes
  * the {@code @GatewayValidator} validator here. The core validator exposes no issuer list, so at
- * 0.9.8 the probes would report a <em>vacuous</em> UP: {@code jwks-endpoints} with
+ * 0.9.8 and 0.9.9 the probes would report a <em>vacuous</em> UP: {@code jwks-endpoints} with
  * {@code checkedEndpoints=0} and {@code jwt-validator} with {@code issuerCount=0}.
  * <p>
  * <strong>This class pins why both probes stay excluded.</strong> A probe that reports UP while it
