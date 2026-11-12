@@ -648,6 +648,17 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     }
 
     /**
+     * Whether an unknown-key-id refresh has been claimed and not yet settled. A published refresh
+     * makes its key set visible before this turns {@code false}, so a reader that must not race the
+     * next window's claim waits for both. A pure read that never fetches.
+     *
+     * @return {@code true} from the claim that schedules a refresh until that refresh has settled
+     */
+    boolean refreshInProgress() {
+        return refreshInFlight.get();
+    }
+
+    /**
      * @return the window within which an unknown key id schedules at most one refresh; non-positive
      *         when the refresh is disabled
      */

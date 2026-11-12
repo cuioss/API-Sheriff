@@ -820,8 +820,15 @@ class RetryingJwksLoaderTest {
                     Awaits.CONNECT_CEILING_SECONDS);
         }
 
+        /**
+         * Waits until the refreshed key set is published <em>and</em> its refresh has settled. The key
+         * becomes visible inside the refresh, before the in-flight flag is released, so a leg that
+         * claims the next window right after visibility alone could find the flag still set and
+         * schedule nothing.
+         */
         private void awaitRotatedKeyPublished(RetryingJwksLoader loader) throws TimeoutException {
-            Awaits.until(() -> loader.getKeyInfo(ROTATED_KEY_ID).isPresent(), "the refreshed key set to be published",
+            Awaits.until(() -> loader.getKeyInfo(ROTATED_KEY_ID).isPresent() && !loader.refreshInProgress(),
+                    "the refreshed key set to be published and its refresh to settle",
                     Awaits.CONNECT_CEILING_SECONDS);
         }
 
