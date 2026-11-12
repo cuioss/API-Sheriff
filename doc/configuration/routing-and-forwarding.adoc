@@ -805,12 +805,6 @@ authoritative specification is `cui-http/doc/forwarded-header-resolution.adoc`. 
   empty comma-separated element -- fails the boot at substitution, naming the pointer and never echoing
   the value. An explicit `trusted_proxies: []` written in the file stays valid and trusts no proxy.
 
-| `trust_scheme_host`
-| *Optional* boolean, *default `false`*. Accepted and validated, but it has *no effect*: the gateway
-  builds its resolver from `trusted_proxies` and the baseline alone, so no forwarded scheme, host,
-  port or context-path prefix is honoured, whatever the value
-  (link:../adr/0003-forwarded-headers.adoc[ADR-0003]).
-
 | `emit`
 | *Optional*, `x-forwarded` (default) or `both`. `x-forwarded` emits
   `X-Forwarded-Proto/-Host/-Port/-Prefix/-For` (present fields only); `both` additionally emits one
@@ -834,7 +828,8 @@ RFC 7239 `Forwarded` (`proto`, `host`, `for`; no prefix directive) and the NiFi
 |===
 
 The table is the `cui-http` resolver's precedence. The gateway's resolver honours only the client-IP
-row: it takes no forwarded scheme, host, port or prefix (see `trust_scheme_host` above). A forwarded
+row: it is built from `trusted_proxies` and the baseline alone, so it takes no forwarded scheme,
+host, port or prefix, and no key turns them on (link:../adr/0003-forwarded-headers.adoc[ADR-0003]). A forwarded
 prefix never moves where the gateway serves; the gateway's own context paths are build-time (see
 link:../user/context-path.adoc[The Context Path]).
 
@@ -851,7 +846,7 @@ backslash, checked on the *raw* value before normalization.
 
 | Pipeline sanitization failure | Value dropped; the security event counter (gateway metrics) is incremented.
 | Raw-value guard failure | Value dropped; WARN `HTTP-120`..`HTTP-123`.
-| Trust miss (an untrusted immediate peer, or a forwarded scheme, host, port or prefix, whatever `trust_scheme_host` says) | Value not honored; no log.
+| Trust miss (an untrusted immediate peer, or any forwarded scheme, host, port or prefix) | Value not honored; no log.
 |===
 
 *Emission is regeneration, never propagation.* Inbound chains are never appended to or forwarded; the

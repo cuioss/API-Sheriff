@@ -381,10 +381,7 @@ forwarded:                         # resolved by cui-http (de.cuioss.http.forwar
                                    #   this file ever sees it, so the WARN is its only signal.
                                    #   The PRESENCE of the forwarded block still requires a
                                    #   file edit; only the value is environment-supplied.
-  trust_scheme_host: false         # accepted but NO EFFECT: the resolver is built from
-                                   #   trusted_proxies and the baseline alone, so no forwarded
-                                   #   scheme/host/port/prefix is honoured whatever the value
-  emit: x-forwarded                # x-forwarded (default) | both (adds RFC 7239 Forwarded)
+  emit: x-forwarded               # x-forwarded (default) | both (adds RFC 7239 Forwarded)
 
 edge_hardening:                    # OPTIONAL admission budget for the public data-plane edge.
                                    #   Omit the block, or either key, to take the defaults shown.

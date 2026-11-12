@@ -63,8 +63,8 @@ spelling. The stage treats every member alike:
   member. The resolver receives no peer address, so `TcpPeerGate` stays the one trust decision.
 
 `ForwardedTrust` builds the resolver configuration from `forwarded.trusted_proxies` and the baseline
-alone. A change that wires `forwarded.trust_scheme_host` into it must keep this mask in front of the
-resolver.
+alone, so the resolver honours no forwarded scheme, host, port or prefix and no configuration key
+enables them. The mask stays in front of the resolver whatever the resolver honours.
 
 Provenance names the resolver does not read are withheld instead. `ConnectionHeaders.REQUEST_STRIP`
 holds the provenance and URL-override class, such as `X-Forwarded-Server`, `X-Original-URL` and

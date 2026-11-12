@@ -1258,7 +1258,7 @@ class ConfigLoaderTest {
                         """
                                 version: 1
                                 forwarded:
-                                  trust_scheme_host: true
+                                  emit: both
                                 """,
                         "/forwarded"),
                 // required_scopes is removed, not renamed: the scopes a route needs are now declared
@@ -1472,6 +1472,59 @@ class ConfigLoaderTest {
 
         assertTrue(loaded.gateway().forwarded().trustedProxies().isEmpty(),
                 "an explicitly empty trusted_proxies list means no proxy is trusted and stays valid");
+    }
+
+    /**
+     * The {@code forwarded} block of the removed-key pair, with or without the removed key. The two
+     * documents differ in that one line only, so the refusal below can be attributed to the key and
+     * to nothing else in the block.
+     */
+    private static String forwardedBlock(String removedKeyLine) {
+        return """
+                version: 1
+                forwarded:
+                  trusted_proxies: ["10.0.0.5/32"]
+                %s  emit: x-forwarded
+                """.formatted(removedKeyLine);
+    }
+
+    /**
+     * {@code forwarded.trust_scheme_host} was removed, not renamed: it never had a reader, so a
+     * document still setting it is refused at load like any other unknown key instead of being
+     * accepted and silently ignored.
+     */
+    @ParameterizedTest(name = "trust_scheme_host: {0} is refused as an unknown key")
+    @ValueSource(strings = {"true", "false"})
+    void refusesTheRemovedTrustSchemeHostKey(String value) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", forwardedBlock("  trust_scheme_host: " + value + "\n"));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED),
+                "a forwarded block still setting the removed key must fail the load");
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().startsWith("/forwarded")),
+                () -> "expected the removed key to be refused inside the forwarded block, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void loadsTheForwardedBlockWithoutTheRemovedKey() throws Exception {
+        // Arrange — the matched control: the same block minus the removed key.
+        writeConfig("gateway.yaml", forwardedBlock(""));
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
+
+        // Assert
+        assertEquals(List.of("10.0.0.5/32"), loaded.gateway().forwarded().trustedProxies(),
+                "the forwarded block without the removed key must load");
+        assertEquals("x-forwarded", loaded.gateway().forwarded().emit(),
+                "the block's remaining keys must bind as written");
     }
 
     @Test
@@ -1894,16 +1947,15 @@ class ConfigLoaderTest {
         // Arrange
         writeConfig("gateway.yaml", """
                 version: 1
-                forwarded:
-                  trusted_proxies: []
-                  trust_scheme_host: "${TRUST_SCHEME_HOST}"
+                egress_tls:
+                  upstream_verify_hostname: "${UPSTREAM_VERIFY_HOSTNAME}"
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("TRUST_SCHEME_HOST", resolved)).load(IGNORE_DEFAULTED);
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("UPSTREAM_VERIFY_HOSTNAME", resolved)).load(IGNORE_DEFAULTED);
 
         // Assert
-        assertEquals(Boolean.valueOf(resolved), loaded.gateway().forwarded().trustSchemeHost(),
+        assertEquals(Boolean.valueOf(resolved), loaded.gateway().egressTls().upstreamVerifyHostname(),
                 "a schema-declared boolean must still coerce from its substituted value");
     }
 
