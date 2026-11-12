@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -115,8 +116,8 @@ import org.jspecify.annotations.Nullable;
  * {@link #NO_BODY_IDLE_TIMEOUT} never arms the clock.
  * <p>
  * <strong>A body that does not end in time is ended at the request-body deadline.</strong> A dispatch
- * constructed with a request-body deadline also bounds how long it waits for the whole body. The
- * deadline is counted from the start of the attempt — the moment the guard's timeout, which bounds each
+ * constructed with a request-body deadline and a request-body idle timeout also bounds how long it waits
+ * for the whole body. This whole-body deadline is counted from the start of the attempt — the moment the guard's timeout, which bounds each
  * attempt rather than the whole dispatch, starts too — and is shorter than that timeout. When it passes
  * while the gateway is still waiting for body bytes, the attempt's upstream request is reset and the body
  * is refused as a {@link RequestBodyDeadlineExceeded} ({@link EventType#REQUEST_BODY_TIMEOUT},
@@ -131,22 +132,62 @@ import org.jspecify.annotations.Nullable;
  * is not being read: a body the upstream is not taking data for when it passes is ended the moment the
  * upstream reads it again, and an attempt that obtained its pooled connection only after the deadline —
  * the wait for the connection counts against it — is ended as soon as its body starts to be read; either
- * way on the same path, before or after the hand-over, as a body still arriving when it passes. An attempt
+ * way on the same path, before or after the hand-over, as a body still arriving when it passes. A body whose
+ * end reaches the dispatch only after the deadline has passed is ended at the deadline as well: the
+ * deadline's instant decides, not the moment its timer, which may fire late, happens to run. An attempt
  * the dispatch no longer waits for stops the deadline and every other clock of its body (see
  * {@link UpstreamAttempt}), so none of them reports anything afterwards. A dispatch constructed without a
  * deadline ({@link #NO_BODY_DEADLINE}) never arms it.
  * <p>
- * <strong>A body whose first byte does not arrive in time is ended at the first-message bound.</strong> A
- * dispatch constructed with a first-message bound — the gRPC dispatch, whose upstream request head is
- * written only with the first body chunk — bounds how long an attempt waits for its first body byte. The
- * clock starts when the attempt hands its body to the upstream request, so the wait for a pooled
- * connection is never counted, and the bound is shorter than the guard's timeout. When it passes before
- * a body byte was forwarded, the body ended or the attempt's send completed, the attempt's upstream
- * request is reset and the dispatch is ended as a {@link FirstMessageTimeout}
- * ({@link EventType#INBOUND_BODY_ABORTED}): a client that opens a call and sends nothing ends it as its
- * own abort, never as the guard's timeout. A body that ends without any byte is not ended by the bound,
- * and once the send completed — the upstream answered — the bound no longer applies. A dispatch
- * constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — never arms it.
+ * <strong>A body whose next complete message does not arrive in time is ended at the message
+ * bound.</strong> A dispatch constructed with a message bound — the gRPC dispatch, whose upstream request
+ * head is written only with the first body chunk — bounds how long an attempt waits for each complete gRPC
+ * message of its request: the 5-byte length prefix and every payload byte it declares, read as the chunks
+ * cross, however they split the messages, without holding any of them. The clock starts when the attempt
+ * hands its body to the upstream request, so the wait for a pooled connection is never counted, and every
+ * complete message forwarded starts the wait for the next one again; a pause while the upstream is not
+ * taking data is not counted either. The bound is shorter than the guard's timeout. When it passes before the next complete message was forwarded, the body ended or the attempt's
+ * send completed, the attempt's upstream request is reset and the dispatch is ended as a
+ * {@link RequestMessageTimeout} ({@link EventType#INBOUND_BODY_ABORTED}): a client that opens a call and
+ * sends nothing, only part of a message, or stops between two messages without ending its request stream,
+ * ends the call as its own abort, never as the guard's timeout. Once the send completed — the upstream
+ * answered — the bound no longer applies.
+ * <p>
+ * <strong>The pre-response deadline ends a request stream still open when it passes — as the client's, unless
+ * the upstream had stalled it for at least the stall threshold; only a stream the upstream holds paused until the
+ * guard fires is ended by the guard.</strong> A
+ * dispatch with a message bound and a request-body deadline arms that deadline as a pre-response deadline,
+ * held to a pre-response cap. Unlike the whole-body deadline it is counted from the moment the attempt hands
+ * its body to the upstream request, where the message bound starts too, so the wait for an upstream
+ * connection, which the guard's timeout counts, is never charged to the client. It passes at the earlier of
+ * two moments: the deadline after that hand-over, and the cap after the start of the attempt — the cap is
+ * shorter than the guard's timeout, so the deadline always passes before the guard could fire. It ends a
+ * request stream that is still open when it passes — a client sending complete messages steadily, each
+ * within the message bound, without ever ending its stream — as a {@link RequestBodyDeadlineExceeded}
+ * ({@link EventType#REQUEST_BODY_TIMEOUT}) and resets the upstream request. A deadline that passes while the
+ * upstream is not taking data, so its backpressure has paused the stream, ends the stream the moment the
+ * upstream takes data again — no later than a client's deadline end would — and only a sustained stall makes
+ * that the upstream's failure: when the pause has lasted, without a break, at least the upstream stall threshold
+ * at that read, the stream is ended as an {@link UpstreamStalledRequest}, a timeout the breaker counts and the
+ * failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. A shorter pause — ordinary flow control, as when
+ * a client sends faster than a healthy upstream reads — leaves the deadline the client's, and so does a deadline
+ * that passes while the stream is being read, however long the upstream paused it before. A stream the upstream
+ * takes no data for again before the guard's timeout is not ended by the deadline at all: the guard's timeout ends
+ * it, as the upstream's {@link EventType#UPSTREAM_TIMEOUT}. The deadline stops when the attempt's send
+ * completes, so it never runs after the hand-over and a stream the upstream has answered is never ended by
+ * it. An attempt that obtains its upstream connection with less than a hand-over grace left before the cap,
+ * or only once the cap has passed — the connection wait used up the guard's timeout but for the margin the
+ * cap leaves and less than the grace of it — gives its client too little time to send, and too little for an
+ * end the client already sent to cross from the inbound connection before the deadline passes: it is refused
+ * at once, before its request is sent or a byte of its body is read, as an {@link UpstreamConnectionTooLate},
+ * a timeout the breaker counts and the failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. Every
+ * attempt that is dispatched therefore has at least the grace between its hand-over and its deadline. The
+ * deadline ends only a request stream whose end has not reached the dispatch when it passes: a client that
+ * had ended its stream by the hand-over is ended by it only if the gateway takes longer than the grace to
+ * deliver the end it already holds. A call whose end did reach the dispatch, and which the upstream then does
+ * not answer, is ended by the guard's timeout as the upstream's. A dispatch
+ * constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — arms neither the message bound
+ * nor the pre-response deadline.
  * <p>
  * The dispatch is awaited synchronously on the caller's virtual thread inside the guard so the
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
@@ -156,12 +197,13 @@ import org.jspecify.annotations.Nullable;
  * <strong>What the breaker sees of a client-ended dispatch.</strong> A dispatch the client itself
  * ended — the body-cap breach, an inbound body stream that failed after dispatch began, a body byte
  * on a bodyless method, a body that disagreed with its declared length, a body that made no progress
- * for the request-body idle timeout, a body still arriving at the request-body deadline, or a body whose
- * first byte did not arrive within the first-message bound — reaches the guard as the
- * {@link GatewayException} the body stream recorded for it ({@link EventType#CONTENT_TOO_LARGE},
- * {@link EventType#INBOUND_BODY_ABORTED} for the failed or short inbound body and for the body with no
- * first byte, {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for
- * the idle body and the body past its deadline), never as the transport error the aborted upstream
+ * for the request-body idle timeout, a body still arriving at the request-body deadline, a body whose
+ * next complete message did not arrive within the message bound, or a gRPC request stream its client still
+ * held open at its pre-response deadline — reaches the guard as the {@link GatewayException} the body stream recorded for
+ * it ({@link EventType#CONTENT_TOO_LARGE}, {@link EventType#INBOUND_BODY_ABORTED} for the failed or short
+ * inbound body and for the body whose next complete message did not arrive,
+ * {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for the idle body
+ * and the body past its deadline), never as the transport error the aborted upstream
  * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
  * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
  * breaker, though: SmallRye Fault Tolerance has no neutral outcome, so a skipped exception is
@@ -200,7 +242,9 @@ import org.jspecify.annotations.Nullable;
  * ends when the pool hands the connection over, which reports the client's abort, or when the guard's
  * timeout fires, which is an ordinary upstream timeout. A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
- * departure is left to it.
+ * departure is left to it. All of this holds only for a dispatch handed the armed {@link InboundBody}
+ * itself — the HTTP dispatch and the gRPC dispatch both are; a decorator around the body would hide the
+ * departure from the dispatch.
  * <p>
  * <strong>The gateway's own upstream reset is not logged as an error.</strong> Every attempt's
  * upstream request carries an exception handler from the moment it is obtained. Without one, Vert.x
@@ -262,13 +306,45 @@ public final class DispatchStage {
     public static final long NO_BODY_DEADLINE = 0L;
 
     /**
-     * The first-message bound of a dispatch that does not bound the wait for its first request-body
-     * byte: the first-message clock is never armed. Every HTTP dispatch is constructed with it; only the
-     * gRPC dispatch ({@link GrpcDispatchStage}) arms the clock. It is derived from
-     * {@link #NO_BODY_IDLE_TIMEOUT} because both clocks are {@link IdleClock}s, whose armed test compares
-     * against that one value.
+     * The message bound of a dispatch that does not bound the wait for its complete request messages: the
+     * message clock, and with it the pre-response deadline, is never armed. Every HTTP dispatch is
+     * constructed with it; only the gRPC dispatch ({@link GrpcDispatchStage}) arms the clock. It is derived
+     * from {@link #NO_BODY_IDLE_TIMEOUT} because both clocks are {@link IdleClock}s, whose armed test
+     * compares against that one value.
      */
     static final long NO_FIRST_MESSAGE_TIMEOUT = NO_BODY_IDLE_TIMEOUT;
+
+    /**
+     * The pre-response cap of a dispatch that arms no pre-response deadline — every dispatch but the gRPC
+     * one ({@link GrpcDispatchStage}), whose request-body deadline, if any, is the whole-body deadline.
+     */
+    static final long NO_PRE_RESPONSE_CAP = 0L;
+
+    /**
+     * The hand-over grace of a dispatch that arms no pre-response deadline — every dispatch but the gRPC one
+     * ({@link GrpcDispatchStage}): no attempt is refused for handing its body over too close to a cap.
+     */
+    static final long NO_HAND_OVER_GRACE = 0L;
+
+    /**
+     * The upstream stall threshold of a dispatch that arms no pre-response deadline — every dispatch but the gRPC
+     * one ({@link GrpcDispatchStage}): no deadline is ever charged to the upstream, so no stall is measured.
+     */
+    static final long NO_UPSTREAM_STALL = 0L;
+
+    /**
+     * Fixed disposition of an attempt whose upstream connection came too close to, or past, its pre-response
+     * cap.
+     */
+    private static final String CONNECTION_TOO_LATE =
+            "The upstream connection was obtained too close to the pre-response cap; the request was not sent";
+
+    /**
+     * Fixed disposition of an attempt whose pre-response deadline passed while the upstream was not taking its
+     * request stream, in a pause that had lasted at least the upstream stall threshold by the read that ended it.
+     */
+    private static final String STALLED_BY_UPSTREAM =
+            "The upstream had stopped taking the request stream for at least the stall threshold when its pre-response deadline passed; the upstream request was aborted";
 
     /**
      * The retry state of the dispatch the guard is running, bound on the dispatching thread for the
@@ -281,7 +357,10 @@ public final class DispatchStage {
     private final long maxBodyBytes;
     private final long bodyIdleTimeoutMillis;
     private final long bodyDeadlineMillis;
-    private final long firstMessageTimeoutMillis;
+    private final long messageTimeoutMillis;
+    private final long preResponseCapMillis;
+    private final long handOverGraceMillis;
+    private final long upstreamStallMillis;
     private final UpstreamFailureMapper failureMapper;
 
     /**
@@ -303,7 +382,7 @@ public final class DispatchStage {
     }
 
     /**
-     * A dispatch that does not bound the wait for its first request-body byte
+     * A dispatch that does not bound the wait for its complete request messages
      * ({@link #NO_FIRST_MESSAGE_TIMEOUT}) — every HTTP dispatch.
      *
      * @param upstreamClients       the boot-built lookup the route's shared client and guard are
@@ -325,56 +404,143 @@ public final class DispatchStage {
     public DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
         this(upstreamClients, maxBodyBytes, bodyIdleTimeoutMillis, bodyDeadlineMillis, NO_FIRST_MESSAGE_TIMEOUT,
-                failureMapper);
+                NO_PRE_RESPONSE_CAP, NO_HAND_OVER_GRACE, NO_UPSTREAM_STALL, failureMapper);
     }
 
     /**
-     * @param upstreamClients           the boot-built lookup the route's shared client and guard are
-     *                                  resolved from
-     * @param maxBodyBytes              the streaming request-body ceiling in bytes
-     *                                  ({@code max_body_bytes})
-     * @param bodyIdleTimeoutMillis     how long, in milliseconds, a body-carrying attempt holding its
-     *                                  upstream connection may go without request-body progress before
-     *                                  it is ended as {@link EventType#REQUEST_BODY_TIMEOUT}, or
-     *                                  {@link #NO_BODY_IDLE_TIMEOUT} when the body is not watched
-     * @param bodyDeadlineMillis        how long, in milliseconds from the start of its attempt, a
-     *                                  body-carrying dispatch may wait for the whole body before it is
-     *                                  ended as a {@link RequestBodyDeadlineExceeded}, or
-     *                                  {@link #NO_BODY_DEADLINE} when the whole body is not bounded in
-     *                                  time; a deadline needs an armed idle timeout, whose timer seam it
-     *                                  shares
-     * @param firstMessageTimeoutMillis how long, in milliseconds from the moment the attempt hands its
-     *                                  body to the upstream request, a body-carrying attempt may wait for
-     *                                  its first body byte before it is ended as a
-     *                                  {@link FirstMessageTimeout}, or {@link #NO_FIRST_MESSAGE_TIMEOUT}
-     *                                  when that wait is not bounded
-     * @param failureMapper             the mapper turning guarded-dispatch failures into the error
-     *                                  contract
+     * @param upstreamClients       the boot-built lookup the route's shared client and guard are resolved
+     *                              from
+     * @param maxBodyBytes          the streaming request-body ceiling in bytes ({@code max_body_bytes})
+     * @param bodyIdleTimeoutMillis how long, in milliseconds, a body-carrying attempt holding its upstream
+     *                              connection may go without request-body progress before it is ended as
+     *                              {@link EventType#REQUEST_BODY_TIMEOUT}, or {@link #NO_BODY_IDLE_TIMEOUT}
+     *                              when the body is not watched
+     * @param bodyDeadlineMillis    how long, in milliseconds, a body-carrying dispatch may wait before it is
+     *                              ended as a {@link RequestBodyDeadlineExceeded}, or
+     *                              {@link #NO_BODY_DEADLINE} when it is not bounded in time. With an armed
+     *                              idle timeout it is the whole-body deadline, counted from the start of the
+     *                              attempt, which keeps running after the response head until the body ends;
+     *                              with an armed message bound and no idle timeout it is the pre-response
+     *                              deadline, counted from the moment the attempt hands its body to the
+     *                              upstream request, held to {@code preResponseCapMillis}, and stopped when
+     *                              the attempt's send completes. It shares the timer seam of the clock it is
+     *                              armed with, so it needs one of the two
+     * @param messageTimeoutMillis  how long, in milliseconds, a body-carrying attempt may wait for each
+     *                              complete gRPC request message — the first counted from the moment the
+     *                              attempt hands its body to the upstream request, every further one from
+     *                              the message before it — before it is ended as a
+     *                              {@link RequestMessageTimeout}, or {@link #NO_FIRST_MESSAGE_TIMEOUT} when
+     *                              that wait is not bounded
+     * @param preResponseCapMillis  the latest the pre-response deadline passes, in milliseconds from the
+     *                              start of the attempt; shorter than the guard's timeout and no shorter than
+     *                              {@code bodyDeadlineMillis}. {@link #NO_PRE_RESPONSE_CAP} exactly when no
+     *                              pre-response deadline is armed
+     * @param handOverGraceMillis   the least time, in milliseconds, the pre-response deadline leaves after the
+     *                              hand-over: an attempt that hands its body over with less than this left
+     *                              before the cap is refused, unsent, as an {@link UpstreamConnectionTooLate};
+     *                              positive and shorter than {@code bodyDeadlineMillis} when a pre-response
+     *                              deadline is armed, {@link #NO_HAND_OVER_GRACE} exactly when none is
+     * @param upstreamStallMillis   how long, in milliseconds, the upstream must have held the request stream
+     *                              without a break — its backpressure pausing the stream — when a passed
+     *                              pre-response deadline is acted on, for the deadline to be charged to the
+     *                              upstream as an {@link UpstreamStalledRequest} rather than to the client as a
+     *                              {@link RequestBodyDeadlineExceeded}; positive and shorter than
+     *                              {@code bodyDeadlineMillis} when a pre-response deadline is armed,
+     *                              {@link #NO_UPSTREAM_STALL} exactly when none is
+     * @param failureMapper         the mapper turning guarded-dispatch failures into the error contract
      * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis}, {@code bodyDeadlineMillis} or
-     *                                  {@code firstMessageTimeoutMillis} is negative, or a deadline is
-     *                                  given without an idle timeout
+     *                                  {@code messageTimeoutMillis} is negative, a deadline is given with
+     *                                  neither an idle timeout nor a message bound, a pre-response deadline
+     *                                  is given a cap shorter than itself, or a grace or a stall threshold
+     *                                  that is not positive or not shorter than itself, or a cap, a grace or
+     *                                  a stall threshold is given with no pre-response deadline to hold
      */
+    @SuppressWarnings("java:S107") // package-private test seam; every bound is a distinct fixed value the gRPC stage derives, and a holder type would only re-bundle them for this one call
     DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, long bodyIdleTimeoutMillis,
-            long bodyDeadlineMillis, long firstMessageTimeoutMillis, UpstreamFailureMapper failureMapper) {
+            long bodyDeadlineMillis, long messageTimeoutMillis, long preResponseCapMillis, long handOverGraceMillis,
+            long upstreamStallMillis, UpstreamFailureMapper failureMapper) {
         if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
         }
         if (bodyDeadlineMillis < NO_BODY_DEADLINE) {
             throw new IllegalArgumentException("bodyDeadlineMillis must not be negative: " + bodyDeadlineMillis);
         }
-        if (bodyDeadlineMillis != NO_BODY_DEADLINE && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
-            throw new IllegalArgumentException("a request-body deadline needs a request-body idle timeout");
+        if (messageTimeoutMillis < NO_FIRST_MESSAGE_TIMEOUT) {
+            throw new IllegalArgumentException("messageTimeoutMillis must not be negative: " + messageTimeoutMillis);
         }
-        if (firstMessageTimeoutMillis < NO_FIRST_MESSAGE_TIMEOUT) {
+        if (bodyDeadlineMillis != NO_BODY_DEADLINE && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT
+                && messageTimeoutMillis == NO_FIRST_MESSAGE_TIMEOUT) {
             throw new IllegalArgumentException(
-                    "firstMessageTimeoutMillis must not be negative: " + firstMessageTimeoutMillis);
+                    "a request-body deadline needs a request-body idle timeout or a message bound");
+        }
+        if (bodyDeadlineMillis != NO_BODY_DEADLINE && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
+            requirePreResponseBounds(bodyDeadlineMillis, preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
+        } else {
+            requireNoPreResponseBounds(preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
         }
         this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
         this.bodyIdleTimeoutMillis = bodyIdleTimeoutMillis;
         this.bodyDeadlineMillis = bodyDeadlineMillis;
-        this.firstMessageTimeoutMillis = firstMessageTimeoutMillis;
+        this.messageTimeoutMillis = messageTimeoutMillis;
+        this.preResponseCapMillis = preResponseCapMillis;
+        this.handOverGraceMillis = handOverGraceMillis;
+        this.upstreamStallMillis = upstreamStallMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
+    }
+
+    /**
+     * Checks the bounds that hold a pre-response deadline — the request-body deadline of a dispatch that arms
+     * no idle timeout, so the deadline is armed with the message bound.
+     *
+     * @param preResponseDeadlineMillis the pre-response deadline in milliseconds, positive
+     * @param preResponseCapMillis      the latest the deadline passes, counted from the start of the attempt
+     * @param handOverGraceMillis       the least time the deadline leaves after the hand-over
+     * @param upstreamStallMillis       the upstream stall threshold
+     * @throws IllegalArgumentException when the cap is shorter than the deadline, or the grace or the stall
+     *                                  threshold is not positive or not shorter than the deadline
+     */
+    private static void requirePreResponseBounds(long preResponseDeadlineMillis, long preResponseCapMillis,
+            long handOverGraceMillis, long upstreamStallMillis) {
+        if (preResponseCapMillis < preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a cap no shorter than itself: " + preResponseCapMillis);
+        }
+        if (handOverGraceMillis <= NO_HAND_OVER_GRACE || handOverGraceMillis >= preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a positive hand-over grace shorter than itself: "
+                            + handOverGraceMillis);
+        }
+        if (upstreamStallMillis <= NO_UPSTREAM_STALL || upstreamStallMillis >= preResponseDeadlineMillis) {
+            throw new IllegalArgumentException(
+                    "a pre-response deadline needs a positive upstream stall threshold shorter than itself: "
+                            + upstreamStallMillis);
+        }
+    }
+
+    /**
+     * Checks that a dispatch arming no pre-response deadline is given none of the bounds that hold one: each
+     * would be silently ignored.
+     *
+     * @param preResponseCapMillis the pre-response cap, to be {@link #NO_PRE_RESPONSE_CAP}
+     * @param handOverGraceMillis  the hand-over grace, to be {@link #NO_HAND_OVER_GRACE}
+     * @param upstreamStallMillis  the upstream stall threshold, to be {@link #NO_UPSTREAM_STALL}
+     * @throws IllegalArgumentException when a cap, a grace or a stall threshold is given
+     */
+    private static void requireNoPreResponseBounds(long preResponseCapMillis, long handOverGraceMillis,
+            long upstreamStallMillis) {
+        if (preResponseCapMillis != NO_PRE_RESPONSE_CAP) {
+            throw new IllegalArgumentException(
+                    "a pre-response cap needs a pre-response deadline to hold: " + preResponseCapMillis);
+        }
+        if (handOverGraceMillis != NO_HAND_OVER_GRACE) {
+            throw new IllegalArgumentException(
+                    "a hand-over grace needs a pre-response deadline to hold: " + handOverGraceMillis);
+        }
+        if (upstreamStallMillis != NO_UPSTREAM_STALL) {
+            throw new IllegalArgumentException(
+                    "an upstream stall threshold needs a pre-response deadline to hold: " + upstreamStallMillis);
+        }
     }
 
     /**
@@ -412,7 +578,9 @@ public final class DispatchStage {
      *                       the shared client and guard from the {@link UpstreamClients}
      * @param requestUri     the upstream request URI (see {@link #upstreamRequestUri})
      * @param forwardHeaders the mode-filtered header set computed by stage 5
-     * @param requestBody    the inbound request body as a live read stream
+     * @param requestBody    the inbound request body as a live read stream — where the edge armed one,
+     *                       the {@link InboundBody} itself: the dispatch reads a client's departure from
+     *                       it, and a decorator around it would hide that departure
      * @param framing        how the body is framed towards the upstream (see {@link BodyFraming})
      * @return the upstream response (body still streaming)
      * @throws GatewayException      carrying the mapped error-contract event on any dispatch failure
@@ -600,6 +768,8 @@ public final class DispatchStage {
         // The client-caused abort as it stood the moment this attempt's send failed — never re-read
         // afterwards (see the catch below).
         AtomicReference<@Nullable GatewayException> clientAbortAtFailure = new AtomicReference<>();
+        // The upstream's stall the body stream ended the request for, read at the same moment.
+        AtomicReference<@Nullable UpstreamStalledRequest> upstreamStallAtFailure = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
                     // Registered before the request is published, so every reset of it the gateway
@@ -630,7 +800,11 @@ public final class DispatchStage {
                     Future<HttpClientResponse> sent = body.send(attempt, request, cappedBody);
                     // Registered before the pause below, so it runs first when the send fails, on the
                     // context reporting that failure — before the failure can reach the dispatching thread.
-                    sent.onFailure(failure -> clientAbortAtFailure.set(body.clientAbort(cappedBody.get())));
+                    sent.onFailure(failure -> {
+                        ByteCappedBodyStream sentBody = cappedBody.get();
+                        upstreamStallAtFailure.set(sentBody == null ? null : sentBody.upstreamStall());
+                        clientAbortAtFailure.set(body.clientAbort(sentBody));
+                    });
                     return sent.map(received -> {
                         received.pause();
                         return received;
@@ -650,6 +824,15 @@ public final class DispatchStage {
             // leaves no snapshot and is the upstream's failure as well. An attempt released before its
             // request was sent arrives here too, as an AttemptReleasedUnsent: never a cancellation,
             // which get() would throw past this catch (see AttemptReleasedUnsent). NOSONAR java:S125 - explanatory prose, not commented-out code
+            // A reset the body stream made because the upstream had stalled the request stream for at least the
+            // stall threshold when its pre-response deadline was acted on is the upstream's failure instead: it is
+            // surfaced as the upstream timeout it is,
+            // which the guard counts. It took the stream's single abort claim, so no client abort of the body
+            // stream can stand beside it, and a departure after it came too late to have caused the failure.
+            UpstreamStalledRequest upstreamStall = upstreamStallAtFailure.get();
+            if (upstreamStall != null) {
+                throw new ExecutionException(upstreamStall.getMessage(), upstreamStall);
+            }
             GatewayException clientAbort = clientAbortAtFailure.get();
             if (clientAbort != null) {
                 throw clientAbort;
@@ -659,9 +842,19 @@ public final class DispatchStage {
         // From here on a body byte on a bodyless method, and a body still arriving at the request-body
         // deadline, reach the edge through the late-violation callback. One that came while the response
         // was still being received is this dispatch's own refusal instead: the response is not relayed,
-        // and the edge answers 400 or 408. So is a first-message bound that passed in that window; the
-        // bound itself stops with the send, so it never fires after the hand-over.
-        GatewayException refusedBeforeHandOver = body.handOver(cappedBody.get());
+        // and the edge answers 400 or 408. So is a message bound or a pre-response deadline that passed in
+        // that window; both stop with the send, so neither fires after the hand-over. A pre-response deadline
+        // that ended the body in that window as the upstream's stall is the upstream's timeout, read before the
+        // hand-over for the same reason: nothing can claim it once the send has completed. That window is real: the
+        // read that claims the stall may run on the inbound connection's event loop — a chunk crossing — while the
+        // answer completes the send on the upstream request's, before the reset the claim sent reaches the stream.
+        // The response is then never relayed: the attempt is released and the call ends as the upstream's timeout.
+        ByteCappedBodyStream sentBody = cappedBody.get();
+        UpstreamStalledRequest stalledBeforeHandOver = sentBody == null ? null : sentBody.upstreamStall();
+        if (stalledBeforeHandOver != null) {
+            throw new ExecutionException(stalledBeforeHandOver.getMessage(), stalledBeforeHandOver);
+        }
+        GatewayException refusedBeforeHandOver = body.handOver(sentBody);
         if (refusedBeforeHandOver != null) {
             throw refusedBeforeHandOver;
         }
@@ -740,8 +933,9 @@ public final class DispatchStage {
      *                       the {@link RequestBodyDeadlineExceeded} of a body still arriving at the
      *                       request-body deadline or read again after it passed, invoked on the event
      *                       loop that observed it — the upstream request's for the deadline's timer and
-     *                       a read the upstream resumes; either way once, before the upstream request is
-     *                       reset
+     *                       a read the upstream resumes, the inbound request's for a chunk or an end that
+     *                       arrived after the deadline had passed; either way once, before the upstream
+     *                       request is reset
      * @since 1.0
      */
     public record BodyFraming(boolean bodyless, long declaredLength, Consumer<GatewayException> lateViolation) {
@@ -922,15 +1116,20 @@ public final class DispatchStage {
          * the body to its upstream request — so the time spent waiting for a pooled connection is never
          * counted — and stops it as soon as the attempt's send completes, whether its response arrived
          * or the send failed. The clock therefore never runs once the response is handed over. The
-         * first-message clock is armed and stopped at the same two moments. The request-body deadline is
-         * armed at the same moment, counted from the start of {@code attempt}, and keeps running after
-         * the send completed, until the body ends. The body is attached to {@code attempt} before any of
-         * them is armed, so an attempt the dispatch no longer waits for stops them all. Every timer is
-         * scheduled through the Vert.x instance owning the context this callback runs on, the upstream
-         * request's own.
+         * message clock is armed and stopped at the same two moments. The request-body deadline is armed
+         * at the same moment. Armed with the idle clock — the whole-body deadline — it is counted from the
+         * start of {@code attempt} and keeps running after the send completed, until the body ends. Armed
+         * with the message clock — the gRPC pre-response deadline — it is counted from now, the hand-over,
+         * passes no later than the pre-response cap after the start of {@code attempt}, and stops with
+         * that clock when the send completes; when less than the hand-over grace is left before the cap, or
+         * the cap has already passed, the request is reset unsent and the send fails as an
+         * {@link UpstreamConnectionTooLate} instead, before the inbound stream is subscribed, so an armed
+         * pre-response deadline always passes at least the hand-over grace after the hand-over. The body is attached to {@code attempt} before any clock is armed, so an attempt the
+         * dispatch no longer waits for stops them all. Every timer is scheduled through the Vert.x instance
+         * owning the context this callback runs on, the upstream request's own.
          *
-         * @throws IllegalStateException when the idle clock or the first-message clock is to be armed and
-         *                               no Vert.x context is current — the send callback always runs on one
+         * @throws IllegalStateException when the idle clock or the message clock is to be armed and no
+         *                               Vert.x context is current — the send callback always runs on one
          */
         Future<HttpClientResponse> send(UpstreamAttempt attempt, HttpClientRequest request,
                 AtomicReference<@Nullable ByteCappedBodyStream> cappedBody) {
@@ -945,6 +1144,17 @@ public final class DispatchStage {
                 // keeps treating the attempt as bodyless.
                 return request.send();
             }
+            long handOverNanos = System.nanoTime();
+            OptionalLong deadline = bodyDeadlineOf(attempt, handOverNanos);
+            if (preResponseCapMillis != NO_PRE_RESPONSE_CAP
+                    && deadline.orElseThrow() - handOverNanos < TimeUnit.MILLISECONDS.toNanos(handOverGraceMillis)) {
+                // The connection wait left less than the hand-over grace before the pre-response cap: too
+                // little time for the client to send, or for an end it already sent to be delivered before
+                // the deadline, so the attempt ends as the upstream's timeout, its request unsent and its
+                // body unread.
+                request.reset();
+                return Future.failedFuture(new UpstreamConnectionTooLate());
+            }
             if (declaredLength >= 0) {
                 request.putHeader(CONTENT_LENGTH, Long.toString(declaredLength));
             }
@@ -953,15 +1163,15 @@ public final class DispatchStage {
             // stall) — see allowsRetryAfter.
             subscribed.set(true);
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
-                    request::reset, bytesSent::addAndGet, idleClock(), bodyDeadlineOf(attempt), firstMessageClock());
+                    request::reset, bytesSent::addAndGet, idleClock(), deadline, messageClock(), upstreamStallMillis);
             cappedBody.set(body);
             attempt.attachBody(body);
             body.startIdleClock();
-            body.startFirstMessageClock();
+            body.startMessageClock();
             Future<HttpClientResponse> sent = request.send(body);
             sent.onComplete(_ -> {
                 body.stopIdleClock();
-                body.stopFirstMessageClock();
+                body.stopMessageClock();
             });
             return sent;
         }
@@ -979,15 +1189,14 @@ public final class DispatchStage {
         }
 
         /**
-         * @return the first-message clock of a body-carrying attempt: unarmed for a dispatch constructed
-         *         with {@link #NO_FIRST_MESSAGE_TIMEOUT}, otherwise timed on the current Vert.x context
+         * @return the message clock of a body-carrying attempt: unarmed for a dispatch constructed with
+         *         {@link #NO_FIRST_MESSAGE_TIMEOUT}, otherwise timed on the current Vert.x context
          */
-        private IdleClock firstMessageClock() {
-            if (firstMessageTimeoutMillis == NO_FIRST_MESSAGE_TIMEOUT) {
+        private IdleClock messageClock() {
+            if (messageTimeoutMillis == NO_FIRST_MESSAGE_TIMEOUT) {
                 return IdleClock.UNARMED;
             }
-            return new IdleClock(firstMessageTimeoutMillis, currentContextScheduler("first-message clock"),
-                    System::nanoTime);
+            return new IdleClock(messageTimeoutMillis, currentContextScheduler("message clock"), System::nanoTime);
         }
 
         /**
@@ -1005,14 +1214,26 @@ public final class DispatchStage {
         }
 
         /**
+         * @param attempt       the attempt handing its body over
+         * @param handOverNanos the {@link System#nanoTime()} reading of the hand-over
          * @return the {@link System#nanoTime()} reading at which {@code attempt}'s request-body deadline
-         *         passes, or empty for a dispatch constructed with {@link #NO_BODY_DEADLINE}
+         *         passes — the whole-body deadline counted from the start of {@code attempt}, or the
+         *         pre-response deadline counted from {@code handOverNanos} and held to the pre-response cap
+         *         counted from the start of {@code attempt} — or empty for a dispatch constructed with
+         *         {@link #NO_BODY_DEADLINE}
          */
-        private OptionalLong bodyDeadlineOf(UpstreamAttempt attempt) {
+        private OptionalLong bodyDeadlineOf(UpstreamAttempt attempt, long handOverNanos) {
             if (bodyDeadlineMillis == NO_BODY_DEADLINE) {
                 return OptionalLong.empty();
             }
-            return OptionalLong.of(attempt.startNanos() + TimeUnit.MILLISECONDS.toNanos(bodyDeadlineMillis));
+            long deadlineNanos = TimeUnit.MILLISECONDS.toNanos(bodyDeadlineMillis);
+            if (preResponseCapMillis == NO_PRE_RESPONSE_CAP) {
+                return OptionalLong.of(attempt.startNanos() + deadlineNanos);
+            }
+            // Compared as differences, never as absolute readings: System.nanoTime() may wrap.
+            long sinceStartNanos = handOverNanos - attempt.startNanos();
+            long untilCapNanos = TimeUnit.MILLISECONDS.toNanos(preResponseCapMillis) - sinceStartNanos;
+            return OptionalLong.of(handOverNanos + Math.min(deadlineNanos, untilCapNanos));
         }
 
         /**
@@ -1037,9 +1258,9 @@ public final class DispatchStage {
          *
          * @param cappedBody the attempt's body stream, {@code null} for a bodyless request
          * @return the refusal that came before the hand-over — the client's departure, a bodyless
-         *         request's body byte, a body still arriving at the request-body deadline, or a body whose
-         *         first byte did not arrive within the first-message bound — or {@code null} when there
-         *         was none
+         *         request's body byte, a body still arriving at the request-body deadline or the
+         *         pre-response deadline, or a body whose next complete message did not arrive within the
+         *         message bound — or {@code null} when there was none
          */
         @Nullable
         GatewayException handOver(@Nullable ByteCappedBodyStream cappedBody) {
@@ -1072,7 +1293,7 @@ public final class DispatchStage {
      * sent. Resetting the request also releases a response the attempt already received and paused.
      * <p>
      * <strong>Its body's clocks stop with it.</strong> {@link #abandon()} also stops the request-body idle
-     * clock, the deadline and the first-message clock of the body stream the attempt sends, and a body
+     * clock, the deadline and the message clock of the body stream the attempt sends, and a body
      * attached only after that has them stopped at once, before they could start. A stopped clock has no timer pending and reports
      * nothing: it neither refuses the body, nor resets the request, nor reaches the late-violation callback.
      * <p>
@@ -1330,10 +1551,20 @@ public final class DispatchStage {
      * request releases it (see {@link DispatchStage}, which also states when a wait for a pooled
      * connection ends). A stream the gateway reset itself records no departure.
      * <p>
+     * <strong>The dispatch is handed this body itself, never a decorator around it.</strong> The dispatch
+     * finds the departure by the type of the stream it is handed, so a decorator between the two would
+     * hide it: a client that left before the dispatch began would still have an upstream request asked
+     * for, and one that left once its body had ended would hold that request until the upstream answered
+     * or the guard's timeout ended the attempt as the upstream's. Whoever has to see the body's frames
+     * on their way to the dispatch therefore registers a {@linkplain #frameObserver(Runnable) frame
+     * observer} here instead of wrapping the body — the gRPC stream-idle bound does
+     * ({@link de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound#watch}).
+     * <p>
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
      * registered from another thread; both go through the same monitor, as do the departure and its
      * handler. The pause is pinned without holding that monitor: a resume racing the mark is followed by
-     * a pause again.
+     * a pause again. The frame observer is published through an atomic reference and read once, when the
+     * consumer registers its handler.
      */
     public static final class InboundBody implements ReadStream<Buffer> {
 
@@ -1343,6 +1574,8 @@ public final class DispatchStage {
         private volatile boolean resetByGateway;
         private @Nullable Throwable departure;
         private @Nullable Handler<Throwable> departureHandler;
+        /** Runs for every frame before the consumer's handler; holds {@code null} while none is registered. */
+        private final AtomicReference<@Nullable Runnable> frameObserver = new AtomicReference<>();
 
         private InboundBody(ReadStream<Buffer> delegate) {
             this.delegate = delegate;
@@ -1452,6 +1685,23 @@ public final class DispatchStage {
             }
         }
 
+        /**
+         * Registers the one observer that is run for every frame this body delivers, before the frame
+         * reaches the consumer's handler. It is how a party that has to see the request frames on their
+         * way to the dispatch does so without wrapping the body, which would hide the body — and with it
+         * the client's departure — from the dispatch (see the class description).
+         * <p>
+         * Register it before the body is handed to its consumer: the observer in force when the consumer
+         * registers its handler is the one that sees the frames, and a handler registered earlier is not
+         * observed.
+         *
+         * @param observer run on the inbound connection's event loop for every frame, before the consumer
+         *                 reads it; it must not block
+         */
+        public void frameObserver(Runnable observer) {
+            frameObserver.set(Objects.requireNonNull(observer, "observer"));
+        }
+
         @Override
         public synchronized ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
             this.failureHandler = handler;
@@ -1461,9 +1711,22 @@ public final class DispatchStage {
             return this;
         }
 
+        /**
+         * Registers the consumer's frame handler on the inbound stream. With a
+         * {@linkplain #frameObserver(Runnable) frame observer} in force, every frame is shown to it
+         * first.
+         */
         @Override
         public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
-            delegate.handler(handler);
+            Runnable observer = frameObserver.get();
+            if (handler == null || observer == null) {
+                delegate.handler(handler);
+            } else {
+                delegate.handler(frame -> {
+                    observer.run();
+                    handler.handle(frame);
+                });
+            }
             return this;
         }
 
@@ -1558,6 +1821,67 @@ public final class DispatchStage {
     }
 
     /**
+     * The failure of an attempt that obtained its upstream connection with less than its hand-over grace
+     * left before its pre-response cap, or only once the cap had passed: the wait for the connection used up
+     * the guard's timeout but for the margin the cap leaves and less than the grace of it, so too little time
+     * is left in which the client could send its request — or in which an end the client already sent could
+     * be delivered before the deadline. The attempt's request is reset unsent and
+     * its body never read, so nothing the client did or did not send contributes to the failure — it is the
+     * upstream's. It is a {@link TimeoutException}, not a {@link GatewayException}: the breaker counts it as
+     * an upstream failure, and the failure mapper reports it as {@link EventType#UPSTREAM_TIMEOUT}, exactly as
+     * the guard's own timeout a moment later would have been reported. Only a dispatch that arms a
+     * pre-response deadline — the gRPC dispatch — raises it.
+     * <p>
+     * Carries no request-specific state.
+     */
+    static final class UpstreamConnectionTooLate extends TimeoutException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        UpstreamConnectionTooLate() {
+            super(CONNECTION_TOO_LATE);
+        }
+    }
+
+    /**
+     * The failure of an attempt whose pre-response deadline passed while the upstream had stalled its request
+     * stream: the upstream had stopped taking data, so its backpressure had paused the stream, and had not taken
+     * any for at least the upstream stall threshold when the deadline was acted on. The stream is ended the
+     * moment the upstream takes data again, exactly when a client's {@link RequestBodyDeadlineExceeded} would have
+     * ended it, and the attempt's upstream request is reset. The time the call ran past its deadline was spent
+     * waiting on the upstream, not on the client, so the failure is the upstream's. It is a
+     * {@link TimeoutException}, not a {@link GatewayException}: the breaker counts it as an upstream failure, and
+     * the failure mapper reports it as {@link EventType#UPSTREAM_TIMEOUT}, as the guard's own timeout would have
+     * been had the upstream taken no more data until it fired.
+     * <p>
+     * <strong>Attributed to the upstream only for a sustained stall.</strong> The deadline is acted on when the
+     * gateway's deadline timer finds it passed while the stream is being read, or, when it passed during a pause,
+     * at the read that ends the pause. It is this failure exactly when, at that moment, the stream has been paused
+     * without a break for at least the stall threshold — however slowly the client sent before the pause. A
+     * deadline that passes while the stream is being read is the client's {@link RequestBodyDeadlineExceeded},
+     * however long the upstream had paused the stream earlier, and so is one that passed during a pause shorter
+     * than the threshold. Ordinary HTTP/2 flow control pauses the stream for a few round-trips at a time, so a
+     * client that sends faster than a healthy upstream reads, and never ends its stream, keeps the deadline its
+     * own: it cannot have its own deadline counted against the upstream's breaker.
+     * <p>
+     * Only the pre-response deadline, which only the gRPC dispatch arms, raises it. The whole-body deadline of an
+     * HTTP dispatch keeps ending a body read again after it passed as the client's
+     * {@link RequestBodyDeadlineExceeded}.
+     * <p>
+     * Carries no request-specific state.
+     */
+    static final class UpstreamStalledRequest extends TimeoutException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        UpstreamStalledRequest() {
+            super(STALLED_BY_UPSTREAM);
+        }
+    }
+
+    /**
      * The client abort of a dispatch whose client left — reset its stream or closed its connection —
      * before the response was handed over for relay (see {@link InboundBody#clientDeparted(Throwable)}).
      * It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told
@@ -1588,6 +1912,14 @@ public final class DispatchStage {
      *       and the body starts to be read.</li>
      * </ul>
      * In the last two cases the body is ended by that read itself, which never reaches the inbound stream.
+     * On a gRPC dispatch the same refusal ends a request stream still open at its pre-response deadline as
+     * long as the upstream has not answered, in the first case and in the second when the pause the deadline
+     * passed in is shorter than the upstream stall threshold at the read that ends it. A pause that has lasted the
+     * threshold by then was the upstream's stall, and that read ends the stream as an
+     * {@link UpstreamStalledRequest}, the upstream's timeout, instead. The third does not arise
+     * there: the pre-response deadline is counted from the moment the attempt hands its body over, so the wait
+     * for the connection is not counted against it, and an attempt whose connection came only after its
+     * pre-response cap is ended as an {@link UpstreamConnectionTooLate}, the upstream's timeout, instead.
      * The refusal is an {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) like the idle timeout's,
      * told apart from it by its type so it is reported with its own record: the body did not end within the
      * deadline, whether or not it was still making progress. Like every client-ended dispatch it is a
@@ -1610,27 +1942,27 @@ public final class DispatchStage {
     }
 
     /**
-     * The client abort of a dispatch whose first request-body byte did not arrive within the
-     * first-message bound — on a gRPC call, a client that opened the call and sent no request message.
-     * The attempt's upstream request is reset when it is raised. It is an
-     * {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told apart from
-     * it by its type so it is reported with its own disposition. Like every client-ended dispatch it is a
-     * gateway rejection: the breaker skips it and the retry predicate refuses it, so an idle client is
-     * never counted against a healthy upstream.
+     * The client abort of a dispatch whose next complete request message did not arrive within the message
+     * bound — on a gRPC call, a client that opened the call and sent no request message, only part of one,
+     * or stopped between two messages without ending its request stream. The attempt's upstream request is
+     * reset when it is raised. It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did
+     * not arrive whole, told apart from it by its type so it is reported with its own disposition. Like
+     * every client-ended dispatch it is a gateway rejection: the breaker skips it and the retry predicate
+     * refuses it, so an idle client is never counted against a healthy upstream.
      *
      * @since 1.0
      */
-    public static final class FirstMessageTimeout extends GatewayException {
+    public static final class RequestMessageTimeout extends GatewayException {
 
         @Serial
         private static final long serialVersionUID = 1L;
 
         /** Fixed disposition of the abort; carries nothing the client supplied. */
-        private static final String NO_FIRST_MESSAGE =
-                "Request body sent no first byte within the first-message bound; the upstream request was aborted";
+        private static final String NO_COMPLETE_MESSAGE =
+                "Request body sent no complete message within the message bound; the upstream request was aborted";
 
-        FirstMessageTimeout() {
-            super(EventType.INBOUND_BODY_ABORTED, NO_FIRST_MESSAGE);
+        RequestMessageTimeout() {
+            super(EventType.INBOUND_BODY_ABORTED, NO_COMPLETE_MESSAGE);
         }
     }
 
@@ -1698,9 +2030,9 @@ public final class DispatchStage {
      * for the remainder instead of expiring.
      * <p>
      * <strong>A body that does not end by the deadline is ended there.</strong> A stream constructed
-     * with a request-body deadline arms one more timer when {@link #startIdleClock()} is called, for the
-     * deadline's moment. Unlike the idle clock it keeps running once {@link #stopIdleClock()} was called
-     * — after the response head — and stops only when the inbound body ends or an abort is claimed. When
+     * with a request-body deadline and an armed idle clock arms one more timer when
+     * {@link #startIdleClock()} is called, for the deadline's moment. Unlike the idle clock it keeps running once {@link #stopIdleClock()} was called
+     * — after the response head — and stops only when the inbound body ends in time or an abort is claimed. When
      * it fires while the gateway is reading the body, the expiry takes the single abort claim with a
      * {@link RequestBodyDeadlineExceeded}, pauses the inbound stream, hands the refusal to the
      * late-violation callback when the response was already {@linkplain #handOver handed over}, runs the
@@ -1709,21 +2041,52 @@ public final class DispatchStage {
      * a {@link #fetch(long)} or a forwarded chunk, none of which then reaches the inbound stream. That
      * covers a stream the consumer had paused because the upstream was not taking data, and a deadline
      * that had already passed at {@link #startIdleClock()} because the connection was obtained only after
-     * it. {@link #stopClocks()} — the end of the body, an abort, or an attempt the dispatch no longer waits
-     * for — cancels both timers and drops a passed deadline: a stopped clock reports nothing.
+     * it. An inbound end that arrives only after the deadline's instant comes too late to end the body in
+     * time: while the deadline is still in force — recorded as passed, or its instant passed and its timer,
+     * which may fire late, not run yet — the body is ended at it the same way, but for the pause of a stream
+     * that has ended, and the end is not passed on. {@link #stopClocks()} — the end of a body in time, an
+     * abort, or an attempt the dispatch no longer waits for — cancels every timer, and the abort and the
+     * attempt no longer waited for drop a passed deadline with them: a stopped clock reports nothing.
      * <p>
-     * <strong>A body whose first byte does not arrive is ended at the first-message bound.</strong> A
-     * stream constructed with an armed first-message clock arms one more timer at
-     * {@link #startFirstMessageClock()}, for the bound's length. It is a single timer, never re-armed: the
-     * first forwarded chunk carrying a byte stops it, and so do the inbound end, any abort claim,
-     * {@link #stopFirstMessageClock()} — which the dispatch calls when the attempt's send completes — and
-     * {@link #stopClocks()}. A chunk of length zero is not a first byte. When the timer fires before any of
-     * these, the expiry takes the single abort claim with a {@link FirstMessageTimeout}
+     * <strong>A body whose next complete message does not arrive is ended at the message bound.</strong> A
+     * stream constructed with an armed message clock arms one more timer at {@link #startMessageClock()},
+     * for the bound's length. While the clock runs, a {@link GrpcMessageFrames} reads the gRPC message
+     * frames from each chunk as it crosses — each 5-byte prefix one byte at a time, then a count of the
+     * payload bytes the prefix declares — with no buffer and no copy of the payload; a prefix and a payload
+     * may straddle any number of chunks, and one chunk may carry the end of one message and the start of
+     * the next. A forwarded chunk that completes at least one message starts the gap to the next complete
+     * message (a message of declared length zero is complete at its prefix); a chunk that completes none,
+     * however many bytes it carries, does not. Like the idle clock, the message clock does not count a pause
+     * by the consumer — the upstream not taking data is never charged to the client — and a resume starts
+     * the gap again. Only the gap's start is recorded: one timer is pending at a time, and when it fires
+     * early relative to the start of the current gap it is re-armed for the remainder — so no timer is
+     * created or cancelled per chunk. The inbound end, any abort claim, {@link #stopMessageClock()} — which
+     * the dispatch calls when the attempt's send completes — and {@link #stopClocks()} stop the clock for
+     * good. A declared length the body cannot carry within {@code max_body_bytes} is not refused by the
+     * tracker: the body's cumulative cap refuses it as the bytes arrive. When a gap lasts the whole bound,
+     * the expiry takes the single abort claim with a {@link RequestMessageTimeout}
      * ({@link EventType#INBOUND_BODY_ABORTED}), pauses the inbound stream, runs the abort action and
      * propagates the failure, exactly like the other client-caused aborts. The claim is taken under the
-     * clocks' monitor, the same monitor a first chunk and the inbound end stop the clock under, so either
-     * the expiry wins and the chunk or the end is dropped, or the chunk or the end wins and the expiry
-     * reports nothing.
+     * clocks' monitor, the same monitor the completing chunk starts the next gap under and the inbound end
+     * stops the clock under, and the completion is checked before that chunk is forwarded, so either the
+     * expiry wins and the chunk or the end is dropped, or the chunk or the end wins and the expiry reports
+     * nothing.
+     * <p>
+     * <strong>With the message clock, the deadline is a pre-response deadline.</strong> A stream whose idle
+     * clock is unarmed and whose message clock is armed arms its request-body deadline at
+     * {@link #startMessageClock()}, through the message clock's scheduler. It ends the body when the
+     * whole-body deadline would — at once while the body is read, or at the next read when it passed while
+     * the consumer had paused the stream — but {@link #stopMessageClock()} stops it as well, so it never
+     * fires once the attempt's send has completed, and therefore never after the hand-over. Unlike the
+     * whole-body deadline, it can be charged to the upstream, but only for a sustained stall: when it is acted
+     * on — at once when it passes while the stream is being read, at the next read when it passed during a pause
+     * — it is the upstream's {@link UpstreamStalledRequest}, readable through {@link #upstreamStall()} and never a
+     * client abort, exactly when the consumer has had the stream paused without a break, because the upstream
+     * was not taking data, for at least the upstream stall threshold at that moment. Every other passed
+     * pre-response deadline is the client's {@link RequestBodyDeadlineExceeded}: one that passes while the stream
+     * is being read, whatever pauses came before, and one that passed during a pause shorter than the threshold —
+     * the brief flow-control waits of a client sending faster than a healthy upstream reads. A resume ends the
+     * pause, so the next pause measures its stall from its own start.
      * <p>
      * Thread-safe: chunks arrive on the inbound connection's event loop, the consumer pauses and
      * resumes from either loop, and the timers fire on the loop they were scheduled from. The last
@@ -1790,20 +2153,54 @@ public final class DispatchStage {
          * chunk can read it without the monitor.
          */
         private volatile boolean deadlinePassed;
+        /**
+         * Whether a pre-response deadline that passed during a pause by the consumer is the upstream's, decided by
+         * the read that ends that pause from the pause's length at that moment: the read's second passed-deadline
+         * check, which runs once the pause has ended, then ends the body as the upstream's
+         * {@link UpstreamStalledRequest} rather than the client's {@link RequestBodyDeadlineExceeded}. Never set
+         * for the whole-body deadline. Written and read holding {@link #clockLock}.
+         */
+        private boolean deadlinePassedHeldByUpstream;
+        /**
+         * How long, in nanoseconds, the consumer must have paused the stream without a break — the upstream not
+         * taking data — when a passed pre-response deadline is acted on, for it to be the upstream's; zero for a
+         * stream that arms no pre-response deadline.
+         */
+        private final long upstreamStallNanos;
+        /**
+         * The {@link #deadlineClock}'s reading when the current pause by the consumer began; meaningful only while
+         * {@link #pausedByConsumer} holds, and recorded only for a pre-response deadline. A pause that is already
+         * in force is not restarted by another pause; a resume ends it. Written and read holding
+         * {@link #clockLock}.
+         */
+        private long pauseStartNanos;
         private long deadlineTimer = NO_TIMER;
-        /** The first-message clock, {@link IdleClock#UNARMED} for a body whose first byte is not awaited. */
-        private final IdleClock firstMessageClock;
+        /** The message clock, {@link IdleClock#UNARMED} for a body whose messages are not awaited. */
+        private final IdleClock messageClock;
         /**
-         * Whether the first-message clock can no longer fire: a first byte was forwarded, the body ended,
-         * an abort was claimed, the clocks were stopped, or the bound expired.
+         * The clock the request-body deadline is scheduled and measured with: the idle clock when it is
+         * armed — the whole-body deadline — otherwise the message clock — the pre-response deadline.
          */
-        private boolean firstMessageEnded;
-        private long firstMessageTimer = NO_TIMER;
+        private final IdleClock deadlineClock;
+        /** Whether {@link #startMessageClock()} ran; written holding {@link #clockLock}. */
+        private boolean messageClockStarted;
         /**
-         * Whether a first body byte was forwarded, so later chunks skip the first-message clock. Read and
-         * written by chunk delivery only, which runs on the inbound connection's event loop.
+         * Whether the message clock can no longer fire: the body ended, an abort was claimed, the clocks
+         * were stopped, the attempt's send completed, or the bound expired. Written holding
+         * {@link #clockLock}; volatile so chunk delivery can skip the frame tracker without the monitor.
          */
-        private boolean firstByteForwarded;
+        private volatile boolean messageClockEnded;
+        private long messageTimer = NO_TIMER;
+        /**
+         * When the current gap began: the message clock started, a complete message was forwarded, or the
+         * consumer resumed the stream. Written holding {@link #clockLock}.
+         */
+        private long messageGapStartNanos;
+        /**
+         * Reads the gRPC message frames as their chunks cross. Used by chunk delivery only, which runs on
+         * the inbound connection's event loop.
+         */
+        private final GrpcMessageFrames messageFrames = new GrpcMessageFrames();
         /** Receives a deadline refusal once the response was handed over; {@code null} until then. */
         private @Nullable Consumer<GatewayException> lateViolation;
         /** Whether the inbound body's end arrived, whatever was made of it. */
@@ -1858,7 +2255,7 @@ public final class DispatchStage {
         }
 
         /**
-         * A stream whose first byte is not awaited: the first-message clock is never armed.
+         * A stream whose messages are not awaited: the message clock is never armed.
          *
          * @param delegate       the inbound request body
          * @param maxBytes       the {@code max_body_bytes} ceiling
@@ -1877,7 +2274,7 @@ public final class DispatchStage {
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos) {
             this(delegate, maxBytes, declaredLength, abortAction, bytesForwarded, idleClock, deadlineNanos,
-                    IdleClock.UNARMED);
+                    IdleClock.UNARMED, NO_UPSTREAM_STALL);
         }
 
         /**
@@ -1889,19 +2286,29 @@ public final class DispatchStage {
          * @param bytesForwarded    receives the length of every chunk forwarded to the upstream
          * @param idleClock         the request-body idle clock, {@link IdleClock#UNARMED} for none; it
          *                          runs only once {@link #startIdleClock()} is called
-         * @param deadlineNanos     the {@code idleClock}'s {@link IdleClock#nanoTime()} reading at which
-         *                          the request-body deadline passes, or empty for none; its timer is
-         *                          scheduled through the idle clock's scheduler once
-         *                          {@link #startIdleClock()} is called; a deadline needs an armed
-         *                          {@code idleClock}, which the dispatch's constructor guarantees
-         * @param firstMessageClock the first-message clock, {@link IdleClock#UNARMED} for none; its one
+         * @param deadlineNanos     the {@link IdleClock#nanoTime()} reading, of the clock it is armed with,
+         *                          at which the request-body deadline passes, or empty for none. With an
+         *                          armed {@code idleClock} it is the whole-body deadline, scheduled through
+         *                          the idle clock's scheduler once {@link #startIdleClock()} is called;
+         *                          otherwise it is the pre-response deadline, scheduled through the message
+         *                          clock's scheduler once {@link #startMessageClock()} is called and
+         *                          stopped by {@link #stopMessageClock()}
+         * @param messageClock      the message clock, {@link IdleClock#UNARMED} for none; its one pending
          *                          timer, for the clock's timeout, is scheduled through its own scheduler
-         *                          once {@link #startFirstMessageClock()} is called
+         *                          once {@link #startMessageClock()} is called and again after every
+         *                          complete message
+         * @param upstreamStallMillis how long, in milliseconds, the consumer must have paused the stream without
+         *                          a break when a passed pre-response deadline is acted on, for the deadline to
+         *                          be the upstream's {@link UpstreamStalledRequest}; positive when the deadline
+         *                          is a pre-response deadline, otherwise {@link #NO_UPSTREAM_STALL}, and never
+         *                          read
+         * @throws IllegalArgumentException when a deadline is given and neither clock is armed, or a pre-response
+         *                                  deadline is given without a positive upstream stall threshold
          */
-        @SuppressWarnings("java:S107") // internal stream; the three clocks are distinct per-attempt bounds built separately by the dispatch, and a holder type would only re-bundle them for this one call
+        @SuppressWarnings("java:S107") // internal stream; the three clocks and the stall threshold are distinct per-attempt bounds built separately by the dispatch, and a holder type would only re-bundle them for this one call
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos,
-                IdleClock firstMessageClock) {
+                IdleClock messageClock, long upstreamStallMillis) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
             this.maxBytes = maxBytes;
             this.declaredLength = declaredLength;
@@ -1909,7 +2316,16 @@ public final class DispatchStage {
             this.bytesForwarded = Objects.requireNonNull(bytesForwarded, "bytesForwarded");
             this.idleClock = Objects.requireNonNull(idleClock, "idleClock");
             this.deadlineNanos = Objects.requireNonNull(deadlineNanos, "deadlineNanos");
-            this.firstMessageClock = Objects.requireNonNull(firstMessageClock, "firstMessageClock");
+            this.messageClock = Objects.requireNonNull(messageClock, "messageClock");
+            this.deadlineClock = idleClock.armed() ? idleClock : messageClock;
+            if (deadlineNanos.isPresent() && !deadlineClock.armed()) {
+                throw new IllegalArgumentException("a request-body deadline needs an armed idle or message clock");
+            }
+            if (preResponseDeadline() && upstreamStallMillis <= NO_UPSTREAM_STALL) {
+                throw new IllegalArgumentException(
+                        "a pre-response deadline needs a positive upstream stall threshold: " + upstreamStallMillis);
+            }
+            this.upstreamStallNanos = TimeUnit.MILLISECONDS.toNanos(upstreamStallMillis);
             delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
         }
@@ -1935,7 +2351,7 @@ public final class DispatchStage {
 
         /**
          * Takes the single abort claim for {@code reason}; the trigger that wins it also stops the idle
-         * clock, the deadline and the first-message clock, so nothing expires after an abort.
+         * clock, the deadline and the message clock, so nothing expires after an abort.
          *
          * @return {@code true} when this call won the claim
          */
@@ -1954,6 +2370,16 @@ public final class DispatchStage {
         @Nullable
         GatewayException clientAbort() {
             return abortReason.get() instanceof GatewayException clientCaused ? clientCaused : null;
+        }
+
+        /**
+         * @return the upstream's stall this stream aborted the upstream request for — a pre-response deadline
+         *         acted on while the upstream had held the stream paused for at least the stall threshold — or
+         *         {@code null} when it did not abort it for that
+         */
+        @Nullable
+        UpstreamStalledRequest upstreamStall() {
+            return abortReason.get() instanceof UpstreamStalledRequest stalled ? stalled : null;
         }
 
         /** @return {@code true} once the inbound body's end has arrived, whatever was made of it */
@@ -1975,8 +2401,8 @@ public final class DispatchStage {
                         "Request body exceeded max_body_bytes=" + maxBytes));
                 return;
             }
-            if (chunk.length() > 0 && firstMessageBoundExpired()) {
-                // The first-message bound expired just before this first byte: the body was ended there.
+            if (messageBoundExpired(chunk)) {
+                // The message bound or another abort ended the body before this chunk.
                 return;
             }
             // The chunk cleared every bound and is about to cross to the upstream — record it so the
@@ -1992,7 +2418,10 @@ public final class DispatchStage {
         }
 
         /**
-         * The inbound stream ended, which stops the idle clock, the deadline and the first-message clock.
+         * The inbound stream ended, which stops the idle clock, the deadline and the message clock.
+         * An end that arrives only after the request-body deadline's instant comes too late to end the body:
+         * while that deadline is still in force the body is ended at it instead, and the end is not passed on
+         * (see {@link #endAtOverdueDeadline()}).
          * A body short of its declared length did not arrive whole: the upstream request is aborted
          * instead of being ended on a message shorter than its framing. After an abort the end is not
          * passed on — the consumer has already been told the body failed, or the gateway reset the stream
@@ -2001,6 +2430,9 @@ public final class DispatchStage {
          */
         private void onInboundEnd(@Nullable Void end) {
             inboundEnded = true;
+            if (endAtOverdueDeadline()) {
+                return;
+            }
             stopClocks();
             if (abortReason.get() != null) {
                 return;
@@ -2047,16 +2479,27 @@ public final class DispatchStage {
                 if (!pausedByConsumer) {
                     armTimer(idleClock.timeoutMillis());
                 }
-                if (deadlineNanos.isPresent() && !deadlineEnded) {
-                    long remainingNanos = deadlineNanos.getAsLong() - lastProgressNanos;
-                    if (remainingNanos > 0) {
-                        armDeadlineTimer(remainingNanos);
-                    } else {
-                        // The connection was obtained only after the deadline passed: the body is ended
-                        // the moment the consumer starts to read it.
-                        deadlinePassed = true;
-                    }
-                }
+                armDeadline(lastProgressNanos);
+            }
+        }
+
+        /**
+         * Arms the request-body deadline, when there is one and it has not ended; called holding
+         * {@link #clockLock} by whichever clock it is armed with. When it has already passed — the
+         * connection was obtained only after it — the body is ended the moment the consumer starts to read
+         * it.
+         *
+         * @param nowNanos the {@link #deadlineClock}'s current reading
+         */
+        private void armDeadline(long nowNanos) {
+            if (deadlineNanos.isEmpty() || deadlineEnded) {
+                return;
+            }
+            long remainingNanos = deadlineNanos.getAsLong() - nowNanos;
+            if (remainingNanos > 0) {
+                armDeadlineTimer(remainingNanos);
+            } else {
+                deadlinePassed = true;
             }
         }
 
@@ -2078,33 +2521,45 @@ public final class DispatchStage {
         }
 
         /**
-         * Stops the idle clock, the request-body deadline and the first-message clock for good and cancels
-         * their timers: the body ended or was aborted, or its attempt is no longer waited for. A stopped
-         * clock reports nothing — a deadline that had already passed unread is dropped with it.
+         * Stops the idle clock, the request-body deadline and the message clock for good and cancels their
+         * timers: the body ended in time or was aborted, or its attempt is no longer waited for. A stopped clock
+         * reports nothing — a deadline that had already passed unread is dropped with it, which is why an
+         * inbound end is held against the deadline before it gets here (see {@link #endAtOverdueDeadline()}).
          * Idempotent.
          */
         private void stopClocks() {
             stopIdleClock();
-            stopFirstMessageClock();
+            stopMessageClock();
             if (deadlineNanos.isEmpty()) {
                 return;
             }
             synchronized (clockLock) {
-                deadlineEnded = true;
-                deadlinePassed = false;
-                if (deadlineTimer != NO_TIMER) {
-                    idleClock.scheduler().cancel(deadlineTimer);
-                    deadlineTimer = NO_TIMER;
-                }
+                endDeadline();
+            }
+        }
+
+        /**
+         * Ends the request-body deadline for good: cancels its timer and drops a passed deadline; called
+         * holding {@link #clockLock}. Idempotent.
+         */
+        private void endDeadline() {
+            deadlineEnded = true;
+            deadlinePassed = false;
+            deadlinePassedHeldByUpstream = false;
+            if (deadlineTimer != NO_TIMER) {
+                deadlineClock.scheduler().cancel(deadlineTimer);
+                deadlineTimer = NO_TIMER;
             }
         }
 
         /**
          * Hands the response over for relay: a deadline refusal from now on goes to
-         * {@code lateViolation} before the upstream request is reset, instead of failing the dispatch.
+         * {@code lateViolation} before the upstream request is reset, instead of failing the dispatch. The
+         * upstream's {@link UpstreamStalledRequest} is not a refusal and is never returned here: it is read
+         * through {@link #upstreamStall()}, and it cannot arise after the hand-over.
          *
          * @param lateViolation receives a deadline refusal that comes after the hand-over
-         * @return the deadline refusal or the first-message timeout that came before the hand-over, or
+         * @return the deadline refusal or the message timeout that came before the hand-over, or
          *         {@code null} when there was none
          */
         @Nullable
@@ -2113,95 +2568,156 @@ public final class DispatchStage {
                 this.lateViolation = lateViolation;
                 return switch (abortReason.get()) {
                     case RequestBodyDeadlineExceeded exceeded -> exceeded;
-                    case FirstMessageTimeout noFirstMessage -> noFirstMessage;
+                    case RequestMessageTimeout idleClient -> idleClient;
                     case null, default -> null;
                 };
             }
         }
 
         /**
-         * Starts the first-message clock: from now on, the clock's timeout passing before a first body
-         * byte was forwarded ends the stream as a {@link FirstMessageTimeout}. A no-op for an unarmed
-         * clock, a clock already started, and one already stopped — by a first byte forwarded before it
-         * was started among others.
+         * Starts the message clock: from now on, the clock's timeout passing before the next complete
+         * message was forwarded ends the stream as a {@link RequestMessageTimeout}. On a stream whose idle
+         * clock is unarmed, arms the request-body deadline — the pre-response deadline — at the same moment.
+         * A no-op for an unarmed clock, a clock already started, and one already stopped.
          */
-        void startFirstMessageClock() {
-            if (!firstMessageClock.armed()) {
+        void startMessageClock() {
+            if (!messageClock.armed()) {
                 return;
             }
             synchronized (clockLock) {
-                if (firstMessageEnded || firstMessageTimer != NO_TIMER) {
+                if (messageClockStarted || messageClockEnded) {
                     return;
                 }
-                firstMessageTimer = firstMessageClock.scheduler().schedule(firstMessageClock.timeoutMillis(),
-                        this::onFirstMessageTimer);
-            }
-        }
-
-        /**
-         * Stops the first-message clock for good and cancels its timer. Idempotent; a no-op for an unarmed
-         * clock.
-         */
-        void stopFirstMessageClock() {
-            if (!firstMessageClock.armed()) {
-                return;
-            }
-            synchronized (clockLock) {
-                firstMessageEnded = true;
-                if (firstMessageTimer != NO_TIMER) {
-                    firstMessageClock.scheduler().cancel(firstMessageTimer);
-                    firstMessageTimer = NO_TIMER;
+                messageClockStarted = true;
+                messageGapStartNanos = messageClock.nanoTime().getAsLong();
+                if (!pausedByConsumer) {
+                    armMessageTimer(messageClock.timeoutMillis());
+                }
+                if (!idleClock.armed()) {
+                    armDeadline(messageGapStartNanos);
                 }
             }
         }
 
         /**
-         * A first body byte arrived: stops the first-message clock, unless its expiry came first.
-         *
-         * @return {@code true} when the bound had already expired and ended the body — the byte must not
-         *         be forwarded
+         * Stops the message clock for good and cancels its timer; on a stream whose idle clock is unarmed it
+         * ends the pre-response deadline as well. The dispatch calls it when the attempt's send completes —
+         * the upstream answered or the send failed. Idempotent; a no-op for an unarmed clock.
          */
-        private boolean firstMessageBoundExpired() {
-            if (!firstMessageClock.armed() || firstByteForwarded) {
-                return false;
+        void stopMessageClock() {
+            if (!messageClock.armed()) {
+                return;
             }
-            // The expiry claims the abort under the same monitor the stop takes, so once the stop returns,
-            // an expiry that came first has already recorded its claim.
-            stopFirstMessageClock();
-            if (abortReason.get() != null) {
-                return true;
+            synchronized (clockLock) {
+                messageClockEnded = true;
+                cancelMessageTimer();
+                if (!idleClock.armed()) {
+                    endDeadline();
+                }
             }
-            firstByteForwarded = true;
-            return false;
         }
 
         /**
-         * The first-message timer fired before a first byte was forwarded and before the clock was
-         * stopped: the stream is refused as a {@link FirstMessageTimeout} through the single abort claim,
+         * A chunk is about to be forwarded while the message clock runs: the frame tracker reads the
+         * chunk's bytes, and a chunk that completes at least one message re-arms the clock for the next one
+         * — unless an expiry came first.
+         *
+         * @param chunk the chunk about to be forwarded
+         * @return {@code true} when an abort had already ended the body — the chunk must not be forwarded
+         */
+        private boolean messageBoundExpired(Buffer chunk) {
+            if (!messageClock.armed()) {
+                return false;
+            }
+            if (!messageClockEnded && messageFrames.completedBy(chunk) > 0) {
+                // The expiry claims the abort under the same monitor the re-arm takes, so once the re-arm
+                // returns, an expiry that came first has already recorded its claim.
+                restartMessageClock();
+            }
+            return abortReason.get() != null;
+        }
+
+        /**
+         * A complete message was forwarded: the gap to the next complete message starts now. Only the start
+         * is recorded; the pending timer re-checks it when it fires. A no-op for a clock not started yet or
+         * already ended.
+         */
+        private void restartMessageClock() {
+            synchronized (clockLock) {
+                if (!messageClockStarted || messageClockEnded) {
+                    return;
+                }
+                messageGapStartNanos = messageClock.nanoTime().getAsLong();
+                if (messageTimer == NO_TIMER && !pausedByConsumer) {
+                    armMessageTimer(messageClock.timeoutMillis());
+                }
+            }
+        }
+
+        /**
+         * The consumer resumed the stream: the upstream is taking data again, so the gap restarts from now
+         * and a timer is pending again; called holding {@link #clockLock}. A no-op for a clock not started
+         * yet or already ended.
+         */
+        private void resumeMessageClock() {
+            if (!messageClock.armed() || !messageClockStarted || messageClockEnded) {
+                return;
+            }
+            messageGapStartNanos = messageClock.nanoTime().getAsLong();
+            if (messageTimer == NO_TIMER) {
+                armMessageTimer(messageClock.timeoutMillis());
+            }
+        }
+
+        /** Schedules the one pending message timer; called holding {@link #clockLock}. */
+        private void armMessageTimer(long delayMillis) {
+            messageTimer = messageClock.scheduler().schedule(delayMillis, this::onMessageTimer);
+        }
+
+        /** Cancels the pending message timer, if any; called holding {@link #clockLock}. */
+        private void cancelMessageTimer() {
+            if (messageTimer != NO_TIMER) {
+                messageClock.scheduler().cancel(messageTimer);
+                messageTimer = NO_TIMER;
+            }
+        }
+
+        /**
+         * The pending message timer fired. A stopped clock, and one whose stream the consumer has paused
+         * because the upstream is not taking data, does nothing — a resume arms a new timer. A gap that began
+         * less than the bound ago — a complete message was forwarded, or the stream resumed, since the timer
+         * was armed — re-arms for the remainder. Otherwise the next complete message did not arrive within the
+         * bound: the stream is refused as a {@link RequestMessageTimeout} through the single abort claim,
          * taken under the clocks' monitor. Outside it, the inbound stream is paused, the upstream request
          * reset and the failure propagated.
          */
-        private void onFirstMessageTimer() {
-            FirstMessageTimeout noFirstMessage;
+        private void onMessageTimer() {
+            RequestMessageTimeout idleClient;
             synchronized (clockLock) {
-                firstMessageTimer = NO_TIMER;
-                if (firstMessageEnded) {
+                messageTimer = NO_TIMER;
+                if (messageClockEnded || pausedByConsumer) {
                     return;
                 }
-                firstMessageEnded = true;
-                noFirstMessage = new FirstMessageTimeout();
-                if (!claimAbort(noFirstMessage)) {
+                long gapNanos = messageClock.nanoTime().getAsLong() - messageGapStartNanos;
+                long remainingNanos = TimeUnit.MILLISECONDS.toNanos(messageClock.timeoutMillis()) - gapNanos;
+                if (remainingNanos > 0) {
+                    armMessageTimer(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos + MILLIS_ROUNDING_NANOS)));
+                    return;
+                }
+                messageClockEnded = true;
+                idleClient = new RequestMessageTimeout();
+                if (!claimAbort(idleClient)) {
                     return;
                 }
             }
             delegate.pause();
             abortAction.run();
-            propagateFailure(noFirstMessage);
+            propagateFailure(idleClient);
         }
 
         /** Schedules the one pending deadline timer; called holding {@link #clockLock}. */
         private void armDeadlineTimer(long remainingNanos) {
-            deadlineTimer = idleClock.scheduler().schedule(
+            deadlineTimer = deadlineClock.scheduler().schedule(
                     Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos + MILLIS_ROUNDING_NANOS)),
                     this::onDeadlineTimer);
         }
@@ -2211,7 +2727,9 @@ public final class DispatchStage {
          * passed it ends the body: at once, by refusing it as a {@link RequestBodyDeadlineExceeded}
          * through the single abort claim — handed to the late-violation callback first when the response
          * was already handed over — or, while the consumer has paused the stream because the upstream is
-         * not taking data, the moment the body is read again.
+         * not taking data, the moment the body is read again. Whose failure a pre-response deadline that
+         * passed during such a pause is, that read decides (see {@link #claimDeadlineExpiry()}); a whole-body
+         * deadline is ended as the client's either way.
          */
         private void onDeadlineTimer() {
             @Nullable DeadlineExpiry expiry;
@@ -2220,14 +2738,14 @@ public final class DispatchStage {
                 if (deadlineEnded) {
                     return;
                 }
-                long remainingNanos = deadlineNanos.orElseThrow() - idleClock.nanoTime().getAsLong();
+                long remainingNanos = deadlineNanos.orElseThrow() - deadlineClock.nanoTime().getAsLong();
                 if (remainingNanos > 0) {
                     armDeadlineTimer(remainingNanos);
                     return;
                 }
                 if (pausedByConsumer) {
                     // The upstream is not taking data: the deadline stays in force, and the body is ended
-                    // the moment the consumer reads it again.
+                    // the moment the consumer reads it again — by the length the pause has reached then.
                     deadlinePassed = true;
                     return;
                 }
@@ -2240,7 +2758,8 @@ public final class DispatchStage {
 
         /**
          * Ends the body at a deadline that passed while it was not being read, now that it is read again —
-         * on the same path as an expiry on time.
+         * on the same path as an expiry on time, as the upstream's {@link UpstreamStalledRequest} when it was a
+         * pre-response deadline and the upstream had held the stream for at least the stall threshold.
          *
          * @return {@code true} when this call ended the body: the read must not reach the inbound stream
          */
@@ -2263,66 +2782,184 @@ public final class DispatchStage {
         }
 
         /**
-         * Ends the deadline and takes the single abort claim for its refusal; called holding
-         * {@link #clockLock}, so the claim and the choice of the late-violation callback are made together
-         * with the hand-over.
+         * Ends the body at its deadline when the inbound end arrived only after the deadline's instant: the body
+         * had not ended when its deadline passed, so the end comes too late. The deadline is overdue while it is
+         * still in force and either was recorded as passed and has not been acted on yet, or its instant has
+         * passed while its timer — which never fires early, but may fire late — has not run. The instant is read
+         * from the clock, as the read that ends a pause reads it (see {@link #resumeClocks()}). Left to
+         * {@link #stopClocks()}, the end would cancel the late timer and drop the passed deadline, and a body
+         * that did not end in time would be passed on as one that did.
+         * <p>
+         * The expiry is claimed exactly as on every other path — {@link #claimDeadlineExpiry()} decides whose
+         * failure it is — and carried out without pausing the inbound stream: the stream has ended, so nothing
+         * is left to pause, and Vert.x refuses to pause an HTTP/2 request that has ended.
+         * <p>
+         * An end that arrived in time ends the deadline in the same hold of the monitor, so the deadline's
+         * timer cannot claim it between this check and the stop of the clocks that follows.
+         *
+         * @return {@code true} when this call ended the body: the end must not be passed on
+         */
+        private boolean endAtOverdueDeadline() {
+            if (deadlineNanos.isEmpty()) {
+                return false;
+            }
+            @Nullable DeadlineExpiry expiry;
+            synchronized (clockLock) {
+                if (!deadlinePassed && !deadlineTimerIsLate()) {
+                    endDeadline();
+                    return false;
+                }
+                expiry = claimDeadlineExpiry();
+            }
+            if (expiry == null) {
+                return false;
+            }
+            abortFor(expiry);
+            return true;
+        }
+
+        /**
+         * Ends the deadline and takes the single abort claim for its expiry — the upstream's
+         * {@link UpstreamStalledRequest} when it is a pre-response deadline and the upstream has held the stream
+         * without a break for at least the stall threshold at this moment, the moment the deadline is acted on;
+         * the client's {@link RequestBodyDeadlineExceeded} otherwise. A pause shorter than the threshold —
+         * ordinary flow control, a client sending faster than a healthy upstream reads — leaves the deadline the
+         * client's, as does a deadline that passes while the stream is being read. Called holding
+         * {@link #clockLock}, so the claim and the choice of the late-violation callback are made together with
+         * the hand-over.
          *
          * @return the expiry to carry out, or {@code null} when another abort was claimed first
          */
         private @Nullable DeadlineExpiry claimDeadlineExpiry() {
+            Exception reason = deadlinePassedHeldByUpstream || upstreamStalledPastThreshold()
+                    ? new UpstreamStalledRequest()
+                    : new RequestBodyDeadlineExceeded();
             deadlineEnded = true;
             deadlinePassed = false;
-            RequestBodyDeadlineExceeded exceeded = new RequestBodyDeadlineExceeded();
-            if (!claimAbort(exceeded)) {
+            deadlinePassedHeldByUpstream = false;
+            if (!claimAbort(reason)) {
                 return null;
             }
-            return new DeadlineExpiry(exceeded, lateViolation);
+            return new DeadlineExpiry(reason, lateViolation);
         }
 
         /**
-         * Carries out a claimed deadline expiry, outside the monitor: pauses the inbound stream, tells the
-         * edge when the response is already being relayed, resets the upstream request and propagates the
-         * failure.
+         * Carries out a claimed deadline expiry of a body whose inbound stream is still open, outside the
+         * monitor: pauses the inbound stream, then aborts the upstream request for the expiry (see
+         * {@link #abortFor}).
          */
         private void expire(DeadlineExpiry expiry) {
             delegate.pause();
+            abortFor(expiry);
+        }
+
+        /**
+         * Aborts the upstream request for a claimed deadline expiry, outside the monitor: tells the edge when
+         * the response is already being relayed, resets the upstream request and propagates the failure. Only
+         * the client's refusal can meet a late-violation callback: the upstream's stall arises on the
+         * pre-response deadline alone, which ends when the attempt's send completes, before the hand-over.
+         * The inbound stream is not touched, so this is all an expiry claimed at the inbound end carries out
+         * (see {@link #endAtOverdueDeadline()}).
+         */
+        private void abortFor(DeadlineExpiry expiry) {
             Consumer<GatewayException> late = expiry.lateViolation();
-            if (late != null) {
-                late.accept(expiry.refusal());
+            if (late != null && expiry.reason() instanceof GatewayException refusal) {
+                late.accept(refusal);
             }
             abortAction.run();
-            propagateFailure(expiry.refusal());
+            propagateFailure(expiry.reason());
         }
 
         /**
          * A deadline expiry whose abort claim was won.
          *
-         * @param refusal       the refusal recorded as the stream's client abort
+         * @param reason        the reason recorded as the stream's abort: the client's
+         *                      {@link RequestBodyDeadlineExceeded} or the upstream's {@link UpstreamStalledRequest}
          * @param lateViolation the late-violation callback when the response was already handed over, or
-         *                      {@code null} when the refusal is the dispatch's own failure
+         *                      {@code null} when the expiry is the dispatch's own failure
          */
-        private record DeadlineExpiry(RequestBodyDeadlineExceeded refusal,
-        @Nullable Consumer<GatewayException> lateViolation) {
+        private record DeadlineExpiry(Exception reason, @Nullable Consumer<GatewayException> lateViolation) {
         }
 
-        /** The consumer paused the stream: the gap is not counted until it resumes. */
-        private void suspendIdleClock() {
-            if (!idleClock.armed()) {
+        /**
+         * @return {@code true} when a pause by the consumer matters to a clock: neither the idle clock nor
+         *         the message clock counts it, and a deadline passing during it ends the body only at the
+         *         next read
+         */
+        private boolean tracksPause() {
+            return idleClock.armed() || messageClock.armed();
+        }
+
+        /**
+         * @return {@code true} when the request-body deadline is a pre-response deadline: armed with the message
+         *         clock because no idle clock is — the only deadline that can be charged to the upstream
+         */
+        private boolean preResponseDeadline() {
+            return deadlineNanos.isPresent() && !idleClock.armed();
+        }
+
+        /**
+         * @return {@code true} when the stream's pre-response deadline is the upstream's to answer for: the
+         *         consumer has the stream paused — the upstream is not taking data — and has had it paused without
+         *         a break for at least the stall threshold; called holding {@link #clockLock}
+         */
+        private boolean upstreamStalledPastThreshold() {
+            return pausedByConsumer && preResponseDeadline()
+                    && deadlineClock.nanoTime().getAsLong() - pauseStartNanos >= upstreamStallNanos;
+        }
+
+        /**
+         * @return {@code true} when the request-body deadline is still in force and its instant has passed while
+         *         its timer is still pending: the timer is late and has not recorded the passed deadline yet. A
+         *         deadline that has ended is never late, as its timer does nothing once it fires. Called holding
+         *         {@link #clockLock}
+         */
+        private boolean deadlineTimerIsLate() {
+            return !deadlineEnded && deadlineTimer != NO_TIMER
+                    && deadlineNanos.orElseThrow() - deadlineClock.nanoTime().getAsLong() <= 0;
+        }
+
+        /**
+         * The consumer paused the stream: no gap is counted until it resumes. A pause already in force keeps the
+         * moment it began, so the stall it measures is the whole unbroken pause.
+         */
+        private void suspendClocks() {
+            if (!tracksPause()) {
                 return;
             }
             synchronized (clockLock) {
+                if (!pausedByConsumer && preResponseDeadline()) {
+                    pauseStartNanos = deadlineClock.nanoTime().getAsLong();
+                }
                 pausedByConsumer = true;
             }
         }
 
-        /** The consumer resumed the stream: the gap restarts from now, and a timer is pending again. */
-        private void resumeIdleClock() {
-            if (!idleClock.armed()) {
+        /**
+         * The consumer resumed the stream: every gap restarts from now, and its timer is pending again. A deadline
+         * that passed during the pause now ending is decided by the pause's length first, as the pause ends, for
+         * the read's second passed-deadline check to act on; the next pause measures its stall from its own start.
+         * <p>
+         * Whether the deadline passed during the pause is read from the clock, not only from the deadline's
+         * timer: a timer never fires early, but it may fire late, so a read can end a pause after the deadline's
+         * instant and before that timer has run. The deadline is then recorded as passed here, exactly as the
+         * timer would have recorded it during the pause. Left to the late timer, it would find the stream being
+         * read again and charge the deadline to the client, however long the upstream had held the stream.
+         */
+        private void resumeClocks() {
+            if (!tracksPause()) {
                 return;
             }
             synchronized (clockLock) {
+                if (pausedByConsumer && deadlineTimerIsLate()) {
+                    deadlinePassed = true;
+                }
+                if (deadlinePassed) {
+                    deadlinePassedHeldByUpstream = upstreamStalledPastThreshold();
+                }
                 pausedByConsumer = false;
-                if (!clockStarted || clockStopped) {
+                resumeMessageClock();
+                if (!idleClock.armed() || !clockStarted || clockStopped) {
                     return;
                 }
                 lastProgressNanos = idleClock.nanoTime().getAsLong();
@@ -2379,18 +3016,18 @@ public final class DispatchStage {
             return this;
         }
 
-        /** Pauses the inbound stream; the idle clock does not count the pause. */
+        /** Pauses the inbound stream; neither the idle clock nor the message clock counts the pause. */
         @Override
         public ReadStream<Buffer> pause() {
-            suspendIdleClock();
+            suspendClocks();
             delegate.pause();
             return this;
         }
 
         /**
-         * Resumes the inbound stream; the idle clock restarts its gap from now. When the request-body
-         * deadline passed while the body was not being read, the body is ended instead and the inbound
-         * stream stays paused.
+         * Resumes the inbound stream; the idle clock and the message clock restart their gaps from now.
+         * When the request-body deadline passed while the body was not being read, the body is ended instead
+         * and the inbound stream stays paused.
          */
         @Override
         public ReadStream<Buffer> resume() {
@@ -2410,9 +3047,9 @@ public final class DispatchStage {
         }
 
         /**
-         * Fetches from the inbound stream; the idle clock restarts its gap from now. When the request-body
-         * deadline passed while the body was not being read, the body is ended instead and the inbound
-         * stream stays paused.
+         * Fetches from the inbound stream; the idle clock and the message clock restart their gaps from now.
+         * When the request-body deadline passed while the body was not being read, the body is ended instead
+         * and the inbound stream stays paused.
          */
         @Override
         public ReadStream<Buffer> fetch(long amount) {
@@ -2432,13 +3069,15 @@ public final class DispatchStage {
         }
 
         /**
-         * Restarts the idle clock for a read of the body, unless the request-body deadline has passed — then
-         * the body is ended instead.
+         * Restarts the idle clock and the message clock for a read of the body, unless the request-body
+         * deadline has passed — then the body is ended instead.
          * <p>
          * The passed deadline is checked before the clock resumes and again once it has. Until the clock
          * has resumed, the stream is still marked paused, so a deadline timer firing in between only records
          * that the deadline passed; the second check ends the body. A timer firing after the clock resumed
-         * finds the stream no longer paused and ends the body itself.
+         * finds the stream no longer paused and ends the body itself. A deadline whose instant has passed
+         * while its timer is late is recorded as passed by the clock's resume, so the second check ends that
+         * body as well — by the length the pause has reached — instead of leaving it to the late timer.
          *
          * @param inReadWindow runs between the first passed-deadline check and the clock's resume
          * @return {@code true} when the read may reach the inbound stream
@@ -2448,7 +3087,7 @@ public final class DispatchStage {
                 return false;
             }
             inReadWindow.run();
-            resumeIdleClock();
+            resumeClocks();
             return !endAtPassedDeadline();
         }
 
@@ -2461,8 +3100,89 @@ public final class DispatchStage {
     }
 
     /**
-     * The scheduling seam of the request-body clocks — the idle clock, the deadline and the first-message
-     * clock: schedules a task after a delay and cancels it. Production schedules on Vert.x
+     * Reads the frames of a body's gRPC length-prefixed messages as their bytes cross, without holding any
+     * of them: each 5-byte prefix — a compressed-flag byte and the payload length as an unsigned 32-bit
+     * big-endian integer — is read one byte at a time, and the payload bytes it declares are then only
+     * counted, after which the next byte starts the next message's prefix. A prefix and a payload may each
+     * straddle any number of chunks, and one chunk may end one message and carry any number of further
+     * messages, complete or not; a message whose declared length is zero is complete at its prefix. The
+     * tracker says how many messages each chunk completes. It never refuses a length: a declared length past
+     * {@code max_body_bytes} is refused by the body's cumulative cap as the bytes arrive.
+     * <p>
+     * Not thread-safe: it is used by chunk delivery only, which runs on the inbound connection's event loop.
+     */
+    static final class GrpcMessageFrames {
+
+        /** The length of a gRPC message prefix: the compressed flag and the 4-byte payload length. */
+        static final int PREFIX_LENGTH = 5;
+
+        /** How many bytes of the current message's prefix have been read. */
+        private int prefixBytesRead;
+        /** The current message's declared payload length, assembled from its prefix's length bytes. */
+        private long declaredLength;
+        /** How many of the current message's payload bytes have not crossed yet, once its prefix is read. */
+        private long payloadBytesOwed;
+
+        /**
+         * Reads {@code chunk}'s bytes of the body's messages.
+         *
+         * @param chunk the next chunk of the body, read in place
+         * @return how many messages {@code chunk} completes; {@code 0} for a chunk carrying only part of a
+         *         message, or nothing
+         */
+        int completedBy(Buffer chunk) {
+            int completed = 0;
+            int index = 0;
+            int length = chunk.length();
+            while (index < length) {
+                boolean messageComplete;
+                if (prefixBytesRead < PREFIX_LENGTH) {
+                    messageComplete = readPrefixByte(chunk.getByte(index++));
+                } else {
+                    long crossing = Math.min(payloadBytesOwed, (long) length - index);
+                    payloadBytesOwed -= crossing;
+                    index += (int) crossing;
+                    messageComplete = payloadBytesOwed == 0;
+                }
+                if (messageComplete) {
+                    completed++;
+                    nextMessage();
+                }
+            }
+            return completed;
+        }
+
+        /**
+         * Reads the next byte of the current message's prefix.
+         *
+         * @param next the next prefix byte
+         * @return {@code true} when the byte completes the message: it is the prefix's last, and the prefix
+         *         declares no payload
+         */
+        private boolean readPrefixByte(byte next) {
+            if (prefixBytesRead > 0) {
+                // Bytes 2-5 carry the length, most significant first; the flag byte carries none.
+                declaredLength = (declaredLength << Byte.SIZE) | (next & 0xFF);
+            }
+            prefixBytesRead++;
+            if (prefixBytesRead < PREFIX_LENGTH) {
+                return false;
+            }
+            payloadBytesOwed = declaredLength;
+            return payloadBytesOwed == 0;
+        }
+
+        /** The current message is complete: the next byte starts the next message's prefix. */
+        private void nextMessage() {
+            prefixBytesRead = 0;
+            declaredLength = 0;
+            payloadBytesOwed = 0;
+        }
+    }
+
+    /**
+     * The scheduling seam of the request-body clocks — the idle clock, the deadline and the message clock:
+     * schedules a task after a delay and cancels it. Production schedules on Vert.x
      * ({@link VertxIdleScheduler}); a unit test drives it by hand.
      */
     interface IdleScheduler {
@@ -2485,7 +3205,7 @@ public final class DispatchStage {
     }
 
     /**
-     * A request-body clock of one dispatch — the idle clock, or the first-message clock: its timeout, the
+     * A request-body clock of one dispatch — the idle clock, or the message clock: its timeout, the
      * scheduler its timer runs on, and the nano-time source it measures progress with.
      *
      * @param timeoutMillis the clock's timeout in milliseconds, or {@link #NO_BODY_IDLE_TIMEOUT} (equal to

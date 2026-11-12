@@ -58,8 +58,11 @@ import io.vertx.core.http.HttpServerOptions;
  * upstream attempt rather than the whole dispatch (a retried dispatch on a retry-enabled route can run
  * up to three attempts, about 90 s), so a dispatch whose body stopped arriving, or is still arriving
  * when the guard would end the attempt, is ended and attributed to the request before the guard would
- * end it as an upstream timeout. A bodyless request
- * and a gRPC route are watched by neither.
+ * end it as an upstream timeout. A bodyless request is watched by neither. A gRPC route is not watched
+ * by the idle timeout — its message bound ends a client idle between request messages instead — and its
+ * pre-response deadline in {@code GrpcDispatchStage} equals the request-body deadline in length, but is
+ * counted from the moment the attempt hands its body over, is held to a cap one second short of the
+ * guard's timeout, and stops once the upstream answers.
  * <p>
  * <strong>The inbound HTTP/2 concurrent streams and connection window are transport bounds too.</strong>
  * A listener admits at most 100 concurrent streams per connection (the Vert.x listener default): a listener announcing more, or announcing no limit at all, is lowered to that bound, and
@@ -405,7 +408,9 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * @return how long, in milliseconds from the start of its upstream attempt, a proxied dispatch may
      *         wait for the whole request body before it is answered {@code 408} and its upstream
      *         request is reset — a fixed gateway constant of 25,000 ms, below the upstream guard's
-     *         timeout, which starts at the same moment
+     *         timeout, which starts at the same moment. A gRPC dispatch uses the same value as its
+     *         pre-response deadline ({@code GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS}), which
+     *         bounds the call only until the upstream answers
      */
     public long requestBodyDeadlineMillis() {
         return requestBodyDeadlineMillis;

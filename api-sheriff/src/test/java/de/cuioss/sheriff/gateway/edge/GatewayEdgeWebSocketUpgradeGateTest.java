@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
@@ -29,6 +30,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
@@ -66,6 +68,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * A request on a {@code protocol: websocket} route that is no valid WebSocket opening handshake is
@@ -76,6 +82,12 @@ import org.junit.jupiter.api.function.Executable;
  * The edge runs with two general admission permits and a relay sub-budget of one. A refusal that kept
  * the general permit it took would therefore leave too few for the valid relay and the plain request
  * that follow it, which is how each case proves the permit came back.
+ * <p>
+ * Two further properties are pinned against the real stack. A refusal that leaves a declared body of up
+ * to 8192 bytes unread — one it does not retire the connection for — must leave the keep-alive connection
+ * serving the request that follows as itself. And the gate must upgrade exactly the {@code Connection}
+ * and {@code Upgrade} header shapes vertx-core itself upgrades: the stub upstream is a plain vertx-core
+ * server, so each shape is asked of it directly first, and the edge is held to its verdict.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — a request on a WebSocket route that is no valid upgrade is refused before any upstream dial")
@@ -99,6 +111,20 @@ class GatewayEdgeWebSocketUpgradeGateTest {
      * minimal-profile route: on the default route the security filter refuses that query first.
      */
     private static final String UNPARSEABLE_URI = MINIMAL_WS_PATH + "/room?a|b";
+    /** The path a request following a refusal on the same connection is sent to: no route matches it. */
+    private static final String UNMATCHED_PATH = "/unmatched";
+    /** The status of {@link #UNMATCHED_PATH}: the request answered as itself, not as bytes of a body before it. */
+    private static final int UNMATCHED_STATUS = 404;
+    /**
+     * How long a request following a refusal on the same connection may take to be answered, or the edge
+     * to close that connection: room for the response-timing floor of its unrouted {@code 404}, far below
+     * the forever an unread body left in front of it would hold it.
+     */
+    private static final long FOLLOW_UP_SECONDS = 10;
+    /** The status of a completed opening handshake (RFC 6455 §4.2.2). */
+    private static final int SWITCHING_PROTOCOLS = 101;
+    private static final String CRLF = "\r\n";
+    private static final String HTTP_1_1 = "HTTP/1.1 ";
     private static final String HSTS = "Strict-Transport-Security";
     private static final String CSP = "Content-Security-Policy";
     private static final int ROUTE_HSTS_MAX_AGE = 31536000;
@@ -341,6 +367,84 @@ class GatewayEdgeWebSocketUpgradeGateTest {
         Awaits.teardown(held.close(), "the held relay to close");
     }
 
+    /**
+     * A refusal of an HTTP/1.1 request declaring a body within the 8192-byte bound — a body the gate never
+     * reads, and the refusal does not retire the connection for — must not leave the keep-alive connection
+     * stalled behind that body: the request that follows on the same connection is either answered as
+     * itself, or the edge closes the connection. A follow-up answered with anything but its own
+     * {@value #UNMATCHED_STATUS} would mean the unread body bytes were parsed as a request. Both ends of
+     * the bound are driven, each through a {@code 400}, a {@code 405} and a {@code 426}.
+     */
+    @ParameterizedTest(name = "a declared body of {0} byte(s)")
+    @ValueSource(ints = {1, 8192})
+    @DisplayName("a refusal leaving a declared body of 1..8192 bytes unread does not stall the connection behind it")
+    void refusalLeavingADeclaredBodyUnreadDoesNotStallTheConnection(int bodyBytes) throws Exception {
+        List<String> withoutKey = new ArrayList<>(handshake("13", SAMPLE_KEY));
+        withoutKey.removeIf(line -> line.startsWith("Sec-WebSocket-Key"));
+        String body = "x".repeat(bodyBytes);
+
+        FollowUp badRequest = refusalThenFollowUp("GET", withoutKey, body);
+        FollowUp methodNotAllowed = refusalThenFollowUp("POST", handshake("13", SAMPLE_KEY), body);
+        FollowUp upgradeRequired = refusalThenFollowUp("GET", List.of("Origin: " + ORIGIN), body);
+
+        assertAll("each refusal of a request whose declared body it never reads",
+                () -> assertEquals(400, badRequest.refusal().status(), "the missing key is the first rule broken"),
+                () -> assertNotStalled(badRequest, "the 400"),
+                () -> assertEquals(405, methodNotAllowed.refusal().status(), "a WebSocket is opened by a GET only"),
+                () -> assertNotStalled(methodNotAllowed, "the 405"),
+                () -> assertEquals(426, upgradeRequired.refusal().status(), "a plain GET is no WebSocket upgrade"),
+                () -> assertNotStalled(upgradeRequired, "the 426"));
+        assertEquals(0, upstreamContacts.get(), "a refused request never reaches the upstream");
+    }
+
+    /**
+     * The gate admits exactly the {@code Connection} and {@code Upgrade} header shapes the HTTP/1.1 upgrade
+     * path of vertx-core 4.5.34 upgrades itself — asserted against that stack, not against a reading of it.
+     * The stub upstream is a plain vertx-core server with a WebSocket handler, so each shape is first sent
+     * to it directly: the status it answers is the stack's verdict. The same shape is then sent through
+     * the edge, which must upgrade it exactly when the stack did, and must refuse a shape the stack
+     * refuses before it dials the upstream.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("upgradeHeaderShapes")
+    @DisplayName("the gate upgrades exactly the Connection and Upgrade header shapes vertx-core itself upgrades")
+    void gateAgreesWithTheStackOnTheUpgradeHeaderShapes(String shape, List<String> upgradeLines) throws Exception {
+        List<String> headerLines = new ArrayList<>(upgradeLines);
+        headerLines.addAll(List.of("Sec-WebSocket-Key: " + SAMPLE_KEY, "Sec-WebSocket-Version: 13",
+                "Origin: " + ORIGIN));
+
+        int stackStatus = exchangeOn(upstream.actualPort(), "GET", WS_URI, headerLines, false).status();
+        int contactsAfterStack = upstreamContacts.get();
+        int edgeStatus = exchange("GET", WS_URI, headerLines, false).status();
+        int edgeContacts = upstreamContacts.get() - contactsAfterStack;
+
+        assertAll(shape,
+                () -> assertEquals(stackStatus == SWITCHING_PROTOCOLS, edgeStatus == SWITCHING_PROTOCOLS,
+                        () -> "the edge upgrades exactly what vertx-core upgrades: the stack answered " + stackStatus
+                                + ", the edge " + edgeStatus),
+                () -> assertTrue(stackStatus == SWITCHING_PROTOCOLS || edgeContacts == 0,
+                        () -> "a shape the stack refuses is refused before any upstream dial: " + edgeContacts
+                                + " upstream contact(s)"));
+    }
+
+    static Stream<Arguments> upgradeHeaderShapes() {
+        return Stream.of(
+                Arguments.of("control: one Connection line Upgrade, one Upgrade line websocket",
+                        List.of("Upgrade: websocket", "Connection: Upgrade")),
+                Arguments.of("upgrade inside a Connection list",
+                        List.of("Upgrade: websocket", "Connection: keep-alive, Upgrade")),
+                Arguments.of("upgrade on the first of two Connection lines",
+                        List.of("Upgrade: websocket", "Connection: Upgrade", "Connection: keep-alive")),
+                Arguments.of("upgrade on the second of two Connection lines only",
+                        List.of("Upgrade: websocket", "Connection: keep-alive", "Connection: Upgrade")),
+                Arguments.of("websocket first in an Upgrade list",
+                        List.of("Upgrade: websocket, x", "Connection: Upgrade")),
+                Arguments.of("websocket last in an Upgrade list",
+                        List.of("Upgrade: chat, websocket", "Connection: Upgrade")),
+                Arguments.of("websocket on the second of two Upgrade lines",
+                        List.of("Upgrade: x", "Upgrade: websocket", "Connection: Upgrade")));
+    }
+
     @Test
     @DisplayName("control: a valid upgrade is still relayed end to end, its one handshake reaching the upstream")
     void validUpgradeIsRelayed() throws Exception {
@@ -434,8 +538,17 @@ class GatewayEdgeWebSocketUpgradeGateTest {
      */
     private Answer exchange(String method, String requestUri, List<String> headerLines, boolean awaitEdgeClose)
             throws Exception {
-        NetSocket socket = Awaits.connect(netClient.connect(front.actualPort(), LoopbackHost.ADDRESS),
-                "the TCP connection to the edge");
+        return exchangeOn(front.actualPort(), method, requestUri, headerLines, awaitEdgeClose);
+    }
+
+    /**
+     * Like {@link #exchange}, sent to the server listening on {@code port} — the edge, or the stub upstream
+     * when the case asks the HTTP stack itself.
+     */
+    private Answer exchangeOn(int port, String method, String requestUri, List<String> headerLines,
+            boolean awaitEdgeClose) throws Exception {
+        NetSocket socket = Awaits.connect(netClient.connect(port, LoopbackHost.ADDRESS),
+                "the TCP connection to the server under test");
         CompletableFuture<Void> closedByEdge = new CompletableFuture<>();
         socket.closeHandler(v -> closedByEdge.complete(null));
         CompletableFuture<Answer> answer = new CompletableFuture<>();
@@ -448,14 +561,9 @@ class GatewayEdgeWebSocketUpgradeGateTest {
                 answer.complete(parseHead(text.substring(0, headEnd)));
             }
         });
-        List<String> request = new ArrayList<>();
-        request.add(method + " " + requestUri + " HTTP/1.1");
-        request.add("Host: " + LoopbackHost.ADDRESS + ":" + front.actualPort());
-        request.addAll(headerLines);
-        request.add("");
-        request.add("");
         try {
-            Awaits.connect(socket.write(String.join("\r\n", request)), "the raw request to be written");
+            Awaits.connect(socket.write(requestHead(port, method, requestUri, headerLines)),
+                    "the raw request to be written");
             Answer edgeAnswer = Awaits.connect(answer.orTimeout(PROMPT_ANSWER_SECONDS, TimeUnit.SECONDS),
                     "the edge's prompt answer to the raw HTTP/1.1 request");
             if (awaitEdgeClose) {
@@ -466,6 +574,88 @@ class GatewayEdgeWebSocketUpgradeGateTest {
         } finally {
             Awaits.teardown(socket.close(), "the raw connection to close");
         }
+    }
+
+    /**
+     * The head of one HTTP/1.1 request with {@code method} to {@code requestUri} on the server listening
+     * on {@code port}, carrying exactly {@code headerLines} beside {@code Host}.
+     */
+    private static String requestHead(int port, String method, String requestUri, List<String> headerLines) {
+        List<String> request = new ArrayList<>();
+        request.add(method + " " + requestUri + " HTTP/1.1");
+        request.add("Host: " + LoopbackHost.ADDRESS + ":" + port);
+        request.addAll(headerLines);
+        request.add("");
+        request.add("");
+        return String.join(CRLF, request);
+    }
+
+    /**
+     * Sends one HTTP/1.1 request on the WebSocket route over a raw connection, carrying
+     * {@code headerLines}, a {@code Content-Length} of {@code body} and {@code body} itself, and awaits the
+     * edge's answer. Then sends a {@code GET} to {@link #UNMATCHED_PATH} on the same connection and awaits,
+     * for at most {@link #FOLLOW_UP_SECONDS}, either the answer to it or the edge closing the connection.
+     *
+     * @return the answer to the first request, and what became of the one that followed it
+     */
+    private FollowUp refusalThenFollowUp(String method, List<String> headerLines, String body) throws Exception {
+        NetSocket socket = Awaits.connect(netClient.connect(front.actualPort(), LoopbackHost.ADDRESS),
+                "the TCP connection to the edge");
+        CompletableFuture<Void> closedByEdge = new CompletableFuture<>();
+        socket.closeHandler(v -> closedByEdge.complete(null));
+        CompletableFuture<Answer> refusal = new CompletableFuture<>();
+        CompletableFuture<Integer> followUpStatus = new CompletableFuture<>();
+        Buffer received = Buffer.buffer();
+        socket.handler(chunk -> {
+            received.appendBuffer(chunk);
+            String text = received.toString(StandardCharsets.ISO_8859_1);
+            int headEnd = text.indexOf(CRLF + CRLF);
+            if (headEnd < 0) {
+                return;
+            }
+            refusal.complete(parseHead(text.substring(0, headEnd)));
+            // The refusal carries no body, so the next status line starts the follow-up's answer.
+            int next = text.indexOf(HTTP_1_1, headEnd);
+            int statusLineEnd = next < 0 ? -1 : text.indexOf(CRLF, next);
+            if (statusLineEnd >= 0) {
+                followUpStatus.complete(Integer.parseInt(text.substring(next, statusLineEnd).split(" ")[1]));
+            }
+        });
+        List<String> withLength = new ArrayList<>(headerLines);
+        withLength.add("Content-Length: " + body.length());
+        try {
+            Awaits.connect(socket.write(requestHead(front.actualPort(), method, WS_URI, withLength) + body),
+                    "the raw request and its body to be written");
+            Answer refused = Awaits.connect(refusal.orTimeout(PROMPT_ANSWER_SECONDS, TimeUnit.SECONDS),
+                    "the edge's prompt answer to the raw HTTP/1.1 request");
+            // A write to a connection the edge has already closed fails; that outcome is read below.
+            socket.write(requestHead(front.actualPort(), "GET", UNMATCHED_PATH, List.of()));
+            Awaits.connect(CompletableFuture.anyOf(followUpStatus, closedByEdge)
+                            .completeOnTimeout(null, FOLLOW_UP_SECONDS, TimeUnit.SECONDS),
+                    "the request that follows to be answered, the edge to close the connection, or the wait to end");
+            return new FollowUp(refused,
+                    followUpStatus.isDone() ? OptionalInt.of(followUpStatus.join()) : OptionalInt.empty(),
+                    closedByEdge.isDone());
+        } finally {
+            Awaits.teardown(socket.close(), "the raw connection to close");
+        }
+    }
+
+    /**
+     * Asserts that the request following a refusal on its connection was not left without an answer: it
+     * was answered as itself, or the edge closed the connection — and then the refusal announced that.
+     */
+    private static void assertNotStalled(FollowUp followUp, String which) {
+        if (followUp.followUpStatus().isPresent()) {
+            assertEquals(UNMATCHED_STATUS, followUp.followUpStatus().getAsInt(),
+                    () -> which + ": the request that follows is answered as itself, not as bytes of the unread body");
+            return;
+        }
+        assertAll(which + ": the request that follows got no answer within " + FOLLOW_UP_SECONDS + " s",
+                () -> assertTrue(followUp.closedByEdge(),
+                        "without an answer, the edge must have closed the connection instead of leaving it stalled"),
+                () -> assertEquals("close", followUp.refusal().headers().get("Connection"),
+                        "a refusal after which the edge closes the connection announces it"));
     }
 
     /** The header lines of a WebSocket opening handshake with the given version and key. */
@@ -528,5 +718,12 @@ class GatewayEdgeWebSocketUpgradeGateTest {
 
     /** What the client saw of the edge's answer: its status and its headers, looked up case-insensitively. */
     private record Answer(int status, Map<String, String> headers) {
+    }
+
+    /**
+     * A refusal and what became of the request sent after it on the same connection: the status it was
+     * answered with, if any, and whether the edge closed the connection.
+     */
+    private record FollowUp(Answer refusal, OptionalInt followUpStatus, boolean closedByEdge) {
     }
 }

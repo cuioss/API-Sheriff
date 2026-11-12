@@ -496,7 +496,8 @@ Neither case has a wire effect: an ALERT is a signal to look at, not a refusal
 The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
 
 The *transport bounds* -- the framing limits, the HTTP/2 stream, header-list, reset and
-connection-window bounds, the request-body idle timeout and deadline, the gRPC stream-idle timeout,
+connection-window bounds, the request-body idle timeout and deadline, the gRPC message bound and
+stream-idle timeout,
 the unrouted-`404` response floor and the drain window -- are fixed secure defaults and are not
 operator-configurable. The header-block and request-line limits fail fast on abusive framing before
 a request is admitted to the pipeline. This table is the documented contract for those constants.
@@ -586,9 +587,33 @@ deployment that never writes it keeps the behaviour shown here.
   connection is closed. The time spent waiting for a pooled upstream connection counts towards the
   25 s: a request that obtains its connection only after the deadline is answered `408` as soon as its
   body is read. The deadline does not reset an upstream that is not taking data, but a body that
-  upstream reads again after the deadline is ended then. Not applied to bodyless requests or
-  `protocol: grpc` routes; not configurable. See
+  upstream reads again after the deadline is ended then. Not applied to bodyless requests. On a
+  `protocol: grpc` route it applies only until the upstream answers, and it counts from the moment the
+  gateway hands the body to the upstream, so the wait for an upstream connection is not charged to the
+  client -- but it passes no later than 29 s after the upstream attempt started, a second before the
+  upstream guard's timeout: a call whose client still holds its request stream open then is ended with
+  `grpc-status: 4` (`DEADLINE_EXCEEDED`) and `grpc-message: input-validation`. A deadline that passes
+  while the upstream is not taking data ends the call when the upstream reads again; it is the
+  upstream's only when the upstream had then taken no data for at least 10 s without a break -- the call
+  ends with `grpc-message: upstream` and the upstream's circuit breaker counts it. A shorter pause is
+  ordinary flow control, as when a client sends faster than its upstream reads, and stays the client's
+  `input-validation`, so a client cannot open the breaker by out-sending a healthy upstream. The deadline always
+  leaves at least 1 s after the hand-over, so a call whose upstream connection took longer than 28 s
+  -- less than that second before the 29 s cap, or past it -- is ended without being sent, as the
+  upstream's timeout (`grpc-status: 4`, `grpc-message: upstream`). Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline].
+
+| gRPC message bound
+| 10 s +
+  (per complete request message)
+| Until the upstream answers, each request message of a `protocol: grpc` call -- its length prefix and
+  every payload byte it declares -- must arrive within this long of the moment the gateway hands the
+  body to the upstream or of the message before it, until the client ends its request stream; part of
+  a message does not count. A
+  call that sends nothing, only part of a message, or stops between two messages is ended with
+  `grpc-status: 3` (`INVALID_ARGUMENT`) as the client's abort, which the upstream's circuit breaker does
+  not count as a failure. Not configurable. See
+  link:../architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline].
 
 | gRPC stream-idle timeout
 | 5 min
@@ -596,7 +621,12 @@ deployment that never writes it keeps the behaviour shown here.
   in either direction for this long is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
   `grpc-message: stream-idle-timeout`. A frame in either direction keeps the call open; HTTP/2 `PING`
   frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
-  upstream guard's 30 s timeout bounds the call instead. Not configurable. See
+  gRPC message bound and the request-body deadline bound the call instead, and the upstream guard's
+  30 s timeout an upstream that holds the complete, half-closed request, a connection or
+  stream-slot wait that lasts the 30 s, or an upstream that stops taking data mid-request and takes
+  no more within the 30 s; one that takes data again after the request-body deadline passed ends the
+  call then, as the upstream's timeout when it had taken no data for at least 10 s, as the client's
+  otherwise. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 | Unrouted-`404` response floor

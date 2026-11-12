@@ -120,6 +120,18 @@ class GrpcStatusMapperTest {
                     "an HTTP 504 upstream timeout maps to gRPC DEADLINE_EXCEEDED (4)");
         }
 
+        /**
+         * A gRPC request stream still open at its pre-response deadline is ended as a
+         * {@link EventType#REQUEST_BODY_TIMEOUT}: the deadline the client's call ran past is the gRPC
+         * {@code DEADLINE_EXCEEDED}, not the {@code UNKNOWN} fall-through.
+         */
+        @Test
+        @DisplayName("408 (request body past its deadline) maps to DEADLINE_EXCEEDED")
+        void mapsRequestBodyTimeoutToDeadlineExceeded() {
+            assertEquals(GrpcStatusMapper.DEADLINE_EXCEEDED, mapper.toGrpcStatus(EventType.REQUEST_BODY_TIMEOUT),
+                    "an HTTP 408 request-body timeout maps to gRPC DEADLINE_EXCEEDED (4)");
+        }
+
         @Test
         @DisplayName("an event with no HTTP mapping falls through to UNKNOWN")
         void mapsUnmappedToUnknown() {
@@ -183,6 +195,20 @@ class GrpcStatusMapperTest {
                     "a 405 method rejection renders gRPC UNIMPLEMENTED (12)");
             assertEquals("routing", response.getHeader("grpc-message"),
                     "a method rejection reports under the routing category slug");
+        }
+
+        @Test
+        @DisplayName("renders a request-body timeout trailers-only as grpc-status 4 with grpc-message input-validation")
+        void rendersRequestBodyTimeoutAsDeadlineExceeded() throws Exception {
+            HttpClientResponse response = render(EventType.REQUEST_BODY_TIMEOUT, Map.of());
+
+            assertAll("a request stream ended at its pre-response deadline",
+                    () -> assertEquals(200, response.statusCode(), "a trailers-only gRPC rejection is an HTTP 200"),
+                    () -> assertEquals("application/grpc", response.getHeader("content-type")),
+                    () -> assertEquals(Integer.toString(GrpcStatusMapper.DEADLINE_EXCEEDED),
+                            response.getHeader("grpc-status"), "a 408 renders gRPC DEADLINE_EXCEEDED (4)"),
+                    () -> assertEquals("input-validation", response.getHeader("grpc-message"),
+                            "the client's own deadline reports under the input-validation slug, never upstream"));
         }
 
         @Test

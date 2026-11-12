@@ -103,7 +103,10 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
 | Proxied request body making no progress for the 10 s request-body idle timeout or not ending within
   the 25 s request-body deadline before the response head (`REQUEST_BODY_TIMEOUT`; see
   link:tls-and-inbound-security.adoc#_request_body_idle_timeout[Request-body idle timeout] and
-  link:tls-and-inbound-security.adoc#_request_body_deadline[Request-body deadline]).
+  link:tls-and-inbound-security.adoc#_request_body_deadline[Request-body deadline]). The 25 s deadline
+  also bounds a gRPC call whose request stream is still open before its upstream answers; that end is
+  rendered `DEADLINE_EXCEEDED` (<<_grpc_error_contract>>; see
+  link:tls-and-inbound-security.adoc#_grpc_message_bound[gRPC message bound and pre-response deadline]).
 | `INPUT_VALIDATION`
 
 | `413`
@@ -234,14 +237,14 @@ document:
 |===
 | gRPC status | Code | Gateway rejection (equivalent HTTP status)
 
-| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation; `INBOUND_BODY_ABORTED`
+| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation; `INBOUND_BODY_ABORTED`, including a gRPC call whose next complete request message did not arrive within the message bound
 | `UNAUTHENTICATED`    | 16 | `401` -- missing/invalid bearer token; invalid/expired session
 | `PERMISSION_DENIED`  | 7  | `403` -- missing scope (`SCOPE_MISSING`); failed CSRF or cookie same-origin check (`CSRF_REJECTED`)
 | `NOT_FOUND`          | 5  | `404` -- `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, disabled endpoint
 | `UNIMPLEMENTED`      | 12 | `405` -- `METHOD_NOT_ALLOWED`
 | `RESOURCE_EXHAUSTED` | 8  | `413` -- `CONTENT_TOO_LARGE` (`max_body_bytes` cap)
 | `UNAVAILABLE`        | 14 | `502` / `503` -- `UPSTREAM_ERROR`, `UPSTREAM_CIRCUIT_OPEN`, or upstream `h2` negotiation failure
-| `DEADLINE_EXCEEDED`  | 4  | `504` -- `UPSTREAM_TIMEOUT` (the upstream guard's fixed 30 s per-attempt head timeout)
+| `DEADLINE_EXCEEDED`  | 4  | `504` -- `UPSTREAM_TIMEOUT`, with `grpc-message: upstream`, from three sources: the upstream guard's fixed 30 s per-attempt head timeout; a gRPC attempt whose upstream connection came less than the 1 s hand-over grace before the 29 s pre-response cap, or past it, ended at that moment with its request unsent (`DispatchStage.UpstreamConnectionTooLate`); and a gRPC call whose pre-response deadline passed while the upstream's backpressure had its request stream paused, ended when the upstream took data again, by which time the pause had lasted without a break at least the fixed 10 s upstream stall threshold (`DispatchStage.UpstreamStalledRequest`); all three counted by the circuit breaker. `408` -- `REQUEST_BODY_TIMEOUT` (the gRPC pre-response request-stream deadline, 25 s, passing while the client held its request stream open -- being read when it passed, or paused in a pause that the upstream ended before it lasted the 10 s stall threshold -- with `grpc-message: input-validation`; link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc#grpc-pre-response-deadline[ADR-0016])
 |===
 
 [[_metrics]]
@@ -275,6 +278,14 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
   as `SOURCE_BLOCKED`; see
   link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
 
+| `sheriff_inbound_body_aborts_total{route,disposition}`
+| Counter of `INBOUND_BODY_ABORTED` ends per route, labelled by why the request body did not arrive
+  whole: `body-stream-failed` (the inbound body stream failed after dispatch began), `client-left` (the
+  client left before the answer) or `client-idle` (a gRPC client held its request stream open without
+  its next complete request message within the message bound). Exactly three dispositions; the same
+  ends stay counted under `sheriff_errors_total{event="INBOUND_BODY_ABORTED"}` (see
+  link:tls-and-inbound-security.adoc#_aborted_inbound_body[Aborted inbound body]).
+
 | `sheriff_source_trips_total{action}`
 | Counter of per-source enumeration-detection trips (one per source and `CLEAR` period) labelled by
   configured `action` (`observe`, `delay`, `block`; see
@@ -296,12 +307,13 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
   floor (<<_trust_boundary_rejections>>).
 
 | `sheriff_front_connections_refused_total{reason}`
-| Counter of connections the accept-time SNI front (active with `tls.passthrough_sni`) closed at accept
-  without reading from them, labelled by the bound that was full: `cap` (1024 connections waiting for
-  their ClientHello or for their backend dial to settle) or `source_share` (one TCP peer address already
-  holding its 256). The peer address
-  is never a label (`WARN ApiSheriff-146`; see
-  link:../development/tls-edge.adoc[TLS Edge -- Contributor Guide]).
+| Counter of connections the accept-time SNI front (active with `tls.passthrough_sni`) closed at once,
+  labelled by the bound that was full. At accept, without reading from them: `cap` (1024 connections
+  waiting for their ClientHello or for their backend dial to settle) or `source_share` (one source --
+  an IPv4 address, or the /64 prefix of an IPv6 address -- already holding its 256). At the route
+  decision of a passthrough match, without dialing its backend: `dial_budget` (128 connections already
+  dialing that passthrough target). The peer address is never a label (`WARN ApiSheriff-146`; see
+  link:../development/tls-edge.adoc#front-refusal-keying[TLS Edge -- Contributor Guide]).
 
 | `sheriff_security_events_total{failure_type}`
 | `cui-http` `SecurityEventCounter` counts per `UrlSecurityFailureType`.

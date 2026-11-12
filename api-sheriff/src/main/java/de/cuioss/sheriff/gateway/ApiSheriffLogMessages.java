@@ -85,19 +85,24 @@ public final class ApiSheriffLogMessages {
                 .build();
 
         /**
-         * A proxied request's body stream failed after the upstream dispatch had begun — a client that
-         * disconnected mid-upload, or broken chunk framing — and the upstream request was aborted. An
-         * ordinary client-caused termination, not a security filter violation. Records the route id
-         * and a fixed disposition only — never the failure's own message or anything the client sent.
+         * A proxied request's body did not arrive whole and the upstream request was aborted: its body
+         * stream failed after the upstream dispatch had begun, for example on broken chunk framing
+         * ({@code body-stream-failed}); the client left before the answer ({@code client-left}); or a
+         * gRPC call's client held its request stream open without sending its next complete request
+         * message within the message bound ({@code client-idle}). An ordinary client-caused termination,
+         * not a security filter violation. Records the route id and that fixed disposition only — never
+         * the failure's own message or anything the client sent.
          * <p>
-         * Latched per route: the event is reachable by any caller the route admits, at will, so the
-         * first occurrence on a route is recorded and every repeat on that route is a {@code DEBUG}
-         * diagnostic. The rate is carried by the error counter, not by this record.
+         * Latched per route and disposition: the event is reachable by any caller the route admits, at
+         * will, so the first occurrence of each disposition on a route is recorded and every repeat of
+         * that disposition on that route is a {@code DEBUG} diagnostic. A disposition already latched
+         * therefore never hides the first occurrence of another. The rate is carried by the error
+         * counter and, per disposition, by {@code sheriff_inbound_body_aborts_total}, not by this record.
          */
         public static final LogRecord INBOUND_BODY_ABORTED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(22)
-                .template("Request body on route '%s' did not arrive whole (%s) — upstream request aborted; further occurrences on this route stay at DEBUG")
+                .template("Request body on route '%s' did not arrive whole (%s) — upstream request aborted; further occurrences of this disposition on this route stay at DEBUG")
                 .build();
 
         /**
@@ -311,13 +316,17 @@ public final class ApiSheriffLogMessages {
                 .build();
 
         /**
-         * The accept-time SNI front closed an accepted connection at once, without reading from it: the
-         * undecided-connection cap was full ({@code cap}), or the connection's source already held its
-         * full share of that cap ({@code source_share}). The cap and the share count connections waiting
-         * for their ClientHello or for their relay's backend dial to settle, so they fill under a flood of
-         * slow or silent handshakes and equally behind a passthrough backend that does not answer the
-         * dial, whose connections each hold a slot for any host-name lookup of the backend plus the full
-         * connect timeout. Rate-limited: emitted at
+         * The accept-time SNI front closed a connection at once, for one of exactly three reasons. At
+         * accept, without reading from it: the undecided-connection cap was full ({@code cap}), or the
+         * connection's source already held its full share of that cap ({@code source_share}). At the
+         * route decision of a passthrough match, without dialling its backend: the connection's target
+         * already had its full dial budget in flight ({@code dial_budget}), so the bound logged is that
+         * budget — the dialling connections of one target, which count against the cap. The cap and the
+         * share count connections waiting for their ClientHello or for their relay's backend dial to
+         * settle, so they fill under a flood of slow or silent handshakes and equally behind passthrough
+         * backends that do not answer the dial, whose connections each hold a slot for any host-name
+         * lookup of the backend plus the full connect timeout; the dial budget keeps one such backend
+         * from holding more than its eighth of the cap. Rate-limited: emitted at
          * most once per fixed window per reason; every further refusal for that reason inside the window is a
          * {@code DEBUG} diagnostic, and every refusal is counted on
          * {@code sheriff_front_connections_refused_total}. Records the reason token, the bound that was

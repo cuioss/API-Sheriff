@@ -18,11 +18,13 @@ package de.cuioss.sheriff.gateway.tls;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 
 import io.vertx.core.Context;
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
@@ -33,11 +35,12 @@ import io.vertx.core.net.NetSocket;
  * Proxies that let a relay test take control of the two events a {@link PassthroughRelay} races
  * during its dial phase: the backend dial completing and the client leaving. Shared by
  * {@link PassthroughRelayTest} and {@link SniFrontListenerTest}, so the front's slot accounting is
- * driven by exactly the dial the relay's own tests hold. One more proxy makes the dial call itself
- * throw, so a front test can drive a hand-off the relay refuses before any dial starts.
+ * driven by exactly the dial the relay's own tests hold. Two more proxies make the first dial fail,
+ * either by throwing from the dial call itself, so a front test can drive a hand-off the relay refuses
+ * before any dial starts, or by returning a failed dial.
  * <p>
  * Thread-safe: the class is stateless; each proxy confines its callbacks to the Vert.x context it was
- * called on, and the throwing proxy decides its one throw with an atomic compare-and-set.
+ * called on, and each first-dial proxy decides its one failure with an atomic compare-and-set.
  */
 final class RelayTestProxies {
 
@@ -98,6 +101,52 @@ final class RelayTestProxies {
                             && args[0] instanceof Integer && args[1] instanceof String
                             && thrown.compareAndSet(false, true)) {
                         throw failure;
+                    }
+                    return invokeOn(delegate, method, args);
+                });
+    }
+
+    /**
+     * A dial client whose first {@code connect(int, String)} — the one the relay calls — returns a
+     * failed future carrying {@code failure}, as a refused or timed-out connect does. Every later dial,
+     * and every other call, goes to {@code delegate}.
+     *
+     * @param delegate the real dial client
+     * @param failure  the cause the first dial fails with
+     * @return the dial client whose first dial fails
+     */
+    static NetClient firstDialFails(NetClient delegate, Throwable failure) {
+        AtomicBoolean failed = new AtomicBoolean();
+        return (NetClient) Proxy.newProxyInstance(NetClient.class.getClassLoader(), new Class<?>[]{NetClient.class},
+                (proxy, method, args) -> {
+                    if ("connect".equals(method.getName()) && args != null && args.length == 2
+                            && args[0] instanceof Integer && args[1] instanceof String
+                            && failed.compareAndSet(false, true)) {
+                        return Future.failedFuture(failure);
+                    }
+                    return invokeOn(delegate, method, args);
+                });
+    }
+
+    /**
+     * A dial client whose {@code connect(int, String)} — the one the relay calls — records the host it was
+     * asked to dial and dials {@code loopback} on the same port in its place. A relay target named by a
+     * host name no resolver knows can so be dialled in a test, and the test can read which name the relay
+     * asked for. Every other call goes to {@code delegate}.
+     *
+     * @param delegate     the dial client the redirected dials go to
+     * @param loopback     the address dialled in place of every requested host
+     * @param dialledHosts receives the host of every dial the relay requests, in order; written from the
+     *                     requesting event loop, so it must be safe to read from the test thread
+     * @return the recording dial client
+     */
+    static NetClient recordingLoopbackDials(NetClient delegate, String loopback, List<String> dialledHosts) {
+        return (NetClient) Proxy.newProxyInstance(NetClient.class.getClassLoader(), new Class<?>[]{NetClient.class},
+                (proxy, method, args) -> {
+                    if ("connect".equals(method.getName()) && args != null && args.length == 2
+                            && args[0] instanceof Integer port && args[1] instanceof String host) {
+                        dialledHosts.add(host);
+                        return delegate.connect(port, loopback);
                     }
                     return invokeOn(delegate, method, args);
                 });

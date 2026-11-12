@@ -18,12 +18,15 @@ package de.cuioss.sheriff.gateway.tls;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Proxy;
+import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -61,14 +64,19 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Unit tests for {@link SniFrontListener}, exercised against real Vert.x sockets: the accept-time
  * routing decision — a mapped SNI is relayed opaquely to the passthrough backend, an empty /
  * non-matching SNI takes the terminated-strict path, and the backend receives the exact ClientHello
  * the client sent — and the bounds of the front: the ClientHello deadline, the undecided-connection
- * cap, its per-source share, the dial phase held inside that cap, a hand-off the relay refuses outright
- * and the relay idle timeout, together with how a refusal at accept is reported.
+ * cap, its per-source share, the dial phase held inside that cap, the per-target dial budget, a hand-off
+ * the relay refuses outright and the relay idle timeout, together with how a refusal is reported and
+ * labelled, how a peer address is keyed to its source — IPv4 by address, IPv6 by /64 — how a passthrough
+ * target is keyed to its dial budget — a host name without regard to letter case — and that the
+ * per-source map returns to empty on every path that ends a connection's hold.
  * <p>
  * The bounds are shortened through the package-private constructor so each case observes its bound
  * within a fraction of a second instead of waiting out the production values. Each bound case is
@@ -370,9 +378,9 @@ class SniFrontListenerTest {
         @Test
         @DisplayName("logs a cap refusal at WARN once per window, every further one at DEBUG, and again after the window")
         void warnsOncePerWindowPerReason() throws Exception {
-            // Arrange — a cap of one, held by one silent connection
+            // Arrange — a cap of one, held by one silent connection; the share of two never binds
             Backend terminated = startBackend(1);
-            SniFrontListener front = startFront(Map.of(), terminated.target(), DEADLINE, 1, 1, LONG_IDLE, LONG_IDLE,
+            SniFrontListener front = startFront(Map.of(), terminated.target(), DEADLINE, 1, 2, LONG_IDLE, LONG_IDLE,
                     clockNanos::get, SniFrontListener::sourceOf);
             ClientLeg held = connectClient(front);
 
@@ -390,7 +398,7 @@ class SniFrontListenerTest {
                             "the WARN names the reason token: " + warnings.getFirst().getMessage()),
                     () -> assertFalse(warnings.getFirst().getMessage().contains(HOST),
                             "the WARN never names the peer address: " + warnings.getFirst().getMessage()),
-                    () -> assertEquals(2, debugLines("Front connection refused at accept (cap)").size(),
+                    () -> assertEquals(2, debugLines("Front connection refused (cap)").size(),
                             "every further refusal inside the window is a DEBUG diagnostic"),
                     () -> assertFalse(held.closedNanos().isDone(), "the connection holding the cap stays open"));
 
@@ -502,6 +510,66 @@ class SniFrontListenerTest {
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
+        /**
+         * The share is checked before the cap: a connection from a source that holds its full share is
+         * refused for its share whether or not the cap is full too, and a connection refused for the cap
+         * holds no slot of its source's share afterwards. The matched control is a connection from a
+         * third source, which finds only the cap full and is refused for the cap.
+         */
+        @Test
+        @DisplayName("refuses a saturated source's excess for its share even while the cap is full, and a fresh source for the cap")
+        void aSaturatedSourceIsRefusedForItsShareWhileTheCapIsFull() throws Exception {
+            // Arrange — a cap of two with a share of one: source-a and source-b each hold one slot, so
+            // both the cap and source-a's share are full
+            Backend terminated = startBackend(1);
+            SniFrontListener front = startFront(Map.of(), terminated.target(), DEADLINE, 2, 1, LONG_IDLE, LONG_IDLE,
+                    clockNanos::get, sourcesInOrder("source-a", "source-b", "source-a", "source-a", "source-a",
+                    "source-c"));
+            ClientLeg ofA = connectClient(front);
+            ClientLeg ofB = connectClient(front);
+
+            // Act — three more connections from source-a, then the control from source-c
+            refuseNext(front);
+            refuseNext(front);
+            refuseNext(front);
+            refuseNext(front);
+
+            // Assert
+            assertAll("every refusal names the bound that refused it",
+                    () -> assertEquals(List.of(Refusal.SOURCE_SHARE, Refusal.SOURCE_SHARE, Refusal.SOURCE_SHARE,
+                                    Refusal.CAP), refusals,
+                            "source-a's excess is refused for its share, source-c — whose share is free — for the cap"),
+                    () -> assertEquals(2, front.sourcesHoldingSlots(),
+                            "only source-a and source-b hold a share: the cap refusal of source-c kept none"),
+                    () -> assertFalse(ofA.closedNanos().isDone(), "source-a's admitted connection stays open"),
+                    () -> assertFalse(ofB.closedNanos().isDone(), "source-b's admitted connection stays open"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("closes a refused connection even when recording the refusal throws")
+        void closesTheRefusedConnectionWhenTheRecorderThrows() throws Exception {
+            // Arrange — a cap of one held by one silent connection, and a recorder that throws after
+            // noting the refusal
+            Backend terminated = startBackend(1);
+            PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient(), relayedPeers);
+            SniFrontListener front = started(new SniFrontListener(vertx, relay, Map.of(), terminated.target(), 0,
+                    HOST, DEADLINE, 1, 2, 1, LONG_IDLE, SniFrontListener.SATURATION_WARN_INTERVAL, clockNanos::get,
+                    SniFrontListener::sourceOf, refusal -> {
+                        refusals.add(refusal);
+                        throw new IllegalStateException("the refusal recorder failed");
+                    }));
+            ClientLeg held = connectClient(front);
+
+            // Act + Assert — refuseNext asserts the prompt close of the refused connection
+            refuseNext(front);
+
+            assertAll("the failed record did not keep the refused connection open",
+                    () -> assertEquals(List.of(Refusal.CAP), refusals, "the refusal reached the recorder once"),
+                    () -> assertFalse(held.closedNanos().isDone(), "the connection holding the cap stays open"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
         private static List<LogRecord> refusalWarnings() {
             return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
                     ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.resolveIdentifierString());
@@ -557,6 +625,67 @@ class SniFrontListenerTest {
                             "the source is the peer's host address"),
                     () -> assertEquals(SniFrontListener.sourceOf(onePort), SniFrontListener.sourceOf(otherPort),
                             "two ports of one address are one source"));
+        }
+
+        @Test
+        @DisplayName("keys two IPv6 peers of one /64 on one source, and peers of two /64s on two")
+        void keysAnIpv6PeerOnItsSlash64() {
+            NetSocket hostInSubnet = withPeer(SocketAddress.inetSocketAddress(new InetSocketAddress(
+                    InetAddress.ofLiteral("2001:db8:1:2::a"), 40001)));
+            NetSocket otherHostInSubnet = withPeer(SocketAddress.inetSocketAddress(new InetSocketAddress(
+                    InetAddress.ofLiteral("2001:db8:1:2:ffff:ffff:ffff:fffe"), 40002)));
+            NetSocket hostInNextSubnet = withPeer(SocketAddress.inetSocketAddress(new InetSocketAddress(
+                    InetAddress.ofLiteral("2001:db8:1:3::a"), 40001)));
+
+            String source = SniFrontListener.sourceOf(hostInSubnet);
+
+            assertAll("an IPv6 peer is counted under its /64",
+                    () -> assertEquals(source, SniFrontListener.sourceOf(otherHostInSubnet),
+                            "two addresses of one /64 are one source"),
+                    () -> assertNotEquals(source, SniFrontListener.sourceOf(hostInNextSubnet),
+                            "control: an address of the neighbouring /64 is another source"),
+                    () -> assertNotEquals(SniFrontListener.UNKNOWN_SOURCE, source,
+                            "an addressed IPv6 peer is never the fallback source"));
+        }
+
+        @Test
+        @DisplayName("keys an IPv6 peer with a zone index on its /64, the zone excluded")
+        void keysAZonedIpv6PeerOnItsSlash64() {
+            assertEquals(SniFrontListener.sourceOf(withHostAddress("fe80:0:0:0:0:0:0:1%1")),
+                    SniFrontListener.sourceOf(withHostAddress("fe80:0:0:0:0:0:0:2%1")),
+                    "the zone index is parsed off, so two link-local hosts of one /64 are one source");
+        }
+
+        @Test
+        @DisplayName("keys an IPv4-mapped IPv6 peer as the IPv4 address it carries")
+        void keysAnIpv4MappedPeerAsItsIpv4Address() throws Exception {
+            NetSocket ipv4Peer = withPeer(SocketAddress.inetSocketAddress(new InetSocketAddress(
+                    InetAddress.getByAddress(new byte[]{(byte) 192, 0, 2, 7}), 40001)));
+
+            assertAll("one host reaching the front over IPv4 or over a dual-stack socket is one source",
+                    () -> assertEquals("192.0.2.7", SniFrontListener.sourceOf(withHostAddress("::ffff:192.0.2.7")),
+                            "the mapped form is counted under the IPv4 address it carries"),
+                    () -> assertEquals(SniFrontListener.sourceOf(ipv4Peer),
+                            SniFrontListener.sourceOf(withHostAddress("0:0:0:0:0:ffff:c000:207")),
+                            "so is the mapped form written in hexadecimal"),
+                    () -> assertEquals("192.0.2.7", SniFrontListener.sourceOf(ipv4Peer),
+                            "control: an IPv4 peer is still keyed on its address alone"));
+        }
+
+        /**
+         * A connection whose peer reports {@code hostAddress} as its address literal, exactly as the
+         * transport hands it over — a form a {@link java.net.InetSocketAddress} cannot always produce,
+         * such as the IPv4-mapped literal or one carrying a zone index.
+         */
+        private static NetSocket withHostAddress(String hostAddress) {
+            SocketAddress peer = (SocketAddress) Proxy.newProxyInstance(SocketAddress.class.getClassLoader(),
+                    new Class<?>[]{SocketAddress.class}, (proxy, method, args) -> {
+                        if ("hostAddress".equals(method.getName()) && (args == null || args.length == 0)) {
+                            return hostAddress;
+                        }
+                        throw new UnsupportedOperationException("not part of the source key: " + method.getName());
+                    });
+            return withPeer(peer);
         }
 
         /** A connection that answers {@code remoteAddress()} with {@code peer} and fails every other call. */
@@ -768,6 +897,358 @@ class SniFrontListenerTest {
                     () -> assertEquals(List.of(), refusals,
                             "the slot was already returned when the fresh connection arrived"));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+    }
+
+    /**
+     * The per-target dial budget: one passthrough target may have at most its budget of connections
+     * dialling at once, counted inside the cap, so a backend that never answers its dials cannot occupy
+     * the slots terminated handshakes need. The relay's dials are held by the case, so "dialling" is a
+     * state the case controls; in the saturation cases no dial ever settles. Every connection here carries
+     * a complete ClientHello: an admitted one has its backend dial requested, a refused one is closed —
+     * whichever happens first decides, see {@link #offer}.
+     */
+    @Nested
+    @DisplayName("per-target dial budget")
+    class DialBudget {
+
+        private static final int CAP = 4;
+        private static final int BUDGET = 2;
+        /** Long enough that a close well inside it cannot be the deadline's doing. */
+        private static final Duration DEADLINE = Duration.ofSeconds(6);
+        private static final String DARK_SOURCE = "dark-target-source";
+        private static final String HANDSHAKE_SOURCE = "handshake-source";
+
+        private final byte[] darkHello = ClientHelloFixture.withSni(MAPPED_SNI);
+        private final byte[] terminatedHello = ClientHelloFixture.withSni("unmapped.example.net");
+        /** Never completed in the saturation cases: their dials stay pending for the whole case. */
+        private final CompletableFuture<Void> releaseDials = new CompletableFuture<>();
+        /** Completed by the next dial the relay requests; replaced before every offered connection. */
+        private volatile CompletableFuture<Void> nextDial = new CompletableFuture<>();
+
+        @Test
+        @DisplayName("admits terminated handshakes while a dark passthrough target holds its full budget, refusing its excess dials")
+        void aDarkTargetLeavesTheCapToTerminatedHandshakes() throws Exception {
+            Backend dark = startBackend(darkHello.length);
+            Backend terminated = startBackend(terminatedHello.length);
+            SniFrontListener front = startDarkLoadFront(dark.target(), terminated.target(), BUDGET);
+
+            List<Offer> darkDials = offerDarkLoad(front);
+            Offer firstHandshake = offer(front, terminatedHello);
+            Offer secondHandshake = offer(front, terminatedHello);
+            awaitRefusals(2);
+
+            List<LogRecord> warnings = RefusalsAtAccept.refusalWarnings();
+            assertAll("the dark target took its budget of the cap and no more",
+                    () -> assertEquals(List.of(true, true, false, false), admitted(darkDials),
+                            "the target's first two dials are admitted, the two beyond its budget refused"),
+                    () -> assertTrue(firstHandshake.admitted(),
+                            "a terminated handshake is admitted while the dark target holds its full budget"),
+                    () -> assertTrue(secondHandshake.admitted(),
+                            "the cap's last slot goes to a second terminated handshake, not to the dark target"),
+                    () -> assertEquals(List.of(Refusal.DIAL_BUDGET, Refusal.DIAL_BUDGET), refusals,
+                            "the dials beyond the budget are refused as dial_budget, and nothing else is refused"),
+                    () -> assertEquals(1, warnings.size(), "one WARN for the two refusals inside one window"),
+                    () -> assertTrue(warnings.getFirst().getMessage().contains("(dial_budget)"),
+                            "the WARN names the reason token: " + warnings.getFirst().getMessage()),
+                    () -> assertTrue(warnings.getFirst().getMessage().contains("bound of " + BUDGET + " "),
+                            "the WARN names the budget as the bound that was full: "
+                                    + warnings.getFirst().getMessage()),
+                    () -> assertFalse(darkDials.getFirst().leg().closedNanos().isDone(),
+                            "an admitted dial is still pending, its connection open"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("control: the same load with the budget set to the cap refuses the terminated handshakes at accept")
+        void aBudgetAtTheCapLetsADarkTargetTakeTheWholeCap() throws Exception {
+            Backend dark = startBackend(darkHello.length);
+            Backend terminated = startBackend(terminatedHello.length);
+            SniFrontListener front = startDarkLoadFront(dark.target(), terminated.target(), CAP);
+
+            List<Offer> darkDials = offerDarkLoad(front);
+            Offer firstHandshake = offer(front, terminatedHello);
+            Offer secondHandshake = offer(front, terminatedHello);
+            awaitRefusals(2);
+
+            assertAll("without a budget below the cap the dark target holds every slot",
+                    () -> assertEquals(List.of(true, true, true, true), admitted(darkDials),
+                            "every dial to the dark target is admitted"),
+                    () -> assertFalse(firstHandshake.admitted(), "a terminated handshake finds the cap full"),
+                    () -> assertFalse(secondHandshake.admitted(), "so does the next one"),
+                    () -> assertEquals(List.of(Refusal.CAP, Refusal.CAP), refusals,
+                            "the terminated handshakes are refused at accept, on the cap"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("returns the dial slot once the target's dial succeeds")
+        void returnsTheDialSlotAfterADialSuccess() throws Exception {
+            Backend dark = startBackend(darkHello.length);
+            SniFrontListener front = startBudgetOfOneFront(RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                    () -> nextDial.complete(null), releaseDials), dark.target());
+            Offer dialling = offer(front, darkHello);
+            Offer beyondTheBudget = offer(front, darkHello);
+
+            releaseDials.complete(null);
+            Awaits.connect(dark.firstBytes(), "the released dial to establish the relay");
+            Offer admitted = awaitAdmitted(front);
+
+            assertAll("the dial slot came back when the dial succeeded",
+                    () -> assertTrue(dialling.admitted(), "the first dial is admitted"),
+                    () -> assertFalse(beyondTheBudget.admitted(),
+                            "while it is pending, it holds the budget of one: the second dial is refused"),
+                    () -> assertEquals(Refusal.DIAL_BUDGET, refusals.getFirst(),
+                            "the second dial is refused on the dial budget"),
+                    () -> assertTrue(refusals.stream().allMatch(Refusal.DIAL_BUDGET::equals),
+                            "every refusal is a dial-budget refusal: " + refusals),
+                    () -> assertFalse(admitted.leg().closedNanos().isDone(),
+                            "the dial admitted into the returned slot was routed, not closed"),
+                    () -> assertFalse(dialling.leg().closedNanos().isDone(),
+                            "the connection whose dial succeeded is still open: the slot came back with the dial"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("returns the dial slot once the target's dial fails")
+        void returnsTheDialSlotAfterADialFailure() throws Exception {
+            Backend dark = startBackend(darkHello.length);
+            NetClient firstDialFails = RelayTestProxies.firstDialFails(vertx.createNetClient(),
+                    new ConnectException("Connection refused"));
+            SniFrontListener front = startBudgetOfOneFront(RelayTestProxies.heldDialClient(firstDialFails,
+                    () -> nextDial.complete(null), releaseDials), dark.target());
+            Offer failing = offer(front, darkHello);
+            Offer beyondTheBudget = offer(front, darkHello);
+
+            releaseDials.complete(null);
+            Awaits.connect(failing.leg().closedNanos(), "the failed dial to close its connection");
+            Offer admitted = awaitAdmitted(front);
+            Buffer received = Awaits.connect(dark.firstBytes(), "the dial admitted into the returned slot to be routed");
+
+            assertAll("the dial slot came back when the dial failed",
+                    () -> assertTrue(failing.admitted(), "the first dial is admitted"),
+                    () -> assertFalse(beyondTheBudget.admitted(),
+                            "while it is pending, it holds the budget of one: the second dial is refused"),
+                    () -> assertTrue(refusals.stream().allMatch(Refusal.DIAL_BUDGET::equals),
+                            "every refusal is a dial-budget refusal: " + refusals),
+                    () -> assertEquals(Buffer.buffer(darkHello), received,
+                            "the dial admitted into the returned slot reaches the backend"),
+                    () -> assertFalse(admitted.leg().closedNanos().isDone(),
+                            "the dial admitted into the returned slot was routed, not closed"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * The relay throws on the first dial instead of returning its dial-phase future; every later
+         * dial is held. The throwing hand-off returns its dial slot at once, so the next connection is
+         * admitted and holds the budget of one, which the third connection then finds full.
+         */
+        @Test
+        @DisplayName("returns the dial slot when the relay throws instead of dialling")
+        void returnsTheDialSlotWhenTheRelayThrows() throws Exception {
+            Backend dark = startBackend(darkHello.length);
+            NetClient heldAfterTheThrow = RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                    () -> nextDial.complete(null), releaseDials);
+            SniFrontListener front = startBudgetOfOneFront(RelayTestProxies.firstDialThrows(heldAfterTheThrow,
+                    new IllegalArgumentException("port p must be in range 0 <= p <= 65535")), dark.target());
+
+            Offer throwing = offer(front, darkHello);
+            Offer next = offer(front, darkHello);
+            Offer beyondTheBudget = offer(front, darkHello);
+            awaitRefusals(1);
+
+            assertAll("the throwing hand-off returned its dial slot",
+                    () -> assertFalse(throwing.admitted(), "the throwing hand-off requested no dial"),
+                    () -> assertTrue(throwing.leg().closedNanos().isDone(), "the throwing hand-off is closed"),
+                    () -> assertTrue(next.admitted(), "the next dial is admitted into the returned slot"),
+                    () -> assertFalse(beyondTheBudget.admitted(), "the next dial holds the budget of one again"),
+                    () -> assertEquals(List.of(Refusal.DIAL_BUDGET), refusals,
+                            "only the dial beyond the budget is refused; the throwing hand-off is not a refusal"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * Two passthrough SNIs whose targets spell one backend's host name in different letter case. A host
+         * name compares without regard to case, so both dial the same backend, and the budget that bounds
+         * what one unreachable backend can take counts them together: with a budget of one, a dial under one
+         * spelling refuses a dial under the other. The slot is returned under the key it was claimed under —
+         * once the first dial settles, the other spelling is admitted — and each dial still names the host
+         * as its target declared it. The targets name a host no resolver knows, so the dial client records
+         * the name it is asked for and dials the loopback backend in its place.
+         */
+        @Test
+        @DisplayName("counts two targets that spell one host name in different case against one dial budget, and dials each as declared")
+        void caseVariantsOfOneHostNameShareOneDialBudget() throws Exception {
+            Backend backend = startBackend(darkHello.length);
+            RelayTarget mixedCaseTarget = new RelayTarget("Backend.Example.TEST", backend.target().port());
+            RelayTarget lowerCaseTarget = new RelayTarget("backend.example.test", backend.target().port());
+            byte[] lowerCaseHello = ClientHelloFixture.withSni(SECOND_MAPPED_SNI);
+            List<String> dialledHosts = new CopyOnWriteArrayList<>();
+            NetClient heldDials = RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                    () -> nextDial.complete(null), releaseDials);
+            SniFrontListener front = startFront(
+                    new PassthroughRelay(RelayTestProxies.recordingLoopbackDials(heldDials, HOST, dialledHosts),
+                            relayedPeers),
+                    Map.of(MAPPED_SNI, mixedCaseTarget, SECOND_MAPPED_SNI, lowerCaseTarget), backend.target(),
+                    DEADLINE, CAP, 1, SniFrontListener::sourceOf);
+
+            Offer mixedCase = offer(front, darkHello);
+            Offer lowerCase = offer(front, lowerCaseHello);
+            // A refusal is recorded before its connection is closed, so it is in the list once the offer returns.
+            List<Refusal> whileTheFirstDialWasPending = List.copyOf(refusals);
+            releaseDials.complete(null);
+            Awaits.connect(backend.firstBytes(), "the released dial to establish the relay");
+            Offer lowerCaseOnceSettled = awaitAdmitted(front, lowerCaseHello);
+
+            assertAll("one backend named in two spellings has one dial budget",
+                    () -> assertTrue(mixedCase.admitted(), "the first dial takes the backend's one dial slot"),
+                    () -> assertFalse(lowerCase.admitted(),
+                            "a dial to the same host in another spelling finds that budget full"),
+                    () -> assertEquals(List.of(Refusal.DIAL_BUDGET), whileTheFirstDialWasPending,
+                            "the second spelling is refused on the dial budget"),
+                    () -> assertTrue(lowerCaseOnceSettled.admitted(),
+                            "the slot claimed under one spelling is returned, and the other spelling takes it"),
+                    () -> assertEquals("Backend.Example.TEST", dialledHosts.getFirst(),
+                            "the relay dials the host as its target declared it, not as the budget keys it"),
+                    () -> assertEquals("backend.example.test", dialledHosts.getLast(),
+                            "the dial admitted after the release names its own target's spelling"),
+                    () -> assertTrue(refusals.stream().allMatch(Refusal.DIAL_BUDGET::equals),
+                            "every refusal is a dial-budget refusal: " + refusals));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * A front of {@link #CAP} with the given dial budget whose relay holds every dial for the whole
+         * case. The first {@link #CAP} connections come from one source, every later one from another.
+         */
+        private SniFrontListener startDarkLoadFront(RelayTarget darkTarget, RelayTarget terminatedTarget,
+                int dialBudget) throws Exception {
+            PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                    () -> nextDial.complete(null), releaseDials), relayedPeers);
+            String[] sources = new String[CAP + 1];
+            Arrays.fill(sources, 0, CAP, DARK_SOURCE);
+            sources[CAP] = HANDSHAKE_SOURCE;
+            return startFront(relay, Map.of(MAPPED_SNI, darkTarget), terminatedTarget, DEADLINE, CAP, dialBudget,
+                    RefusalsAtAccept.sourcesInOrder(sources));
+        }
+
+        /** A front of {@link #CAP} whose one passthrough target has a dial budget of one. */
+        private SniFrontListener startBudgetOfOneFront(NetClient dialClient, RelayTarget target) throws Exception {
+            return startFront(new PassthroughRelay(dialClient, relayedPeers), Map.of(MAPPED_SNI, target), target,
+                    DEADLINE, CAP, 1, SniFrontListener::sourceOf);
+        }
+
+        /** Offers the front as many dials to the dark target as the cap has slots, one after another. */
+        private List<Offer> offerDarkLoad(SniFrontListener front) throws Exception {
+            List<Offer> offers = new ArrayList<>();
+            for (int i = 0; i < CAP; i++) {
+                offers.add(offer(front, darkHello));
+            }
+            return offers;
+        }
+
+        /**
+         * Offers the front one more connection carrying {@code hello}. Admitted, it is routed and its
+         * backend dial requested; refused, it is closed. Whichever happens first decides.
+         */
+        private Offer offer(SniFrontListener front, byte[] hello) throws Exception {
+            CompletableFuture<Void> dialled = new CompletableFuture<>();
+            nextDial = dialled;
+            ClientLeg leg = connectClient(front);
+            leg.socket().write(Buffer.buffer(hello));
+            Awaits.connect(CompletableFuture.anyOf(dialled, leg.closedNanos()),
+                    "the front to admit or refuse the offered connection");
+            return new Offer(leg, dialled.isDone());
+        }
+
+        /** Offers dark-target connections until one is admitted, and returns that one. */
+        private Offer awaitAdmitted(SniFrontListener front) throws Exception {
+            return awaitAdmitted(front, darkHello);
+        }
+
+        /** Offers connections carrying {@code hello} until one is admitted, and returns that one. */
+        private Offer awaitAdmitted(SniFrontListener front, byte[] hello) throws Exception {
+            List<Offer> admittedOffers = new CopyOnWriteArrayList<>();
+            Awaits.until(() -> {
+                Offer probe = offer(front, hello);
+                if (probe.admitted()) {
+                    admittedOffers.add(probe);
+                }
+                return probe.admitted();
+            }, "a dial to be admitted into the returned slot", Awaits.CONNECT_CEILING_SECONDS);
+            return admittedOffers.getFirst();
+        }
+
+        private void awaitRefusals(int expected) throws Exception {
+            Awaits.until(() -> refusals.size() >= expected, "the refusals to reach the recorder",
+                    Awaits.CONNECT_CEILING_SECONDS);
+        }
+
+        private static List<Boolean> admitted(List<Offer> offers) {
+            return offers.stream().map(Offer::admitted).toList();
+        }
+    }
+
+    /** A connection offered to the front, and whether the front admitted it into a backend dial. */
+    private record Offer(ClientLeg leg, boolean admitted) {
+    }
+
+    /**
+     * The key a passthrough target's dial budget is counted under, {@link SniFrontListener#dialBudgetKeyOf}:
+     * a host name is keyed without regard to letter case, the port stays part of the key, and an IP literal
+     * is kept as declared. That the budget is claimed and returned under this key is driven through a live
+     * front by {@link DialBudget#caseVariantsOfOneHostNameShareOneDialBudget()}.
+     */
+    @Nested
+    @DisplayName("dial budget key")
+    class DialBudgetKey {
+
+        private static final int PORT = 8443;
+
+        @Test
+        @DisplayName("keys a target named by host name on the lowered name, so its spellings are one target")
+        void keysAHostNameWithoutRegardToCase() {
+            RelayTarget mixedCase = new RelayTarget("Backend.Example.TEST", PORT);
+            RelayTarget lowerCase = new RelayTarget("backend.example.test", PORT);
+
+            RelayTarget key = SniFrontListener.dialBudgetKeyOf(mixedCase);
+
+            assertAll("one backend named in two spellings",
+                    () -> assertEquals(lowerCase, key, "the key carries the lowered host name and the port"),
+                    () -> assertEquals(key, SniFrontListener.dialBudgetKeyOf(lowerCase),
+                            "both spellings are counted under one key"));
+        }
+
+        @Test
+        @DisplayName("lowers the host name in the root locale, whatever the default locale is")
+        void lowersInTheRootLocale() {
+            Locale defaultLocale = Locale.getDefault();
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+            try {
+                assertEquals(new RelayTarget("internal.example.test", PORT),
+                        SniFrontListener.dialBudgetKeyOf(new RelayTarget("INTERNAL.example.test", PORT)),
+                        "a locale that lowers I to a dotless i must not reach a host name");
+            } finally {
+                Locale.setDefault(defaultLocale);
+            }
+        }
+
+        @Test
+        @DisplayName("control: keeps the port in the key, so two ports of one host are two targets")
+        void keepsThePortInTheKey() {
+            assertNotEquals(SniFrontListener.dialBudgetKeyOf(new RelayTarget("backend.example.test", PORT)),
+                    SniFrontListener.dialBudgetKeyOf(new RelayTarget("backend.example.test", PORT + 1)),
+                    "another port of the same host is another backend");
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"fe80::1%Eth0", "[fe80::1%Eth0]", "192.0.2.7"})
+        @DisplayName("keeps an IP literal as declared: an IPv6 zone index names an interface and is case-sensitive")
+        void keepsAnIpLiteralAsDeclared(String literal) {
+            RelayTarget declared = new RelayTarget(literal, PORT);
+
+            assertEquals(declared, SniFrontListener.dialBudgetKeyOf(declared),
+                    "an IP literal is its own key, exactly as its target declares it");
         }
     }
 
@@ -1069,6 +1550,211 @@ class SniFrontListenerTest {
         }
     }
 
+    /**
+     * The per-source map holds an entry only while its source holds a slot, so it returns to empty on
+     * every path that ends a connection's hold: the ClientHello deadline, the client closing, the
+     * connection failing, the dial succeeding, the dial failing, a dial-budget refusal, a cap refusal and
+     * a relay session that fails to start. Each case first observes the entry held — that is what makes
+     * the empty map afterwards the path's doing — and reads the map through the front's read-only seam.
+     * Where a dial is involved the relay's dial is held by the case, so the held state is one the case
+     * controls rather than a race it hopes to win.
+     */
+    @Nested
+    @DisplayName("per-source map on every exit path")
+    class PerSourceMapReturnsToEmpty {
+
+        /** Long enough that a close well inside it cannot be the deadline's doing. */
+        private static final Duration LONG_DEADLINE = Duration.ofSeconds(6);
+
+        private final byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
+        private final CompletableFuture<Void> releaseDials = new CompletableFuture<>();
+        /** Completed by the next dial the relay requests; replaced before every routed connection. */
+        private volatile CompletableFuture<Void> nextDial = new CompletableFuture<>();
+
+        @Test
+        @DisplayName("empties after the ClientHello deadline closes a silent connection")
+        void emptiesAfterTheDeadline() throws Exception {
+            Backend terminated = startBackend(1);
+            SniFrontListener front = startFront(Map.of(), terminated.target(), Duration.ofMillis(400), 4, LONG_IDLE);
+            ClientLeg silent = connectClient(front);
+            int whileHeld = awaitSourcesHolding(front, 1);
+
+            Awaits.connect(silent.closedNanos(), "the deadline to close the silent connection");
+
+            assertMapEmptied(front, whileHeld);
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("empties after the client closes before its ClientHello")
+        void emptiesAfterTheClose() throws Exception {
+            Backend terminated = startBackend(1);
+            SniFrontListener front = startFront(Map.of(), terminated.target(), LONG_DEADLINE, 4, LONG_IDLE);
+            ClientLeg leaving = connectClient(front);
+            int whileHeld = awaitSourcesHolding(front, 1);
+
+            Awaits.teardown(leaving.socket().close(), "the undecided client to leave");
+
+            assertMapEmptied(front, whileHeld);
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("empties after the connection fails before its ClientHello")
+        void emptiesAfterTheError() throws Exception {
+            Backend terminated = startBackend(1);
+            SniFrontListener front = startFront(Map.of(), terminated.target(), LONG_DEADLINE, 4, LONG_IDLE);
+            int whileHeld;
+            try (Socket resetting = new Socket()) {
+                resetting.connect(new InetSocketAddress(HOST, front.actualPort()), (int) PROMPT_CLOSE_MILLIS);
+                whileHeld = awaitSourcesHolding(front, 1);
+                resetting.setSoLinger(true, 0);
+            }
+
+            assertMapEmptied(front, whileHeld);
+            assertFalse(debugLines("Front connection failed before ClientHello was read").isEmpty(),
+                    "the reset reached the failure path");
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("empties once the backend dial succeeds, while the relayed connection stays open")
+        void emptiesAfterADialSuccess() throws Exception {
+            Backend passthrough = startBackend(hello.length);
+            SniFrontListener front = startHeldDialFront(vertx.createNetClient(), passthrough.target(), 1, 1,
+                    SniFrontListener::sourceOf);
+            ClientLeg routed = routeWithAHeldDial(front);
+            int whileHeld = front.sourcesHoldingSlots();
+
+            releaseDials.complete(null);
+            Awaits.connect(passthrough.firstBytes(), "the released dial to establish the relay");
+
+            assertMapEmptied(front, whileHeld);
+            assertFalse(routed.closedNanos().isDone(), "the relayed connection is still open");
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("empties once the backend dial fails")
+        void emptiesAfterADialFailure() throws Exception {
+            Backend passthrough = startBackend(hello.length);
+            SniFrontListener front = startHeldDialFront(RelayTestProxies.firstDialFails(vertx.createNetClient(),
+                    new ConnectException("Connection refused")), passthrough.target(), 1, 1, SniFrontListener::sourceOf);
+            ClientLeg failing = routeWithAHeldDial(front);
+            int whileHeld = front.sourcesHoldingSlots();
+
+            releaseDials.complete(null);
+            Awaits.connect(failing.closedNanos(), "the failed dial to close its connection");
+
+            assertMapEmptied(front, whileHeld);
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("drops the source of a dial-budget refusal, and empties once the held dial settles")
+        void emptiesAfterADialBudgetRefusal() throws Exception {
+            Backend passthrough = startBackend(hello.length);
+            SniFrontListener front = startHeldDialFront(vertx.createNetClient(), passthrough.target(), 4, 1,
+                    RefusalsAtAccept.sourcesInOrder("holder", "refused"));
+            routeWithAHeldDial(front);
+            int whileHeld = front.sourcesHoldingSlots();
+
+            ClientLeg refused = connectClient(front);
+            refused.socket().write(Buffer.buffer(hello));
+            Awaits.connect(refused.closedNanos(), "the dial beyond the budget to be refused");
+            Awaits.until(() -> !refusals.isEmpty(), "the refusal to reach the recorder", Awaits.CONNECT_CEILING_SECONDS);
+            int afterTheRefusal = front.sourcesHoldingSlots();
+            releaseDials.complete(null);
+            Awaits.connect(passthrough.firstBytes(), "the held dial to establish the relay");
+
+            assertAll("the refused connection's source holds nothing after the refusal",
+                    () -> assertEquals(List.of(Refusal.DIAL_BUDGET), refusals, "the second dial is a budget refusal"),
+                    () -> assertEquals(1, afterTheRefusal, "only the holder's source is left after the refusal"));
+            assertMapEmptied(front, whileHeld);
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        @Test
+        @DisplayName("keeps no entry for a cap refusal, and empties once the holder leaves")
+        void emptiesAfterACapRefusal() throws Exception {
+            Backend terminated = startBackend(1);
+            SniFrontListener front = startFront(Map.of(), terminated.target(), LONG_DEADLINE, 1, 1, LONG_IDLE,
+                    LONG_IDLE, System::nanoTime, RefusalsAtAccept.sourcesInOrder("holder", "refused"));
+            ClientLeg holder = connectClient(front);
+            int whileHeld = awaitSourcesHolding(front, 1);
+
+            refuseNext(front);
+            int afterTheRefusal = front.sourcesHoldingSlots();
+            Awaits.teardown(holder.socket().close(), "the holder to leave");
+
+            assertAll("a cap refusal returns the share it claimed first",
+                    () -> assertEquals(List.of(Refusal.CAP), refusals, "the second source finds the cap full"),
+                    () -> assertEquals(1, afterTheRefusal, "only the holder's source is left after the refusal"));
+            assertMapEmptied(front, whileHeld);
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * A relay session that fails to start after a successful dial: the relay still ends the dial
+         * phase, so the front returns the connection's slots, and the session's failure closes the client
+         * leg.
+         */
+        @Test
+        @DisplayName("empties once a relay session fails to start, and closes the connection")
+        void emptiesAfterASessionThatFailsToStart() throws Exception {
+            Backend passthrough = startBackend(hello.length);
+            PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.heldDialClient(vertx.createNetClient(),
+                    () -> nextDial.complete(null), releaseDials), relayedPeers, () -> {
+                throw new IllegalStateException("the relay session failed to start");
+            });
+            SniFrontListener front = startFront(relay, Map.of(MAPPED_SNI, passthrough.target()),
+                    passthrough.target(), LONG_DEADLINE, 1, 1, SniFrontListener::sourceOf);
+            ClientLeg routed = routeWithAHeldDial(front);
+            int whileHeld = front.sourcesHoldingSlots();
+
+            releaseDials.complete(null);
+            Awaits.connect(routed.closedNanos(), "the failed session start to close the connection");
+            Awaits.connect(passthrough.firstClosed(), "the failed session start to close the backend leg");
+
+            assertMapEmptied(front, whileHeld);
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /** A front whose relay holds every dial until {@link #releaseDials} completes. */
+        private SniFrontListener startHeldDialFront(NetClient dialClient, RelayTarget target, int cap, int dialBudget,
+                Function<NetSocket, String> sourceKey) throws Exception {
+            PassthroughRelay relay = new PassthroughRelay(RelayTestProxies.heldDialClient(dialClient,
+                    () -> nextDial.complete(null), releaseDials), relayedPeers);
+            return startFront(relay, Map.of(MAPPED_SNI, target), target, LONG_DEADLINE, cap, dialBudget, sourceKey);
+        }
+
+        /** Routes one connection to the passthrough target and waits until its backend dial is requested. */
+        private ClientLeg routeWithAHeldDial(SniFrontListener front) throws Exception {
+            CompletableFuture<Void> dialled = new CompletableFuture<>();
+            nextDial = dialled;
+            ClientLeg routed = connectClient(front);
+            Awaits.connect(routed.socket().write(Buffer.buffer(hello)), "the ClientHello to be written");
+            Awaits.connect(dialled, "the routed connection's backend dial to be requested");
+            return routed;
+        }
+
+        /** Waits until {@code expected} sources hold a slot, and returns the count then read. */
+        private int awaitSourcesHolding(SniFrontListener front, int expected) throws Exception {
+            Awaits.until(() -> front.sourcesHoldingSlots() == expected,
+                    "the accepted connection's source to hold a slot", Awaits.CONNECT_CEILING_SECONDS);
+            return front.sourcesHoldingSlots();
+        }
+
+        /** Waits until the per-source map is empty, then re-asserts the held state and the empty map. */
+        private void assertMapEmptied(SniFrontListener front, int whileHeld) throws Exception {
+            Awaits.until(() -> front.sourcesHoldingSlots() == 0, "the per-source map to return to empty",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            assertAll("the source's entry lived exactly as long as its hold",
+                    () -> assertEquals(1, whileHeld, "precondition: the source held a slot"),
+                    () -> assertEquals(0, front.sourcesHoldingSlots(), "the per-source map is empty again"));
+        }
+    }
+
     private static List<LogRecord> debugLines(String text) {
         return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, text);
     }
@@ -1090,22 +1776,25 @@ class SniFrontListenerTest {
 
     /**
      * Starts a front whose server and relay dial client carry different idle timeouts, so a case can
-     * prove each leg's timeout on its own. The per-source share equals the cap, so it never binds
-     * before the cap does, and connections are keyed on their TCP peer address as in production.
+     * prove each leg's timeout on its own. The per-source share is one above the cap: the share is
+     * checked first, so a share equal to the cap would refuse a single source's connection beyond the cap
+     * for its share; one above it never binds. Connections are keyed on their TCP peer address as in
+     * production.
      *
      * @param frontIdle the idle timeout of the front server; positive
      * @param relayIdle the idle timeout of the relay's dial client, or {@code null} for none at all
      */
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget,
             Duration deadline, int cap, Duration frontIdle, @Nullable Duration relayIdle) throws Exception {
-        return startFront(targets, terminatedTarget, deadline, cap, cap, frontIdle, relayIdle, System::nanoTime,
+        return startFront(targets, terminatedTarget, deadline, cap, cap + 1, frontIdle, relayIdle, System::nanoTime,
                 SniFrontListener::sourceOf);
     }
 
     /**
      * Starts a front with every bound explicit, recording its refusals into {@link #refusals}. The
      * warn window is the production {@link SniFrontListener#SATURATION_WARN_INTERVAL}; a case moves
-     * past it with its own {@code clock}.
+     * past it with its own {@code clock}. The dial budget equals the cap, so it never binds before the
+     * cap does; the cases of {@link DialBudget} set it on their own.
      *
      * @param perSource the per-source share of the cap; positive
      * @param clock     the monotonic nanosecond clock the warn window is measured on
@@ -1121,18 +1810,34 @@ class SniFrontListenerTest {
         }
         PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient(relayOptions), relayedPeers);
         return started(new SniFrontListener(vertx, relay, targets, terminatedTarget, 0, HOST, deadline, cap,
-                perSource, frontIdle, SniFrontListener.SATURATION_WARN_INTERVAL, clock, sourceKey, refusals::add));
+                perSource, cap, frontIdle, SniFrontListener.SATURATION_WARN_INTERVAL, clock, sourceKey,
+                refusals::add));
     }
 
     /**
-     * Starts a front handing its connections to the given relay, with the per-source share equal to
-     * the cap and every other bound as in {@link #startFront(Map, RelayTarget, Duration, int, Duration)}.
+     * Starts a front handing its connections to the given relay, with the dial budget equal to the cap,
+     * the per-source share one above it — so it never binds — and every other bound as in
+     * {@link #startFront(Map, RelayTarget, Duration, int, Duration)}.
      */
     private SniFrontListener startFront(PassthroughRelay relay, Map<String, RelayTarget> targets,
             RelayTarget terminatedTarget, Duration deadline, int cap) throws Exception {
-        return started(new SniFrontListener(vertx, relay, targets, terminatedTarget, 0, HOST, deadline, cap, cap,
-                LONG_IDLE, SniFrontListener.SATURATION_WARN_INTERVAL, System::nanoTime, SniFrontListener::sourceOf,
-                refusals::add));
+        return startFront(relay, targets, terminatedTarget, deadline, cap, cap, SniFrontListener::sourceOf);
+    }
+
+    /**
+     * Starts a front handing its connections to the given relay, with the given dial budget and source
+     * key, the per-source share one above the cap — so it never binds — and the production warn window
+     * and clock.
+     *
+     * @param dialBudget how many connections may be dialling one passthrough target at once; positive
+     * @param sourceKey  the source each accepted connection is counted under
+     */
+    private SniFrontListener startFront(PassthroughRelay relay, Map<String, RelayTarget> targets,
+            RelayTarget terminatedTarget, Duration deadline, int cap, int dialBudget,
+            Function<NetSocket, String> sourceKey) throws Exception {
+        return started(new SniFrontListener(vertx, relay, targets, terminatedTarget, 0, HOST, deadline, cap,
+                cap + 1, dialBudget, LONG_IDLE, SniFrontListener.SATURATION_WARN_INTERVAL, System::nanoTime,
+                sourceKey, refusals::add));
     }
 
     private static SniFrontListener started(SniFrontListener front) throws Exception {

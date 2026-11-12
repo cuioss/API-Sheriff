@@ -535,10 +535,10 @@ class TlsEdgeProducerTest {
 
     /**
      * The refusal recorder the producer hands the front listener counts each refusal on the metric
-     * series of its own reason. The metric name and the two label values are the documented contract,
-     * so they are written out here rather than read from {@link SheriffMetrics}. The two reasons are
-     * recorded a different number of times, so a recorder that swapped the mapping, or sent both reasons
-     * to one series, would leave a different count on each series than the one asserted.
+     * series of its own reason. The metric name and the three label values are the documented contract,
+     * so they are written out here rather than read from {@link SheriffMetrics}. The three reasons are
+     * recorded a different number of times each, so a recorder that swapped two of the mappings, or sent
+     * two reasons to one series, would leave a different count on some series than the one asserted.
      */
     @Nested
     @DisplayName("Front refusal recorder")
@@ -547,7 +547,7 @@ class TlsEdgeProducerTest {
         private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
         @Test
-        @DisplayName("counts a cap refusal under reason=cap and a share refusal under reason=source_share")
+        @DisplayName("counts a cap, a share and a dial-budget refusal each under its own reason")
         void countsEachRefusalUnderItsOwnReason() {
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, GatewayConfig.builder().version(1).build(),
                     new ResolvedTopology(Map.of()), NO_ROUTES, new SheriffMetrics(registry), HTTP_IDLE_TIMEOUT, 8443,
@@ -556,13 +556,18 @@ class TlsEdgeProducerTest {
             producer.recordRefusal(SniFrontListener.Refusal.CAP);
             producer.recordRefusal(SniFrontListener.Refusal.SOURCE_SHARE);
             producer.recordRefusal(SniFrontListener.Refusal.SOURCE_SHARE);
+            producer.recordRefusal(SniFrontListener.Refusal.DIAL_BUDGET);
+            producer.recordRefusal(SniFrontListener.Refusal.DIAL_BUDGET);
+            producer.recordRefusal(SniFrontListener.Refusal.DIAL_BUDGET);
 
             assertAll("each refusal reason lands on its own series of the refusal counter",
                     () -> assertEquals(1.0, refusedCount("cap"), "one cap refusal on reason=cap"),
                     () -> assertEquals(2.0, refusedCount("source_share"),
                             "two share refusals on reason=source_share"),
-                    () -> assertEquals(2, registry.find("sheriff_front_connections_refused_total").counters().size(),
-                            "the refusal counter carries exactly the two reason series"));
+                    () -> assertEquals(3.0, refusedCount("dial_budget"),
+                            "three dial-budget refusals on reason=dial_budget"),
+                    () -> assertEquals(3, registry.find("sheriff_front_connections_refused_total").counters().size(),
+                            "the refusal counter carries exactly the three reason series"));
         }
 
         /**

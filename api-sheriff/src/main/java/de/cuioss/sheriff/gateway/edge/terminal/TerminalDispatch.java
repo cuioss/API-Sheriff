@@ -431,16 +431,22 @@ public final class TerminalDispatch {
      * A dispatch failure (including an h2-negotiation failure) surfaces as a {@link GatewayException}
      * that {@link ErrorResponseWriter} renders as a trailers-only gRPC status rather than problem+json.
      * <p>
-     * <strong>What bounds the call.</strong> The dispatch arms neither the request-body idle timeout nor
-     * the request-body deadline, so a client-streaming or bidirectional call may pause between its
-     * messages. Until the upstream sends its response headers the guard's timeout bounds the call: that
-     * timeout bounds each attempt, and a gRPC call is a {@code POST}, which is never retried, so its one
-     * attempt is the whole call. From then on the call's {@linkplain ResponseStage.GrpcStreamIdleBound stream-idle bound}
-     * does: every request frame the dispatch reads and every upstream frame the relay writes restarts it,
+     * <strong>What bounds the call.</strong> The dispatch arms no request-body idle timeout, so a
+     * client-streaming or bidirectional call may pause between its messages. Until the upstream sends its
+     * response headers the request side of the call is bounded twice by the dispatch (see
+     * {@link GrpcDispatchStage}) — by the message bound, the wait for each complete request message
+     * ({@link GrpcDispatchStage#GRPC_MESSAGE_TIMEOUT_MILLIS}), and by the pre-response deadline, the
+     * request-body deadline counted from the hand-over of the body
+     * ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_DEADLINE_MILLIS}) — and the call as a whole by the guard's
+     * timeout: that timeout bounds each attempt, and a gRPC call is a {@code POST}, which is never retried,
+     * so its one attempt is the whole call. From then on the call's {@linkplain ResponseStage.GrpcStreamIdleBound stream-idle bound}
+     * bounds it: every request frame the dispatch reads and every upstream frame the relay writes restarts it,
      * and a call that carried no frame in either direction for its fixed five minutes is ended by the
      * relay — the upstream request is reset, and the client response ends through the one end rule with
      * {@code grpc-status: 4} ({@code DEADLINE_EXCEEDED}) in its trailers. Such an end is logged as
-     * {@code ApiSheriff-25}, latched per route.
+     * {@code ApiSheriff-25}, latched per route. A client that leaves before the upstream answers does not
+     * wait for any of these: the dispatch releases the upstream request at once and ends as the client's
+     * own abort, exactly as an HTTP dispatch does (see {@link DispatchStage}).
      *
      * @param ctx     the request
      * @param request the pipeline request, through stage 5
@@ -488,6 +494,13 @@ public final class TerminalDispatch {
      * upstream URI and the body cap are resolved. The dispatch is handed the request body the bound
      * {@linkplain ResponseStage.GrpcStreamIdleBound#watch watches}, the bound is passed to
      * {@link ResponseStage#relayWithTrailers}, and its expiry is logged as {@code ApiSheriff-25}.
+     * <p>
+     * <strong>The watched body is the armed body itself.</strong> The bound watches the armed
+     * {@link DispatchStage.InboundBody} in place and hands it back, so the dispatch still reads a client's
+     * departure from it: a client that resets its call or closes its connection before the upstream
+     * answers — also once it has ended its request stream, when only the response still reports it —
+     * releases the upstream request at once and ends the dispatch as the client's own abort, which the
+     * breaker skips, instead of holding it until the guard's timeout.
      */
     private void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
             ResponseStage.GrpcStreamIdleBound idleBound, Function<ReadStream<Buffer>, HttpClientResponse> dispatch) {
@@ -643,6 +656,24 @@ public final class TerminalDispatch {
      * stops receiving that body, the upstream request still receiving it is reset, and the end and a
      * {@code NO_ERROR} reset follow once the body stops arriving or the time cap passes. The relay's
      * future completes after that.
+     * <p>
+     * <strong>Once the relay has handed its end over, that end is the only one.</strong> The answer has
+     * then been relayed whole, and only its end is still to come — on HTTP/2, possibly after that wait. A
+     * client that leaves in the meantime, and an end that fails because the client has left, still fail
+     * the relay outcome and reach the one reset site, where the reset of an exchange already read to its
+     * end is a no-op, but they are not answered by {@code failRelay}: there is no truncated answer to
+     * complete, and its end would be a second one.
+     * <p>
+     * <strong>Nothing is left open by not answering them.</strong> After the hand-over the outcome fails in
+     * two ways only, and neither leaves a client waiting on this response. <em>The end itself failed.</em>
+     * Vert.x marks a response ended before it writes its last frame, so behind a failed end there is no
+     * response left that could still be ended — a second end is refused — and the end fails only on a
+     * stream already reset or a connection already closed, or on a write error, which the transport
+     * answers itself by resetting the stream (HTTP/2) or closing the connection (an HTTP/1.x I/O failure).
+     * A deferred end that finds the response ended by another writer fails as well, and that response is
+     * ended. <em>The response reported an exception or a close before it ended.</em> It does so for a
+     * stream its client reset, for a stream or connection error — which the transport answers with a reset
+     * or a close of its own — and for a closed connection.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
@@ -654,6 +685,9 @@ public final class TerminalDispatch {
             Function<ResponseEnd, Future<Void>> relay) {
         ctx.vertx().runOnContext(v -> {
             Promise<Void> outcome = Promise.promise();
+            // Set once the relay hands the end of the response to the one end rule: from then on the
+            // answer is whole and that end is its only one.
+            AtomicBoolean endHandedOver = new AtomicBoolean();
             // A quiet upstream gives the relay no write that could fail, so the client leaving is
             // observed on its own: a response that closes before it ended fails the outcome at once.
             ctx.addEndHandler(ended -> {
@@ -665,7 +699,7 @@ public final class TerminalDispatch {
             if (response.closed() && !response.ended()) {
                 outcome.tryFail(new IllegalStateException("the client response closed before the relay started"));
             }
-            startRelay(ctx, stageSetCookies, relay).onComplete(relayed -> {
+            startRelay(ctx, stageSetCookies, relay, endHandedOver).onComplete(relayed -> {
                 if (relayed.succeeded()) {
                     outcome.tryComplete();
                 } else {
@@ -677,6 +711,15 @@ public final class TerminalDispatch {
                 // lost its client: nothing reads the upstream body any more, so release the exchange
                 // instead of letting it drain or idle.
                 upstream.request().reset();
+                if (endHandedOver.get()) {
+                    // The relay had already handed its end to the one end rule — on HTTP/2 still waiting
+                    // for request data to stop — so the client left an answer that was relayed whole.
+                    // That end stays the only one: answering this as a failed relay would end the
+                    // response a second time. No client is left waiting behind it: a failed end leaves a
+                    // response Vert.x already counts as ended, on a stream or connection that is gone.
+                    LOGGER.debug("Client left while the end of its relayed response waited: %s", failure.getMessage());
+                    return;
+                }
                 failRelay(ctx, failure, upstream.statusCode());
             });
         });
@@ -865,17 +908,21 @@ public final class TerminalDispatch {
     /**
      * Starts the relay on the event loop, turning a failure thrown while starting it into a failed
      * future, which {@link #relayOnEventLoop} answers — releasing the paused upstream response first —
-     * exactly like a failure the relay reports on its future.
+     * exactly like a failure the relay reports on its future. The {@link ResponseEnd} the relay is handed
+     * sets {@code endHandedOver} before it passes the end to the one end rule.
      */
     private static Future<Void> startRelay(RoutingContext ctx, List<String> stageSetCookies,
-            Function<ResponseEnd, Future<Void>> relay) {
+            Function<ResponseEnd, Future<Void>> relay, AtomicBoolean endHandedOver) {
         // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
         // must be answered, so no narrower catch is correct. The failure is not swallowed — it is
         // handed to failRelay exactly like a failure the relay reports on its future.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             ResponseEnds.applyStageSetCookies(ctx.response(), stageSetCookies);
-            return relay.apply(ending -> ResponseEnds.endResponse(ctx, ending));
+            return relay.apply(ending -> {
+                endHandedOver.set(true);
+                return ResponseEnds.endResponse(ctx, ending);
+            });
         } catch (RuntimeException startFailure) {
             return Future.failedFuture(startFailure);
         }

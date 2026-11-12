@@ -331,6 +331,37 @@ class PassthroughRelayTest {
     }
 
     /**
+     * A session that fails to start after a successful dial — its start throws — must still end the dial
+     * phase, or the front would hold the connection's slots forever, and must close both legs, or the
+     * dialled backend leg and the paused client leg would stay open with nothing relaying them. The
+     * terminated kind is used so the relayed-peer entry the hand-over registers is shown released too.
+     */
+    @Test
+    @DisplayName("a session that fails to start still ends the dial phase and closes both legs")
+    void aSessionThatFailsToStartEndsTheDialPhaseAndClosesBothLegs() throws Exception {
+        CompletableFuture<Void> backendClosed = new CompletableFuture<>();
+        RelayTarget backend = startSignalBackend(socket -> socket.closeHandler(v -> backendClosed.complete(null)));
+        PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient(), relayedPeers, () -> {
+            throw new IllegalStateException("the relay session failed to start");
+        });
+        CompletableFuture<Future<Void>> dialPhase = new CompletableFuture<>();
+        int frontPort = startHarness(accepted -> dialPhase.complete(relay.relay(accepted, Buffer.buffer("PREFIX"),
+                backend, RelayKind.TERMINATED, "")));
+        CompletableFuture<Void> clientClosed = new CompletableFuture<>();
+
+        connectClient(frontPort, socket -> socket.closeHandler(v -> clientClosed.complete(null)));
+        Future<Void> phase = Awaits.connect(dialPhase, "the relay to hand back its dial-phase future");
+        Awaits.connect(phase, "the dial phase to be over although the session failed to start");
+        Awaits.connect(clientClosed, "the failed session start to close the client leg");
+        Awaits.connect(backendClosed, "the failed session start to close the backend leg");
+
+        assertAll("nothing outlives a session that failed to start",
+                () -> assertTrue(phase.succeeded(), "the dial phase ends, and never fails"),
+                () -> assertEquals(0, relayedPeers.size(), "the relayed-peer entry of the hand-over is released"),
+                () -> assertTrue(hasDebugLine("failed to start, closing both legs"), "the failed start is recorded"));
+    }
+
+    /**
      * A client that leaves while the backend dial is held does not end the dial phase: the dial keeps
      * its connection's slot at the front until it settles. The dial here succeeds once released.
      */
@@ -392,6 +423,10 @@ class PassthroughRelayTest {
                         "the departed client's ClientHello is dropped at the close, not when the dial settles"),
                 () -> assertTrue(phase.succeeded(), "the dial phase ends once the dial settled, and never fails"),
                 () -> assertEquals(0, relayedPeers.size(), "a client that left during the dial registers nothing"));
+    }
+
+    private static boolean hasDebugLine(String text) {
+        return !TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, text).isEmpty();
     }
 
     /**

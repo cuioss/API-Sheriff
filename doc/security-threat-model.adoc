@@ -318,7 +318,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
   <<gw-02>>, <<gw-01>>. *DoS* (slowloris, h2 abuse, decompression) -> <<gw-07>>, <<gw-08>>;
   uploads that make the gateway close its own upstream connections until its local ports run out ->
   <<gw-07-upstream-ports,GW-07>>; a request body that stops or keeps arriving too slowly to end, a
-  gRPC call that goes quiet, and an HTTP/2 upload the gateway does not read ->
+  gRPC call whose client holds its request stream open, a gRPC call that goes quiet, and an HTTP/2
+  upload the gateway does not read ->
   <<gw-07-request-body,GW-07>>; an
   unauthenticated login request driving an outbound request to the identity provider, and a flood of
   them filling the pending-login store -> <<bff-20>>;
@@ -1517,8 +1518,8 @@ aspects now target a backend that reads the body, so no benchmark aspect drives 
 more, and `Http2EarlyResponseResetIT` guards the shape of an early answer, not the gateway's port use.
 
 [#gw-07-request-body]
-*A proxied dispatch waits a bounded time for its request body, and a gRPC call a bounded time for a
-frame.* A dispatch holds one pooled upstream connection and one admission permit while it forwards
+*A proxied dispatch waits a bounded time for its request body, and a gRPC call a bounded time for
+each request message and for a frame.* A dispatch holds one pooled upstream connection and one admission permit while it forwards
 the request body, a gRPC call holds its stream for as long as it stays open, and an HTTP/2 stream
 whose body the gateway does not read holds flow-control credit of its connection. Each is bounded by
 a fixed gateway constant that no configuration key or system property reaches
@@ -1526,6 +1527,8 @@ a fixed gateway constant that no configuration key or system property reaches
 -- request-body idle timeout],
 link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[request-body
 deadline],
+link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-message-bound[gRPC
+message bound and pre-response deadline],
 link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-stream-idle-bound[gRPC
 stream-idle bound]):
 
@@ -1548,24 +1551,66 @@ stream-idle bound]):
   ended the same way as soon as it is read again. An attempt that ends without handing its response
   back stops the deadline, which then reports nothing
   (link:architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline]).
-* *A gRPC call whose client never sends a byte.* The forced-HTTP/2 upstream request head is
-  written only with the first request body chunk, so a client that opens a call and sends nothing would
-  hold the dispatch until the guard's 30 s timeout -- and the breaker would count that timeout as an
-  upstream failure, letting idle clients open the breaker for every caller of a healthy upstream. A
-  gRPC call that forwards no request byte within the fixed 10 s first-message bound
-  (`GrpcDispatchStage.GRPC_FIRST_MESSAGE_TIMEOUT_MILLIS`) has its upstream request reset and ends as
-  the client's own abort, `DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`), which the
-  breaker does not count as a failure; the bound is below the guard's timeout, so it fires first
-  unless waiting for an upstream connection (counted by the guard, not by the bound) consumed the
-  difference. The bound ends when the first request byte is forwarded, not when a complete gRPC
-  message has arrived; from then until the upstream sends its response headers the call is bounded
-  only by the guard's 30 s timeout, so a call that sends part of a message and stalls ends at that
-  timeout. An upstream that received the first byte and never answers is ended by the guard and
-  counted as an upstream failure
-  (link:architecture/tls-and-inbound-security.adoc#_grpc_first_message_bound[Architecture -- gRPC first-message bound]).
-* *A gRPC call that goes quiet.* A gRPC call arms neither request-body bound. After its first request
-  byte and until its upstream sends the response headers, the guard's 30 s timeout, which runs from
-  the start of the attempt, bounds it;
+* *A gRPC call whose client holds its request stream open.* The forced-HTTP/2 upstream request head
+  is written only with the first request body chunk, and an upstream cannot act on a request message
+  it holds only part of. A client that opens a call and sends nothing, part of a message, or a complete
+  message followed by silence would hold the dispatch until the guard's 30 s timeout -- and the
+  breaker would count that timeout as an upstream failure, letting idle clients open the breaker for
+  every caller of a healthy upstream. Until the upstream answers, two fixed bounds end such a call as
+  the client's own abort, which the breaker does not count as a failure. A call whose next complete
+  request message -- the length prefix and every payload byte it declares -- is not forwarded within
+  the 10 s message bound (`GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS`), counted afresh after every
+  complete message, has its upstream request reset and ends as `DispatchStage.RequestMessageTimeout`
+  (`INBOUND_BODY_ABORTED`); a forwarded byte of an incomplete message does not stop the bound. A call
+  whose request stream is still open 25 s after its attempt handed the body over
+  (`GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS`) -- a steady sender that never ends its stream
+  -- ends as `DispatchStage.RequestBodyDeadlineExceeded` (`REQUEST_BODY_TIMEOUT`, rendered
+  `DEADLINE_EXCEEDED`). Both bounds count from the hand-over, so the wait for an upstream connection,
+  which the guard counts, is never charged to the client; to keep them ahead of the guard regardless,
+  the deadline never passes later than 29 s after the attempt started
+  (`GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS`, a second before the guard), and never less than
+  the 1 s hand-over grace after the hand-over (`GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS`): an
+  attempt whose connection wait leaves less than that grace before the cap, or reaches the cap, is
+  ended unsent, its body unread, as the upstream's `UPSTREAM_TIMEOUT`
+  (`DispatchStage.UpstreamConnectionTooLate`), which the breaker counts. The grace keeps a client that
+  had already ended its stream from being ended by a deadline too short for that end to be delivered;
+  such a client is ended by the deadline only if the gateway takes longer than the grace to deliver
+  it. The guard's timeout, counted as an upstream failure, is therefore reached in three ways, all the
+  upstream's: by an upstream that holds a complete, half-closed request and never answers; by a wait
+  for an upstream connection or HTTP/2 stream slot that itself lasts the 30 s; and by an upstream that
+  stops taking data mid-request and takes no more within the 30 s. While that backpressure pauses the
+  request stream, the message bound is not counted, and the pre-response deadline keeps counting but
+  does not end the call at once: a deadline that passes during the pause ends the call the moment the
+  upstream takes data again. Only a sustained stall makes that the upstream's failure: when the pause
+  has lasted without a break at least the fixed 10 s upstream stall threshold
+  (`GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS`, equal to the message bound) at that read, the call
+  ends as the upstream's `UPSTREAM_TIMEOUT` (`DispatchStage.UpstreamStalledRequest`), which the breaker
+  counts; a shorter pause, and a deadline that passes while the stream is being read, however long the
+  upstream paused the stream before, leave the deadline the client's `REQUEST_BODY_TIMEOUT`, which the
+  breaker skips. The threshold is the line between a stall and flow control: a client that sends
+  faster than a healthy upstream reads, and never ends its stream, is paused for brief waits most of
+  the time, and were any pause at the deadline charged to the upstream, that client could open the
+  route's breaker for every caller by repeating such calls (CWE-400). So a client cannot get its own
+  deadline counted against the upstream, and an upstream that holds the stream paused for the
+  threshold across the deadline is charged with that stall. A stall that ends before the deadline
+  passes is not: that deadline is the client's, however long the stall was, as the residual below
+  records (link:architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline]).
+* *A gRPC call whose client leaves before its upstream answers.* A request stream reports a reset or a
+  closed connection only while its body is open. Once the client has ended its request stream -- as a
+  unary or client-streaming call normally has before it is answered -- only the response learns that it
+  can no longer be answered; the edge reports that to the request body it armed, and the dispatch reads the
+  departure from the body it is handed. The gRPC dispatch is handed the armed body itself: the call's
+  stream-idle bound observes that body's frames in place instead of wrapping it. A client that resets
+  its call or closes its connection before the upstream answers therefore releases the upstream request
+  at once and ends the dispatch as its own abort (`INBOUND_BODY_ABORTED`, disposition `client-left`, or
+  `body-stream-failed` while its request stream was still open), which the breaker does not count -- on
+  a gRPC route exactly as on an HTTP route. A dispatch handed a decorator around the armed body would
+  not learn of the departure, and the call would run on until the upstream answered or the guard's
+  30 s timeout ended it as the upstream's failure
+  (link:architecture/tls-and-inbound-security.adoc#_client_departure[Architecture -- a client that leaves before it is answered]).
+* *A gRPC call that goes quiet.* A gRPC call arms no request-body idle timeout. Until its upstream
+  sends the response headers, the message bound, the pre-response deadline and the guard's 30 s
+  timeout bound it;
   after them, a call that carries no frame
   in either direction for five minutes has its upstream request reset and ends with
   `grpc-status: 4` (`DEADLINE_EXCEEDED`)
@@ -1576,16 +1621,36 @@ stream-idle bound]):
   admission permit. Both held without a change to the gateway; the connection stays open in both
   cases (link:architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[Architecture -- unread upload release]).
 
-The idle timeout and the deadline are recorded as `INFO` `ApiSheriff-23` and `ApiSheriff-24` and
-counted under `sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`; a call ended by the stream-idle
-bound is recorded as `INFO` `ApiSheriff-25`; a gRPC call ended by the first-message bound is
-recorded as `INFO` `ApiSheriff-22` with the disposition `no-first-message` and counted under
-`sheriff_errors_total{event="INBOUND_BODY_ABORTED"}`. All four records are latched per route (CWE-779).
+The idle timeout and the deadline, the gRPC pre-response deadline its client held included, are
+recorded as `INFO` `ApiSheriff-23` and `ApiSheriff-24` and counted under
+`sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`; a gRPC pre-response deadline that passed while the
+upstream had the stream paused, in a pause that had lasted at least the stall threshold by the read
+that ended it, is counted under
+`sheriff_errors_total{event="UPSTREAM_TIMEOUT"}` and by the breaker instead; a call ended by the
+stream-idle bound is
+recorded as `INFO` `ApiSheriff-25`; a gRPC call ended by the message bound is recorded as `INFO`
+`ApiSheriff-22` with the disposition `client-idle`, counted under
+`sheriff_errors_total{event="INBOUND_BODY_ABORTED"}` and, apart from client departures and failed
+body streams, under `sheriff_inbound_body_aborts_total{disposition="client-idle"}`. The first three
+records are latched per route; `ApiSheriff-22` is latched per route and disposition, so an idle-client
+end on a route is recorded at `INFO` even after a departure there (CWE-779).
 
 *Residual (accepted).* A body may hold its upstream connection for up to 25 s from the start of its
 attempt while it keeps arriving. A body the upstream is not taking data for when the deadline passes
 is ended only once the upstream reads it again; until then the upstream holds it, and before the
-response head the guard's 30 s timeout ends that attempt. A gRPC call has no bound on its total
+response head the guard's 30 s timeout ends that attempt, as the upstream's `UPSTREAM_TIMEOUT`, whatever
+the length of that pause. The 10 s stall threshold decides only a deadline that passes during a pause the
+upstream ends by reading again: on a gRPC call that read ends the call as the upstream's
+`UPSTREAM_TIMEOUT` only when the pause had then lasted without a break for at least the threshold; a
+shorter pause at that read is still recorded as the client's `REQUEST_BODY_TIMEOUT` and skipped by the
+breaker, so an upstream that pauses its readers for several seconds at a time, but less than 10 s, and
+reads again each time, is never counted for it. Nor is a stall
+of any length that ends before the deadline passes: a deadline that passes while the stream is being
+read is the client's, however long the upstream paused the stream earlier, so an upstream that stalls a
+call for 10 s or more and reads again before the deadline leaves that call's deadline end recorded as
+its client's `REQUEST_BODY_TIMEOUT`, skipped by the breaker. On an HTTP route
+the whole-body deadline still ends such a body as the request's `REQUEST_BODY_TIMEOUT`, which the breaker
+does not count. A gRPC call has no bound on its total
 duration: a call that carries a frame at least every five minutes stays open, as long-lived streaming
 calls are normal for gRPC (ADR-0060).
 
@@ -1620,9 +1685,10 @@ stops its body's clocks (`abandonedAttemptStopsTheClocksOfItsBody`,
 `bodyOfAnAlreadyAbandonedAttemptNeverStartsItsClocks`); `failedAttemptStopsTheRequestBodyDeadline`
 asserts the same over a live upstream that fails the attempt. Each of these was red before the
 deadline stayed in force.
-`GrpcDispatchStageTest.StreamBounds` asserts that a paused client-streaming call is ended by neither
-request-body bound (`clientStreamingPauseIsEndedByNeitherRequestBodyBound`), that the guard no longer
-bounds a call once its headers arrived (`callAfterHeadersOutlivesTheGuardAndEndsOnlyWithItsStream`),
+`GrpcDispatchStageTest.StreamBounds` asserts that a client sending complete messages within the
+message bound and then ending its stream is answered (`steadySenderIsAnsweredAfterItHalfCloses`), that
+the guard no longer bounds a call once its headers arrived
+(`callAfterHeadersOutlivesTheGuardAndEndsOnlyWithItsStream`),
 that a call idle in both directions ends with `DEADLINE_EXCEEDED`
 (`callIdleInBothDirectionsIsEndedWithDeadlineExceeded`), and that traffic in either direction alone
 keeps a call open (`upstreamTrafficKeepsTheCallOpenWhileTheClientIsSilent`,
@@ -1639,23 +1705,118 @@ with, `GrpcStreamIdleBound.on(...)`, carries exactly the fixed five minutes
 `ApiSheriff-24` (`GatewayEdgeRequestBodyIdleTimeoutTest`, `deadlineRecordIsLatchedPerRoute`) and
 `ApiSheriff-25` (`TerminalDispatchGrpcStreamIdleTest`, `idleExpiryRecordIsLatchedPerRoute`): a repeat
 on the same route stays at `DEBUG`, and a first occurrence on another route is recorded at `INFO`.
-`GrpcDispatchStageTest.StreamBounds` also drives the first-message bound, shortened to 300 ms, under a
-guard carrying the production breaker rules: idle calls beyond the breaker's threshold each end as
-`DispatchStage.FirstMessageTimeout` (`INBOUND_BODY_ABORTED`, rendered `INVALID_ARGUMENT`) at the
-bound, the breaker makes no transition and a following call reaches the upstream
-(`idleClientEndsAsItsOwnAbortAndLeavesTheBreakerClosed`); its matched
-control forwards its first request byte to an upstream that never answers, and the guard's timeout
-opens the breaker at its threshold (`unansweredFirstMessageIsTheGuardTimeoutAndOpensTheBreaker`); a
-call whose stream ends without a byte is not ended (`bodyEndingWithoutAMessageIsNotAborted`); and
-`firstMessageBoundIsBelowTheGuardTimeout` pins the fixed 10 s below the 30 s guard timeout.
-`InboundBodyDepartureTest` asserts the `no-first-message` disposition of `ApiSheriff-22` and its
-per-route latch shared with `client-left` and `body-stream-failed`.
+`GrpcDispatchStageTest.StreamBounds` also drives the message bound and the pre-response deadline,
+shortened to 400 ms and 1.2 s, under a guard carrying the production breaker rules: calls beyond the
+breaker's threshold that send nothing, part of a first message, or a complete message and then hold
+the stream open each end as `DispatchStage.RequestMessageTimeout` (`INBOUND_BODY_ABORTED`, rendered
+`INVALID_ARGUMENT`) at the bound and the breaker makes no transition
+(`idleClientEndsAsItsOwnAbortAndLeavesTheBreakerClosed`,
+`partialFirstMessageEndsAsTheClientsAbortAndLeavesTheBreakerClosed`,
+`heldOpenAfterACompleteMessageEndsAsTheClientsAbortAndLeavesTheBreakerClosed`); steady senders that
+never end their stream, as many as the breaker's threshold, each end as
+`DispatchStage.RequestBodyDeadlineExceeded` at the deadline, rendered `DEADLINE_EXCEEDED`, leave the
+breaker closed, and the call behind them is answered
+(`steadySenderThatNeverHalfClosesEndsAtTheDeadlineAndLeavesTheBreakerClosed`). Its matched control
+sends one complete message and ends its stream to an upstream that reads it and never answers, and
+the guard's timeout opens the breaker at its threshold
+(`upstreamHoldingAHalfClosedRequestIsTheGuardTimeoutAndOpensTheBreaker`). Behind a slow upstream
+connection, with the cap shortened to 1.6 s and the hand-over grace to 100 ms, a half-closed call is
+the guard's timeout counted by the breaker, a steady sender is ended at the cap as the client's, and a
+half-closed call whose connection comes past the cap, or inside the grace before it, is ended at once
+as `UPSTREAM_TIMEOUT` through `DispatchStage.UpstreamConnectionTooLate`, unsent, and counted by the
+breaker (`halfClosedRequestBehindASlowConnectionIsTheGuardTimeoutAndOpensTheBreaker`,
+`steadySenderBehindASlowConnectionEndsAtTheCapAndLeavesTheBreakerClosed`,
+`connectionPastTheCapIsTheUpstreamsTimeoutAndOpensTheBreaker`,
+`connectionInsideTheGraceBeforeTheCapIsTheUpstreamsTimeoutAndOpensTheBreaker`); the grace case was red
+while the refusal fired only past the cap. With the stall threshold shortened to 500 ms, an upstream
+that stops reading at the request head and reads again after the deadline, before the guard, behind a
+client sending more than its HTTP/2 window, has stalled the stream past the threshold by then: each
+call ends when the upstream reads again as `UPSTREAM_TIMEOUT` through
+`DispatchStage.UpstreamStalledRequest`, and the breaker opens at its threshold
+(`deadlinePassingWhileTheUpstreamHoldsTheStreamIsTheUpstreamsTimeoutAndOpensTheBreaker`, red while such
+a call ended as the client's `REQUEST_BODY_TIMEOUT` with the breaker closed); its matched control, a
+client whose small messages never fill that window, keeps the stream being read and ends at the
+deadline as the client's `REQUEST_BODY_TIMEOUT` with the breaker closed
+(`clientHoldingTheStreamWithinTheWindowIsTheClientsDeadlineAndLeavesTheBreakerClosed`). The flow-control
+attack is driven too: a client sending large messages faster than an upstream that reads all the time,
+but slower, is paused by flow control again and again, never for long, and never ends its stream; each
+such call ends at the deadline as the client's `REQUEST_BODY_TIMEOUT` and the breaker stays closed
+(`clientOutpacingAHealthyUpstreamIsTheClientsDeadlineAndLeavesTheBreakerClosed`, red while any pause at
+the deadline was charged to the upstream: a call ended as `UPSTREAM_TIMEOUT`, the breaker opened and
+the call behind was refused `UPSTREAM_CIRCUIT_OPEN`). A stall claimed in the moment the upstream answers
+ends the call as the upstream's timeout and the answer is not relayed
+(`answerArrivingJustAfterTheStallWasClaimedIsTheUpstreamsTimeout`). A call whose stream ends without a byte is not ended
+(`bodyEndingWithoutAMessageIsNotAborted`); and the `ConstructorContract` cases pin the fixed 10 s and
+25 s below the 30 s guard timeout, the 29 s cap one second below it, the 1 s grace, the 25 s equal
+to the request-body deadline, and the 10 s stall threshold equal to the message bound and below the
+deadline (`messageBoundDeadlineAndCapAreBelowTheGuardTimeout`,
+`preResponseDeadlineEqualsTheRequestBodyDeadline`, `upstreamStallThresholdIsTheMessageBoundBelowTheDeadline`). `DispatchStageTest` asserts the frame reading of
+the message bound -- a prefix or payload split across chunks, a zero-length message, a partial first
+message -- that the bound stops when the send completes, the body ends or the attempt is abandoned,
+and that the pre-response deadline ends a steady sender and stops when the send completes or the
+body ends (`MessageClock`, `CompleteMessage`, `PreResponseDeadline`); its `PreResponseDeadline` cases
+also pin the attribution rule: a deadline passing while the upstream has held the stream paused past
+the stall threshold, or inside the read that resumes such a pause, is the upstream's stall, never a
+client abort (`pausedByTheUpstreamAtTheDeadlineIsTheUpstreamsStall`,
+`deadlinePassingInsideTheResumingReadIsTheUpstreamsStall`); the threshold's edge is decided by the
+pause's length at the read that ends it -- one millisecond short is the client's, reaching it is the
+upstream's (`pauseJustShortOfTheStallThresholdLeavesTheDeadlineTheClients`,
+`pauseReachingTheStallThresholdIsTheUpstreamsStall`); a resume restarts the stall, so a short pause
+after a long one is the client's (`resumeRestartsTheStallMeasuredByTheNextPause`), while a pause
+re-asserted during a pause keeps its start (`pauseWhilePausedKeepsTheStallsStart`); one passing after
+an earlier pause has ended is the client's (`pausedEarlierThenReadAgainBeforeTheDeadlineIsTheClients`),
+and the whole-body deadline of an HTTP dispatch stays the client's
+(`wholeBodyDeadlinePausedByTheUpstreamStaysTheClients`). A timer never fires early but may fire late,
+so the same rule is driven with the deadline's instant passed and its timer still pending: a read that
+ends a stall of the threshold then ends the body as the upstream's stall itself
+(`readEndingAStallBeforeTheLateDeadlineTimerRanIsTheUpstreamsStall`, red while only the timer recorded
+a passed deadline -- the late timer found the stream being read again and charged the client), a pause
+one millisecond short of the threshold stays the client's
+(`readEndingAShortPauseBeforeTheLateDeadlineTimerRanIsTheClients`), and the `BodyDeadline` case
+`readAfterTheDeadlineInstantEndsThePausedBodyBeforeItsLateTimerRan` asserts that an HTTP dispatch's
+read ends the paused body without waiting for the late timer either. The same instant decides whether a
+body ended in time: an end that arrives at or after it while the deadline's timer is still pending is
+not passed on, and the stream, read all along, is ended at the deadline as the client's
+(`inboundEndAfterTheDeadlineInstantBeforeItsLateTimerRanIsTheClientsDeadline`, red while the end
+cancelled the late timer and the stream was passed on as one that had ended in time); an end one
+millisecond before the instant is passed on (`inboundEndJustBeforeTheDeadlineInstantIsPassedOn`). The
+`BodyDeadline` cases assert the same end after the hand-over, where it reaches the late-violation
+callback before the reset, and for a deadline already recorded as passed
+(`inboundEndAfterTheDeadlineInstantAfterTheHandOverGoesToTheLateCallback`,
+`inboundEndDoesNotDropADeadlineRecordedAsPassed`). Each of the three asserts that the ended inbound
+stream is not paused, and `LateEndOverALiveRequest` shows why against the transport: it drives the same
+end through a live HTTP/1.1 and a live HTTP/2 request, where the expiry runs inside the request's own
+end handler (`endOfALiveRequestPastItsDeadlineEndsTheBodyAtTheDeadline`). Its HTTP/2 case is red when
+the expiry pauses the inbound stream first: Vert.x refuses to pause a request that has ended, so the
+upstream request is never reset and the failure never propagated.
+`GrpcStatusMapperTest` asserts the `DEADLINE_EXCEEDED` rendering of `REQUEST_BODY_TIMEOUT`
+(`rendersRequestBodyTimeoutAsDeadlineExceeded`). `GrpcProxyIT` drives a call that sends HEADERS only
+and one that stalls inside its first message through the native image, each ended as
+`INVALID_ARGUMENT` at the message bound with the route serving the next call, and a matched control
+whose complete, half-closed message is answered by the upstream
+(`headersOnlyCallIsEndedByTheMessageBound`, `partialFirstMessageIsEndedByTheMessageBound`,
+`completeHalfClosedMessageIsAnsweredByTheUpstream`). `InboundBodyDepartureTest` asserts the
+`client-idle` disposition of `ApiSheriff-22`, its latch per route and disposition -- the first end of
+each disposition on a route is its own `INFO`, a repeat stays at `DEBUG`
+(`idleClientAfterADepartureIsItsOwnInfo`, `repeatIdleClientStaysAtDebug`) -- and the count of every end
+under its disposition (`everyEndIsCountedUnderItsDisposition`).
+`TerminalDispatchGrpcClientDepartureTest` runs a call through the public `TerminalDispatch.dispatchGrpc`
+behind a front handler that arms the request body and reports a response ended unwritten as the edge
+root does: a client that resets its call once its request stream has ended ends the dispatch as
+`DispatchStage.ClientDeparted`, the upstream call is released, and a guard that opens on the first
+failure it counts makes no transition (`clientLeavingAfterItsRequestStreamEndedIsItsOwnDeparture`, red
+while the dispatch was handed a decorator around the armed body: the call ran to the guard's timeout,
+ended as `UPSTREAM_TIMEOUT` and opened the breaker); its matched control, an upstream that resets the
+call, opens that breaker (`upstreamResettingTheCallIsAnUpstreamFailure`). `ResponseStageTest` pins that
+the stream-idle bound hands the armed body back itself (`armedRequestBodyIsWatchedInPlace`), and
+`DispatchStageTest.InboundFrameObserver` that the body's frame observer sees every frame before the
+consumer reads it. The edge root's own report of the departure is driven over HTTP only, by
+`GatewayEdgeHttp2AbuseTest`; no test runs a gRPC departure through `GatewayEdgeRoute`.
 `GatewayEdgeEarlyResponseResetTest` asserts
 the release of credit and permit (`admissionRefusedUploadReturnsItsConnectionWindow`,
 `uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit`). The trickle and pool-wait
 cases run a shorter test-only idle timeout and deadline, and the stream-idle cases a 1 s bound, in
-place of the fixed 10 s, 25 s and five minutes; the gRPC pause case pauses past the fixed 10 s and
-25 s. What no test observes is the public `dispatchGrpc`'s one-line hand-over of that five-minute
+place of the fixed 10 s, 25 s and five minutes. What no test observes is the public `dispatchGrpc`'s one-line hand-over of that five-minute
 bound to the overload: the unit tests assert the five minutes the factory builds and drive the
 overload with a shorter bound, and `GrpcProxyIT` sends real calls through the public method without
 asserting the bound.
@@ -1690,21 +1851,40 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   times out -- whether or not its client is still connected: a client that leaves during the dial
   does not hand the slot back early. The relay's dial client carries a fixed 10 s connect timeout in
   place of the Vert.x default of 60 s. That timeout bounds the TCP connect only: a backend named by host
-  name is resolved before the connect starts, the lookup is bounded by the DNS resolver's own query
-  timeout rather than by the 10 s, and the connection keeps its slot during the lookup as well. The dial
-  phase is therefore inside the cap and time-bounded: a backend that never answers the connect holds a
-  slot for its name lookup plus at most 10 s, and no dialing connection escapes the cap, so a client
-  cannot start more concurrent backend dials than the cap admits by hanging up after its ClientHello. During the dial the connection holds only its replay buffer -- the parser is dropped at
-  the route decision -- and the relay drops that buffer as soon as the client is known gone.
+  name is resolved before the connect starts, the lookup is bounded by the DNS resolver rather than by
+  the 10 s, and the connection keeps its slot during the lookup as well. With the resolver
+  configuration in effect -- 5 s per query, at most 4 queries per name, the search list of the
+  process's `/etc/resolv.conf` -- one lookup takes at most 5 s x 4 x (search domains + 1), so the dial
+  window is at most 30 s with no search domain and 20 s longer per search domain
+  (link:development/tls-edge.adoc#relay-dial-name-lookup[Development -- the worst case of the name
+  lookup]). The dial phase is therefore inside the cap and time-bounded, and no dialing connection
+  escapes the cap, so a client cannot start more concurrent backend dials than the cap admits by
+  hanging up after its ClientHello. During the dial the connection holds only its replay buffer -- the
+  parser is dropped at the route decision -- and the relay drops that buffer as soon as the client is
+  known gone.
 * *A per-source share of the cap.* At most 256 of those 1024 -- a fixed quarter -- may belong to one
-  source, the TCP peer address of the accepted connection, at the same time. A connection accepted
-  while its source holds its full share is closed at once, without being read, so one source filling
-  its share leaves three quarters of the cap to every other source instead of starving them all.
+  source at the same time. The source is the TCP peer address of the accepted connection: an IPv4
+  address, the /64 prefix of an IPv6 address -- so one host cannot multiply its share across the
+  addresses of its own /64 -- and, for an IPv4-mapped IPv6 address, the IPv4 address it carries. A
+  connection accepted while its source holds its full share is closed at once, without being read, so
+  one source filling its share leaves three quarters of the cap to every other source instead of
+  starving them all.
+* *A per-target dial budget.* At most 128 of those 1024 -- a fixed eighth -- may be dialing one
+  passthrough backend at the same time. A connection routed to a backend whose budget is full is closed
+  at the route decision without being dialed, and its slots of the cap and of its source's share come
+  back at once. A backend that never answers the dial therefore holds at most 128 slots of the cap, each
+  for at most one dial window, and leaves seven eighths of it to terminated handshakes and every other
+  backend. A backend is the host and port a passthrough alias resolves to, not an SNI hostname: every
+  hostname that resolves to it shares its budget, and its host name is compared without regard to
+  letter case, so two aliases that spell one backend's name differently cannot hold a budget each. The
+  terminated hand-off target is exempt: its dial goes to the gateway's own loopback listener and settles
+  at once.
 * *A visible refusal.* Every connection closed at accept, beyond the cap or beyond its source's share,
-  is counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share`) and logged
+  and every connection closed at its route decision beyond its backend's dial budget, is counted on
+  `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged
   as `WARN ApiSheriff-146` at most once per 60 s per reason, every repeat inside the window at `DEBUG`
   (CWE-779). Neither carries the peer address or a received byte. A saturated front is therefore
-  reported rather than visible only as handshakes that wait.
+  reported rather than visible only as connections that are closed without an answer.
 * *An incremental parse.* Each connection owns its own parser and offers it every received chunk
   exactly once; the parser consumes only the TLS records a chunk completes. A ClientHello split into
   many one-byte records therefore costs work linear in its length, where re-parsing the whole buffer
@@ -1718,17 +1898,18 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   directly; it moves only with the values it is derived from.
 
 *Residual (accepted).* A single source can hold only its 256-connection share, so holding the whole
-cap of 1024 takes at least four source addresses. Clients that do hold 1024 silent sockets make new
-handshakes wait: a connection accepted while the cap is full is closed, and the deadline frees the
-held slots again within one 10 s window per wave of such sockets. That bounded delay is preferred over
-unbounded pre-route memory. The source is the TCP peer address, because nothing else exists before the
-ClientHello; behind an L4 load balancer or NAT that does not keep client addresses on the connection,
-every client shares one source and the share acts as a gateway-wide sub-cap of 256 undecided
-connections -- still tens of thousands of one-round-trip handshakes per second. While a backend
-silently drops the relay's dial, every connection routed to it holds its slot for the backend's name
-lookup plus up to the 10 s connect timeout, also after its client has left, so a burst of such
-connections can fill the cap for that window; counting the dial against the cap is preferred over letting dialing connections pile up
-outside it. A relayed connection
+cap of 1024 takes at least four sources. Sources that together fill the cap with silent sockets turn
+new handshakes away: a connection accepted while the cap is full is not queued but closed, so its
+client has to connect again, and the deadline frees each held slot again within one 10 s window.
+Refusing new connections for that bounded time is preferred over unbounded pre-route memory. The
+source is the TCP peer address, because nothing else exists before the ClientHello; behind
+an L4 load balancer or NAT that does not keep client addresses on the connection, every client shares
+one source and the share acts as a gateway-wide sub-cap of 256 undecided connections -- still tens of
+thousands of one-round-trip handshakes per second. While a backend silently drops the relay's dial,
+every connection routed to it holds its slot for the dial window, also after its client has left; the
+dial budget holds one such backend to 128 slots, but several add up -- two hold at most a quarter of
+the cap, eight could hold all of it, each slot for at most one dial window. Counting the dial against
+the cap is preferred over letting dialing connections pile up outside it. A relayed connection
 that carries a byte at least once per relay idle timeout stays open: the relay bounds idleness, not
 duration, and a route that declares a long WebSocket idle timeout lengthens the relay idle timeout
 with it.
@@ -1750,9 +1931,22 @@ after its client has left, until the dial settles (`holdsItsSlotWhenTheClientLea
 `PassthroughRelayTest` asserts that the dial phase outlasts a departed client until the dial succeeds
 or fails (`dialPhaseOutlastsTheClientUntilTheDialSucceeds`, `dialPhaseOutlastsTheClientUntilTheDialFails`).
 The last three were red on the code that returned the slot when the client left.
-`SheriffMetricsTest` pins the two `reason` values of `sheriff_front_connections_refused_total`. And a
-relay that
-carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`), also when
+`SniFrontListenerTest.ProductionSourceKey` pins the source key: an IPv4 peer on its address, an IPv6
+peer -- zoned or not -- on its /64 (`keysAnIpv6PeerOnItsSlash64`, `keysAZonedIpv6PeerOnItsSlash64`)
+and an IPv4-mapped peer as its IPv4 address (`keysAnIpv4MappedPeerAsItsIpv4Address`).
+`SniFrontListenerTest.DialBudget` asserts that a backend that never answers the dial holds at most its
+budget and leaves the rest of the cap to terminated handshakes
+(`aDarkTargetLeavesTheCapToTerminatedHandshakes`, with the matched control
+`aBudgetAtTheCapLetsADarkTargetTakeTheWholeCap`), and that the dial slot comes back after a dial
+success, a dial failure and a relay that throws (`returnsTheDialSlotAfterADialSuccess`,
+`returnsTheDialSlotAfterADialFailure`, `returnsTheDialSlotWhenTheRelayThrows`). Two targets that spell
+one host name in different letter case share one budget, the slot claimed under one spelling is
+returned and taken by the other, and each dial still names the host as its target declares it
+(`caseVariantsOfOneHostNameShareOneDialBudget`, red while the budget was keyed by the target as
+declared); `SniFrontListenerTest.DialBudgetKey` pins the key itself -- a host name lowered in the root
+locale, the port kept, an IP literal kept as declared.
+`SheriffMetricsTest` pins the three `reason` values of `sheriff_front_connections_refused_total`. And a
+relay that carries nothing is closed on both legs at the idle timeout (`closesSilentRelayOnBothLegs`), also when
 only the front server or only the relay's dial client carries that timeout
 (`closesSilentRelayWithTheFrontTimeoutAlone`, `closesSilentRelayWithTheDialClientTimeoutAlone`).
 `SniFrontListenerTest.ApplyIdleTimeout` and `TlsEdgeProducerTest.DialClientOptions` pin that the
@@ -1770,7 +1964,7 @@ ClientHello are closed without an answer within the 10 s deadline plus a 5 s mar
 must arrive no earlier than the deadline minus a slack of 1 s (`EARLY_CLOSE_SLACK`, which covers the
 deadline being armed at accept before the client starts its clock), so a connection closed at once --
 refused at accept, or closed for any other reason -- cannot pass as the deadline's close. No
-integration test exercises the cap or the relay idle timeout.
+integration test exercises the cap, the dial budget or the relay idle timeout.
 
 [#gw-07-relay-failure-reset]
 *A client that leaves mid-response cannot keep an upstream connection leased.* Once the gateway hands
@@ -4475,8 +4669,8 @@ outstanding hardening work (next section).
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
-| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither; a gRPC call that sends no request byte within 10 s ends as the client's `INBOUND_BODY_ABORTED`, not counted by the breaker as a failure, before the guard's 30 s timeout could count it against the upstream (unless an upstream connection wait, counted by the guard only, used up the difference); one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
-| <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no configuration key sets any of them | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap or the relay idle timeout)
+| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose client still holds its request stream open 25 s after its attempt handed the body over, never later than 29 s after the attempt started, ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, neither counted by the breaker as a failure; one whose upstream connection wait leaves less than the 1 s hand-over grace before that 29 s cap, or reaches it, ends unsent as the upstream's `UPSTREAM_TIMEOUT`, counted by the breaker, so a dispatched call always has at least the grace to deliver an end its client already sent; the guard's 30 s timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection or stream-slot wait that lasts the 30 s, or by an upstream that stops taking data mid-request and takes no more within the 30 s -- while that backpressure pauses the request stream the message bound is not counted, and the pre-response deadline keeps counting but ends the call only once the upstream takes data again, then as the upstream's `UPSTREAM_TIMEOUT` (`UpstreamStalledRequest`), counted by the breaker, only when the upstream had held the stream paused without a break for at least the fixed 10 s stall threshold, and as the client's `REQUEST_BODY_TIMEOUT` after a shorter, flow-control pause -- so a client out-sending a healthy upstream cannot open its breaker; one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
+| <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
 | <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `405`/`426`/`400`/`413` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
