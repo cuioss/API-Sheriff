@@ -1502,6 +1502,10 @@ class SniFrontListenerTest {
 
             assertFreshConnectionAdmitted(front, passthrough, "the slot the failed connection freed to admit a connection");
             long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectedNanos);
+            // The front returns the slot before it logs the failure, so a freed slot does not yet say the
+            // line is written: wait for it, then assert it.
+            Awaits.until(() -> !debugLines(FAILURE_LINE).isEmpty(), "the reset to reach the failure path",
+                    Awaits.CONNECT_CEILING_SECONDS);
             assertAll("the failure, not the deadline, returned the slot",
                     () -> assertTrue(elapsedMillis < LONG_DEADLINE.toMillis(),
                             "the slot came back before the deadline could fire: after " + elapsedMillis + " ms"),
@@ -1612,6 +1616,10 @@ class SniFrontListenerTest {
             }
 
             assertMapEmptied(front, whileHeld);
+            // The front returns the slot before it logs the failure, so the empty map does not yet say
+            // the line is written: wait for it, then assert it.
+            Awaits.until(() -> !debugLines("Front connection failed before ClientHello was read").isEmpty(),
+                    "the reset to reach the failure path", Awaits.CONNECT_CEILING_SECONDS);
             assertFalse(debugLines("Front connection failed before ClientHello was read").isEmpty(),
                     "the reset reached the failure path");
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
