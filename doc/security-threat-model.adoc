@@ -1638,11 +1638,13 @@ end on a route is recorded at `INFO` even after a departure there (CWE-779).
 *Residual (accepted).* A body may hold its upstream connection for up to 25 s from the start of its
 attempt while it keeps arriving. A body the upstream is not taking data for when the deadline passes
 is ended only once the upstream reads it again; until then the upstream holds it, and before the
-response head the guard's 30 s timeout ends that attempt. On a gRPC call that end is the upstream's
-`UPSTREAM_TIMEOUT` only when the upstream had then held the stream paused without a break for at least
-the 10 s stall threshold; an upstream stall shorter than the threshold across the deadline is still
-recorded as the client's `REQUEST_BODY_TIMEOUT` and skipped by the breaker, so an upstream that pauses
-its readers for several seconds at a time, but less than 10 s, is never counted for it. Nor is a stall
+response head the guard's 30 s timeout ends that attempt, as the upstream's `UPSTREAM_TIMEOUT`, whatever
+the length of that pause. The 10 s stall threshold decides only a deadline that passes during a pause the
+upstream ends by reading again: on a gRPC call that read ends the call as the upstream's
+`UPSTREAM_TIMEOUT` only when the pause had then lasted without a break for at least the threshold; a
+shorter pause at that read is still recorded as the client's `REQUEST_BODY_TIMEOUT` and skipped by the
+breaker, so an upstream that pauses its readers for several seconds at a time, but less than 10 s, and
+reads again each time, is never counted for it. Nor is a stall
 of any length that ends before the deadline passes: a deadline that passes while the stream is being
 read is the client's, however long the upstream paused the stream earlier, so an upstream that stalls a
 call for 10 s or more and reads again before the deadline leaves that call's deadline end recorded as
