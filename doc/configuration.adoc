@@ -246,7 +246,9 @@ management:                       # TLS policy for the management interface (hea
                                    #   their own port). POLICY ONLY -- this block declares NO
                                    #   port; the port is deployment-bound (see "management")
   tls:
-    enabled: true                  # HTTPS is the default and the shipped posture. false takes
+    enabled: true                  # true enforces nothing by itself: the management port serves
+                                   #   HTTPS only when key material is supplied, and falls back to
+                                   #   plain HTTP otherwise (the audit only WARNs). false takes
                                    #   the WHOLE management surface to plain HTTP and emits a
                                    #   loud boot WARN (ApiSheriff-115)
 

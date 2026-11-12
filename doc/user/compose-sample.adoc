@@ -494,7 +494,7 @@ The redirect URI registered in the realm does not change, because the gateway's 
 
 The variant's configuration set, `docker/sheriff-config-auth-fronted/`, adds a fourth anchor, `auth`,
 and one endpoint, `endpoints/idp.yaml`. That endpoint routes exactly the four namespaces of
-Keycloak's the browser login needs, and nothing else:
+Keycloak that the browser login needs, and nothing else:
 
 [cols="1,3"]
 |===

@@ -843,7 +843,9 @@ the logout token has already ended its own session.
 The receiver destroys the matching sessions in its own local store and answers `200` even when it
 destroyed none, so the IdP cannot tell from the answer whether a session ended. Behind several
 replicas, a session held by a replica that did not receive the token stays alive. Where back-channel
-revocation matters, run a single replica, or use cookie mode (see <<multi-replica>>).
+revocation matters, run a single replica (see <<multi-replica>>). Cookie mode is no substitute: it
+holds no server-side session, so `backchannel_path` answers `404` there and an IdP-side termination
+takes effect only at the next transparent refresh.
 
 *That memory is per gateway instance.* It is held in memory, is not shared between instances and
 does not survive a restart. It holds 10 000 tokens; when it is full of tokens still inside their
@@ -900,8 +902,8 @@ replica that holds its session.
 * *A back-channel logout ends sessions on one replica only.* The IdP posts the logout token to
   whichever replica the balancer picks, and that replica destroys the matching sessions in its own
   store only and answers `200` even when it destroyed none. A session held by another replica stays
-  alive. Where back-channel revocation matters, run a single replica or use cookie mode (see
-  <<backchannel-logout>>).
+  alive. Where back-channel revocation matters, run a single replica (see
+  <<backchannel-logout>>); cookie mode offers no back-channel path at all.
 * *Give every replica the same two signing key files* (see
   link:bff-oidc-common.adoc#key-material[Shared Setup -- Key material]).
 
