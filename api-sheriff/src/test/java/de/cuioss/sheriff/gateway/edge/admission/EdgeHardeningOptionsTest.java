@@ -75,7 +75,7 @@ class EdgeHardeningOptionsTest {
     }
 
     @Test
-    @DisplayName("reaps an idle connection after a bounded idle window (slow-loris / h2 abuse guard)")
+    @DisplayName("reaps a connection that carries no bytes for the 60-second idle window")
     void reapsIdleConnection() {
         // Arrange
         EdgeHardeningOptions hardening = new EdgeHardeningOptions();
@@ -84,9 +84,11 @@ class EdgeHardeningOptionsTest {
         // Act
         hardening.customizeHttpServer(options);
 
-        // Assert — an idle connection is reaped so a slow-loris / h2 abuse load cannot pin slots.
+        // Assert — a connection carrying no bytes for the window is closed. Any byte restarts the window,
+        // so this frees idle connections only; the bound on open connections is the connection cap
+        // quarkus.http.limits.max-connections (ShippedApplicationPropertiesTest, MainListenerConnectionCapTest).
         assertEquals(IDLE_TIMEOUT_SECONDS, options.getIdleTimeout(),
-                "An idle connection is reaped after 60 seconds");
+                "A connection idle for 60 seconds is reaped");
         assertEquals(TimeUnit.SECONDS, options.getIdleTimeoutUnit(),
                 "The idle-timeout unit is seconds");
     }

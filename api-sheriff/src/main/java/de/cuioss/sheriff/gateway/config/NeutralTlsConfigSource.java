@@ -95,8 +95,9 @@ import org.yaml.snakeyaml.Yaml;
  * {@code getKeyCertOptions()} is {@code null}.
  * <p>
  * <strong>Why an absent or {@code true} value projects nothing.</strong> The no-projection is
- * deliberate, not a gap. HTTPS on the management interface is the secure default and needs no key to
- * express it, and projecting nothing is what keeps the deployment-level
+ * deliberate, not a gap. HTTPS is the management interface's intended posture and needs no key to
+ * express it (it is served only when key material is supplied; otherwise the port falls back to plain
+ * HTTP), and projecting nothing is what keeps the deployment-level
  * {@code QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME} a working route onto the same Quarkus key. The
  * neutral {@code gateway.yaml} door and the deployment door are therefore two routes onto ONE lever
  * rather than two competing mechanisms with a precedence puzzle between them — which is only true for
@@ -194,7 +195,7 @@ public final class NeutralTlsConfigSource implements ConfigSource {
      * <p>
      * The projection is deliberately one-sided: only {@code management.tls.enabled: false} produces a
      * key. Absent, {@code true}, and every shape the schema will later reject all project nothing, so
-     * the secure default is expressed by silence and the deployment keeps its own route onto
+     * the HTTPS posture is expressed by silence and the deployment keeps its own route onto
      * {@value #MANAGEMENT_TLS_CONFIGURATION_NAME}.
      */
     private static Map<String, String> project(@Nullable Map<String, Object> policyBlocks) {

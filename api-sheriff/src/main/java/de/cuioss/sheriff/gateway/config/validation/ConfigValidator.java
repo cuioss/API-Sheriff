@@ -122,7 +122,11 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * exclusion between two of its keys is cross-cutting and lives with the post-binding rules. The
  * cookie-header refusal (owned by {@link ForwardingRules} as well) adds one more: a
  * {@code forward.headers_allow}, {@code forward.headers_deny} or {@code forward.set_headers} naming
- * {@code Cookie} is refused, because only the {@code cookies} block decides which cookies cross.
+ * {@code Cookie} is refused, because only the {@code cookies} block decides which cookies cross. The
+ * WebSocket authorization-origin refusal (owned by {@link ForwardingRules} too) adds one more: a
+ * {@code require: none} WebSocket route whose effective {@code forward.headers_allow} re-admits
+ * {@code Authorization} must declare a non-empty {@code websocket.allowed_origins}, because the
+ * upstream never sees the browser's {@code Origin} and that allowlist is the route's only origin check.
  * <p>
  * The cookie-policy rules (owned by {@link CookieRules}) add seven more. Four are checked at every
  * scope the {@code cookies} block is declarable at — the gateway, each anchor, each enabled endpoint
@@ -284,6 +288,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> ForwardingRules.validateForwardModeExclusivity(endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> ForwardingRules.validateTokenRelayForwardConflict(gateway,
+                    endpoints, errors),
+            (gateway, endpoints, topology, errors) -> ForwardingRules.validateWebSocketAuthorizationOrigins(gateway,
                     endpoints, errors),
             (gateway, endpoints, topology, errors) -> ForwardingRules.validateCookieOutsideCookiesBlock(endpoints,
                     errors),

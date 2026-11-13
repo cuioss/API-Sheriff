@@ -158,8 +158,8 @@ from outside (see <<_the_auth_fronted_variant>>).
 *The exposure step proves it can tell the two answers apart before it relies on that.* A denied path
 passes when the gateway answered it, and the step recognises the gateway's answer by shape: an RFC
 9457 problem document or no body. That holds only while Keycloak answers in neither, so the step first
-requests `/auth/realms/sample/no-such-page`, which the realm route forwards and Keycloak refuses, and
-fails unless that refusal is classified as Keycloak's. Without the control, a Keycloak that refused a
+requests `/auth/realms/sample/login-actions/no-such-page`, which the login-actions route forwards and
+Keycloak refuses, and fails unless that refusal is classified as Keycloak's. Without the control, a Keycloak that refused a
 crossed probe with an empty-bodied `4xx` would pass the whole step.
 
 It verifies TLS against the generated certificate rather than passing `-k`, bounds every request
@@ -185,22 +185,24 @@ any other file was written: discovery under `keycloak:8443/auth` advertises ever
 `https://localhost:8443/auth`, and a full login -- discovery, PAR, the code exchange with DPoP and
 `private_key_jwt` through the back channel -- completed with no DPoP error.
 
-*An allowlist of routes, and no catch-all.* `endpoints/idp.yaml` routes `/auth/realms/sample`,
-`/auth/resources` and `/auth/.well-known/oauth-authorization-server/realms/sample`, nothing else. The
-last is one document, not a namespace, on purpose: Keycloak serves RFC 8414 authorization-server
-metadata at that server-level path-insertion address for *every* realm, so a route on
-`/auth/.well-known` forwarded the master realm's document as well. Neither the login nor the BFF reads
-the document -- the BFF's discovery runs over the back channel, and the realm's OIDC discovery
-document lies under the realm route -- so dropping the route was the alternative. It is narrowed
-instead, so a browser-side OAuth client discovering the sample realm the RFC 8414 way still finds it,
-and the login check asserts the document's issuer, which is also what shows the pinned image serves
-the path insertion at all. A deny rule for `/auth/admin/` would have to
+*An allowlist of the login flow, and no catch-all.* `endpoints/idp.yaml` routes
+`/auth/realms/sample/protocol/openid-connect/auth`, `/auth/realms/sample/login-actions`,
+`/auth/realms/sample/protocol/openid-connect/logout` and `/auth/resources`, nothing else -- the
+namespaces a browser login and sign-out pass through. A route on the whole realm prefix would also
+forward the realm's account console and account REST API, its token endpoint and its discovery
+documents, none of which the browser login reads: the BFF's discovery, code exchange and refresh
+travel the back channel, and its key-set fetch dials `keycloak:8443`. No well-known route is kept
+either -- neither the realm's OIDC discovery document nor the RFC 8414 metadata at
+`/auth/.well-known/oauth-authorization-server/realms/sample` -- because the sample's browser client,
+the demo SPA, performs no discovery. The realm ships its `account` and `account-console` clients with
+`"enabled": false`, because Keycloak re-creates both default clients when an import omits them, so
+disabling them is the only removal that holds. A deny rule for `/auth/admin/` would have to
 recognise every spelling of the console path; an allowlist is closed by construction, and the
 canonical-path guard reduces or refuses a dot-segment, an encoded separator or a doubled slash before
-route selection, so a relative spelling cannot reach the console through the realm route. The
+route selection, so a relative spelling cannot reach the console through a login route. The
 load-balancer check `/auth/lb-check` is not routed: the pinned image answers it `404`, so a route for
-it would forward to nothing. The realm route admits Keycloak's login cookies by
-exact name with `same_origin_check: true`, because the credential `POST` carries them.
+it would forward to nothing. The three login routes admit Keycloak's login cookies by exact name with
+`same_origin_check: true`, because the credential `POST` carries them.
 
 *The `Cookie` cap is the one relaxation, and it is gateway-level.* Keycloak's login cookies run past
 `strict`'s 1024-character header-value cap. That cap is enforced before a route is selected, so a

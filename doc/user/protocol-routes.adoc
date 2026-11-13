@@ -78,7 +78,17 @@ Author each permitted origin *in full* -- `scheme://host[:port]`:
   `oidc.session.csrf.trusted_origins`: list the origins here as well.
 * A `require: none` WebSocket route may omit the list; its upgrade is then not origin-checked. A
   list it does declare is enforced.
+* *Except* a `require: none` WebSocket route whose effective `forward.headers_allow` -- on the route
+  or inherited from the endpoint -- names `Authorization` (any letter case). Such a route must
+  declare a non-empty `allowed_origins`; without one the boot is refused, naming the route and the
+  fix: declare `websocket.allowed_origins`, or drop `Authorization` from `headers_allow`.
 * A `websocket` block on a non-WebSocket route is a boot-time configuration error.
+
+*The upstream cannot check the `Origin` itself.* The gateway strips the browser's `Origin` header --
+`origin` is in the never-forward set -- and the WebSocket client that dials the upstream sends its
+own `Origin` on the upgrade. Whatever the upstream sees, it is not the page that opened the socket,
+so `allowed_origins` is the only origin check a WebSocket route has. That is why a route that hands
+the client's `Authorization` header to the upstream may not omit it.
 
 For the full field contract see
 link:../configuration/routing-and-forwarding.adoc#_allowed_origins[Configuration -- `allowed_origins`].

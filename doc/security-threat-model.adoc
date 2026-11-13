@@ -549,7 +549,9 @@ enforces it and the test that pins it:
   `FramingGateTest.AmbiguousTransferEncoding`
 
 | More than one `Content-Length` (CL.CL), or a comma-separated `Content-Length` value
-| `FramingGate`; on HTTP/2 the transport refuses `Content-Length` fields declaring different lengths
+| `FramingGate`; on HTTP/2 the transport refuses differing `Content-Length` values and collapses
+  identical ones -- repeated fields and a comma-separated list alike -- into one value, so that shape
+  reaches the gate as a single length and is not rejected on HTTP/2
 | `GatewayEdgeFramingCorpusTest` (`repeatedContentLengthIsRefusedOnHttp2`); `FramingGateTest`
   (`rejectsMultipleContentLength`, `rejectsCommaSeparatedContentLength`)
 
@@ -833,9 +835,9 @@ under every forward mode, forward-all included, so the *emitted* chain is always
 `ForwardPolicyStage.RESOLVER_INPUT_HEADERS`, `X-Proxy*` included, so a direct client seeds neither
 the chain nor the scheme, host, port or prefix the resolver derives. The resolver receives no peer
 address; `TcpPeerGate` stays the one trust decision. `ForwardedTrust` builds the resolver
-configuration from `trusted_proxies` and the baseline alone; a change that wires
-`forwarded.trust_scheme_host` into it must keep this mask in front of the resolver, so that only a
-trusted peer's scheme, host, port and prefix claims can ever be honoured (ADR-0003).
+configuration from `trusted_proxies` and the baseline alone, so no forwarded scheme, host, port or
+prefix is honoured and no configuration key enables them; the mask stays in front of the resolver
+whatever the resolver honours (ADR-0003).
 
 *Provenance the resolver does not read is withheld for every peer.* The provenance and URL-override
 class -- its members are listed once, in
@@ -1331,19 +1333,25 @@ MIME quadratic, CVE-2025-61723 PEM quadratic). A relay that buffers unbounded re
 bodies with no timeout exhausts a memory-capped container.
 
 *Control.* Bound everything an attacker inflates: inbound header/line-size limits, an
-inbound idle/read timeout (slowloris), a max-in-flight admission cap, `max_body_bytes` as a
+inbound idle timeout that closes a connection carrying no bytes (any byte the connection carries
+starts it again, so it does not end a connection that keeps trickling), a connection cap
+(`quarkus.http.limits.max-connections`) that bounds how many connections the Quarkus-terminated
+side holds open at once (one counter shared by the plain-HTTP redirect listener and the HTTPS
+listener; the SNI front listener of `passthrough_sni` and the management interface are not
+counted), a max-in-flight admission cap, `max_body_bytes` as a
 *streaming* counter (never buffer the body -- link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]),
 and streamed responses (never materialized). The gateway is an *opaque* passthrough -- it does
 not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must
 still cap body bytes. Explicit YAML `StreamReadConstraints` are applied at config load.
 
 *Status:* PARTIAL. Streaming + the `max_body_bytes` counter is ADR-0006 + pipeline
-stage 6; edge limits, idle timeout, admission cap and graceful drain are delivered as the
-edge-hardening bounds; YAML limits are applied at config load. The individual controls are
+stage 6; edge limits, idle timeout, connection cap, admission cap and graceful drain are delivered
+as the edge-hardening bounds; YAML limits are applied at config load. The individual controls are
 delivered, but the assertion below is not yet pinned across the whole set, which is what keeps
 the entry at PARTIAL rather than COVERED.
 
-*Assertion.* A slow-drip request is evicted at the idle timeout; a body exceeding
+*Assertion.* A connection that carries no bytes is closed at the idle timeout; a connection beyond
+the connection cap is closed while the connections already open are served; a body exceeding
 `max_body_bytes` aborts mid-stream without full buffering; concurrent large requests do not
 grow heap without bound (admission cap holds); an oversized/alias-bomb config fails boot
 gracefully.
@@ -1371,10 +1379,15 @@ refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
   sets held at that moment, so the flood ties up no request thread on the identity provider's
   latency. The refresh is started from a scheduler, never from a request thread.
 * *A flood cannot evict valid keys.* A refreshed key set replaces the loaded one only when it holds
-  the key id that triggered the refresh. A refresh triggered by an invented key id is discarded, so
-  it displaces neither the loaded key set nor a replaced one still inside its key-rotation grace
-  period, and it cannot end that grace period early. A failed refresh changes nothing either and
-  does not start the failed-load retry.
+  the key id that triggered the refresh, or a key id that neither the loaded key set nor a replaced
+  one still inside its key-rotation grace period holds. What decides is the key set the identity
+  provider serves, not the key id the caller named. A refresh triggered by an invented key id that
+  fetches the keys the gateway already holds is discarded, so it displaces neither the loaded key set
+  nor the replaced one, and it cannot end that grace period early. One that fetches a newly rotated
+  key is published, exactly as a refresh triggered by a token signed with that key would be; once the
+  key is held, the next refresh brings nothing new and is discarded, so a flood replaces the key set
+  at most once per key the identity provider introduces. A failed refresh changes nothing and does
+  not start the failed-load retry.
 
 * *A clock step moves neither bound.* The window and the grace deadline of
   `jwks.key_rotation_grace_period_seconds` (`0`-`3600`) are durations the gateway enforces, so both
@@ -1398,17 +1411,15 @@ with the new key are rejected: the request that triggers the refresh is itself r
 unrouted `404` on the shipped default, `401` with `security_defaults.uniform_not_found: false`), and
 when the window was already claimed the next refresh waits for it to pass. And a caller who keeps
 presenting invented key ids can claim an issuer's window ahead of legitimate tokens. The refresh such
-a claim triggers is discarded even when the key set it fetched holds a newly rotated key, so for as
-long as that caller wins the claim, the new key is picked up only by a window a token signed with it
-claims or, at the latest, by the background refresh. In that worst case the gateway behaves as it
-would without the on-demand refresh; the flood buys a delay of the rotation pick-up bounded by
-`jwks.refresh_interval_seconds`, never the acceptance of a token and never the loss of a key that
-was valid. Closing this residual exactly requires the refresh to compare the key ids the fetched key
-set holds with those of the current one. The token library exposes them since 0.9.7
-(`JwksLoader.getKeyIds()`), but the refresh does not use them: it publishes a fetched key set only
-when that set resolves the key id that triggered it. A replaced key set is closed only when its grace period ends, so until then its loader
-keeps running its own background refresh beside the current one; at most one replaced key set is
-held per issuer.
+a claim triggers compares the key ids of the fetched key set with those the loaded and the replaced
+key set hold (`JwksLoader.getKeyIds()`) and publishes a set that brings a new one, so a newly rotated
+key is picked up whichever token claimed the window. What the caller still decides is when the
+window is claimed: a refresh claimed just before the identity provider starts serving the new key
+fetches the old set and is discarded, and the next window's refresh picks the key up. The flood buys
+a delay of the rotation pick-up of about one window, never the acceptance of a token and never the
+loss of a key that was valid. A replaced key set is closed only when its grace period ends, so until
+then its loader keeps running its own background refresh beside the current one; at most one
+replaced key set is held per issuer.
 
 *Status of this control:* COVERED. `RetryingJwksLoaderTest` drives the window, the discarded and the
 published refresh, the grace period, steps of the wall clock in both directions and the record with
@@ -2026,7 +2037,10 @@ follow from the never-forward set and from dispatch:
 * *Stream resets.* The per-connection Rapid-Reset guard is pinned at 200 client-sent `RST_STREAM`
   frames per 30-second window -- the transport's own default, set explicitly so a change of that
   default cannot move it, and never raised (ADR-0066). A connection past it is ended with
-  `GOAWAY ENHANCE_YOUR_CALM`; every other connection is served on.
+  `GOAWAY ENHANCE_YOUR_CALM`; every other connection is served on. The resets the transport itself
+  *sends* are counted as well, by Netty's encoder-side reset limit: every sent reset except `NO_ERROR`
+  and `CANCEL`, including the `STREAM_CLOSED` reset for a DATA frame that arrives after an early
+  answer, `REFUSED_STREAM`, and the reset after a `431`.
 * *Header block.* A connection announces a `SETTINGS_MAX_HEADER_LIST_SIZE` of at most 16 KiB, the
   bound the HTTP/1.1 header block has. It covers the whole decoded header block, `CONTINUATION`
   frames included, so a header block grown past it over any number of frames ends the connection.
@@ -2049,7 +2063,7 @@ listeners, and the forced-h2 upstream leg opens at most one upstream stream per 
 request, so the stream and reset rates it can produce towards an upstream are bounded by the inbound
 ones.
 
-*Note -- early-answered uploads do not feed the reset count.* The Rapid-Reset guard counts the
+*Note -- early-answered uploads do not feed the client-side reset count.* The Rapid-Reset guard counts the
 resets a client sends per connection, so a legitimate client that resets every upload stream answered
 before its body was sent -- as a Go client does -- would reach the guard's limit on an ordinary
 upload burst and lose the connection with every sibling stream. The gateway therefore resets every
@@ -2061,7 +2075,9 @@ first of three points: the client can send nothing more on the stream (the strea
 connection's flow-control window is used up, or the client ended or lost the stream), what it may send
 has not changed for 50 ms, or 1 s has passed. Only the first shows that no more of the body can
 arrive. The 50 ms quiet period infers it from a client that is not sending, and the 1 s cap is a
-separate exit that ends the wait even while request data may still be in flight. The guard itself is
+separate exit that ends the wait even while request data may still be in flight. The gateway's own
+`NO_ERROR` reset is not counted by the encoder-side limit, but a DATA frame that arrives after it is
+answered by the transport with `RST_STREAM(STREAM_CLOSED)`, and that reset is counted. The guard itself is
 pinned at the transport default and never raised, and this note does not change the status below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
 availability threat of its own: it is recorded, with its control, under
 <<gw-07-upstream-ports,GW-07>>.
@@ -4666,16 +4682,16 @@ outstanding hardening work (next section).
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
 | <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1 and HTTP/2, the h2->h1 declared-length framing included; the upstream reset is pinned against an HTTP/1.1 upstream only)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
-| <<gw-04>> | TCP-peer forwarded gate over every resolver input, `X-Proxy*` included; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode; the provenance and URL-override class withheld for every peer, re-admittable only by a `headers_allow` naming it; `forwarded.trust_scheme_host` never wired without the resolver-input mask | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, `ForwardPolicyStage` resolver-input mask, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
+| <<gw-04>> | TCP-peer forwarded gate over every resolver input, `X-Proxy*` included; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode; the provenance and URL-override class withheld for every peer, re-admittable only by a `headers_allow` naming it; no forwarded scheme, host, port or prefix honoured | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, `ForwardPolicyStage` resolver-input mask, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on the mapped egress TLS clients) | PARTIAL
-| <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
-| <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
+| <<gw-07>> | Streaming + body cap; idle timeout; connection cap (`quarkus.http.limits.max-connections`); admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
+| <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id or a key id neither held key set holds; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose client still holds its request stream open 25 s after its attempt handed the body over, never later than 29 s after the attempt started, ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, neither counted by the breaker as a failure; one whose upstream connection wait leaves less than the 1 s hand-over grace before that 29 s cap, or reaches it, ends unsent as the upstream's `UPSTREAM_TIMEOUT`, counted by the breaker, so a dispatched call always has at least the grace to deliver an end its client already sent; the guard's 30 s timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection or stream-slot wait that lasts the 30 s, or by an upstream that stops taking data mid-request and takes no more within the 30 s -- while that backpressure pauses the request stream the message bound is not counted, and the pre-response deadline keeps counting but ends the call only once the upstream takes data again, then as the upstream's `UPSTREAM_TIMEOUT` (`UpstreamStalledRequest`), counted by the breaker, only when the upstream had held the stream paused without a break for at least the fixed 10 s stall threshold, and as the client's `REQUEST_BODY_TIMEOUT` after a shorter, flow-control pause -- so a client out-sending a healthy upstream cannot open its breaker; one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
-| <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
+| <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted while the transport's other sent resets (`STREAM_CLOSED`, `REFUSED_STREAM`, the reset after a `431`) count against Netty's encoder-side limit; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `405`/`426`/`400`/`413` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED

@@ -71,7 +71,9 @@ import org.jspecify.annotations.Nullable;
  * virtual thread and no timer is held for it. Under {@code delay} the same answer — with
  * {@code Retry-After} the whole seconds of {@code delay_millis} — refuses a tripped source's request
  * while that source's {@linkplain EdgeHardeningOptions#heldAnswerSourceShare() share} of the
- * held-answer sub-budget is used up, so one delayed source cannot occupy the whole sub-budget.
+ * held-answer sub-budget is used up, so one delayed source cannot occupy the whole sub-budget, once
+ * that has more than one permit. Below an {@code edge_hardening.admission_cap} of {@code 8} the
+ * sub-budget has one permit, and one source's share is that whole permit.
  * <p>
  * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ReconFeed}, the gate admits every
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —

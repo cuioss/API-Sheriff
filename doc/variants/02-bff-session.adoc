@@ -174,9 +174,12 @@ attached. Same-origin deployments need neither.
   without a `revocation_endpoint`, gets no revocation request
   (link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
 * *Back-channel* (`oidc.logout.backchannel_path`). A signed logout token from the IdP destroys the
-  matching session; a token acts once. Because the session is held server-side, the termination is
-  *immediately effective* -- an advantage over the link:03-bff-cookie.adoc[cookie-based variant].
-  This path revokes no token: the IdP initiated the logout and has already ended its own session.
+  matching session; a token acts once. The session store is *per process*: the receiver destroys
+  sessions in its own local store only, and it answers `200` even when it destroyed none. Behind
+  several replicas, a token that reaches one replica leaves a session held by another replica alive.
+  Where back-channel revocation matters, run a single replica; the
+  link:03-bff-cookie.adoc[cookie-based variant] has no back-channel path (`backchannel_path` answers
+  `404` there). This path revokes no token: the IdP initiated the logout and has already ended its own session.
   What the IdP must send is in link:../user/bff-session.adoc#backchannel-logout[the operator guide].
 * *Logout wins over in-flight work.* A refresh or scope widening running when the session is
   destroyed does not write it back: the refresh is answered as session-ended and revokes the refresh
@@ -291,7 +294,7 @@ endpoint:
 
 | State | Stateful -- a server-side token store (`memory`; one node or sticky sessions).
 | Token custody | The token never leaves the server in any form; the browser holds an opaque handle.
-| Revocation | Immediate: logout and back-channel logout destroy the stored session; RP-initiated logout also revokes the session's refresh token at the IdP, never the access token.
+| Revocation | Per replica: logout and back-channel logout destroy the session in the store of the replica that received them, and the store is per process; RP-initiated logout also attempts to revoke the session's refresh token at the IdP, never the access token -- the attempt can fail, and a session without a refresh token or an IdP without a `revocation_endpoint` gets no revocation request (see Logout above).
 | OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
 | CSRF | Fixed origin verification on unsafe methods (<<_csrf_defence>>).
 |===

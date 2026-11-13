@@ -433,8 +433,10 @@ Read it as a map of what you can and cannot change, and of where the answer is "
 * *Deployment-bound by necessity?* The *trust anchor path* is, being material. The *decision* is not,
   and is correctly neutral.
 * *Operator caveat:* mTLS here is require-and-verify or off -- no optional/want mode -- and
-  `client_ca` is a single global anchor with no CRL or OCSP. Revocation is trust-root rotation, which
-  is all-or-nothing. See link:tls-edge.adoc[TLS Edge].
+  `client_ca` is one global PEM trust bundle with no CRL or OCSP; every certificate in the bundle is
+  trusted. A rotation can therefore be gradual -- ship both roots in the file, then drop the old one
+  -- and an emergency cut-off drops the old root from the file. The listener reads the file when it
+  starts, so each change takes effect at the next restart. See link:tls-edge.adoc[TLS Edge].
 
 === Listener topology and the SNI split
 

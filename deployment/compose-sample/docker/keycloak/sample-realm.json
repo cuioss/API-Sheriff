@@ -52,6 +52,28 @@
         "dpop.bound.access.tokens": "true",
         "post.logout.redirect.uris": "https://localhost:8443/bff/logout/return"
       }
+    },
+    {
+      "clientId": "account",
+      "description": "Keycloak's default account client, DISABLED: listed rather than omitted, because an import that omits it makes Keycloak re-create it enabled.",
+      "enabled": false,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "account-console",
+      "description": "Keycloak's default account console client, DISABLED for the same reason as the account client: listed rather than omitted, because an import that omits it makes Keycloak re-create it enabled.",
+      "enabled": false,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
     }
   ],
 
