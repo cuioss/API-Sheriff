@@ -1413,9 +1413,10 @@ id's included, uses up the window and schedules nothing, so that earlier refresh
 discarded or fails, delays the pick-up by at least the rest of that window, and by more when the load
 keeps running through further windows. And a caller presenting invented key ids can bring forward --
 never cause -- the end of an older replaced key set's grace period: a publication their refresh
-triggers closes that older key set, but only when the identity provider's served key set genuinely changed, and at most
-once per issuer per window. An identity provider whose replicas serve diverging key sets looks like
-one that keeps changing, so alternating answers can cause at most one publication per window. None
+triggers closes that older key set, but only when the identity provider's served key set genuinely
+changed, and at most once per issuer per window. An identity provider whose replicas serve diverging
+key sets looks like one that keeps changing, so alternating answers can cause at most one publication
+per window. None
 of this accepts a token that is not validly signed. A replaced key set is closed only when its grace
 period ends, so until then its loader keeps running its own background refresh beside the current
 one; at most one replaced key set is held per issuer.
