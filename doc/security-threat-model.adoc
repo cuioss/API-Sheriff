@@ -1421,8 +1421,9 @@ key id would: whichever key id claims the window, a refresh that completes while
 has not moved publishes a key set that gained a key id, and one whose load fails or whose fetch
 overlaps a move of the loaded key set uses up the window all the same. While an earlier window's
 refresh is still in flight, any claim, an invented key id's included, uses up the window and
-schedules nothing, so that earlier refresh, if it is then discarded or fails, delays the pick-up by at least the rest of that window, and by more when the load
-keeps running through further windows. And a caller presenting invented key ids can bring forward --
+schedules nothing, so that earlier refresh, if it is then discarded or fails, delays the pick-up by
+at least the rest of that window, and by more when the load keeps running through further windows.
+And a caller presenting invented key ids can bring forward --
 never cause -- the end of an older replaced key set's grace period: a publication their refresh
 triggers closes that older key set, but only when the identity provider's served key set genuinely
 changed, and at most once per issuer per window. An identity provider whose replicas serve diverging
