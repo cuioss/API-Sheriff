@@ -21,7 +21,6 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-
 import io.vertx.core.net.SocketAddress;
 import org.jspecify.annotations.Nullable;
 

@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.ArrayList;
 import java.util.List;
 
-
 import de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck;
 import de.cuioss.sheriff.token.quarkus.health.TokenValidatorHealthCheck;
 import io.quarkus.test.junit.QuarkusTest;

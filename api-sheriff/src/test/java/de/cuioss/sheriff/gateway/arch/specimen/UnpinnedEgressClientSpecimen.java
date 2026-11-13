@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.arch.specimen;
 
 import java.net.http.HttpClient;
 
-
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 
 /**

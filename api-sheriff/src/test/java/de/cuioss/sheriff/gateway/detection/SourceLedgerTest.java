@@ -30,7 +30,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-
 import de.cuioss.sheriff.gateway.detection.SourceLedger.Action;
 import de.cuioss.sheriff.gateway.detection.SourceLedger.Settings;
 import de.cuioss.sheriff.gateway.detection.SourceState.Status;

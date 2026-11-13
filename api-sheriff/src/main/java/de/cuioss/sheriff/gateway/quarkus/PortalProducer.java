@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.quarkus;
 import java.nio.file.Path;
 import java.util.Objects;
 
-
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;

@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.time.Instant;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;

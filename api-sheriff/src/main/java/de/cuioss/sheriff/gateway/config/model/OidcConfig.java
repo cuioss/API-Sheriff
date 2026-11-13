@@ -20,7 +20,6 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 

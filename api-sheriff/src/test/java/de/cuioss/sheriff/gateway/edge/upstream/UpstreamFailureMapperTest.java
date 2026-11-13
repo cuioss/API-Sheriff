@@ -21,7 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import java.io.IOException;
 import java.io.Serial;
 
-
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;

@@ -19,7 +19,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.TimeUnit;
 
-
 import de.cuioss.sheriff.gateway.edge.end.EarlyResponseEnd.Outcome;
 import de.cuioss.sheriff.gateway.edge.end.EarlyResponseEnd.Quiescence;
 import de.cuioss.test.generator.Generators;

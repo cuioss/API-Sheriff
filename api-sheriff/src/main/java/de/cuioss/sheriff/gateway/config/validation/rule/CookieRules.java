@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;

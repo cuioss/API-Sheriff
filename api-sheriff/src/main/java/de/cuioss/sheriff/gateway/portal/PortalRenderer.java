@@ -29,7 +29,6 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-
 import io.quarkus.qute.Engine;
 import io.quarkus.qute.Expression;
 import io.quarkus.qute.HtmlEscaper;

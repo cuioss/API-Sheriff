@@ -28,7 +28,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jspecify.annotations.Nullable;
@@ -1991,7 +1990,7 @@ class ConfigModelContractTest {
 
         @Test
         void oidcAllowedEgressHostsIsCopiedDefensivelyAndNormalizesNull() {
-            java.util.ArrayList<String> mutable = new java.util.ArrayList<>(List.of("keycloak"));
+            ArrayList<String> mutable = new ArrayList<>(List.of("keycloak"));
             OidcConfig copied = OidcConfig.builder().allowedEgressHosts(mutable).build();
             mutable.add("injected");
             assertAll("the allow-list is an immutable copy and an absent list is empty",

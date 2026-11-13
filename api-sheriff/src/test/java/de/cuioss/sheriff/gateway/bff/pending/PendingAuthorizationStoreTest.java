@@ -29,7 +29,6 @@ import java.util.logging.LogRecord;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord.Widening;
 import de.cuioss.sheriff.gateway.events.EventType;

@@ -38,7 +38,6 @@ import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.logging.LogRecord;
 
-
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;

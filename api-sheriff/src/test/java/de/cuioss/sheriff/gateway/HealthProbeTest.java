@@ -24,7 +24,6 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;

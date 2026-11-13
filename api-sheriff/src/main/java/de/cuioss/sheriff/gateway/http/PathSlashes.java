@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.http;
 
 import java.util.Objects;
 
-
 import lombok.experimental.UtilityClass;
 
 /**

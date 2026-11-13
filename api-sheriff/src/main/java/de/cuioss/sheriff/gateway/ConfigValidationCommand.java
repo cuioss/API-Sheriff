@@ -26,7 +26,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.boot.ConfigBootPipeline;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.DefaultedPlaceholder;

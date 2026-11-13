@@ -24,7 +24,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-
 import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus.State;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
