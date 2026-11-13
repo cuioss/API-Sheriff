@@ -1077,7 +1077,7 @@ class RetryingJwksLoaderTest {
         @DisplayName("a refresh fetched while the loaded key set dropped a key id is discarded and does not bring it back")
         void refreshOutrunByADropIsDiscarded() throws Exception {
             // Arrange — the identity provider drops A and adds C while the fetch is held; the fetch
-            // still carries the older {A, B}, which gains A against the moved {B, C}
+            // still carries the older {A, B}, which gains A against the moved {B, C} key set
             String keyA = InMemoryKeyMaterialHandler.DEFAULT_KEY_ID;
             String keyC = "added-key";
 
