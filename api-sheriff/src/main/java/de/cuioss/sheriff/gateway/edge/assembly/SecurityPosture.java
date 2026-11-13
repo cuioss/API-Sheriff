@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge.assembly;
 
 import java.util.Objects;
 
+
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 

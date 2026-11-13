@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
+
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

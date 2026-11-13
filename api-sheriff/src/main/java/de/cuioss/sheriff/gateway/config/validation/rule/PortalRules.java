@@ -20,6 +20,7 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.*;
 import java.util.List;
 import java.util.Optional;
 
+
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.CatalogConfig;

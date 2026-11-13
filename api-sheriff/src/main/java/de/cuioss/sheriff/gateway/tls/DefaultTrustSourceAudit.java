@@ -19,6 +19,7 @@ import java.security.KeyStore;
 import java.util.Objects;
 import java.util.Optional;
 
+
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.StartupEvent;

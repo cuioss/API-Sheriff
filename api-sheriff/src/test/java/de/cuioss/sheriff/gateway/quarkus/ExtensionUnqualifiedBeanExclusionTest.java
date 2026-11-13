@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.token.quarkus.config.IssuerConfigResolver;
 import de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck;
