@@ -1410,10 +1410,10 @@ does not delay the pick-up of a key the identity provider already serves: whiche
 window, a refresh that completes while the loaded key set has not moved publishes a key set that
 gained a key id. While an earlier window's refresh is still in flight, any claim, an invented key
 id's included, uses up the window and schedules nothing, so that earlier refresh, if it is then
-discarded or fails, delays the pick-up by up to one further window. And a caller presenting invented
-key ids can bring forward -- never cause --
-the end of an older replaced key set's grace period: a publication their refresh triggers closes that
-older key set, but only when the identity provider's served key set genuinely changed, and at most
+discarded or fails, delays the pick-up by at least the rest of that window, and by more when the load
+keeps running through further windows. And a caller presenting invented key ids can bring forward --
+never cause -- the end of an older replaced key set's grace period: a publication their refresh
+triggers closes that older key set, but only when the identity provider's served key set genuinely changed, and at most
 once per issuer per window. An identity provider whose replicas serve diverging key sets looks like
 one that keeps changing, so alternating answers can cause at most one publication per window. None
 of this accepts a token that is not validly signed. A replaced key set is closed only when its grace
