@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -33,6 +34,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
@@ -64,6 +66,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ForwardingRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
+
+    /** The routes the WebSocket Authorization-origin rule must not judge: HTTP (undeclared) and gRPC. */
+    static Stream<Protocol> nonWebSocketProtocols() {
+        return Stream.of(null, Protocol.HTTP, Protocol.GRPC);
+    }
 
     /**
      * The forward-mode exclusivity rule: each {@code forward} dimension resolves exactly one of the
@@ -321,6 +328,54 @@ class ForwardingRulesTest {
 
             assertTrue(errors.isEmpty(),
                     () -> "the route-level block replaces the endpoint block wholesale, got: " + errors);
+        }
+
+        /**
+         * Validates one {@code require: none} route that re-admits {@code Authorization} through the
+         * endpoint-level {@code headers_allow} and declares no {@code websocket} block, so the only thing
+         * that decides whether the origin rule applies is the route's protocol or terminal action.
+         */
+        private List<ConfigError> validateReadmittingRoute(@Nullable Protocol protocol,
+                @Nullable RedirectConfig redirect) {
+            RouteConfig route = RouteConfig.builder().id(ROUTE_ID).protocol(protocol)
+                    .match(match("/" + ROUTE_ID, HttpMethod.GET)).redirect(redirect).build();
+            EndpointConfig endpoint = EndpointConfig.builder().id(ENDPOINT_ID).enabled(true)
+                    .baseUrl(redirect == null ? ALIAS : null).auth(auth(Require.NONE))
+                    .forward(allowing("Authorization")).routes(List.of(route)).build();
+            GatewayConfig gateway = validGateway().tokenValidation(new TokenValidationConfig(List.of(
+                    IssuerConfig.builder().name("main").issuer("https://idp.example").build()))).build();
+            return validator.validate(gateway, List.of(endpoint), topologyWith(ALIAS));
+        }
+
+        @ParameterizedTest
+        @MethodSource("de.cuioss.sheriff.gateway.config.validation.rule.ForwardingRulesTest#nonWebSocketProtocols")
+        @DisplayName("Should leave a require: none route of another protocol re-admitting Authorization alone "
+                + "(negative control)")
+        void shouldLeaveNonWebSocketProtocolAlone(@Nullable Protocol protocol) {
+            List<ConfigError> errors = validateReadmittingRoute(protocol, null);
+
+            assertFalse(refused(errors),
+                    () -> "the origin rule judges a WebSocket route only, but refused " + protocol + ": " + errors);
+        }
+
+        @Test
+        @DisplayName("Should leave a non-proxy WebSocket route alone (negative control)")
+        void shouldLeaveNonProxyRouteAlone() {
+            RedirectConfig redirect = RedirectConfig.builder().location("/home").status(302).build();
+
+            List<ConfigError> errors = validateReadmittingRoute(Protocol.WEBSOCKET, redirect);
+
+            assertFalse(refused(errors),
+                    () -> "a redirect route has no upstream to hand Authorization to, but got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should still refuse the identical WebSocket proxy route (matched positive control)")
+        void shouldRefuseTheIdenticalWebSocketProxyRoute() {
+            List<ConfigError> errors = validateReadmittingRoute(Protocol.WEBSOCKET, null);
+
+            assertTrue(refused(errors),
+                    () -> "the controls above are only meaningful while this route is refused, got: " + errors);
         }
 
         @Test
