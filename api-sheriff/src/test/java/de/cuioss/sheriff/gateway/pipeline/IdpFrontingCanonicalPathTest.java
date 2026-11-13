@@ -276,12 +276,8 @@ class IdpFrontingCanonicalPathTest {
 
     static Stream<AllowedRequest> allowedRequests() {
         return Stream.of(
-                new AllowedRequest(HttpMethod.GET, SAMPLE_REALM + "/protocol/openid-connect/auth",
-                        "idp-sample-authorization"),
                 new AllowedRequest(HttpMethod.GET, LOGIN_ACTIONS + "/authenticate", "idp-sample-login-actions"),
                 new AllowedRequest(HttpMethod.POST, LOGIN_ACTIONS + "/authenticate", "idp-sample-login-actions"),
-                new AllowedRequest(HttpMethod.GET, SAMPLE_REALM + "/protocol/openid-connect/logout",
-                        "idp-sample-logout"),
                 new AllowedRequest(HttpMethod.POST, SAMPLE_REALM + "/protocol/openid-connect/logout/logout-confirm",
                         "idp-sample-logout"),
                 new AllowedRequest(HttpMethod.GET, "/auth/resources/abc12/login/keycloak.v2/css/styles.css",
