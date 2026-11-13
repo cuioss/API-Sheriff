@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.http;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
