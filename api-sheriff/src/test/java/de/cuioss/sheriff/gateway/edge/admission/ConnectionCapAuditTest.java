@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.OptionalInt;
 
+
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;

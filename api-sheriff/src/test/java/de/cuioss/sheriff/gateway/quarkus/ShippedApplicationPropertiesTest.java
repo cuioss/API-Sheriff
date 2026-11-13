@@ -176,7 +176,7 @@ class ShippedApplicationPropertiesTest {
                                 + EdgeHardeningConfig.DEFAULT_ADMISSION_CAP + ", or on HTTP/1.1 the cap closes "
                                 + "connections before admission can answer 503"),
                 () -> assertEquals(String.valueOf(CONNECTION_CAP_HEADROOM_FACTOR
-                        * EdgeHardeningConfig.DEFAULT_ADMISSION_CAP), declared,
+                                * EdgeHardeningConfig.DEFAULT_ADMISSION_CAP), declared,
                         "the cap is the documented multiple of the default edge_hardening.admission_cap"),
                 () -> assertEquals("4096", declared,
                         "the literal value the Connection cap row of doc/user/edge-security.adoc and the "
