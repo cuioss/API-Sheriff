@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A token naming a key id the gateway does not hold schedules at most one JWKS refresh per issuer per window (jwks.unknown_kid_refresh_window_seconds, 5-3600, default 30), claimed when the token arrives and never run on a request thread; the refresh loads a fresh library loader off to the side and publishes it only when it holds the triggering key id or a key id that neither the current nor the replaced loader holds, so an unchanged key set is discarded, the replaced loader keeps answering for its own keys until the key-rotation grace period ends, and a WARN rate-limited by the same window names the issuer and the gateway's own last load. The refresh window and the grace deadline are measured on a monotonic clock, because both are durations the gateway enforces rather than instants it reports, so a wall-clock step neither lengthens the refresh blackout nor cuts the grace period short; the last-load instant in ApiSheriff-136 stays on the wall clock because it is reported as an instant. The background refresh interval (jwks.refresh_interval_seconds, 60-86400, library default 600) and the grace period (jwks.key_rotation_grace_period_seconds, 0-3600, library default) are passed to the token library only when declared. All three keys are refused at boot on a file source; readiness is unchanged.
+// summary: A token naming a key id the gateway does not hold schedules at most one JWKS refresh per issuer per window (jwks.unknown_kid_refresh_window_seconds, 5-3600, default 30), claimed when the token arrives and never run on a request thread; the refresh loads a fresh library loader off to the side and publishes it only when its key ids include one the basis captured at the claim lacks (the basis holds the key ids of the current loader and of a replaced loader still inside its grace period) and the current loader and its key ids have not moved by the time the refresh settles, so an equal, shrunk or empty key set, one that only brings back key ids of that replaced loader, and one fetched while the held set moved, changes nothing whichever key id triggered it; the replaced loader keeps answering for its own keys until the key-rotation grace period ends, and a WARN rate-limited by the same window names the issuer and the gateway's own last load. The refresh window and the grace deadline are measured on a monotonic clock, because both are durations the gateway enforces rather than instants it reports, so a wall-clock step neither lengthens the refresh blackout nor cuts the grace period short; the last-load instant in ApiSheriff-136 stays on the wall clock because it is reported as an instant. The background refresh interval (jwks.refresh_interval_seconds, 60-86400, library default 600) and the grace period (jwks.key_rotation_grace_period_seconds, 0-3600, library default) are passed to the token library only when declared. All three keys are refused at boot on a file source; readiness is unchanged.
 // tags: jwks, token-validation, key-rotation, configuration-surface, denial-of-service, log-amplification, readiness, boot-sequence
 // affects: api-sheriff, integration-tests, documentation
 // supersedes:
@@ -42,7 +42,7 @@ Three structural facts constrain the answer:
 * *The library offers no public re-fetch.* The only way to fetch a key set again outside the library's own timer is to build a fresh library loader and load it. A fresh loader knows the identity provider's current keys and none of the previous ones.
 * *The cadence is the library's unless the gateway exposes it.* The refresh interval and the key-rotation grace period are knobs of the library's loader configuration. The gateway configuration exposes such a knob only by deliberate decision (link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]). Left unexposed, a deployment can neither shorten the window of exposure nor lengthen the tolerance for the previous key.
 
-*The decision:* an unknown key id may schedule a refresh, never perform one, and at most one per issuer per window. A refresh earns the right to replace the held keys only by bringing a key the gateway does not hold: the key that was asked for, or any key id that neither held key set has.
+*The decision:* an unknown key id may schedule a refresh, never perform one, and at most one per issuer per window. A refresh earns the right to replace the held keys only by bringing a key id that neither held key set had when its window was claimed: not the current loader's, and not that of a replaced loader still inside its grace period.
 
 === Three keys on the issuer's `jwks` block
 
@@ -68,17 +68,60 @@ When a lookup misses and the issuer's key set is loaded, the lookup tries to cla
 
 The lookup makes the claim at trigger time, not at completion. The bound of one refresh per issuer per window therefore holds whatever the outcome of the fetch, the request rate and the number of distinct key ids. It does not depend on anything the caller chooses. One in-flight flag additionally keeps a refresh from starting while the previous one is still running. A claim made in that state logs its record and schedules nothing.
 
-=== A refresh is loaded off to the side and published only when it brings a key id the gateway does not hold
+[[_publish_rule]]
+=== A refresh is loaded off to the side and published only when it gains a key id
 
-The refresh builds a fresh library loader and loads it without publishing it. The current loader keeps answering until the outcome is known. Three outcomes discard the fresh loader and leave the held key sets untouched:
+The refresh builds a fresh library loader and loads it without publishing it. The current loader keeps answering until the outcome is known. The refresh does not carry the key id that triggered it. It carries its _comparison basis_ instead, captured when the window is claimed: the loader current at that moment, that loader's key ids, and the key ids of a replaced loader still inside its grace period at that moment. The gateway still accepts the keys of such a replaced loader, so the basis counts them as held. Four outcomes discard the fresh loader and leave the held key sets untouched:
 
 * the load fails,
 * the load completes exceptionally,
-* the load yields a key set that holds neither the key id that triggered it nor a key id absent from both the current loader and the replaced loader still inside its grace period.
+* the load yields a key set whose key ids add nothing to the basis: a set equal to the current loader's, a strict subset of it, a set that only brings back key ids of that replaced loader, or an empty set,
+* the basis moved while the load ran: when the refresh settles, the current loader is no longer the basis's loader or no longer holds the key ids it held at the claim.
 
-A fresh loader is published when it holds the triggering key id, or when it holds a key id that neither held loader has. The second condition reads the key ids each loader holds through the library's `JwksLoader.getKeyIds()`.
+A fresh loader is published exactly when it loaded, its key ids include at least one the basis lacks, and the basis has not moved. Every set is read through `JwksLoader.getKeyIds()`, an immutable snapshot of one loader's active key set. The current loader's snapshot leaves a replaced loader's keys out, so the basis reads the replaced loader's snapshot too, and reads both at the claim. The fetched set is thus compared against the key sets it was fetched to improve on, and it is published only over that same current key set. A successful load alone does not imply a key: the library can report one while holding no key at all, and the comparison is what keeps an empty set from being published.
 
-This condition makes the refresh safe to offer to uncredentialed callers. What decides publication is the key set the identity provider serves, never the key id the caller named. A token naming an invented key id costs one bounded fetch. When the identity provider serves the keys the gateway already holds, the fetch is discarded and changes nothing: it can neither replace the held keys nor shorten a grace period. When the identity provider has started serving a key the gateway does not hold, the fetch is published exactly as a refresh triggered by a token signed with that key would be. A caller cannot repeat that publication: once the new key is held, the next refresh fetches nothing new and is discarded. A discarded refresh also never starts the failed-load retry, which belongs to an issuer that has no key set at all.
+[cols="3,1,5",options="header"]
+|===
+|Fresh key set, against the basis |Outcome |Why
+
+|Adds a key id: a rotation from `{A}` to `{B}`, or a superset from `{A}` to `{A,B}`
+|published
+|The identity provider genuinely serves a key the gateway lacks. The key id that triggered the refresh need not be in the published set.
+
+|Equal to the current loader's key set
+|discarded
+|There is nothing to gain. However many unknown key ids triggered refreshes, no loader is swapped and the retired slot does not move.
+
+|Only drops key ids: from `{A,B}` to `{A}`
+|discarded
+|Publishing it gains nothing and hands a caller a lever, as the paragraph below explains.
+
+|Only brings back key ids of a replaced loader still inside its grace period at the claim: `{A}` fetched while `{B}` is current and the replaced loader holds `{A}`
+|discarded
+|The gateway still accepts `A` through the replaced loader, so the fetch gains nothing. Publishing it would only swap the two loaders and move the retired slot, as the paragraph on replaced loaders below explains.
+
+|Empty: a successful load that holds no key id
+|discarded
+|An empty key set is never published over a loaded one.
+
+|Non-empty, over a current loader that reports no key id while loaded
+|published
+|The fresh set adds a key id. Publishing a populated set over an id-less one loses nothing.
+
+|Any set, when the basis moved during the fetch: `{A,B}` fetched against the basis `{A}`, while the held set moved from `{A}` to `{B,C}`
+|discarded
+|The fetch gains `B` against its basis, but it was taken before the move and still holds `A`, which the held set has dropped. Publishing it would bring back a key the identity provider has dropped. The next claimed window compares against the new basis.
+|===
+
+*Why a set that only drops key ids is discarded.* Publishing a strict subset would gain no revocation speed, because the replaced loader keeps answering for the grace period either way. It would, however, let a caller presenting an invented key id end an older replaced loader's grace period whenever the identity provider drops a key. The current loader's own background refresh performs the shrink, with the library's own handling of retired keys.
+
+*Why a replaced loader's key ids count as held.* A replaced loader still inside its grace period keeps verifying the tokens its keys signed, so a fetched key set that holds only its key ids brings nothing the gateway cannot already verify. Publishing it would close that replaced loader and retire the current one in its place without the gateway accepting any key it did not accept before. An identity provider whose replicas alternate between two key sets would then make the gateway swap its loaders once per window for any caller presenting invented key ids. Counting the replaced loader's key ids as held lets the gateway come to rest for that grace period, with one key set current and the other retained. The replaced loader's key ids are read at the claim, by the same deadline test the lookup uses, so a replaced loader whose grace deadline has passed counts as gone even while it is not closed yet. The end of its grace period while a fetch runs does not move the basis. The price is a possible short gap, in two cases. An identity provider may go back to a key it had dropped. Or it may add a new key that the replaced loader's own background refresh loads before the current loader's does, because the replaced loader keeps following the identity provider until its grace period ends: a fetch that holds only that key beside key ids already held is then discarded. In both cases, once the replaced loader's grace period ends, tokens signed with that key are rejected until a later claimed window publishes it, unless the current loader's own background refresh has loaded it by then.
+
+This condition makes the refresh safe to offer to uncredentialed callers. What decides publication is the key set the identity provider serves, never the key id the caller named, and whatever is published is a key set the identity provider itself served. A token naming an invented key id costs one bounded fetch. It changes the held keys only when the key set the identity provider serves has genuinely gained a key id the gateway lacks, which is the change a refresh exists to pick up, and then at most once per issuer per window. Against an unchanged identity provider it changes nothing: it can neither replace the held keys nor shorten a grace period. A discarded refresh also never starts the failed-load retry, which belongs to an issuer that has no key set at all.
+
+*Why the basis is captured at the claim.* A fetch takes time, and while it runs the current loader's own background refresh can move its key set ahead. Comparing at settle time against whatever is current then would set an older fetched key set against a newer held one. If the identity provider dropped key `A` and added `C` in that interval, the fetched `{A,B}` would look like a gain against the held `{B,C}` and be published, so the dropped `A` would keep verifying tokens for one more grace period plus up to one window. Capturing the basis at the claim and requiring it to be unchanged at settle time closes that: a refresh is published only over the exact key set it was compared against.
+
+The loader itself cannot be replaced while a refresh is in flight. Only the refresh publishes, the in-flight flag keeps a second refresh out, and a failed-load retry cannot run at the same time. Its key set can move, and that is what the basis check catches. The final check and the publication are not one atomic step: what stays open is the few instructions between the two, not the duration of the fetch, and no lock is taken on the library's loader to close it.
 
 === The replaced loader is retained for the grace period
 
@@ -120,9 +163,9 @@ The lookup that meets an unknown key id would fetch the key set and answer from 
 
 === Replace the held key set with whatever a refresh fetched
 
-The gateway would publish every completed refresh, without asking what it holds. A refresh triggered by an invented key id during a genuine rotation would then pick the new key up.
+The gateway would publish every completed refresh, without comparing its key ids with the held ones. A refresh triggered by an invented key id during a genuine rotation would then pick the new key up.
 
-*Rejected because* it gives every uncredentialed caller a way to make the gateway replace its loader once per window. Each replacement retires the previous loader, and the gateway keeps at most one retired loader. A steady flood would roll the retired slot forward and end the grace period of a genuine rotation early. The caller would be choosing when valid tokens stop being accepted. Conditioning publication on a key id the gateway does not hold keeps the pick-up and removes that lever: a key set that brings nothing new is discarded, so a flood replaces the loader at most once per key the identity provider introduces, which is no more often than legitimate tokens signed with those keys would.
+*Rejected because* it gives every uncredentialed caller a way to make the gateway replace its loader once per window. Each replacement retires the previous loader, and the gateway keeps at most one retired loader. A steady flood would roll the retired slot forward and end the grace period of a genuine rotation early. The caller would be choosing when valid tokens stop being accepted. Conditioning publication on a gained key id removes that roll-forward lever without giving up the pick-up: against an unchanged identity provider every refresh is discarded, a key set that only brings back the keys of a replaced loader still inside its grace period is discarded as well, and a refresh triggered by an invented key id during a genuine rotation still picks the new key up.
 
 === Change the token library
 
@@ -136,7 +179,7 @@ An issuer whose tokens keep naming an unknown key id would take readiness `DOWN`
 
 *Rejected because* readiness answers whether the gateway can validate tokens, and it can: the held keys verify every token they signed. Taking it `DOWN` on unknown key ids would let an uncredentialed caller remove a healthy gateway from rotation by presenting invented key ids. Removing the gateway does nothing to make the identity provider publish its key. The gateway reports the condition where an operator can act on it, in the log.
 
-The unifying principle: work an uncredentialed caller can trigger is bounded by something the caller does not choose, and it changes held security state only when the identity provider's answer, not the caller's request, brings something the gateway does not hold.
+The unifying principle: work an uncredentialed caller can trigger is bounded by something the caller does not choose, and it changes held security state only when it produces a key the held state lacks.
 
 == Consequences
 
@@ -144,7 +187,8 @@ The unifying principle: work an uncredentialed caller can trigger is bounded by 
 
 * The gateway follows an abrupt signing-key change at the identity provider within about one window instead of one background refresh interval, on bearer routes and on BFF logins alike, with no restart.
 * An operator-set number, floored by the validator, bounds per issuer the cost an uncredentialed caller can impose through invented key ids: at most `floor(t / window) + 1` refreshes over an interval `t`.
-* A flood of invented key ids cannot change which keys the gateway accepts beyond picking up a key the identity provider itself has started serving.
+* A flood of invented key ids cannot install an equal, shrunk or empty key set, nor one that only brings back the keys of a replaced loader still inside its grace period. It can make the gateway adopt a key set only when the identity provider actually serves it and it gains a key id neither held key set had when the window was claimed, and then at most once per issuer per window.
+* Whichever unknown key id claims the window, a refresh that completes while the held key set has not moved picks up a key the identity provider already serves. A claim made while a refresh is in flight schedules nothing, and a refresh outrun by the held key set is discarded.
 * Tokens signed with the previous key stay valid for the grace period across an on-demand refresh.
 * The refresh cadence and the rotation tolerance are tunable per issuer, and a deployment that declares nothing behaves as before.
 * No request thread and no readiness probe performs or awaits a JWKS request.
@@ -158,9 +202,11 @@ The unifying principle: work an uncredentialed caller can trigger is bounded by 
 
 === Risks
 
-* *A caller presenting invented key ids can win the window.* The refresh such a claim triggers is published when the key set it fetched holds a key id that neither held loader has, so a newly rotated key is picked up whichever token claimed the window. What the caller still decides is when a window is claimed. A window claimed just before the identity provider starts serving a new key fetches the old set and is discarded, and the new key is picked up by the next refresh: the next window's claim, whoever makes it, or the background refresh. The flood therefore delays the pick-up by at most about one window. It never causes the acceptance of an invalid token or the loss of a valid key.
+* *An invented key id can bring forward the end of an older grace period, on a real key change only.* A refresh triggered by an invented key id is published when the identity provider's served key set has genuinely gained a key id that neither the current loader nor a replaced loader still inside its grace period held when the window was claimed. Like every publication it retires the current loader for the grace period and closes an older replaced loader. A caller presenting invented key ids can therefore bring forward, never cause, the end of an older key set's grace period: only when the identity provider actually changed its keys, and at most once per issuer per window, because the claim bound is unchanged. An unchanged or shrunk key set is always discarded, and so is one that only brings back the keys of that replaced loader, so a flood cannot roll the retired slot forward against an unchanged provider. An identity provider whose replicas serve diverging key sets looks like one that keeps changing: answers that alternate between the replicas can cause at most one publication per window, each retiring the loader before it, and none while the alternating answer only brings back the keys of a replaced loader still inside its grace period. None of this ever accepts an invalid token.
+* *A refresh outrun by the held key set is lost.* A refresh whose basis moved during its fetch is discarded even when its key set would have added a key the held one lacks. The gateway then picks that key up through the next claimed window, compared against the new basis, or through the background refresh that moved the basis. Discarding is the safe direction: publishing a set fetched before the move could bring back a key the identity provider has already dropped. The residual race is the few instructions between the final basis check and the publication.
+* *A window claimed too early still delays the pick-up.* The request that triggers a refresh is always rejected, and a window claimed before the identity provider published its new key blocks the next refresh until it passes. The gateway then picks the new key up through the next claimed window, whichever key id claims it, or through the background refresh. While no earlier refresh is in flight, a claim by an invented key id does not delay the pick-up of a key the identity provider already serves. While one is, any claim, an invented key id's included, uses up the window and schedules nothing, so an earlier refresh that is then discarded or fails delays the pick-up by at least the rest of that window, and by more when the load keeps running through further windows.
 * *One refresh is one library load, not always one request.* Against an identity provider that does not answer, the HTTP client beneath the library retries the fetch itself within that one load. The per-window bound counts refreshes, and the in-flight flag keeps them from overlapping.
-* *The integration proof runs a shortened window.* The native-image suite declares a 5-second window and a 300-second grace period and observes one gateway and one issuer. It does not prove the 30-second default, the end of the grace period, or a refresh whose fetch fails. Unit tests with a controlled clock cover those.
+* *The integration proof runs a shortened window.* The native-image suite declares a 5-second window and a 300-second grace period and observes one gateway and one issuer. Its combined leg shows a single invented key id picking up a genuinely rotated key inside the window it claimed, with exactly one key-set request. It does not prove the 30-second default, the end of the grace period, or a refresh whose fetch fails. Unit tests with a controlled clock cover those.
 
 == Links
 

@@ -83,14 +83,37 @@ import org.jspecify.annotations.Nullable;
  * rate and the number of distinct key ids presented — any caller can present a token naming an
  * arbitrary key id, so the bound must not depend on what is asked for. The claimed refresh runs on the
  * scheduler: it builds a fresh delegate and loads it <em>off to the side</em>, while the current
- * delegate keeps answering. A fresh delegate is published when its key set holds the triggering key
- * id, or holds a key id that neither the current delegate nor a retired delegate still inside its grace
- * period holds: the window an
- * invented key id claimed therefore still picks up a key the identity provider has genuinely rotated
- * in, instead of leaving that key unanswered until the next window. A load that fails, completes
- * exceptionally, or yields a key set that adds no key id to those already held closes the fresh
- * delegate and changes nothing, so a flood of invented key ids can neither displace the loaded key set
- * with an unchanged one nor start the failed-load retry. Every key set published is one the identity
+ * delegate keeps answering. The refresh does not carry the key id that triggered it. It carries its
+ * <em>comparison basis</em> instead, captured when the window is claimed: the delegate current at that
+ * moment, that delegate's key ids ({@link JwksLoader#getKeyIds()}), and the key ids of a retired
+ * delegate still inside its grace period at that moment, which count as already held. A loaded
+ * fresh delegate is published exactly when its key ids include at least one the basis lacks
+ * <em>and</em> the basis is still current when the refresh settles — the current delegate is the
+ * same one, holding the same key ids; the retired delegate plays no part in that check. An identity
+ * provider that rotated its key therefore has the new key picked up by whichever unknown key id
+ * claimed the window, whether or not that key id is in the published set, unless a refresh of an
+ * earlier window is still in flight (a claim made then schedules nothing) or the basis moves during
+ * the fetch (the refresh is then discarded). A load that fails, completes exceptionally, yields a
+ * key set whose key ids add nothing to the basis, or settles after the basis moved closes the fresh
+ * delegate and changes nothing:
+ * <ul>
+ * <li>a key set equal to the current delegate's is discarded, so an unchanged key set changes nothing
+ * however many key ids triggered the refresh, and a flood of invented key ids against an unchanged
+ * identity provider can neither displace the loaded key set nor roll the retired one forward;</li>
+ * <li>a key set that only drops key ids is discarded: publishing it would gain no revocation speed,
+ * because the replaced delegate keeps answering for the grace period, but would let any caller end an
+ * older retired delegate's grace period whenever the identity provider drops a key — the current
+ * delegate's own background refresh performs the shrink;</li>
+ * <li>a key set that only brings back key ids of the retired delegate counted in the basis is
+ * discarded: that delegate still answered for them when the window was claimed, so against the basis
+ * the fetch gains nothing, and publishing it would only roll the retired delegate forward;</li>
+ * <li>a key set holding no key id is never published over a loaded one;</li>
+ * <li>a key set fetched while the basis moved is discarded, whatever it holds: the current
+ * delegate's own background refresh may have dropped a key during the fetch, and the older fetched
+ * set would then look like a gain against the newer one and bring the dropped key back for another
+ * grace period. The next claimed window compares against the new basis.</li>
+ * </ul>
+ * No discarded refresh starts the failed-load retry, and every key set published is one the identity
  * provider itself served.
  * <p>
  * <strong>The replaced key set stays valid for the grace period.</strong> A fresh library loader knows
@@ -176,6 +199,52 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         /** The same snapshot without its retired delegate. */
         Snapshot withoutRetired() {
             return new Snapshot(delegate, state, null, 0L);
+        }
+    }
+
+    /**
+     * What an unknown-key-id refresh is compared against, captured when its window is claimed. The key
+     * ids the basis holds are the union of {@code keyIds} and {@code retiredKeyIds}: a key id a retired
+     * delegate still answers for counts as already held.
+     *
+     * @param delegate      the delegate current when the window was claimed
+     * @param keyIds        that delegate's key ids at that moment, as an immutable copy
+     * @param retiredKeyIds the key ids, at that moment and as an immutable copy, of the retired
+     *                      delegate still inside its grace period; empty when there was none
+     */
+    private record RefreshBasis(JwksLoader delegate, Set<String> keyIds, Set<String> retiredKeyIds) {
+
+        /**
+         * The basis of a refresh claimed now.
+         *
+         * @param current the current delegate
+         * @param retired the retired delegate still inside its grace period, or {@code null} when
+         *                there is none
+         * @return the basis holding {@code current} and both delegates' key ids as they are now
+         */
+        static RefreshBasis of(JwksLoader current, @Nullable JwksLoader retired) {
+            return new RefreshBasis(current, Set.copyOf(current.getKeyIds()),
+                    retired == null ? Set.of() : Set.copyOf(retired.getKeyIds()));
+        }
+
+        /**
+         * @param fetchedKeyIds the key ids of the key set a refresh fetched
+         * @return {@code true} when the basis already holds every one of them, as a key id of the
+         *         delegate or of the retired delegate, so the fetched key set adds nothing to it
+         */
+        boolean holdsAll(Set<String> fetchedKeyIds) {
+            return fetchedKeyIds.stream()
+                    .allMatch(keyId -> keyIds.contains(keyId) || retiredKeyIds.contains(keyId));
+        }
+
+        /**
+         * @param current the delegate current now
+         * @return {@code true} when the basis has not moved: {@code current} is the same delegate and
+         *         still holds the same key ids. The retired delegate plays no part: the end of its
+         *         grace period does not move the basis
+         */
+        boolean isCurrent(JwksLoader current) {
+            return current == delegate && keyIds.equals(current.getKeyIds());
         }
     }
 
@@ -455,12 +524,14 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * while one is in flight logs its record and schedules nothing.
      * <p>
      * The claim is made here, when the lookup arrives, and not when a refresh completes, so the bound
-     * of one refresh per window holds whatever the fetch outcome. Runs on the calling request thread
-     * and performs no fetch and no blocking wait.
-     *
-     * @param kid the key id that triggered the lookup; handed to the refresh, never logged
+     * of one refresh per window holds whatever the fetch outcome. The refresh's comparison basis — the
+     * current delegate, its key ids and the key ids of a retired delegate still inside its grace
+     * period — is captured here as well, before the refresh is scheduled. The key id that triggered
+     * the lookup is not handed to the refresh: whether a refresh is published depends on the key ids
+     * it fetched and on that basis (see {@link #settleRefresh}), never on the key id that asked for
+     * it. Runs on the calling request thread and performs no fetch and no blocking wait.
      */
-    private void onUnknownKeyId(String kid) {
+    private void onUnknownKeyId() {
         if (closed.get()) {
             return;
         }
@@ -475,9 +546,16 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             return;
         }
         LOGGER.warn(ConfigLogMessages.WARN.JWKS_UNKNOWN_KEY_ID, issuerName, lastLoaded.get());
-        if (refreshEnabled && refreshInFlight.compareAndSet(false, true)) {
+        if (!refreshEnabled) {
+            return;
+        }
+        // Captured before the in-flight flag is taken, so nothing between taking and handing it to
+        // the scheduler can leave it set. Both delegates are read off one snapshot.
+        Snapshot current = snapshot.get();
+        RefreshBasis basis = RefreshBasis.of(current.delegate(), answeringRetired(current));
+        if (refreshInFlight.compareAndSet(false, true)) {
             try {
-                scheduler.execute(() -> runRefresh(kid));
+                scheduler.execute(() -> runRefresh(basis));
             } catch (RejectedExecutionException rejected) {
                 // The scheduler is shutting down. The lookup is answered from the held key sets either
                 // way, so the refusal must not surface on the request thread.
@@ -505,8 +583,10 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * releases the flag — so an error is covered without catching {@link Throwable}, and one refresh
      * yields at most one record. The claim bounds refreshes to one per issuer per window, so the
      * record is bounded the same way.
+     *
+     * @param basis the comparison basis captured when the window was claimed
      */
-    private void runRefresh(String kid) {
+    private void runRefresh(RefreshBasis basis) {
         JwksLoader fresh = null;
         boolean handedToSettle = false;
         // True on every exit the WARN must not report: handed to settleRefresh, an anticipated
@@ -522,7 +602,8 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             JwksLoader loading = fresh;
             loadingRefresh.set(loading);
             loading.initJWKSLoader(counter)
-                    .whenComplete((status, failure) -> settleRefresh(loading, kid, failure == null ? status : null));
+                    .whenComplete((status, failure) ->
+                            settleRefresh(loading, failure == null ? status : null, basis));
             handedToSettle = true;
             accountedFor = true;
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
@@ -549,18 +630,45 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     }
 
     /**
-     * Settles one refresh: publishes {@code fresh} when it loaded a key set that holds the triggering
-     * key id or holds a key id neither the current delegate nor a retired delegate still inside its
-     * grace period holds, and closes it
-     * otherwise. A refresh claimed by an invented key id thus still publishes a key the identity
-     * provider has rotated in, while an unchanged key set is discarded. A discarded refresh leaves the
-     * snapshot untouched and never starts the failed-load retry.
+     * Settles one refresh: publishes {@code fresh} exactly when it loaded ({@link LoaderStatus#OK}), its
+     * key ids include at least one the basis lacks, and the basis is still current — the current
+     * delegate is the basis's delegate and still holds the key ids it held at the claim. It closes
+     * {@code fresh} otherwise. The basis was captured when the refresh's window was claimed, so the
+     * fetched key set is compared against the key sets it was fetched to improve on: the basis lacks
+     * a key id exactly when neither the delegate current at the claim nor a retired delegate still
+     * inside its grace period at the claim held it. Which key id triggered the refresh plays no part,
+     * so it need not be in the published set.
+     * <p>
+     * A fresh key set equal to the current delegate's, one that only drops key ids, one that only
+     * brings back key ids of that retired delegate, and one holding no key id at all are discarded —
+     * an unchanged key set changes nothing however many key ids triggered refreshes.
+     * {@link LoaderStatus#OK} alone does not imply a key: a library loader may report it while holding
+     * none, and the key-id comparison is what keeps such a set from being published. A refresh that
+     * settles after the basis moved is discarded whatever it holds: while the fetch ran, the current
+     * delegate's own background refresh may have dropped a key, and an older fetched set still holding
+     * it would look like a gain against the newer one and bring the dropped key back. A discarded
+     * refresh leaves the snapshot untouched and never starts the failed-load retry. A published one is
+     * always a key set the identity provider itself served.
+     * <p>
+     * Concurrency: the delegate itself cannot be replaced while the refresh is in flight — only this
+     * refresh publishes, the in-flight flag keeps a second refresh out, and a failed-load retry cannot
+     * run concurrently, because a refresh is claimed only while a key set is loaded and the retry exists
+     * only while none is. Its key set can move, through its own background refresh, and that is what the
+     * basis check catches. The retired delegate can only leave, when its grace period ends; that does
+     * not move the basis, so the key ids it held at the claim count as held until this refresh has
+     * settled, and a key set that brings back only those is left to a later window. The check and the
+     * publication in {@link #publishRefreshed} are a check-then-act without a lock; what remains open
+     * is the few instructions between the two, not the duration of the fetch.
      *
+     * @param fresh  the refresh's delegate, loaded off to the side and never published before this
      * @param status the load's status, or {@code null} when it completed exceptionally
+     * @param basis  the comparison basis captured when the refresh's window was claimed
      */
-    private void settleRefresh(JwksLoader fresh, String kid, @Nullable LoaderStatus status) {
+    private void settleRefresh(JwksLoader fresh, @Nullable LoaderStatus status, RefreshBasis basis) {
         try {
-            if (closed.get() || status != LoaderStatus.OK || !carriesNewKey(fresh, kid)) {
+            if (closed.get() || status != LoaderStatus.OK
+                    || basis.holdsAll(fresh.getKeyIds())
+                    || !basis.isCurrent(snapshot.get().delegate())) {
                 LOGGER.debug("JWKS refresh for issuer '%s' discarded (status %s)", issuerName, status);
                 closeDelegate(fresh);
                 return;
@@ -570,29 +678,6 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             loadingRefresh.compareAndSet(fresh, null);
             refreshInFlight.set(false);
         }
-    }
-
-    /**
-     * Whether {@code fresh}'s loaded key set is worth publishing: it holds the triggering key id, or it
-     * holds a key id that neither the current delegate nor a retired delegate still inside its grace
-     * period holds. A retired delegate whose grace deadline has passed but whose retirement has not run
-     * yet answers no lookup, so its key ids do not count as held. Reads only the key sets already
-     * loaded; it never fetches.
-     *
-     * @param fresh the refresh's delegate, whose load completed with {@link LoaderStatus#OK}
-     * @param kid   the key id that triggered the refresh
-     * @return {@code true} when publishing {@code fresh} makes a key resolvable that is not now
-     */
-    private boolean carriesNewKey(JwksLoader fresh, String kid) {
-        if (fresh.getKeyInfo(kid).isPresent()) {
-            return true;
-        }
-        Snapshot current = snapshot.get();
-        Set<String> currentKeyIds = current.delegate().getKeyIds();
-        JwksLoader retired = answeringRetired(current);
-        Set<String> retiredKeyIds = retired == null ? Set.of() : retired.getKeyIds();
-        return fresh.getKeyIds().stream()
-                .anyMatch(keyId -> !currentKeyIds.contains(keyId) && !retiredKeyIds.contains(keyId));
     }
 
     /**
@@ -628,9 +713,9 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
 
     /**
      * The retired delegate of {@code current} while its grace deadline has not passed. This is the one
-     * deadline test, shared by the lookup and by the refresh's publication check, so a retired delegate
-     * whose deadline has passed but whose retirement has not run on the scheduler yet counts as gone
-     * for both.
+     * deadline test, shared by the lookup and by the capture of a refresh's comparison basis, so a
+     * retired delegate whose deadline has passed but whose retirement has not run on the scheduler yet
+     * counts as gone for both: it answers no lookup, and its key ids do not count as held.
      *
      * @param current the snapshot to read
      * @return the retired delegate that still answers lookups, or {@code null} when there is none
@@ -722,7 +807,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             }
         }
         if (current.state() == KeySetState.LOADED) {
-            onUnknownKeyId(kid);
+            onUnknownKeyId();
         }
         return Optional.empty();
     }
@@ -730,7 +815,10 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     /**
      * The key ids of the current delegate's active key set, as an immutable snapshot taken at the
      * moment of the call. A retired delegate's key ids are not included, even while its grace period
-     * lets {@link #getKeyInfo(String)} still resolve them. A pure read: it never fetches and never
+     * lets {@link #getKeyInfo(String)} still resolve them. The current delegate's key ids, captured
+     * when an unknown-key-id refresh is claimed, are also part of the basis that refresh is compared
+     * against before it is published; that basis adds the key ids of a retired delegate still inside
+     * its grace period, which this method leaves out. A pure read: it never fetches and never
      * schedules a refresh.
      *
      * @return the active key set's key ids, empty before the first load, never {@code null}
