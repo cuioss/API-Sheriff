@@ -89,7 +89,9 @@ import org.jspecify.annotations.Nullable;
  * published exactly when its key ids include at least one the basis lacks <em>and</em> the basis is
  * still current when the refresh settles — the same delegate, holding the same key ids. An identity
  * provider that rotated its key therefore has the new key picked up by whichever unknown key id
- * claimed the window, whether or not that key id is in the published set. A load that fails,
+ * claimed the window, whether or not that key id is in the published set, unless a refresh of an
+ * earlier window is still in flight (a claim made then schedules nothing) or the basis moves during
+ * the fetch (the refresh is then discarded). A load that fails,
  * completes exceptionally, yields a key set whose key ids add nothing to the basis, or settles after
  * the basis moved closes the fresh delegate and changes nothing:
  * <ul>

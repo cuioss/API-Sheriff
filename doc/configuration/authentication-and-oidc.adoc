@@ -304,11 +304,15 @@ When the issuer's key set is loaded, the lookup also tries to claim the issuer's
 * *A replaced key set stays in service for the grace period*, then is dropped. At most one replaced
   key set is held per issuer; a second replacement inside the grace period drops the older one.
 
-A token signed with a new key is accepted once a claimed refresh has loaded the key: after the fetch
-when the window was free, after at most one further window otherwise. A rejected client
-succeeds by retrying. A claimed refresh that completes while the held key set has not moved picks up
-a key the IdP already serves, whichever key id triggered it, even one the IdP never published. BFF ID tokens from an issuer declared here recover
-the same way.
+A token signed with a new key is accepted once a refresh whose key set contains that key has been
+published: after the fetch when the window was free, after at most one further window otherwise,
+when the refresh of an earlier window has finished by then. A refresh that fails, is still running,
+or is discarded (fetched before the identity provider published the key, or fetched while the held
+key set moved) publishes nothing. The key is then picked up through a later claimed window or the
+background refresh, which can take longer than one further window. A rejected client succeeds by
+retrying. A claimed refresh that completes while the held key set has not moved picks up a key the
+IdP already serves, whichever key id triggered it, even one the IdP never published. BFF ID tokens
+from an issuer declared here recover the same way.
 
 *`ApiSheriff-136` signals a stalled rotation* (readiness stays `UP`). It names the issuer's `name` and
 the instant the gateway's own loader last loaded that issuer's key set (first load, retry or
