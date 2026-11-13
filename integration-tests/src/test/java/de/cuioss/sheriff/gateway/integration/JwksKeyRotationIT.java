@@ -205,7 +205,7 @@ class JwksKeyRotationIT {
     @DisplayName("a rotated key is accepted within the bound, a flood of key ids is bounded, an invented key id "
             + "picks up a rotated key within the window it claimed, a login recovers, and an invented key id "
             + "holds no rotated key back")
-    void rotatedKeyIsAcceptedFloodIsBoundedInventedKeyIdPicksUpRotatedKeyLoginRecoversAndNoRotatedKeyIsHeldBack() {
+    void rotatedKeyIsAcceptedTheFloodIsBoundedALoginRecoversAndAnInventedKeyIdHoldsNothingBack() {
         try (StubIdentityProviderRig rig = StubIdentityProviderRig.startForKeyRotation()) {
             String startedAt = rig.gatewayStartedAt();
             Set<String> publishedKeyIds = new LinkedHashSet<>();
