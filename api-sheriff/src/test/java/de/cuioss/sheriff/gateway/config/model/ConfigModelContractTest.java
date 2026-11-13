@@ -98,7 +98,7 @@ class ConfigModelContractTest {
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .anchors(Map.of("api", anchorConfig()))
                 .upstreamDefaults(UpstreamDefaultsConfig.defaults())
-                .forwarded(new ForwardedConfig(List.of("10.0.0.0/8"), true, "both"))
+                .forwarded(new ForwardedConfig(List.of("10.0.0.0/8"), "both"))
                 .tokenValidation(tokenValidationConfig())
                 .oidc(oidcConfig())
                 .portal(portalConfig())
@@ -404,9 +404,9 @@ class ConfigModelContractTest {
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),
                     voCase("ForwardedConfig",
-                            new ForwardedConfig(List.of("10.0.0.0/8"), true, "both"),
-                            new ForwardedConfig(List.of("10.0.0.0/8"), true, "both"),
-                            new ForwardedConfig(List.of("192.168.0.0/16"), false, "x-forwarded")),
+                            new ForwardedConfig(List.of("10.0.0.0/8"), "both"),
+                            new ForwardedConfig(List.of("10.0.0.0/8"), "both"),
+                            new ForwardedConfig(List.of("192.168.0.0/16"), "x-forwarded")),
                     voCase("TokenValidationConfig", tokenValidationConfig(), tokenValidationConfig(),
                             new TokenValidationConfig(List.of())),
                     voCase("IssuerConfig", issuerConfig(), issuerConfig(),
@@ -1199,7 +1199,7 @@ class ConfigModelContractTest {
         void collectionBearingRecordsNormalizeNullToEmpty() {
             // Positional on purpose: every canonical constructor's null-to-empty normalization is the subject.
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
-            assertTrue(new ForwardedConfig(null, null, null).trustedProxies().isEmpty());
+            assertTrue(new ForwardedConfig(null, null).trustedProxies().isEmpty());
             assertTrue(new ForwardConfig(null, null, null, null, null).setHeaders().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).cipherSuites().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).alpn().isEmpty());

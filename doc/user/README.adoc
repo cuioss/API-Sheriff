@@ -73,10 +73,11 @@ link:../../README.adoc#_known_limitations[Known Limitations].
 | Configuring the TLS policy keys (`tls.min_version`, `tls.cipher_suites`, `tls.alpn`) and their
   terminated-listener scope limit; `tls.passthrough_sni` (relay selected hostnames at L4 without
   terminating) and `tls.mtls` (require-and-verify a client certificate on terminated connections),
-  plus the emergency trust-root-replacement blast radius every operator must understand before
-  relying on mTLS; and the management interface -- HTTPS by default, the single-port constraint, the
-  two doors onto the plain-HTTP opt-out, and why `quarkus.management.enabled=false` is not one of
-  them. Links to the Configuration Reference for the field contract.
+  plus rotating the `client_ca` trust bundle -- a gradual cutover by shipping both roots, an emergency
+  cut-off by dropping the old one; and the management interface -- HTTPS only when key material is
+  supplied (plain HTTP with a boot WARN otherwise), the single-port constraint, the two doors onto the
+  plain-HTTP opt-out, and why `quarkus.management.enabled=false` is not one of them. Links to the
+  Configuration Reference for the field contract.
 
 | link:tls-scenarios.adoc[TLS Scenarios -- Choosing and Configuring a TLS Posture]
 | The goal-organised entry point to TLS: nine scenarios -- terminating at the gateway, requiring

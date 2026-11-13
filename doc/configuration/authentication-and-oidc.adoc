@@ -296,10 +296,12 @@ When the issuer's key set is loaded, the lookup also tries to claim the issuer's
   request thread, unless an earlier window's refresh is still running. The request is still rejected.
 * *Further unknown key ids in the window* -- schedule nothing; logged at `DEBUG`. The window is
   claimed on arrival, so the bound holds regardless of refresh outcome, rate or number of key ids.
-* *The refresh replaces the key set only if it holds a key id the current set lacked when the window
-  was claimed, and that set has not moved since.* An unchanged, shrunk or empty key set, a refresh
-  fetched while the current set moved, or a failed refresh, changes nothing. The key id that triggered the
-  refresh plays no part; the rule and its cases are recorded in
+* *The refresh replaces the key set only if it holds a key id that neither the current key set nor
+  a replaced one still in its grace period held when the window was claimed, and the current set
+  has not moved since.* An unchanged, shrunk or empty key set, one that only brings back keys of
+  that replaced key set, a refresh fetched while the current set moved, or a failed refresh,
+  changes nothing. The key id that triggered the refresh plays no part; the rule and its cases are
+  recorded in
   link:../adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc#_publish_rule[ADR-0063, the publish rule].
 * *A replaced key set stays in service for the grace period*, then is dropped. At most one replaced
   key set is held per issuer; a second replacement inside the grace period drops the older one.

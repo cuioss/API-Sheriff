@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The cookie-based BFF deflates its session payload before it seals it, because the two conditions that make compress-then-encrypt dangerous — attacker-forced sample count and attacker-chosen plaintext adjacent to a secret — are both absent from this construction, and both are named here so a future change that reintroduces either knows it has reversed the decision.
+// summary: The cookie-based BFF deflates its session payload before it seals it, because the two conditions that make compress-then-encrypt dangerous — repeated samples of one secret and attacker-chosen plaintext adjacent to it — do not hold for this construction (cross-site re-seals carry fresh tokens, and the only attacker influence is which declared scope names enter), and both are named here so a future change that reintroduces either knows it has reversed the decision.
 // tags: compression, side-channels, cookie-session, sealed-wire-format, bff, crime, breach
 // affects: api-sheriff
 // supersedes:
@@ -51,28 +51,42 @@ plaintext next to a secret in one compression context reads the secret from the 
 
 The pipeline encodes the eleven fields as length-prefixed raw UTF-8, deflates them, seals with AES-256-GCM and
 base64url-encodes once for transport. `SealedSessionCookieCodec` implements it. The decision applies here and only
-here, because both halves of the CRIME/BREACH discriminator answer no.
+here, because neither half of the CRIME/BREACH discriminator gives an attacker a length oracle.
 
 === Half one: sample count
 
-*Can an attacker force additional seals? No, not without already holding the session.*
+*Can an attacker force additional seals? Yes, cross-site, but the seals it gets are no length oracle.*
 
 The gateway writes the sealed value on exactly three events: a completed login, a token refresh that rotates
-the material, and the merge of a widening. The login and the refresh are outcomes of authentication, not of a request an unauthenticated party can drive. This record has not assessed the merge of a widening against that statement.
+the material, and the merge of a widening.
 
-* An attacker who triggers a login authenticates as themselves and seals their own payload. That teaches nothing
-  about a victim's.
-* An attacker who triggers a victim's refresh must already send the victim's session cookie. That attacker holds
-  the session and has no reason to attack its length.
+* A login seals the payload of whoever authenticated. An attacker who triggers one seals their own payload, which
+  says nothing about a victim's.
+* A refresh and a widening re-seal a live session, and a cross-site request can drive both. The browser attaches
+  the session cookie to a top-level navigation from another site, so such a navigation to a session route makes the
+  gateway re-validate the session and, when the access token is due or lacks a declared scope, refresh or widen it. A
+  navigation to the step-up path is a `GET`, which carries no CSRF check, and it starts a widening for the route
+  behind its return URL.
 
-Compression-oracle attacks need thousands of samples of the same secret under attacker-varied input. This
-construction admits one seal per session change, all behind authentication. The attacker has no lever that
-increases the count.
+A compression oracle needs many seals of the same secret, each next to bytes the attacker varies, and an observer of
+their lengths. The seals a cross-site request drives meet none of these conditions:
+
+* *Every re-seal carries freshly issued tokens.* A refresh and a widening both store the token response the identity
+  provider just issued, so no two seals compress the same access token.
+* *The stable secret cannot be probed.* The session nonce stays the same across re-seals, but no attacker-varied byte
+  sits next to it in the compression context. The only attacker influence on the plaintext is which scope names enter
+  it (half two).
+* *Samples are bounded by monotone scope growth.* A widening only adds scope names, and only names the operator
+  declared on a route and the identity provider grants. A name once in the session stays there, so the distinct
+  plaintexts an attacker can cause are bounded by the declared scope set, not by the number of requests it sends.
+* *Reading a length needs an on-path observer of the cookie size.* The cross-site page that drives the re-seal cannot
+  read the `Set-Cookie` header of the gateway's origin.
 
 === Half two: chosen-plaintext influence
 
-*Can an attacker vary the plaintext next to the secret? No.* The identity provider issues or the gateway mints each
-of the eleven components. None is echoed from the request that produced it.
+*Can an attacker vary the plaintext next to the secret? Only by choosing which declared scope names enter it.* The
+identity provider issues or the gateway mints each of the eleven components. None is echoed from the request that
+produced it.
 
 [cols="2,2,3"]
 |===
@@ -120,17 +134,22 @@ of the eleven components. None is echoed from the request that produced it.
 
 | `activeScopes`
 | The identity provider, or the gateway's own request when the token or refresh response names no scope
-| Not assessed by this record. The set holds the scopes the session's access token was granted
+| Only in which names it holds. A navigation the attacker drives can make a refresh or a widening request the scopes
+  an operator declared on a route, and the set then holds those the identity provider granted
   (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
+  No byte of a name comes from the request.
 
 | `grantedScopes`
 | The identity provider, or the gateway's own request when the token names no scope
-| Not assessed by this record. The set holds the scopes the identity provider is known to grant the session
+| Only in which names it holds, as for `activeScopes`. The set holds the scopes the identity provider is known to grant
+  the session, and a widening only adds to it
   (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 |===
 
-No request populates a field, so a probe string has no place to go. Attacker-varied bytes sharing a compression
-context with the secret are absent structurally, not by a validation a later change could relax.
+No request supplies a byte of any field, so a probe string has no place to go. The most a request selects is which
+operator-declared, identity-provider-granted scope names a widening adds. That choice is drawn from a fixed, finite
+vocabulary the attacker does not write, so attacker-varied bytes sharing a compression context with the secret are
+absent structurally, not by a validation a later change could relax.
 
 === The claim is scoped
 
@@ -200,8 +219,9 @@ or relocate the payload. Only compression addresses the size without giving up a
 * *The compressed length is visible.* Anyone who can see the cookie can observe the sealed size: the browser, an intermediary
   that logs header sizes, and the client. After compression that size depends on the payload's content. A markedly smaller seal
   carries less material, most legibly no refresh token. The signal is not actionable. It distinguishes classes of session, not
-  a bit of a secret. It is one observation per session, not a series an attacker can drive. A client that can read the cookie's
-  length already holds the cookie. This record keeps the residual, and it is no path to token material.
+  a bit of a secret. The series of re-seals a cross-site request can drive is bounded by scope growth and carries fresh tokens
+  each time, and observing it needs a position on the path. A client that can read the cookie's length already holds the
+  cookie. This record keeps the residual, and it is no path to token material.
 * *The wire format has no migration path.* An explicit version gate refuses a value sealed under an earlier format before it
   constructs a cipher. Earlier cookie sessions end at the change, and the browser re-authenticates.
 * *The payload is not readable at rest, even with the key,* until it is inflated. This is a diagnostic cost, not a security
@@ -213,14 +233,15 @@ or relocate the payload. Only compression addresses the size without giving up a
 Either of these restores an enabling condition and makes compress-then-encrypt unsafe here:
 
 . *A payload component an attacker can influence.* A field populated from the request puts chosen plaintext into the compression
-  context next to three credentials. Examples are a returned URL, a client-supplied correlation id, a header echo, or an IdP claim
-  a downstream party can set. The deflate step must go in the same change.
-. *A route that re-seals on demand.* A path that produces a fresh seal without a completed authentication or a due refresh hands
-  the attacker the sample count. Examples are a "refresh my cookie" endpoint, a re-seal on every request, or a re-seal a client
+  context next to three credentials. Examples are a returned URL, a client-supplied correlation id, a header echo, an IdP claim
+  a downstream party can set, or a scope name that is not drawn from the operator's declared set. The deflate step must go in the
+  same change.
+. *A re-seal that keeps the same secret.* A path that produces a fresh seal without fresh token material hands the attacker
+  repeated samples of one secret. Examples are a "refresh my cookie" endpoint, a re-seal on every request, or a re-seal a client
   parameter triggers. The other half may still hold, which is the case a reader most likely waves through.
 
-Both reduce to one question: can a party who does not hold this session cause a seal, or choose bytes inside one? While the answer
-stays no on both, the decision stands.
+Both reduce to one question: can a party who does not hold this session obtain repeated seals of the same secret, or choose bytes
+inside one beyond selecting declared scope names? While the answer stays no on both, the decision stands.
 
 === Other risks
 

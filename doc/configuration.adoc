@@ -246,7 +246,9 @@ management:                       # TLS policy for the management interface (hea
                                    #   their own port). POLICY ONLY -- this block declares NO
                                    #   port; the port is deployment-bound (see "management")
   tls:
-    enabled: true                  # HTTPS is the default and the shipped posture. false takes
+    enabled: true                  # true enforces nothing by itself: the management port serves
+                                   #   HTTPS only when key material is supplied, and falls back to
+                                   #   plain HTTP otherwise (the audit only WARNs). false takes
                                    #   the WHOLE management surface to plain HTTP and emits a
                                    #   loud boot WARN (ApiSheriff-115)
 
@@ -381,10 +383,7 @@ forwarded:                         # resolved by cui-http (de.cuioss.http.forwar
                                    #   this file ever sees it, so the WARN is its only signal.
                                    #   The PRESENCE of the forwarded block still requires a
                                    #   file edit; only the value is environment-supplied.
-  trust_scheme_host: false         # accepted but NO EFFECT: the resolver is built from
-                                   #   trusted_proxies and the baseline alone, so no forwarded
-                                   #   scheme/host/port/prefix is honoured whatever the value
-  emit: x-forwarded                # x-forwarded (default) | both (adds RFC 7239 Forwarded)
+  emit: x-forwarded               # x-forwarded (default) | both (adds RFC 7239 Forwarded)
 
 edge_hardening:                    # OPTIONAL admission budget for the public data-plane edge.
                                    #   Omit the block, or either key, to take the defaults shown.

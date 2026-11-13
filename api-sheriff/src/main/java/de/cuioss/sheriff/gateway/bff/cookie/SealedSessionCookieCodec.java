@@ -51,11 +51,24 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Packaging pipeline.</strong> The ciphertext covers a <em>deflated</em>
  * {@link SealedSessionPayload#encode() length-prefixed raw UTF-8 payload}: encode, deflate, seal,
- * base64url. Compress-then-encrypt is safe <em>here</em> and only here because the plaintext carries
- * no attacker-chosen material next to a secret and is never returned to the client as a
- * length-observable oracle — the sealed value is written once per session change and read back only
- * by this gateway. See {@code doc/adr/0043} for the CRIME/BREACH discriminator that bounds that
- * claim.
+ * base64url. Compress-then-encrypt is safe <em>here</em> and only here because the seals give no
+ * practical length oracle. A cross-site request can drive a re-seal — a top-level navigation makes the
+ * gateway re-validate the session and, when its access token is due or lacks a declared scope, refresh
+ * or widen it, and the step-up path is a {@code GET} that carries no CSRF check — but the conditions a
+ * compression oracle needs are absent:
+ * <ul>
+ *   <li>the only attacker influence on the plaintext is which operator-declared, identity-provider-granted
+ *       scope names enter it; no byte of any field comes from a request;</li>
+ *   <li>every re-seal carries the freshly issued tokens of the refresh or widening that caused it, so
+ *       no two seals compress the same token;</li>
+ *   <li>the material that stays the same across re-seals has no attacker-varied byte next to it, so it
+ *       cannot be probed;</li>
+ *   <li>the distinct plaintexts an attacker can cause are bounded by monotone scope growth — a
+ *       widening only adds declared names — not by the number of requests it sends;</li>
+ *   <li>reading the sealed length needs an on-path observer of the cookie size; the cross-site page
+ *       that drives a re-seal cannot read the gateway's {@code Set-Cookie} header.</li>
+ * </ul>
+ * See {@code doc/adr/0043} for the CRIME/BREACH discriminator that bounds that claim.
  * <p>
  * <strong>Inflation is bounded.</strong> {@link #unseal} inflates only bytes the GCM tag has already
  * authenticated, so this is not untrusted-input decompression; the inflated size is nonetheless

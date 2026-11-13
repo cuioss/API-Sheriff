@@ -29,17 +29,15 @@ import org.jspecify.annotations.Nullable;
  * {@code x-forwarded} / {@code both}; the value set is enforced by the
  * configuration validator.
  *
- * @param trustedProxies  the trusted-proxy CIDRs, empty when forwarding headers
- *                        are never trusted
- * @param trustSchemeHost whether the sanitized forwarded scheme/host/port/prefix
- *                        is honored, {@code null} when omitted
- * @param emit            the canonical output mode, {@code null} when omitted
+ * @param trustedProxies the trusted-proxy CIDRs, empty when forwarding headers
+ *                       are never trusted
+ * @param emit           the canonical output mode, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 // cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record ForwardedConfig(List<String> trustedProxies, @Nullable Boolean trustSchemeHost, @Nullable String emit) {
+public record ForwardedConfig(List<String> trustedProxies, @Nullable String emit) {
 
     /**
      * Canonical constructor defensively copying {@code trustedProxies}.

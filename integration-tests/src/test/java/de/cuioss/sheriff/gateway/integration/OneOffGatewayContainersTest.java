@@ -287,6 +287,28 @@ class OneOffGatewayContainersTest {
                     () -> assertEquals(OneOffGatewayContainers.IMAGE, arguments.getLast()));
         }
 
+        @Test
+        @DisplayName("a bearer-only gateway hands each further environment entry to docker before the image")
+        void bearerOnlyGatewayCarriesFurtherEnvironmentEntries() throws Exception {
+            Path descriptor = writeReadableByOthers("bearer-only-environment/descriptor.yaml", DESCRIPTOR_CONTENT);
+            String entry = "HARNESS_TEST_SETTING=4";
+
+            List<String> withEntry = OneOffGatewayContainers.gatewayRunArguments("harness-test-bearer-gateway",
+                    "harness-test-network", descriptor, 10498, List.of(entry));
+            List<String> without = OneOffGatewayContainers.gatewayRunArguments("harness-test-bearer-gateway",
+                    "harness-test-network", descriptor, 10498);
+
+            int position = withEntry.indexOf(entry);
+            assertAll("the further environment entry",
+                    () -> assertTrue(position > 0, () -> "the entry is passed: " + withEntry),
+                    () -> assertEquals("-e", withEntry.get(position - 1), "the entry is an environment option"),
+                    () -> assertTrue(position < withEntry.indexOf(OneOffGatewayContainers.IMAGE),
+                            "the entry precedes the image, so docker reads it as an option"),
+                    () -> assertFalse(without.contains(entry), "the four-argument form passes no further entry"),
+                    () -> assertEquals(without.size() + 2, withEntry.size(),
+                            "the entry adds exactly one option and its value"));
+        }
+
         @ParameterizedTest(name = "application port {0}")
         @ValueSource(ints = {10459, 10464, 10471})
         @DisplayName("a gateway publishes its management interface on loopback at the application port plus the offset")

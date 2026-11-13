@@ -195,7 +195,12 @@ rejected `400` when it carries:
   the use case nothing: an Elasticsearch client sends a `Content-Length`-framed body, never a chunked
   one, so the relaxation is drawn where the security value is rather than where the convenience is.
 * both `Content-Length` and `Transfer-Encoding` -- the CL+TE desync primer, checked before this leg.
-* more than one `Content-Length` header, or a comma-separated `Content-Length` value.
+* a comma-separated `Content-Length` value, or more than one `Content-Length` header with differing
+  values. On HTTP/1.1 identical values are refused as well, whether repeated as headers or listed in
+  one comma-separated value. On HTTP/2 the transport (Netty) collapses identical values -- repeated
+  headers and a comma-separated list such as `0, 0` alike -- into one value before the gateway sees
+  the request, so such a request is not rejected there -- it reaches the gate with one unambiguous
+  length. Differing values are refused on HTTP/2 too.
 * a `Connection` header naming a framing or trust header (the hop-by-hop strip vector).
 
 And `HEAD` is unaffected on every leg -- a body on `HEAD` stays rejected whatever this key says.
@@ -495,12 +500,14 @@ Neither case has a wire effect: an ALERT is a signal to look at, not a refusal
 
 The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
 
-The *transport bounds* -- the framing limits, the HTTP/2 stream, header-list, reset and
-connection-window bounds, the request-body idle timeout and deadline, the gRPC message bound and
-stream-idle timeout,
+The *transport bounds* -- the framing limits, the idle-connection reap and the connection cap, the
+HTTP/2 stream, header-list, reset and connection-window bounds, the request-body idle timeout and
+deadline, the gRPC message bound and stream-idle timeout,
 the unrouted-`404` response floor and the drain window -- are fixed secure defaults and are not
-operator-configurable. The header-block and request-line limits fail fast on abusive framing before
-a request is admitted to the pipeline. This table is the documented contract for those constants.
+operator-configurable in `gateway.yaml`. The connection cap is the one among them set as a Quarkus
+property in the shipped `application.properties` rather than as a gateway constant. The header-block
+and request-line limits fail fast on abusive framing before a request is admitted to the pipeline.
+This table is the documented contract for those constants.
 
 The *admission budgets* -- how many requests, and how many WebSocket relays, may be in flight at
 once -- are configurable through the optional
@@ -537,8 +544,30 @@ deployment that never writes it keeps the behaviour shown here.
 
 | Idle-connection reap
 | 60 s
-| An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin
-  connection slots.
+| A connection that carries no bytes for this window is closed. Any byte the connection carries, in
+  either direction, starts the window again, so a client that keeps sending -- however slowly --
+  keeps its connection open. The reap frees connections nobody uses; the bound on how many
+  connections may be open at once is the connection cap below.
+
+| Connection cap (open connections) +
+  [`quarkus.http.limits.max-connections`]
+| 2048
+| How many connections the Quarkus-terminated side holds open at once. A connection beyond the cap
+  is closed without being served, while the connections already open are served on. It bounds open
+  connections whatever they carry; the admission cap below bounds the requests in flight on them.
+  The cap is one counter shared by the plain-HTTP redirect listener and the HTTPS listener of the
+  Quarkus-terminated side, so a connection to the redirect listener counts toward it too. The SNI
+  front listener of `passthrough_sni` and the management interface are not counted. The value is set
+  in the shipped `application.properties`, not in `gateway.yaml`, and is not configurable there.
+
+  *Derivation.* `Dockerfile.native` declares no file-descriptor limit, so the process runs under
+  whatever limit the container runtime grants, and the image cannot derive a value from it. The cap
+  is therefore held at its floor, the default `edge_hardening.admission_cap` of 2048, so admission
+  keeps governing the requests in flight while the cap bounds the connections open. Each in-flight
+  request may hold an upstream and a back-channel descriptor besides its own connection, so at the
+  defaults the gateway needs a descriptor limit of at least 2048 + 2 × 2048 = 6,144 plus its
+  listeners and files: give the container a `nofile` limit of 8192 or more. Under a lower limit the
+  process runs out of descriptors before the cap is reached.
 
 | HTTP/2 concurrent streams per connection
 | 100
@@ -564,8 +593,12 @@ deployment that never writes it keeps the behaviour shown here.
 | 200 per 30 s
 | The Rapid-Reset guard: a connection whose client sends more `RST_STREAM` frames than this inside one
   window is ended with `GOAWAY ENHANCE_YOUR_CALM`, and every other connection is served on. Pinned at
-  the transport's own default and never raised. Only resets the client sends count, never the
-  gateway's own. Not configurable. See
+  the transport's own default and never raised. Resets the transport *sends* count too, against
+  Netty's encoder-side reset limit: every reset it writes except `NO_ERROR` and `CANCEL` -- including
+  the `STREAM_CLOSED` reset for a DATA frame that arrives after an early answer, `REFUSED_STREAM`, and
+  the reset after a `431`. The gateway's own reset of an early answer is `NO_ERROR` and does not count
+  (link:../adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
+  Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[Architecture -- HTTP/2 transport bounds].
 
 | Request-body idle timeout

@@ -22,7 +22,6 @@ upstream_defaults:
     enabled: false
 forwarded:
   trusted_proxies: ["10.0.0.0/8"]
-  trust_scheme_host: true
   emit: "both"
 token_validation:
   issuers:

@@ -91,9 +91,9 @@ One projected policy key is reachable from the environment as well, deliberately
 *The source must never project key material into the default TLS registry bucket.* The management-interface lookup falls back to the default bucket when no configuration name is selected, and takes that fallback only when the bucket carries key material. This project's default bucket is empty, because the server certificate arrives through the HTTP-SSL keys. Populating it from anywhere would switch the management interface to HTTPS through a path no configuration file mentions. A test asserts this.
 
 [#two-doors-onto-one-lever]
-=== Management HTTPS is the default, and the opt-out is runtime-native
+=== Management HTTPS is the intended posture, and the opt-out is runtime-native
 
-The management interface serves over TLS by default, on the deployment-bound management port. Taking it to plain HTTP stays possible, because running operations endpoints in the clear behind a trusted boundary is a legitimate deployment, but it stops being silent. Two doors lead onto one lever:
+The management interface serves over TLS on the deployment-bound management port when the TLS configuration it resolves carries key material. When it does not, the port serves plain HTTP and the audit only warns. That covers a deployment that supplies no key material, and also one where either door below selects a named bucket without key material: selecting that bucket replaces any certificate the deployment supplies rather than adding to it. Taking it to plain HTTP stays possible, because running operations endpoints in the clear behind a trusted boundary is a legitimate deployment, but it stops being silent. Two doors lead onto one lever:
 
 * *The neutral door:* `management.tls.enabled: false` in the gateway configuration. The config source projects it onto the runtime's management TLS-configuration-name key, selecting a named TLS bucket that carries no key material.
 * *The deployment door:* setting that same runtime key as an environment variable.
@@ -208,7 +208,7 @@ A configuration surface earns its neutrality by being *bound*, and it earns its 
 * One document states the gateway's TLS posture, in the product's vocabulary.
 * The classification makes new knobs decidable before a key is named, so the surface grows by rule.
 * A single ordinal keeps precedence explainable: the gateway configuration wins for policy, the environment wins for everything else.
-* The secure default keeps a real escape hatch. The management downgrade is reachable, runtime-native, settable at container start and loud.
+* The HTTPS posture keeps a real escape hatch. The management downgrade is reachable, runtime-native, settable at container start and loud.
 * Ports and material stay out of the committed document, so one gateway configuration moves across environments unedited and carries no secrets.
 * Plain HTTP on the terminated listener is reachable only by declaring it.
 

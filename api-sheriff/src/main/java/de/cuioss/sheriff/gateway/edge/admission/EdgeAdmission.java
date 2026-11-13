@@ -36,9 +36,11 @@ import io.vertx.ext.web.RoutingContext;
  *   <li>The {@linkplain EdgeHardeningOptions#webSocketRelayCap() WebSocket relay sub-budget}: an
  *       upgrade takes one of its permits <em>in addition to</em> its general permit and holds both for
  *       the relay's lifetime.</li>
- *   <li>The {@linkplain EdgeHardeningOptions#heldAnswerCap() held-answer sub-budget}: an answer held
- *       back on a timer takes one of its permits <em>instead of</em> its general permit
- *       ({@link #tryEnterHold}), so held answers cannot occupy the general pool.</li>
+ *   <li>The {@linkplain EdgeHardeningOptions#heldAnswerCap() held-answer sub-budget}: an answer about
+ *       to be held back on a timer takes one of its permits <em>instead of</em> its general permit
+ *       when one is free ({@link #tryEnterHold}), so an answer that took a held permit no longer
+ *       occupies the general pool. An answer refused a held permit keeps its general permit for as
+ *       long as it waits.</li>
  * </ol>
  * A request that hands its general permit back on entering a hold stays counted in flight until its
  * response ends, so the drain still waits for its held answer.
@@ -114,8 +116,10 @@ public final class EdgeAdmission {
     private final Semaphore webSocketRelayAdmission;
     /**
      * The held-answer sub-budget: acquired <em>instead of</em> {@link #admission} by an answer that
-     * waits on a timer. Without it every held answer would keep its general permit for the whole wait,
-     * so a scan whose answers are all held could fill the general pool with answers that do no work.
+     * waits on a timer, while one of its permits is free. Without it every held answer would keep its
+     * general permit for the whole wait. Only the answers that took one of its permits are kept off
+     * the general pool: once it is full, an answer refused a held permit waits under its general
+     * permit, and the answers waiting at once stay within the admission cap plus this sub-budget.
      */
     private final Semaphore heldAnswerAdmission;
     /** How many answers held for one tripped source may wait at once. */
