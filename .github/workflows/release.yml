@@ -1182,7 +1182,7 @@ jobs:
 
       - name: Install Cosign
         if: env.DRY_RUN != 'true' || github.ref != 'refs/heads/main'
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       # KEYLESS OIDC SIGNING, BY DIGEST — THREE DIGESTS PER RELEASE, after the index has been
       # assembled and proved, so every signed artifact is provably the tested one, and before the
