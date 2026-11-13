@@ -275,7 +275,8 @@ covered in link:tls-edge.adoc[TLS Edge]; supplying the management certificate pa
 port 9000 speak HTTPS, so any *host-side* probe pointed at it -- a `curl` health check, a load
 balancer, an orchestrator's HTTP probe -- must speak TLS and trust that certificate. The image's own
 baked probe is unaffected, and that is by design: it writes and reads nothing on the socket, which is
-precisely how one probe stays correct under both the HTTPS default and the plain-HTTP opt-out.
+precisely how one probe stays correct whether the port serves HTTPS (key material supplied) or plain
+HTTP (none supplied, or the opt-out).
 
 == What the SBOM and the scan guarantee -- and what they do not
 

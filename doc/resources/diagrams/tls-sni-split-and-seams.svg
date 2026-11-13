@@ -93,7 +93,7 @@
   <line class="track" x1="748" y1="320" x2="788" y2="320" marker-end="url(#arrow)"/>
   <rect class="stroke" x="792" y="292" width="256" height="56" rx="6"/>
   <text x="920" y="314" class="stage">Management Interface (:9000)</text>
-  <text x="920" y="334" class="sub">/q/health · /q/metrics (HTTPS default)</text>
+  <text x="920" y="334" class="sub">/q/health · /q/metrics (HTTPS if keyed)</text>
 
   <!-- Footer caption -->
   <text x="540" y="374" class="caption">Boot validation also refuses any route whose match.host equals a passthrough SNI.</text>
