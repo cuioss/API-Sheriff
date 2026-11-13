@@ -23,6 +23,7 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Map;
 
+
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier.Classification;
 import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier.Exit;

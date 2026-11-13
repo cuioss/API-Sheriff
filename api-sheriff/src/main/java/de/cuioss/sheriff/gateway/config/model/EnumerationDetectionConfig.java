@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Locale;
 
+
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
