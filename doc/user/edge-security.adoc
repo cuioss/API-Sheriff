@@ -551,7 +551,7 @@ deployment that never writes it keeps the behaviour shown here.
 
 | Connection cap (open connections) +
   [`quarkus.http.limits.max-connections`]
-| 2048
+| 4096
 | How many connections the Quarkus-terminated side holds open at once. A connection beyond the cap
   is closed without being served, while the connections already open are served on. It bounds open
   connections whatever they carry; the admission cap below bounds the requests in flight on them.
@@ -562,12 +562,22 @@ deployment that never writes it keeps the behaviour shown here.
 
   *Derivation.* `Dockerfile.native` declares no file-descriptor limit, so the process runs under
   whatever limit the container runtime grants, and the image cannot derive a value from it. The cap
-  is therefore held at its floor, the default `edge_hardening.admission_cap` of 2048, so admission
-  keeps governing the requests in flight while the cap bounds the connections open. Each in-flight
-  request may hold an upstream and a back-channel descriptor besides its own connection, so at the
-  defaults the gateway needs a descriptor limit of at least 2048 + 2 × 2048 = 6,144 plus its
-  listeners and files: give the container a `nofile` limit of 8192 or more. Under a lower limit the
-  process runs out of descriptors before the cap is reached.
+  is therefore set at twice the default `edge_hardening.admission_cap` of 2048, so it lies *above*
+  admission. On HTTP/1.1 one request needs one connection: with a cap equal to admission, the cap
+  would close connections, unserved and without a `503`, before admission could refuse a request, and
+  idle keep-alive connections would take slots that admitted work needs. With the headroom, admission
+  answers its `503` first and the cap bounds the connections that merely stay open. An
+  `admission_cap` at or above the cap is not capped silently: the gateway logs `ApiSheriff-148` at
+  startup (see link:../LogMessages.adoc[Log messages]).
+
+  *Descriptor sizing.* Each connection holds one descriptor, and each in-flight request may hold an
+  upstream and a back-channel descriptor besides its own connection, so at the defaults the gateway
+  needs 4096 + 2 × 2048 = 8,192 plus its listeners and files: give the container a `nofile` limit of
+  16384 or more. Under `tls.passthrough_sni` each terminated connection holds three descriptors (the
+  front listener's client socket, its relay dial and the loopback socket Quarkus accepts), and the
+  passthrough relays hold two each and are not counted by this cap, so the worst case at the defaults
+  is 3 × 4096 + 2 × 2048 = 16,384 plus the relays: give the container a `nofile` limit of 32768 or
+  more there. Under a lower limit the process runs out of descriptors before the cap is reached.
 
 | HTTP/2 concurrent streams per connection
 | 100
