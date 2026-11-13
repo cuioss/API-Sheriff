@@ -576,8 +576,8 @@ deployment that never writes it keeps the behaviour shown here.
   16384 or more. Under `tls.passthrough_sni` each terminated connection holds three descriptors (the
   front listener's client socket, its relay dial and the loopback socket Quarkus accepts), and the
   passthrough relays hold two each and are not counted by this cap, so the worst case at the defaults
-  is 3 × 4096 + 2 × 2048 = 16,384 plus the relays: give the container a `nofile` limit of 32768 or
-  more there. Under a lower limit the process runs out of descriptors before the cap is reached.
+  is 3 × 4096 + 2 × 2048 = 16,384 plus the front's undecided connections and the passthrough relays:
+  give the container a `nofile` limit of 32768 or more there. Under a lower limit the process runs out of descriptors before the cap is reached.
 
 | HTTP/2 concurrent streams per connection
 | 100

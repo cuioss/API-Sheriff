@@ -176,7 +176,10 @@ class ShippedApplicationPropertiesTest {
                                 + "connections before admission can answer 503"),
                 () -> assertEquals(String.valueOf(CONNECTION_CAP_HEADROOM_FACTOR
                         * EdgeHardeningConfig.DEFAULT_ADMISSION_CAP), declared,
-                        "the value the Connection cap row of doc/user/edge-security.adoc documents"));
+                        "the cap is the documented multiple of the default edge_hardening.admission_cap"),
+                () -> assertEquals("4096", declared,
+                        "the literal value the Connection cap row of doc/user/edge-security.adoc and the "
+                                + "nofile advice derived from it document"));
     }
 
     @Test

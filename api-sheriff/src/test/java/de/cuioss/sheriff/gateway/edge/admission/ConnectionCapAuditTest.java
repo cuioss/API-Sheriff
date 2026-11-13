@@ -56,7 +56,11 @@ import org.junit.jupiter.api.Test;
 @DisplayName("Connection-cap audit — an admission_cap the connection cap cannot honour")
 class ConnectionCapAuditTest {
 
-    private static final int CONNECTION_CAP = 4096;
+    /**
+     * The connection cap the direct cases hand the audit. A fixture value: the Quarkus profile this class
+     * boots under lowers the real cap to a handful, which is what makes the startup-event case warn.
+     */
+    private static final int FIXTURE_CONNECTION_CAP = 4096;
 
     private static final String WARNING_FRAGMENT = "edge_hardening.admission_cap";
 
@@ -79,17 +83,18 @@ class ConnectionCapAuditTest {
     @Test
     @DisplayName("Warns when the admission cap lies above the connection cap")
     void warnsWhenAdmissionCapIsAboveTheConnectionCap() {
-        boolean warned = auditOf(CONNECTION_CAP + 1000, OptionalInt.of(CONNECTION_CAP)).audit();
+        boolean warned = auditOf(FIXTURE_CONNECTION_CAP + 1000, OptionalInt.of(FIXTURE_CONNECTION_CAP)).audit();
 
         assertTrue(warned, "an admission_cap above the connection cap is not honoured on HTTP/1.1");
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, WARNING_FRAGMENT);
-        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, String.valueOf(CONNECTION_CAP + 1000));
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                String.valueOf(FIXTURE_CONNECTION_CAP + 1000));
     }
 
     @Test
     @DisplayName("Warns when the admission cap equals the connection cap")
     void warnsWhenAdmissionCapEqualsTheConnectionCap() {
-        boolean warned = auditOf(CONNECTION_CAP, OptionalInt.of(CONNECTION_CAP)).audit();
+        boolean warned = auditOf(FIXTURE_CONNECTION_CAP, OptionalInt.of(FIXTURE_CONNECTION_CAP)).audit();
 
         assertTrue(warned, "at equality the cap closes connections before admission can answer 503");
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, WARNING_FRAGMENT);
@@ -98,7 +103,7 @@ class ConnectionCapAuditTest {
     @Test
     @DisplayName("Stays silent when the admission cap lies below the connection cap (matched control)")
     void staysSilentWhenAdmissionCapIsBelowTheConnectionCap() {
-        boolean warned = auditOf(CONNECTION_CAP - 1, OptionalInt.of(CONNECTION_CAP)).audit();
+        boolean warned = auditOf(FIXTURE_CONNECTION_CAP - 1, OptionalInt.of(FIXTURE_CONNECTION_CAP)).audit();
 
         assertFalse(warned, "the connection cap leaves headroom above the admission cap");
         LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, ConnectionCapAudit.class);
@@ -107,7 +112,7 @@ class ConnectionCapAuditTest {
     @Test
     @DisplayName("Stays silent when no connection cap is declared")
     void staysSilentWhenNoConnectionCapIsDeclared() {
-        boolean warned = auditOf(CONNECTION_CAP * 4, OptionalInt.empty()).audit();
+        boolean warned = auditOf(FIXTURE_CONNECTION_CAP * 4, OptionalInt.empty()).audit();
 
         assertFalse(warned, "with no cap declared nothing closes connections ahead of admission");
         LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, ConnectionCapAudit.class);

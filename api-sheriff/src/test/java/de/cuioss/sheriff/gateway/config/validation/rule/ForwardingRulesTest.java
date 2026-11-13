@@ -67,9 +67,9 @@ class ForwardingRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
 
-    /** The routes the WebSocket Authorization-origin rule must not judge: HTTP (undeclared) and gRPC. */
+    /** The routes the WebSocket Authorization-origin rule must not judge: HTTP (declared or not), gRPC and GraphQL. */
     static Stream<Protocol> nonWebSocketProtocols() {
-        return Stream.of(null, Protocol.HTTP, Protocol.GRPC);
+        return Stream.of(null, Protocol.HTTP, Protocol.GRPC, Protocol.GRAPHQL);
     }
 
     /**
