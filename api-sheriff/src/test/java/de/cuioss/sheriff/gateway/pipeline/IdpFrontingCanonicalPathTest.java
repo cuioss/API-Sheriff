@@ -86,7 +86,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <strong>Every spelling {@code check-bff-login.sh --idp-prefix /auth} probes live is in the corpus</strong>,
  * plus case variants, double encodings and the overlong UTF-8 dot. The positive control proves the
  * allowlisted paths DO reach the {@code idp} endpoint unchanged, so a set that routed nothing at all
- * cannot pass by refusing everything.
+ * cannot pass by refusing everything. It holds one baseline per route of the assembled {@code idp}
+ * endpoint, derived from {@code idp.yaml}, so a route added there is covered without editing this class.
  * <p>
  * <strong>Red against its deliberate cuts.</strong> The {@link DeliberateCuts} drive the same verdict over
  * three broken variants, and each must be reported as a breach: a copy of the shipped set with a catch-all
@@ -287,6 +288,23 @@ class IdpFrontingCanonicalPathTest {
                         "idp-resources"));
     }
 
+    /**
+     * One baseline control per route the assembled {@code idp} endpoint declares, derived from the shipped
+     * {@code idp.yaml} rather than listed by hand: a request for the route's own match key, sent with the
+     * route's first matched method or {@code GET} when it matches every method, must be selected onto that
+     * route. A route added to {@code idp.yaml} therefore gets its positive control with it and cannot stay
+     * unproven while this class reports green. {@link #allowedRequests()} adds what a derived control cannot
+     * know: the POST cases and the paths below each prefix.
+     *
+     * @return one allowlisted request per {@code idp} route of the shipped set
+     */
+    static Stream<AllowedRequest> idpRouteBaselines() {
+        return idpRoutes(shipped).stream()
+                .map(route -> new AllowedRequest(
+                        route.match().methods().isEmpty() ? HttpMethod.GET : route.match().methods().getFirst(),
+                        route.match().matchKey(), route.id()));
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("hostileSpellings")
     @DisplayName("a spelling of an unlisted path is refused or unrouted, never selected onto an idp route")
@@ -299,7 +317,7 @@ class IdpFrontingCanonicalPathTest {
     }
 
     @ParameterizedTest(name = "{0}")
-    @MethodSource("allowedRequests")
+    @MethodSource({"allowedRequests", "idpRouteBaselines"})
     @DisplayName("an allowlisted path is selected onto its idp route with the path unchanged (positive control)")
     void allowlistedPathReachesItsIdpRoute(AllowedRequest request) {
         Outcome outcome = shippedPipeline.drive(request.method(), request.path());
@@ -437,11 +455,16 @@ class IdpFrontingCanonicalPathTest {
         return Objects.requireNonNull(outcome.assembly());
     }
 
-    private static Set<String> idpRouteIds(ConfigBootPipeline.Assembly assembly) {
+    private static List<RouteConfig> idpRoutes(ConfigBootPipeline.Assembly assembly) {
         return assembly.enabledEndpoints().stream()
                 .filter(endpoint -> IDP_ENDPOINT_ID.equals(endpoint.id()))
                 .map(EndpointConfig::routes)
                 .flatMap(List::stream)
+                .toList();
+    }
+
+    private static Set<String> idpRouteIds(ConfigBootPipeline.Assembly assembly) {
+        return idpRoutes(assembly).stream()
                 .map(RouteConfig::id)
                 .collect(Collectors.toUnmodifiableSet());
     }

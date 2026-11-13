@@ -84,7 +84,8 @@ import org.jspecify.annotations.Nullable;
  * arbitrary key id, so the bound must not depend on what is asked for. The claimed refresh runs on the
  * scheduler: it builds a fresh delegate and loads it <em>off to the side</em>, while the current
  * delegate keeps answering. A fresh delegate is published when its key set holds the triggering key
- * id, or holds a key id that neither the current nor the retired delegate holds: the window an
+ * id, or holds a key id that neither the current delegate nor a retired delegate still inside its grace
+ * period holds: the window an
  * invented key id claimed therefore still picks up a key the identity provider has genuinely rotated
  * in, instead of leaving that key unanswered until the next window. A load that fails, completes
  * exceptionally, or yields a key set that adds no key id to those already held closes the fresh
@@ -549,7 +550,8 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
 
     /**
      * Settles one refresh: publishes {@code fresh} when it loaded a key set that holds the triggering
-     * key id or holds a key id neither the current nor the retired delegate holds, and closes it
+     * key id or holds a key id neither the current delegate nor a retired delegate still inside its
+     * grace period holds, and closes it
      * otherwise. A refresh claimed by an invented key id thus still publishes a key the identity
      * provider has rotated in, while an unchanged key set is discarded. A discarded refresh leaves the
      * snapshot untouched and never starts the failed-load retry.
@@ -572,8 +574,10 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
 
     /**
      * Whether {@code fresh}'s loaded key set is worth publishing: it holds the triggering key id, or it
-     * holds a key id that neither the current nor the retired delegate holds. Reads only the key sets
-     * already loaded; it never fetches.
+     * holds a key id that neither the current delegate nor a retired delegate still inside its grace
+     * period holds. A retired delegate whose grace deadline has passed but whose retirement has not run
+     * yet answers no lookup, so its key ids do not count as held. Reads only the key sets already
+     * loaded; it never fetches.
      *
      * @param fresh the refresh's delegate, whose load completed with {@link LoaderStatus#OK}
      * @param kid   the key id that triggered the refresh
@@ -585,7 +589,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         }
         Snapshot current = snapshot.get();
         Set<String> currentKeyIds = current.delegate().getKeyIds();
-        JwksLoader retired = current.retired();
+        JwksLoader retired = answeringRetired(current);
         Set<String> retiredKeyIds = retired == null ? Set.of() : retired.getKeyIds();
         return fresh.getKeyIds().stream()
                 .anyMatch(keyId -> !currentKeyIds.contains(keyId) && !retiredKeyIds.contains(keyId));
@@ -620,6 +624,20 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         if (closed.get()) {
             close();
         }
+    }
+
+    /**
+     * The retired delegate of {@code current} while its grace deadline has not passed. This is the one
+     * deadline test, shared by the lookup and by the refresh's publication check, so a retired delegate
+     * whose deadline has passed but whose retirement has not run on the scheduler yet counts as gone
+     * for both.
+     *
+     * @param current the snapshot to read
+     * @return the retired delegate that still answers lookups, or {@code null} when there is none
+     */
+    private @Nullable JwksLoader answeringRetired(Snapshot current) {
+        JwksLoader retired = current.retired();
+        return retired != null && monotonicClock.getAsLong() - current.retiredUntil() < 0 ? retired : null;
     }
 
     /** Drops {@code retired} from the snapshot, provided it is still the retired one, and closes it. */
@@ -696,8 +714,8 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         if (key.isPresent()) {
             return key;
         }
-        JwksLoader retired = current.retired();
-        if (retired != null && monotonicClock.getAsLong() - current.retiredUntil() < 0) {
+        JwksLoader retired = answeringRetired(current);
+        if (retired != null) {
             Optional<KeyInfo> retiredKey = retired.getKeyInfo(kid);
             if (retiredKey.isPresent()) {
                 return retiredKey;

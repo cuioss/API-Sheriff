@@ -1057,6 +1057,41 @@ class RetryingJwksLoaderTest {
             loader.close();
         }
 
+        @Test
+        @DisplayName("a refresh holding a key id only an expired, not yet closed retired delegate holds is published")
+        void refreshHoldingAnExpiredRetiredKeyIdIsPublished() throws Exception {
+            // Arrange — one replacement done: the rotated key set is current, the original one retired
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            rotateSigningKey();
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+            // ... the grace deadline passes on the monotonic clock, while the scheduler, which closes the
+            // retired delegate only after the grace period of real time, has not run the retirement yet ...
+            tick(GRACE);
+            // ... and the endpoint serves the original key set again, which only that delegate holds
+            jwksBody.set(InMemoryKeyMaterialHandler.createDefaultJwks());
+
+            // Act — an invented key id claims the next window. The original key id is not looked up
+            // first, because that lookup would claim the window itself.
+            loader.getKeyInfo("invented");
+            awaitBuilt(3);
+            Awaits.until(() -> loader.getKeyIds().contains(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID)
+                    || built.get(2).closed.get(), "the refresh to settle", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert — the expired delegate answers no lookup, so its key id is not held, and the
+            // refresh that serves it again is published
+            assertFalse(built.get(2).closed.get(), "the refresh is published, not discarded");
+            assertEquals(Set.of(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID), loader.getKeyIds(),
+                    "the served key set is the current one");
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
+                    "the key id the identity provider serves resolves again");
+            assertTrue(built.getFirst().closed.get(), "the expired retired delegate is closed by the publication");
+            assertTrue(loader.getKeyInfo(ROTATED_KEY_ID).isPresent(),
+                    "the replaced rotated key set keeps answering inside its own grace period");
+            loader.close();
+        }
+
         @ParameterizedTest
         @EnumSource(RefreshBuildFailure.class)
         @DisplayName("a refresh that cannot be built changes nothing, the next window tries again, and only an unanticipated failure warns")
