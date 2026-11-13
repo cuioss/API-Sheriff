@@ -2,10 +2,10 @@
   "id": "PLAN-SEC-06",
   "slug": "tier-2-quick-wins",
   "workstream": "WS-04",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-sec-06-tier-2-quick-wins",
+  "pr": "607",
+  "landing": "landings/PLAN-SEC-06.md",
   "seq": 6
 }

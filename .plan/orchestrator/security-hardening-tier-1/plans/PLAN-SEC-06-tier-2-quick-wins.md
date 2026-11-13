@@ -155,18 +155,31 @@ once the fix is on the branch.
 ## Claim Labels
 
 - OBSERVED: `application.properties` sets no `quarkus.http.limits.max-connections` — read at `api-sheriff/src/main/resources/application.properties` (main `047496b2`)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: parent 0ff33e95 application.properties carries no max-connections; #607 adds it
 - OBSERVED: the `EdgeHardeningOptions` class Javadoc and `doc/user/edge-security.adoc` state that an idle connection is reaped so a slow-loris load cannot pin connection slots — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java` § class Javadoc (main `047496b2`)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: EdgeHardeningOptions.java:32-33 at 0ff33e95 and edge-security.adoc:540 carried the slow-loris pin wording; removed by #607
 - OBSERVED: the auth-fronted sample routes the whole `/auth/realms/sample` realm — read at `deployment/compose-sample/docker/sheriff-config-auth-fronted/endpoints/idp.yaml` (main `7f5c61af`, assessment)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: idp.yaml at 0ff33e95 routed path_prefix /auth/realms/sample (line 42); #607 replaces it with four login-flow routes
 - OBSERVED: `start-sample.sh --auth-fronted` warns and continues when the Compose version is unreadable — read at `deployment/compose-sample/scripts/start-sample.sh` (main `7f5c61af`, assessment)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: start-sample.sh:160-164 at 0ff33e95 warns on unreadable Compose version and continues; #607 adds the effect check
 - OBSERVED: `RetryingJwksLoader.settleRefresh` discards a fetched set that lacks the kid that claimed the window — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java` § `settleRefresh` (main `7f5c61af`, assessment)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: RetryingJwksLoader.settleRefresh at 0ff33e95 discarded on fresh.getKeyInfo(kid).isEmpty(); #607 adds carriesNewKey
 - OBSERVED: no boot rule ties `allowed_origins` to a `require: none` WebSocket route that re-admits `Authorization` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/CookieRules.java` § `validateWebSocketCookieOrigins` (main `7f5c61af`, assessment)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: no rule rule-package source at 0ff33e95 ties allowed_origins to Authorization re-admission; #607 adds it in ForwardingRules (not CookieRules)
 - OBSERVED: `trust_scheme_host` is declared in `ForwardedConfig` and `gateway.schema.json` and read by no main source — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ForwardedConfig.java` (main `047496b2`)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: ForwardedConfig.java:42 at 0ff33e95 declares trustSchemeHost; no main reader; #607 removes it
 - OBSERVED: ADR-0043 answers "Can an attacker force additional seals? No" — read at `doc/adr/0043-Compress-then-encrypt_in_the_sealed_session_cookie_and_the_CRIME_BREACH_discriminator.adoc` (main `047496b2`)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: ADR-0043:58 at 0ff33e95 reads 'Can an attacker force additional seals? No'
 - OBSERVED: `doc/user/tls-edge.adoc` calls `client_ca` a single global trust anchor with no gradual cutover, and says the management port serves HTTPS by default — read at `doc/user/tls-edge.adoc` (main `047496b2`)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: tls-edge.adoc:373,376,536 at 0ff33e95: single global trust anchor, no gradual cutover, HTTPS by default
 - OBSERVED: `doc/variants/02-bff-session.adoc` states "Revocation: Immediate" including back-channel logout — read at `doc/variants/02-bff-session.adoc` § comparison table (main `047496b2`)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: 02-bff-session.adoc:294 at 0ff33e95: 'Revocation | Immediate' incl. back-channel logout
 - OBSERVED: ADR-0008 calls `not_modified: false` the hardening setting for upstreams that leak inode or version information — read at `doc/adr/0008-data-plane-transport.adoc` (main `047496b2`)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: ADR-0008:34 at 0ff33e95 calls not_modified false the hardening setting for upstreams that leak inode information
 - HYPOTHESIS: the "gateway-sent resets never count" statements are still present after PLAN-SEC-01..04 — confirm/refute at `EdgeHardeningOptions.java`, `doc/security-threat-model.adoc`, `doc/user/edge-security.adoc`, `doc/architecture/tls-and-inbound-security.adoc` (verify-at-outline)
+  - verdict: corroborated | checked_at: 0ff33e95 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: statements that only client-sent resets count were present at 0ff33e95 in EdgeHardeningOptions, threat model, edge-security.adoc, tls-and-inbound-security.adoc; #607 removes them
 - HYPOTHESIS: `quarkus.http.limits.max-connections` is honoured by the Quarkus 3.40 recorder for the main listener in this application's server setup — confirm at the Quarkus `VertxHttpRecorder` connection-limit wiring and by the deliverable-1 test (verify-at-outline)
+  - verdict: corroborated | checked_at: 898e0100 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: MainListenerConnectionCapTest (JVM) and MainListenerConnectionCapIT (native) open CAP sockets, assert the next is closed, with a freed-slot control; both ran green in PR #607 CI (build 25/26, integration-tests). Recorder source not read.
 
 ## Expected Surface
 
