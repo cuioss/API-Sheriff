@@ -75,6 +75,11 @@ endpoint:
   or fragment after the path is allowed.
 * *The portal does not route.* `entry` is only a link. The request the browser sends when it follows
   the link is routed, authenticated and filtered like any other request.
+* *The catalog is public by design.* The portal path is answered before the route table, so no
+  route's authentication applies to it, and every caller that reaches the path sees the same list of
+  active entries, signed in or not. The catalog is not filtered by session, user or role. Declare a
+  `catalog` block only for an application whose title, description and entry path may be shown to
+  anyone who can reach the portal.
 
 [[_path]]
 == Choose the path, including the context root
