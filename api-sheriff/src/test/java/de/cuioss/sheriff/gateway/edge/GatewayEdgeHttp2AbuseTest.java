@@ -70,8 +70,10 @@ import org.junit.jupiter.api.Test;
  * library neither resets a stream straight behind the {@code HEADERS} frame that opened it nor leaves a
  * header block open across {@code CONTINUATION} frames. The matched controls — early-answered uploads
  * the gateway itself resets, resets below the pinned limit, a header block within the bound spread
- * over {@code CONTINUATION} frames — use the same connection shapes and show the bounds trip on the
- * abuse alone.
+ * over {@code CONTINUATION} frames, a single {@code HEADERS} frame just under the 16 KiB header-list
+ * bound — use the same connection shapes and show the bounds trip on the abuse alone. A decoded header
+ * list just over that bound costs its stream only: it is answered {@code 431} and reset, and the
+ * connection carries on.
  * <p>
  * <strong>A client that leaves releases what it held.</strong> A stream reset — or, over HTTP/1.1, a
  * connection closed — while its request is held by the upstream releases that upstream request at once,
@@ -104,14 +106,26 @@ class GatewayEdgeHttp2AbuseTest {
     private static final int GATEWAY_RESETS = RESET_LIMIT + 50;
     /** Uploads of the gateway-reset control kept in flight at once. */
     private static final int UPLOAD_BATCH = 10;
-    /** The header-block bound in bytes, restated so a change to it is noticed here. */
+    /** The header-list bound in bytes, restated so a change to it is noticed here. */
     private static final int HEADER_LIST_BOUND = 16 * 1024;
     /** The size of each header value a CONTINUATION frame of the size flood carries. */
     private static final int FLOOD_FIELD_BYTES = 1024;
-    /** A complete header block just above the bound: 17 KiB of fields. */
-    private static final int NEAR_BOUND_BLOCK_BYTES = 17 * 1024;
-    /** A complete header block far above the bound: 32 KiB of fields. */
-    private static final int FAR_ABOVE_BLOCK_BYTES = 2 * HEADER_LIST_BOUND;
+    /**
+     * How far the grey-zone pair sits from the bound, in decoded bytes: both lists lie above the
+     * transport default of 8 KiB, one just under the 16 KiB bound and one just over it.
+     */
+    private static final int GREY_ZONE_MARGIN = 64;
+    /**
+     * The largest header value a grey-zone field carries: below the 1,024-character header-value cap of
+     * the default {@code strict} profile, so the inbound filter admits every field of the list.
+     */
+    private static final int GREY_ZONE_FIELD_BYTES = 1000;
+    /** The length of every grey-zone field name, {@code x-grey-NN}. */
+    private static final int GREY_ZONE_NAME_BYTES = 9;
+    /** What HPACK counts towards the decoded header-list size per field beside its name and value (RFC 7541 §4.1). */
+    private static final int HPACK_ENTRY_OVERHEAD = 32;
+    /** The largest frame payload the edge accepts before announcing more (RFC 9113 §6.5.2 default). */
+    private static final int DEFAULT_MAX_FRAME_SIZE = 16_384;
     /** Zero-length CONTINUATION frames the empty-frame flood sends. */
     private static final int EMPTY_CONTINUATIONS = 10_000;
 
@@ -140,7 +154,10 @@ class GatewayEdgeHttp2AbuseTest {
         vertx = Vertx.vertx();
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         earlyAnswer = Generators.letterStrings(16, 32).next();
-        upstreamServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions().setHttp2ClearTextEnabled(false))
+        // The stub upstream takes a forwarded header block well past the bound, so a refusal of the
+        // grey-zone pair can only come from the edge, never from the stub's own 8 KiB default.
+        upstreamServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions().setHttp2ClearTextEnabled(false)
+                        .setMaxHeaderSize(4 * HEADER_LIST_BOUND))
                 .requestHandler(this::handleUpstreamRequest)
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         GatewayEdgeRoute edge = EdgeFixtures.edge(vertx, virtualThreadExecutor)
@@ -411,49 +428,89 @@ class GatewayEdgeHttp2AbuseTest {
                 () -> assertEquals(200, afterStatus, "the edge keeps serving a fresh connection"));
     }
 
+    /**
+     * The grey zone between the transport default of 8 KiB and the documented 16 KiB bound: a single
+     * {@code HEADERS} frame whose decoded list is just under the bound is served. A listener still
+     * announcing the transport default would answer it {@code 431}.
+     */
     @Test
-    @DisplayName("a complete header block just above 16 KiB ends the connection, not only its stream")
-    void headerBlockJustAboveTheBoundEndsTheConnection() throws Exception {
+    @DisplayName("a single HEADERS frame whose decoded header list is just under 16 KiB is served")
+    void headerListJustUnderTheBoundIsServed() throws Exception {
         RawHttp2Connection connection = RawHttp2Connection.open(netClient, frontPort);
-        Awaits.connect(connection.write(completeBlock(connection, 1, "/echo/just-above", NEAR_BOUND_BLOCK_BYTES)),
-                "the header block to be sent");
-        Awaits.connect(connection.closed(), "the edge to end the connection");
-        int afterStatus = statusOfAFreshConnection();
+        List<Map.Entry<String, String>> fields = headerListOfDecodedSize(connection, "/echo/grey-under",
+                HEADER_LIST_BOUND - GREY_ZONE_MARGIN);
 
-        assertAll("a complete header block of 17 KiB",
-                () -> assertTrue(connection.goAwayCode().isPresent(), "the edge announces the end with GOAWAY"),
-                () -> assertNotEquals(Optional.of(RawHttp2Connection.NO_ERROR), connection.goAwayCode(),
-                        "the GOAWAY names an error"),
-                () -> assertEquals(Optional.empty(), connection.status(1), "the stream is never answered"),
-                () -> assertFalse(upstreamStarted.contains("GET /just-above"), "the stream never reaches the upstream"),
-                () -> assertEquals(200, afterStatus, "the edge keeps serving a fresh connection"));
+        Awaits.connect(connection.write(RawHttp2Connection.headers(1, fields, true)), "the header list to be sent");
+        Awaits.until(() -> connection.status(1).isPresent() || connection.isClosed(),
+                "the request to be answered", Awaits.CONNECT_CEILING_SECONDS);
+        Awaits.teardown(connection.close(), "the raw HTTP/2 connection to close");
+
+        assertAll("a decoded header list just under the bound",
+                () -> assertTrue(RawHttp2Connection.hpack(fields).length <= DEFAULT_MAX_FRAME_SIZE,
+                        "precondition: the whole list fits one HEADERS frame"),
+                () -> assertTrue(decodedSize(fields) > 8 * 1024, "precondition: the list lies above 8 KiB"),
+                () -> assertEquals(Optional.of(200), connection.status(1), "the request is served"),
+                () -> assertEquals(Optional.empty(), connection.reset(1), "the stream is not reset"),
+                () -> assertEquals(Optional.empty(), connection.goAwayCode(), "the edge sends no GOAWAY"),
+                () -> assertTrue(upstreamStarted.contains("GET /grey-under"), "the request reached the upstream"));
     }
 
+    /**
+     * A single {@code HEADERS} frame whose decoded list is just over the bound: the stream is answered
+     * {@code 431} and reset, while the connection — whose compressed block stays far below 1.25 times
+     * the bound — carries on serving further streams.
+     */
     @Test
-    @DisplayName("a complete header block of 32 KiB ends the connection with GOAWAY")
-    void headerBlockFarAboveTheBoundEndsTheConnection() throws Exception {
+    @DisplayName("a single HEADERS frame whose decoded header list is just over 16 KiB is answered 431 and reset")
+    void headerListJustOverTheBoundIsAnswered431() throws Exception {
         RawHttp2Connection connection = RawHttp2Connection.open(netClient, frontPort);
-        Awaits.connect(connection.write(completeBlock(connection, 1, "/echo/far-above", FAR_ABOVE_BLOCK_BYTES)),
-                "the header block to be sent");
-        Awaits.connect(connection.closed(), "the edge to drop the connection");
+        List<Map.Entry<String, String>> fields = headerListOfDecodedSize(connection, "/echo/grey-over",
+                HEADER_LIST_BOUND + GREY_ZONE_MARGIN);
 
-        assertAll("a header block far above the bound",
-                () -> assertTrue(connection.goAwayCode().isPresent(), "the edge announces the drop with GOAWAY"),
-                () -> assertNotEquals(Optional.of(RawHttp2Connection.NO_ERROR), connection.goAwayCode(),
-                        "the GOAWAY names an error"),
-                () -> assertFalse(upstreamStarted.contains("GET /far-above"), "the stream never reaches the upstream"));
+        Awaits.connect(connection.write(RawHttp2Connection.headers(1, fields, true)
+                        .appendBuffer(RawHttp2Connection.headers(3, connection.requestHead("GET", "/echo/after"), true))),
+                "the header list and a further request to be sent");
+        Awaits.until(() -> connection.status(1).isPresent() && connection.reset(1).isPresent()
+                        && connection.status(3).isPresent() || connection.isClosed(),
+                "the over-bound stream to be refused and the further stream answered", Awaits.CONNECT_CEILING_SECONDS);
+        Awaits.teardown(connection.close(), "the raw HTTP/2 connection to close");
+
+        assertAll("a decoded header list just over the bound",
+                () -> assertTrue(RawHttp2Connection.hpack(fields).length <= DEFAULT_MAX_FRAME_SIZE,
+                        "precondition: the whole list fits one HEADERS frame"),
+                () -> assertEquals(Optional.of(431), connection.status(1), "the stream is answered 431"),
+                () -> assertTrue(connection.reset(1).isPresent(), "the stream is reset"),
+                () -> assertEquals(Optional.empty(), connection.goAwayCode(), "the edge sends no GOAWAY"),
+                () -> assertEquals(Optional.of(200), connection.status(3),
+                        "a further stream on the same connection is served"),
+                () -> assertFalse(upstreamStarted.contains("GET /grey-over"), "the stream never reaches the upstream"));
     }
 
-    /** A complete request header block of about {@code totalBytes}, its fields spread over CONTINUATION frames. */
-    private static Buffer completeBlock(RawHttp2Connection connection, int streamId, String path, int totalBytes) {
-        String filler = Generators.letterStrings(FLOOD_FIELD_BYTES, FLOOD_FIELD_BYTES).next();
-        int fieldFrames = totalBytes / FLOOD_FIELD_BYTES;
-        Buffer frames = RawHttp2Connection.headersLeftOpen(streamId, connection.requestHead("GET", path), true);
-        for (int i = 0; i < fieldFrames; i++) {
-            frames.appendBuffer(RawHttp2Connection.continuation(streamId,
-                    List.of(Map.entry("x-field-" + i, filler)), i == fieldFrames - 1));
+    /**
+     * A {@code GET} request header list for {@code path} whose decoded size — what HPACK counts against
+     * {@code SETTINGS_MAX_HEADER_LIST_SIZE}, every name and value plus 32 bytes per field — is exactly
+     * {@code decodedBytes}. The bytes beyond the request head are spread evenly over as few
+     * {@code x-grey-NN} fields as keep each value within {@value #GREY_ZONE_FIELD_BYTES} characters.
+     */
+    private static List<Map.Entry<String, String>> headerListOfDecodedSize(RawHttp2Connection connection,
+            String path, int decodedBytes) {
+        List<Map.Entry<String, String>> fields = new ArrayList<>(connection.requestHead("GET", path));
+        int remaining = decodedBytes - decodedSize(fields);
+        int perFieldOverhead = GREY_ZONE_NAME_BYTES + HPACK_ENTRY_OVERHEAD;
+        int fieldCount = Math.ceilDiv(remaining, GREY_ZONE_FIELD_BYTES + perFieldOverhead);
+        int valueBytes = remaining - fieldCount * perFieldOverhead;
+        for (int i = 0; i < fieldCount; i++) {
+            int length = valueBytes / fieldCount + (i == fieldCount - 1 ? valueBytes % fieldCount : 0);
+            fields.add(Map.entry("x-grey-%02d".formatted(i), Generators.letterStrings(length, length).next()));
         }
-        return frames;
+        return fields;
+    }
+
+    /** The decoded header-list size HPACK counts for {@code fields} (RFC 7541 §4.1). */
+    private static int decodedSize(List<Map.Entry<String, String>> fields) {
+        return fields.stream()
+                .mapToInt(field -> field.getKey().length() + field.getValue().length() + HPACK_ENTRY_OVERHEAD)
+                .sum();
     }
 
     @Test

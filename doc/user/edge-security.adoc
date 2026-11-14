@@ -597,9 +597,10 @@ deployment that never writes it keeps the behaviour shown here.
 | HTTP/2 header list per request
 | 16 KiB
 | The `SETTINGS_MAX_HEADER_LIST_SIZE` value every listener announces -- the HTTP/1.1 header-block
-  bound. It covers the whole decoded header block, `CONTINUATION` frames included, so a header block
-  grown past it over any number of frames ends the connection. A listener announcing more, or no
-  limit, is lowered to it; a lower setting is kept. Not configurable.
+  bound, set in place of the transport default of 8 KiB. It covers the whole decoded header list,
+  `CONTINUATION` frames included: a request whose decoded list passes it is answered `431` and its
+  stream reset, and the connection stays open. Only a compressed header block larger than 1.25 times
+  the bound (20 KiB) ends the connection. Not configurable.
 
 | HTTP/2 stream resets per connection
 | 200 per 30 s

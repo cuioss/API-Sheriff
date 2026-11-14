@@ -158,8 +158,10 @@ for the benchmark comparison against a fixed 2 MiB window).
 [[_http2_transport_bounds]]
 *Per-connection HTTP/2 transport bounds* (link:../security-threat-model.adoc#gw-08[GW-08]):
 
-* *Header block (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Capped at 16 KiB across the whole decoded block
-  (`CONTINUATION` frames included); exceeding it ends the connection with `GOAWAY`.
+* *Header list (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Announced as 16 KiB on every listener, in place of
+  the transport default of 8 KiB, across the whole decoded list (`CONTINUATION` frames included). A
+  decoded list over it is answered `431` and its stream reset; only a compressed header block over
+  1.25 times the bound (20 KiB) ends the connection with `GOAWAY`.
 
 * *Rapid-Reset.* Pinned at 200 `RST_STREAM` frames per 30-second window (`GOAWAY
   ENHANCE_YOUR_CALM` on breach). It counts the resets a client sends, and Netty's encoder-side limit
