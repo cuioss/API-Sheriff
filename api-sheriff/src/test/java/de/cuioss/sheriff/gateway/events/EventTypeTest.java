@@ -121,6 +121,7 @@ class EventTypeTest {
             arguments(EventType.WEBSOCKET_ORIGIN_REJECTED, 403, EventCategory.AUTHORIZATION),
             arguments(EventType.UPSTREAM_ERROR, 502, EventCategory.UPSTREAM),
             arguments(EventType.UPSTREAM_CIRCUIT_OPEN, 503, EventCategory.UPSTREAM),
+            arguments(EventType.UPSTREAM_POOL_SATURATED, 503, EventCategory.UPSTREAM),
             arguments(EventType.UPSTREAM_TIMEOUT, 504, EventCategory.UPSTREAM),
             arguments(EventType.SOURCE_BLOCKED, 429, EventCategory.RATE_LIMITING),
             arguments(EventType.PENDING_AUTHORIZATION_SATURATED, 503, EventCategory.RATE_LIMITING));

@@ -46,8 +46,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the default admission cap, rather than calling the observer directly, because a normal-scoped
  * observer bean can hold a lazy proxy that is never touched and then never runs in production while a
  * test calling the method directly stays green. The direct cases pin the boundary: an admission cap
- * above or equal to the connection cap warns, one below it does not (matched control), and a listener
- * with no declared cap has nothing to honour.
+ * above half the connection cap warns (one above half, one below the cap, equal to and above the cap),
+ * one at exactly half does not (matched control), and a listener with no declared cap has nothing to
+ * honour.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -104,11 +105,31 @@ class ConnectionCapAuditTest {
     }
 
     @Test
-    @DisplayName("Stays silent when the admission cap lies below the connection cap (matched control)")
-    void staysSilentWhenAdmissionCapIsBelowTheConnectionCap() {
+    @DisplayName("Warns when the admission cap lies one below the connection cap")
+    void warnsWhenAdmissionCapIsOneBelowTheConnectionCap() {
         boolean warned = auditOf(FIXTURE_CONNECTION_CAP - 1, OptionalInt.of(FIXTURE_CONNECTION_CAP)).audit();
 
-        assertFalse(warned, "the connection cap leaves headroom above the admission cap");
+        assertTrue(warned, "one slot of headroom is less than the shipped factor of two");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, WARNING_FRAGMENT);
+    }
+
+    @Test
+    @DisplayName("Warns when the admission cap lies one above half the connection cap")
+    void warnsWhenAdmissionCapIsOneAboveHalfTheConnectionCap() {
+        boolean warned = auditOf(FIXTURE_CONNECTION_CAP / 2 + 1, OptionalInt.of(FIXTURE_CONNECTION_CAP)).audit();
+
+        assertTrue(warned, "the headroom is below the shipped factor of two");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, WARNING_FRAGMENT);
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                String.valueOf(FIXTURE_CONNECTION_CAP / 2 + 1));
+    }
+
+    @Test
+    @DisplayName("Stays silent when the admission cap is exactly half the connection cap (matched control)")
+    void staysSilentWhenAdmissionCapIsHalfTheConnectionCap() {
+        boolean warned = auditOf(FIXTURE_CONNECTION_CAP / 2, OptionalInt.of(FIXTURE_CONNECTION_CAP)).audit();
+
+        assertFalse(warned, "the shipped factor of two leaves the connection cap its full headroom");
         LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, ConnectionCapAudit.class);
     }
 

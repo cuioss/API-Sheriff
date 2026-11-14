@@ -117,7 +117,9 @@ public class SheriffMetrics {
      * Counter of {@link EventType#INBOUND_BODY_ABORTED} ends keyed by route and the
      * {@link InboundBodyAbortDisposition} label ({@code disposition} label {@code body-stream-failed},
      * {@code client-left} or {@code client-idle}). Every such end is also counted on {@link #ERRORS_TOTAL}
-     * under its one {@code event} label; this counter is what tells the three apart.
+     * under its one {@code event} label; this counter is what tells the three apart. The {@code client-idle}
+     * series also counts a gRPC request stream still open at its pre-response deadline, which
+     * {@link #ERRORS_TOTAL} counts under {@link EventType#REQUEST_BODY_TIMEOUT}.
      */
     public static final String INBOUND_BODY_ABORTS_TOTAL = "sheriff_inbound_body_aborts_total";
     /** The {@code cui-http} security-filter counts, per failure type. */
@@ -235,7 +237,10 @@ public class SheriffMetrics {
 
         /**
          * A gRPC client held its request stream open without sending its next complete request message within
-         * the message bound — the client was idle, not gone.
+         * the message bound, or still held it open at the pre-response deadline — the client was idle, not
+         * gone. The second end is a {@link EventType#REQUEST_BODY_TIMEOUT} on {@link #ERRORS_TOTAL}, not an
+         * {@link EventType#INBOUND_BODY_ABORTED}; it is counted here as well so every idle-client end is
+         * countable on one series.
          */
         CLIENT_IDLE("client-idle");
 

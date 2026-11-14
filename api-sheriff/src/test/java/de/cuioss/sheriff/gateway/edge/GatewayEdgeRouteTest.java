@@ -506,6 +506,51 @@ class GatewayEdgeRouteTest {
         }
 
         /**
+         * A relay whose end throws before anything is written: the end was handed over, but no end was
+         * written, so the relay's failure must still be answered — here, with nothing of the head written,
+         * as the empty {@code 502} — rather than leaving the client waiting for an end that never comes.
+         */
+        @Test
+        @DisplayName("answers an empty 502 when the relay's end throws before it is written")
+        void answersBadGatewayWhenTheEndThrowsBeforeItIsWritten() throws Exception {
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.response().end(ANSWER))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            HttpClient upstreamClient = vertx.createHttpClient();
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> upstreamClient
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, ANSWERING_PATH)
+                    .compose(request -> request.send().map(received -> {
+                        received.pause();
+                        return received;
+                    }))
+                    .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
+                            end -> end.end(() -> {
+                                throw new IllegalStateException("the end failed before it was written");
+                            }))));
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the relaying front server to start listening");
+            HttpClient client = vertx.createHttpClient();
+            try {
+                String answer = Awaits.connect(client
+                                .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .compose(HttpClientRequest::send)
+                                .compose(response -> response.body()
+                                        .map(body -> response.statusCode() + " [" + body + "]")),
+                        "the answer to a relay whose end threw before it was written");
+
+                assertEquals("502 []", answer, "an end that was never written leaves the failure to be answered");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the relaying front server to close");
+                Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+                Awaits.teardown(upstream.close(), "the stub upstream to close");
+            }
+        }
+
+        /**
          * The upstream response is received and paused exactly as {@code DispatchStage} leaves it, over
          * an upstream client holding at most one HTTP/1.1 connection, and its body is far larger than
          * what the transport buffers. A released response is therefore observable three times over: the
@@ -666,6 +711,51 @@ class GatewayEdgeRouteTest {
                                 "the request body must still have been open when the relay completed"),
                         () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
                                 "the stream is reset with NO_ERROR after the relay completed"));
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP/2 client to close");
+                Awaits.teardown(front.close(), "the relaying front server to close");
+                Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+                Awaits.teardown(upstream.close(), "the stub upstream to close");
+            }
+        }
+
+        @Test
+        @DisplayName("HTTP/2 — a relay whose deferred end fails before it is written still answers the open upload")
+        void deferredEndThatFailsBeforeItIsWrittenStillAnswers() throws Exception {
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.response().end(Generators.letterStrings(4, 12).next()))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            HttpClient upstreamClient = vertx.createHttpClient();
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> upstreamClient
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .compose(request -> request.send().map(received -> {
+                        received.pause();
+                        return received;
+                    }))
+                    .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
+                            end -> end.end(() -> {
+                                throw new IllegalStateException("the deferred end failed before it was written");
+                            }))));
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the relaying front server to start listening");
+            HttpClient client = vertx.createHttpClient(new HttpClientOptions()
+                    .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
+            try {
+                HttpClientRequest upload = Awaits.connect(client.request(HttpMethod.POST,
+                        front.actualPort(), LoopbackHost.ADDRESS, "/upload"), "the upload stream to open");
+                upload.exceptionHandler(_ -> {
+                    // The edge resets the open upload stream after its answer; that reset is expected.
+                });
+                Awaits.connect(upload.setChunked(true).write(Generators.letterStrings(4, 12).next()),
+                        "the first part of the upload to be sent");
+
+                int status = Awaits.connect(upload.response().map(HttpClientResponse::statusCode),
+                        "the answer to a relay whose deferred end failed before it was written");
+
+                assertEquals(502, status, "an end that was never written leaves the failure to be answered");
             } finally {
                 Awaits.teardown(client.close(), "the HTTP/2 client to close");
                 Awaits.teardown(front.close(), "the relaying front server to close");
@@ -1418,17 +1508,19 @@ class GatewayEdgeRouteTest {
         }
 
         @Test
-        @DisplayName("the default client differs from bare HttpClientOptions in verifyHost and the abortive close alone")
-        void defaultClientDiffersFromBareOptionsInVerifyHostAndSoLingerOnly() {
+        @DisplayName("the default client differs from bare HttpClientOptions in verifyHost, the abortive close and the connection-establishment timeouts alone")
+        void defaultClientDiffersFromBareOptionsInVerifyHostSoLingerAndEstablishmentTimeoutsOnly() {
             CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null, true, null),
                     unconsultedTrustProfileResolver());
             HttpClientOptions bare = new HttpClientOptions();
 
             HttpClientOptions restored = new HttpClientOptions(capturing.plainHttpOptions())
-                    .setVerifyHost(true).setSoLinger(bare.getSoLinger());
+                    .setVerifyHost(true).setSoLinger(bare.getSoLinger()).setConnectTimeout(bare.getConnectTimeout())
+                    .setSslHandshakeTimeout(bare.getSslHandshakeTimeout())
+                    .setSslHandshakeTimeoutUnit(bare.getSslHandshakeTimeoutUnit());
 
             assertEquals(bare.toJson(), restored.toJson(),
-                    "restoring verifyHost and soLinger to their defaults must leave an object "
+                    "restoring verifyHost, soLinger and the dial and TLS-handshake timeouts to their defaults must leave an object "
                             + "indistinguishable from a bare new HttpClientOptions() — the default client must "
                             + "not change the protocol version, the client-level SSL flag, h2-upgrade "
                             + "negotiation, or anything else");
@@ -2099,9 +2191,9 @@ class GatewayEdgeRouteTest {
         }
 
         @Override
-        public HttpClient createHttpClient(HttpClientOptions options) {
+        public HttpClient createHttpClient(HttpClientOptions options, PoolOptions poolOptions) {
             httpClientOptions.add(options);
-            return delegate.createHttpClient(options);
+            return delegate.createHttpClient(options, poolOptions);
         }
 
         @Override
@@ -2154,7 +2246,7 @@ class GatewayEdgeRouteTest {
         /** The two factory methods {@link CapturingVertx} implements itself rather than delegating. */
         private interface CapturedFactories {
 
-            HttpClient createHttpClient(HttpClientOptions options);
+            HttpClient createHttpClient(HttpClientOptions options, PoolOptions poolOptions);
 
             WebSocketClient createWebSocketClient(WebSocketClientOptions options);
         }

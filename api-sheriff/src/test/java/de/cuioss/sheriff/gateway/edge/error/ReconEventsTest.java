@@ -88,6 +88,7 @@ class ReconEventsTest {
         table.put(EventType.SCOPE_MISSING, postTrust);
         table.put(EventType.UPSTREAM_ERROR, upstream);
         table.put(EventType.UPSTREAM_CIRCUIT_OPEN, upstream);
+        table.put(EventType.UPSTREAM_POOL_SATURATED, upstream);
         table.put(EventType.UPSTREAM_TIMEOUT, upstream);
         table.put(EventType.SESSION_CREATED, notARejection);
         table.put(EventType.SESSION_DESTROYED, notARejection);

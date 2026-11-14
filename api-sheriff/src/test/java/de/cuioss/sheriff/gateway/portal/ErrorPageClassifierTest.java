@@ -73,6 +73,7 @@ class ErrorPageClassifierTest {
         table.put(EventType.CSRF_REJECTED, HTML_ELIGIBLE);
         table.put(EventType.UPSTREAM_ERROR, HTML_ELIGIBLE);
         table.put(EventType.UPSTREAM_CIRCUIT_OPEN, HTML_ELIGIBLE);
+        table.put(EventType.UPSTREAM_POOL_SATURATED, HTML_ELIGIBLE);
         table.put(EventType.UPSTREAM_TIMEOUT, HTML_ELIGIBLE);
         table.put(EventType.SESSION_CREATED, KEEP_SHAPE);
         table.put(EventType.SESSION_DESTROYED, KEEP_SHAPE);

@@ -28,23 +28,27 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * Audits, at startup, whether the configured {@code edge_hardening.admission_cap} is below the
- * connection cap of the terminated listener, and emits {@code WARN ApiSheriff-148} when it is not.
+ * Audits, at startup, whether the configured {@code edge_hardening.admission_cap} leaves the connection cap
+ * of the terminated listener its headroom, and emits {@code WARN ApiSheriff-148} when it does not.
  * <p>
  * <strong>What the audit protects against.</strong> The connection cap
  * ({@code quarkus.http.limits.max-connections}) is a fixed deployment value, not a {@code gateway.yaml}
  * key, while the admission cap is configurable and has no schema maximum. On HTTP/1.1 one request needs
- * one connection, so an admission cap at or above the connection cap is never reached: the cap closes
- * connections, unserved and without a {@code 503}, first. Without this audit the configured number would
- * be capped silently, which the never-silent-downgrade rule forbids.
+ * one connection, and the cap also counts every connection that carries no admitted request — an idle
+ * keep-alive connection, one whose request head has not arrived, one being answered {@code 503}. The
+ * shipped connection cap is twice the default admission cap for that reason. An admission cap that gives
+ * that headroom up lets the cap close connections, unserved and without a {@code 503}, before admission
+ * refuses a request; at or above the connection cap the admission cap is never reached at all. Without
+ * this audit the configured number would be capped silently, which the never-silent-downgrade rule
+ * forbids.
  * <p>
  * <strong>Why a WARN and never a boot refusal.</strong> A deployment that is mostly HTTP/2, or that
  * raises the connection cap together with its descriptor limit, may legitimately configure a larger
  * admission cap; refusing it would block that. The record names both remedies.
  * <p>
- * <strong>The boundary.</strong> The audit warns when the admission cap is greater than <em>or equal
- * to</em> the connection cap: at equality HTTP/1.1 admission still cannot answer first, which is the
- * state the shipped headroom exists to avoid. With no connection cap declared nothing closes connections
+ * <strong>The boundary.</strong> The audit warns when the admission cap is greater than half the
+ * connection cap, the shipped factor: an admission cap of exactly half is silent, one above it warns. With
+ * no connection cap declared nothing closes connections
  * ahead of admission, so there is nothing to honour and nothing to warn about. The same holds for a
  * declared value of zero or less: Quarkus enforces the cap only when it is greater than zero.
  * <p>
@@ -87,10 +91,10 @@ public class ConnectionCapAudit {
     }
 
     /**
-     * Compares the configured admission cap with the connection cap and warns when the connection cap
-     * cannot honour it.
+     * Compares the configured admission cap with the connection cap and warns when the admission cap is
+     * above half the connection cap.
      *
-     * @return {@code true} when the admission cap is not below the connection cap and the warning was
+     * @return {@code true} when the admission cap is above half the connection cap and the warning was
      *         emitted
      */
     public boolean audit() {
@@ -99,10 +103,12 @@ public class ConnectionCapAudit {
         }
         int admissionCap = options.admissionCap();
         int cap = connectionCap.getAsInt();
-        if (admissionCap < cap) {
+        int headroomBound = cap / 2;
+        if (admissionCap <= headroomBound) {
             return false;
         }
-        LOGGER.warn(ConfigLogMessages.WARN.ADMISSION_CAP_NOT_BELOW_CONNECTION_CAP, admissionCap, cap, cap);
+        LOGGER.warn(ConfigLogMessages.WARN.ADMISSION_CAP_ABOVE_CONNECTION_CAP_HEADROOM, admissionCap, cap,
+                headroomBound);
         return true;
     }
 }

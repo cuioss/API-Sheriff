@@ -83,7 +83,8 @@ import org.jspecify.annotations.Nullable;
  *       {@link EventType#REQUEST_BODY_TIMEOUT}, the streaming {@link EventType#CONTENT_TOO_LARGE}, the
  *       dispatch-time {@link EventType#SECURITY_FILTER_VIOLATION} for an undeclared body on a bodyless
  *       method, the asset action's dispatch-path {@code 405} and {@link EventType#UPSTREAM_ERROR} /
- *       {@link EventType#UPSTREAM_CIRCUIT_OPEN} / {@link EventType#UPSTREAM_TIMEOUT} — raised after
+ *       {@link EventType#UPSTREAM_CIRCUIT_OPEN} / {@link EventType#UPSTREAM_POOL_SATURATED} /
+ *       {@link EventType#UPSTREAM_TIMEOUT} — raised after
  *       stage 4 completed: the caller is trusted, or the route is anonymous and its own success
  *       answer already discloses that it exists;</li>
  *   <li>{@link EventType#RESERVED_BODY_TOO_LARGE} and {@link EventType#LOGOUT_TOKEN_INVALID} — the

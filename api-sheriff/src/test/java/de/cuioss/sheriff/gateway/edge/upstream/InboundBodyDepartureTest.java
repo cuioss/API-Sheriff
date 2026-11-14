@@ -499,6 +499,31 @@ class InboundBodyDepartureTest {
                             "sheriff_errors_total keeps counting all three under one event series"));
         }
 
+        @Test
+        @DisplayName("a gRPC request stream held open past its pre-response deadline is counted on client-idle, and stays a REQUEST_BODY_TIMEOUT")
+        void preResponseDeadlineIsCountedAsClientIdle() {
+            reporter.reportRejection(routed, new DispatchStage.RequestBodyDeadlineExceeded(true));
+
+            assertAll("a pre-response deadline end",
+                    () -> assertEquals(1.0, abortsCounted("client-idle"),
+                            "an idle gRPC client is countable on its own series, whichever bound ended it"),
+                    () -> assertEquals(1.0, registry.get(ERRORS_TOTAL)
+                                    .tags("event", EventType.REQUEST_BODY_TIMEOUT.name()).counter().count(),
+                            "the shared REQUEST_BODY_TIMEOUT event is kept"));
+        }
+
+        @Test
+        @DisplayName("control — an HTTP body past its whole-body deadline is not counted on client-idle")
+        void wholeBodyDeadlineIsNotCountedAsClientIdle() {
+            reporter.reportRejection(routed, new DispatchStage.RequestBodyDeadlineExceeded(false));
+
+            assertAll("a whole-body deadline end",
+                    () -> assertTrue(registry.find(ABORTS_TOTAL).counters().isEmpty(),
+                            "a slow HTTP body is not an idle gRPC client"),
+                    () -> assertEquals(1.0, registry.get(ERRORS_TOTAL)
+                            .tags("event", EventType.REQUEST_BODY_TIMEOUT.name()).counter().count()));
+        }
+
         private double abortsCounted(String disposition) {
             return registry.get(ABORTS_TOTAL).tags("route", routeId, "disposition", disposition).counter().count();
         }

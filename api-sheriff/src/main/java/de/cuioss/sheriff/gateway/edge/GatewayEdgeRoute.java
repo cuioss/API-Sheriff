@@ -455,7 +455,8 @@ public class GatewayEdgeRoute {
         // The gateway-global egress-TLS settings (ADR-0040) are resolved ONCE here, with their WARNs,
         // and bound to every governed egress client: the per-tuple clients the assembler builds below
         // and the edge-wide WebSocket client further down.
-        EgressClients egressClients = new EgressClients(vertx, gatewayConfig, egressTrustProfileResolver);
+        EgressClients egressClients = new EgressClients(vertx, gatewayConfig, egressTrustProfileResolver,
+                hardening.admissionCap());
         UpstreamGuards upstreamGuards = new UpstreamGuards(upstreamFailureMapper);
 
         RouteAssembler assembler = new RouteAssembler(new ProtocolProcessorRegistry());

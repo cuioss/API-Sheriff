@@ -1289,6 +1289,54 @@ class DispatchStageTest {
                     () -> assertEquals(1, probe.aborts.get()));
         }
 
+        @ParameterizedTest(name = "read again by {0}")
+        @ValueSource(strings = {"resume", "fetch"})
+        @DisplayName("a pause is not counted, but the gap read before it is: the flow restarting continues the gap rather than restarting it")
+        void flowRestartContinuesTheGap(String restart) {
+            IdleProbe probe = messageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            Buffer message = grpcMessage(Generators.letterStrings(4, 12).next());
+            probe.capped.startMessageClock();
+            probe.source.emit(message.slice(0, GRPC_PREFIX_LENGTH + 1));
+            probe.time.advanceMillis(BOUND_MILLIS - 200);
+            probe.capped.pause();
+
+            probe.time.advanceMillis(5 * BOUND_MILLIS);
+            boolean quietWhilePaused = probe.failure.get() == null;
+            if ("resume".equals(restart)) {
+                probe.capped.resume();
+            } else {
+                probe.capped.fetch(1);
+            }
+            probe.time.advanceMillis(199);
+            boolean quietJustBeforeTheBound = probe.failure.get() == null;
+            probe.time.advanceMillis(1);
+
+            assertAll("a message the client was still sending when the upstream paused the stream",
+                    () -> assertTrue(quietWhilePaused, "a pause is never charged to the client"),
+                    () -> assertTrue(quietJustBeforeTheBound, "nothing ends the body before the bound of read time"),
+                    () -> assertInstanceOf(DispatchStage.RequestMessageTimeout.class, probe.capped.clientAbort(),
+                            "the read time before and after the pause adds up to the bound"),
+                    () -> assertEquals(1, probe.aborts.get()));
+        }
+
+        @Test
+        @DisplayName("an end landing between the expiry's claim and its pause of the stream does not swallow the abort")
+        void endBetweenTheClaimAndThePauseKeepsTheAbort() {
+            IdleProbe probe = messageProbe(DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startMessageClock();
+            probe.source.endAtNextPause();
+
+            assertDoesNotThrow(() -> probe.time.advanceMillis(BOUND_MILLIS),
+                    "a stream that ended can no longer be paused, and the expiry carries on without the pause");
+
+            GatewayException expiry = probe.capped.clientAbort();
+            assertAll("an expiry whose pause found the stream ended",
+                    () -> assertInstanceOf(DispatchStage.RequestMessageTimeout.class, expiry),
+                    () -> assertSame(expiry, probe.failure.get(), "the expiry is still propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is still reset, once"),
+                    () -> assertFalse(probe.ended.get(), "the end that came after the claim is not passed on"));
+        }
+
         @Test
         @DisplayName("a chunk of length zero is not a message: the clock still ends the body at the bound")
         void emptyChunkIsNotAMessage() {
@@ -1780,6 +1828,26 @@ class DispatchStageTest {
                     () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
                     () -> assertTrue(probe.source.paused(), "the inbound stream is paused by the refusal"),
                     () -> assertEquals(0, probe.time.pendingCount(), "the message timer is cancelled with it"));
+        }
+
+        @Test
+        @DisplayName("an end landing between the deadline's claim and its pause of the stream does not swallow the refusal")
+        void endBetweenTheDeadlineClaimAndThePauseKeepsTheRefusal() {
+            IdleProbe probe = deadlineProbe();
+            probe.capped.startMessageClock();
+            long sent = sendSteadily(probe, DEADLINE_MILLIS - 1);
+            probe.time.advanceMillis(DEADLINE_MILLIS - 1 - sent);
+            probe.source.endAtNextPause();
+
+            assertDoesNotThrow(() -> probe.time.advanceMillis(1),
+                    "a stream that ended can no longer be paused, and the expiry carries on without the pause");
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a deadline expiry whose pause found the stream ended",
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is still propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is still reset, once"),
+                    () -> assertFalse(probe.ended.get(), "the end that came after the claim is not passed on"));
         }
 
         @Test
@@ -4555,6 +4623,20 @@ class DispatchStageTest {
         /** How often {@link #pause()} was called. */
         private final AtomicInteger pauseCalls = new AtomicInteger();
         private volatile @Nullable Buffer onResume;
+        /** Whether the next {@link #pause()} first ends the stream; see {@link #endAtNextPause()}. */
+        private volatile boolean endAtNextPause;
+        /** Whether the stream ended through {@link #endAtNextPause()}: every pause from then on is refused. */
+        private volatile boolean endedRefusingPause;
+
+        /**
+         * Lands the stream's end just before the next {@link #pause()}, which is then refused with the
+         * {@link IllegalStateException} Vert.x throws when an ended HTTP/2 request is paused — the order an end
+         * arriving on the inbound connection's event loop produces when it slips in between an expiry's abort
+         * claim and its pause of the stream on the upstream request's loop.
+         */
+        void endAtNextPause() {
+            endAtNextPause = true;
+        }
 
         /** @return {@code true} while the last call that changed the flow was a pause */
         boolean paused() {
@@ -4614,6 +4696,14 @@ class DispatchStageTest {
         @Override
         public ReadStream<Buffer> pause() {
             pauseCalls.incrementAndGet();
+            if (endAtNextPause) {
+                endAtNextPause = false;
+                endedRefusingPause = true;
+                end();
+            }
+            if (endedRefusingPause) {
+                throw new IllegalStateException("Request has already been read");
+            }
             paused = true;
             return this;
         }

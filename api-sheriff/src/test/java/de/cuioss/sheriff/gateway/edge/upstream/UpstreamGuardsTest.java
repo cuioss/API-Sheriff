@@ -84,7 +84,7 @@ class UpstreamGuardsTest {
      */
     static Stream<Arguments> clientEndedDispatches() {
         Supplier<GatewayException> noCompleteMessage = DispatchStage.RequestMessageTimeout::new;
-        Supplier<GatewayException> streamStillOpen = DispatchStage.RequestBodyDeadlineExceeded::new;
+        Supplier<GatewayException> streamStillOpen = () -> new DispatchStage.RequestBodyDeadlineExceeded(true);
         Supplier<GatewayException> clientLeft =
                 () -> new DispatchStage.ClientDeparted(new IllegalStateException("the client reset its stream"));
         return Stream.of(

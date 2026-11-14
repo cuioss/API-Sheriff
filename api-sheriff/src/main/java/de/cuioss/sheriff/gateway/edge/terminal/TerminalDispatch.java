@@ -64,6 +64,7 @@ import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
+import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientResponse;
@@ -110,6 +111,11 @@ public final class TerminalDispatch {
     private static final String CACHE_CONTROL_HEADER = "Cache-Control";
     /** The {@code Cache-Control} value forced on an authenticated or cookie-bearing redirect answer. */
     private static final String NO_STORE = "no-store";
+    /**
+     * The freshness and validator headers a failed relay's unwritten head drops, beside replacing its
+     * {@code Cache-Control} (see {@link #prepareFailedRelayHead}).
+     */
+    static final List<String> UNSTORABLE_ANSWER_REMOVES = List.of("Expires", "Age", "ETag", "Last-Modified");
     /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
     private static final String VARY_HEADER = "Vary";
     private static final String CONTENT_LENGTH_HEADER = "Content-Length";
@@ -909,7 +915,11 @@ public final class TerminalDispatch {
      * Starts the relay on the event loop, turning a failure thrown while starting it into a failed
      * future, which {@link #relayOnEventLoop} answers — releasing the paused upstream response first —
      * exactly like a failure the relay reports on its future. The {@link ResponseEnd} the relay is handed
-     * sets {@code endHandedOver} before it passes the end to the one end rule.
+     * sets {@code endHandedOver} before it passes the end to the one end rule. An end that fails before the
+     * response was ended — the end rule or the ending itself throwing before anything was written, at once or,
+     * for an HTTP/2 end deferred until the request body stops, later — is no end at all: the flag is cleared
+     * again and the failure reaches the relay as the end's failed future, so the relay's failure reaches
+     * {@link #failRelay} and the client response is still ended.
      */
     private static Future<Void> startRelay(RoutingContext ctx, List<String> stageSetCookies,
             Function<ResponseEnd, Future<Void>> relay, AtomicBoolean endHandedOver) {
@@ -921,7 +931,22 @@ public final class TerminalDispatch {
             ResponseEnds.applyStageSetCookies(ctx.response(), stageSetCookies);
             return relay.apply(ending -> {
                 endHandedOver.set(true);
-                return ResponseEnds.endResponse(ctx, ending);
+                try {
+                    // A deferred end (HTTP/2, request body still open) runs the ending later and fails its
+                    // future when it throws, without ending the response. The relay is handed the future
+                    // andThen returns, which completes only after the flag was cleared, so the relay's
+                    // failure can never reach the outcome while the flag still says the end was handed over.
+                    return ResponseEnds.endResponse(ctx, ending).andThen(ended -> {
+                        if (ended.failed() && !ctx.response().ended()) {
+                            endHandedOver.set(false);
+                        }
+                    });
+                } catch (RuntimeException endFailure) {
+                    if (!ctx.response().ended()) {
+                        endHandedOver.set(false);
+                    }
+                    return Future.failedFuture(endFailure);
+                }
             });
         } catch (RuntimeException startFailure) {
             return Future.failedFuture(startFailure);
@@ -994,12 +1019,23 @@ public final class TerminalDispatch {
      * the client would wait for bytes that never come. The status is the one the upstream sent when the
      * relay failed because a late request-body timeout reset the upstream request — the upstream had
      * already answered, and its status stands — and {@code 502} for every other failure.
+     * <p>
+     * <strong>The answer is never storable.</strong> The head still carries the caching metadata the relay
+     * copied from the upstream response, which describes a body this answer does not carry. A cache honouring
+     * it would store the empty answer as that response and serve it again, so the head is made uncacheable:
+     * {@code Cache-Control: no-store} replaces the upstream's directives, and {@code Expires}, {@code Age} and
+     * the validators {@code ETag} and {@code Last-Modified} are removed. The status is kept rather than turned
+     * into a {@code 502} for a {@code 2xx}: the upstream has acted on the request, and a {@code 502} would tell
+     * the client it may simply send it again (see the architecture's late request-body timeout).
      */
     static void prepareFailedRelayHead(HttpServerResponse response, boolean bodyTimedOutLate, int upstreamStatus) {
         if (response.headWritten()) {
             return;
         }
-        response.headers().remove(CONTENT_LENGTH_HEADER);
+        MultiMap headers = response.headers();
+        headers.remove(CONTENT_LENGTH_HEADER);
+        UNSTORABLE_ANSWER_REMOVES.forEach(headers::remove);
+        headers.set(CACHE_CONTROL_HEADER, NO_STORE);
         response.setStatusCode(bodyTimedOutLate ? upstreamStatus : BAD_GATEWAY);
     }
 }

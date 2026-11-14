@@ -131,6 +131,11 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
 | `503`
 | Circuit breaker open (`UPSTREAM_CIRCUIT_OPEN`, carrying `Retry-After: 5`; see
   link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
+  An upstream attempt that obtained no pooled connection because the gateway itself is saturated -- the
+  upstream client's bounded wait queue was full, or the wait for a connection outlasted the fixed 10 s
+  connection wait bound (`UPSTREAM_POOL_SATURATED`; the request was never sent, and the circuit breaker
+  does not count it as a failure; see
+  link:tls-and-inbound-security.adoc#_upstream_connection_wait[Upstream connection wait]).
   A BFF login, step-up or session-widening start refused because the pending-authorization store
   holds its capacity of live records (`PENDING_AUTHORIZATION_SATURATED`, carrying `Retry-After: 30`;
   raised after the pushed authorization request, with no pending record stored, no binding cookie set
@@ -243,7 +248,7 @@ document:
 | `NOT_FOUND`          | 5  | `404` -- `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, disabled endpoint
 | `UNIMPLEMENTED`      | 12 | `405` -- `METHOD_NOT_ALLOWED`
 | `RESOURCE_EXHAUSTED` | 8  | `413` -- `CONTENT_TOO_LARGE` (`max_body_bytes` cap)
-| `UNAVAILABLE`        | 14 | `502` / `503` -- `UPSTREAM_ERROR`, `UPSTREAM_CIRCUIT_OPEN`, or upstream `h2` negotiation failure
+| `UNAVAILABLE`        | 14 | `502` / `503` -- `UPSTREAM_ERROR`, `UPSTREAM_CIRCUIT_OPEN`, `UPSTREAM_POOL_SATURATED`, or upstream `h2` negotiation failure
 | `DEADLINE_EXCEEDED`  | 4  | `504` -- `UPSTREAM_TIMEOUT`, with `grpc-message: upstream`, from three sources: the upstream guard's fixed 30 s per-attempt head timeout; a gRPC attempt whose upstream connection came less than the 1 s hand-over grace before the 29 s pre-response cap, or past it, ended at that moment with its request unsent (`DispatchStage.UpstreamConnectionTooLate`); and a gRPC call whose pre-response deadline passed while the upstream's backpressure had its request stream paused, ended when the upstream took data again, by which time the pause had lasted without a break at least the fixed 10 s upstream stall threshold (`DispatchStage.UpstreamStalledRequest`); all three counted by the circuit breaker. `408` -- `REQUEST_BODY_TIMEOUT` (the gRPC pre-response request-stream deadline, 25 s, passing while the client held its request stream open -- being read when it passed, or paused in a pause that the upstream ended before it lasted the 10 s stall threshold -- with `grpc-message: input-validation`; link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc#grpc-pre-response-deadline[ADR-0016])
 |===
 
@@ -286,7 +291,9 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
 | Counter of `INBOUND_BODY_ABORTED` ends per route, labelled by why the request body did not arrive
   whole: `body-stream-failed` (the inbound body stream failed after dispatch began), `client-left` (the
   client left before the answer) or `client-idle` (a gRPC client held its request stream open without
-  its next complete request message within the message bound). Exactly three dispositions; the same
+  its next complete request message within the message bound, or still held it open at its
+  pre-response deadline -- that end is a `REQUEST_BODY_TIMEOUT` on `sheriff_errors_total`, counted here
+  as well so every idle-client end is on one series). Exactly three dispositions; the same
   ends stay counted under `sheriff_errors_total{event="INBOUND_BODY_ABORTED"}` (see
   link:tls-and-inbound-security.adoc#_aborted_inbound_body[Aborted inbound body]).
 

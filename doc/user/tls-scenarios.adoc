@@ -337,10 +337,13 @@ means the front listener never started.
 
 === Goal
 
-Health and metrics are served on their own port, `9000` by default, over HTTPS. This is the shipped
-default; pick it unless you have a specific reason for <<_scenario_management_plain>>. The management
-interface has exactly one port, so every consumer -- readiness gates, scrapers, load-balancer checks
--- must speak TLS (see link:tls-edge.adoc#_the_single_port_constraint[The single-port constraint]).
+Health and metrics are served on their own port, `9000` by default, over HTTPS. The port serves HTTPS
+only when the deployment supplies key material for it; without key material it serves plain HTTP and
+the gateway logs `WARN ApiSheriff-115` at startup (<<_scenario_management_plain>>). Supplying the
+material is the recommended posture; pick it unless you have a specific reason for plain HTTP. The
+management interface has exactly one port, so every consumer -- readiness gates, scrapers,
+load-balancer checks -- must speak TLS (see
+link:tls-edge.adoc#_the_single_port_constraint[The single-port constraint]).
 
 === Preconditions
 
