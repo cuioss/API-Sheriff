@@ -256,8 +256,12 @@ public data-plane port.
 
 image::../resources/diagrams/management-metrics-and-health.svg[Management port (:9000), Prometheus metric families, and SmallRye Health readiness checks, align=center]
 
-The management port is served over *HTTPS* by default (`management.tls.enabled: false` in
-`gateway.yaml` opts out behind a trusted boundary; see
+The management port is served over *HTTPS* only when the deployment supplies key material for it;
+without key material it falls back to plain HTTP and the gateway logs `WARN ApiSheriff-115` at startup
+(`management.tls.enabled: false` in `gateway.yaml` selects the plain-HTTP bucket behind a trusted
+boundary: it outranks the environment variable, but an explicit system property for
+`quarkus.management.tls-configuration-name` takes precedence over it, and `true` enforces nothing by
+itself; see
 link:../configuration/tls-and-egress.adoc#_management[Configuration -- `management`]).
 
 [cols="1,2", options="header"]

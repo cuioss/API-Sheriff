@@ -194,8 +194,11 @@ The bounds are therefore fixed per-connection constants on the transport, set by
   (link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
   A connection past it is ended with `GOAWAY ENHANCE_YOUR_CALM`.
 
-The guard counts only the resets a client sends. The gateway's own `RST_STREAM(NO_ERROR)` resets of
-ADR-0066 and ADR-0060 can therefore never feed it. The forced-h2 gRPC upstream leg opens at most one
+The guard counts the resets a client sends on its connection. The resets the transport itself sends are
+counted too, by Netty's encoder-side reset limit: every reset it writes except `NO_ERROR` and
+`CANCEL`, among them the `STREAM_CLOSED` reset for a DATA frame that arrives after an early answer and
+the reset after a `431`. The gateway's own `RST_STREAM(NO_ERROR)` resets of ADR-0066 and ADR-0060 feed
+neither count. The forced-h2 gRPC upstream leg opens at most one
 upstream stream per admitted inbound request, so it inherits the inbound bounds. HTTP/2 stream abuse
 is not a substrate consumer.
 
@@ -293,7 +296,7 @@ admission.
 * link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]
   and
   link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060]
-  -- the gateway's own `NO_ERROR` resets the Rapid-Reset guard never counts
+  -- the gateway's own `NO_ERROR` resets, which neither Rapid-Reset count includes
 * link:0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]
   -- the trusted-proxy set the source resolution relies on
 * link:0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077] -- the

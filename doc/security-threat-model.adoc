@@ -1338,7 +1338,8 @@ starts it again, so it does not end a connection that keeps trickling), a connec
 (`quarkus.http.limits.max-connections`) that bounds how many connections the Quarkus-terminated
 side holds open at once (one counter shared by the plain-HTTP redirect listener and the HTTPS
 listener; the SNI front listener of `passthrough_sni` and the management interface are not
-counted), a max-in-flight admission cap, `max_body_bytes` as a
+counted; set at twice the default admission cap, so on HTTP/1.1 admission can answer while a
+connection slot remains -- idle keep-alive connections can still fill the cap), a max-in-flight admission cap, `max_body_bytes` as a
 *streaming* counter (never buffer the body -- link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]),
 and streamed responses (never materialized). The gateway is an *opaque* passthrough -- it does
 not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must
@@ -2088,8 +2089,9 @@ rule. The admission `503` of a refused upload and the `408` of a body past the i
 request-body deadline are followed by a `NO_ERROR` reset of their stream; a relayed response ended at
 the deadline is reset with `NO_ERROR` once its end has been written; and a gRPC call ended by its
 stream-idle bound ends with trailers, its stream reset with `NO_ERROR` when its request is still open.
-Each is a reset the gateway sends, so none counts towards the client's Rapid-Reset limit, and none
-ends the connection or its other streams. The status below is unchanged.
+Each is a `NO_ERROR` reset the gateway sends, which the encoder-side reset limit does not count, so
+none counts towards the Rapid-Reset limit, and none ends the connection or its other streams. The
+status below is unchanged.
 
 *Status:* COVERED. `EdgeHardeningOptionsTest` pins the reset-guard constants and the header-list
 bound (lowered when the listener announces more, kept when it announces less).
@@ -2103,13 +2105,14 @@ zero-length `CONTINUATION` frames ends its connection before the stream is answe
 `ForwardPolicyStageTest` pin that `HTTP2-Settings`, `Upgrade` and `Connection` are withheld under
 every forward mode, and the HTTP/2 legs of `GatewayEdgeFramingCorpusTest` pin the h2->h1
 declared-length framing. `GatewayEdgeEarlyResponseResetTest` keeps proving that the gateway's own
-resets are not counted. Against the native image `Http2StreamAbuseIT` drives the same floods,
+`NO_ERROR` resets are not counted. Against the native image `Http2StreamAbuseIT` drives the same floods,
 the `HTTP2-Settings` withholding and the h2->h1 framing over TLS and ALPN.
 
 *Assertion.* A Rapid-Reset / CONTINUATION-flood load against the gateway does not exhaust
 CPU/memory (bounded, connection dropped); client `Upgrade: h2c`/`Connection`/`HTTP2-Settings`
-headers are not forwarded upstream; an h2->h1 path re-derives framing; a reset the gateway sends
-never counts towards a client's Rapid-Reset limit.
+headers are not forwarded upstream; an h2->h1 path re-derives framing; the gateway's own
+`NO_ERROR` resets are not counted by either Rapid-Reset limit, while the resets the transport sends
+(every sent reset except `NO_ERROR` and `CANCEL`) are counted by Netty's encoder-side limit.
 
 [#gw-09]
 === GW-09 -- WebSocket cross-site hijacking (CSWSH) / missing Origin check on upgrade
@@ -2130,7 +2133,14 @@ pipeline incl. auth, and `OriginValidationStage` checks the `Origin` against the
 `protocol: websocket` route whose effective auth is `require: bearer` or `require: session`
 is refused at boot unless it declares a non-empty allowlist, so an authenticated WebSocket
 route always has one; only a `require: none` route may omit it
-(link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]). The session cookie is
+(link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]), and two boot refusals bound
+even that. A `require: none` WebSocket route is refused without `websocket.allowed_origins` when its
+effective `forward.headers_allow` names `Authorization` (letter case ignored), the one way an inbound
+`Authorization` header is re-admitted past the never-forward set -- the gateway strips the browser's
+`Origin`, so that allowlist is the route's only origin check. It is refused the same way when its
+effective `cookies` block forwards any cookie. Both rules judge a `protocol: websocket` proxy route
+only, so an HTTP or gRPC route that names `Authorization`, or a route with no upstream, is left alone.
+The session cookie is
 `SameSite=Lax` in both session modes, a fixed attribute with no configuration key, so the
 socket is not authenticated by ambient cookies alone.
 
@@ -4692,7 +4702,7 @@ outstanding hardening work (next section).
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
 | <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted while the transport's other sent resets (`STREAM_CLOSED`, `REFUSED_STREAM`, the reset after a `431`) count against Netty's encoder-side limit; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
-| <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `405`/`426`/`400`/`413` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
+| <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes, and on a `require: none` route that re-admits `Authorization` through `forward.headers_allow` or forwards a cookie; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `405`/`426`/`400`/`413` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs; upstream `Server` / `X-Powered-By` stripped by default with a per-route opt-out; no version string on gateway errors | cui-http + token-sheriff mappers + gateway error contract + `UpstreamIdentityHeaders` (ADR-0037) | PARTIAL

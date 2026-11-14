@@ -161,8 +161,22 @@ for the benchmark comparison against a fixed 2 MiB window).
 * *Header block (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Capped at 16 KiB across the whole decoded block
   (`CONTINUATION` frames included); exceeding it ends the connection with `GOAWAY`.
 
-* *Rapid-Reset.* Pinned at 200 client-sent `RST_STREAM` frames per 30-second window (`GOAWAY
-  ENHANCE_YOUR_CALM` on breach). Gateway-issued `NO_ERROR` resets do not count.
+* *Rapid-Reset.* Pinned at 200 `RST_STREAM` frames per 30-second window (`GOAWAY
+  ENHANCE_YOUR_CALM` on breach). It counts the resets a client sends, and Netty's encoder-side limit
+  counts every reset the transport sends except `NO_ERROR` and `CANCEL`. Gateway-issued `NO_ERROR`
+  resets feed neither count.
+
+[[_connection_cap]]
+*Connection cap.* The Quarkus-terminated side bounds its open connections with one counter,
+`quarkus.http.limits.max-connections`, shared by the plain-HTTP redirect listener and the HTTPS
+listener (the SNI front listener and the management interface are not counted). The cap is set at
+twice the default admission cap, so on HTTP/1.1, where a request needs a connection of its own,
+admission has room to answer its `503` while a connection slot remains; idle keep-alive connections
+can still fill the cap, and a connection beyond it is closed unserved. An `edge_hardening.admission_cap` at or
+above the cap is not capped silently: the gateway logs `ApiSheriff-148` at startup. Under
+`passthrough_sni` a terminated connection holds three descriptors (front client socket, relay dial and
+the accepted loopback socket); the sizing is in
+link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults].
 
 [[_http2_unread_upload_release]]
 *Unread upload credit release.* An HTTP/2 upload refused `503` at admission returns its stream credit

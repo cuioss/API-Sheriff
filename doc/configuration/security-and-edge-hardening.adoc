@@ -235,7 +235,14 @@ link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults
 
 | `admission_cap`
 | Maximum concurrently in-flight requests across every route. Default `2048`, minimum `1`. A request
-  beyond it is refused `503` before a virtual thread is dispatched.
+  beyond it is refused `503` before a virtual thread is dispatched. The terminated listener also has a
+  connection cap of `4096` open connections, fixed in the deployment's `application.properties` and not
+  a key here. A value at or above that cap cannot be honoured on HTTP/1.1, where one request needs one
+  connection: connections beyond the cap are closed unserved, without a `503`, before admission can
+  refuse a request. The value is not capped silently -- the gateway logs `ApiSheriff-148` at startup;
+  lower `admission_cap`, or raise `quarkus.http.limits.max-connections` in the deployment together with
+  the container's `nofile` limit (see
+  link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults]).
 
 | `websocket_relay_cap`
 | Maximum concurrently *established* WebSocket relays. Minimum `1`; omitted, a quarter of the
