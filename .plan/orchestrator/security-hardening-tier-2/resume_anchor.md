@@ -1,0 +1,1 @@
+Decomposed 2026-11-14: 3 plans staged. Next: /plan-marshall:plan-orchestrator next slug=security-hardening-tier-2 (emits PLAN-SEC2-01 only). After PLAN-SEC2-01 lands: analyze, then re-check .plan/local/security_notes_verified.adoc against main and re-ground PLAN-SEC2-02/03 before emitting them.
