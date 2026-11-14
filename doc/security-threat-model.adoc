@@ -1639,8 +1639,10 @@ stream-idle bound]):
   (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). An attempt the full queue refuses, or whose wait
   outlasts the 10 s, ends unsent as `UPSTREAM_POOL_SATURATED` (`503`), the gateway's own saturation:
   the breaker does not count it as a failure. A refused connection, and a dial or TLS handshake that does
-  not complete in time, stay the upstream's failure, which the breaker counts, so an unreachable upstream
-  still opens its breaker. The queue bound is the admission cap, the number of requests admitted at once.
+  not complete in time, stay the upstream's failure, which the breaker counts. Those timeouts run from the
+  start of the dial, the wait bound from the request for a connection, so an attempt that dials at once fails
+  as the upstream's, while one that queued first and dials late can reach the wait bound first and is then
+  reported as local saturation. The queue bound is the admission cap, the number of requests admitted at once.
   The wait bound also
   keeps the wait to a minority of the request-body bounds: an HTTP body has at least 15 s of its
   deadline after the hand-over, a gRPC call at least 19 s before its pre-response cap

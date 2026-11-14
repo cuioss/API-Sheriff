@@ -255,8 +255,8 @@ import org.jspecify.annotations.Nullable;
  * is saturated: it ends, unsent, as an {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}),
  * raised inside the guard, so the breaker does not count it as a failure and the retry predicate refuses it.
  * Every other reason an attempt obtains no connection — the upstream refused it, or its dial or TLS handshake
- * did not complete within the clients' timeouts, which together are shorter — stays the upstream's failure (see
- * {@link #poolSaturationOf}).
+ * did not complete within the clients' timeouts, which together are shorter and run from the start of the dial —
+ * stays the upstream's failure (see {@link #poolSaturationOf}).
  * The bound keeps the wait from taking more than a minority of the request-body deadline or of the
  * pre-response deadline: an HTTP attempt hands its body over with at least
  * {@code bodyDeadline - UPSTREAM_CONNECTION_WAIT_MILLIS} of its whole-body deadline left, and a gRPC attempt
@@ -318,8 +318,10 @@ public final class DispatchStage {
      * saturation ({@link EventType#UPSTREAM_POOL_SATURATED}). It is shorter than the request-body deadline and
      * the pre-response deadline by more than half of either, so an attempt always hands its body over with
      * most of its deadline left (see {@link DispatchBody#send}), and longer than the clients' dial and TLS
-     * handshake timeouts together ({@code EgressClients}), so a connection the upstream never establishes fails
-     * as the upstream's first.
+     * handshake timeouts together ({@code EgressClients}). The bound runs from the moment the attempt asks for
+     * its connection, those timeouts from the moment its dial starts: an attempt that dials at once fails as the
+     * upstream's when the upstream does not establish the connection, while one that queued first can reach this
+     * bound before them and is then reported as local saturation.
      */
     static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
 
@@ -764,8 +766,10 @@ public final class DispatchStage {
      * rejection, which the breaker does not count. Every other failure — a connection the upstream refused, a
      * dial or TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — stays
      * the upstream's failure, unchanged. The dial and handshake timeouts together are shorter than the wait
-     * bound, so a connection the upstream never establishes fails as the upstream's before the wait bound could
-     * end the attempt as local saturation.
+     * bound, but they run from the start of the dial while the wait bound runs from the request for a
+     * connection: an attempt that dials at once fails as the upstream's when the upstream does not establish the
+     * connection, while an attempt that queued first and dials late can reach the wait bound first. Vert.x tells
+     * the two apart nowhere, so that expiry is classified as local saturation.
      *
      * @param failure       why the attempt obtained no connection
      * @param failureMapper meters the saturation and builds its rejection

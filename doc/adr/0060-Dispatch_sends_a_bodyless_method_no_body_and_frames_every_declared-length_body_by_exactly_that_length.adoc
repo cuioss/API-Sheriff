@@ -267,13 +267,12 @@ within 4 s (`EgressClients`), and an attempt waits at most 10 s for its connecti
 queue and dial together (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). An attempt the full queue
 refuses, or whose wait outlasts the 10 s, ends unsent inside the guard as `UPSTREAM_POOL_SATURATED`
 (`503`): the gateway's own saturation, which the breaker does not count and the retry predicate refuses.
-A refused connection and a dial or handshake past its timeout stay the upstream's failure; together they
-are shorter than the wait bound, so an unreachable upstream still opens its breaker. The wait still counts towards the HTTP
+A refused connection and a dial or handshake past its timeout stay the upstream's failure; together they are
+shorter than the wait bound but run from the dial's start, so an attempt that queued first can meet the wait
+bound first. The wait still counts towards the HTTP
 deadline (<<request-body-deadline>>), which must pass before the guard's timeout; the 10 s bound leaves a
-body at least 15 s after its hand-over, and a gRPC call at least 19 s before its 29 s cap. The values are
-fixed; the derivation is in
-link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream
-connection wait].
+body at least 15 s after its hand-over, and a gRPC call at least 19 s before its 29 s cap. The values are fixed; the derivation is in
+link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream connection wait].
 
 [[unread-upload-bodies]]
 === Unread HTTP/2 upload bodies give their credit back

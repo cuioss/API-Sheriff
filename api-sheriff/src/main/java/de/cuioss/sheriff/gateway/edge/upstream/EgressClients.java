@@ -78,16 +78,19 @@ public final class EgressClients {
 
     /**
      * How long one TCP connect to an upstream may take before it fails as the upstream's own failure, which
-     * the circuit breaker counts. Shorter than the dispatch's bound on the whole wait for a connection, so an
-     * upstream that does not complete a dial is never answered as the gateway's own saturation.
+     * the circuit breaker counts. Together with {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS} it is shorter than
+     * the dispatch's bound on the whole wait for a connection, so a dial that starts at once fails as the
+     * upstream's; a dial that starts only after a wait in the queue can meet that bound first (see
+     * {@code DispatchStage.poolSaturationOf}).
      */
     static final int UPSTREAM_DIAL_TIMEOUT_MILLIS = 5_000;
 
     /**
      * How long the TLS handshake with an upstream may take before it fails as the upstream's own failure,
      * which the circuit breaker counts. Together with {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} it stays below the
-     * dispatch's bound on the whole wait for a connection, so an upstream that accepts the TCP connection but
-     * does not complete its handshake is never answered as the gateway's own saturation.
+     * dispatch's bound on the whole wait for a connection, so an attempt that dials at once and whose upstream
+     * accepts the TCP connection but does not complete its handshake fails as the upstream's; one that queued
+     * first can meet that bound before (see {@code DispatchStage.poolSaturationOf}).
      */
     static final int UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS = 4_000;
 
@@ -245,8 +248,8 @@ public final class EgressClients {
     /**
      * Bounds how long establishing a connection to an upstream may take — the TCP connect by
      * {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} and the TLS handshake by {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS}
-     * — so a connection the upstream does not establish fails as the upstream's before the dispatch's wait
-     * bound could end the attempt as the gateway's own saturation.
+     * — so, for an attempt that dials at once, a connection the upstream does not establish fails as the
+     * upstream's before the dispatch's wait bound could end the attempt as the gateway's own saturation.
      */
     private static HttpClientOptions establishmentBound(HttpClientOptions options) {
         return options.setConnectTimeout(UPSTREAM_DIAL_TIMEOUT_MILLIS)

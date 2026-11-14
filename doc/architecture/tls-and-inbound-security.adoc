@@ -231,8 +231,11 @@ outlasts the 10 s, obtained no connection because the gateway itself is saturate
 `UPSTREAM_POOL_SATURATED` (`503`, `urn:api-sheriff:problem:upstream`), which the circuit breaker does
 not count as a failure and the retry predicate refuses. A connection the upstream refuses, and a dial
 or TLS handshake that does not complete in time, stay the upstream's `UPSTREAM_ERROR` /
-`UPSTREAM_TIMEOUT`, which the breaker counts; the two timeouts together are shorter than the wait bound,
-so an upstream that never establishes a connection is not reported as local saturation. The queue bound
+`UPSTREAM_TIMEOUT`, which the breaker counts. The two timeouts together are shorter than the wait bound,
+but they run from the start of the dial and the wait bound from the request for a connection: an attempt
+that dials at once fails as the upstream's when the upstream does not establish the connection, while
+one that queued first and dials late can reach the wait bound first and is then reported as local
+saturation. The queue bound
 is the admission cap, the number of requests the gateway admits at once. An attempt whose client left
 keeps its place in the queue until the pool hands it a connection, which is then released unsent, or
 until its wait bound passes. The wait bound keeps the connection wait
