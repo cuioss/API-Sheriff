@@ -820,8 +820,9 @@ public final class TerminalDispatch {
      * <strong>A body byte on a bodyless method</strong> ({@link EventType#SECURITY_FILTER_VIOLATION}):
      * the dispatch can no longer answer it with a {@code 400}, and ending the response would present a
      * truncated answer as complete, so the client response is <strong>reset</strong> instead — on HTTP/2
-     * the one stream, with {@code CANCEL}. The callback runs on the inbound request's event loop, so the
-     * response is reset before the aborted relay could end it; the event stashed under
+     * the one stream, with {@code CANCEL}. Under the {@code @VirtualThreads} executor the context is
+     * preserved, so the callback runs on the loop of the client connection and the response is reset
+     * before the aborted relay could end it; the event stashed under
      * {@link #LATE_BODY_REFUSAL_KEY} keeps {@link #failRelay} from ending it afterwards.
      * <p>
      * <strong>A body still arriving at the request-body deadline, or read again after it passed</strong>
@@ -834,8 +835,10 @@ public final class TerminalDispatch {
      * stashed under {@link #LATE_BODY_REFUSAL_KEY}, recorded here before the reset, tells
      * {@code failRelay} so. The body behind it was not read, so an HTTP/1.x connection is recorded as
      * retired here, before that reset, in the synchronized retired set only
-     * ({@link ConnectionRetirement#recordRetirement}) — this callback runs on the upstream request's event
-     * loop, and the request's context data is owned by the client connection's. The end that follows
+     * ({@link ConnectionRetirement#recordRetirement}). Under the {@code @VirtualThreads} executor the
+     * context is preserved, so this callback runs on the loop of the client connection, the loop that owns
+     * the request's context data; the retirement still writes only to the synchronized set and leaves that
+     * data to the relay's end. The end that follows
      * recognises the late timeout from the event stashed under {@link #LATE_BODY_REFUSAL_KEY} and closes
      * the connection (see {@link #failRelay}); a response that has already ended has its HTTP/1.x
      * connection closed instead, decided on the client connection's own context, the one the response is
@@ -868,10 +871,11 @@ public final class TerminalDispatch {
      * the stream.
      * <p>
      * The retirement is recorded at once, on the thread the callback runs on, so it is in place before the
-     * upstream request is reset and the relay fails. This runs on the upstream request's event loop, so it
-     * writes only to the synchronized retired set and never to the request's context data, a plain map the
-     * client connection's loop owns; the relay's end learns of the late timeout from the event stashed
-     * under {@link #LATE_BODY_REFUSAL_KEY}.
+     * upstream request is reset and the relay fails. Under the {@code @VirtualThreads} executor the context
+     * is preserved, so this runs on the loop of the client connection, which owns the request's context
+     * data; it nevertheless writes only to the synchronized retired set and never to that context data, a
+     * plain map, and the relay's end learns of the late timeout from the event stashed under
+     * {@link #LATE_BODY_REFUSAL_KEY}.
      */
     private void retireAfterLateBodyTimeout(RoutingContext ctx, Context clientContext) {
         connectionRetirement.recordRetirement(ctx);
@@ -882,10 +886,12 @@ public final class TerminalDispatch {
 
     /**
      * Closes the HTTP/1.x connection of {@code request} when its response has already ended, deciding on
-     * {@code clientContext}. The late callback runs on the upstream request's event loop, while the
-     * response is ended on the client connection's, so whether it has ended is read there: a response
-     * the relay ends normally just before this decision is seen as ended and its connection is closed. A
-     * response not yet ended is left to the relay's end, which closes the marked connection.
+     * {@code clientContext}, the context the response is ended on. Under the {@code @VirtualThreads}
+     * executor the context is preserved, so the late callback already runs on the loop of the client
+     * connection; the decision is still scheduled onto {@code clientContext} so that it is read where the
+     * response is ended: a response the relay ends normally just before this decision is seen as ended
+     * and its connection is closed. A response not yet ended is left to the relay's end, which closes the
+     * marked connection.
      */
     static void closeIfEndedOn(Context clientContext, HttpServerRequest request) {
         clientContext.runOnContext(v -> {

@@ -2825,9 +2825,10 @@ public final class DispatchStage {
         }
 
         /**
-         * Pauses the inbound stream for an expiry that has won the abort claim. The expiry runs on the
-         * upstream request's event loop while the inbound end arrives on the inbound connection's, so the end
-         * can land between the claim and this pause; it is then not passed on — the abort was claimed first —
+         * Pauses the inbound stream for an expiry that has won the abort claim. Under the
+         * {@code @VirtualThreads} executor the context is preserved, so the late body-refusal callback runs
+         * on the loop of the client connection, the same loop the inbound end arrives on. The end can still
+         * land between the claim and this pause; it is then not passed on — the abort was claimed first —
          * and Vert.x refuses to pause an HTTP/2 request that has ended. A stream that has ended has nothing left
          * to pause, so that refusal is dropped and the expiry goes on to reset the upstream request and report
          * its failure; left to propagate, it would skip both and leave the call to the guard's timeout.

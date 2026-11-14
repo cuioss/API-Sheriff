@@ -97,7 +97,11 @@ public final class RpInitiatedLogout {
 
     private static final CuiLogger LOGGER = new CuiLogger(RpInitiatedLogout.class);
 
-    /** The {@code __Host-}-prefixed single-use logout-state cookie name (CSRF defence for logout). */
+    /**
+     * The {@code __Host-}-prefixed single-use logout-state cookie name. The cookie carries the
+     * {@code state} the {@linkplain #completeReturn return leg} verifies, so it protects the return
+     * leg from the identity provider; it does not guard the logout request itself.
+     */
     public static final String LOGOUT_STATE_COOKIE_NAME = "__Host-sheriff-logout";
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
