@@ -457,7 +457,8 @@ for the property.
   guard would have ended it, so an upstream that connects that slowly and would then answer within the
   last two seconds is not given them.
 * An attempt that waits over 10 s for a pooled connection, or finds the wait queue full, is answered
-  `503` unsent; a TCP connect over 5 s fails as the upstream's.
+  `503` unsent; a TCP connect over 5 s fails as the upstream's unless the attempt's wait bound, which
+  counts its queue time too, passes first.
 * An upstream stall shorter than the 10 s threshold across the pre-response deadline, or one of any
   length that ends before the deadline passes, leaves the deadline the client's `REQUEST_BODY_TIMEOUT`,
   which the breaker skips: an upstream that stops reading for several seconds at a time, but never for
