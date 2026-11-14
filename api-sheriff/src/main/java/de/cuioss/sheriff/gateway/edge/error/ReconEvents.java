@@ -67,8 +67,9 @@ import org.jspecify.annotations.Nullable;
  *       {@link EventType#WEBSOCKET_ORIGIN_REJECTED}, and the post-stage-4 raises of
  *       {@code CONTENT_TOO_LARGE} and {@code SECURITY_FILTER_VIOLATION}: the caller is trusted, or the
  *       route is anonymous and its own success answer already discloses it;</li>
- *   <li>the upstream events {@link EventType#UPSTREAM_ERROR}, {@link EventType#UPSTREAM_CIRCUIT_OPEN}
- *       and {@link EventType#UPSTREAM_TIMEOUT} — they describe the upstream, not the caller's
+ *   <li>the upstream events {@link EventType#UPSTREAM_ERROR}, {@link EventType#UPSTREAM_CIRCUIT_OPEN},
+ *       {@link EventType#UPSTREAM_POOL_SATURATED} and {@link EventType#UPSTREAM_TIMEOUT} — they describe the
+ *       upstream or the gateway's own saturation, not the caller's
  *       probing;</li>
  *   <li>{@link EventType#INBOUND_BODY_ABORTED} and {@link EventType#REQUEST_BODY_TIMEOUT} — a body
  *       that stopped arriving is a network or client condition and says nothing about which addresses

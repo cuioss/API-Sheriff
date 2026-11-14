@@ -128,6 +128,10 @@ class TerminalDispatchLateBodyTimeoutTest {
     private static final String CONTENT_LENGTH = "Content-Length";
     private static final String RELAYED_HEADER = "X-Relayed";
     private static final String RELAYED_VALUE = "kept";
+    private static final String CACHE_CONTROL = "Cache-Control";
+    private static final String RELAYED_CACHE_CONTROL = "public, max-age=3600";
+    /** The caching metadata a failed relay's unwritten head must not carry, beside its Cache-Control. */
+    private static final List<String> CACHING_METADATA = List.of("Expires", "Age", "ETag", "Last-Modified");
     /** A status other than the {@code 200} the relay of a fresh response starts from. */
     private static final int UPSTREAM_STATUS = 201;
     private static final int BAD_GATEWAY = 502;
@@ -163,7 +167,7 @@ class TerminalDispatchLateBodyTimeoutTest {
     }
 
     @Test
-    @DisplayName("a relay a late request-body timeout failed before its head was written: the upstream status stands, with no body")
+    @DisplayName("a relay a late request-body timeout failed before its head was written: the upstream status stands, with no body and not storable")
     void lateBodyTimeoutBeforeTheHeadKeepsTheUpstreamStatus() {
         FailedRelayResponse response = new FailedRelayResponse(false);
 
@@ -174,11 +178,15 @@ class TerminalDispatchLateBodyTimeoutTest {
                         "the status the upstream sent is set, whatever the relay had set before it failed"),
                 () -> assertFalse(response.headers.contains(CONTENT_LENGTH), "no body byte follows the head"),
                 () -> assertEquals(RELAYED_VALUE, response.headers.get(RELAYED_HEADER),
-                        "the headers the relay copied are kept"));
+                        "the headers the relay copied are kept"),
+                () -> assertEquals(List.of("no-store"), response.headers.getAll(CACHE_CONTROL),
+                        "the empty answer is never stored as the upstream's response"),
+                () -> assertEquals(List.of(), CACHING_METADATA.stream().filter(response.headers::contains).toList(),
+                        "no freshness or validator of the upstream's response is kept"));
     }
 
     @Test
-    @DisplayName("a relay that failed for any other reason before its head was written: 502, with no body")
+    @DisplayName("a relay that failed for any other reason before its head was written: 502, with no body and not storable")
     void otherFailureBeforeTheHeadIsAnswered502() {
         FailedRelayResponse response = new FailedRelayResponse(false);
 
@@ -186,7 +194,11 @@ class TerminalDispatchLateBodyTimeoutTest {
 
         assertAll("the unwritten head of a relay that failed on its own",
                 () -> assertEquals(List.of(BAD_GATEWAY), response.statuses, "the failure is answered 502"),
-                () -> assertFalse(response.headers.contains(CONTENT_LENGTH), "the 502 carries no body"));
+                () -> assertFalse(response.headers.contains(CONTENT_LENGTH), "the 502 carries no body"),
+                () -> assertEquals(List.of("no-store"), response.headers.getAll(CACHE_CONTROL),
+                        "the 502 is never stored"),
+                () -> assertEquals(List.of(), CACHING_METADATA.stream().filter(response.headers::contains).toList(),
+                        "no freshness or validator of the upstream's response is kept"));
     }
 
     @Test
@@ -198,7 +210,9 @@ class TerminalDispatchLateBodyTimeoutTest {
 
         assertAll("the written head of a failed relay",
                 () -> assertEquals(List.of(), response.statuses, "no status is set on a written head"),
-                () -> assertTrue(response.headers.contains(CONTENT_LENGTH), "the written head is not changed"));
+                () -> assertTrue(response.headers.contains(CONTENT_LENGTH), "the written head is not changed"),
+                () -> assertEquals(RELAYED_CACHE_CONTROL, response.headers.get(CACHE_CONTROL),
+                        "the written head is not changed"));
     }
 
     /**
@@ -569,7 +583,12 @@ class TerminalDispatchLateBodyTimeoutTest {
         private final boolean headWritten;
         private final MultiMap headers = MultiMap.caseInsensitiveMultiMap()
                 .add(CONTENT_LENGTH, "42")
-                .add(RELAYED_HEADER, RELAYED_VALUE);
+                .add(RELAYED_HEADER, RELAYED_VALUE)
+                .add(CACHE_CONTROL, RELAYED_CACHE_CONTROL)
+                .add("Expires", "Thu, 01 Jan 2099 00:00:00 GMT")
+                .add("Age", "12")
+                .add("ETag", "\"v1\"")
+                .add("Last-Modified", "Thu, 01 Jan 2026 00:00:00 GMT");
         private final List<Integer> statuses = new ArrayList<>();
 
         FailedRelayResponse(boolean headWritten) {

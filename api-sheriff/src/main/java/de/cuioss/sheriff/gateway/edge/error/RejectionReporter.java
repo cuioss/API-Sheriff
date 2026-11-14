@@ -128,9 +128,14 @@ public final class RejectionReporter {
             // was answered, and an idle gRPC client each carry a disposition of their own.
             case INBOUND_BODY_ABORTED -> reportInboundBodyAborted(routeLabel(ctx), inboundBodyAbortDisposition(rejected));
             // A body that stopped arriving while the dispatch held an upstream connection, or one still
-            // arriving at the request-body deadline: an INFO each, latched per route.
+            // arriving at the request-body deadline: an INFO each, latched per route. A gRPC request stream its
+            // client still held open at the pre-response deadline is an idle client as well, so it is also
+            // counted on the client-idle series, beside the shared REQUEST_BODY_TIMEOUT event.
             case REQUEST_BODY_TIMEOUT -> {
-                if (rejected instanceof DispatchStage.RequestBodyDeadlineExceeded) {
+                if (rejected instanceof DispatchStage.RequestBodyDeadlineExceeded pastDeadline) {
+                    if (pastDeadline.preResponse()) {
+                        sheriffMetrics.recordInboundBodyAbort(routeLabel(ctx), InboundBodyAbortDisposition.CLIENT_IDLE);
+                    }
                     logRequestBodyDeadline(routeLabel(ctx));
                 } else {
                     logRequestBodyTimeout(routeLabel(ctx));
@@ -227,7 +232,10 @@ public final class RejectionReporter {
      * dispatch began, such as a client disconnecting mid-upload (disposition {@code body-stream-failed}),
      * a client that left before its proxied request was answered, with or without a body (disposition
      * {@code client-left}), or a gRPC client that held its request stream open without sending its next
-     * complete request message within the message bound (disposition {@code client-idle}).
+     * complete request message within the message bound (disposition {@code client-idle}). The
+     * {@code client-idle} series also counts a gRPC request stream still open at its pre-response deadline,
+     * which {@link #reportRejection} reports as a {@link EventType#REQUEST_BODY_TIMEOUT} and records there,
+     * without this method's {@code INFO}: its own record is {@link #logRequestBodyDeadline}'s.
      * <p>
      * <strong>Counted per disposition.</strong> Every end is counted on
      * {@link SheriffMetrics#INBOUND_BODY_ABORTS_TOTAL} under its route and disposition, beside the one

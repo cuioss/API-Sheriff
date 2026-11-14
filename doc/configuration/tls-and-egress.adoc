@@ -117,8 +117,8 @@ metrics). Neutral names only, like `tls`.
 | `tls.enabled`
 | *Default `true`* (the shipped value). `true` enforces nothing by itself: it projects no key, and the
   management listener serves HTTPS only when the deployment supplies key material for it. Without key
-  material the listener falls back to plain HTTP. `false` selects a key-less named TLS bucket, which
-  forces plain HTTP. Whenever the listener resolved to plain HTTP, by either route, the boot logs
+  material the listener serves plain HTTP. `false` selects a key-less named TLS bucket, so the listener
+  serves plain HTTP. Whenever the listener resolved to plain HTTP, by either route, the boot logs
   `WARN ApiSheriff-115` (`ManagementPlainHttpAudit`) and still starts -- the audit only warns.
 
 | (no `port` key)

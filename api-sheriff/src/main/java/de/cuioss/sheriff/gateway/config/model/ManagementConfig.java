@@ -57,12 +57,12 @@ public record ManagementConfig(@Nullable ManagementTls tls) {
      * <p>
      * {@code true} is the shipped value, and it enforces nothing by itself: it projects no key
      * material, and the management port serves HTTPS only when the deployment supplies key material
-     * for it. Without key material the port falls back to plain HTTP. {@code false} selects a key-less
-     * named TLS bucket and so forces plain HTTP. Whenever the port resolved to plain HTTP, by either
+     * for it. Without key material the port serves plain HTTP. {@code false} selects a key-less named TLS
+     * bucket, so the port serves plain HTTP. Whenever the port resolved to plain HTTP, by either
      * route, {@code ManagementPlainHttpAudit} logs {@code WARN ApiSheriff-115} at startup and the
      * gateway still starts — the audit only warns, it never refuses.
      *
-     * @param enabled {@code false} to force the management interface onto plain HTTP; {@code true}
+     * @param enabled {@code false} to select plain HTTP for the management interface; {@code true}
      *                leaves the protocol to the key material the deployment supplies
      * @author API Sheriff Team
      * @since 1.0

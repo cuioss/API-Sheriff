@@ -569,8 +569,8 @@ deployment that never writes it keeps the behaviour shown here.
   room to answer its `503` while a connection slot remains. It is not a guarantee: enough idle
   keep-alive connections can still fill the cap, and a connection beyond it is then closed unserved.
   The cap bounds the connections that merely stay open. An
-  `admission_cap` at or above the cap is not capped silently: the gateway logs `ApiSheriff-148` at
-  startup (see link:../LogMessages.adoc[Log messages]).
+  `admission_cap` above half the cap gives that headroom up and is not capped silently: the gateway
+  logs `ApiSheriff-148` at startup (see link:../LogMessages.adoc[Log messages]).
 
   *Descriptor sizing.* Each connection holds one descriptor, and each in-flight request may hold an
   upstream and a back-channel descriptor besides its own connection, so at the defaults the gateway
@@ -629,9 +629,12 @@ deployment that never writes it keeps the behaviour shown here.
 | A proxied request whose body has not ended this long after its upstream attempt started is ended,
   however steadily the body arrives: answered `408` when the upstream has not answered yet, and
   otherwise its relayed response is ended -- on HTTP/2 the stream is then reset, on HTTP/1.x the
-  connection is closed. The time spent waiting for a pooled upstream connection counts towards the
-  25 s: a request that obtains its connection only after the deadline is answered `408` as soon as its
-  body is read. The deadline does not reset an upstream that is not taking data, but a body that
+  connection is closed. When nothing of the upstream's answer had been relayed yet, the client gets the
+  upstream's status with no body, marked `Cache-Control: no-store` and without the upstream's
+  `Expires`, `Age`, `ETag` and `Last-Modified`, so no cache keeps it. The time spent waiting for a
+  pooled upstream connection counts towards the 25 s, but that wait is bounded at 10 s (Upstream
+  connection wait, below), so a body always has at least 15 s after the gateway hands it to the
+  upstream. The deadline does not reset an upstream that is not taking data, but a body that
   upstream reads again after the deadline is ended then. Not applied to bodyless requests. On a
   `protocol: grpc` route it applies only until the upstream answers, and it counts from the moment the
   gateway hands the body to the upstream, so the wait for an upstream connection is not charged to the
@@ -642,11 +645,23 @@ deployment that never writes it keeps the behaviour shown here.
   upstream's only when the upstream had then taken no data for at least 10 s without a break -- the call
   ends with `grpc-message: upstream` and the upstream's circuit breaker counts it. A shorter pause is
   ordinary flow control, as when a client sends faster than its upstream reads, and stays the client's
-  `input-validation`, so a client cannot open the breaker by out-sending a healthy upstream. The deadline always
-  leaves at least 1 s after the hand-over, so a call whose upstream connection took longer than 28 s
-  -- less than that second before the 29 s cap, or past it -- is ended without being sent, as the
-  upstream's timeout (`grpc-status: 4`, `grpc-message: upstream`). Not configurable. See
+  `input-validation`, so a client cannot open the breaker by out-sending a healthy upstream. Because the
+  wait for an upstream connection is bounded at 10 s, the deadline leaves a gRPC client at least 19 s
+  after the hand-over. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline].
+
+| Upstream connection wait
+| 10 s +
+  (wait queue: `admission_cap`, at least 16; dial: 5 s)
+| How long an upstream attempt waits for a pooled upstream connection, in its upstream client's wait
+  queue and while the connection is dialled. Each upstream client queues at most as many attempts as
+  the effective `admission_cap`, never fewer than 16. An attempt that finds the queue full, or whose
+  wait outlasts the 10 s, is answered `503` (`UPSTREAM_POOL_SATURATED`, problem type
+  `urn:api-sheriff:problem:upstream`) without the request ever being sent; it is the gateway's own
+  saturation, so the upstream's circuit breaker does not count it as a failure. A connection the
+  upstream refuses, and a TCP connect that does not complete within 5 s, stay the upstream's failure,
+  which the breaker counts. Not configurable. See
+  link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream connection wait].
 
 | gRPC message bound
 | 10 s +
@@ -654,7 +669,8 @@ deployment that never writes it keeps the behaviour shown here.
 | Until the upstream answers, each request message of a `protocol: grpc` call -- its length prefix and
   every payload byte it declares -- must arrive within this long of the moment the gateway hands the
   body to the upstream or of the message before it, until the client ends its request stream; part of
-  a message does not count. A
+  a message does not count. Time the upstream takes no data is not counted, but the time before it is:
+  the wait for a message goes on from there when the upstream reads again. A
   call that sends nothing, only part of a message, or stops between two messages is ended with
   `grpc-status: 3` (`INVALID_ARGUMENT`) as the client's abort, which the upstream's circuit breaker does
   not count as a failure. Not configurable. See
@@ -667,9 +683,9 @@ deployment that never writes it keeps the behaviour shown here.
   `grpc-message: stream-idle-timeout`. A frame in either direction keeps the call open; HTTP/2 `PING`
   frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
   gRPC message bound and the request-body deadline bound the call instead, and the upstream guard's
-  30 s timeout an upstream that holds the complete, half-closed request, a connection or
-  stream-slot wait that lasts the 30 s, or an upstream that stops taking data mid-request and takes
-  no more within the 30 s; one that takes data again after the request-body deadline passed ends the
+  30 s timeout an upstream that holds the complete, half-closed request or an upstream that stops
+  taking data mid-request and takes no more within the 30 s; a connection or stream-slot wait ends at
+  the 10 s upstream connection wait instead. One that takes data again after the request-body deadline passed ends the
   call then, as the upstream's timeout when it had taken no data for at least 10 s, as the client's
   otherwise. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
@@ -689,7 +705,8 @@ deployment that never writes it keeps the behaviour shown here.
   [`edge_hardening.admission_cap`]
 | 2048
 | Requests beyond the cap are rejected `503` *before* a virtual thread is dispatched, so a flood
-  cannot spawn unbounded virtual threads. Operator-configurable; minimum 1.
+  cannot spawn unbounded virtual threads. It also bounds each upstream client's queue of attempts
+  waiting for a pooled connection (Upstream connection wait, above). Operator-configurable; minimum 1.
 
 | WebSocket relay cap (established relays) +
   [`edge_hardening.websocket_relay_cap`]

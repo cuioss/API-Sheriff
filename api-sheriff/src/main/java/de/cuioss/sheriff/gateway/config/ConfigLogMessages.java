@@ -603,27 +603,30 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
-         * The configured {@code edge_hardening.admission_cap} is not below the connection cap of the
-         * terminated listener ({@code quarkus.http.limits.max-connections}), so the admission budget is
-         * not honoured as configured.
+         * The configured {@code edge_hardening.admission_cap} is above half the connection cap of the
+         * terminated listener ({@code quarkus.http.limits.max-connections}), so the connection cap no longer
+         * leaves the headroom the shipped values keep.
          * <p>
-         * On HTTP/1.1 one request needs one connection, so with an admission cap at or above the
-         * connection cap the cap closes connections, unserved and without a {@code 503}, before
-         * admission can refuse a request; the effective in-flight bound is the connection cap. The
-         * connection cap is a fixed deployment value, not a {@code gateway.yaml} key, so the template
-         * names both remedies: lower the admission cap, or raise the connection cap together with the
-         * container's file-descriptor limit.
+         * On HTTP/1.1 one request needs one connection, and the connection cap also counts every connection
+         * that carries no admitted request — an idle keep-alive connection, one whose request head has not
+         * arrived, one being answered {@code 503}. The shipped connection cap is twice the default admission
+         * cap, so admission refuses a request with a {@code 503} long before the cap closes connections,
+         * unserved and without a {@code 503}. An admission cap above half the connection cap gives that
+         * headroom up, and at or above the connection cap the cap rather than the admission budget bounds the
+         * requests in flight. The connection cap is a fixed deployment value, not a {@code gateway.yaml} key,
+         * so the template names both remedies: lower the admission cap, or raise the connection cap together
+         * with the container's file-descriptor limit.
          * <p>
          * It is a {@code WARN} and never a boot refusal: an operator running mostly HTTP/2 or a
          * deployment that raises the cap may legitimately want the larger value. What must not happen is
          * the configured number being capped silently. Emitted once at startup by
          * {@code ConnectionCapAudit}. The template arguments are, in order: the configured admission cap,
-         * the connection cap and the connection cap again, as the value to stay below.
+         * the connection cap and half the connection cap, as the value to stay at or below.
          */
-        public static final LogRecord ADMISSION_CAP_NOT_BELOW_CONNECTION_CAP = LogRecordModel.builder()
+        public static final LogRecord ADMISSION_CAP_ABOVE_CONNECTION_CAP_HEADROOM = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(148)
-                .template("edge_hardening.admission_cap is %s, which is not below the connection cap of %s open connections (quarkus.http.limits.max-connections) — on HTTP/1.1 connections beyond the cap are closed unserved, without a 503, before admission can refuse a request, so the cap rather than the admission budget bounds the requests in flight. Lower edge_hardening.admission_cap below %s, or raise quarkus.http.limits.max-connections in the deployment together with the container's nofile limit")
+                .template("edge_hardening.admission_cap is %s, which is above half the connection cap of %s open connections (quarkus.http.limits.max-connections) — on HTTP/1.1 every request holds a connection and the cap also counts connections carrying no admitted request, so the cap can close connections unserved, without a 503, before admission refuses a request. Keep edge_hardening.admission_cap at or below %s, or raise quarkus.http.limits.max-connections in the deployment together with the container's nofile limit")
                 .build();
     }
 

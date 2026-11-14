@@ -102,6 +102,7 @@ class UniformNotFoundTest {
         table.put(EventType.SCOPE_MISSING, "the credential validated, so the caller is trusted");
         table.put(EventType.UPSTREAM_ERROR, postTrust);
         table.put(EventType.UPSTREAM_CIRCUIT_OPEN, postTrust);
+        table.put(EventType.UPSTREAM_POOL_SATURATED, postTrust);
         table.put(EventType.UPSTREAM_TIMEOUT, postTrust);
         table.put(EventType.SESSION_CREATED, informational);
         table.put(EventType.SESSION_DESTROYED, informational);

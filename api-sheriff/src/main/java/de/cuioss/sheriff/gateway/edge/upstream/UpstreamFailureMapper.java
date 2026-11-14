@@ -41,6 +41,9 @@ import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;
  *       {@link EventType#UPSTREAM_TIMEOUT} (504);</li>
  *   <li>any other connection / protocol failure → {@link EventType#UPSTREAM_ERROR} (502).</li>
  * </ul>
+ * An attempt that obtained no pooled connection because the gateway itself is saturated never reaches
+ * that classification: the dispatch maps it inside the guard, through {@link #toPoolSaturation(Throwable)},
+ * to {@link EventType#UPSTREAM_POOL_SATURATED} (503), a gateway rejection the breaker does not count.
  * Every mapped failure is metered on the shared {@link GatewayEventCounter}. Breaker state
  * transitions are metered and logged through {@link #recordBreakerTransition(String, CircuitBreakerState)},
  * which the boot-time edge installs as each breaker's state-change callback
@@ -101,6 +104,22 @@ public final class UpstreamFailureMapper {
         EventType type = classify(failure);
         eventCounter.increment(type);
         return new GatewayException(type, "Upstream dispatch failed: " + type.name(), failure);
+    }
+
+    /**
+     * Meters an attempt that obtained no pooled upstream connection because the gateway itself is saturated —
+     * the upstream client's wait queue was full, or the wait outlasted the connection wait bound — and
+     * produces the {@link EventType#UPSTREAM_POOL_SATURATED} rejection the edge answers {@code 503}. The
+     * dispatch raises it inside the guard, so the breaker skips it like every {@link GatewayException}.
+     *
+     * @param failure the pool's refusal or the expired wait, kept as the cause and never shown to the client
+     * @return the gateway exception carrying {@link EventType#UPSTREAM_POOL_SATURATED}
+     */
+    public GatewayException toPoolSaturation(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        eventCounter.increment(EventType.UPSTREAM_POOL_SATURATED);
+        return new GatewayException(EventType.UPSTREAM_POOL_SATURATED,
+                "Upstream dispatch failed: " + EventType.UPSTREAM_POOL_SATURATED.name(), failure);
     }
 
     /**

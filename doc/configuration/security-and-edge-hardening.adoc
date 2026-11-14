@@ -237,12 +237,17 @@ link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults
 | Maximum concurrently in-flight requests across every route. Default `2048`, minimum `1`. A request
   beyond it is refused `503` before a virtual thread is dispatched. The terminated listener also has a
   connection cap of `4096` open connections, fixed in the deployment's `application.properties` and not
-  a key here. A value at or above that cap cannot be honoured on HTTP/1.1, where one request needs one
-  connection: connections beyond the cap are closed unserved, without a `503`, before admission can
-  refuse a request. The value is not capped silently -- the gateway logs `ApiSheriff-148` at startup;
-  lower `admission_cap`, or raise `quarkus.http.limits.max-connections` in the deployment together with
+  a key here. The cap is twice the default `admission_cap`, because on HTTP/1.1 one request needs one
+  connection and the cap also counts connections that carry no admitted request. A value above half
+  the cap gives that headroom up: connections beyond the cap can be closed unserved, without a `503`,
+  before admission refuses a request, and at or above the cap the admission budget is never reached at
+  all. Such a value is not capped silently -- the gateway logs `ApiSheriff-148` at startup; keep
+  `admission_cap` at or below half the cap, or raise `quarkus.http.limits.max-connections` in the deployment together with
   the container's `nofile` limit (see
-  link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults]).
+  link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults]). The value also
+  bounds each upstream client's queue of attempts waiting for a pooled connection, never below `16`; an
+  attempt beyond it is answered `503` (`UPSTREAM_POOL_SATURATED`) without being sent (see
+  link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Upstream connection wait]).
 
 | `websocket_relay_cap`
 | Maximum concurrently *established* WebSocket relays. Minimum `1`; omitted, a quarter of the

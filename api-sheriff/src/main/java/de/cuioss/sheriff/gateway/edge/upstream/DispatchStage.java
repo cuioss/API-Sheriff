@@ -51,6 +51,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.ConnectionPoolTooBusyException;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
@@ -123,8 +124,9 @@ import org.jspecify.annotations.Nullable;
  * is refused as a {@link RequestBodyDeadlineExceeded} ({@link EventType#REQUEST_BODY_TIMEOUT},
  * {@code 408}). Before the response was handed over this is the dispatch's own failure, so a body the
  * gateway is still reading when the guard would end the attempt is ended as the request's instead; a
- * body the upstream has stopped reading, or an attempt still waiting for its pooled connection, can
- * reach the guard's timeout first and then ends as an upstream timeout. After the hand-over —
+ * body the upstream has stopped reading can reach the guard's timeout first and then ends as an upstream
+ * timeout. The wait for a pooled connection counts towards the deadline, but it is bounded on its own (see
+ * below), so an attempt always hands its body over with more than half of the deadline left. After the hand-over —
  * an upstream that answered at once and keeps reading — the refusal goes to the
  * {@linkplain BodyFraming#lateViolation() late-violation callback}, and the reset upstream request fails
  * the relay, which ends the client response with the status the upstream sent. Once it has passed, the
@@ -239,12 +241,25 @@ import org.jspecify.annotations.Nullable;
  * {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, so the breaker skips it: a body that was
  * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. The
  * departure does not wake a dispatching thread that is still waiting for a pooled connection: that wait
- * ends when the pool hands the connection over, which reports the client's abort, or when the guard's
- * timeout fires, which is an ordinary upstream timeout. A client that left before the dispatch began has
+ * ends when the pool hands the connection over, which reports the client's abort, or when the connection
+ * wait bound passes, which ends it as the gateway's own saturation (see below). A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
  * departure is left to it. All of this holds only for a dispatch handed the armed {@link InboundBody}
  * itself — the HTTP dispatch and the gRPC dispatch both are; a decorator around the body would hide the
  * departure from the dispatch.
+ * <p>
+ * <strong>The wait for a pooled connection is bounded.</strong> Every attempt asks for its upstream connection
+ * with a connection wait bound of {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms, which covers both its time in
+ * the client's queue and the dial of a new connection for it. An attempt the client's bounded wait queue
+ * refuses at once, and one whose wait outlasts the bound, obtained no connection because the gateway itself
+ * is saturated: it ends, unsent, as an {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}),
+ * raised inside the guard, so the breaker does not count it as a failure and the retry predicate refuses it.
+ * Every other reason an attempt obtains no connection — the upstream refused it, or its dial did not complete
+ * within the clients' shorter dial timeout — stays the upstream's failure (see {@link #poolSaturationOf}).
+ * The bound keeps the wait from taking more than a minority of the request-body deadline or of the
+ * pre-response deadline: an HTTP attempt hands its body over with at least
+ * {@code bodyDeadline - UPSTREAM_CONNECTION_WAIT_MILLIS} of its whole-body deadline left, and a gRPC attempt
+ * with at least {@code preResponseCap - UPSTREAM_CONNECTION_WAIT_MILLIS} before its pre-response cap.
  * <p>
  * <strong>The gateway's own upstream reset is not logged as an error.</strong> Every attempt's
  * upstream request carries an exception handler from the moment it is obtained. Without one, Vert.x
@@ -295,6 +310,16 @@ public final class DispatchStage {
 
     /** The declared length of a request that declares none. */
     static final long NO_DECLARED_LENGTH = -1L;
+
+    /**
+     * How long an attempt waits for a pooled upstream connection — in the client's queue and while the
+     * connection it waits for is dialled — before the dispatch gives up on it as the gateway's own
+     * saturation ({@link EventType#UPSTREAM_POOL_SATURATED}). It is shorter than the request-body deadline and
+     * the pre-response deadline by more than half of either, so an attempt always hands its body over with
+     * most of its deadline left (see {@link DispatchBody#send}), and longer than the clients' dial timeout
+     * ({@code EgressClients}), so a dial that never completes fails as the upstream's first.
+     */
+    static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
 
     /**
      * The request-body idle timeout of a dispatch whose body is not watched for progress: the idle
@@ -618,7 +643,8 @@ public final class DispatchStage {
         try {
             HttpClientResponse response = guardedDispatch(guard, retryGate, method, body.bytesSent::get,
                     body.subscribed::get,
-                    () -> awaitDispatch(upstream, httpClient, upstreamMethod, requestUri, forwardHeaders, body));
+                    () -> awaitDispatch(upstream, httpClient, upstreamMethod, requestUri, forwardHeaders, body,
+                            failureMapper));
             handedToCaller = true;
             return response;
         } finally {
@@ -728,15 +754,41 @@ public final class DispatchStage {
         }
     }
 
+    /**
+     * Classifies a failure of the wait for a pooled upstream connection. The upstream client's queue of
+     * attempts waiting for a connection being full ({@link ConnectionPoolTooBusyException}) and the wait
+     * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS} (a {@link TimeoutException})
+     * are the gateway's own saturation: the attempt becomes an {@link EventType#UPSTREAM_POOL_SATURATED}
+     * rejection, which the breaker does not count. Every other failure — a connection the upstream refused, a
+     * dial that did not complete within the clients' dial timeout, a failed TLS handshake — stays the
+     * upstream's failure, unchanged. The dial timeout is shorter than the wait bound, so a dial that never
+     * completes fails as the upstream's before the wait bound could end the attempt as local saturation.
+     *
+     * @param failure       why the attempt obtained no connection
+     * @param failureMapper meters the saturation and builds its rejection
+     * @return the saturation rejection the attempt ends with, or {@code null} when the failure is the
+     *         upstream's and stays as it is
+     */
+    static @Nullable GatewayException poolSaturationOf(@Nullable Throwable failure,
+            UpstreamFailureMapper failureMapper) {
+        if (failure instanceof ConnectionPoolTooBusyException || failure instanceof TimeoutException) {
+            return failureMapper.toPoolSaturation(failure);
+        }
+        return null;
+    }
+
     private static HttpClientResponse awaitDispatch(ResolvedUpstream upstream, HttpClient httpClient,
             io.vertx.core.http.HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
-            DispatchBody body) throws InterruptedException, ExecutionException {
+            DispatchBody body, UpstreamFailureMapper failureMapper) throws InterruptedException, ExecutionException {
+        // The connect timeout of a request bounds the whole wait for its pooled connection: the time in the
+        // client's queue and the dial of a new connection for it (see UPSTREAM_CONNECTION_WAIT_MILLIS).
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
                 .setHost(upstream.host())
                 .setPort(upstream.port())
                 .setSsl("https".equalsIgnoreCase(upstream.scheme()))
-                .setURI(requestUri);
+                .setURI(requestUri)
+                .setConnectTimeout(UPSTREAM_CONNECTION_WAIT_MILLIS);
         // Begun before the request is asked for, so an attempt the dispatch stops waiting for is
         // released whatever state its upstream exchange has reached by then.
         UpstreamAttempt attempt = body.beginAttempt();
@@ -747,7 +799,8 @@ public final class DispatchStage {
                 // The client left before this attempt asked for its request: none is asked for.
                 throw departed;
             }
-            HttpClientResponse received = awaitResponse(httpClient, options, forwardHeaders, body, attempt);
+            HttpClientResponse received = awaitResponse(httpClient, options, forwardHeaders, body, attempt,
+                    failureMapper);
             handedBack = true;
             return received;
         } finally {
@@ -762,16 +815,19 @@ public final class DispatchStage {
     }
 
     private static HttpClientResponse awaitResponse(HttpClient httpClient, RequestOptions options,
-            Map<String, String> forwardHeaders, DispatchBody body, UpstreamAttempt attempt)
-            throws InterruptedException, ExecutionException {
+            Map<String, String> forwardHeaders, DispatchBody body, UpstreamAttempt attempt,
+            UpstreamFailureMapper failureMapper) throws InterruptedException, ExecutionException {
         AtomicReference<@Nullable ByteCappedBodyStream> cappedBody = new AtomicReference<>();
         // The client-caused abort as it stood the moment this attempt's send failed — never re-read
         // afterwards (see the catch below).
         AtomicReference<@Nullable GatewayException> clientAbortAtFailure = new AtomicReference<>();
         // The upstream's stall the body stream ended the request for, read at the same moment.
         AtomicReference<@Nullable UpstreamStalledRequest> upstreamStallAtFailure = new AtomicReference<>();
+        // Set once the pool handed the attempt its request: a failure before it is a connection not obtained.
+        AtomicBoolean connectionObtained = new AtomicBoolean();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
+                    connectionObtained.set(true);
                     // Registered before the request is published, so every reset of it the gateway
                     // makes — the unsent release below included — finds a handler (see the class javadoc).
                     request.exceptionHandler(DispatchStage::onUpstreamRequestFailure);
@@ -814,6 +870,14 @@ public final class DispatchStage {
         try {
             received = response.toCompletionStage().toCompletableFuture().get();
         } catch (ExecutionException dispatchFailure) {
+            // An attempt that obtained no pooled connection because the gateway is saturated is the gateway's
+            // own rejection, raised here, inside the guard, so the breaker skips it.
+            GatewayException saturated = connectionObtained.get()
+                    ? null
+                    : poolSaturationOf(dispatchFailure.getCause(), failureMapper);
+            if (saturated != null) {
+                throw saturated;
+            }
             // The body stream aborts the upstream request itself when the client ends the dispatch, and
             // the transport then reports that abort as a reset. Surface the recorded client-side cause
             // in its place, so the guard sees a GatewayException — which it skips. Only the snapshot
@@ -1936,8 +2000,25 @@ public final class DispatchStage {
         private static final String BODY_PAST_DEADLINE =
                 "Request body did not end within the request-body deadline; the upstream request was aborted";
 
-        RequestBodyDeadlineExceeded() {
+        /** Whether the deadline that passed was a gRPC dispatch's pre-response deadline. */
+        private final boolean preResponse;
+
+        /**
+         * @param preResponse whether the deadline that passed was a gRPC dispatch's pre-response deadline,
+         *                    rather than an HTTP dispatch's whole-body deadline
+         */
+        RequestBodyDeadlineExceeded(boolean preResponse) {
             super(EventType.REQUEST_BODY_TIMEOUT, BODY_PAST_DEADLINE);
+            this.preResponse = preResponse;
+        }
+
+        /**
+         * @return {@code true} when the deadline that passed was a gRPC dispatch's pre-response deadline — a
+         *         request stream its client held open — and {@code false} for an HTTP dispatch's whole-body
+         *         deadline
+         */
+        public boolean preResponse() {
+            return preResponse;
         }
     }
 
@@ -2057,8 +2138,9 @@ public final class DispatchStage {
      * the next. A forwarded chunk that completes at least one message starts the gap to the next complete
      * message (a message of declared length zero is complete at its prefix); a chunk that completes none,
      * however many bytes it carries, does not. Like the idle clock, the message clock does not count a pause
-     * by the consumer — the upstream not taking data is never charged to the client — and a resume starts
-     * the gap again. Only the gap's start is recorded: one timer is pending at a time, and when it fires
+     * by the consumer — the upstream not taking data is never charged to the client — but unlike it, a resume
+     * does not start the gap again: the gap goes on from the read time it had reached when the pause began.
+     * Only a complete message starts a new gap. Only the gap's start is recorded: one timer is pending at a time, and when it fires
      * early relative to the start of the current gap it is re-armed for the remainder — so no timer is
      * created or cancelled per chunk. The inbound end, any abort claim, {@link #stopMessageClock()} — which
      * the dispatch calls when the attempt's send completes — and {@link #stopClocks()} stop the clock for
@@ -2192,10 +2274,16 @@ public final class DispatchStage {
         private volatile boolean messageClockEnded;
         private long messageTimer = NO_TIMER;
         /**
-         * When the current gap began: the message clock started, a complete message was forwarded, or the
-         * consumer resumed the stream. Written holding {@link #clockLock}.
+         * When the current gap began: the message clock started or a complete message was forwarded, moved
+         * later by the length of every pause by the consumer since, so the gap counts only the time the stream
+         * was being read. Written holding {@link #clockLock}.
          */
         private long messageGapStartNanos;
+        /**
+         * When the consumer's current pause began, as the message clock reads it; meaningful only while
+         * {@link #pausedByConsumer} is set. Written holding {@link #clockLock}.
+         */
+        private long messagePauseStartNanos;
         /**
          * Reads the gRPC message frames as their chunks cross. Used by chunk delivery only, which runs on
          * the inbound connection's event loop.
@@ -2655,17 +2743,31 @@ public final class DispatchStage {
         }
 
         /**
-         * The consumer resumed the stream: the upstream is taking data again, so the gap restarts from now
-         * and a timer is pending again; called holding {@link #clockLock}. A no-op for a clock not started
-         * yet or already ended.
+         * The consumer resumed the stream: the upstream is taking data again. The gap continues rather than
+         * restarting: when the stream was paused, its start moves later by the part of the gap the pause took,
+         * so the read time before the pause still counts and the pause does not. Only a complete message starts
+         * a new gap. A timer is pending again, for what is left of the bound. Called holding
+         * {@link #clockLock}. A no-op for a clock not started yet or already ended.
+         *
+         * @param wasPaused whether the consumer had the stream paused until this resume
          */
-        private void resumeMessageClock() {
+        private void resumeMessageClock(boolean wasPaused) {
             if (!messageClock.armed() || !messageClockStarted || messageClockEnded) {
                 return;
             }
-            messageGapStartNanos = messageClock.nanoTime().getAsLong();
+            long nowNanos = messageClock.nanoTime().getAsLong();
+            if (wasPaused) {
+                // Compared as a difference, never as absolute readings: System.nanoTime() may wrap. A gap that
+                // began during the pause — the clock started or a message completed then — was paused whole.
+                long pausedFromNanos = messagePauseStartNanos - messageGapStartNanos > 0
+                        ? messagePauseStartNanos
+                        : messageGapStartNanos;
+                messageGapStartNanos += nowNanos - pausedFromNanos;
+            }
             if (messageTimer == NO_TIMER) {
-                armMessageTimer(messageClock.timeoutMillis());
+                long remainingNanos = TimeUnit.MILLISECONDS.toNanos(messageClock.timeoutMillis())
+                        - (nowNanos - messageGapStartNanos);
+                armMessageTimer(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos + MILLIS_ROUNDING_NANOS)));
             }
         }
 
@@ -2688,8 +2790,8 @@ public final class DispatchStage {
          * less than the bound ago — a complete message was forwarded, or the stream resumed, since the timer
          * was armed — re-arms for the remainder. Otherwise the next complete message did not arrive within the
          * bound: the stream is refused as a {@link RequestMessageTimeout} through the single abort claim,
-         * taken under the clocks' monitor. Outside it, the inbound stream is paused, the upstream request
-         * reset and the failure propagated.
+         * taken under the clocks' monitor. Outside it, the inbound stream is paused — unless it has ended in the
+         * meantime (see {@link #pauseUnlessEnded()}) — the upstream request reset and the failure propagated.
          */
         private void onMessageTimer() {
             RequestMessageTimeout idleClient;
@@ -2710,9 +2812,25 @@ public final class DispatchStage {
                     return;
                 }
             }
-            delegate.pause();
+            pauseUnlessEnded();
             abortAction.run();
             propagateFailure(idleClient);
+        }
+
+        /**
+         * Pauses the inbound stream for an expiry that has won the abort claim. The expiry runs on the
+         * upstream request's event loop while the inbound end arrives on the inbound connection's, so the end
+         * can land between the claim and this pause; it is then not passed on — the abort was claimed first —
+         * and Vert.x refuses to pause an HTTP/2 request that has ended. A stream that has ended has nothing left
+         * to pause, so that refusal is dropped and the expiry goes on to reset the upstream request and report
+         * its failure; left to propagate, it would skip both and leave the call to the guard's timeout.
+         */
+        private void pauseUnlessEnded() {
+            try {
+                delegate.pause();
+            } catch (IllegalStateException ended) {
+                LOGGER.debug("The inbound stream had ended before an expiry could pause it: %s", ended.getMessage());
+            }
         }
 
         /** Schedules the one pending deadline timer; called holding {@link #clockLock}. */
@@ -2833,7 +2951,7 @@ public final class DispatchStage {
         private @Nullable DeadlineExpiry claimDeadlineExpiry() {
             Exception reason = deadlinePassedHeldByUpstream || upstreamStalledPastThreshold()
                     ? new UpstreamStalledRequest()
-                    : new RequestBodyDeadlineExceeded();
+                    : new RequestBodyDeadlineExceeded(preResponseDeadline());
             deadlineEnded = true;
             deadlinePassed = false;
             deadlinePassedHeldByUpstream = false;
@@ -2845,11 +2963,11 @@ public final class DispatchStage {
 
         /**
          * Carries out a claimed deadline expiry of a body whose inbound stream is still open, outside the
-         * monitor: pauses the inbound stream, then aborts the upstream request for the expiry (see
-         * {@link #abortFor}).
+         * monitor: pauses the inbound stream — unless it has ended since the claim (see
+         * {@link #pauseUnlessEnded()}) — then aborts the upstream request for the expiry (see {@link #abortFor}).
          */
         private void expire(DeadlineExpiry expiry) {
-            delegate.pause();
+            pauseUnlessEnded();
             abortFor(expiry);
         }
 
@@ -2921,7 +3039,8 @@ public final class DispatchStage {
 
         /**
          * The consumer paused the stream: no gap is counted until it resumes. A pause already in force keeps the
-         * moment it began, so the stall it measures is the whole unbroken pause.
+         * moment it began, so the stall it measures is the whole unbroken pause, and the message clock leaves
+         * that whole pause out of its gap.
          */
         private void suspendClocks() {
             if (!tracksPause()) {
@@ -2931,12 +3050,16 @@ public final class DispatchStage {
                 if (!pausedByConsumer && preResponseDeadline()) {
                     pauseStartNanos = deadlineClock.nanoTime().getAsLong();
                 }
+                if (!pausedByConsumer && messageClock.armed()) {
+                    messagePauseStartNanos = messageClock.nanoTime().getAsLong();
+                }
                 pausedByConsumer = true;
             }
         }
 
         /**
-         * The consumer resumed the stream: every gap restarts from now, and its timer is pending again. A deadline
+         * The consumer resumed the stream: the idle clock's gap restarts from now, the message clock's gap
+         * continues without the pause (see {@link #resumeMessageClock}), and each timer is pending again. A deadline
          * that passed during the pause now ending is decided by the pause's length first, as the pause ends, for
          * the read's second passed-deadline check to act on; the next pause measures its stall from its own start.
          * <p>
@@ -2957,8 +3080,9 @@ public final class DispatchStage {
                 if (deadlinePassed) {
                     deadlinePassedHeldByUpstream = upstreamStalledPastThreshold();
                 }
+                boolean wasPaused = pausedByConsumer;
                 pausedByConsumer = false;
-                resumeMessageClock();
+                resumeMessageClock(wasPaused);
                 if (!idleClock.armed() || !clockStarted || clockStopped) {
                     return;
                 }
@@ -3025,7 +3149,8 @@ public final class DispatchStage {
         }
 
         /**
-         * Resumes the inbound stream; the idle clock and the message clock restart their gaps from now.
+         * Resumes the inbound stream; the idle clock restarts its gap from now, and the message clock continues
+         * its gap without the pause.
          * When the request-body deadline passed while the body was not being read, the body is ended instead
          * and the inbound stream stays paused.
          */
@@ -3047,7 +3172,8 @@ public final class DispatchStage {
         }
 
         /**
-         * Fetches from the inbound stream; the idle clock and the message clock restart their gaps from now.
+         * Fetches from the inbound stream; the idle clock restarts its gap from now, and the message clock
+         * continues its gap without the pause.
          * When the request-body deadline passed while the body was not being read, the body is ended instead
          * and the inbound stream stays paused.
          */

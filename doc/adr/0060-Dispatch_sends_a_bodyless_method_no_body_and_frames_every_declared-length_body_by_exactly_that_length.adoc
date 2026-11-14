@@ -6,8 +6,8 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt handed the body over, never later than 29 s after the attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, and an attempt whose upstream connection wait leaves less than a fixed 1 s hand-over grace before that 29 s cap is ended unsent as the upstream's UPSTREAM_TIMEOUT, so the guard's timeout is reached only as the upstream's, in three ways: by an upstream holding a complete, half-closed request, by a connection wait that lasts it, or by an upstream that stops taking data mid-request, during which the message bound is not counted and the deadline, which keeps counting, ends the call only once the upstream takes data again, then as the upstream's UPSTREAM_TIMEOUT only when the upstream had held the stream paused without a break for at least a fixed 10 s stall threshold, and as the client's REQUEST_BODY_TIMEOUT after a shorter, flow-control pause; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
-// tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, request-body-deadline, grpc-message-bound, grpc-pre-response-deadline, grpc-stream-idle-timeout, upstream-connection
+// summary: Dispatch owns what crosses to the upstream and how long it waits for the request body: a GET or HEAD without a positive declared Content-Length is sent with no body and its first body byte rejects the request; a checked declared length is written as the upstream Content-Length and the body is held to exactly that length; a forwarded body ends after 10 s without progress or 25 s after its upstream attempt started (408 REQUEST_BODY_TIMEOUT); before its upstream answers, a gRPC call ends after 10 s without its next complete request message (INBOUND_BODY_ABORTED) and with its request stream still open 25 s after its attempt handed the body over, never later than 29 s after the attempt started (REQUEST_BODY_TIMEOUT, rendered DEADLINE_EXCEEDED), both as the client's abort the breaker does not count, and an attempt whose upstream connection wait leaves less than a fixed 1 s hand-over grace before that 29 s cap is ended unsent as the upstream's UPSTREAM_TIMEOUT, so the guard's timeout is reached only as the upstream's, in two ways: by an upstream holding a complete, half-closed request, or by an upstream that stops taking data mid-request, during which the message bound is not counted and the deadline, which keeps counting, ends the call only once the upstream takes data again, then as the upstream's UPSTREAM_TIMEOUT only when the upstream had held the stream paused without a break for at least a fixed 10 s stall threshold, and as the client's REQUEST_BODY_TIMEOUT after a shorter, flow-control pause; a gRPC call after five minutes without a frame in either direction (DEADLINE_EXCEEDED); the wait for a pooled upstream connection is bounded at a fixed 10 s, behind a wait queue bounded by the admission cap and a fixed 5 s dial timeout, and an attempt that obtains no connection because the gateway is saturated ends unsent as UPSTREAM_POOL_SATURATED (503), which the breaker does not count; a relay that fails before its head is written answers unstorable; all bounds are fixed constants below the upstream guard; how a response ends and how the upstream connection closes belong to ADR-0066
+// tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, request-body-deadline, grpc-message-bound, grpc-pre-response-deadline, grpc-stream-idle-timeout, upstream-connection, upstream-connection-wait, upstream-pool
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -144,6 +144,11 @@ the body is rejected as `REQUEST_BODY_TIMEOUT`:
 * *After the response head* the reset fails the relay. The relayed response ends with the status the
   upstream sent, also when no upstream body byte had been relayed yet.
 
+*Amendment: an answer whose head was not yet written is unstorable.* It now carries
+`Cache-Control: no-store` and none of the upstream's `Expires`, `Age`, `ETag` or `Last-Modified`, so no
+cache keeps the empty answer as the upstream's response. Its status is kept rather than turned into a
+`502`: the upstream has acted on the request, and a `502` would invite the client to send it again.
+
 A passed deadline stays in force. While the upstream takes no data, the deadline does not reset the
 upstream request; it ends the body when the forwarding pipe resumes. An attempt that obtains its
 pooled connection only after the deadline has its body ended as soon as it starts to be read, before
@@ -170,10 +175,10 @@ upstream request. It ends the client response with `grpc-status: 4` (`DEADLINE_E
 client was going to send, never gave the client the time to send it, or stopped taking what the client
 sent. Time the client holds its request open is the client's; time spent reaching the upstream is the
 upstream's. The guard's timeout, which the breaker records as an upstream failure, is therefore reached
-in three ways, all the upstream's: by an upstream that holds a complete, half-closed request it does
-not answer; by a wait for an upstream connection or HTTP/2 stream slot that itself lasts the guard's
-30 s, before any body is handed over; and by an upstream that stops taking data mid-request and takes
-no more within the guard's 30 s. Each holds only while the client stays: a client that leaves before the
+in two ways, both the upstream's: by an upstream that holds a complete, half-closed request it does
+not answer, and by an upstream that stops taking data mid-request and takes no more within the guard's
+30 s. A wait for an upstream connection or HTTP/2 stream slot ends earlier, at the connection wait
+bound (<<upstream-connection-wait>>). Each holds only while the client stays: a client that leaves before the
 upstream answers ends the call at once, as its own departure, on a gRPC route as on any other
 (link:../architecture/tls-and-inbound-security.adoc#_client_departure[Architecture -- a client that
 leaves before it is answered]). A flow-control pause is not a stall: a client that sends faster than a
@@ -192,7 +197,8 @@ upstream.
 message bound, `GRPC_MESSAGE_TIMEOUT_MILLIS` (10 s), counted from the hand-over of the body to the
 upstream request. `ByteCappedBodyStream` reads each length-prefixed message as its bytes cross and
 holds none of them. Only a complete message starts the wait for the next one again; a forwarded byte
-of an incomplete message does not, and a pause while the upstream takes no data is not counted. When
+of an incomplete message does not, and a pause while the upstream takes no data is not counted, though the
+read time before it is (amended: a resume no longer starts the wait again). When
 the bound passes before the next complete message, the expiry takes the body stream's single abort
 claim with a `DispatchStage.RequestMessageTimeout` (`INBOUND_BODY_ABORTED`) and resets the upstream
 request. The breaker does not count it, the retry predicate does not retry it, and the client receives
@@ -253,6 +259,22 @@ the stall threshold are fixed constants of `GrpcDispatchStage` (see the fixed va
 Every HTTP dispatch is built without the message bound, and so arms neither the message bound nor the
 pre-response deadline.
 
+[[upstream-connection-wait]]
+=== Amendment: the wait for an upstream connection is bounded, and its saturation is the gateway's own
+
+Each upstream client queues at most `max(admission_cap, 16)` attempts and dials within 5 s (`EgressClients`), and an attempt waits at most 10 s for its connection,
+queue and dial together (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). An attempt the full queue
+refuses, or whose wait outlasts the 10 s, ends unsent inside the guard as `UPSTREAM_POOL_SATURATED`
+(`503`): the gateway's own saturation, which the breaker does not count and the retry predicate refuses.
+A refused connection and a dial past 5 s stay the upstream's failure; the dial timeout is the shorter
+one so an unreachable upstream still opens its breaker. The queue bound follows the admission cap, so it
+never refuses an admitted attempt the gateway could serve. The wait still counts towards the HTTP
+deadline (<<request-body-deadline>>), which must pass before the guard's timeout; the 10 s bound leaves a
+body at least 15 s after its hand-over, and a gRPC call at least 19 s before its 29 s cap. The values are
+fixed; the derivation is in
+link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream
+connection wait].
+
 [[unread-upload-bodies]]
 === Unread HTTP/2 upload bodies give their credit back
 
@@ -287,7 +309,9 @@ bodyless request never subscribes the inbound stream to an attempt, so it stays 
 as no body byte has arrived.
 
 Each bound's end is recorded at `INFO`, latched per route. A gRPC message-bound end is recorded under the
-`INBOUND_BODY_ABORTED` disposition `client-idle`. A pre-response deadline end the upstream stalled for
+`INBOUND_BODY_ABORTED` disposition `client-idle`. A pre-response deadline end the client held is also
+counted on that disposition's `sheriff_inbound_body_aborts_total` series, beside its
+`REQUEST_BODY_TIMEOUT` event. A pre-response deadline end the upstream stalled for
 the threshold is recorded as an upstream timeout, never as a passed request-body deadline. The log
 records, their latches and the counters are in
 link:../architecture/tls-and-inbound-security.adoc#_request_body_bound_recording[Architecture --
@@ -422,17 +446,19 @@ for the property.
   arrives. The pool wait counts towards the 25 s. An upload that obtains its connection only after the
   deadline is answered `408` although its client sent the whole body in time.
 * After the response head the client keeps the upstream's status, so a `200` can end before its body
-  is complete.
+  is complete; with no byte relayed, that answer is marked `no-store`.
 * A gRPC call that legitimately stays silent in both directions for more than five minutes has to
   send messages to stay open.
 * Before its upstream answers, a gRPC client must complete each request message within 10 s of the
   one before it, and a client stream the upstream answers only after the client ends it must end within
   25 s of the hand-over and before the 29 s cap, earlier than the guard's timeout that ended it before.
   Behind an upstream connection slower than 4 s that leaves the client less than 25 s, but never less
-  than the 1 s hand-over grace.
+  than 19 s, since the connection wait is bounded at 10 s.
 * An attempt whose upstream connection took longer than 28 s ends as `UPSTREAM_TIMEOUT` before the
   guard would have ended it, so an upstream that connects that slowly and would then answer within the
   last two seconds is not given them.
+* An attempt that waits over 10 s for a pooled connection, or finds the wait queue full, is answered
+  `503` unsent; a TCP connect over 5 s fails as the upstream's.
 * An upstream stall shorter than the 10 s threshold across the pre-response deadline, or one of any
   length that ends before the deadline passes, leaves the deadline the client's `REQUEST_BODY_TIMEOUT`,
   which the breaker skips: an upstream that stops reading for several seconds at a time, but never for
