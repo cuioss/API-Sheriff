@@ -4,7 +4,7 @@
 
 ## START HERE
 
-**Resume anchor**: 2026-11-14: PLAN-SEC-01..07 all shipped (#582, #581, #590, #589, #600, #607, #619). Nothing staged or running in the ledger. The remaining follow-ups (S7-A, management doc sites, PLAN-SEC-05 minor points, M3 part a, R3) run in an operator-pasted Claude Code session outside the ledger (.plan/local/sec-follow-ups-command.md). S6-A deferred by the operator. Watch: confirm main runs/benchmark for e1b8a2cb. Next: when the operator says so, run /plan-marshall:plan-orchestrator close slug=security-hardening-tier-1 (optionally after the follow-up PR merges).
+**Resume anchor**: PLAN-SEC-01..07 all shipped; the operator-pasted follow-up session shipped as PR #620 (a6c36b37), post-merge runs verified green. S6-A (per-source connection bound) deferred by operator, private notes only. No open plan rows, no pending watches on main runs. Next: on the operator's word, land the ledger and run close (/plan-marshall:plan-orchestrator close slug=security-hardening-tier-1).
 **Phase**: orchestrating
 **Queue** (staged, in order):
 - (empty)
