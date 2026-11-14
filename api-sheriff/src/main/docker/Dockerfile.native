@@ -3,9 +3,11 @@
 # No baked-in certificates — mount TLS certs at runtime via volumes or secrets
 # Health probes via the management interface on port 9000 — that interface has exactly ONE port
 # (no ssl-port, no insecure-requests), and its scheme is deployment-bound: HTTPS only once the
-# deployment supplies QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES / _KEY_FILES (ADR-0025). Without key
+# deployment supplies key material for it (ADR-0025) -- the PEM pair QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES
+# / _KEY_FILES, a keystore through QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_STORE_FILE, or a credentials
+# provider -- or a quarkus.management.tls-configuration-name bucket that carries a key store. Without key
 # material the port falls back to plain HTTP and the gateway logs WARN ApiSheriff-115, and the named
-# opt-out quarkus.management.tls-configuration-name=plain-management forces plain HTTP.
+# opt-out quarkus.management.tls-configuration-name=plain-management selects plain HTTP.
 #
 # The image reports its own health. The HEALTHCHECK below runs /app/application --health-probe, which
 # opens a TCP connection to 127.0.0.1:9000 — the same port the management interface serves — and

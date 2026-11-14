@@ -45,7 +45,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * <strong>The boundary.</strong> The audit warns when the admission cap is greater than <em>or equal
  * to</em> the connection cap: at equality HTTP/1.1 admission still cannot answer first, which is the
  * state the shipped headroom exists to avoid. With no connection cap declared nothing closes connections
- * ahead of admission, so there is nothing to honour and nothing to warn about.
+ * ahead of admission, so there is nothing to honour and nothing to warn about. The same holds for a
+ * declared value of zero or less: Quarkus enforces the cap only when it is greater than zero.
  * <p>
  * <strong>Lazy-proxy hazard.</strong> The observer actively invokes {@link #audit()}, which reads the
  * injected {@link EdgeHardeningOptions} (a normal-scoped bean) — a held but untouched proxy would
@@ -93,7 +94,7 @@ public class ConnectionCapAudit {
      *         emitted
      */
     public boolean audit() {
-        if (connectionCap.isEmpty()) {
+        if (connectionCap.isEmpty() || connectionCap.getAsInt() <= 0) {
             return false;
         }
         int admissionCap = options.admissionCap();

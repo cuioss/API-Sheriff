@@ -1338,8 +1338,8 @@ starts it again, so it does not end a connection that keeps trickling), a connec
 (`quarkus.http.limits.max-connections`) that bounds how many connections the Quarkus-terminated
 side holds open at once (one counter shared by the plain-HTTP redirect listener and the HTTPS
 listener; the SNI front listener of `passthrough_sni` and the management interface are not
-counted; set at twice the default admission cap, so on HTTP/1.1 admission answers before the cap
-closes a connection), a max-in-flight admission cap, `max_body_bytes` as a
+counted; set at twice the default admission cap, so on HTTP/1.1 admission can answer while a
+connection slot remains -- idle keep-alive connections can still fill the cap), a max-in-flight admission cap, `max_body_bytes` as a
 *streaming* counter (never buffer the body -- link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]),
 and streamed responses (never materialized). The gateway is an *opaque* passthrough -- it does
 not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must

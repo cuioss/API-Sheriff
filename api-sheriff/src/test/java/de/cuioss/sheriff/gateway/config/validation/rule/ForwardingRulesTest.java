@@ -20,6 +20,7 @@ import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasE
 import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.singleRefusalAt;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -67,9 +68,14 @@ class ForwardingRulesTest {
 
     private final ConfigValidator validator = new ConfigValidator();
 
-    /** The routes the WebSocket Authorization-origin rule must not judge: HTTP (declared or not), gRPC and GraphQL. */
+    /**
+     * The routes the WebSocket Authorization-origin rule must not judge: an undeclared protocol plus every
+     * {@link Protocol} constant but {@code WEBSOCKET}, derived from the enum so a protocol added later is
+     * covered without touching this list.
+     */
     static Stream<Protocol> nonWebSocketProtocols() {
-        return Stream.of(null, Protocol.HTTP, Protocol.GRPC, Protocol.GRAPHQL);
+        return Stream.concat(Stream.of((Protocol) null),
+                Arrays.stream(Protocol.values()).filter(protocol -> protocol != Protocol.WEBSOCKET));
     }
 
     /**

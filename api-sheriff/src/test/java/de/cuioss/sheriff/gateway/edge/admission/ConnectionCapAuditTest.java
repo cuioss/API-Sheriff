@@ -33,6 +33,8 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link ConnectionCapAudit}: a configured {@code edge_hardening.admission_cap} that the
@@ -107,6 +109,16 @@ class ConnectionCapAuditTest {
         boolean warned = auditOf(FIXTURE_CONNECTION_CAP - 1, OptionalInt.of(FIXTURE_CONNECTION_CAP)).audit();
 
         assertFalse(warned, "the connection cap leaves headroom above the admission cap");
+        LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, ConnectionCapAudit.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1})
+    @DisplayName("Stays silent when the connection cap is zero or negative, which Quarkus does not enforce")
+    void staysSilentWhenTheConnectionCapIsNotPositive(int notAnEnforcedCap) {
+        boolean warned = auditOf(FIXTURE_CONNECTION_CAP, OptionalInt.of(notAnEnforcedCap)).audit();
+
+        assertFalse(warned, "Quarkus enforces the cap only above zero, so there is nothing to honour");
         LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, ConnectionCapAudit.class);
     }
 

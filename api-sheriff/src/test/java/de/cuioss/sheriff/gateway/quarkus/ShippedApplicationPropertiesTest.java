@@ -153,9 +153,10 @@ class ShippedApplicationPropertiesTest {
      * The terminated listener's connection cap. Quarkus bounds open connections only when
      * {@code quarkus.http.limits.max-connections} is set, so an absent key is an unbounded listener.
      * The value is derived rather than chosen: it is a multiple of the default admission cap, so on
-     * HTTP/1.1, where one request needs one connection, admission answers its {@code 503} before the
-     * cap closes a connection and idle keep-alive connections do not take the slots admitted work needs
-     * (see the Connection cap row of {@code doc/user/edge-security.adoc}).
+     * HTTP/1.1, where one request needs one connection, admission has room to answer its {@code 503}
+     * while a connection slot remains. The headroom is not a guarantee: enough idle keep-alive
+     * connections can still fill the cap (see the Connection cap row of
+     * {@code doc/user/edge-security.adoc}).
      */
     @Test
     @DisplayName("The packaged file caps the terminated listener's open connections above the default admission cap")

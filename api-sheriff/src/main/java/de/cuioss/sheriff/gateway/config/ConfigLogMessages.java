@@ -170,12 +170,12 @@ public final class ConfigLogMessages {
          * The remedy names what restores HTTPS — supplying server key material for the management
          * port through the deployment — because the audit observes the effective state and cannot tell
          * which route led to plain HTTP. The neutral {@code management.tls.enabled: true} projects no key
-         * material and so restores nothing by itself, and {@code false} forces plain HTTP (ADR-0025).
+         * material and so restores nothing by itself, and {@code false} selects the plain-HTTP bucket (ADR-0025).
          */
         public static final LogRecord MANAGEMENT_PLAIN_HTTP = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(115)
-                .template("Management interface is serving PLAIN HTTP on port %s — health and metrics are unencrypted and every HTTPS consumer of that port will fail. Expose it only behind a trusted boundary; restore HTTPS by supplying server key material for the management port through the deployment — quarkus.management.ssl.certificate.* or a quarkus.management.tls-configuration-name bucket that carries a key store. management.tls.enabled: true alone restores nothing, and management.tls.enabled: false forces plain HTTP")
+                .template("Management interface is serving PLAIN HTTP on port %s — health and metrics are unencrypted and every HTTPS consumer of that port will fail. Expose it only behind a trusted boundary; restore HTTPS by supplying server key material for the management port through the deployment — quarkus.management.ssl.certificate.* or a quarkus.management.tls-configuration-name bucket that carries a key store. management.tls.enabled: true alone restores nothing, and management.tls.enabled: false selects plain HTTP")
                 .build();
 
         /**

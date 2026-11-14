@@ -171,7 +171,8 @@ for the benchmark comparison against a fixed 2 MiB window).
 `quarkus.http.limits.max-connections`, shared by the plain-HTTP redirect listener and the HTTPS
 listener (the SNI front listener and the management interface are not counted). The cap is set at
 twice the default admission cap, so on HTTP/1.1, where a request needs a connection of its own,
-admission answers its `503` before the cap closes a connection. An `edge_hardening.admission_cap` at or
+admission has room to answer its `503` while a connection slot remains; idle keep-alive connections
+can still fill the cap, and a connection beyond it is closed unserved. An `edge_hardening.admission_cap` at or
 above the cap is not capped silently: the gateway logs `ApiSheriff-148` at startup. Under
 `passthrough_sni` a terminated connection holds three descriptors (front client socket, relay dial and
 the accepted loopback socket); the sizing is in
