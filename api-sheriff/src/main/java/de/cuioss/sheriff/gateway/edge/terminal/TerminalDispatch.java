@@ -932,16 +932,15 @@ public final class TerminalDispatch {
             return relay.apply(ending -> {
                 endHandedOver.set(true);
                 try {
-                    Future<Void> ended = ResponseEnds.endResponse(ctx, ending);
-                    // A deferred end (HTTP/2, request body still open) runs the ending later and fails this
-                    // future when it throws, without ending the response. Registered before the relay sees
-                    // the future, so the flag is cleared before the relay's failure reaches the outcome.
-                    ended.onFailure(deferredFailure -> {
-                        if (!ctx.response().ended()) {
+                    // A deferred end (HTTP/2, request body still open) runs the ending later and fails its
+                    // future when it throws, without ending the response. The relay is handed the future
+                    // andThen returns, which completes only after the flag was cleared, so the relay's
+                    // failure can never reach the outcome while the flag still says the end was handed over.
+                    return ResponseEnds.endResponse(ctx, ending).andThen(ended -> {
+                        if (ended.failed() && !ctx.response().ended()) {
                             endHandedOver.set(false);
                         }
                     });
-                    return ended;
                 } catch (RuntimeException endFailure) {
                     if (!ctx.response().ended()) {
                         endHandedOver.set(false);
