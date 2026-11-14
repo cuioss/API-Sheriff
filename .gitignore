@@ -32,3 +32,4 @@ benchmarking/doc/templates/data/
 !.plan/archived-orchestrators/
 .plan/archived-orchestrators/*/logs/
 node_modules/
+**.factorypath
