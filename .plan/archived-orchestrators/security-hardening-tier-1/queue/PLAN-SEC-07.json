@@ -1,0 +1,11 @@
+{
+  "id": "PLAN-SEC-07",
+  "slug": "tier-2-follow-ups",
+  "workstream": "WS-04",
+  "status": "shipped",
+  "lane": "runbook",
+  "plan_marshall_plan_id": "sec-07-tier-2-follow-ups",
+  "pr": "619",
+  "landing": "landings/PLAN-SEC-07.md",
+  "seq": 7
+}
