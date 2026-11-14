@@ -1,7 +1,7 @@
 {
   "kind": "orchestrator",
   "title": "Security hardening - tier 1",
-  "phase": "orchestrating",
+  "phase": "closed",
   "workstreams": [
     "WS-01-edge-transport",
     "WS-02-upstream-and-forwarding",

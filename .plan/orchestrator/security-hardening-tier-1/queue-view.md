@@ -4,8 +4,8 @@
 
 ## START HERE
 
-**Resume anchor**: PLAN-SEC-01..07 all shipped; the operator-pasted follow-up session shipped as PR #620 (a6c36b37), post-merge runs verified green. S6-A (per-source connection bound) deferred by operator, private notes only. No open plan rows, no pending watches on main runs. Next: on the operator's word, land the ledger and run close (/plan-marshall:plan-orchestrator close slug=security-hardening-tier-1).
-**Phase**: orchestrating
+**Resume anchor**: epic closed — see history.md
+**Phase**: closed
 **Queue** (staged, in order):
 - (empty)
 - PLAN-SEC-01 (WS-01) — plan=plan-sec-01-edge-transport-hardening — PR 582 — landing=landings/PLAN-SEC-01.md — status: shipped

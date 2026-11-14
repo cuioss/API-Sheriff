@@ -1,1 +1,1 @@
-PLAN-SEC-01..07 all shipped; the operator-pasted follow-up session shipped as PR #620 (a6c36b37), post-merge runs verified green. S6-A (per-source connection bound) deferred by operator, private notes only. No open plan rows, no pending watches on main runs. Next: on the operator's word, land the ledger and run close (/plan-marshall:plan-orchestrator close slug=security-hardening-tier-1).
+epic closed — see history.md
