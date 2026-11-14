@@ -125,12 +125,19 @@ mechanism level once the fix is on the branch.
 ## Claim Labels
 
 - OBSERVED: the connection cap is one counter shared by the HTTPS and redirect listeners, with no per-source bound — read at `api-sheriff/src/main/resources/application.properties:143-162` (main `898e0100`)
+  - verdict: corroborated | checked_at: d6b90737 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: application.properties:146-148,162 at d6b90737: one counter shared by redirect and HTTPS listeners; no per-source bound (D1 not implemented, gap stays)
 - OBSERVED: the cap equals the default `admission_cap` (2048) — read at `api-sheriff/src/main/resources/application.properties:151-153,162` (main `898e0100`)
+  - verdict: corroborated | checked_at: d6b90737 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: application.properties:162 at d6b90737: max-connections=2048 = default admission_cap; #619 raises it to 4096
 - OBSERVED: `admission_cap` has no schema maximum and no boot warning against the connection cap — read at `api-sheriff/src/main/resources/schema/gateway.schema.json:345` (main `898e0100`)
+  - verdict: corroborated | checked_at: d6b90737 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: gateway.schema.json:345 at d6b90737: admission_cap minimum 1, no maximum, no boot warning; #619 adds ConnectionCapAudit (ApiSheriff-148)
 - OBSERVED: the GW-08 Assertion still says a gateway-sent reset never counts — read at `doc/security-threat-model.adoc:2111-2112` (main `898e0100`)
+  - verdict: corroborated | checked_at: d6b90737 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: security-threat-model.adoc:2111-2112 at d6b90737: 'never counts towards a client's Rapid-Reset limit'; corrected by #619
 - OBSERVED: the ApiSheriff-115 remedy says `management.tls.enabled: true` restores the HTTPS default — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/ConfigLogMessages.java:177` (main `898e0100`)
+  - verdict: corroborated | checked_at: d6b90737 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: ConfigLogMessages.java:177 at d6b90737 carried 'restore the HTTPS default'; corrected by #619
 - OBSERVED: no `ForwardingRulesTest` case covers a `require: none` HTTP/gRPC route re-admitting `Authorization` or a non-proxy route — read at `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/rule/ForwardingRulesTest.java:235-335` (main `898e0100`)
+  - verdict: corroborated | checked_at: d6b90737 | by: security-hardening-tier-1/analyze | rescoped: n/a | evidence: ForwardingRulesTest at d6b90737 had no non-WebSocket / non-proxy control; #619 adds them
 - HYPOTHESIS: a supported hook sees every connection the Quarkus HTTP server accepts, before a request exists, without patching Quarkus — confirm at the Quarkus `VertxHttpRecorder` max-connections wiring and the available `HttpServerOptionsCustomizer` / Vert.x `connectionHandler` surface (verify-first, D1)
+  - verdict: contradicted | checked_at: e1b8a2cb | by: security-hardening-tier-1/analyze | rescoped: yes | evidence: quarkus-vertx-http 3.40.1 VertxHttpRecorder:1397-1428: the only HttpServer.connectionHandler is Quarkus' own max-connections counter; servers are local (1329,1355); HttpServerOptionsCustomizer/HttpServerStart carry options only; Vert.x 4.5.34 connectionHandler is single-slot. Unexamined: Transport SPI (ServerBootstrap) — internals-adjacent. D1 dropped by its verify-first clause (rescoped).
 
 ## Expected Surface
 
