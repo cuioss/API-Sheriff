@@ -130,8 +130,11 @@ class TerminalDispatchLateBodyTimeoutTest {
     private static final String RELAYED_VALUE = "kept";
     private static final String CACHE_CONTROL = "Cache-Control";
     private static final String RELAYED_CACHE_CONTROL = "public, max-age=3600";
-    /** The caching metadata a failed relay's unwritten head must not carry, beside its Cache-Control. */
-    private static final List<String> CACHING_METADATA = List.of("Expires", "Age", "ETag", "Last-Modified");
+    /**
+     * The caching metadata a failed relay's unwritten head must not carry, beside its Cache-Control: the
+     * production removal policy itself, so a header added to it is seeded and checked here too.
+     */
+    private static final List<String> CACHING_METADATA = TerminalDispatch.UNSTORABLE_ANSWER_REMOVES;
     /** A status other than the {@code 200} the relay of a fresh response starts from. */
     private static final int UPSTREAM_STATUS = 201;
     private static final int BAD_GATEWAY = 502;
@@ -584,15 +587,12 @@ class TerminalDispatchLateBodyTimeoutTest {
         private final MultiMap headers = MultiMap.caseInsensitiveMultiMap()
                 .add(CONTENT_LENGTH, "42")
                 .add(RELAYED_HEADER, RELAYED_VALUE)
-                .add(CACHE_CONTROL, RELAYED_CACHE_CONTROL)
-                .add("Expires", "Thu, 01 Jan 2099 00:00:00 GMT")
-                .add("Age", "12")
-                .add("ETag", "\"v1\"")
-                .add("Last-Modified", "Thu, 01 Jan 2026 00:00:00 GMT");
+                .add(CACHE_CONTROL, RELAYED_CACHE_CONTROL);
         private final List<Integer> statuses = new ArrayList<>();
 
         FailedRelayResponse(boolean headWritten) {
             this.headWritten = headWritten;
+            CACHING_METADATA.forEach(name -> headers.add(name, "relayed"));
         }
 
         HttpServerResponse fake() {

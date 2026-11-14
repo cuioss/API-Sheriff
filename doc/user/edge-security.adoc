@@ -652,15 +652,15 @@ deployment that never writes it keeps the behaviour shown here.
 
 | Upstream connection wait
 | 10 s +
-  (wait queue: `admission_cap`, at least 16; dial: 5 s)
+  (wait queue: `admission_cap`, at least 16; dial: 5 s; TLS handshake: 4 s)
 | How long an upstream attempt waits for a pooled upstream connection, in its upstream client's wait
   queue and while the connection is dialled. Each upstream client queues at most as many attempts as
   the effective `admission_cap`, never fewer than 16. An attempt that finds the queue full, or whose
   wait outlasts the 10 s, is answered `503` (`UPSTREAM_POOL_SATURATED`, problem type
   `urn:api-sheriff:problem:upstream`) without the request ever being sent; it is the gateway's own
   saturation, so the upstream's circuit breaker does not count it as a failure. A connection the
-  upstream refuses, and a TCP connect that does not complete within 5 s, stay the upstream's failure,
-  which the breaker counts. Not configurable. See
+  upstream refuses, and a TCP connect or TLS handshake that does not complete in time, stay the
+  upstream's failure, which the breaker counts. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream connection wait].
 
 | gRPC message bound

@@ -58,6 +58,26 @@ class EgressClientsTest {
     }
 
     @Test
+    @DisplayName("bounds the TLS handshake of the default and of the forced-HTTP/2 client, dial and handshake below the connection wait")
+    void boundsTheTlsHandshakeOfBothBranches() {
+        HttpClientOptions plain = EgressClients.clientOptionsFor(
+                new UpstreamTarget("https", "upstream.example", 8443, false), true, null);
+        HttpClientOptions forcedHttp2 = EgressClients.clientOptionsFor(
+                new UpstreamTarget("https", "upstream.example", 8443, true), true, null);
+
+        assertAll("the TLS handshake timeout of every upstream client",
+                () -> assertEquals(EgressClients.UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS,
+                        plain.getSslHandshakeTimeoutUnit().toMillis(plain.getSslHandshakeTimeout()), "the default client"),
+                () -> assertEquals(EgressClients.UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS,
+                        forcedHttp2.getSslHandshakeTimeoutUnit().toMillis(forcedHttp2.getSslHandshakeTimeout()),
+                        "the forced-HTTP/2 client"),
+                () -> assertTrue(EgressClients.UPSTREAM_DIAL_TIMEOUT_MILLIS + EgressClients.UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS
+                        < DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS,
+                        "a connection the upstream does not establish fails as the upstream's before the connection "
+                                + "wait bound ends the attempt as local saturation"));
+    }
+
+    @Test
     @DisplayName("bounds the TCP connect of the default and of the forced-HTTP/2 client")
     void boundsTheDialOfBothBranches() {
         HttpClientOptions plain = EgressClients.clientOptionsFor(

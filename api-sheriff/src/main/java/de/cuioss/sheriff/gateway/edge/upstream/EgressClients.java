@@ -15,6 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.edge.upstream;
 
+import java.util.concurrent.TimeUnit;
+
+
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -50,10 +53,11 @@ import org.jspecify.annotations.Nullable;
  * {@linkplain #poolOptionsFor(int) a wait-queue bound} of attempts waiting for a pooled connection; an attempt
  * beyond it is refused at once, and the dispatch answers it as the gateway's own saturation
  * ({@code UPSTREAM_POOL_SATURATED}, {@code 503}), which the circuit breaker does not count. A TCP connect to
- * the upstream is bounded by {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} and fails as the upstream's own failure,
- * which the breaker counts. The dispatch bounds an attempt's whole wait for a connection on its own
- * ({@code DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS}), longer than the dial timeout. All three are fixed
- * values, not configuration keys.
+ * the upstream is bounded by {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} and its TLS handshake by
+ * {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS}; either expiring is the upstream's own failure, which the
+ * breaker counts. The dispatch bounds an attempt's whole wait for a connection on its own
+ * ({@code DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS}), longer than the dial and handshake timeouts together.
+ * All of them are fixed values, not configuration keys.
  * <p>
  * Built once at boot and immutable afterwards; the clients it creates are Vert.x's own thread-safe
  * clients.
@@ -78,6 +82,14 @@ public final class EgressClients {
      * upstream that does not complete a dial is never answered as the gateway's own saturation.
      */
     static final int UPSTREAM_DIAL_TIMEOUT_MILLIS = 5_000;
+
+    /**
+     * How long the TLS handshake with an upstream may take before it fails as the upstream's own failure,
+     * which the circuit breaker counts. Together with {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} it stays below the
+     * dispatch's bound on the whole wait for a connection, so an upstream that accepts the TCP connection but
+     * does not complete its handshake is never answered as the gateway's own saturation.
+     */
+    static final int UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS = 4_000;
 
     private final Vertx vertx;
     private final boolean upstreamVerifyHostname;
@@ -139,13 +151,12 @@ public final class EgressClients {
      * The pool options every upstream client is created with: the Vert.x pool sizes, and a wait queue bounded
      * by the admission cap, never below {@link #WAIT_QUEUE_FLOOR}.
      * <p>
-     * <strong>Derivation.</strong> Admission bounds the requests in flight gateway-wide, so no more admitted
-     * attempts than the admission cap can ever wait for one upstream's connections at once, even when every
-     * admitted request targets that upstream; a queue that long never refuses an admitted attempt that the
-     * gateway could otherwise serve. What the bound keeps out is the queue growing past anything admission
-     * accounts for: an attempt whose client left has already returned its admission permit, yet holds its
-     * place in the queue until the pool hands it a connection or its wait ends. The bound is per client, one
-     * per upstream target.
+     * <strong>Derivation.</strong> Admission bounds the requests in flight gateway-wide, so the admission cap
+     * is as many attempts as can be admitted to wait for one upstream's connections at once, even when every
+     * admitted request targets that upstream. The bound keeps the queue at that size whatever else holds a
+     * place in it: an attempt whose client left has already returned its admission permit, yet keeps its
+     * place until the pool hands it a connection or its wait ends. The bound is per client, one per upstream
+     * target.
      *
      * @param admissionCap the resolved {@code edge_hardening.admission_cap}
      * @return the pool options every upstream client is created with
@@ -188,7 +199,7 @@ public final class EgressClients {
 
     /**
      * Builds the options of the shared Vert.x client for an upstream-target tuple. Both branches bound a TCP
-     * connect to the upstream by {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS}. A gRPC route's tuple carries the
+     * connect to the upstream and its TLS handshake (see {@link #establishmentBound}). A gRPC route's tuple carries the
      * {@code forcedHttp2} flag, so it gets a client forced to HTTP/2 (h2 over TLS with ALPN, or
      * prior-knowledge h2c in cleartext) — gRPC requires HTTP/2 end-to-end. Every other tuple gets the
      * default client (HTTP/1.1 with h2 upgrade negotiation).
@@ -196,8 +207,8 @@ public final class EgressClients {
      * Both branches construct from an options object so both bind the gateway-global egress-TLS
      * settings. The default branch's object starts from a bare {@code new HttpClientOptions()} — the
      * same defaults the no-arg {@code createHttpClient()} uses — and carries {@code setVerifyHost},
-     * {@code setTrustOptions} only under a configured profile, the dial timeout and the abortive close
-     * below. It sets no
+     * {@code setTrustOptions} only under a configured profile, the dial and TLS-handshake timeouts and the
+     * abortive close below. It sets no
      * protocol version, no client-level SSL flag and no change to h2-upgrade negotiation: a route's TLS
      * is still selected per request ({@code DispatchStage}), so a client-level flag here would change
      * behaviour rather than preserve it.
@@ -218,11 +229,10 @@ public final class EgressClients {
     static HttpClientOptions clientOptionsFor(UpstreamTarget target, boolean verifyHostname,
             @Nullable TrustOptions trustOptions) {
         if (!target.forcedHttp2()) {
-            return egressTlsBound(new HttpClientOptions().setSoLinger(0).setConnectTimeout(UPSTREAM_DIAL_TIMEOUT_MILLIS),
-                    verifyHostname, trustOptions);
+            return egressTlsBound(establishmentBound(new HttpClientOptions().setSoLinger(0)), verifyHostname,
+                    trustOptions);
         }
-        HttpClientOptions options = new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2)
-                .setConnectTimeout(UPSTREAM_DIAL_TIMEOUT_MILLIS);
+        HttpClientOptions options = establishmentBound(new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2));
         if ("https".equalsIgnoreCase(target.scheme())) {
             options.setSsl(true).setUseAlpn(true);
         } else {
@@ -230,6 +240,18 @@ public final class EgressClients {
             options.setHttp2ClearTextUpgrade(false);
         }
         return egressTlsBound(options, verifyHostname, trustOptions);
+    }
+
+    /**
+     * Bounds how long establishing a connection to an upstream may take — the TCP connect by
+     * {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} and the TLS handshake by {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS}
+     * — so a connection the upstream does not establish fails as the upstream's before the dispatch's wait
+     * bound could end the attempt as the gateway's own saturation.
+     */
+    private static HttpClientOptions establishmentBound(HttpClientOptions options) {
+        return options.setConnectTimeout(UPSTREAM_DIAL_TIMEOUT_MILLIS)
+                .setSslHandshakeTimeout(UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS)
+                .setSslHandshakeTimeoutUnit(TimeUnit.MILLISECONDS);
     }
 
     /**

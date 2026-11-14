@@ -115,7 +115,7 @@ public final class TerminalDispatch {
      * The freshness and validator headers a failed relay's unwritten head drops, beside replacing its
      * {@code Cache-Control} (see {@link #prepareFailedRelayHead}).
      */
-    private static final List<String> UNSTORABLE_ANSWER_REMOVES = List.of("Expires", "Age", "ETag", "Last-Modified");
+    static final List<String> UNSTORABLE_ANSWER_REMOVES = List.of("Expires", "Age", "ETag", "Last-Modified");
     /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
     private static final String VARY_HEADER = "Vary";
     private static final String CONTENT_LENGTH_HEADER = "Content-Length";
@@ -915,10 +915,11 @@ public final class TerminalDispatch {
      * Starts the relay on the event loop, turning a failure thrown while starting it into a failed
      * future, which {@link #relayOnEventLoop} answers — releasing the paused upstream response first —
      * exactly like a failure the relay reports on its future. The {@link ResponseEnd} the relay is handed
-     * sets {@code endHandedOver} before it passes the end to the one end rule. An end that throws before the
-     * response was ended — the end rule or the ending itself failing before anything was written — is no
-     * end at all: the flag is cleared again and the throw is returned as the end's failed future, so the
-     * relay's failure reaches {@link #failRelay} and the client response is still ended.
+     * sets {@code endHandedOver} before it passes the end to the one end rule. An end that fails before the
+     * response was ended — the end rule or the ending itself throwing before anything was written, at once or,
+     * for an HTTP/2 end deferred until the request body stops, later — is no end at all: the flag is cleared
+     * again and the failure reaches the relay as the end's failed future, so the relay's failure reaches
+     * {@link #failRelay} and the client response is still ended.
      */
     private static Future<Void> startRelay(RoutingContext ctx, List<String> stageSetCookies,
             Function<ResponseEnd, Future<Void>> relay, AtomicBoolean endHandedOver) {
@@ -931,7 +932,16 @@ public final class TerminalDispatch {
             return relay.apply(ending -> {
                 endHandedOver.set(true);
                 try {
-                    return ResponseEnds.endResponse(ctx, ending);
+                    Future<Void> ended = ResponseEnds.endResponse(ctx, ending);
+                    // A deferred end (HTTP/2, request body still open) runs the ending later and fails this
+                    // future when it throws, without ending the response. Registered before the relay sees
+                    // the future, so the flag is cleared before the relay's failure reaches the outcome.
+                    ended.onFailure(deferredFailure -> {
+                        if (!ctx.response().ended()) {
+                            endHandedOver.set(false);
+                        }
+                    });
+                    return ended;
                 } catch (RuntimeException endFailure) {
                     if (!ctx.response().ended()) {
                         endHandedOver.set(false);

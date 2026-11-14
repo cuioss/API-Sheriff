@@ -223,23 +223,22 @@ to the guard's timeout as an upstream failure.
 
 [[_upstream_connection_wait]]
 *Upstream connection wait (10 s) and wait queue.* Every upstream client queues at most
-`max(edge_hardening.admission_cap, 16)` attempts waiting for a pooled connection and dials a new
-connection within a fixed 5 s (`EgressClients`). An attempt waits at most a fixed 10 s for its
+`max(edge_hardening.admission_cap, 16)` attempts waiting for a pooled connection, dials a new
+connection within a fixed 5 s and completes its TLS handshake within a fixed 4 s (`EgressClients`). An attempt waits at most a fixed 10 s for its
 connection, in that queue and while the connection is dialled
 (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). An attempt the full queue refuses, and one whose wait
 outlasts the 10 s, obtained no connection because the gateway itself is saturated: it ends unsent as
 `UPSTREAM_POOL_SATURATED` (`503`, `urn:api-sheriff:problem:upstream`), which the circuit breaker does
-not count as a failure and the retry predicate refuses. A connection the upstream refuses and a dial
-that does not complete within the 5 s stay the upstream's `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT`, which
-the breaker counts; the dial timeout is the shorter of the two, so an upstream that never completes a
-dial is not reported as local saturation. The queue bound follows the admission cap because admission
-already bounds the requests in flight: no admitted attempt the gateway could serve is refused by it,
-while the queue cannot grow past what admission accounts for -- an attempt whose client left has
-returned its admission permit but keeps its place in the queue until the pool hands it a connection,
-which is then released unsent, or until its wait bound passes. The wait bound keeps the connection wait
+not count as a failure and the retry predicate refuses. A connection the upstream refuses, and a dial
+or TLS handshake that does not complete in time, stay the upstream's `UPSTREAM_ERROR` /
+`UPSTREAM_TIMEOUT`, which the breaker counts; the two timeouts together are shorter than the wait bound,
+so an upstream that never establishes a connection is not reported as local saturation. The queue bound
+is the admission cap, the number of requests the gateway admits at once. An attempt whose client left
+keeps its place in the queue until the pool hands it a connection, which is then released unsent, or
+until its wait bound passes. The wait bound keeps the connection wait
 to a minority of the request-body bounds: an HTTP body has at least 15 s of its 25 s deadline left at the
 hand-over, and a gRPC call at least 19 s before its 29 s pre-response cap (<<_request_body_deadline>>,
-<<_grpc_message_bound>>). All three values are fixed
+<<_grpc_message_bound>>). All of these values are fixed
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#upstream-connection-wait[ADR-0060]).
 
 [[_request_body_idle_timeout]]

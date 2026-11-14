@@ -154,8 +154,9 @@ docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
   is rejected with `404`. The image ships no built-in application endpoints of its own
 * Port `9000` — management endpoints (health and metrics), served beneath the image's
   *management context path*. It serves HTTPS only when the deployment supplies key material for it, as
-  `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_*` above does; without key material it serves plain HTTP and the
-  gateway logs `WARN ApiSheriff-115` at startup. The management interface has exactly one port, so the
+  `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_*` above does, and `gateway.yaml` does not select plain HTTP with
+  `management.tls.enabled: false`, whose key-less bucket takes precedence over that pair; otherwise it
+  serves plain HTTP and the gateway logs `WARN ApiSheriff-115` at startup. The management interface has exactly one port, so the
   material converts 9000 itself to HTTPS; there is no simultaneous plain-HTTP listener. It is additionally bound to
   `127.0.0.1` (loopback only) so the unauthenticated management interface is not exposed on all
   host interfaces, matching the security posture documented in `doc/architecture/observability-and-errors.adoc`

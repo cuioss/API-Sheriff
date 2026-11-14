@@ -254,8 +254,9 @@ import org.jspecify.annotations.Nullable;
  * refuses at once, and one whose wait outlasts the bound, obtained no connection because the gateway itself
  * is saturated: it ends, unsent, as an {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}),
  * raised inside the guard, so the breaker does not count it as a failure and the retry predicate refuses it.
- * Every other reason an attempt obtains no connection — the upstream refused it, or its dial did not complete
- * within the clients' shorter dial timeout — stays the upstream's failure (see {@link #poolSaturationOf}).
+ * Every other reason an attempt obtains no connection — the upstream refused it, or its dial or TLS handshake
+ * did not complete within the clients' timeouts, which together are shorter — stays the upstream's failure (see
+ * {@link #poolSaturationOf}).
  * The bound keeps the wait from taking more than a minority of the request-body deadline or of the
  * pre-response deadline: an HTTP attempt hands its body over with at least
  * {@code bodyDeadline - UPSTREAM_CONNECTION_WAIT_MILLIS} of its whole-body deadline left, and a gRPC attempt
@@ -316,8 +317,9 @@ public final class DispatchStage {
      * connection it waits for is dialled — before the dispatch gives up on it as the gateway's own
      * saturation ({@link EventType#UPSTREAM_POOL_SATURATED}). It is shorter than the request-body deadline and
      * the pre-response deadline by more than half of either, so an attempt always hands its body over with
-     * most of its deadline left (see {@link DispatchBody#send}), and longer than the clients' dial timeout
-     * ({@code EgressClients}), so a dial that never completes fails as the upstream's first.
+     * most of its deadline left (see {@link DispatchBody#send}), and longer than the clients' dial and TLS
+     * handshake timeouts together ({@code EgressClients}), so a connection the upstream never establishes fails
+     * as the upstream's first.
      */
     static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
 
@@ -760,9 +762,10 @@ public final class DispatchStage {
      * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS} (a {@link TimeoutException})
      * are the gateway's own saturation: the attempt becomes an {@link EventType#UPSTREAM_POOL_SATURATED}
      * rejection, which the breaker does not count. Every other failure — a connection the upstream refused, a
-     * dial that did not complete within the clients' dial timeout, a failed TLS handshake — stays the
-     * upstream's failure, unchanged. The dial timeout is shorter than the wait bound, so a dial that never
-     * completes fails as the upstream's before the wait bound could end the attempt as local saturation.
+     * dial or TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — stays
+     * the upstream's failure, unchanged. The dial and handshake timeouts together are shorter than the wait
+     * bound, so a connection the upstream never establishes fails as the upstream's before the wait bound could
+     * end the attempt as local saturation.
      *
      * @param failure       why the attempt obtained no connection
      * @param failureMapper meters the saturation and builds its rejection
