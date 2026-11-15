@@ -186,6 +186,7 @@ to the connection window once ended (having never acquired an admission permit),
 upload reset by its client while awaiting a pooled upstream connection returns its stream credit and
 releases its admission permit immediately
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#unread-upload-bodies[ADR-0060]).
+Neither release needs code of its own. Two tests in `GatewayEdgeEarlyResponseResetTest` pin both.
 
 == Request Body Framing and Timeouts
 
