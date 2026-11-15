@@ -296,7 +296,8 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static void apply(HttpServerOptions options) {
         Http2Settings settings = options.getInitialSettings();
         boundConcurrentStreams(settings);
-        pinHeaderListSize(settings);
+        // Set unconditionally: a lower announce, the transport default of 8 KiB included, is raised too.
+        settings.setMaxHeaderListSize(MAX_HEADER_LIST_SIZE_BYTES);
         options.setMaxHeaderSize(MAX_HEADER_SIZE_BYTES)
                 .setMaxInitialLineLength(MAX_INITIAL_LINE_LENGTH_BYTES)
                 .setMaxChunkSize(MAX_CHUNK_SIZE_BYTES)
@@ -307,17 +308,6 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
                 .setHttp2RstFloodMaxRstFramePerWindow(RST_FLOOD_MAX_RST_FRAMES_PER_WINDOW)
                 .setHttp2RstFloodWindowDuration(RST_FLOOD_WINDOW_SECONDS)
                 .setHttp2RstFloodWindowDurationTimeUnit(TimeUnit.SECONDS);
-    }
-
-    /**
-     * Sets the listener's announced header-list size to {@link #MAX_HEADER_LIST_SIZE_BYTES}, whatever
-     * it announced before — higher, unbounded, or lower such as the transport default of 8 KiB — so
-     * the announced bound is the documented one.
-     *
-     * @param settings the initial HTTP/2 settings of the listener, updated in place
-     */
-    private static void pinHeaderListSize(Http2Settings settings) {
-        settings.setMaxHeaderListSize(MAX_HEADER_LIST_SIZE_BYTES);
     }
 
     /**
