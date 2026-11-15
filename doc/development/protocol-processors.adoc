@@ -199,8 +199,8 @@ then relays the upstream response -- including its `grpc-status` / `grpc-message
   `DispatchStage`, so the request/response bodies stream as opaque length-prefixed frames (the
   gateway never inspects the protobuf payload) under the same body cap and stream-aware retry gate
   as the HTTP path. The HTTP/2 stream-abuse bounds of threat GW-08 hold on the gRPC path because
-  they are bounds of the shared inbound transport, set by `EdgeHardeningOptions` on every listener
-  rather than per protocol: at most 100 concurrent streams per connection, a decoded header block of
+  they are bounds of the shared inbound transport, set by `EdgeHardeningOptions` on every
+  data-plane listener (main HTTP, main HTTPS, main domain socket) rather than per protocol: at most 100 concurrent streams per connection, a decoded header block of
   at most 16 KiB (`CONTINUATION` frames included), and the Rapid-Reset guard pinned at 200
   client-sent `RST_STREAM` frames per 30-second window. The forced-h2 upstream leg opens at most one
   upstream stream per admitted inbound request, so its stream and reset rates inherit the inbound

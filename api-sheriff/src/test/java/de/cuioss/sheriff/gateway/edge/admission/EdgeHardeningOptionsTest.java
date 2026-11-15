@@ -104,7 +104,7 @@ class EdgeHardeningOptionsTest {
         // Act
         hardening.customizeHttpsServer(options);
 
-        // Assert — the customizer applies to every listener Quarkus opens, TLS included.
+        // Assert — the customizer applies to every listener it reaches, TLS included.
         assertEquals(MAX_HEADER_SIZE_BYTES, options.getMaxHeaderSize(),
                 "The TLS listener bounds the header block identically");
         assertEquals(MAX_INITIAL_LINE_LENGTH_BYTES, options.getMaxInitialLineLength(),
@@ -115,6 +115,53 @@ class EdgeHardeningOptionsTest {
                 "The TLS listener reaps idle connections identically");
         assertEquals(TimeUnit.SECONDS, options.getIdleTimeoutUnit(),
                 "The TLS listener idle-timeout unit is seconds");
+    }
+
+    @Test
+    @DisplayName("applies the same transport bounds to the domain-socket listener as to the plaintext listener")
+    void appliesSameBoundsToDomainSocketListener() {
+        // Arrange — a listener announcing the unbounded Http2Settings stream default and the transport's
+        // 8 KiB header list, so every pinned and derived bound has something to change
+        HttpServerOptions domainSocket = new HttpServerOptions().setInitialSettings(new Http2Settings()
+                .setMaxConcurrentStreams(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS));
+        HttpServerOptions plaintext = new HttpServerOptions().setInitialSettings(new Http2Settings()
+                .setMaxConcurrentStreams(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS));
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions();
+
+        // Act — Quarkus calls customizeDomainSocketServer for an enabled domain-socket listener
+        hardening.customizeDomainSocketServer(domainSocket);
+        hardening.customizeHttpServer(plaintext);
+
+        // Assert — the anchors are the documented values, and each matches the plaintext listener's
+        Http2Settings settings = domainSocket.getInitialSettings();
+        assertAll("the domain-socket listener carries every transport bound",
+                () -> assertEquals(MAX_HEADER_SIZE_BYTES, settings.getMaxHeaderListSize(),
+                        "the HTTP/2 header list is pinned at 16 KiB"),
+                () -> assertEquals(100L, settings.getMaxConcurrentStreams(),
+                        "the concurrent streams are lowered to the bound of 100"),
+                () -> assertEquals(100 * settings.getInitialWindowSize(), domainSocket.getHttp2ConnectionWindowSize(),
+                        "the connection window lets every admitted stream fill its own window"),
+                () -> assertEquals(200, domainSocket.getHttp2RstFloodMaxRstFramePerWindow(),
+                        "the Rapid-Reset guard is pinned at 200 resets"),
+                () -> assertEquals(30, domainSocket.getHttp2RstFloodWindowDuration(),
+                        "the Rapid-Reset window is pinned at 30"),
+                () -> assertEquals(TimeUnit.SECONDS, domainSocket.getHttp2RstFloodWindowDurationTimeUnit(),
+                        "the Rapid-Reset window is counted in seconds"),
+                () -> assertEquals(MAX_HEADER_SIZE_BYTES, domainSocket.getMaxHeaderSize(),
+                        "the HTTP/1.x header block is bounded to 16 KiB"),
+                () -> assertEquals(MAX_INITIAL_LINE_LENGTH_BYTES, domainSocket.getMaxInitialLineLength(),
+                        "the HTTP/1.x request line is bounded to 8 KiB"),
+                () -> assertEquals(MAX_CHUNK_SIZE_BYTES, domainSocket.getMaxChunkSize(),
+                        "a chunked-transfer chunk is bounded to 16 KiB"),
+                () -> assertEquals(IDLE_TIMEOUT_SECONDS, domainSocket.getIdleTimeout(),
+                        "a connection idle for 60 seconds is reaped"),
+                () -> assertEquals(TimeUnit.SECONDS, domainSocket.getIdleTimeoutUnit(),
+                        "the idle-timeout unit is seconds"),
+                () -> assertEquals(plaintext.getInitialSettings(), settings,
+                        "the announced HTTP/2 settings equal the plaintext listener's"),
+                () -> assertEquals(plaintext.getHttp2ConnectionWindowSize(),
+                        domainSocket.getHttp2ConnectionWindowSize(),
+                        "the connection window equals the plaintext listener's"));
     }
 
     @Test
@@ -413,8 +460,8 @@ class EdgeHardeningOptionsTest {
 
     /**
      * The inbound HTTP/2 header-list bound: the decoded header list of one request, {@code CONTINUATION}
-     * frames included, is bounded like the HTTP/1.1 header block. Every listener announces exactly
-     * 16 KiB, whatever it announced before — a larger or unbounded value is lowered, and a lower one,
+     * frames included, is bounded like the HTTP/1.1 header block. Every listener the customizer reaches
+     * announces exactly 16 KiB, whatever it announced before — a larger or unbounded value is lowered, and a lower one,
      * the transport default of 8 KiB included, is raised, so the announced bound is the documented one.
      */
     @Nested

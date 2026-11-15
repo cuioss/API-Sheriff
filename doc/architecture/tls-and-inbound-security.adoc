@@ -156,10 +156,13 @@ link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_decla
 for the benchmark comparison against a fixed 2 MiB window).
 
 [[_http2_transport_bounds]]
-*Per-connection HTTP/2 transport bounds* (link:../security-threat-model.adoc#gw-08[GW-08]):
+*Per-connection HTTP/2 transport bounds* (link:../security-threat-model.adoc#gw-08[GW-08]). They
+reach the listeners `EdgeHardeningOptions` customizes -- the main HTTP listener, the main HTTPS
+listener and the main domain-socket listener. The management interface is built without the
+customizer and keeps the transport defaults.
 
-* *Header list (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Announced as 16 KiB on every listener, in place of
-  the transport default of 8 KiB, across the whole decoded list (`CONTINUATION` frames included). A
+* *Header list (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Announced as 16 KiB on each of those listeners, in
+  place of the transport default of 8 KiB, across the whole decoded list (`CONTINUATION` frames included). A
   decoded list over it is answered `431` and its stream reset; only a compressed header block over
   1.25 times the bound (20 KiB) ends the connection with `GOAWAY`.
 

@@ -184,7 +184,9 @@ belongs to that connection, while the substrate keys a source address. Keying th
 neither see one abusive connection sooner nor bound the memory it holds.
 
 The bounds are therefore fixed per-connection constants on the transport, set by
-`EdgeHardeningOptions` on every listener:
+`EdgeHardeningOptions` on every listener it customizes: the main HTTP, main HTTPS and main
+domain-socket listeners. The management interface is built without the customizer and keeps the
+transport defaults:
 
 * The listener announces a header-list size of exactly 16 KiB, the HTTP/1.1 header-block bound, in
   place of the transport default of 8 KiB. The bound covers the whole decoded header list,

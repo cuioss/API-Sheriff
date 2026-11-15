@@ -583,8 +583,10 @@ deployment that never writes it keeps the behaviour shown here.
 
 | HTTP/2 concurrent streams per connection
 | 100
-| The `SETTINGS_MAX_CONCURRENT_STREAMS` value every listener announces. A listener whose own setting
-  is unbounded or larger is lowered to 100; a lower setting is kept. Not configurable.
+| The `SETTINGS_MAX_CONCURRENT_STREAMS` value every data-plane listener announces (the main HTTP,
+  HTTPS and domain-socket listeners). A listener whose own setting is unbounded or larger is lowered
+  to 100; a lower setting is kept. The management interface is not customized and keeps the transport
+  defaults for this and every other HTTP/2 bound in this table. Not configurable.
 
 | HTTP/2 connection window
 | 6,553,500 bytes +
@@ -596,8 +598,9 @@ deployment that never writes it keeps the behaviour shown here.
 
 | HTTP/2 header list per request
 | 16 KiB
-| The `SETTINGS_MAX_HEADER_LIST_SIZE` value every listener announces -- the HTTP/1.1 header-block
-  bound, set in place of the transport default of 8 KiB. It covers the whole decoded header list,
+| The `SETTINGS_MAX_HEADER_LIST_SIZE` value every data-plane listener announces -- the HTTP/1.1
+  header-block bound, set in place of the transport default of 8 KiB, which the management interface
+  keeps. It covers the whole decoded header list,
   `CONTINUATION` frames included: a request whose decoded list passes it is answered `431` and its
   stream reset, and the connection stays open. Only a compressed header block larger than 1.25 times
   the bound (20 KiB) ends the connection. Not configurable.

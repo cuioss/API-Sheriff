@@ -26,7 +26,11 @@ import io.vertx.core.http.HttpServerOptions;
 /**
  * Edge hardening for the public data-plane HTTP server. It is BOTH the carrier of the
  * gateway's inbound-transport bounds AND the {@link HttpServerOptionsCustomizer} SPI bean that
- * applies them to every listener Quarkus opens.
+ * applies them to the listeners that customizer reaches: the main plain-HTTP listener, the main
+ * HTTPS listener and the main domain-socket listener, through the three callbacks Quarkus invokes for
+ * them. The management interface is built without consulting any {@link HttpServerOptionsCustomizer},
+ * so it keeps the transport defaults — the 8 KiB HTTP/2 header list among them — and none of the
+ * bounds below reaches it.
  * <p>
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
@@ -78,9 +82,11 @@ import io.vertx.core.http.HttpServerOptions;
  * derived from the listener's stream settings after the stream bound is applied, not configured.
  * <p>
  * <strong>The inbound HTTP/2 header block and stream-reset rate are transport bounds as well.</strong>
- * Every listener announces a {@code SETTINGS_MAX_HEADER_LIST_SIZE} of exactly 16 KiB — the same bound
- * the HTTP/1.1 header block has. The value is set whatever the listener announced before, so the
- * transport default of 8 KiB never stays in effect. The bound covers the whole decoded header list,
+ * Every listener this customizer reaches (main HTTP, main HTTPS, main domain socket) announces a
+ * {@code SETTINGS_MAX_HEADER_LIST_SIZE} of exactly 16 KiB — the same bound the HTTP/1.1 header block
+ * has. The value is set whatever the listener announced before, so the transport default of 8 KiB
+ * never stays in effect on those listeners; the management interface, which no customizer reaches,
+ * keeps it. The bound covers the whole decoded header list,
  * {@code CONTINUATION} frames included: a request whose decoded list passes it is answered {@code 431}
  * and its stream reset, while the connection stays open; only a compressed header block larger than
  * 1.25 times the bound (20 KiB) makes the codec end the connection with a {@code GOAWAY} naming an
@@ -182,8 +188,9 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static final long MAX_CONCURRENT_STREAMS_PER_CONNECTION = 100L;
 
     /**
-     * Bound on the decoded HTTP/2 header list of one request, announced as every listener's initial
-     * {@code SETTINGS_MAX_HEADER_LIST_SIZE} in place of the transport default of 8 KiB. Defined as
+     * Bound on the decoded HTTP/2 header list of one request, announced as the initial
+     * {@code SETTINGS_MAX_HEADER_LIST_SIZE} of every listener this customizer reaches, in place of the
+     * transport default of 8 KiB. Defined as
      * {@link #MAX_HEADER_SIZE_BYTES} so the HTTP/2 header list, {@code CONTINUATION} frames included,
      * has the same 16 KiB bound as the HTTP/1.1 header block. A decoded list over it is answered
      * {@code 431} and its stream reset; a compressed header block over 1.25 times it ends the
@@ -278,6 +285,11 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
 
     @Override
     public void customizeHttpsServer(HttpServerOptions options) {
+        apply(options);
+    }
+
+    @Override
+    public void customizeDomainSocketServer(HttpServerOptions options) {
         apply(options);
     }
 
