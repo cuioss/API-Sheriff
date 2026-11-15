@@ -108,9 +108,9 @@ class DeclaredKeyMaterialKeysDriftTest {
                 DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_PREFIX);
 
         assertAll("both listeners fall through to the same legacy ssl.certificate.* block in "
-                        + "HttpServerOptionsUtils, so a spelling that supplies material on one "
-                        + "supplies it on the other. Adding one to a single prefix leaves the other "
-                        + "leg with the false positive that was just fixed on this one.",
+                + "HttpServerOptionsUtils, so a spelling that supplies material on one "
+                + "supplies it on the other. Adding one to a single prefix leaves the other "
+                + "leg with the false positive that was just fixed on this one.",
                 () -> assertEquals(httpLeaves, managementLeaves, "full vocabulary"),
                 () -> assertEquals(httpKeyBearingLeaves, managementKeyBearingLeaves, "key-bearing view"));
     }
@@ -125,7 +125,7 @@ class DeclaredKeyMaterialKeysDriftTest {
         managementPasswordOnly.removeAll(DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS);
 
         assertAll("the vocabulary is never narrowed: the key-bearing view drops the credentials "
-                        + "provider and nothing else, and every key-bearing name stays in the full list",
+                + "provider and nothing else, and every key-bearing name stays in the full list",
                 () -> assertEquals(4, DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS.size(),
                         "the full http vocabulary lost a spelling: "
                                 + DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS),
