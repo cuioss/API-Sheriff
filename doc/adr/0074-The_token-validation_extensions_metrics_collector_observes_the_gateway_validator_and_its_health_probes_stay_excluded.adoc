@@ -175,7 +175,8 @@ decision was taken on. It does not hold at 0.9.8.
   they observe nothing this gateway does. ADR-0027's principle stands unchanged for them: a bean that
   observes machinery the product does not use is removed, not configured into a working state.
 * *No projection onto `sheriff.token.issuers.*`.* The gateway configuration stays the only issuer
-  source. The extension's namespace stays empty in every profile.
+  source. The extension's namespace stays empty in every profile, and a key in it refuses the boot
+  (see Risks).
 * *The extension dependency stays.* The collector the gateway now uses lives in it.
 
 The exclusion is still declared unconditionally and in no profile
@@ -231,8 +232,8 @@ this record decides.
 | Gated on `IssuerConfigResolver.hasEnabledIssuers`, the same probe the resolver uses for `PROPERTY_CONFIGURED`. The
   shipped artifact configures no `sheriff.token.issuers.*` issuer, so the gate is false and the initializer does
   nothing. The probe also reads the environment (`SHERIFF_TOKEN_ISSUERS_<NAME>_ENABLED`).
-| Inert as shipped. A deployment that sets such a key now additionally gets that validator built at boot, and a bad
-  value there aborts the gateway start; see Risks. `ExtensionUnqualifiedBeanExclusionTest` pins the gate.
+| Inert as shipped. A deployment that sets such a key is refused at boot before the initializer runs; see Risks.
+  `ExtensionUnqualifiedBeanExclusionTest` pins the gate.
 
 | `TokenValidatorProducer` closes its validator on `@PreDestroy`
 | The producer builds a validator only on an enabled issuer, so there is nothing to close.
@@ -346,16 +347,20 @@ and with it a second package to re-read on every upgrade.
   extension makes the resolver ambiguous. It WARNs once, reports `NOT_CONFIGURED`, and the collector
   goes idle. `ExtensionUnqualifiedBeanExclusionTest` asserts the resolver observes the
   `@GatewayValidator` instance, so the build turns red before such a change ships.
-* *A populated extension namespace redirects the collector.* A deployment that sets an enabled
-  `sheriff.token.issuers.*` issuer switches the resolver to the extension's own validator. The
-  collector would then report on a validator the request path never touches. The shipped artifact
-  sets none, and `DefaultProfileReadinessTest` asserts that the effective configuration carries no
-  such key. A deployment can still set one through the environment, and nothing detects that. Since 0.9.9
-  the same probe also makes the extension's `TokenValidatorStartupInitializer` build that validator at boot,
-  so a deployment that sets an enabled issuer this way now has the extension's configuration errors abort the
-  gateway start, on top of the redirected collector. `ExtensionUnqualifiedBeanExclusionTest` asserts the gate
-  is false for the effective configuration of the test run, which is the same blind spot as above: it covers
-  what the artifact ships, not what a deployment adds.
+* *A populated extension namespace would redirect the collector and fetch key sets outside the
+  gateway.* An enabled `sheriff.token.issuers.*` issuer switches the resolver to the extension's own
+  validator, so the collector would report on a validator the request path never touches. Since 0.9.9
+  the same probe also makes the extension's `TokenValidatorStartupInitializer` build that validator at
+  boot. That validator loads its key sets through the extension's own loader: the fetches leave the
+  gateway outside `RetryingJwksLoader`, the `jwks.tls_profile` resolution and the derived egress
+  allowance, and a configuration error in that namespace aborts the start with the extension's message.
+  The shipped artifact sets no such key, and `DefaultProfileReadinessTest` asserts that the effective
+  configuration carries none. A deployment that adds one, as a property or through the environment
+  (`SHERIFF_TOKEN_ISSUERS_*`), is refused at boot: `ExtensionIssuerNamespaceGate` observes
+  `StartupEvent` ahead of the extension's initializer and of the scheduler that drives the collector,
+  logs `ApiSheriff-203` naming the offending keys, and aborts the start before the extension builds
+  anything. `ExtensionUnqualifiedBeanExclusionTest` additionally asserts the initializer's gate is false
+  for the effective configuration of the test run.
 * *The list lags the extension.* A release that adds an eagerly-driven bean outside the two packages
   read here reproduces the defect class ADR-0027 describes. The mitigation stays the same: read the
   extension's bean set on every upgrade, as this record did for 0.9.8 and again for 0.9.9.
