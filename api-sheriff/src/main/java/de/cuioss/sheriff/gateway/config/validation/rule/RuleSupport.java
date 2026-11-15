@@ -42,9 +42,12 @@ import org.jspecify.annotations.Nullable;
  * the gateway lacks a configured token issuer ({@link #lacksConfiguredIssuer}).
  * <p>
  * Each helper exists exactly once. {@link #renderForMessage} above all must stay the single copy of
- * the CWE-117 escaping. The rule for every refusal: a configured scalar echoed into its message is
- * passed through {@link #renderForMessage} first, so that a hostile value cannot forge a boot ERROR
- * log line.
+ * the CWE-117 escaping; the route-table and WebSocket-relay log records reuse it rather than carrying
+ * a second escaper. The rule for every refusal message and every log record a rule emits: a
+ * configured free-form scalar it echoes — an endpoint or route id, an anchor name, a path, a host, an
+ * alias, a list entry — is passed through {@link #renderForMessage} first, so that a hostile value
+ * cannot forge a boot log line. Only a value drawn from a closed vocabulary (an enum constant, a
+ * gateway-owned key name or built-in entry) or fixed text is echoed as it is.
  * <p>
  * Stateless, and therefore safe for concurrent use. Free of framework dependencies as the pre-boot
  * rule requires of this package (ADR-0061, ADR-0062).

@@ -156,7 +156,7 @@ public class AssetDefaultsRules {
                                 + "the value is served verbatim as the asset's Content-Type response header, so it "
                                 + "must be a 'type/subtype' (optionally followed by ';name=value' parameters) and "
                                 + "must carry no control characters")
-                                .formatted(entry.getKey(), renderForMessage(value))));
+                                .formatted(renderForMessage(entry.getKey()), renderForMessage(value))));
             }
         }
     }

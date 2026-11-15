@@ -78,7 +78,7 @@ public class ProtocolRules {
                 } else if (route.websocket() != null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' declares a websocket block but its protocol is not 'websocket'; the websocket settings would be silently ignored"
-                                    .formatted(route.id())));
+                                    .formatted(renderForMessage(route.id()))));
                 }
             }
         }
@@ -108,20 +108,20 @@ public class ProtocolRules {
         if (require.isAuthenticated() && origins.isEmpty()) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' with effective auth '%s' must declare a non-empty allowed_origins allowlist (fail-closed)"
-                            .formatted(route.id(), require.name().toLowerCase(Locale.ROOT))));
+                            .formatted(renderForMessage(route.id()), require.name().toLowerCase(Locale.ROOT))));
         }
         for (String origin : origins) {
             if (origin.contains(WILDCARD_ORIGIN)) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                         "websocket route '%s' allowed_origins entry '%s' must be an exact origin; wildcards are not permitted"
-                                .formatted(route.id(), origin)));
+                                .formatted(renderForMessage(route.id()), renderForMessage(origin))));
             }
         }
         Integer timeout = websocket == null ? null : websocket.idleTimeoutSeconds();
         if (timeout != null && timeout <= 0) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' idle_timeout_seconds must be a positive integer, but was %d"
-                            .formatted(route.id(), timeout)));
+                            .formatted(renderForMessage(route.id()), timeout)));
         }
     }
 
@@ -144,7 +144,8 @@ public class ProtocolRules {
                         && (protocol == Protocol.GRPC || protocol == Protocol.WEBSOCKET)) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' declares upstream.rewrite_location but its protocol is '%s'; the Location rewrite applies to http and graphql routes only and would be silently ignored"
-                                    .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
+                                    .formatted(renderForMessage(route.id()),
+                                            protocol.name().toLowerCase(Locale.ROOT))));
                 }
             }
         }

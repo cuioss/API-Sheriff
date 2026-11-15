@@ -157,7 +157,7 @@ class GatewayEdgeHttp2AbuseTest {
         // The stub upstream takes a forwarded header block well past the bound, so a refusal of the
         // grey-zone pair can only come from the edge, never from the stub's own 8 KiB default.
         upstreamServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions().setHttp2ClearTextEnabled(false)
-                        .setMaxHeaderSize(4 * HEADER_LIST_BOUND))
+                .setMaxHeaderSize(4 * HEADER_LIST_BOUND))
                 .requestHandler(this::handleUpstreamRequest)
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         GatewayEdgeRoute edge = EdgeFixtures.edge(vertx, virtualThreadExecutor)

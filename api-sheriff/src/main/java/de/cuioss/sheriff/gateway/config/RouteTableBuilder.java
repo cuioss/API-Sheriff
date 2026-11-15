@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -345,7 +346,7 @@ public final class RouteTableBuilder {
             return null;
         }
         if (!cookies.effectiveSameOriginCheck()) {
-            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_SAME_ORIGIN_CHECK_DISABLED, routeId);
+            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_SAME_ORIGIN_CHECK_DISABLED, RuleSupport.renderForMessage(routeId));
             return null;
         }
         List<String> additionalOrigins = cookies.additionalOrigins();
@@ -544,7 +545,8 @@ public final class RouteTableBuilder {
         String anchorName = route.anchor() != null ? route.anchor() : NO_ANCHOR_NAME;
         SecurityProfile effectiveProfile = effectiveProfile(route.effectiveSecurityFilter(), gateway);
         AuthConfig effectiveAuth = route.effectiveAuth();
-        LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, effectiveAuth.require(),
+        LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, RuleSupport.renderForMessage(route.id()),
+                RuleSupport.renderForMessage(anchorName), effectiveAuth.require(),
                 effectiveAuth.effectiveSessionFallback(), effectiveProfile.name().toLowerCase(Locale.ROOT));
     }
 

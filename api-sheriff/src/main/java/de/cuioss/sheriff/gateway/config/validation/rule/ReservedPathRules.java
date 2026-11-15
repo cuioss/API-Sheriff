@@ -214,7 +214,7 @@ public class ReservedPathRules {
             if (!allowed.contains(claim)) {
                 errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_DEFAULT_VIEW_POINTER,
                         "oidc user_info default_view claim '%s' is not in allowed_claims; the default view cannot disclose a claim outside the operator allowlist"
-                                .formatted(claim)));
+                                .formatted(renderForMessage(claim))));
             }
         }
     }

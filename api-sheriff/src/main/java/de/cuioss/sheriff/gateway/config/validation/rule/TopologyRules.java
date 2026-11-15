@@ -77,7 +77,7 @@ public class TopologyRules {
         for (EndpointConfig endpoint : endpoints) {
             if (!seen.add(endpoint.id())) {
                 errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/id",
-                        "duplicate endpoint id: " + endpoint.id()));
+                        "duplicate endpoint id: " + renderForMessage(endpoint.id())));
             }
         }
     }
@@ -95,7 +95,7 @@ public class TopologyRules {
             for (RouteConfig route : endpoint.routes()) {
                 if (!seen.add(route.id())) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "duplicate route id: " + route.id()));
+                            "duplicate route id: " + renderForMessage(route.id())));
                 }
             }
         }
@@ -119,11 +119,12 @@ public class TopologyRules {
             if (baseUrl == null) {
                 if (endpoint.routes().stream().anyMatch(RouteConfig::isProxyRoute)) {
                     errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
-                            "endpoint '%s' declares proxy route(s) but no base_url".formatted(endpoint.id())));
+                            "endpoint '%s' declares proxy route(s) but no base_url"
+                                    .formatted(renderForMessage(endpoint.id()))));
                 }
             } else if (topology.lookup(baseUrl).isEmpty()) {
                 errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
-                        "unresolved topology alias: " + baseUrl));
+                        "unresolved topology alias: " + renderForMessage(baseUrl)));
             }
         }
     }

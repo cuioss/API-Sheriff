@@ -26,6 +26,7 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
 import de.cuioss.sheriff.gateway.events.EventType;
@@ -340,7 +341,7 @@ public final class WebSocketRelayStage {
             WebSocket upstreamWs, RelayLifetime lifetime) {
         Integer declaredIdleSeconds = route.effectiveWebSocketIdleTimeoutSeconds();
         int idleSeconds = declaredIdleSeconds == null ? DEFAULT_IDLE_TIMEOUT_SECONDS : declaredIdleSeconds;
-        LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, route.id());
+        LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, RuleSupport.renderForMessage(route.id()));
         eventCounter.increment(EventType.REQUEST_FORWARDED);
         // The admission permit stays held for the relay's whole lifetime — the session releases it from
         // its single teardown funnel, never here at upgrade completion.
@@ -594,7 +595,8 @@ public final class WebSocketRelayStage {
             if (closed) {
                 return;
             }
-            LOGGER.warn(ApiSheriffLogMessages.WARN.WEBSOCKET_IDLE_RECLAIM, routeId, Integer.toString(idleSeconds));
+            LOGGER.warn(ApiSheriffLogMessages.WARN.WEBSOCKET_IDLE_RECLAIM, RuleSupport.renderForMessage(routeId),
+                    Integer.toString(idleSeconds));
             eventCounter.increment(EventType.WEBSOCKET_IDLE_TIMEOUT);
             closeBoth((short) EventType.WEBSOCKET_IDLE_TIMEOUT.wsCloseCode(), "idle timeout");
         }

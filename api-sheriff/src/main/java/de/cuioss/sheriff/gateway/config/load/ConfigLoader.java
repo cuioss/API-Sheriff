@@ -369,7 +369,9 @@ public final class ConfigLoader {
      * the refusal cannot point the operator at a value the next boot refuses.
      * <p>
      * Neither echoed value can carry a secret or forge a log line: the id has already passed the
-     * endpoint schema, whose {@code ^[a-z][a-z0-9-]*$} pattern admits no control character, and the
+     * endpoint schema, whose {@code ^[a-z][a-z0-9-]*} pattern ends in the negative lookahead
+     * {@code (?![\s\S])} rather than {@code $} — {@code $} would also match before a final line
+     * terminator — and so admits no control character, not even a trailing line break, and the
      * file name is the name of the file the error is already reported against. A stem echoed as the
      * suggested id has passed that same pattern.
      *

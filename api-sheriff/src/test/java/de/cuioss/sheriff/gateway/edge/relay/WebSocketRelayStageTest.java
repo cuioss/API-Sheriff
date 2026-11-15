@@ -51,6 +51,7 @@ import java.util.function.Supplier;
 import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -84,9 +85,12 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
+import de.cuioss.tools.logging.LogRecord;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
@@ -139,12 +143,22 @@ import org.junit.jupiter.api.Test;
  * their plain {@link Awaits} calls.
  */
 @EnableGeneratorController
+@EnableTestLogger
 @DisplayName("WebSocketRelayStage — end-to-end WebSocket dispatch over a live Vert.x server")
 @Tag("isolated-fork")
 class WebSocketRelayStageTest {
 
     private static final String ALLOWED_ORIGIN = "https://app.example";
     private static final String FOREIGN_ORIGIN = "https://evil.example";
+
+    /**
+     * A route id carrying a line feed and a forged line, written straight into the route table: the
+     * endpoint schema refuses such an id at load, but the relay's log records escape it on their own.
+     */
+    private static final String FORGED_ROUTE_ID = "wsforged\nX-Forged: 1";
+
+    /** How the relay's log records render {@link #FORGED_ROUTE_ID}. */
+    private static final String ESCAPED_ROUTE_ID = "wsforged\\u000AX-Forged: 1";
 
     /**
      * Absolute paths probed for {@code lsof}, in order. Absolute rather than {@code PATH}-resolved so
@@ -216,6 +230,8 @@ class WebSocketRelayStageTest {
                 wsRoute("wssecure", "/ws-secure", Require.BEARER, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
                         positiveListNamingNothing()),
                 wsRoute("wsidle", "/ws-idle", Require.NONE, upstreamPort, Set.of(), 1, positiveListNamingNothing()),
+                wsRoute(FORGED_ROUTE_ID, "/ws-forged", Require.NONE, upstreamPort, Set.of(), 1,
+                        positiveListNamingNothing()),
                 wsRoute("wsdead", "/ws-dead", Require.NONE, deadPort, Set.of(), null, positiveListNamingNothing())));
 
         // Built through the test-only constructor so every relay this edge establishes reports its
@@ -437,6 +453,40 @@ class WebSocketRelayStageTest {
         // Act + Assert — with no frame in either direction the relay is reclaimed and closed 1001
         assertEquals((short) 1001, Awaits.connect(closeCode, "the idle relay to be reclaimed and closed"),
                 "an idle relay is closed with WebSocket code 1001 (Going Away)");
+    }
+
+    /**
+     * The relay's two route-naming log records — the established INFO and the idle-reclaim WARN — echo
+     * the configured route id through {@code RuleSupport.renderForMessage}, so a control character in it
+     * is logged as a {@code \\uXXXX} escape and cannot forge a log line (CWE-117).
+     */
+    @Test
+    @DisplayName("renders a control character in the route id escaped in the established and idle-reclaim records")
+    void rendersTheRouteIdEscapedInTheRelayRecords() throws Exception {
+        // Arrange — the forged route idles after 1s, so one connection drives both records
+        WebSocket socket = connect("/ws-forged/room", ALLOWED_ORIGIN);
+        CompletableFuture<Short> closeCode = new CompletableFuture<>();
+        socket.closeHandler(v -> closeCode.complete(socket.closeStatusCode()));
+
+        // Act — the idle WARN is written before the reclaim closes the client leg
+        assertEquals((short) 1001, Awaits.connect(closeCode, "the forged-id relay to be reclaimed and closed"));
+
+        // Assert
+        assertRelayRecordEscaped(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED);
+        assertRelayRecordEscaped(ApiSheriffLogMessages.WARN.WEBSOCKET_IDLE_RECLAIM);
+    }
+
+    private static void assertRelayRecordEscaped(LogRecord logRecord) {
+        String identifier = logRecord.resolveIdentifierString();
+        List<String> messages = SheriffDebugCapture.capturedRecords().stream()
+                .map(java.util.logging.LogRecord::getMessage)
+                .filter(message -> message != null && message.startsWith(identifier)).toList();
+        assertAll(identifier,
+                () -> assertTrue(messages.stream().anyMatch(message -> message.contains(ESCAPED_ROUTE_ID)),
+                        () -> "the record must echo the forged route id escaped: " + messages),
+                () -> assertTrue(messages.stream().allMatch(message -> message.chars()
+                                .noneMatch(Character::isISOControl)),
+                        () -> "the record must carry no raw control character: " + messages));
     }
 
     @Test

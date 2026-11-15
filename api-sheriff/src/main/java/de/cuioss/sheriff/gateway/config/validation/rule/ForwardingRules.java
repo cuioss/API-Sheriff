@@ -94,12 +94,14 @@ public class ForwardingRules {
      */
     public static void validateCookieOutsideCookiesBlock(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
-            checkCookieHeader(endpoint, endpoint.forward(), "endpoint '%s'".formatted(endpoint.id()),
+            checkCookieHeader(endpoint, endpoint.forward(),
+                    "endpoint '%s'".formatted(RuleSupport.renderForMessage(endpoint.id())),
                     ENDPOINT_FORWARD_POINTER, errors);
             List<RouteConfig> routes = endpoint.routes();
             for (int index = 0; index < routes.size(); index++) {
                 RouteConfig route = routes.get(index);
-                checkCookieHeader(endpoint, route.forward(), "route '%s'".formatted(route.id()),
+                checkCookieHeader(endpoint, route.forward(),
+                        "route '%s'".formatted(RuleSupport.renderForMessage(route.id())),
                         ENDPOINT_ROUTES_POINTER + "/" + index + "/forward", errors);
             }
         }
@@ -153,10 +155,12 @@ public class ForwardingRules {
      */
     public static void validateForwardModeExclusivity(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
-            checkForwardModes(endpoint, endpoint.forward(), "endpoint '%s'".formatted(endpoint.id()),
+            checkForwardModes(endpoint, endpoint.forward(),
+                    "endpoint '%s'".formatted(RuleSupport.renderForMessage(endpoint.id())),
                     ENDPOINT_FORWARD_POINTER, errors);
             for (RouteConfig route : endpoint.routes()) {
-                checkForwardModes(endpoint, route.forward(), "route '%s'".formatted(route.id()),
+                checkForwardModes(endpoint, route.forward(),
+                        "route '%s'".formatted(RuleSupport.renderForMessage(route.id())),
                         ENDPOINT_ROUTES_POINTER, errors);
             }
         }
@@ -236,7 +240,7 @@ public class ForwardingRules {
                                     + "Authorization; token_relay: false keeps every access token away from the "
                                     + "upstream, so re-admitting the Authorization header contradicts it — drop "
                                     + "Authorization from headers_allow, or drop token_relay: false")
-                                    .formatted(route.id())));
+                                    .formatted(RuleSupport.renderForMessage(route.id()))));
                 }
             }
         }

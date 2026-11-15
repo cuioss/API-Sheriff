@@ -111,8 +111,8 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9-]*$",
-          "description": "Unique endpoint name (mandatory). Uniqueness across all endpoint files is enforced in code."
+          "pattern": "^[a-z][a-z0-9-]*(?![\\s\\S])",
+          "description": "Unique endpoint name (mandatory): a lowercase ASCII letter followed by lowercase ASCII letters, digits and hyphens. The pattern terminates with a negative lookahead rather than '$', because '$' also matches before a final line terminator. Uniqueness across all endpoint files is enforced in code."
         },
         "enabled": {
           "type": "boolean",
@@ -190,7 +190,11 @@
             "additionalProperties": false,
             "required": ["id", "match"],
             "properties": {
-              "id": { "type": "string" },
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*(?![\\s\\S])",
+                "description": "The route name (mandatory): a lowercase ASCII letter followed by lowercase ASCII letters, digits and hyphens — the same shape as the endpoint id. The pattern terminates with a negative lookahead rather than '$', because '$' also matches before a final line terminator."
+              },
               "protocol": { "type": "string", "enum": ["http", "grpc", "graphql", "websocket"] },
               "anchor": {
                 "type": "string",

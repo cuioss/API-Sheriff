@@ -141,15 +141,15 @@ public class TerminalActionRules {
         if (assetAnchor && asset == null && redirect == null) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' resolves to asset anchor '%s' but declares no asset terminal action and no redirect terminal action"
-                            .formatted(route.id(), anchor.name())));
+                            .formatted(renderForMessage(route.id()), renderForMessage(anchor.name()))));
         } else if (!assetAnchor && asset != null) {
             String context = anchor == null
                     ? "the route is unanchored"
-                    : "its anchor '%s' is type '%s'".formatted(anchor.name(),
+                    : "its anchor '%s' is type '%s'".formatted(renderForMessage(anchor.name()),
                     anchor.type().name().toLowerCase(Locale.ROOT));
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' declares an asset terminal action but %s; an asset action requires an asset-type anchor"
-                            .formatted(route.id(), context)));
+                            .formatted(renderForMessage(route.id()), context)));
         }
         if (asset != null) {
             validateAssetSource(endpoint, route, asset, topology, errors);
@@ -168,12 +168,12 @@ public class TerminalActionRules {
         if (route.asset() != null) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' declares both a redirect and an asset terminal action; a route resolves exactly one of upstream, asset or redirect"
-                            .formatted(route.id())));
+                            .formatted(renderForMessage(route.id()))));
         }
         if (route.upstream() != null) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' declares both a redirect terminal action and an upstream block; a redirect contacts no upstream, so the upstream settings would be silently ignored"
-                            .formatted(route.id())));
+                            .formatted(renderForMessage(route.id()))));
         }
     }
 
@@ -201,7 +201,7 @@ public class TerminalActionRules {
         }
         errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                 ("route '%s' declares a forward block but serves a redirect, which has no upstream "
-                        + "to forward to — remove the block").formatted(route.id())));
+                        + "to forward to — remove the block").formatted(renderForMessage(route.id()))));
     }
 
     /**
@@ -254,7 +254,7 @@ public class TerminalActionRules {
         if (protocol != Protocol.HTTP) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' declares a redirect terminal action but its protocol is '%s'; a redirect is answered over http only"
-                            .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
+                            .formatted(renderForMessage(route.id()), protocol.name().toLowerCase(Locale.ROOT))));
         }
         if (redirect.keepQuery() && redirect.allowExternal()) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
@@ -262,14 +262,14 @@ public class TerminalActionRules {
                             + "string to a foreign origin, where it lands in the target's access log and Referer "
                             + "chain — drop keep_query to confine the query to this gateway, or drop "
                             + "allow_external to keep the redirect same-origin")
-                            .formatted(route.id())));
+                            .formatted(renderForMessage(route.id()))));
         }
         redirectLocationRefusal(redirect).ifPresent(reason -> errors.add(
                 new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                         "route '%s' redirect location '%s' is refused: %s"
-                                .formatted(route.id(), renderForMessage(redirect.location()), reason))));
+                                .formatted(renderForMessage(route.id()), renderForMessage(redirect.location()), reason))));
         if (redirect.allowExternal()) {
-            LOGGER.warn(ConfigLogMessages.WARN.REDIRECT_EXTERNAL_TARGET_ALLOWED, route.id());
+            LOGGER.warn(ConfigLogMessages.WARN.REDIRECT_EXTERNAL_TARGET_ALLOWED, renderForMessage(route.id()));
         }
     }
 
@@ -382,18 +382,18 @@ public class TerminalActionRules {
             case DIRECTORY -> {
                 if (asset.directory() == null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "asset route '%s' declares source: directory but no directory root".formatted(route.id())));
+                            "asset route '%s' declares source: directory but no directory root".formatted(renderForMessage(route.id()))));
                 }
             }
             case UPSTREAM -> {
                 String alias = asset.upstream();
                 if (alias == null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "asset route '%s' declares source: upstream but no upstream alias".formatted(route.id())));
+                            "asset route '%s' declares source: upstream but no upstream alias".formatted(renderForMessage(route.id()))));
                 } else if (topology.lookup(alias).isEmpty()) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "asset route '%s' upstream alias '%s' does not resolve in the topology"
-                                    .formatted(route.id(), alias)));
+                                    .formatted(renderForMessage(route.id()), renderForMessage(alias))));
                 }
             }
         }
@@ -451,7 +451,7 @@ public class TerminalActionRules {
                     identityHeadersIgnoredReason(route).ifPresent(reason -> errors.add(
                             new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                                     "route '%s' declares keep_identity_headers but %s, which relays no upstream response header; the key would be silently ignored"
-                                            .formatted(route.id(), reason))));
+                                            .formatted(renderForMessage(route.id()), reason))));
                 }
             }
         }
@@ -485,11 +485,11 @@ public class TerminalActionRules {
         if (asset.source() != AssetConfig.Source.DIRECTORY) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "asset route '%s' declares asset.%s but its source is 'upstream'; index and fallback apply to source: directory only"
-                            .formatted(route.id(), key)));
+                            .formatted(renderForMessage(route.id()), key)));
         } else if (!DirectoryAssetSource.isSingleFileName(value)) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "asset route '%s' asset.%s must be a single file-name segment (not empty, no '/', no '\\', no '.' or '..', no control characters)"
-                            .formatted(route.id(), key)));
+                            .formatted(renderForMessage(route.id()), key)));
         }
     }
 }

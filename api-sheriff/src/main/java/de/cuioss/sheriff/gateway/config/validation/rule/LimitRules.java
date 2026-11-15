@@ -146,7 +146,7 @@ public class LimitRules {
                             ("route '%s' resolves inbound-filter profile 'minimal' but %s; 'minimal' is refused on "
                                     + "authenticated and bff routes — declare profile 'strict' or 'lenient' for this "
                                     + "route, or stop routing it through a 'minimal' fallback")
-                                    .formatted(route.id(), String.join(" and ", refusals))));
+                                    .formatted(renderForMessage(route.id()), String.join(" and ", refusals))));
                 }
             }
         }
@@ -165,7 +165,7 @@ public class LimitRules {
             refusals.add("its effective access level is 'authenticated'");
         }
         if (anchor != null && anchor.type() == AnchorType.BFF) {
-            refusals.add("its anchor '%s' is type 'bff'".formatted(anchor.name()));
+            refusals.add("its anchor '%s' is type 'bff'".formatted(renderForMessage(anchor.name())));
         }
         return refusals;
     }
@@ -412,7 +412,8 @@ public class LimitRules {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 if (route.rateLimit() != null) {
-                    LOGGER.warn(ConfigLogMessages.WARN.RATE_LIMIT_NOT_ENFORCED, route.id(), endpoint.id());
+                    LOGGER.warn(ConfigLogMessages.WARN.RATE_LIMIT_NOT_ENFORCED, renderForMessage(route.id()),
+                            renderForMessage(endpoint.id()));
                 }
             }
         }
