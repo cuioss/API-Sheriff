@@ -145,8 +145,10 @@ the body is rejected as `REQUEST_BODY_TIMEOUT`:
   upstream sent, also when no upstream body byte had been relayed yet.
 
 *Amendment: an answer whose head was not yet written is unstorable.* It now carries
-`Cache-Control: no-store` and none of the upstream's `Expires`, `Age`, `ETag` or `Last-Modified`, so no
-cache keeps the empty answer as the upstream's response. Its status is kept rather than turned into a
+`Cache-Control: no-store` and none of the upstream's `Expires`, `Age`, `ETag`, `Last-Modified`,
+`CDN-Cache-Control` or `Surrogate-Control`, so no cache keeps the empty answer as the upstream's response.
+The last two are dropped because a cache they target obeys them in place of `Cache-Control` (RFC 9213).
+Its status is kept rather than turned into a
 `502`: the upstream has acted on the request, and a `502` would invite the client to send it again.
 
 A passed deadline stays in force. While the upstream takes no data, the deadline does not reset the

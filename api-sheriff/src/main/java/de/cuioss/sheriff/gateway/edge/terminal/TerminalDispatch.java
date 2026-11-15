@@ -112,10 +112,11 @@ public final class TerminalDispatch {
     /** The {@code Cache-Control} value forced on an authenticated or cookie-bearing redirect answer. */
     private static final String NO_STORE = "no-store";
     /**
-     * The freshness and validator headers a failed relay's unwritten head drops, beside replacing its
-     * {@code Cache-Control} (see {@link #prepareFailedRelayHead}).
+     * The freshness, validator and cache-targeted control headers a failed relay's unwritten head drops,
+     * beside replacing its {@code Cache-Control} (see {@link #prepareFailedRelayHead}).
      */
-    static final List<String> UNSTORABLE_ANSWER_REMOVES = List.of("Expires", "Age", "ETag", "Last-Modified");
+    static final List<String> UNSTORABLE_ANSWER_REMOVES = List.of("Expires", "Age", "ETag", "Last-Modified",
+            "CDN-Cache-Control", "Surrogate-Control");
     /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
     private static final String VARY_HEADER = "Vary";
     private static final String CONTENT_LENGTH_HEADER = "Content-Length";
@@ -1029,8 +1030,11 @@ public final class TerminalDispatch {
      * <strong>The answer is never storable.</strong> The head still carries the caching metadata the relay
      * copied from the upstream response, which describes a body this answer does not carry. A cache honouring
      * it would store the empty answer as that response and serve it again, so the head is made uncacheable:
-     * {@code Cache-Control: no-store} replaces the upstream's directives, and {@code Expires}, {@code Age} and
-     * the validators {@code ETag} and {@code Last-Modified} are removed. The status is kept rather than turned
+     * {@code Cache-Control: no-store} replaces the upstream's directives, and {@code Expires}, {@code Age},
+     * the validators {@code ETag} and {@code Last-Modified} and the cache-targeted fields
+     * {@code CDN-Cache-Control} and {@code Surrogate-Control} are removed. The last two must go as well:
+     * a cache they target obeys them in place of {@code Cache-Control} (RFC 9213), so a {@code no-store}
+     * written beside them would not reach that cache. The status is kept rather than turned
      * into a {@code 502} for a {@code 2xx}: the upstream has acted on the request, and a {@code 502} would tell
      * the client it may simply send it again (see the architecture's late request-body timeout).
      */
