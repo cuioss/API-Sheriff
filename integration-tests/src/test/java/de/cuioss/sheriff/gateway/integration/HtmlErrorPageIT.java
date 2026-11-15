@@ -609,9 +609,10 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                         Math.min(REFUSED_DIAL_CONNECT_SECONDS, remainingSeconds), remainingSeconds))
                 .header("Accept", accept)
                 .redirects().follow(false);
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             return spec.when().get(UNREACHABLE_UPSTREAM_PATH).then().extract();
-        } catch (Exception unanswered) { // cui-rewrite:disable InvalidExceptionUsageRecipe
+        } catch (Exception unanswered) {
             throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + " (" + accept + ") was not answered within the "
                     + remainingSeconds + "s left of the " + REFUSED_DIAL_TIMEOUT.toSeconds()
                     + "s refused-dial wait, " + wait.elapsedSeconds() + "s into it: " + unanswered, unanswered);
