@@ -704,8 +704,8 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
             return "GOAWAY " + goAwayCode().map(Long::toHexString).orElse("none") + " "
                     + goAwayDetail.getNow("") + ", " + answeredStreams.size() + " stream(s) answered, statuses "
                     + statuses.entrySet().stream().filter(entry -> entry.getValue().isDone())
-                            .map(entry -> entry.getKey() + "=" + entry.getValue().getNow(null)).sorted().limit(5)
-                            .toList()
+                    .map(entry -> entry.getKey() + "=" + entry.getValue().getNow(null)).sorted().limit(5)
+                    .toList()
                     + ", " + resetStreams.size() + " stream(s) reset by the gateway: "
                     + resetStreams.entrySet().stream().sorted(Map.Entry.comparingByKey()).limit(5).toList();
         }
