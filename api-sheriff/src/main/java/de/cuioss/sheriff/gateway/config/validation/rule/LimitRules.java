@@ -123,9 +123,10 @@ public class LimitRules {
      * {@code security_defaults.profile: minimal} reaching an authenticated or BFF route through the
      * fallback resolves to {@code minimal} here and is refused identically.
      * <p>
-     * The message names the route, the refusing dimension and the remedy, and echoes no configured
-     * scalar value. Every violation collects into the shared list; the rule never fails fast
-     * (ADR-0009).
+     * The message names the route, the refusing dimension and the remedy. The configured scalars it
+     * echoes — the route id and, on the bff dimension, the anchor name — pass through
+     * {@link RuleSupport#renderForMessage}, so a control character in either is rendered escaped.
+     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
      *
      * @param gateway   the bound gateway document
      * @param endpoints the enabled endpoints

@@ -159,6 +159,7 @@ class RouteTableBuilderTest {
 
         private static final String FORGED_ROUTE_ID = "orders\nX-Forged: 1";
         private static final String ESCAPED_ROUTE_ID = "orders\\u000AX-Forged: 1";
+        private static final char ESCAPE = (char) 0x1B;
 
         /** The captured messages of one log record, identified by its {@code ApiSheriff-NNN} identifier. */
         private static List<String> messagesOf(LogRecord logRecord) {
@@ -182,7 +183,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should render a control character in the route id and anchor name escaped in the posture line")
         void shouldRenderThePostureLineEscaped() {
             // Arrange
-            String anchorName = "api\u001B[2J";
+            String anchorName = "api" + ESCAPE + "[2J";
             GatewayConfig gateway = gatewayWithAnchors(Map.of(anchorName,
                     anchorSeed(anchorName).pathPrefix("/api").auth(auth(Require.BEARER)).build()));
             EndpointConfig endpoint = anchoredEndpointSeed("api", "API", anchorName)

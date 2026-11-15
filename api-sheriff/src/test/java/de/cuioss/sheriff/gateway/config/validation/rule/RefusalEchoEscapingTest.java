@@ -68,8 +68,8 @@ class RefusalEchoEscapingTest {
 
     private static final char LINE_FEED = '\n';
     private static final char CARRIAGE_RETURN = '\r';
-    private static final char ESCAPE = '\u001B';
-    private static final char BELL = '\u0007';
+    private static final char ESCAPE = (char) 0x1B;
+    private static final char BELL = (char) 0x07;
 
     private final ConfigValidator validator = new ConfigValidator();
 

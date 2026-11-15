@@ -22,9 +22,7 @@ the route's log records and metrics.
 | Type | String, mandatory.
 | Shape
 | A lowercase ASCII letter followed by lowercase ASCII letters, digits and hyphens -- the shape the
-  endpoint `id` has as well. The bundled schema holds both to `^[a-z][a-z0-9-]*`, terminated by a
-  negative lookahead rather than `$`, because `$` also matches before a final line terminator; an id
-  with a trailing line break is therefore refused like any other off-shape id.
+  endpoint `id` has as well. The bundled schema holds both to `^[a-z][a-z0-9-]*$`.
 | Uniqueness | Unique across every enabled endpoint; a repeated id fails the boot.
 | Load refusal | An off-shape id (`Route_1`, `1route`, an id ending in a line break) fails the load,
   naming the endpoint file.
