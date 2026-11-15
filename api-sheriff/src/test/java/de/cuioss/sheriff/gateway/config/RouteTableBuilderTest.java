@@ -146,10 +146,11 @@ class RouteTableBuilderTest {
     }
 
     /**
-     * The log-side half of the CWE-117 contract {@code RuleSupport} states for boot refusals: the two
-     * records route-table assembly writes per route echo configured free-form scalars — the route id
-     * and the anchor name — and render them through the same {@code RuleSupport.renderForMessage}, so a
-     * control character in either is logged as a {@code \\uXXXX} escape and cannot forge a log line.
+     * The log-side half of the CWE-117 contract {@code RuleSupport} states for boot refusals: the
+     * records route-table assembly writes per route — the posture line, the same-origin-check WARN and
+     * the anchor-override WARN — echo configured free-form scalars (the route id, the endpoint id, the
+     * anchor name) and render them through the same {@code RuleSupport.renderForMessage}, so a control
+     * character in any of them is logged as a {@code \\uXXXX} escape and cannot forge a log line.
      * The ids are written straight into the bound model: the endpoint schema refuses such an id at load,
      * but the escaping is assembly's own guarantee and must not depend on that earlier stage.
      */
@@ -214,6 +215,29 @@ class RouteTableBuilderTest {
 
             // Assert
             assertEscapedEcho(ConfigLogMessages.WARN.COOKIE_SAME_ORIGIN_CHECK_DISABLED, ESCAPED_ROUTE_ID);
+        }
+
+        @Test
+        @DisplayName("Should render control characters in the route id, endpoint id and anchor name escaped in the anchor-override WARN")
+        void shouldRenderTheAnchorOverrideWarnEscaped() {
+            // Arrange — a route whose own security_filter replaces its anchor's
+            String anchorName = "api" + ESCAPE + "[2J";
+            String endpointId = "orders\rX-Forged: 2";
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(anchorName,
+                    anchorSeed(anchorName).pathPrefix("/api").auth(auth(Require.BEARER))
+                            .securityFilter(filter("strict")).build()));
+            EndpointConfig endpoint = anchoredEndpointSeed(endpointId, "API", anchorName)
+                    .routes(List.of(RouteConfig.builder().id(FORGED_ROUTE_ID).anchor(anchorName)
+                            .match(match("/api/read")).securityFilter(filter("lenient")).build()))
+                    .build();
+
+            // Act
+            builder.build(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertEscapedEcho(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, ESCAPED_ROUTE_ID);
+            assertEscapedEcho(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, "orders\\u000DX-Forged: 2");
+            assertEscapedEcho(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, "api\\u001B[2J");
         }
 
         @Test

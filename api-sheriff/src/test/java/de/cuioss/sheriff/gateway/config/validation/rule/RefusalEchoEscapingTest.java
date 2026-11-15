@@ -17,20 +17,31 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
+import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.importer.ClassFileImporter;
+import com.tngtech.archunit.core.importer.ImportOption;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -38,10 +49,13 @@ import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -52,12 +66,19 @@ import org.junit.jupiter.params.provider.MethodSource;
  * reaches the message through {@link RuleSupport#renderForMessage}, so a control character in it is
  * rendered as a {@code \\uXXXX} escape and cannot forge a boot log line.
  * <p>
- * One case per rule class that echoes such a scalar. Each case plants a control character in exactly
- * one configured value, drives the full default {@link ConfigValidator} — so a refusal lost from its
- * rule's registration fails here as surely as an unescaped echo — and asserts two things: the refusal
- * the case targets carries the escaped rendering, and <em>no</em> refusal of the whole run carries a
- * raw control character, whichever rule reported it. The second assertion is what holds a rule this
- * table does not name to the same contract once its echo is reached by a planted value.
+ * One case per rule class of this package that echoes such a scalar. Each case plants a control
+ * character in exactly one configured value, drives the full default {@link ConfigValidator} — so a
+ * refusal lost from its rule's registration fails here as surely as an unescaped echo — and asserts two
+ * things: the refusal the case targets carries the escaped rendering, and <em>no</em> refusal of the
+ * whole run carries a raw control character, whichever rule reported it.
+ * <p>
+ * The table is not trusted to name the echoing classes. {@code shouldCoverEveryEchoingRuleClass}
+ * derives them from the compiled classes — every class of this package other than {@link RuleSupport}
+ * whose bytecode calls {@link RuleSupport#renderForMessage} — and requires the set of row keys to equal
+ * it, so a rule class that starts echoing without a row, or a row whose class was renamed or stopped
+ * echoing, fails the build. Each case targets one echo of its class; a class with several echo sites
+ * is covered at one of them, and the run-wide raw-character assertion holds every other echo the
+ * planted value happens to reach.
  * <p>
  * The values are written directly into the bound model, bypassing the schema on purpose: the
  * endpoint and route ids are pattern-bound at load, but the escaping is the rules' own guarantee and
@@ -71,6 +92,12 @@ class RefusalEchoEscapingTest {
     private static final char CARRIAGE_RETURN = '\r';
     private static final char ESCAPE = (char) 0x1B;
     private static final char BELL = (char) 0x07;
+
+    /** The package whose rule classes the coverage check derives from the compiled classes. */
+    private static final String RULE_PACKAGE = RuleSupport.class.getPackageName();
+
+    /** The name of the single CWE-117 escaper every echoing rule class calls. */
+    private static final String RENDER_FOR_MESSAGE = "renderForMessage";
 
     private final ConfigValidator validator = new ConfigValidator();
 
@@ -166,7 +193,112 @@ class RefusalEchoEscapingTest {
                                         .defaultView(List.of("sub", "em" + LINE_FEED + "ail")).build())
                                 .build()).build(),
                         List.of(), topologyWith(), "/oidc/user_info/default_view",
-                        "default_view claim 'em\\u000Aail' is not in allowed_claims"));
+                        "default_view claim 'em\\u000Aail' is not in allowed_claims"),
+                refusal("HeaderRules", validGateway()
+                                .securityHeaders(SecurityHeadersConfig.builder()
+                                        .contentSecurityPolicy("default-src 'self'" + LINE_FEED + "X-Forged: 1").build())
+                                .build(),
+                        List.of(), topologyWith(), "/security_headers/content_security_policy",
+                        "content_security_policy default-src 'self'\\u000AX-Forged: 1 must be"),
+                refusal("RouteMatchingRules", validGateway().build(),
+                        List.of(openEndpointSeed("orders", "ORDERS").allowedMethods(List.of(HttpMethod.GET))
+                                .routes(List.of(RouteConfig.builder().id(forgedRouteId)
+                                        .match(match("/orders", HttpMethod.POST)).build()))
+                                .build()),
+                        topologyWith("ORDERS"), "/endpoint/routes",
+                        "route '" + escapedRouteId + "' matches method POST outside the effective allowed_methods"),
+                refusal("OidcClientRules", validGateway().oidc(OidcConfig.builder()
+                                .issuer("https://idp.example/realms/sheriff")
+                                .redirectUri("https://gw.example/bff/callback")
+                                .allowedEgressHosts(List.of("idp" + BELL + ".example:8443")).build()).build(),
+                        List.of(), topologyWith(), "/oidc/allowed_egress_hosts",
+                        "oidc.allowed_egress_hosts entry 'idp\\u0007.example:8443' is refused"),
+                refusal("OidcSessionRules", validGateway().oidc(OidcConfig.builder()
+                                .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE)
+                                        .cookieName("__Host-se" + CARRIAGE_RETURN + "ss").build())
+                                .build()).build(),
+                        List.of(), topologyWith(), "/oidc/session/cookie_name",
+                        "oidc session cookie_name '__Host-se\\u000Dss'"),
+                refusal("PortalRules", validGateway().build(),
+                        List.of(openEndpointSeed("orders" + ESCAPE + "[2J", "ORDERS")
+                                .catalog(new CatalogConfig("Orders", null, "https://elsewhere.example/", null))
+                                .routes(List.of(routeWithId("orders-read").build())).build()),
+                        topologyWith("ORDERS"), "/endpoint/catalog/entry",
+                        "catalog.entry of endpoint 'orders\\u001B[2J' points outside the gateway's own origin"),
+                refusal("TokenValidationRules", validGateway()
+                                .tokenValidation(new TokenValidationConfig(List.of(IssuerConfig.builder().name("corp")
+                                        .issuer("https://corp.example")
+                                        .jwks(IssuerConfig.Jwks.builder().source("http").url("https://corp.example/jwks")
+                                                .allowedEgressHosts(List.of("idp" + BELL + ".example:8443")).build())
+                                        .build())))
+                                .build(),
+                        List.of(), topologyWith(), "/token_validation/issuers/0/jwks/allowed_egress_hosts",
+                        "jwks.allowed_egress_hosts entry 'idp\\u0007.example:8443' is refused"));
+    }
+
+    /**
+     * The rule classes the table must cover, derived from the compiled classes rather than trusted from
+     * the table: every class of this package, other than {@link RuleSupport} itself, whose bytecode calls
+     * or references {@link RuleSupport#renderForMessage}. A nested class or a lambda body counts for the
+     * top-level class that declares it, so the result is a set of simple top-level class names — the
+     * spelling {@link #echoingRefusals()} uses as its row key.
+     *
+     * @return the simple names of the echoing rule classes
+     */
+    private static Set<String> echoingRuleClassesFromBytecode() {
+        JavaClasses ruleClasses = new ClassFileImporter()
+                .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
+                .importPackages(RULE_PACKAGE);
+        return ruleClasses.stream()
+                .filter(javaClass -> RULE_PACKAGE.equals(javaClass.getPackageName()))
+                .filter(RefusalEchoEscapingTest::callsRenderForMessage)
+                .map(RefusalEchoEscapingTest::topLevelSimpleName)
+                .filter(name -> !RuleSupport.class.getSimpleName().equals(name))
+                .collect(Collectors.toCollection(TreeSet::new));
+    }
+
+    private static boolean callsRenderForMessage(JavaClass javaClass) {
+        return javaClass.getMethodCallsFromSelf().stream()
+                .anyMatch(call -> isRenderForMessage(call.getTarget().getOwner(), call.getTarget().getName()))
+                || javaClass.getMethodReferencesFromSelf().stream()
+                .anyMatch(reference -> isRenderForMessage(reference.getTarget().getOwner(),
+                        reference.getTarget().getName()));
+    }
+
+    private static boolean isRenderForMessage(JavaClass owner, String methodName) {
+        return owner.isEquivalentTo(RuleSupport.class) && RENDER_FOR_MESSAGE.equals(methodName);
+    }
+
+    private static String topLevelSimpleName(JavaClass javaClass) {
+        String binaryName = javaClass.getName().substring(RULE_PACKAGE.length() + 1);
+        int nested = binaryName.indexOf('$');
+        return nested < 0 ? binaryName : binaryName.substring(0, nested);
+    }
+
+    @Test
+    @DisplayName("Should hold exactly one escaping row per rule class whose bytecode echoes through renderForMessage")
+    void shouldCoverEveryEchoingRuleClass() {
+        // Arrange
+        Set<String> derived = echoingRuleClassesFromBytecode();
+
+        // Act
+        Set<String> covered = echoingRefusals().map(arguments -> (String) arguments.get()[0])
+                .collect(Collectors.toCollection(TreeSet::new));
+
+        // Assert
+        Set<String> uncovered = new TreeSet<>(derived);
+        uncovered.removeAll(covered);
+        Set<String> unknown = new TreeSet<>(covered);
+        unknown.removeAll(derived);
+        assertAll("echoing rule classes",
+                () -> assertFalse(derived.isEmpty(),
+                        "the bytecode scan must find echoing rule classes at all, or the coverage check is vacuous"),
+                () -> assertTrue(derived.contains(AnchorRules.class.getSimpleName()),
+                        () -> "the bytecode scan must find a class known to echo, got: " + derived),
+                () -> assertTrue(uncovered.isEmpty(),
+                        () -> "rule classes that echo through renderForMessage without an escaping row: " + uncovered),
+                () -> assertTrue(unknown.isEmpty(),
+                        () -> "escaping rows naming no echoing rule class (renamed or no longer echoing): " + unknown));
     }
 
     @ParameterizedTest(name = "{0}")

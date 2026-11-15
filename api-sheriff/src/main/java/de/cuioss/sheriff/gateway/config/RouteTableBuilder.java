@@ -542,7 +542,7 @@ public final class RouteTableBuilder {
      * rather than reading as a plain bearer route.
      */
     private static void logPosture(Route route, GatewayConfig gateway) {
-        String anchorName = route.anchor() != null ? route.anchor() : NO_ANCHOR_NAME;
+        String anchorName = Objects.requireNonNullElse(route.anchor(), NO_ANCHOR_NAME);
         SecurityProfile effectiveProfile = effectiveProfile(route.effectiveSecurityFilter(), gateway);
         AuthConfig effectiveAuth = route.effectiveAuth();
         LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, RuleSupport.renderForMessage(route.id()),
@@ -601,6 +601,10 @@ public final class RouteTableBuilder {
      * endpoint, so the operator can find the replacing declaration. An unanchored route has no
      * anchor policy to override, and a block the route does not resolve from its scope chain
      * ({@link #resolvesFromChain}) has no replacement to announce.
+     * <p>
+     * The route id, endpoint id and anchor name are configured free-form scalars, so each passes
+     * through {@link RuleSupport#renderForMessage} before it reaches the record; the block key and
+     * the declaring scope are closed vocabulary and are echoed as they are.
      *
      * @param chain the route's scope chain
      */
@@ -615,8 +619,10 @@ public final class RouteTableBuilder {
             }
             Set<PolicyBlock.Scope> declaring = block.declaringScopes(chain);
             if (replacesAnchor(declaring)) {
-                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, chain.route().id(),
-                        chain.endpoint().id(), anchor.name(), block.yamlKey(), nearestScope(declaring));
+                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN,
+                        RuleSupport.renderForMessage(chain.route().id()),
+                        RuleSupport.renderForMessage(chain.endpoint().id()),
+                        RuleSupport.renderForMessage(anchor.name()), block.yamlKey(), nearestScope(declaring));
             }
         }
     }
