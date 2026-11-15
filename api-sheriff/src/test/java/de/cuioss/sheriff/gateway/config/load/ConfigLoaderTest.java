@@ -1149,7 +1149,7 @@ class ConfigLoaderTest {
         }
 
         @Test
-        void discoversTheEndpointFilesOfEveryShippedConfigurationSet() throws IOException {
+        void discoversTheEndpointFilesOfEveryShippedConfigurationSet() throws Exception {
             List<String> discovered = discover().stream().map(file -> REPOSITORY.relativize(file).toString())
                     .map(path -> path.replace('\\', '/')).toList();
 
