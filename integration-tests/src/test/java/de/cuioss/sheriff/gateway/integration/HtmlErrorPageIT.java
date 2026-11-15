@@ -34,6 +34,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import io.restassured.response.ExtractableResponse;
@@ -79,7 +80,12 @@ import org.junit.jupiter.api.Test;
  * {@code 502} and then {@code 503} is a breaker transition between the legs, not negotiation changing
  * the status. Such a pair is therefore sent again, within the same bounded wait, until both legs answer
  * the same status; the contract is asserted on that agreeing pair, and a disagreement that outlasts the
- * wait fails.
+ * wait fails. Every leg's whole shape — the HTML error page on the navigation, the problem document on
+ * the JSON leg, and the open-circuit signature on a leg that is not {@code 502} — is checked before a
+ * pair is sent again, so a malformed leg fails at once instead of being discarded with a disagreeing
+ * pair. Each request of the two waits carries a connect and a response timeout that fit in the time
+ * left of its wait, so a request that is never answered fails the test, naming the route and the
+ * elapsed wait, instead of holding the wait past its bound.
  * <p>
  * <strong>The two upstream-fault tests.</strong> {@code 504} and {@code 503} are answers the gateway
  * gives about an upstream that misbehaves, so both tests misbehave one: the {@code upstream-fault}
@@ -198,6 +204,12 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
      * stays open, and the trial dial that follows.
      */
     private static final Duration REFUSED_DIAL_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * The connect bound of one refused-dial request, in seconds, capped further by the time left in the
+     * wait. The gateway accepts at once, so the bound only stops a connect that hangs.
+     */
+    private static final int REFUSED_DIAL_CONNECT_SECONDS = 5;
 
     /**
      * The RFC 9457 problem type of an upstream failure. With status {@code 503} and
@@ -501,9 +513,9 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
      */
     @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded poll of a circuit breaker letting a trial dial through
     private static void awaitRefusedDial() {
-        long deadline = System.nanoTime() + REFUSED_DIAL_TIMEOUT.toNanos();
-        ExtractableResponse<Response> last = send(JSON_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
-        while (last.statusCode() != 502 && System.nanoTime() < deadline) {
+        RefusedDialWait wait = RefusedDialWait.start();
+        ExtractableResponse<Response> last = sendRefusedDial(JSON_ACCEPT, wait);
+        while (last.statusCode() != 502 && wait.hasTimeLeft()) {
             assertOpenCircuit(last);
             try {
                 Thread.sleep(HEALTHY_POLL_INTERVAL_MILLIS);
@@ -511,7 +523,10 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("interrupted while waiting for the refused dial", interrupted);
             }
-            last = send(JSON_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
+            if (!wait.hasTimeLeft()) {
+                break;
+            }
+            last = sendRefusedDial(JSON_ACCEPT, wait);
         }
         ExtractableResponse<Response> answered = last;
         assertEquals(502, answered.statusCode(), () -> UNREACHABLE_UPSTREAM_PATH + " must answer the gateway's own "
@@ -523,18 +538,19 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
      * Sends the negotiated pair on the refused-dial route until its two legs answer the same status, for
      * at most {@link #REFUSED_DIAL_TIMEOUT}. A pair whose legs disagree was taken across a breaker
      * transition — the navigation's refused dial opened the circuit, or a trial dial closed it, before the
-     * JSON client was answered — and is sent again. Every leg on the way must be the gateway's own
-     * {@code 502} or an identified open circuit; anything else, a bare {@code 503} included, fails at once
-     * and is not sent again.
+     * JSON client was answered — and is sent again only when both of its legs passed the whole-shape
+     * checks of {@link #sendRefusedDialPair}. Every leg on the way must be the gateway's own {@code 502}
+     * or an identified open circuit; anything else, a bare {@code 503} or a malformed leg included, fails
+     * at once and is not sent again.
      *
      * @return the first pair whose legs agree, or the last pair sent once the wait has expired, so that a
      *         disagreement which persists fails in the caller
      */
     @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded repeat of a pair a breaker transition split
     private static NegotiatedPair awaitAgreeingPair() {
-        long deadline = System.nanoTime() + REFUSED_DIAL_TIMEOUT.toNanos();
-        NegotiatedPair pair = sendRefusedDialPair();
-        while (!pair.agrees() && System.nanoTime() < deadline) {
+        RefusedDialWait wait = RefusedDialWait.start();
+        NegotiatedPair pair = sendRefusedDialPair(wait);
+        while (!pair.agrees() && wait.hasTimeLeft()) {
             try {
                 Thread.sleep(HEALTHY_POLL_INTERVAL_MILLIS);
             } catch (InterruptedException interrupted) {
@@ -542,18 +558,30 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                 throw new IllegalStateException("interrupted while waiting for an agreeing negotiated pair",
                         interrupted);
             }
-            pair = sendRefusedDialPair();
+            if (!wait.hasTimeLeft()) {
+                break;
+            }
+            pair = sendRefusedDialPair(wait);
         }
         return pair;
     }
 
     /**
-     * Sends the refused-dial request as a navigation, then as a JSON client, and asserts each leg on its
-     * own: the gateway's own {@code 502}, or an open circuit identified by its signature.
+     * Sends the refused-dial request as a navigation, then as a JSON client, and asserts each leg's whole
+     * shape before the caller decides whether to send the pair again: the HTML error page on the
+     * navigation and the problem document on the JSON leg, at the status each was answered with, and on
+     * a leg that is not the gateway's own {@code 502} the open-circuit signature as well. So a malformed
+     * leg fails here, even beside a valid leg of the other status, instead of being discarded as one half
+     * of a breaker transition. Each leg is bounded by the time left in {@code wait}.
+     *
+     * @param wait the bounded wait the pair is sent within
+     * @return the pair, both legs asserted
      */
-    private static NegotiatedPair sendRefusedDialPair() {
-        ExtractableResponse<Response> html = send(BROWSER_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
-        ExtractableResponse<Response> json = send(JSON_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
+    private static NegotiatedPair sendRefusedDialPair(RefusedDialWait wait) {
+        ExtractableResponse<Response> html = sendRefusedDial(BROWSER_ACCEPT, wait);
+        ExtractableResponse<Response> json = sendRefusedDial(JSON_ACCEPT, wait);
+        assertHtmlErrorPage(html, html.statusCode());
+        assertCurrentShape(json, json.statusCode(), true);
         if (html.statusCode() != 502) {
             assertOpenCircuitPage(html);
         }
@@ -561,6 +589,67 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
             assertOpenCircuit(json);
         }
         return new NegotiatedPair(html, json);
+    }
+
+    /**
+     * Sends one refused-dial request with a connect and a response timeout that fit in the time left of
+     * {@code wait}, so a request that is never answered cannot hold the bounded wait past its end. A
+     * request that fails or times out fails the test, naming the route and how much of the wait had
+     * passed; it is not sent again. The other tests keep {@link #send}, whose waits are the gateway's own.
+     *
+     * @param accept the {@code Accept} the request carries
+     * @param wait   the bounded wait the request is sent within; it must have time left
+     * @return the answer
+     */
+    @SuppressWarnings("java:S2221") // NOSONAR java:S2221 - REST Assured surfaces a socket timeout as an undeclared checked exception; every failure is turned into a named test failure
+    private static ExtractableResponse<Response> sendRefusedDial(String accept, RefusedDialWait wait) {
+        int remainingSeconds = wait.remainingSeconds();
+        RequestSpecification spec = given()
+                .config(BffKeycloakLoginFlow.clientDeadlines(
+                        Math.min(REFUSED_DIAL_CONNECT_SECONDS, remainingSeconds), remainingSeconds))
+                .header("Accept", accept)
+                .redirects().follow(false);
+        try {
+            return spec.when().get(UNREACHABLE_UPSTREAM_PATH).then().extract();
+        } catch (Exception unanswered) {
+            throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + " (" + accept + ") was not answered within the "
+                    + remainingSeconds + "s left of the " + REFUSED_DIAL_TIMEOUT.toSeconds()
+                    + "s refused-dial wait, " + wait.elapsedSeconds() + "s into it: " + unanswered, unanswered);
+        }
+    }
+
+    /**
+     * One bounded refused-dial wait of {@link #REFUSED_DIAL_TIMEOUT}, measured from its start. The time
+     * left is counted in whole seconds because that is the unit the request timeouts are set in; a wait
+     * with less than one whole second left has no time left, so no request is sent with a timeout of
+     * zero, which the HTTP client would read as no timeout at all.
+     *
+     * @param startNanos the {@link System#nanoTime()} the wait started at
+     */
+    private record RefusedDialWait(long startNanos) {
+
+        static RefusedDialWait start() {
+            return new RefusedDialWait(System.nanoTime());
+        }
+
+        int remainingSeconds() {
+            long left = startNanos + REFUSED_DIAL_TIMEOUT.toNanos() - System.nanoTime();
+            int seconds = (int) TimeUnit.NANOSECONDS.toSeconds(Math.max(0L, left));
+            if (seconds < 1) {
+                throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + ": the " + REFUSED_DIAL_TIMEOUT.toSeconds()
+                        + "s refused-dial wait has no whole second left for another request, "
+                        + elapsedSeconds() + "s into it");
+            }
+            return seconds;
+        }
+
+        boolean hasTimeLeft() {
+            return startNanos + REFUSED_DIAL_TIMEOUT.toNanos() - System.nanoTime() >= TimeUnit.SECONDS.toNanos(1);
+        }
+
+        long elapsedSeconds() {
+            return TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - startNanos);
+        }
     }
 
     /**
