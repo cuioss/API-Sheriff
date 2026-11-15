@@ -120,7 +120,12 @@ public class ExtensionIssuerNamespaceGate {
      *                               {@code ApiSheriff-203} naming every offending key
      */
     public void refuseConfiguredExtensionIssuers() {
-        SortedSet<String> offending = offendingKeys(config);
+        SortedSet<String> offending = new TreeSet<>();
+        for (String name : config.getPropertyNames()) {
+            if (inExtensionIssuerNamespace(name)) {
+                offending.add(name);
+            }
+        }
         if (offending.isEmpty()) {
             LOGGER.debug("No sheriff.token.issuers.* key configured — the extension builds no validator of its own");
             return;
@@ -131,20 +136,6 @@ public class ExtensionIssuerNamespaceGate {
         LOGGER.error(ConfigLogMessages.ERROR.EXTENSION_ISSUER_NAMESPACE_CONFIGURED, rendered);
         throw new IllegalStateException("Refusing to start — the token-validation extension's own issuer "
                 + "namespace is configured: " + rendered);
-    }
-
-    /**
-     * @param config the configuration to enumerate
-     * @return every configured key in the extension's issuer namespace, in either spelling, sorted
-     */
-    static SortedSet<String> offendingKeys(Config config) {
-        SortedSet<String> offending = new TreeSet<>();
-        for (String name : config.getPropertyNames()) {
-            if (inExtensionIssuerNamespace(name)) {
-                offending.add(name);
-            }
-        }
-        return offending;
     }
 
     /**
