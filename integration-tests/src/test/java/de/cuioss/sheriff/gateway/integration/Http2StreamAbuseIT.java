@@ -22,6 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.http2.DefaultHttp2HeadersDecoder;
+import io.netty.handler.codec.http2.Http2Exception;
+import io.netty.handler.codec.http2.Http2Headers;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
@@ -68,6 +72,14 @@ import org.junit.jupiter.api.Test;
  *   <li><em>A declared body keeps its length</em> — an {@code h2} request with a body reaches the
  *       HTTP/1.1 echo upstream with a {@code Content-Length} equal to the bytes sent, and the body
  *       whole.</li>
+ *   <li><em>The listener announces 16 KiB, not the transport default of 8 KiB</em> — the header-list
+ *       bound is the {@code SETTINGS_MAX_HEADER_LIST_SIZE} of {@value #HEADER_LIST_BOUND} bytes every
+ *       listener announces, counted as HPACK counts a decoded list: every name and value plus 32 bytes
+ *       per field. A single {@code HEADERS} frame whose decoded list lies {@value #GREY_ZONE_MARGIN}
+ *       bytes under that bound, and so above 8 KiB, is answered by the echo upstream. One whose decoded
+ *       list lies {@value #GREY_ZONE_MARGIN} bytes over it is answered {@code 431} and its stream reset,
+ *       while the connection — whose compressed block stays far below 1.25 times the bound — serves a
+ *       further stream. A listener still announcing 8 KiB fails the case just under the bound.</li>
  *   <li><em>A Rapid-Reset flood ends its connection</em> — {@value #FLOOD_RESETS} streams, each reset
  *       by the client straight behind the {@code HEADERS} frame that opened it, go one past the pinned
  *       limit of {@value #RESET_LIMIT} client resets per window: the connection is ended with
@@ -78,12 +90,14 @@ import org.junit.jupiter.api.Test;
  *       taken to nearly twice it by its last frame, is never answered: the connection is ended with an
  *       error {@code GOAWAY}, and the gateway stays ready.</li>
  * </ul>
- * The two floods are written frame by frame over a raw TLS socket ({@link RawTlsHttp2Connection}): an
- * HTTP/2 client library neither resets a stream straight behind its {@code HEADERS} frame nor leaves a
- * header block open. The unit-level matched controls — resets below the limit, gateway-sent
- * {@code NO_ERROR} resets, a header block within the bound spread over {@code CONTINUATION} frames —
- * are {@code GatewayEdgeHttp2AbuseTest}; {@link Http2EarlyResponseResetIT} is the wire-level control
- * that four hundred gateway-reset uploads on one connection never trip the guard.
+ * The two floods and the grey-zone pair are written frame by frame over a raw TLS socket
+ * ({@link RawTlsHttp2Connection}): an HTTP/2 client library neither resets a stream straight behind its
+ * {@code HEADERS} frame nor leaves a header block open, and it refuses to encode a header list larger
+ * than the one its peer announced, so it cannot send the case just over the bound. The unit-level
+ * matched controls — resets below the limit, gateway-sent {@code NO_ERROR} resets, a header block within
+ * the bound spread over {@code CONTINUATION} frames, the same grey-zone pair — are
+ * {@code GatewayEdgeHttp2AbuseTest}; {@link Http2EarlyResponseResetIT} is the wire-level control that
+ * four hundred gateway-reset uploads on one connection never trip the guard.
  * <p>
  * <strong>Each flood ends on the frame that trips its bound.</strong> The gateway sends its
  * {@code GOAWAY} and closes the connection at once. A TCP connection closed while bytes its peer sent
@@ -119,7 +133,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
-@DisplayName("HTTP/2 over TLS: HTTP2-Settings stripped, body length kept, Rapid-Reset and CONTINUATION floods ended")
+@DisplayName("HTTP/2 over TLS: HTTP2-Settings stripped, body length kept, 16 KiB header list announced, Rapid-Reset and CONTINUATION floods ended")
 class Http2StreamAbuseIT extends BaseIntegrationTest {
 
     private static final String DEFAULT_TEST_PORT = "10443";
@@ -148,6 +162,27 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
 
     /** The header value each field of the {@code CONTINUATION} flood carries: 1 KiB. */
     private static final String FLOOD_FILLER = "f".repeat(1024);
+
+    /** The transport default of {@code SETTINGS_MAX_HEADER_LIST_SIZE}, which the grey-zone pair lies above. */
+    private static final int TRANSPORT_DEFAULT_BOUND = 8 * 1024;
+
+    /** How far the grey-zone pair sits from the bound, in decoded bytes, on either side. */
+    private static final int GREY_ZONE_MARGIN = 64;
+
+    /**
+     * The largest header value a grey-zone field carries: below the 1,024-character header-value cap of
+     * the default {@code strict} profile, so the inbound filter admits every field of the list.
+     */
+    private static final int GREY_ZONE_FIELD_BYTES = 1000;
+
+    /** The length of every grey-zone field name, {@code x-grey-NN}. */
+    private static final int GREY_ZONE_NAME_BYTES = 9;
+
+    /** What HPACK counts towards the decoded header-list size per field beside its name and value (RFC 7541 §4.1). */
+    private static final int HPACK_ENTRY_OVERHEAD = 32;
+
+    private static final int OK = 200;
+    private static final int REQUEST_HEADER_FIELDS_TOO_LARGE = 431;
 
     /** A syntactically valid {@code HTTP2-Settings} value: base64url of one SETTINGS parameter. */
     private static final String HTTP2_SETTINGS_VALUE = "AAMAAABkAAQAoAAAAAIAAAAA";
@@ -216,6 +251,62 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
                 () -> assertEquals(Optional.of(Integer.toString(length)), echo.header("Content-Length"),
                         () -> "the upstream request carries the length of the bytes sent: " + echo.body()),
                 () -> assertEquals(body, echo.body().getString("data"), "the body arrives whole"));
+    }
+
+    @Test
+    @DisplayName("a single HEADERS frame whose decoded header list is just under 16 KiB is answered by the echo upstream")
+    void headerListJustUnderTheBoundIsAnsweredByTheUpstream() throws Exception {
+        RawTlsHttp2Connection connection = RawTlsHttp2Connection.open(vertx, port);
+        List<Map.Entry<String, String>> fields = headerListOfDecodedSize(
+                connection.requestHead("GET", rootPath + ECHO_PATH + "/grey-under"),
+                HEADER_LIST_BOUND - GREY_ZONE_MARGIN);
+
+        connection.write(RawTlsHttp2Connection.headers(1, fields, true));
+        Optional<Integer> status = connection.awaitStatus(1, CALL_TIMEOUT_SECONDS);
+        connection.close();
+
+        assertAll("a decoded header list just under the 16 KiB bound over TLS",
+                () -> assertEquals("h2", connection.negotiatedProtocol(), "precondition: ALPN negotiated h2"),
+                () -> assertTrue(RawTlsHttp2Connection.hpack(fields).length <= FRAME_PAYLOAD_BYTES,
+                        "precondition: the whole list fits one HEADERS frame"),
+                () -> assertTrue(decodedSize(fields) > TRANSPORT_DEFAULT_BOUND,
+                        "precondition: the list lies above the transport default of 8 KiB"),
+                () -> assertEquals(Optional.of(OK), status,
+                        () -> "the echo upstream answers a list within the announced bound: " + connection.describe()),
+                () -> assertEquals(Optional.empty(), connection.goAwayCode(),
+                        () -> "the gateway does not end the connection: " + connection.describe()));
+    }
+
+    @Test
+    @DisplayName("a single HEADERS frame whose decoded header list is just over 16 KiB is answered 431 and reset, its connection serving on")
+    void headerListJustOverTheBoundIsAnswered431() throws Exception {
+        RawTlsHttp2Connection connection = RawTlsHttp2Connection.open(vertx, port);
+        List<Map.Entry<String, String>> fields = headerListOfDecodedSize(
+                connection.requestHead("GET", rootPath + ECHO_PATH + "/grey-over"),
+                HEADER_LIST_BOUND + GREY_ZONE_MARGIN);
+
+        connection.write(RawTlsHttp2Connection.headers(1, fields, true)
+                .appendBuffer(RawTlsHttp2Connection.headers(3,
+                        connection.requestHead("GET", rootPath + ECHO_PATH + "/after-grey-over"), true)));
+        Optional<Integer> overStatus = connection.awaitStatus(1, CALL_TIMEOUT_SECONDS);
+        Optional<Long> overReset = connection.awaitReset(1, CALL_TIMEOUT_SECONDS);
+        Optional<Integer> furtherStatus = connection.awaitStatus(3, CALL_TIMEOUT_SECONDS);
+        connection.close();
+
+        assertAll("a decoded header list just over the 16 KiB bound over TLS",
+                () -> assertEquals("h2", connection.negotiatedProtocol(), "precondition: ALPN negotiated h2"),
+                () -> assertTrue(RawTlsHttp2Connection.hpack(fields).length <= FRAME_PAYLOAD_BYTES,
+                        "precondition: the whole list fits one HEADERS frame"),
+                () -> assertEquals(Optional.of(REQUEST_HEADER_FIELDS_TOO_LARGE), overStatus,
+                        () -> "the stream over the bound is answered 431: " + connection.describe()),
+                () -> assertTrue(overReset.isPresent(),
+                        () -> "the stream over the bound is reset: " + connection.describe()),
+                () -> assertEquals(Optional.empty(), connection.goAwayCode(),
+                        () -> "a decoded list over the bound costs its stream only, never the connection: "
+                                + connection.describe()),
+                () -> assertEquals(Optional.of(OK), furtherStatus,
+                        () -> "matched control: a further stream on the same connection is served: "
+                                + connection.describe()));
     }
 
     @Test
@@ -289,6 +380,33 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
         return Map.entry("x-flood-%03d".formatted(index), FLOOD_FILLER);
     }
 
+    /**
+     * A request header list starting with {@code head} whose decoded size — what HPACK counts against
+     * {@code SETTINGS_MAX_HEADER_LIST_SIZE}, every name and value plus 32 bytes per field — is exactly
+     * {@code decodedBytes}. The bytes beyond the head are spread evenly over as few {@code x-grey-NN}
+     * fields as keep each value within {@value #GREY_ZONE_FIELD_BYTES} characters.
+     */
+    private static List<Map.Entry<String, String>> headerListOfDecodedSize(List<Map.Entry<String, String>> head,
+            int decodedBytes) {
+        List<Map.Entry<String, String>> fields = new ArrayList<>(head);
+        int remaining = decodedBytes - decodedSize(fields);
+        int perFieldOverhead = GREY_ZONE_NAME_BYTES + HPACK_ENTRY_OVERHEAD;
+        int fieldCount = Math.ceilDiv(remaining, GREY_ZONE_FIELD_BYTES + perFieldOverhead);
+        int valueBytes = remaining - fieldCount * perFieldOverhead;
+        for (int index = 0; index < fieldCount; index++) {
+            int length = valueBytes / fieldCount + (index == fieldCount - 1 ? valueBytes % fieldCount : 0);
+            fields.add(Map.entry("x-grey-%02d".formatted(index), "g".repeat(length)));
+        }
+        return fields;
+    }
+
+    /** The decoded header-list size HPACK counts for {@code fields} (RFC 7541 §4.1). */
+    private static int decodedSize(List<Map.Entry<String, String>> fields) {
+        return fields.stream()
+                .mapToInt(field -> field.getKey().length() + field.getValue().length() + HPACK_ENTRY_OVERHEAD)
+                .sum();
+    }
+
     /** The gateway reports readiness and serves a fresh connection after a flood ended one of its connections. */
     private static void assertGatewayStaysReady() {
         int readiness = givenManagement().when().get("/health/ready").statusCode();
@@ -354,10 +472,10 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
      * shapes an HTTP/2 client library refuses to produce. Header blocks are HPACK-encoded as literal
      * fields without indexing, so the encoder keeps no state. The frames the gateway sends back are
      * parsed as they arrive: {@code SETTINGS} and {@code PING} are acknowledged, the streams a response
-     * {@code HEADERS} frame arrived for are recorded, the streams the gateway reset are recorded with
-     * their error codes, and a {@code GOAWAY} is recorded with its error code, last stream id and debug
-     * data. Frames are parsed on the socket's event loop; the observations are safe to read from the
-     * test thread.
+     * {@code HEADERS} frame arrived for are recorded, each response header block is decoded in order so
+     * the stream's {@code :status} is known, the streams the gateway reset are recorded with their error
+     * codes, and a {@code GOAWAY} is recorded with its error code, last stream id and debug data. Frames
+     * are parsed on the socket's event loop; the observations are safe to read from the test thread.
      */
     private static final class RawTlsHttp2Connection {
 
@@ -372,6 +490,8 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
         private static final int FLAG_END_STREAM = 0x1;
         private static final int FLAG_ACK = 0x1;
         private static final int FLAG_END_HEADERS = 0x4;
+        private static final int FLAG_PADDED = 0x8;
+        private static final int FLAG_PRIORITY = 0x20;
         private static final int FRAME_HEADER_BYTES = 9;
         private static final byte[] PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
 
@@ -380,8 +500,18 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
         /** Bytes received and not yet parsed into a whole frame; touched on the event loop only. */
         private Buffer pending = Buffer.buffer();
         private final Set<Integer> answeredStreams = ConcurrentHashMap.newKeySet();
+        /** The stream whose response header block is being received; touched on the event loop only. */
+        private int headerBlockStream;
+        /** The fragments of that header block so far; touched on the event loop only. */
+        private Buffer headerBlock = Buffer.buffer();
+        /** Decodes every response header block in order, as HPACK's dynamic table requires. */
+        private final DefaultHttp2HeadersDecoder decoder = new DefaultHttp2HeadersDecoder(false);
+        /** The {@code :status} of every stream whose response head was decoded, by stream. */
+        private final Map<Integer, CompletableFuture<Integer>> statuses = new ConcurrentHashMap<>();
         /** The error code of every stream the gateway reset, by stream. */
         private final Map<Integer, Long> resetStreams = new ConcurrentHashMap<>();
+        /** Completes, by stream, once the gateway reset that stream. */
+        private final Map<Integer, CompletableFuture<Long>> resets = new ConcurrentHashMap<>();
         private final CompletableFuture<Long> goAway = new CompletableFuture<>();
         /** The last stream id and the debug data of the GOAWAY the gateway sent, as text. */
         private final CompletableFuture<String> goAwayDetail = new CompletableFuture<>();
@@ -520,14 +650,63 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
         }
 
         /**
+         * Waits for the response head of {@code streamId}, for at most {@code timeoutSeconds}; the wait
+         * also ends when the gateway resets the stream or closes the connection.
+         *
+         * @return the decoded {@code :status}, or empty when no response head arrived
+         */
+        Optional<Integer> awaitStatus(int streamId, long timeoutSeconds) throws Exception {
+            CompletableFuture<Integer> status = statusOf(streamId);
+            awaitAny(timeoutSeconds, status, resetOf(streamId), closed);
+            return Optional.ofNullable(status.getNow(null));
+        }
+
+        /**
+         * Waits for the gateway to reset {@code streamId}, for at most {@code timeoutSeconds}; the wait
+         * also ends when the gateway closes the connection.
+         *
+         * @return the reset's error code, or empty when the stream was not reset
+         */
+        Optional<Long> awaitReset(int streamId, long timeoutSeconds) throws Exception {
+            CompletableFuture<Long> reset = resetOf(streamId);
+            awaitAny(timeoutSeconds, reset, closed);
+            return Optional.ofNullable(reset.getNow(null));
+        }
+
+        /** Closes the client side of the connection. */
+        void close() throws Exception {
+            await(socket.close(), "the raw TLS HTTP/2 connection to close");
+        }
+
+        private CompletableFuture<Integer> statusOf(int streamId) {
+            return statuses.computeIfAbsent(streamId, stream -> new CompletableFuture<>());
+        }
+
+        private CompletableFuture<Long> resetOf(int streamId) {
+            return resets.computeIfAbsent(streamId, stream -> new CompletableFuture<>());
+        }
+
+        /** Returns once any of {@code outcomes} completed, or once {@code timeoutSeconds} passed. */
+        private static void awaitAny(long timeoutSeconds, CompletableFuture<?>... outcomes) throws Exception {
+            try {
+                CompletableFuture.anyOf(outcomes).get(timeoutSeconds, TimeUnit.SECONDS);
+            } catch (TimeoutException noneYet) {
+                // The caller reads what arrived and fails on what did not.
+            }
+        }
+
+        /**
          * What the gateway sent back on this connection, for a failure message: the {@code GOAWAY} with
          * its last stream id and debug data — where the transport states why it ended the connection —
          * the streams it answered and the streams it reset.
          */
         String describe() {
             return "GOAWAY " + goAwayCode().map(Long::toHexString).orElse("none") + " "
-                    + goAwayDetail.getNow("") + ", " + answeredStreams.size() + " stream(s) answered, "
-                    + resetStreams.size() + " stream(s) reset by the gateway: "
+                    + goAwayDetail.getNow("") + ", " + answeredStreams.size() + " stream(s) answered, statuses "
+                    + statuses.entrySet().stream().filter(entry -> entry.getValue().isDone())
+                            .map(entry -> entry.getKey() + "=" + entry.getValue().getNow(null)).sorted().limit(5)
+                            .toList()
+                    + ", " + resetStreams.size() + " stream(s) reset by the gateway: "
                     + resetStreams.entrySet().stream().sorted(Map.Entry.comparingByKey()).limit(5).toList();
         }
 
@@ -578,8 +757,21 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
                         socket.write(frame(PING, FLAG_ACK, 0, payload.getBytes()));
                     }
                 }
-                case HEADERS -> answeredStreams.add(streamId);
-                case RST_STREAM -> resetStreams.put(streamId, payload.getUnsignedInt(0));
+                case HEADERS -> {
+                    answeredStreams.add(streamId);
+                    headerBlockStream = streamId;
+                    headerBlock = Buffer.buffer().appendBuffer(fragment(flags, payload));
+                    endHeaderBlockIfComplete(flags);
+                }
+                case CONTINUATION -> {
+                    headerBlock.appendBuffer(payload);
+                    endHeaderBlockIfComplete(flags);
+                }
+                case RST_STREAM -> {
+                    long errorCode = payload.getUnsignedInt(0);
+                    resetStreams.put(streamId, errorCode);
+                    resetOf(streamId).complete(errorCode);
+                }
                 case GOAWAY -> {
                     goAwayDetail.complete("(last stream " + (payload.getInt(0) & 0x7fffffff) + ", debug '"
                             + payload.getString(8, payload.length(), StandardCharsets.US_ASCII.name()) + "')");
@@ -589,6 +781,38 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
                     // DATA, WINDOW_UPDATE and PRIORITY carry nothing the cases assert on.
                 }
             }
+        }
+
+        /** The header block fragment of a {@code HEADERS} frame: its padding and priority fields removed. */
+        private static Buffer fragment(int flags, Buffer payload) {
+            int start = 0;
+            int end = payload.length();
+            if ((flags & FLAG_PADDED) != 0) {
+                end -= payload.getUnsignedByte(0);
+                start = 1;
+            }
+            if ((flags & FLAG_PRIORITY) != 0) {
+                start += 5;
+            }
+            return payload.getBuffer(start, end);
+        }
+
+        /** Decodes the header block once its last fragment arrived and records the stream's {@code :status}. */
+        private void endHeaderBlockIfComplete(int flags) {
+            if ((flags & FLAG_END_HEADERS) == 0) {
+                return;
+            }
+            try {
+                Http2Headers decoded = decoder.decodeHeaders(headerBlockStream,
+                        Unpooled.wrappedBuffer(headerBlock.getBytes()));
+                if (decoded.status() != null) {
+                    statusOf(headerBlockStream).complete(Integer.valueOf(decoded.status().toString()));
+                }
+            } catch (Http2Exception undecodable) {
+                // A response block this client cannot decode leaves its stream without a status; the
+                // cases then fail on the missing status, with what did arrive in their message.
+            }
+            headerBlock = Buffer.buffer();
         }
     }
 }

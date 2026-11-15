@@ -59,8 +59,8 @@ import io.restassured.response.Response;
  * {@code start-integration-container.sh} would refuse.
  * <p>
  * It carries the docker process plumbing, the port and network lookups, the readiness and log polls,
- * the bearer-gated asset probe and the token mint, so each such test states only its own topology and
- * legs. Every gateway it starts runs the {@value #IMAGE} image the compose stack runs. It starts two
+ * the wait for a gateway that refuses its start to exit ({@link #awaitExit(String)}), the bearer-gated
+ * asset probe and the token mint, so each such test states only its own topology and legs. Every gateway it starts runs the {@value #IMAGE} image the compose stack runs. It starts two
  * shapes of gateway:
  * <ul>
  *   <li>{@link #startGateway(String, String, Path, int)} — a bearer-only gateway over one standalone
@@ -1099,6 +1099,27 @@ final class OneOffGatewayContainers {
     static String restartGateway(String gateway) {
         docker("restart the one-off gateway " + gateway, "restart", gateway);
         return publishedPort(gateway, 9000);
+    }
+
+    /**
+     * Waits for a one-off container to stop and returns the exit status of its process — for a gateway
+     * that refuses its own start, whose readiness can therefore never be polled to an answer.
+     * {@code docker wait} blocks until the container stops, and the wait is bounded like every docker
+     * call of this harness. A container that is still running when that bound passes fails the test,
+     * with the gateway log.
+     *
+     * @param container the container name
+     * @return the exit status of the container's process
+     */
+    static int awaitExit(String container) {
+        DockerRun run = runDocker("wait", container);
+        assertEquals(0, run.exitCode(), () -> "the container " + container + " did not stop within "
+                + DOCKER_TIMEOUT_SECONDS + "s: " + run.output() + " " + gatewayLog(container));
+        String status = run.output().lines().map(String::strip).filter(line -> !line.isEmpty())
+                .reduce((first, second) -> second).orElse("");
+        assertTrue(status.matches("-?\\d+"), () -> "docker wait reported no exit status for " + container
+                + ": '" + run.output() + "'");
+        return Integer.parseInt(status);
     }
 
     /**
