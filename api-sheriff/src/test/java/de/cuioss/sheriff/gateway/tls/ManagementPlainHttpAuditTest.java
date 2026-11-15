@@ -17,10 +17,8 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -173,7 +171,7 @@ class ManagementPlainHttpAuditTest {
 
     @Test
     @DisplayName("The management interface this boot started really answers on plain HTTP")
-    void managementInterfaceAnswersOnPlainHttp() throws IOException, InterruptedException, URISyntaxException {
+    void managementInterfaceAnswersOnPlainHttp() throws Exception {
         URI liveness = managementUrl.toURI().resolve(LIVENESS_PATH);
         HttpRequest request = HttpRequest.newBuilder(liveness).timeout(MANAGEMENT_REQUEST_TIMEOUT).GET().build();
 
@@ -250,7 +248,7 @@ class ManagementPlainHttpAuditTest {
         @ParameterizedTest(name = "{0}")
         @MethodSource("keyBearingSpellings")
         @DisplayName("Each key-bearing spelling alone means HTTPS, so none of them warns")
-        void eachSpellingAloneMeansHttps(String key) throws ReflectiveOperationException {
+        void eachSpellingAloneMeansHttps(String key) throws Exception {
             Constructor<?> constructor =
                     ConfigPropertyInjectionPoints.injectionConstructor(ManagementPlainHttpAudit.class);
             OptionalInt index = ConfigPropertyInjectionPoints.parameterIndexOf(constructor, key);

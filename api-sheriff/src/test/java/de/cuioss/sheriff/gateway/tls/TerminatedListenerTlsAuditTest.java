@@ -312,7 +312,7 @@ class TerminatedListenerTlsAuditTest {
         @ParameterizedTest(name = "{0}")
         @MethodSource("keyBearingSpellings")
         @DisplayName("Each key-bearing spelling alone means HTTPS, so none of them warns")
-        void eachSpellingAloneMeansHttps(String key) throws ReflectiveOperationException {
+        void eachSpellingAloneMeansHttps(String key) throws Exception {
             Constructor<?> constructor =
                     ConfigPropertyInjectionPoints.injectionConstructor(TerminatedListenerTlsAudit.class);
             OptionalInt index = ConfigPropertyInjectionPoints.parameterIndexOf(constructor, key);

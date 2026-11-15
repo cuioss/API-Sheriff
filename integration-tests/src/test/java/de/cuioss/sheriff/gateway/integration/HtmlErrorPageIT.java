@@ -611,7 +611,7 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                 .redirects().follow(false);
         try {
             return spec.when().get(UNREACHABLE_UPSTREAM_PATH).then().extract();
-        } catch (Exception unanswered) {
+        } catch (Exception unanswered) { // cui-rewrite:disable InvalidExceptionUsageRecipe
             throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + " (" + accept + ") was not answered within the "
                     + remainingSeconds + "s left of the " + REFUSED_DIAL_TIMEOUT.toSeconds()
                     + "s refused-dial wait, " + wait.elapsedSeconds() + "s into it: " + unanswered, unanswered);
