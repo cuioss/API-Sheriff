@@ -164,7 +164,7 @@ class TerminatedListenerTlsAuditTest {
             TerminatedListenerTlsAudit audit = new TerminatedListenerTlsAudit(
                     registry(keyLessConfiguration(), null), gatewayConfig, Optional.of(NAMED_BUCKET),
                     Optional.of(List.of(CERTIFICATE_PATH)), Optional.of(List.of(CERTIFICATE_KEY_PATH)),
-                    Optional.empty(), Optional.empty(), HTTP_PORT, HTTPS_PORT);
+                    Optional.empty(), HTTP_PORT, HTTPS_PORT);
 
             boolean plain = audit.auditTerminatedListenerTls();
 
@@ -270,14 +270,18 @@ class TerminatedListenerTlsAuditTest {
      * <p>
      * These cases pin the false positive the audit carried: it injected
      * {@code quarkus.http.ssl.certificate.files} alone, while
-     * {@code TlsUtils.computeKeyStoreOptions} accepts three further spellings. A deployment
-     * supplying a keystore file, a PEM key without a chain file, or a credentials provider therefore
-     * terminated TLS perfectly well and was reported as a plain-HTTP downgrade —
-     * {@code ApiSheriff-121} against a gateway that was doing exactly the right thing.
+     * {@code TlsUtils.computeKeyStoreOptions} builds key options from two further spellings. A
+     * deployment supplying a keystore file, or a PEM key without a chain file, therefore terminated
+     * TLS perfectly well and was reported as a plain-HTTP downgrade — {@code ApiSheriff-121} against
+     * a gateway that was doing exactly the right thing.
+     * <p>
+     * The password-only {@code credentials-provider} is deliberately not an injection point: on its
+     * own it puts no certificate on the listener, so it must not silence {@code ApiSheriff-121}.
+     * {@code DeclaredKeyMaterialKeysDriftTest} pins that the constructor no longer reads it.
      * <p>
      * The audit is constructed directly here rather than booted, because the subject is which
      * <em>injected values</em> the constructor folds into its verdict; a profile could only present
-     * one such deployment per boot, and four boots to assert four spellings would be paying a
+     * one such deployment per boot, and three boots to assert three spellings would be paying a
      * container start for a constructor question. {@link #warnsThroughTheRealStartupEventPath()}
      * above remains the proof that the observer path itself works.
      */
@@ -286,46 +290,40 @@ class TerminatedListenerTlsAuditTest {
     class DeclaredCertificateSpellings {
 
         @Test
-        @DisplayName("Each of the four spellings alone means HTTPS, so none of them warns")
+        @DisplayName("Each of the three key-bearing spellings alone means HTTPS, so none of them warns")
         void eachSpellingAloneMeansHttps() {
-            assertAll("every spelling TlsUtils.computeKeyStoreOptions accepts supplies key material",
+            assertAll("every spelling TlsUtils.computeKeyStoreOptions builds key options from",
                     () -> assertFalse(auditWith(Optional.of(List.of("localhost.crt")),
-                                    Optional.empty(), Optional.empty(), Optional.empty())
+                                    Optional.empty(), Optional.empty())
                                     .auditTerminatedListenerTls(),
                             "quarkus.http.ssl.certificate.files — the spelling that already worked"),
                     () -> assertFalse(auditWith(Optional.empty(),
-                                    Optional.of(List.of("localhost.key")), Optional.empty(), Optional.empty())
+                                    Optional.of(List.of("localhost.key")), Optional.empty())
                                     .auditTerminatedListenerTls(),
                             "quarkus.http.ssl.certificate.key-files alone: a deployment can supply "
                                     + "the chain through the registry and the key here, and reading "
                                     + "only .files reported it as plain HTTP"),
                     () -> assertFalse(auditWith(Optional.empty(), Optional.empty(),
-                                    Optional.of("/etc/certs/keystore.p12"), Optional.empty())
+                                    Optional.of("/etc/certs/keystore.p12"))
                                     .auditTerminatedListenerTls(),
                             "quarkus.http.ssl.certificate.key-store-file: a keystore carries chain "
                                     + "AND key, so a deployment using it declares no .files at all — "
-                                    + "this is the reported false positive"),
-                    () -> assertFalse(auditWith(Optional.empty(), Optional.empty(), Optional.empty(),
-                                    Optional.of("vault"))
-                                    .auditTerminatedListenerTls(),
-                            "quarkus.http.ssl.certificate.credentials-provider: the keystore password "
-                                    + "arrives from a provider, and the block is still consumed"));
+                                    + "this is the reported false positive"));
         }
 
         @Test
         @DisplayName("With no spelling declared the listener really is plain HTTP — the positive control")
         void noSpellingDeclaredMeansPlainHttp() {
-            assertTrue(auditWith(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty())
+            assertTrue(auditWith(Optional.empty(), Optional.empty(), Optional.empty())
                             .auditTerminatedListenerTls(),
-                    "without this control the four assertions above would pass equally against an "
+                    "without this control the three assertions above would pass equally against an "
                             + "audit that had simply stopped warning altogether");
         }
 
         @Test
         @DisplayName("A blank or empty value is no declaration, so it still means plain HTTP")
         void blankValuesAreNoDeclaration() {
-            assertTrue(auditWith(Optional.of(List.of()), Optional.of(List.of()),
-                            Optional.of(""), Optional.of(""))
+            assertTrue(auditWith(Optional.of(List.of()), Optional.of(List.of()), Optional.of(""))
                             .auditTerminatedListenerTls(),
                     "an empty list and a key cleared to the empty string are both the shape a "
                             + "compose file's bare VAR= produces; neither supplies material, and "
@@ -335,11 +333,10 @@ class TerminatedListenerTlsAuditTest {
 
         private TerminatedListenerTlsAudit auditWith(Optional<List<String>> certificateFiles,
                 Optional<List<String>> certificateKeyFiles,
-                Optional<String> certificateKeyStoreFile,
-                Optional<String> certificateCredentialsProvider) {
+                Optional<String> certificateKeyStoreFile) {
             return new TerminatedListenerTlsAudit(registry(null, null), gatewayConfig,
                     Optional.empty(), certificateFiles, certificateKeyFiles, certificateKeyStoreFile,
-                    certificateCredentialsProvider, HTTP_PORT, HTTPS_PORT);
+                    HTTP_PORT, HTTPS_PORT);
         }
     }
 

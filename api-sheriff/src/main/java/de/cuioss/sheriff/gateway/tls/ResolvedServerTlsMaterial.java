@@ -68,9 +68,11 @@ import org.jspecify.annotations.Nullable;
  *       {@code KeyCertOptions} the registry actually resolved. Leg 3 cannot: the legacy block is
  *       consumed inside {@code createSslOptions} through {@code TlsUtils.computeKeyStoreOptions}
  *       and never lands in the registry, so the caller passes the presence of a declared certificate
- *       key as a proxy — across <em>every</em> spelling the block accepts
+ *       key as a proxy — across <em>every key-bearing</em> spelling the block accepts
  *       ({@code de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys}), since a keystore file
- *       and a credentials provider terminate TLS exactly as a PEM chain does. The reduction is
+ *       terminates TLS exactly as a PEM chain does. The credentials provider is not such a spelling:
+ *       it supplies a keystore password, and on its own {@code computeKeyStoreOptions} returns no
+ *       key options, so the recorder serves plain HTTP. The reduction is
  *       one-directional — a declared chain that fails to load fails the boot rather than reaching a
  *       listener — so this leg cannot manufacture a false "HTTPS" verdict for a listener that is
  *       actually plain.</li>

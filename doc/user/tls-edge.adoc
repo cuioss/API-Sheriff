@@ -113,8 +113,11 @@ The boot decides the listener's posture from what you declared:
 
 "Server key material" is any of: a key-bearing `QUARKUS_HTTP_TLS_CONFIGURATION_NAME` bucket, a
 default `quarkus.tls.key-store.*` bucket, `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` (with `..._KEY_FILES`),
-`QUARKUS_HTTP_SSL_CERTIFICATE_KEY_STORE_FILE`, or `QUARKUS_HTTP_SSL_CERTIFICATE_CREDENTIALS_PROVIDER`.
-A keystore-based deployment carries no `..._FILES` key at all and is valid.
+or `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_STORE_FILE`. A keystore-based deployment carries no `..._FILES`
+key at all and is valid. `QUARKUS_HTTP_SSL_CERTIFICATE_CREDENTIALS_PROVIDER` is not key material: it
+only supplies the keystore password, so set alone it counts as no certificate. The full list, for both
+listeners, is in
+link:../configuration/tls-and-egress.adoc#_server_key_material_settings[Which settings supply key material].
 
 Every refusal names the offending key and both ways out: remove the contradicting declaration, or
 remove the opt-in and declare a certificate. `ApiSheriff-121` reports the key material that actually

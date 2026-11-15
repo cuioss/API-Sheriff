@@ -53,6 +53,12 @@ import org.junit.jupiter.api.Test;
  * set under contract. Each constructor legitimately injects other keys — a port, a
  * {@code tls-configuration-name} — and folding those in would make the assertion a restatement of
  * each constructor's whole signature rather than of the shared predicate.
+ * <p>
+ * <strong>The contract is the key-bearing set, and the full vocabulary is pinned beside it.</strong>
+ * The audits read the three spellings that can put a certificate on a listener; the credentials
+ * provider only supplies a keystore password, so reading it would silence a plain-HTTP warning on a
+ * listener that serves cleartext. The complete four-spelling vocabulary stays declared, and this test
+ * pins that it does, so the distinction is never made by deleting a name.
  */
 @DisplayName("Declared key-material vocabulary — drift guard")
 class DeclaredKeyMaterialKeysDriftTest {
@@ -61,29 +67,31 @@ class DeclaredKeyMaterialKeysDriftTest {
     private static final String CERTIFICATE_MARKER = "ssl.certificate.";
 
     @Test
-    @DisplayName("The main-listener audit injects exactly the shared http certificate key set")
+    @DisplayName("The main-listener audit injects exactly the shared http key-bearing set")
     void terminatedListenerAuditAgreesWithTheSharedSet() {
         Set<String> injected = injectedCertificateKeys(TerminatedListenerTlsAudit.class);
 
-        assertEquals(Set.copyOf(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS), injected,
-                "TerminatedListenerTlsAudit must read every spelling the validator reads. A key "
-                        + "present here but absent from DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS "
-                        + "means the validator would accept a deployment the audit cannot see; a key "
-                        + "present there but absent here means the audit reports a plain-HTTP "
-                        + "downgrade (ApiSheriff-121) against a listener that is terminating TLS — "
-                        + "the exact false positive this shared vocabulary was extracted to remove. "
-                        + "Add the spelling to DeclaredKeyMaterialKeys and to BOTH audits.");
+        assertEquals(Set.copyOf(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS), injected,
+                "TerminatedListenerTlsAudit must read every key-bearing spelling the gate reads. A key "
+                        + "present here but absent from "
+                        + "DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS means the audit "
+                        + "counts something as a certificate that the gate does not — the password "
+                        + "source would silence ApiSheriff-121 on a cleartext listener; a key present "
+                        + "there but absent here means the audit reports a plain-HTTP downgrade "
+                        + "(ApiSheriff-121) against a listener that is terminating TLS. Add the "
+                        + "spelling to DeclaredKeyMaterialKeys and to BOTH audits.");
     }
 
     @Test
-    @DisplayName("The management audit injects exactly the shared management certificate key set")
+    @DisplayName("The management audit injects exactly the shared management key-bearing set")
     void managementAuditAgreesWithTheSharedSet() {
         Set<String> injected = injectedCertificateKeys(ManagementPlainHttpAudit.class);
 
-        assertEquals(Set.copyOf(DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEYS), injected,
-                "ManagementPlainHttpAudit must read every management spelling the runtime honours. "
-                        + "Reading fewer emits ApiSheriff-115 against a management port that is on "
-                        + "HTTPS through a keystore file or a credentials provider.");
+        assertEquals(Set.copyOf(DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS), injected,
+                "ManagementPlainHttpAudit must read every key-bearing management spelling and nothing "
+                        + "else. Reading fewer emits ApiSheriff-115 against a management port that is "
+                        + "on HTTPS through a keystore file; reading the credentials provider silences "
+                        + "ApiSheriff-115 on a port that serves plain HTTP.");
     }
 
     @Test
@@ -93,27 +101,63 @@ class DeclaredKeyMaterialKeysDriftTest {
                 DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_PREFIX);
         Set<String> managementLeaves = leavesUnder(DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEYS,
                 DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_PREFIX);
+        Set<String> httpKeyBearingLeaves = leavesUnder(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS,
+                DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_PREFIX);
+        Set<String> managementKeyBearingLeaves = leavesUnder(
+                DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS,
+                DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_PREFIX);
 
-        assertEquals(httpLeaves, managementLeaves,
-                "both listeners fall through to the same legacy ssl.certificate.* block in "
+        assertAll("both listeners fall through to the same legacy ssl.certificate.* block in "
                         + "HttpServerOptionsUtils, so a spelling that supplies material on one "
                         + "supplies it on the other. Adding one to a single prefix leaves the other "
-                        + "leg with the false positive that was just fixed on this one.");
+                        + "leg with the false positive that was just fixed on this one.",
+                () -> assertEquals(httpLeaves, managementLeaves, "full vocabulary"),
+                () -> assertEquals(httpKeyBearingLeaves, managementKeyBearingLeaves, "key-bearing view"));
     }
 
     @Test
-    @DisplayName("The guard is non-vacuous: the reflective scan really found four keys per audit")
+    @DisplayName("The key-bearing view is the full vocabulary minus exactly the password source")
+    void keyBearingViewNarrowsOnlyThePasswordSource() {
+        Set<String> httpPasswordOnly = new LinkedHashSet<>(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS);
+        httpPasswordOnly.removeAll(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS);
+        Set<String> managementPasswordOnly =
+                new LinkedHashSet<>(DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEYS);
+        managementPasswordOnly.removeAll(DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS);
+
+        assertAll("the vocabulary is never narrowed: the key-bearing view drops the credentials "
+                        + "provider and nothing else, and every key-bearing name stays in the full list",
+                () -> assertEquals(4, DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS.size(),
+                        "the full http vocabulary lost a spelling: "
+                                + DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS),
+                () -> assertEquals(4, DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEYS.size(),
+                        "the full management vocabulary lost a spelling: "
+                                + DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEYS),
+                () -> assertTrue(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS
+                                .containsAll(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS),
+                        "a key-bearing http spelling is missing from the full vocabulary"),
+                () -> assertTrue(DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_KEYS
+                                .containsAll(DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS),
+                        "a key-bearing management spelling is missing from the full vocabulary"),
+                () -> assertEquals(Set.of(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER),
+                        httpPasswordOnly, "the http password source"),
+                () -> assertEquals(Set.of(DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER),
+                        managementPasswordOnly, "the management password source"));
+    }
+
+    @Test
+    @DisplayName("The guard is non-vacuous: the reflective scan really found three keys per audit")
     void guardIsNonVacuous() {
         Set<String> mainListener = injectedCertificateKeys(TerminatedListenerTlsAudit.class);
         Set<String> management = injectedCertificateKeys(ManagementPlainHttpAudit.class);
 
         assertAll("a scan that matched nothing would make every assertion above pass on two empty sets",
-                () -> assertFalse(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS.isEmpty(),
-                        "the shared http list is empty, so it constrains nothing"),
-                () -> assertEquals(4, mainListener.size(),
-                        "the four spellings TlsUtils.computeKeyStoreOptions accepts: " + mainListener),
-                () -> assertEquals(4, management.size(),
-                        "the same four on the management leg: " + management),
+                () -> assertFalse(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS.isEmpty(),
+                        "the shared http key-bearing list is empty, so it constrains nothing"),
+                () -> assertEquals(3, mainListener.size(),
+                        "the three key-bearing spellings TlsUtils.computeKeyStoreOptions builds key "
+                                + "options from: " + mainListener),
+                () -> assertEquals(3, management.size(),
+                        "the same three on the management leg: " + management),
                 () -> assertTrue(mainListener.contains(
                                 DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_STORE_FILE),
                         "key-store-file specifically: it is the spelling whose omission produced the "
