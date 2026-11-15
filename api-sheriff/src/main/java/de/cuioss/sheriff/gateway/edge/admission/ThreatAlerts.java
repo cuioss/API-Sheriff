@@ -19,6 +19,7 @@ import java.time.Clock;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.detection.SourceLedger;
 import de.cuioss.sheriff.gateway.detection.SourceTrip;

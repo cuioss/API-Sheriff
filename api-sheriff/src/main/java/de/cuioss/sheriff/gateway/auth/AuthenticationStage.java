@@ -20,6 +20,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 
+
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.events.EventType;

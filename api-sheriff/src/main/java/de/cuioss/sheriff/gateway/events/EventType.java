@@ -168,6 +168,16 @@ public enum EventType {
     /** The circuit breaker is open; the upstream was not called. */
     UPSTREAM_CIRCUIT_OPEN(EventCategory.UPSTREAM, 503),
     /**
+     * The attempt obtained no pooled upstream connection: the upstream client's queue of attempts waiting for
+     * one was full, or the wait for one — in that queue and while the connection was dialled — outlasted the
+     * gateway's connection wait bound. It is the gateway's own saturation rather than the upstream's failure,
+     * so the dispatch ends as a gateway rejection the route's circuit breaker does not count as a failure, and
+     * the upstream was never sent the request. A connection the upstream refuses, and a dial that does not
+     * complete within the dial timeout, remain {@link #UPSTREAM_ERROR} or {@link #UPSTREAM_TIMEOUT}, which the
+     * breaker counts.
+     */
+    UPSTREAM_POOL_SATURATED(EventCategory.UPSTREAM, 503),
+    /**
      * An attempt to the upstream timed out: the upstream guard's fixed per-attempt timeout, or another timeout
      * the attempt failed with, passed. On a {@code protocol: grpc} route the same event reports two earlier
      * ends the gRPC dispatch attributes to the upstream: a pre-response deadline acted on while the upstream's

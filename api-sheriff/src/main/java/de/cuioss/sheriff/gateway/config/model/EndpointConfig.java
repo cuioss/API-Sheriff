@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Objects;
 
+
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 

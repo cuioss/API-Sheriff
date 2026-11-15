@@ -114,7 +114,7 @@ A browser must reach the login, so this answer discloses its route by design.
 | `WEBSOCKET_ORIGIN_REJECTED`, `INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`, the streaming
 `CONTENT_TOO_LARGE`, the dispatch-time `SECURITY_FILTER_VIOLATION` for an undeclared body on a
 bodyless method, the asset action's dispatch-path `405`, `UPSTREAM_ERROR`,
-`UPSTREAM_CIRCUIT_OPEN`, `UPSTREAM_TIMEOUT`
+`UPSTREAM_CIRCUIT_OPEN`, `UPSTREAM_POOL_SATURATED`, `UPSTREAM_TIMEOUT`
 | Raised after stage 4 completed. The caller is trusted, or the route is anonymous and its own
 success answer already discloses that it exists. The trust-boundary leg of the predicate, not the
 closed set, keeps the two shared constants honest here.

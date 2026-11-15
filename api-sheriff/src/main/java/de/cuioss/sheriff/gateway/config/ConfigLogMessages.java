@@ -167,14 +167,15 @@ public final class ConfigLogMessages {
          * trusted network boundary is a legitimate deployment, and blocking it would be wrong. The
          * template names the port only; it must never carry certificate paths or bucket contents.
          * <p>
-         * The remedy names <em>both</em> doors onto the downgrade, because the audit observes the
-         * effective state and cannot tell which one was used: the neutral {@code gateway.yaml} key and
-         * the deployment environment variable land on the same Quarkus key (ADR-0025).
+         * The remedy names what restores HTTPS — supplying server key material for the management
+         * port through the deployment — because the audit observes the effective state and cannot tell
+         * which route led to plain HTTP. The neutral {@code management.tls.enabled: true} projects no key
+         * material and so restores nothing by itself, and {@code false} selects the plain-HTTP bucket (ADR-0025).
          */
         public static final LogRecord MANAGEMENT_PLAIN_HTTP = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(115)
-                .template("Management interface is serving PLAIN HTTP on port %s — health and metrics are unencrypted and every HTTPS consumer of that port will fail. Expose it only behind a trusted boundary; restore the HTTPS default by setting management.tls.enabled back to true in gateway.yaml, or by removing a QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME override supplied by the deployment")
+                .template("Management interface is serving PLAIN HTTP on port %s — health and metrics are unencrypted and every HTTPS consumer of that port will fail. Expose it only behind a trusted boundary; restore HTTPS by supplying server key material for the management port through the deployment — quarkus.management.ssl.certificate.* or a quarkus.management.tls-configuration-name bucket that carries a key store. management.tls.enabled: true alone restores nothing, and management.tls.enabled: false selects plain HTTP")
                 .build();
 
         /**
@@ -599,6 +600,33 @@ public final class ConfigLogMessages {
                 .prefix(PREFIX)
                 .identifier(140)
                 .template("Route '%s' of endpoint '%s' declares rate_limit, which the gateway does not implement — no rate limit is applied to the route and the rate_limit block never causes a 429. Remove rate_limit from the route, or accept that nothing is enforced")
+                .build();
+
+        /**
+         * The configured {@code edge_hardening.admission_cap} is above half the connection cap of the
+         * terminated listener ({@code quarkus.http.limits.max-connections}), so the connection cap no longer
+         * leaves the headroom the shipped values keep.
+         * <p>
+         * On HTTP/1.1 one request needs one connection, and the connection cap also counts every connection
+         * that carries no admitted request — an idle keep-alive connection, one whose request head has not
+         * arrived, one being answered {@code 503}. The shipped connection cap is twice the default admission
+         * cap, so admission refuses a request with a {@code 503} long before the cap closes connections,
+         * unserved and without a {@code 503}. An admission cap above half the connection cap gives that
+         * headroom up, and at or above the connection cap the cap rather than the admission budget bounds the
+         * requests in flight. The connection cap is a fixed deployment value, not a {@code gateway.yaml} key,
+         * so the template names both remedies: lower the admission cap, or raise the connection cap together
+         * with the container's file-descriptor limit.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: an operator running mostly HTTP/2 or a
+         * deployment that raises the cap may legitimately want the larger value. What must not happen is
+         * the configured number being capped silently. Emitted once at startup by
+         * {@code ConnectionCapAudit}. The template arguments are, in order: the configured admission cap,
+         * the connection cap and half the connection cap, as the value to stay at or below.
+         */
+        public static final LogRecord ADMISSION_CAP_ABOVE_CONNECTION_CAP_HEADROOM = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(148)
+                .template("edge_hardening.admission_cap is %s, which is above half the connection cap of %s open connections (quarkus.http.limits.max-connections) — on HTTP/1.1 every request holds a connection and the cap also counts connections carrying no admitted request, so the cap can close connections unserved, without a 503, before admission refuses a request. Keep edge_hardening.admission_cap at or below %s, or raise quarkus.http.limits.max-connections in the deployment together with the container's nofile limit")
                 .build();
     }
 

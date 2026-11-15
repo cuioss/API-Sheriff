@@ -19,6 +19,7 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.*;
 
 import java.util.List;
 
+
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;

@@ -26,6 +26,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
+
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
@@ -454,7 +455,8 @@ public class GatewayEdgeRoute {
         // The gateway-global egress-TLS settings (ADR-0040) are resolved ONCE here, with their WARNs,
         // and bound to every governed egress client: the per-tuple clients the assembler builds below
         // and the edge-wide WebSocket client further down.
-        EgressClients egressClients = new EgressClients(vertx, gatewayConfig, egressTrustProfileResolver);
+        EgressClients egressClients = new EgressClients(vertx, gatewayConfig, egressTrustProfileResolver,
+                hardening.admissionCap());
         UpstreamGuards upstreamGuards = new UpstreamGuards(upstreamFailureMapper);
 
         RouteAssembler assembler = new RouteAssembler(new ProtocolProcessorRegistry());

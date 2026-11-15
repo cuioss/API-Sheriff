@@ -19,6 +19,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
+
 import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import org.jspecify.annotations.Nullable;

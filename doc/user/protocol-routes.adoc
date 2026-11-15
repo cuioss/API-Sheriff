@@ -290,13 +290,12 @@ it as the client's own abort, which the upstream's circuit breaker does not coun
 
 Both bounds stop as soon as the upstream sends its response headers. The upstream guard's 30 s
 timeout runs from the start of the attempt and ends a call whose upstream holds the complete,
-half-closed request and does not answer, a call whose wait for an upstream connection or HTTP/2
-stream slot itself lasts the 30 s, and a call whose upstream stops taking data mid-request and takes
-no more within the 30 s; each ends with `DEADLINE_EXCEEDED` and `grpc-message: upstream`, and the
-breaker counts it. So does a call whose upstream connection took longer than 28 s: the
-deadline always leaves the client at least one second after the gateway hands the call over, so a call
-that would get less than that before the 29 s cap is ended without being sent, before the guard would
-end it the same way. While an upstream is not taking data, the 10 s message bound does not run and the
+half-closed request and does not answer, and a call whose upstream stops taking data mid-request and
+takes no more within the 30 s; each ends with `DEADLINE_EXCEEDED` and `grpc-message: upstream`, and the
+breaker counts it. A call whose wait for an upstream connection or HTTP/2 stream slot lasts 10 s ends
+earlier, unsent, with `UNAVAILABLE`: the gateway itself is saturated, so the breaker does not count it.
+Because of that bound the deadline leaves the client at least 19 s after the gateway hands the call
+over. While an upstream is not taking data, the 10 s message bound does not run and the
 25 s deadline does not end the call at once: a deadline that passed meanwhile ends the call the moment
 the upstream takes data again. Only a sustained upstream stall makes that the upstream's failure: when
 the upstream had then taken no data for at least 10 s without a break, the call is the upstream's

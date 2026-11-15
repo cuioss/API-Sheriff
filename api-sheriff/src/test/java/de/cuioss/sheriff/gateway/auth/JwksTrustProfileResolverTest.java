@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import javax.net.ssl.SSLContext;
 
+
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;

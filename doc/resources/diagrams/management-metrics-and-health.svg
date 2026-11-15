@@ -8,7 +8,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">Management port metrics scrape and readiness probe sequence</title>
-  <desc id="desc">A four-actor sequence diagram across Scraper / Probe, Management Port (:9000), Micrometer / SheriffMetrics, and GatewayReadinessCheck. In the top section (Metrics Scrape), a scraper requests GET /q/metrics over HTTPS on port 9000 (or HTTP with WARN ApiSheriff-115 when management.tls.enabled is false); Micrometer exports traffic counters/timers (requests_total, request_duration_seconds, upstream_duration_seconds), rejection/detection counters (errors_total, source_trips_total, source_untracked_total, threat_alerts_total, threat_untracked_total, uniform_not_found_overruns_total), and security/auth counters (security_events_total, session_events_total, auth_branch_total, token_validation_errors_total, token_validation_success_operations_total). In the bottom section (Readiness Probe), GET /q/health/ready invokes GatewayReadinessCheck, which checks validated configuration and issuer JWKS key sets (DOWN with jwks: loading or unavailable until every issuer loads keys, then UP with jwks: ready retained across refresh failures) and, when a BFF runtime is active, attaches oidc (server or cookie) and non-fetching oidc_discovery (not-attempted, resolved, or failed without altering the UP/DOWN verdict), returning state tokens only while logging causes via WARN ApiSheriff-116.</desc>
+  <desc id="desc">A four-actor sequence diagram across Scraper / Probe, Management Port (:9000), Micrometer / SheriffMetrics, and GatewayReadinessCheck. In the top section (Metrics Scrape), a scraper requests GET /q/metrics over HTTPS on port 9000 (or plain HTTP with WARN ApiSheriff-115 when the deployment supplies no key material for the port); Micrometer exports traffic counters/timers (requests_total, request_duration_seconds, upstream_duration_seconds), rejection/detection counters (errors_total, source_trips_total, source_untracked_total, threat_alerts_total, threat_untracked_total, uniform_not_found_overruns_total), and security/auth counters (security_events_total, session_events_total, auth_branch_total, token_validation_errors_total, token_validation_success_operations_total). In the bottom section (Readiness Probe), GET /q/health/ready invokes GatewayReadinessCheck, which checks validated configuration and issuer JWKS key sets (DOWN with jwks: loading or unavailable until every issuer loads keys, then UP with jwks: ready retained across refresh failures) and, when a BFF runtime is active, attaches oidc (server or cookie) and non-fetching oidc_discovery (not-attempted, resolved, or failed without altering the UP/DOWN verdict), returning state tokens only while logging causes via WARN ApiSheriff-116.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -39,7 +39,7 @@
   <!-- Actor 2: Management Port (:9000) -->
   <rect class="stroke" x="288" y="20" width="208" height="44" rx="6"/>
   <text x="392" y="40" class="actor">Management Port (:9000)</text>
-  <text x="392" y="56" class="note">HTTPS default · root /q</text>
+  <text x="392" y="56" class="note">HTTPS if keyed · root /q</text>
   <line class="lifeline" x1="392" y1="64" x2="392" y2="484"/>
 
   <!-- Actor 3: Micrometer / SheriffMetrics -->
@@ -99,5 +99,5 @@
   <text x="555" y="460" class="msg-c">3 · 200 UP / 503 DOWN (state tokens only; causes logged via WARN 116)</text>
 
   <!-- Footer caption -->
-  <text x="560" y="510" class="caption">Opting out of HTTPS on :9000 via management.tls.enabled: false downgrades both metrics and health and logs WARN ApiSheriff-115 at boot.</text>
+  <text x="560" y="510" class="caption">Without key material :9000 falls back to plain HTTP for metrics and health and logs WARN ApiSheriff-115 at boot.</text>
 </svg>

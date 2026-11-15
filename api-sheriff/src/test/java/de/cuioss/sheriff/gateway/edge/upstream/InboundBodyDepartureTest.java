@@ -31,6 +31,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
+
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -496,6 +497,31 @@ class InboundBodyDepartureTest {
                                     .tags("route", routeId, "event", EventType.INBOUND_BODY_ABORTED.name())
                                     .counter().count(), 0.0,
                             "sheriff_errors_total keeps counting all three under one event series"));
+        }
+
+        @Test
+        @DisplayName("a gRPC request stream held open past its pre-response deadline is counted on client-idle, and stays a REQUEST_BODY_TIMEOUT")
+        void preResponseDeadlineIsCountedAsClientIdle() {
+            reporter.reportRejection(routed, new DispatchStage.RequestBodyDeadlineExceeded(true));
+
+            assertAll("a pre-response deadline end",
+                    () -> assertEquals(1.0, abortsCounted("client-idle"),
+                            "an idle gRPC client is countable on its own series, whichever bound ended it"),
+                    () -> assertEquals(1.0, registry.get(ERRORS_TOTAL)
+                                    .tags("event", EventType.REQUEST_BODY_TIMEOUT.name()).counter().count(),
+                            "the shared REQUEST_BODY_TIMEOUT event is kept"));
+        }
+
+        @Test
+        @DisplayName("control — an HTTP body past its whole-body deadline is not counted on client-idle")
+        void wholeBodyDeadlineIsNotCountedAsClientIdle() {
+            reporter.reportRejection(routed, new DispatchStage.RequestBodyDeadlineExceeded(false));
+
+            assertAll("a whole-body deadline end",
+                    () -> assertTrue(registry.find(ABORTS_TOTAL).counters().isEmpty(),
+                            "a slow HTTP body is not an idle gRPC client"),
+                    () -> assertEquals(1.0, registry.get(ERRORS_TOTAL)
+                            .tags("event", EventType.REQUEST_BODY_TIMEOUT.name()).counter().count()));
         }
 
         private double abortsCounted(String disposition) {

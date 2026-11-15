@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
 import de.cuioss.sheriff.gateway.events.EventType;
@@ -83,7 +84,7 @@ class UpstreamGuardsTest {
      */
     static Stream<Arguments> clientEndedDispatches() {
         Supplier<GatewayException> noCompleteMessage = DispatchStage.RequestMessageTimeout::new;
-        Supplier<GatewayException> streamStillOpen = DispatchStage.RequestBodyDeadlineExceeded::new;
+        Supplier<GatewayException> streamStillOpen = () -> new DispatchStage.RequestBodyDeadlineExceeded(true);
         Supplier<GatewayException> clientLeft =
                 () -> new DispatchStage.ClientDeparted(new IllegalStateException("the client reset its stream"));
         return Stream.of(

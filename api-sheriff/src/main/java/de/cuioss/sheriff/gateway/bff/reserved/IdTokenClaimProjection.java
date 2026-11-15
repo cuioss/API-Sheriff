@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 
+
 import de.cuioss.sheriff.token.commons.transport.ParserConfig;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.json.MapRepresentation;

@@ -22,6 +22,7 @@ import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
 
+
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -87,6 +88,7 @@ class ReconEventsTest {
         table.put(EventType.SCOPE_MISSING, postTrust);
         table.put(EventType.UPSTREAM_ERROR, upstream);
         table.put(EventType.UPSTREAM_CIRCUIT_OPEN, upstream);
+        table.put(EventType.UPSTREAM_POOL_SATURATED, upstream);
         table.put(EventType.UPSTREAM_TIMEOUT, upstream);
         table.put(EventType.SESSION_CREATED, notARejection);
         table.put(EventType.SESSION_DESTROYED, notARejection);

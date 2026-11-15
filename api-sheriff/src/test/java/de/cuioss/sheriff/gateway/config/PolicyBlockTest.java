@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+
 import de.cuioss.sheriff.gateway.config.PolicyBlock.Fallback;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.Scope;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;

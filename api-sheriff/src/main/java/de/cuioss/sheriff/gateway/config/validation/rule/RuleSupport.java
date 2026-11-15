@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
+
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;

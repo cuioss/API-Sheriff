@@ -589,8 +589,12 @@ readiness DOWN. Monitor those from the IdP side.
   which one is in force. See link:#_terminated_listener_tls_policy[the terminated-listener table].
 
 | Whether management serves HTTPS
-| Yes, via `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME` -- or in `gateway.yaml` via
-  `management.tls.enabled`. Both doors, one lever. Pick one.
+| Key material decides, and it is deployment-supplied: the port serves HTTPS only when the deployment
+  supplies key material for it (`QUARKUS_MANAGEMENT_SSL_CERTIFICATE_*`, or a
+  `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME` bucket carrying a key store); without it the port serves
+  plain HTTP and the gateway logs `WARN ApiSheriff-115` at startup. To select plain HTTP on purpose,
+  set `management.tls.enabled: false` in `gateway.yaml` or name a key-less bucket through
+  `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME`. Both doors, one lever. Pick one.
 
 | Any port
 | Yes -- every port is deployment-bound. `gateway.yaml` owns none of them.
