@@ -17,12 +17,19 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Constructor;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.testsupport.ConfigPropertyInjectionPoints;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -41,6 +48,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for {@link TerminatedListenerTlsAudit} and the {@link ResolvedServerTlsMaterial}
@@ -279,6 +288,13 @@ class TerminatedListenerTlsAuditTest {
      * own it puts no certificate on the listener, so it must not silence {@code ApiSheriff-121}.
      * {@code DeclaredKeyMaterialKeysDriftTest} pins that the constructor no longer reads it.
      * <p>
+     * The spelling cases are generated from
+     * {@link DeclaredKeyMaterialKeys#HTTP_KEY_BEARING_CERTIFICATE_KEYS}, not listed here: each key is
+     * driven into the constructor parameter whose {@code @ConfigProperty} names it, found the way
+     * {@code DeclaredKeyMaterialKeysDriftTest} finds it, so a spelling added to the vocabulary gets
+     * its case without an edit here, and a spelling with no injection point fails rather than being
+     * skipped.
+     * <p>
      * The audit is constructed directly here rather than booted, because the subject is which
      * <em>injected values</em> the constructor folds into its verdict; a profile could only present
      * one such deployment per boot, and three boots to assert three spellings would be paying a
@@ -289,26 +305,49 @@ class TerminatedListenerTlsAuditTest {
     @DisplayName("Declared certificate spellings — the false positive removed")
     class DeclaredCertificateSpellings {
 
+        static Stream<String> keyBearingSpellings() {
+            return DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS.stream();
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("keyBearingSpellings")
+        @DisplayName("Each key-bearing spelling alone means HTTPS, so none of them warns")
+        void eachSpellingAloneMeansHttps(String key) throws ReflectiveOperationException {
+            Constructor<?> constructor =
+                    ConfigPropertyInjectionPoints.injectionConstructor(TerminatedListenerTlsAudit.class);
+            OptionalInt index = ConfigPropertyInjectionPoints.parameterIndexOf(constructor, key);
+            assertTrue(index.isPresent(), () -> "'" + key + "' is a key-bearing spelling the gate "
+                    + "reads, but no audit constructor parameter is injected with it — the audit "
+                    + "cannot see a certificate declared that way and would report plain HTTP");
+
+            Object[] arguments = {registry(null, null), gatewayConfig, Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), HTTP_PORT, HTTPS_PORT};
+            arguments[index.getAsInt()] =
+                    ConfigPropertyInjectionPoints.declaringValueFor(constructor.getParameters()[index.getAsInt()]);
+            TerminatedListenerTlsAudit audit = (TerminatedListenerTlsAudit) constructor.newInstance(arguments);
+
+            assertFalse(audit.auditTerminatedListenerTls(), () -> "'" + key + "' alone puts a "
+                    + "certificate on the listener, so reporting plain HTTP is the false positive this "
+                    + "audit used to carry");
+        }
+
         @Test
-        @DisplayName("Each of the three key-bearing spellings alone means HTTPS, so none of them warns")
-        void eachSpellingAloneMeansHttps() {
-            assertAll("every spelling TlsUtils.computeKeyStoreOptions builds key options from",
-                    () -> assertFalse(auditWith(Optional.of(List.of("localhost.crt")),
-                                    Optional.empty(), Optional.empty())
-                                    .auditTerminatedListenerTls(),
-                            "quarkus.http.ssl.certificate.files — the spelling that already worked"),
-                    () -> assertFalse(auditWith(Optional.empty(),
-                                    Optional.of(List.of("localhost.key")), Optional.empty())
-                                    .auditTerminatedListenerTls(),
-                            "quarkus.http.ssl.certificate.key-files alone: a deployment can supply "
-                                    + "the chain through the registry and the key here, and reading "
-                                    + "only .files reported it as plain HTTP"),
-                    () -> assertFalse(auditWith(Optional.empty(), Optional.empty(),
-                                    Optional.of("/etc/certs/keystore.p12"))
-                                    .auditTerminatedListenerTls(),
-                            "quarkus.http.ssl.certificate.key-store-file: a keystore carries chain "
-                                    + "AND key, so a deployment using it declares no .files at all — "
-                                    + "this is the reported false positive"));
+        @DisplayName("One spelling case per key-bearing key, each reaching its own injection point")
+        void spellingCasesCoverTheWholeVocabulary() {
+            Constructor<?> constructor =
+                    ConfigPropertyInjectionPoints.injectionConstructor(TerminatedListenerTlsAudit.class);
+            Set<Integer> reached = keyBearingSpellings()
+                    .map(key -> ConfigPropertyInjectionPoints.parameterIndexOf(constructor, key))
+                    .filter(OptionalInt::isPresent).map(OptionalInt::getAsInt)
+                    .collect(Collectors.toSet());
+
+            assertAll("the generated cases must be as many as the vocabulary, and never none",
+                    () -> assertFalse(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS.isEmpty(),
+                            "an empty vocabulary would generate no case at all"),
+                    () -> assertEquals(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS.size(),
+                            keyBearingSpellings().count(), "one generated case per key-bearing key"),
+                    () -> assertEquals(DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS.size(),
+                            reached.size(), "each key must reach a distinct audit parameter: " + reached));
         }
 
         @Test
@@ -316,7 +355,7 @@ class TerminatedListenerTlsAuditTest {
         void noSpellingDeclaredMeansPlainHttp() {
             assertTrue(auditWith(Optional.empty(), Optional.empty(), Optional.empty())
                             .auditTerminatedListenerTls(),
-                    "without this control the three assertions above would pass equally against an "
+                    "without this control the spelling cases above would pass equally against an "
                             + "audit that had simply stopped warning altogether");
         }
 

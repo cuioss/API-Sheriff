@@ -67,6 +67,11 @@ import lombok.experimental.UtilityClass;
  * declared as well, password source included, so the distinction is stated where the names live
  * rather than by leaving one of them out.
  * <p>
+ * The complete lists are the single source of the spellings. Each key-bearing view is
+ * <em>derived</em> from its listener's complete list by dropping that listener's
+ * credentials-provider key, so a new spelling is added in one place and reaches both views of
+ * its listener at once.
+ * <p>
  * A key that is present but <em>blank</em> is not a declaration. A compose file's bare
  * {@code QUARKUS_HTTP_SSL_CERTIFICATE_FILES=} and a test profile's empty override both produce that
  * shape, and neither supplies any material; every consumer of these names applies the same rule.
@@ -145,23 +150,37 @@ public final class DeclaredKeyMaterialKeys {
 
     /**
      * The main listener's key-bearing spellings: the ones that can put a certificate on the
-     * listener. The password source {@value #HTTP_CERTIFICATE_CREDENTIALS_PROVIDER} is deliberately
-     * absent — see the class documentation.
+     * listener. Derived from {@link #HTTP_CERTIFICATE_KEYS} by dropping the password source
+     * {@value #HTTP_CERTIFICATE_CREDENTIALS_PROVIDER} — see the class documentation — so a spelling
+     * added to the complete vocabulary reaches this view without a second edit. Immutable, in the
+     * complete vocabulary's order.
      */
-    public static final List<String> HTTP_KEY_BEARING_CERTIFICATE_KEYS = List.of(
-            HTTP_CERTIFICATE_FILES,
-            HTTP_CERTIFICATE_KEY_FILES,
-            HTTP_CERTIFICATE_KEY_STORE_FILE);
+    public static final List<String> HTTP_KEY_BEARING_CERTIFICATE_KEYS =
+            withoutPasswordSource(HTTP_CERTIFICATE_KEYS, HTTP_CERTIFICATE_CREDENTIALS_PROVIDER);
 
-    /** The management interface's key-bearing spellings, mirroring the main listener's. */
-    public static final List<String> MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS = List.of(
-            MANAGEMENT_CERTIFICATE_FILES,
-            MANAGEMENT_CERTIFICATE_KEY_FILES,
-            MANAGEMENT_CERTIFICATE_KEY_STORE_FILE);
+    /**
+     * The management interface's key-bearing spellings, derived from
+     * {@link #MANAGEMENT_CERTIFICATE_KEYS} exactly as the main listener's view is derived from its
+     * vocabulary.
+     */
+    public static final List<String> MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS =
+            withoutPasswordSource(MANAGEMENT_CERTIFICATE_KEYS, MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER);
 
     /** The prefix every main-listener certificate key carries. */
     public static final String HTTP_CERTIFICATE_PREFIX = "quarkus.http.ssl.certificate.";
 
     /** The prefix every management certificate key carries. */
     public static final String MANAGEMENT_CERTIFICATE_PREFIX = "quarkus.management.ssl.certificate.";
+
+    /**
+     * A listener's key-bearing view: its complete certificate vocabulary minus the one spelling
+     * that only supplies a keystore password.
+     *
+     * @param vocabulary     the listener's complete certificate vocabulary
+     * @param passwordSource the listener's credentials-provider key
+     * @return the remaining keys, immutable, in the vocabulary's order
+     */
+    private static List<String> withoutPasswordSource(List<String> vocabulary, String passwordSource) {
+        return vocabulary.stream().filter(key -> !key.equals(passwordSource)).toList();
+    }
 }

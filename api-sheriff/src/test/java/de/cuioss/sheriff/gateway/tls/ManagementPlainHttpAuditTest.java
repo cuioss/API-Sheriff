@@ -17,19 +17,33 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
+import de.cuioss.sheriff.gateway.testsupport.ConfigPropertyInjectionPoints;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.quarkus.arc.Unremovable;
 import io.quarkus.credentials.CredentialsProvider;
 import io.quarkus.runtime.StartupEvent;
+import io.quarkus.test.common.http.TestHTTPResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
@@ -47,6 +61,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for {@link ManagementPlainHttpAudit}.
@@ -63,10 +79,14 @@ import org.junit.jupiter.api.Test;
  * default TLS registry bucket carries no key material, and no key-bearing management certificate is
  * configured. {@link CredentialsProviderOnlyProfile} adds
  * {@code quarkus.management.ssl.certificate.credentials-provider}, backed by
- * {@link TestCredentialsProvider} so the recorder can resolve it. The recorder then reads the
- * provider for a keystore password, builds no key options and starts the port on plain HTTP — and the
- * audit must say so. An audit that counted the password source as a certificate stayed silent on
- * exactly this port.
+ * {@link TestCredentialsProvider} so the recorder can resolve it. The boot-wide test properties
+ * disable the management interface; this profile enables it again, on a randomly assigned test port
+ * so it cannot collide with a concurrently forked boot. The recorder then reads the provider for a
+ * keystore password, builds no key options and starts the port on plain HTTP — and the audit must say
+ * so. An audit that counted the password source as a certificate stayed silent on exactly this port.
+ * {@link #managementInterfaceAnswersOnPlainHttp()} observes the listener itself: a cleartext request
+ * to its liveness probe is served, so the warning is asserted against a port that really exists and
+ * really speaks plain HTTP, not only against the audit's verdict.
  * <p>
  * <strong>The default-bucket regression.</strong> {@link #defaultBucketWithKeyMaterialIsNotPlainHttp()}
  * pins the false positive this audit used to carry: it was built on {@code TlsConfiguration.from},
@@ -90,8 +110,18 @@ class ManagementPlainHttpAuditTest {
     /** The bean name the profile points the management credentials provider at. */
     static final String TEST_CREDENTIALS_PROVIDER = "sheriff-test-credentials";
 
+    /** The liveness probe beneath the shipped management root path. */
+    private static final String LIVENESS_PATH = "/q/health/live";
+
+    /** The bound on connecting to, and being answered by, the booted management interface. */
+    private static final Duration MANAGEMENT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
+
     @Inject
     Event<StartupEvent> startupEvent;
+
+    /** The base URL of the management interface this boot started, on its randomly assigned test port. */
+    @TestHTTPResource(management = true)
+    URL managementUrl;
 
     /**
      * Declares a management credentials provider and no key-bearing management setting, so the
@@ -102,6 +132,8 @@ class ManagementPlainHttpAuditTest {
         @Override
         public Map<String, String> getConfigOverrides() {
             return Map.of(
+                    "quarkus.management.enabled", "true",
+                    "quarkus.management.test-port", "0",
                     DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER, "management-keystore",
                     DeclaredKeyMaterialKeys.MANAGEMENT_CERTIFICATE_PREFIX + "credentials-provider-name",
                     TEST_CREDENTIALS_PROVIDER);
@@ -137,6 +169,26 @@ class ManagementPlainHttpAuditTest {
 
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
                 "Management interface is serving PLAIN HTTP on port");
+    }
+
+    @Test
+    @DisplayName("The management interface this boot started really answers on plain HTTP")
+    void managementInterfaceAnswersOnPlainHttp() throws IOException, InterruptedException, URISyntaxException {
+        URI liveness = managementUrl.toURI().resolve(LIVENESS_PATH);
+        HttpRequest request = HttpRequest.newBuilder(liveness).timeout(MANAGEMENT_REQUEST_TIMEOUT).GET().build();
+
+        HttpResponse<String> response;
+        try (HttpClient client = HttpClient.newBuilder().connectTimeout(MANAGEMENT_REQUEST_TIMEOUT).build()) {
+            response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+
+        assertAll("the audit's verdict must describe a listener that exists and speaks cleartext",
+                () -> assertEquals("http", liveness.getScheme(), "the request is sent without TLS"),
+                () -> assertEquals(200, response.statusCode(),
+                        () -> "the management port must serve its liveness probe over plain HTTP: "
+                                + response.body()),
+                () -> assertTrue(response.body().contains("UP"),
+                        () -> "the liveness document must report UP: " + response.body()));
     }
 
     @Test
@@ -181,31 +233,59 @@ class ManagementPlainHttpAuditTest {
      * keystore file, or as a PEM key without a chain file, was therefore reported as plain HTTP —
      * {@code ApiSheriff-115} against a properly terminated port. The password-only credentials
      * provider is not among them; the boot-level test above is its case.
+     * <p>
+     * The spelling cases are generated from
+     * {@link DeclaredKeyMaterialKeys#MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS}: each key is driven into
+     * the constructor parameter whose {@code @ConfigProperty} names it, so a spelling added to the
+     * vocabulary gets its case without an edit here, and a spelling with no injection point fails.
      */
     @Nested
     @DisplayName("Declared certificate spellings — the false positive removed")
     class DeclaredCertificateSpellings {
 
+        static Stream<String> keyBearingSpellings() {
+            return DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS.stream();
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("keyBearingSpellings")
+        @DisplayName("Each key-bearing spelling alone means HTTPS, so none of them warns")
+        void eachSpellingAloneMeansHttps(String key) throws ReflectiveOperationException {
+            Constructor<?> constructor =
+                    ConfigPropertyInjectionPoints.injectionConstructor(ManagementPlainHttpAudit.class);
+            OptionalInt index = ConfigPropertyInjectionPoints.parameterIndexOf(constructor, key);
+            assertTrue(index.isPresent(), () -> "'" + key + "' is a key-bearing management spelling, but "
+                    + "no audit constructor parameter is injected with it — the audit cannot see a "
+                    + "certificate declared that way and would emit ApiSheriff-115 against an HTTPS port");
+
+            Object[] arguments = {defaultBucketRegistry(keyLessConfiguration()), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty(), MANAGEMENT_PORT};
+            arguments[index.getAsInt()] =
+                    ConfigPropertyInjectionPoints.declaringValueFor(constructor.getParameters()[index.getAsInt()]);
+            ManagementPlainHttpAudit audit = (ManagementPlainHttpAudit) constructor.newInstance(arguments);
+
+            assertFalse(audit.auditManagementTls(), () -> "'" + key + "' alone puts a certificate on the "
+                    + "management port, so reporting plain HTTP is the false positive this audit used to "
+                    + "carry");
+        }
+
         @Test
-        @DisplayName("Each of the three key-bearing spellings alone means HTTPS, so none of them warns")
-        void eachSpellingAloneMeansHttps() {
-            assertAll("the management block bears key material through the main listener's spellings",
-                    () -> assertFalse(auditWith(Optional.of(List.of("management.crt")),
-                                    Optional.empty(), Optional.empty())
-                                    .auditManagementTls(),
-                            "quarkus.management.ssl.certificate.files — the spelling that already "
-                                    + "worked"),
-                    () -> assertFalse(auditWith(Optional.empty(),
-                                    Optional.of(List.of("management.key")), Optional.empty())
-                                    .auditManagementTls(),
-                            "quarkus.management.ssl.certificate.key-files alone"),
-                    () -> assertFalse(auditWith(Optional.empty(), Optional.empty(),
-                                    Optional.of("/etc/certs/management.p12"))
-                                    .auditManagementTls(),
-                            "quarkus.management.ssl.certificate.key-store-file: a keystore carries "
-                                    + "chain AND key, so such a deployment declares no .files at all "
-                                    + "— this is the reported false positive, and the matched control "
-                                    + "for the credentials-provider boot above"));
+        @DisplayName("One spelling case per key-bearing key, each reaching its own injection point")
+        void spellingCasesCoverTheWholeVocabulary() {
+            Constructor<?> constructor =
+                    ConfigPropertyInjectionPoints.injectionConstructor(ManagementPlainHttpAudit.class);
+            Set<Integer> reached = keyBearingSpellings()
+                    .map(key -> ConfigPropertyInjectionPoints.parameterIndexOf(constructor, key))
+                    .filter(OptionalInt::isPresent).map(OptionalInt::getAsInt)
+                    .collect(Collectors.toSet());
+
+            assertAll("the generated cases must be as many as the vocabulary, and never none",
+                    () -> assertFalse(DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS.isEmpty(),
+                            "an empty vocabulary would generate no case at all"),
+                    () -> assertEquals(DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS.size(),
+                            keyBearingSpellings().count(), "one generated case per key-bearing key"),
+                    () -> assertEquals(DeclaredKeyMaterialKeys.MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS.size(),
+                            reached.size(), "each key must reach a distinct audit parameter: " + reached));
         }
 
         @Test
@@ -213,7 +293,7 @@ class ManagementPlainHttpAuditTest {
         void noSpellingDeclaredMeansPlainHttp() {
             assertTrue(auditWith(Optional.empty(), Optional.empty(), Optional.empty())
                             .auditManagementTls(),
-                    "without this control the three assertions above would pass equally against an "
+                    "without this control the spelling cases above would pass equally against an "
                             + "audit that had simply stopped warning altogether");
         }
 
