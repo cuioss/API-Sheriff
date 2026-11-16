@@ -63,6 +63,14 @@ import org.jspecify.annotations.Nullable;
  * it — the feed after the virtual-thread hop. A request that carries no stashed source is neither
  * answered nor admitted.
  * <p>
+ * <strong>The unknown source is never acted on.</strong> A request whose client did not resolve — a
+ * trusted proxy's request with no usable forwarding header — is keyed on the shared
+ * {@link SourceKey#UNKNOWN_SOURCE}, which stands for every such client at once. It is admitted to the
+ * ledger like any source, so it is counted, can trip, and its trip is logged and handed to the
+ * recon-trip observer; but whatever the action, it is never answered {@code 429}, never refused for a
+ * used-up held-answer share and never held, because acting on it would act on all of those clients for
+ * the probing of one.
+ * <p>
  * <strong>The block.</strong> A source can be {@code BLOCKED} only when the operator configured
  * {@code action: block}; the default {@code observe} never blocks. A request from a blocked source is
  * answered on the event loop, before {@link EdgeAdmission#tryAdmit()}: it is metered as
@@ -74,7 +82,8 @@ import org.jspecify.annotations.Nullable;
  * while that source's {@linkplain EdgeHardeningOptions#heldAnswerSourceShare() share} of the
  * held-answer sub-budget is used up, so one delayed source cannot occupy the whole sub-budget, once
  * that has more than one permit. Below an {@code edge_hardening.admission_cap} of {@code 8} the
- * sub-budget has one permit, and one source's share is that whole permit.
+ * sub-budget has one permit, and one source's share is that whole permit. Neither answer is ever given
+ * to the {@link SourceKey#UNKNOWN_SOURCE unknown} source.
  * <p>
  * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ReconFeed}, the gate admits every
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —
@@ -192,7 +201,8 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * {@code Retry-After} is then the whole seconds of {@code delay_millis}, at least {@code 1}. Called
      * on the event loop before {@link EdgeAdmission#tryAdmit()}, after the source was stashed; when it
      * answers, it takes no admission permit, starts no virtual thread and arms no timer. A request
-     * without a stashed source is never answered here.
+     * without a stashed source, and a request keyed on {@link SourceKey#UNKNOWN_SOURCE}, is never
+     * answered here.
      *
      * @param ctx the incoming request
      * @return {@code true} when the request was answered {@code 429} and the caller must stop
@@ -203,7 +213,7 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
             return false;
         }
         SourceKey key = ctx.get(SourceKeys.SOURCE_KEY);
-        if (key == null) {
+        if (key == null || isUnknownSource(key)) {
             return false;
         }
         Optional<SourceState> state = ledger.state(key);
@@ -254,7 +264,7 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * @param request   the pipeline request, {@code null} for a rejection raised before one was built
      * @param eventType the TRUE event of the rejection
      * @return admission plus {@code delay_millis} when the action is {@code delay} and the source has
-     *         tripped; empty otherwise
+     *         tripped and is not {@link SourceKey#UNKNOWN_SOURCE}; empty otherwise
      */
     @Override
     public OptionalLong admit(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType) {
@@ -274,10 +284,20 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
             reportUntracked();
             return OptionalLong.empty();
         }
-        if (delayNanos.isEmpty() || !state.hasTripped()) {
+        if (delayNanos.isEmpty() || !state.hasTripped() || isUnknownSource(key)) {
             return OptionalLong.empty();
         }
         return delayedHold(ctx, key);
+    }
+
+    /**
+     * Whether {@code key} is the shared source of every request whose client did not resolve
+     * ({@link SourceKey#UNKNOWN_SOURCE}) — counted, tripped, logged and observed like any source, but
+     * never answered, refused or held: it stands for many clients at once, so acting on it would act on
+     * all of them for the probing of one.
+     */
+    private static boolean isUnknownSource(SourceKey key) {
+        return SourceKey.UNKNOWN_SOURCE.equals(key.source());
     }
 
     /**
@@ -294,11 +314,12 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * The hold of a pre-trust internal failure, which carries no detection weight and is never admitted:
      * under {@code delay} it is held until admission plus {@code delay_millis} when the source has
      * already tripped and the request is one a recon rejection would be counted for — not past the trust
-     * boundary and not a static resource — and is answered without a hold otherwise. The source's state
+     * boundary and not a static resource — and is answered without a hold otherwise, as it always is for
+     * the {@link SourceKey#UNKNOWN_SOURCE unknown} source. The source's state
      * is only read, so the failure neither adds weight nor starts tracking an untracked source.
      */
     private OptionalLong holdUncounted(RoutingContext ctx, @Nullable PipelineRequest request, SourceKey key) {
-        if (delayNanos.isEmpty()) {
+        if (delayNanos.isEmpty() || isUnknownSource(key)) {
             return OptionalLong.empty();
         }
         boolean reconShaped = request == null

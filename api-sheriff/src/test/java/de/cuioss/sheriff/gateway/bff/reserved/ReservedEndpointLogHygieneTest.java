@@ -292,8 +292,8 @@ class ReservedEndpointLogHygieneTest {
                 () -> Optional.of("https://idp.example.com/logout"), ORIGIN + "/auth/logout/return", "/",
                 Duration.ofMinutes(1)), sessionBinding, new CsrfDefence(Set.of(ORIGIN)), "/auth/logout");
         LogoutEndpoint withoutEndpoint = new LogoutEndpoint(new RpInitiatedLogout(endSessionFlow, ended -> {
-                },
-                Optional::empty, ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1)), sessionBinding,
+                        },
+                        Optional::empty, ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1)), sessionBinding,
                 new CsrfDefence(Set.of(ORIGIN)), "/auth/logout");
 
         LogoutEndpoint.LogoutOutcome toProvider = withEndpoint.logout(cookie, null, "same-origin", NOW);

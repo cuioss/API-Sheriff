@@ -45,6 +45,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * The source-key stage: the key a request is tracked under follows the {@code forwarded} trust
  * decision, never reads an untrusted peer's header, never keys a trusted proxy's request on the proxy,
+ * falls back to the {@code X-Forwarded-For} client of a contested chain,
  * folds a malformed or undeclared {@code Host} to {@code *} and an IPv6 source to its {@code /64}, and
  * is stashed on the context under {@link SourceKeys#SOURCE_KEY} for both per-source consumers.
  */
@@ -52,6 +53,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 class SourceKeysTest {
 
     private static final String FORWARDED_FOR = "X-Forwarded-For";
+    private static final String FORWARDED = "Forwarded";
+    private static final String OTHER_CLIENT = "203.0.113.9";
     private static final String PROXY = "192.0.2.10";
     private static final String PEER = "198.51.100.23";
     private static final String FORWARDED_CLIENT = "203.0.113.7";
@@ -89,6 +92,45 @@ class SourceKeysTest {
 
         assertEquals(new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST), key,
                 "never the proxy's own address");
+    }
+
+    @Test
+    @DisplayName("a trusted proxy's request whose Forwarded disagrees with X-Forwarded-For is keyed on the X-Forwarded-For client")
+    void contestedChainIsKeyedOnTheXForwardedForClient() {
+        SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
+
+        SourceKey contested = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT), null));
+        SourceKey agreeing = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED, "for=" + FORWARDED_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT), null));
+
+        assertAll("the X-Forwarded-For fallback",
+                () -> assertEquals(new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST), contested,
+                        "a contested chain falls back to the X-Forwarded-For client, never unknown"),
+                () -> assertEquals(new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST), agreeing,
+                        "control: an agreeing chain keys on its client as before"));
+    }
+
+    @Test
+    @DisplayName("a trusted proxy's contested chain without a usable X-Forwarded-For is still keyed on the unknown source")
+    void contestedChainWithoutAUsableXForwardedForIsUnknown() {
+        SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
+
+        SourceKey key = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, "not-an-address"), null));
+
+        assertEquals(new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST), key);
+    }
+
+    @Test
+    @DisplayName("an untrusted peer's contested chain is never read")
+    void untrustedPeersContestedChainIsNeverRead() {
+        SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
+
+        SourceKey key = sourceKeys.resolve(request(PEER,
+                Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT), null));
+
+        assertEquals(new SourceKey(PEER, SourceKey.UNDECLARED_HOST), key);
     }
 
     @Test

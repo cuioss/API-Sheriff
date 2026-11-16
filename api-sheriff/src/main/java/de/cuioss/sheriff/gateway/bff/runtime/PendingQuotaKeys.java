@@ -21,6 +21,7 @@ import java.util.Objects;
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
+import de.cuioss.sheriff.gateway.forward.ForwardedClientResolution;
 import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 
@@ -32,10 +33,12 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  * <strong>The source.</strong> For a peer the {@link TcpPeerGate} trusts, the client address the
  * {@link ForwardedHeaderResolver} resolves from its forwarding headers — the gate and the resolver come
  * from {@link ForwardedTrust}, so they carry the forward stage's trusted-proxy set and resolver
- * configuration — and {@link SourceKey#UNKNOWN_SOURCE} when those headers resolve no client, never the
- * trusted peer's own address, which every such request through that peer would otherwise share. For
- * any other peer,
- * the TCP peer address; its forwarding headers are never read. The address is canonicalized by
+ * configuration. When a contested chain — a {@code Forwarded} header disagreeing with
+ * {@code X-Forwarded-For} — resolves no client, the {@code X-Forwarded-For} client is taken instead,
+ * through {@link ForwardedClientResolution}, the one fallback the edge's source key shares. Only when
+ * neither resolves a client is the key {@link SourceKey#UNKNOWN_SOURCE}, never the trusted peer's own
+ * address, which every such request through that peer would otherwise share. For any other peer, the
+ * TCP peer address; its forwarding headers are never read. The address is canonicalized by
  * {@link SourceKeyResolver#canonicalSource}: IPv4 kept whole, IPv6 reduced to its {@code /64}, an absent
  * or unparseable address folded to {@link SourceKey#UNKNOWN_SOURCE}. No authority host is part of the
  * key.
@@ -108,7 +111,7 @@ public final class PendingQuotaKeys {
         if (!peerGate.isTrustedPeer(peerAddress)) {
             return SourceKeyResolver.canonicalSource(peerAddress);
         }
-        return forwardedResolver.resolve(request::headerValues).clientIp()
+        return ForwardedClientResolution.clientOf(forwardedResolver, request::headerValues)
                 .map(SourceKeyResolver::canonicalSource)
                 .orElse(SourceKey.UNKNOWN_SOURCE);
     }
