@@ -34,9 +34,9 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 ## Queue annotations
 
-- PLAN-SEC2-01 — simple and documentation changes; runs alone first. 6 deliverables, kept as one plan on the operator's "not too small" direction.
-- After PLAN-SEC2-01 lands: re-check `.plan/local/security_notes_verified.adoc` against `main` (orchestrator analysis, not a plan) BEFORE emitting PLAN-SEC2-02/03; re-ground their claims at the new HEAD.
-- PLAN-SEC2-02 / PLAN-SEC2-03 — disjoint production surfaces (`edge/upstream/**` vs `bff/**`, `edge/reserved/**`, `edge/admission/Source*`, `detection/**`); they share only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc`, so `next` puts the two-file overlap to the operator. Scope 2 allows them side by side.
+- PLAN-SEC2-01 — shipped as #623 (`31595bca`), landing `landings/PLAN-SEC2-01.md`. Simple and documentation changes; ran alone first. 6 specified deliverables (the lane counts 8).
+- The post-landing re-check of `.plan/local/security_notes_verified.adoc` against `main` was done at `31595bca` (2026-11-16): the items still listed there are all unplanned ones, and nothing PLAN-SEC2-01 shipped reopens or closes one. The PLAN-SEC2-02/03 claims were re-grounded at the same HEAD (every `OBSERVED` claim holds; line numbers moved only in `DispatchStage`/`GrpcDispatchStage` Javadoc) and the verdicts are persisted on the specs.
+- PLAN-SEC2-02 / PLAN-SEC2-03 — disjoint production surfaces (`edge/upstream/**` vs `bff/**`, `edge/reserved/**`, `edge/admission/Source*`, `detection/**`); they share only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc`, so `next` puts the two-file overlap to the operator. Scope 2 allows them side by side. PLAN-SEC2-01 rewrote ADR-0060 and edited ADR-0076, which PLAN-SEC2-02 and PLAN-SEC2-03 amend again: each must check the ADR body ceiling (500 lines) before the amendment.
 
 ## Decisions
 
@@ -45,8 +45,12 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 ## Open Defects
 
-- none
+- 2026-11-16 — Incomplete landing `sec2-01-doc-honesty-and-config-guards-001.md` (PLAN-SEC2-01): `inbox landing-check` reports `complete: false`, missing key `effort` (the facts block carries `effort=unknown`). The landing was still reconciled and its facts used as far as they go; a manual paste from that plan may still surface the effort level.
 
 ## Watches
+
+- 2026-11-16 — PLAN-SEC2-01 landing claims `review_body_findings_total=2` but `runbook_lane review-gate --pr-number 623` on the merged head reports 10 review-body findings (all CodeRabbit, none dispositioned in the provider's own record). Recorded as a false claim, not a rounding difference. `review_body_findings_handled=2` is not re-verified (the dispositions live in the lane's own record). Retire once the operator confirms the ten were handled.
+- 2026-11-16 — PLAN-SEC2-01 `sonar_open_new_issues=0` is not re-verified: the Sonar read on the merged PR is `undecidable` (`head_revision_unavailable`), so the figure is unknown. Retire on the operator's confirmation or a Sonar read that decides.
+- 2026-11-16 — PLAN-SEC2-01 pushed on the logged `force-override` basis three times because the pre-push freshness gate refused every pass with `worktree_root_unreadable` (null worktree root in every build row of the change ledger). The lane attributes it to a plan-marshall build-recording defect that was not investigated. Operator to route it to the plan-marshall lessons inbox; retire once routed.
 
 - Pre-commit formatter churn (carried from tier 1): #618 aligned `main` with the local formatter; a plan that reports churn again re-opens it.

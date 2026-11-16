@@ -105,12 +105,17 @@ fixed) — never into the PR, commits, docs or the inbox message.
 ## Claim Labels
 
 - OBSERVED: the 10 s connection wait is set as the `RequestOptions` connect timeout — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java:326,791-798` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: DispatchStage.java:798 setConnectTimeout(UPSTREAM_CONNECTION_WAIT_MILLIS) at 31595bca
 - OBSERVED: `poolSaturationOf` maps `ConnectionPoolTooBusyException` and any `TimeoutException` before hand-over to `UPSTREAM_POOL_SATURATED`, a `GatewayException` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java:779-786,875-884` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: DispatchStage.poolSaturationOf (:779-781) maps ConnectionPoolTooBusyException and TimeoutException; use at :884 at 31595bca
 - OBSERVED: the breaker is `requestVolumeThreshold(20)`, `failureRatio(0.5)`, `skipOn(GatewayException.class)` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamGuards.java:141-146` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: UpstreamGuards.java:141-145 requestVolumeThreshold(20) failureRatio(0.5) skipOn(GatewayException) at 31595bca
 - OBSERVED: `EgressClients` sets no HTTP/1 pool size (Vert.x default 5) — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/EgressClients.java:167-168,255-257` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: EgressClients.poolOptionsFor (:167-168) sets only the max wait queue size, no pool size, at 31595bca
 - HYPOTHESIS: under a never-answering upstream with a pool of 5, the breaker's failure ratio stays below 0.5 once traffic exceeds ~0.3 req/s, so it never opens — confirm by the D1 test (verify-at-outline)
 - HYPOTHESIS: a pre-guard short-circuit can make outcomes breaker-neutral without changing the timeout/retry nesting — confirm at `UpstreamGuards.guardFor` and the SmallRye Guard API (verify-at-outline, D2)
 - OBSERVED: `clientDeparted` only abandons; `awaitResponse` blocks on `get()` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java:871,1120-1127` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: DispatchStage clientDeparted (:1120-1128) only records the departure and abandons the current attempt; awaitResponse (:824) holds the request future, at 31595bca
 - HYPOTHESIS: `UpstreamConnectionTooLate` is unreachable since the wait is ≤10 s — confirm at `DispatchStage.UpstreamConnectionTooLate` and `GrpcDispatchStage` hand-over checks (verify-at-outline, D4)
 - Verify-first clause: re-ground every line reference at the HEAD this plan starts from (PLAN-SEC2-01 edits Javadoc in `DispatchStage`).
 

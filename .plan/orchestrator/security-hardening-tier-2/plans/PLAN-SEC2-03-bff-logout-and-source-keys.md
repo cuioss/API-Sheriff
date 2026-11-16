@@ -88,12 +88,18 @@ fixed) — never into the PR, commits, docs or the inbox message.
 ## Claim Labels
 
 - OBSERVED: reserved paths are handled before the CSRF gate — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java:723,766` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: GatewayEdgeRoute handles reserved paths at :723 and the CSRF enforce for the session branch comes later at :766, at 31595bca
 - OBSERVED: the logout case passes only the cookie header — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java:350` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/reserved/ReservedPathHandler.java:157-168` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: BffRuntime.dispatchToHandler (:350) passes only req.cookieHeader() to logout; ReservedPathHandler.dispatchReserved builds the request without Sec-Fetch-Site or Origin, at 31595bca
 - OBSERVED: an empty forwarded resolution becomes `unknown` for both the source key and the pending quota — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/SourceKeys.java:125-127` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/PendingQuotaKeys.java:101-114` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: SourceKeys (:125-127) falls to keyResolver.resolve(null, null, host) on an empty forwarded resolution; PendingQuotaKeys:113 orElse(SourceKey.UNKNOWN_SOURCE), at 31595bca
 - OBSERVED: the pending store bounds 256 per source with own-oldest eviction — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/InMemoryPendingAuthorizationStore.java:85,133-136` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: InMemoryPendingAuthorizationStore MAX_PENDING_PER_SOURCE = 256 (:85) with the key's own oldest record evicted, at 31595bca
 - HYPOTHESIS: cui-http 3.2 returns an empty client address when `X-Forwarded-For` and `Forwarded` disagree — confirm at cui-http 3.2 `ForwardedHeaderResolver.reconcileSources` by test (verify-at-outline, D2)
 - OBSERVED: the ledger bound is 65,536 and a new key at the bound is `UNTRACKED` and not counted — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/detection/SourceLedger.java:86,203-206,279-291` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: SourceLedger MAX_TRACKED_SOURCES = 65_536 (:86); a new key at the bound returns UNTRACKED and only an overflow counter increments (:203-206), at 31595bca
 - OBSERVED: detection actions default to `OBSERVE` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/EnumerationDetectionConfig.java:77` (main `6ee137df`)
+  - verdict: corroborated | checked_at: 31595bca01e9d0e01780a87b73ff2b8dac3dec40 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: EnumerationDetectionConfig DEFAULT_ACTION = Action.OBSERVE (:77), at 31595bca
 
 ## Expected Surface
 
