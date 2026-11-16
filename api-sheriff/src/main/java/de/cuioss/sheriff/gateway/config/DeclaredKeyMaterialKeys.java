@@ -152,19 +152,20 @@ public final class DeclaredKeyMaterialKeys {
      * The main listener's key-bearing spellings: the ones that can put a certificate on the
      * listener. Derived from {@link #HTTP_CERTIFICATE_KEYS} by dropping the password source
      * {@value #HTTP_CERTIFICATE_CREDENTIALS_PROVIDER} — see the class documentation — so a spelling
-     * added to the complete vocabulary reaches this view without a second edit. Immutable, in the
+     * added to the complete vocabulary reaches this view without a second edit. Immutable (the
+     * {@link List#copyOf(java.util.Collection)} at the declaration makes that visible), in the
      * complete vocabulary's order.
      */
-    public static final List<String> HTTP_KEY_BEARING_CERTIFICATE_KEYS =
-            withoutPasswordSource(HTTP_CERTIFICATE_KEYS, HTTP_CERTIFICATE_CREDENTIALS_PROVIDER);
+    public static final List<String> HTTP_KEY_BEARING_CERTIFICATE_KEYS = List.copyOf(
+            withoutPasswordSource(HTTP_CERTIFICATE_KEYS, HTTP_CERTIFICATE_CREDENTIALS_PROVIDER));
 
     /**
      * The management interface's key-bearing spellings, derived from
      * {@link #MANAGEMENT_CERTIFICATE_KEYS} exactly as the main listener's view is derived from its
-     * vocabulary.
+     * vocabulary. Immutable, in the complete vocabulary's order.
      */
-    public static final List<String> MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS =
-            withoutPasswordSource(MANAGEMENT_CERTIFICATE_KEYS, MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER);
+    public static final List<String> MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS = List.copyOf(
+            withoutPasswordSource(MANAGEMENT_CERTIFICATE_KEYS, MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER));
 
     /** The prefix every main-listener certificate key carries. */
     public static final String HTTP_CERTIFICATE_PREFIX = "quarkus.http.ssl.certificate.";

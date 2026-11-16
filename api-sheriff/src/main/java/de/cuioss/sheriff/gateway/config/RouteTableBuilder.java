@@ -542,7 +542,11 @@ public final class RouteTableBuilder {
      * rather than reading as a plain bearer route.
      */
     private static void logPosture(Route route, GatewayConfig gateway) {
-        String anchorName = Objects.requireNonNullElse(route.anchor(), NO_ANCHOR_NAME);
+        // An explicit null check, not Objects.requireNonNullElse, for the reason resolveRoute gives
+        // for its protocol local: the analyser does not model requireNonNullElse as null-eliminating
+        // and raised java:S4449 on the renderForMessage argument below.
+        String declaredAnchor = route.anchor();
+        String anchorName = declaredAnchor != null ? declaredAnchor : NO_ANCHOR_NAME;
         SecurityProfile effectiveProfile = effectiveProfile(route.effectiveSecurityFilter(), gateway);
         AuthConfig effectiveAuth = route.effectiveAuth();
         LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, RuleSupport.renderForMessage(route.id()),
