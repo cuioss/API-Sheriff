@@ -37,6 +37,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
+import io.restassured.path.json.JsonPath;
 import io.restassured.response.ExtractableResponse;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
@@ -83,7 +84,10 @@ import org.junit.jupiter.api.Test;
  * wait fails. Every leg's whole shape — the HTML error page on the navigation, the problem document on
  * the JSON leg, and the open-circuit signature on a leg that is not {@code 502} — is checked before a
  * pair is sent again, so a malformed leg fails at once instead of being discarded with a disagreeing
- * pair. Each request of the two waits carries a connect and a response timeout that fit in the time
+ * pair. The problem document is checked by its body, not only by its content type: whatever the leg's
+ * status, the body must parse as JSON, name the upstream problem type and carry a {@code status} member
+ * equal to the leg's HTTP status — on every JSON leg of a pair, and on the {@code 502} the first wait
+ * accepts. Each request of the two waits carries a connect and a response timeout that fit in the time
  * left of its wait, so a request that is never answered fails the test, naming the route and the
  * elapsed wait, instead of holding the wait past its bound.
  * <p>
@@ -265,6 +269,7 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                 + "navigation was answered " + html.statusCode() + ", the JSON client " + status);
         assertHtmlErrorPage(html, status);
         assertCurrentShape(json, status, true);
+        assertUpstreamProblemDocument(json);
     }
 
     @Test
@@ -509,7 +514,8 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
      * Requests the refused-dial route as a JSON client until it answers the gateway's own {@code 502}.
      * Every other answer on the way must be an open circuit identified by its full signature — the
      * breaker that earlier refusals opened, which lets a trial dial through once its open delay has
-     * passed. A bare {@code 503}, or any other status, fails at once.
+     * passed. A bare {@code 503}, or any other status, fails at once. The {@code 502} it accepts must
+     * carry the upstream problem document ({@link #assertUpstreamProblemDocument}).
      */
     @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded poll of a circuit breaker letting a trial dial through
     private static void awaitRefusedDial() {
@@ -532,6 +538,7 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
         assertEquals(502, answered.statusCode(), () -> UNREACHABLE_UPSTREAM_PATH + " must answer the gateway's own "
                 + "502 for a refused dial within " + REFUSED_DIAL_TIMEOUT.toSeconds() + "s; the last answer was "
                 + answered.statusCode() + ", body: " + answered.asString());
+        assertUpstreamProblemDocument(answered);
     }
 
     /**
@@ -569,10 +576,13 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     /**
      * Sends the refused-dial request as a navigation, then as a JSON client, and asserts each leg's whole
      * shape before the caller decides whether to send the pair again: the HTML error page on the
-     * navigation and the problem document on the JSON leg, at the status each was answered with, and on
-     * a leg that is not the gateway's own {@code 502} the open-circuit signature as well. So a malformed
-     * leg fails here, even beside a valid leg of the other status, instead of being discarded as one half
-     * of a breaker transition. Each leg is bounded by the time left in {@code wait}.
+     * navigation and, on the JSON leg, the problem content type and the problem document itself
+     * ({@link #assertUpstreamProblemDocument} — parsed, the upstream type, a {@code status} member equal
+     * to the leg's status), at the status each was answered with, and on a leg that is not the gateway's
+     * own {@code 502} the open-circuit signature as well. So a malformed leg — a {@code 502} whose JSON
+     * body is not the problem document included — fails here, even beside a valid leg of the other
+     * status, instead of being discarded as one half of a breaker transition. Each leg is bounded by the
+     * time left in {@code wait}.
      *
      * @param wait the bounded wait the pair is sent within
      * @return the pair, both legs asserted
@@ -585,7 +595,10 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
         if (html.statusCode() != 502) {
             assertOpenCircuitPage(html);
         }
-        if (json.statusCode() != 502) {
+        if (json.statusCode() == 502) {
+            assertUpstreamProblemDocument(json);
+        } else {
+            // The open-circuit signature includes the problem-document check.
             assertOpenCircuit(json);
         }
         return new NegotiatedPair(html, json);
@@ -668,20 +681,52 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
 
     /**
      * Asserts that a JSON client's answer is an open circuit, identified by its full signature: status
-     * {@code 503}, {@code Retry-After} naming the seconds the breaker stays open, and a problem document
-     * of the upstream type. A {@code 503} lacking any of them is not the breaker's.
+     * {@code 503}, {@code Retry-After} naming the seconds the breaker stays open, and the upstream
+     * problem document ({@link #assertUpstreamProblemDocument}). A {@code 503} lacking any of them is not
+     * the breaker's.
      */
     private static void assertOpenCircuit(ExtractableResponse<Response> json) {
         String body = json.asString();
-        boolean problemDocument = contentType(json).startsWith(PROBLEM_JSON);
         assertAll("an open circuit, identified by its full signature",
                 () -> assertEquals(503, json.statusCode(), "only the breaker's 503 is tolerated; body: " + body),
                 () -> assertEquals(BREAKER_OPEN_SECONDS, json.header(RETRY_AFTER),
                         "an open circuit names the seconds the breaker stays open"),
-                () -> assertTrue(problemDocument,
+                () -> assertTrue(contentType(json).startsWith(PROBLEM_JSON),
                         "an open circuit renders RFC 9457 problem+json; content type was " + json.contentType()),
-                () -> assertEquals(UPSTREAM_PROBLEM_TYPE, problemDocument ? json.jsonPath().getString("type") : null,
-                        "an open circuit carries the upstream problem type; body: " + body));
+                () -> assertUpstreamProblemDocument(json));
+    }
+
+    /**
+     * Asserts that a JSON leg of the refused-dial route carries the gateway's upstream problem document,
+     * whatever its status: a body that parses as JSON, whose {@code type} is
+     * {@link #UPSTREAM_PROBLEM_TYPE} and whose {@code status} member equals the leg's HTTP status — the
+     * gateway's {@code 502} body is {@code {"type":"urn:api-sheriff:problem:upstream","title":"Upstream",
+     * "status":502}}. The content type alone proves none of that: a {@code 502} labelled
+     * {@code application/problem+json} over a body that is not a problem document would pass it. A body
+     * that does not parse fails with a message naming the route and quoting the body, not with the
+     * parser's own exception.
+     *
+     * @param json the JSON client's answer
+     */
+    private static void assertUpstreamProblemDocument(ExtractableResponse<Response> json) {
+        int status = json.statusCode();
+        String body = json.asString();
+        Object type;
+        Object statusMember;
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            JsonPath document = JsonPath.from(body);
+            type = document.get("type");
+            statusMember = document.get("status");
+        } catch (RuntimeException notJson) {
+            throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + " answered its JSON leg " + status
+                    + " with a body that is not a JSON problem document: '" + body + "'", notJson);
+        }
+        assertAll("the upstream problem document of the " + status + " on " + UNREACHABLE_UPSTREAM_PATH,
+                () -> assertEquals(UPSTREAM_PROBLEM_TYPE, type,
+                        "the JSON leg names the upstream problem type; body: " + body),
+                () -> assertEquals(Integer.valueOf(status), statusMember,
+                        "the problem document's status member equals the leg's HTTP status; body: " + body));
     }
 
     /** One bodyless request on the fault route, as a JSON client; the status it is answered with. */
