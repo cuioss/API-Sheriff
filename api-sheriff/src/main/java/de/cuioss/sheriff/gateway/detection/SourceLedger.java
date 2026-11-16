@@ -64,9 +64,26 @@ import org.jspecify.annotations.Nullable;
  * not blocked — a sweep runs at most once per {@link #SWEEP_INTERVAL}, so a flood of new keys cannot
  * turn every admission into a full scan. When the map is still full the key is not tracked:
  * {@link #admit} returns an {@link SourceState.Status#UNTRACKED} state and the overflow is counted
- * ({@link #untrackedCount()}) for the caller to report. A tripped or blocked key is never evicted. The
- * bound is soft: the size check and the insert are not one atomic step, so the map can exceed the
- * bound by at most the number of threads inserting new keys at the same moment.
+ * ({@link #untrackedCount()}) for the caller to report. A tripped or blocked key is never evicted, and
+ * neither is a key still holding weight, so a source accruing toward the threshold stays tracked however
+ * full the map gets. The bound is soft: the size check and the insert are not one atomic step, so the
+ * map can exceed the bound by at most the number of threads inserting new keys at the same moment.
+ * <p>
+ * <strong>Aggregation under pressure.</strong> From a fixed high-water mark of
+ * {@value #HIGH_WATER_PERCENT}% of the bound on, a NEW IPv6 key is tracked under its {@code /48}
+ * aggregate ({@link SourceKeyResolver#aggregateSource}) instead of its {@code /64}, so one site cannot
+ * fill the ledger by rotating through the {@code /64}s of its allocation. Below the mark a new key keeps
+ * its {@code /64}; a key already tracked keeps its key at any fill; an IPv4 or unknown source is never
+ * aggregated. Every lookup — {@link #admit}, {@link #state} and {@link #hasRoomFor} — answers a
+ * {@code /64} that is not tracked itself from its tracked {@code /48}, so a caller keeps asking with the
+ * {@code /64} it resolved and finds the aggregated entry; the reported key ({@link SourceState#key()},
+ * {@link SourceTrip#key()}) is then the {@code /48}. The mark is a constant, not configuration, and it
+ * scales with the bound. The rule is the substrate's: every ledger built on this class follows it.
+ * <p>
+ * <strong>The room query.</strong> {@link #hasRoomFor} answers whether an admission would track a key
+ * now, by the same lookup, sweep and size check {@link #admit} uses, without admitting anything. It
+ * claims no slot: a caller that refuses on its answer decides on a moment that admissions on other
+ * threads move on from, and {@link #admit} decides again when it runs.
  * <p>
  * <strong>Threading.</strong> Thread-safe. Every read-modify-write of one key — drain, add, trip,
  * block — runs inside one {@link ConcurrentHashMap#compute} call, so two concurrent admissions for the
@@ -87,6 +104,12 @@ public final class SourceLedger {
 
     /** The least time between two sweeps of the map at the cardinality bound. */
     public static final Duration SWEEP_INTERVAL = Duration.ofSeconds(1);
+
+    /**
+     * The fill, in percent of the bound, from which a new IPv6 key is tracked under its {@code /48}
+     * aggregate; a fixed constant, no configuration reaches it.
+     */
+    public static final int HIGH_WATER_PERCENT = 75;
 
     /**
      * The response a ledger is configured with. The ledger itself only distinguishes {@link #BLOCK},
@@ -143,6 +166,7 @@ public final class SourceLedger {
     private final double drainPerNano;
     private final long blockNanos;
     private final int maxTrackedSources;
+    private final int highWaterMark;
     private final LongSupplier nanoClock;
     private final Consumer<SourceTrip> tripListener;
     private final ConcurrentHashMap<SourceKey, Entry> entries = new ConcurrentHashMap<>();
@@ -168,6 +192,7 @@ public final class SourceLedger {
             throw new IllegalArgumentException("maxTrackedSources must be at least 1 (was " + maxTrackedSources + ")");
         }
         this.maxTrackedSources = maxTrackedSources;
+        this.highWaterMark = Math.max(1, maxTrackedSources * HIGH_WATER_PERCENT / 100);
         this.drainPerNano = settings.threshold() / (double) settings.window().toNanos();
         this.blockNanos = settings.blockDuration().toNanos();
         this.nextSweepAtNanos = new AtomicLong(nanoClock.getAsLong());
@@ -183,14 +208,17 @@ public final class SourceLedger {
     /**
      * Admits one weighted event for a source and returns the source's state right after it.
      * <p>
-     * When the admission trips the source, the trip listener is called on this thread before the
-     * method returns.
+     * The event is counted on the key the source is tracked under: the key itself, the tracked
+     * {@code /48} aggregate of an IPv6 {@code /64} that is not tracked itself, or — for a new key — the
+     * key as given, or its {@code /48} from the high-water mark on. When the admission trips the source,
+     * the trip listener is called on this thread before the method returns.
      *
      * @param key    the source the event is attributed to
      * @param weight the event's weight, at least {@code 1}
      * @param tag    the caller's tag for the event, reported per tag in the state and the trip
-     * @return the post-admission state; {@link SourceState.Status#UNTRACKED} when the key could not be
-     *         tracked, in which case the event was not counted
+     * @return the post-admission state, carrying the key the event was counted on;
+     *         {@link SourceState.Status#UNTRACKED} when the key could not be tracked, in which case the
+     *         event was not counted
      * @throws IllegalArgumentException when {@code weight} is below {@code 1}
      */
     public SourceState admit(SourceKey key, int weight, Enum<?> tag) {
@@ -200,12 +228,13 @@ public final class SourceLedger {
             throw new IllegalArgumentException("weight must be at least 1 (was " + weight + ")");
         }
         long now = nanoClock.getAsLong();
-        if (!entries.containsKey(key) && entries.size() >= maxTrackedSources && !makeRoom(now)) {
+        SourceKey slot = slotFor(key, now);
+        if (slot == null) {
             untracked.incrementAndGet();
             return SourceState.untracked(key, settings.threshold());
         }
         AdmitOutcome outcome = new AdmitOutcome();
-        entries.compute(key, (sourceKey, existing) -> {
+        entries.compute(slot, (sourceKey, existing) -> {
             Entry entry = existing != null ? existing : new Entry(now);
             drain(entry, now);
             entry.level += weight;
@@ -232,7 +261,8 @@ public final class SourceLedger {
 
     /**
      * Answers the current state of a source without admitting an event. The level is drained to the
-     * current instant first.
+     * current instant first. An IPv6 {@code /64} that is not tracked itself is answered from its tracked
+     * {@code /48} aggregate, whose key the state then carries.
      *
      * @param key the source to query
      * @return the source's state, or empty when the source is not tracked — it never admitted an
@@ -240,14 +270,33 @@ public final class SourceLedger {
      */
     public Optional<SourceState> state(SourceKey key) {
         Objects.requireNonNull(key, "key");
+        SourceKey tracked = trackedKeyOf(key, aggregateOf(key));
+        if (tracked == null) {
+            return Optional.empty();
+        }
         long now = nanoClock.getAsLong();
         AdmitOutcome outcome = new AdmitOutcome();
-        entries.computeIfPresent(key, (sourceKey, entry) -> {
+        entries.computeIfPresent(tracked, (sourceKey, entry) -> {
             drain(entry, now);
             outcome.state = snapshot(sourceKey, entry);
             return entry;
         });
         return Optional.ofNullable(outcome.state);
+    }
+
+    /**
+     * Answers whether an admission for {@code key} would track it now: {@code true} when the key — or
+     * the {@code /48} aggregate of an IPv6 {@code /64} — is tracked, or when a new key fits, after the
+     * rate-limited sweep {@link #admit} would run at the bound. Nothing is admitted, counted or
+     * reserved, so the answer is a decision about this instant only; {@link #admit} decides again.
+     *
+     * @param key the source to query
+     * @return {@code false} exactly when an admission now would return
+     *         {@link SourceState.Status#UNTRACKED}
+     */
+    public boolean hasRoomFor(SourceKey key) {
+        Objects.requireNonNull(key, "key");
+        return slotFor(key, nanoClock.getAsLong()) != null;
     }
 
     /**
@@ -271,6 +320,36 @@ public final class SourceLedger {
      */
     public long untrackedCount() {
         return untracked.get();
+    }
+
+    /**
+     * The key an admission for {@code key} counts on now — the tracked key or aggregate, else the key a
+     * new entry is created under — or {@code null} when a new entry does not fit even after the sweep.
+     */
+    private @Nullable SourceKey slotFor(SourceKey key, long now) {
+        SourceKey aggregate = aggregateOf(key);
+        SourceKey tracked = trackedKeyOf(key, aggregate);
+        if (tracked != null) {
+            return tracked;
+        }
+        if (entries.size() >= maxTrackedSources && !makeRoom(now)) {
+            return null;
+        }
+        return aggregate != null && entries.size() >= highWaterMark ? aggregate : key;
+    }
+
+    /** The key itself when tracked, else its tracked {@code /48} aggregate, else {@code null}. */
+    private @Nullable SourceKey trackedKeyOf(SourceKey key, @Nullable SourceKey aggregate) {
+        if (entries.containsKey(key)) {
+            return key;
+        }
+        return aggregate != null && entries.containsKey(aggregate) ? aggregate : null;
+    }
+
+    /** The {@code /48} aggregate of an IPv6 {@code /64} key on the same host, {@code null} for any other key. */
+    private static @Nullable SourceKey aggregateOf(SourceKey key) {
+        String aggregate = SourceKeyResolver.aggregateSource(key.source());
+        return aggregate.equals(key.source()) ? null : new SourceKey(aggregate, key.host());
     }
 
     /**

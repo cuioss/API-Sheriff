@@ -123,6 +123,44 @@ class SourceKeyResolverTest {
     }
 
     @Nested
+    @DisplayName("the /48 aggregate")
+    class Aggregate {
+
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource({
+                "2001:db8:5:7::/64, 2001:db8:5::/48",
+                "fe80:0:0:0::/64, fe80:0:0::/48",
+                "0:0:0:0::/64, 0:0:0::/48",
+                "ffff:ffff:ffff:ffff::/64, ffff:ffff:ffff::/48"
+        })
+        @DisplayName("a canonical /64 widens to its /48 by dropping the fourth hextet")
+        void canonicalPrefixWidensToItsAggregate(String prefix, String expected) {
+            assertEquals(expected, SourceKeyResolver.aggregateSource(prefix));
+        }
+
+        @Test
+        @DisplayName("the /64s of one /48 share its aggregate, a neighbouring /48 does not")
+        void oneSlash48SharesAnAggregate() {
+            String first = SourceKeyResolver.aggregateSource(SourceKeyResolver.canonicalSource("2001:db8:a:b::1"));
+            String second = SourceKeyResolver.aggregateSource(SourceKeyResolver.canonicalSource("2001:db8:a:ffff::1"));
+            String neighbour = SourceKeyResolver.aggregateSource(SourceKeyResolver.canonicalSource("2001:db8:b:b::1"));
+
+            assertAll("the /48 is the unit of aggregation",
+                    () -> assertEquals("2001:db8:a::/48", first),
+                    () -> assertEquals(first, second),
+                    () -> assertNotEquals(first, neighbour));
+        }
+
+        @ParameterizedTest(name = "[{0}]")
+        @ValueSource(strings = {"203.0.113.9", SourceKey.UNKNOWN_SOURCE, "2001:db8:5::/48", "2001:DB8:5:7::/64",
+                "2001:db8:05:7::/64", "2001:db8:5:7:8::/64", "2001:db8:5:7::/56"})
+        @DisplayName("an IPv4 address, unknown, an aggregate and any non-canonical text pass through unchanged")
+        void otherTextsPassThrough(String source) {
+            assertEquals(source, SourceKeyResolver.aggregateSource(source));
+        }
+    }
+
+    @Nested
     @DisplayName("the host")
     class Host {
 

@@ -85,6 +85,18 @@ import org.jspecify.annotations.Nullable;
  * sub-budget has one permit, and one source's share is that whole permit. Neither answer is ever given
  * to the {@link SourceKey#UNKNOWN_SOURCE unknown} source.
  * <p>
+ * <strong>The full ledger fails closed.</strong> Under {@code block} and {@code delay} a source the
+ * ledger does not track and has no room for ({@link SourceLedger#hasRoomFor}) is answered the same
+ * block-style {@code 429}, with {@code Retry-After} the {@link SourceLedger#SWEEP_INTERVAL sweep interval}
+ * in whole seconds, at least {@code 1}, and its overflow is reported like an untracked rejection's. A
+ * source the ledger cannot count could never trip or be blocked, so letting it through would hand an
+ * unbounded number of fresh sources free probing once the ledger is full. The consequence is accepted
+ * on purpose: while a flood keeps the ledger full of live sources, every NEW source is refused, a
+ * legitimate one included, until the flood drains and the sweep frees room; sources already tracked
+ * are answered as before. Under {@code observe} nothing is refused, and the
+ * {@link SourceKey#UNKNOWN_SOURCE unknown} source is never refused. The check claims no slot: room that
+ * a concurrent admission takes after it falls back to the untracked count below.
+ * <p>
  * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ReconFeed}, the gate admits every
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —
  * a recon event before the trust boundary that is not a static resource. Under {@code delay}, a
@@ -96,7 +108,8 @@ import org.jspecify.annotations.Nullable;
  * address would be answered at the floor while the same input on an absent address waited for the
  * delay, and the timing would tell the two apart. A source the
  * ledger could not track — the cardinality bound — is counted on
- * {@link SheriffMetrics#SOURCE_UNTRACKED_TOTAL}, and the first overflow of the process is logged once
+ * {@link SheriffMetrics#SOURCE_UNTRACKED_TOTAL}, whether the gate refused it or the feed found no room
+ * for its rejection, and the first overflow of the process is logged once
  * ({@link ApiSheriffLogMessages.WARN#SOURCE_UNTRACKED}).
  * <p>
  * <strong>The trip.</strong> Every trip, whatever the action, is counted as
@@ -198,11 +211,12 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * Answers the request at once with the block-style {@code 429} when the source {@link SourceKeys}
      * stashed under {@link SourceKeys#SOURCE_KEY} is blocked ({@code block}), or when it has tripped
      * under {@code delay} and its share of the held-answer sub-budget is used up — its
-     * {@code Retry-After} is then the whole seconds of {@code delay_millis}, at least {@code 1}. Called
-     * on the event loop before {@link EdgeAdmission#tryAdmit()}, after the source was stashed; when it
-     * answers, it takes no admission permit, starts no virtual thread and arms no timer. A request
-     * without a stashed source, and a request keyed on {@link SourceKey#UNKNOWN_SOURCE}, is never
-     * answered here.
+     * {@code Retry-After} is then the whole seconds of {@code delay_millis}, at least {@code 1} — or,
+     * under either, when the ledger neither tracks the source nor has room for it, with
+     * {@code Retry-After} the sweep interval. Called on the event loop before
+     * {@link EdgeAdmission#tryAdmit()}, after the source was stashed; when it answers, it takes no
+     * admission permit, starts no virtual thread and arms no timer. A request without a stashed source,
+     * and a request keyed on {@link SourceKey#UNKNOWN_SOURCE}, is never answered here.
      *
      * @param ctx the incoming request
      * @return {@code true} when the request was answered {@code 429} and the caller must stop
@@ -218,7 +232,14 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
         }
         Optional<SourceState> state = ledger.state(key);
         if (state.isEmpty()) {
-            return false;
+            if (ledger.hasRoomFor(key)) {
+                return false;
+            }
+            // Fail closed: a source the full ledger cannot count could never trip, so it is refused
+            // rather than handed free probing; the check claims no slot, admit decides again.
+            reportUntracked();
+            answerBlocked(ctx, retryAfterSeconds(SourceLedger.SWEEP_INTERVAL.toNanos()));
+            return true;
         }
         if (action == SourceLedger.Action.BLOCK) {
             if (!state.get().isBlocked()) {
@@ -343,8 +364,9 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     }
 
     /**
-     * Counts one untracked recon event and logs the first overflow of the process once; every later
-     * one is a {@code DEBUG} diagnostic.
+     * Counts one source the full ledger could not track — refused at the gate or left untracked by the
+     * feed — and logs the first overflow of the process once; every later one is a {@code DEBUG}
+     * diagnostic.
      */
     private void reportUntracked() {
         sheriffMetrics.recordSourceUntracked();

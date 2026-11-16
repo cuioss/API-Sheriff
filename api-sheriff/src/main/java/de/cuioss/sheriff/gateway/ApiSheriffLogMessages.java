@@ -262,7 +262,8 @@ public final class ApiSheriffLogMessages {
          * A source tripped per-source enumeration detection: its recon ledger reached the
          * {@code enumeration_detection} threshold. Emitted once per trip, which the ledger raises at most
          * once per {@code CLEAR} period of a source. Records the source in the canonical form the
-         * detection contract fixes (an IPv4 address whole, an IPv6 address as its {@code /64} prefix),
+         * detection contract fixes (an IPv4 address whole, an IPv6 address as its {@code /64} prefix, or
+         * as its {@code /48} aggregate when the ledger began tracking it above its high-water mark),
          * the host folded to the declared {@code match.host} set ({@code *} for any other), the
          * threshold, the window in seconds and the configured action — never the raw {@code Host}, the
          * request path or any header.
@@ -275,23 +276,27 @@ public final class ApiSheriffLogMessages {
 
         /**
          * The per-source detection ledger reached its fixed bound on tracked sources and could not make
-         * room, so a source was left untracked: its recon events are not counted and it can neither
-         * trip nor be blocked. Latched: emitted once per process, on the first overflow; every further
-         * overflow is a {@code DEBUG} diagnostic and is counted on
-         * {@code sheriff_source_untracked_total}. Records the bound only — never a source address.
+         * room, so a source was left untracked: its recon events are not counted and it cannot trip.
+         * Under {@code block} and {@code delay} such a source is refused with the block-style
+         * {@code 429} instead of being let through uncounted; under {@code observe} it passes.
+         * Latched: emitted once per process, on the first overflow; every further overflow is a
+         * {@code DEBUG} diagnostic and is counted on {@code sheriff_source_untracked_total}. Records the
+         * bound only — never a source address.
          */
         public static final LogRecord SOURCE_UNTRACKED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(142)
-                .template("Enumeration detection is tracking its maximum of %s sources — a further source was left untracked and cannot trip; further overflows stay at DEBUG and are counted on sheriff_source_untracked_total")
+                .template("Enumeration detection is tracking its maximum of %s sources — a further source was left untracked: under block or delay it is refused, under observe it cannot trip; further overflows stay at DEBUG and are counted on sheriff_source_untracked_total")
                 .build();
 
         /**
          * A source reached the {@code threat_classification} threshold: its threat ledger tripped. This
          * is the ALERT of the threat tier. Emitted once per trip, which the ledger raises at most once
          * per episode — a source raises its next ALERT only after its score has drained to zero.
-         * Records the source in the canonical form the detection contract fixes, the host folded to the
-         * declared {@code match.host} set ({@code *} for any other), and the ECS-shaped JSON document of
+         * Records the source in the canonical form the detection contract fixes — an IPv6 source as its
+         * {@code /48} aggregate when the threat ledger began tracking it above its high-water mark — the
+         * host folded to the declared {@code match.host} set ({@code *} for any other), and the
+         * ECS-shaped JSON document of
          * the alert, or a fixed marker when that document could not be rendered — never the raw
          * {@code Host}, the request path or any header. Classification only observes: the ALERT changes
          * no answer.

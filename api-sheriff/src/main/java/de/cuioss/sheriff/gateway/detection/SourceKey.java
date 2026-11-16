@@ -26,7 +26,8 @@ import java.util.Objects;
  * producer the edge uses — so equal keys mean the same source on the same host:
  * <ul>
  *   <li>{@code source} is the canonical address text: an IPv4 address whole in dotted-decimal form,
- *       an IPv6 address reduced to its {@code /64} prefix in the form {@code a:b:c:d::/64}, or the fixed
+ *       an IPv6 address reduced to its {@code /64} prefix in the form {@code a:b:c:d::/64} — or, for a
+ *       key a ledger under pressure tracks, its {@code /48} aggregate {@code a:b:c::/48} — or the fixed
  *       {@link #UNKNOWN_SOURCE} for an absent or unparseable address;</li>
  *   <li>{@code host} is the lower-cased authority host when it equals a host some route declares in
  *       {@code match.host}, otherwise the fixed {@link #UNDECLARED_HOST}.</li>
