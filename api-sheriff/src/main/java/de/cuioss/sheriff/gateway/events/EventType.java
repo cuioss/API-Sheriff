@@ -168,18 +168,22 @@ public enum EventType {
     /** The circuit breaker is open; the upstream was not called. */
     UPSTREAM_CIRCUIT_OPEN(EventCategory.UPSTREAM, 503),
     /**
-     * The attempt obtained no pooled upstream connection: the upstream client's queue of attempts waiting for
-     * one was full, or the wait for one — in that queue and while the connection was dialled — outlasted the
-     * gateway's connection wait bound. It is the gateway's own saturation rather than the upstream's failure,
-     * so the dispatch ends as a gateway rejection the route's circuit breaker records as neutral — neither a
-     * failure nor a success — and the upstream was never sent the request. A connection the upstream refuses, and a dial that does not
-     * complete within the dial timeout, remain {@link #UPSTREAM_ERROR} or {@link #UPSTREAM_TIMEOUT}, which the
-     * breaker counts.
+     * The attempt obtained no pooled upstream connection because the upstream client's queue of attempts
+     * waiting for one was full. It is the gateway's own saturation rather than the upstream's failure, so the
+     * dispatch ends as a gateway rejection the route's circuit breaker records as neutral — neither a failure
+     * nor a success — and the upstream was never sent the request. A wait for a connection — in that queue and
+     * while the connection was dialled — that outlasts the gateway's connection wait bound is not this event: it
+     * is an {@link #UPSTREAM_TIMEOUT}. A connection the upstream refuses, and a dial that does not complete
+     * within the dial timeout, remain {@link #UPSTREAM_ERROR} or {@link #UPSTREAM_TIMEOUT}. The breaker counts
+     * all of these.
      */
     UPSTREAM_POOL_SATURATED(EventCategory.UPSTREAM, 503),
     /**
      * An attempt to the upstream timed out: the upstream guard's fixed per-attempt timeout, or another timeout
-     * the attempt failed with, passed. On a {@code protocol: grpc} route the same event reports two earlier
+     * the attempt failed with, passed. That includes an attempt whose wait for a pooled upstream connection
+     * outlasted the gateway's connection wait bound ({@code DispatchStage.UpstreamConnectionWaitExpired}): the
+     * attempt queued behind connections the upstream is holding, its request unsent, and it is never retried.
+     * On a {@code protocol: grpc} route the same event reports two earlier
      * ends the gRPC dispatch attributes to the upstream: a pre-response deadline acted on while the upstream's
      * backpressure had held the request stream paused, without a break, for at least the gRPC upstream stall
      * threshold ({@code DispatchStage.UpstreamStalledRequest}), and an attempt whose upstream connection came

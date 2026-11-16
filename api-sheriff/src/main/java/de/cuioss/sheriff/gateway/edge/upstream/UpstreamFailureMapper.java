@@ -37,14 +37,17 @@ import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;
  *   <li>{@link CircuitBreakerOpenException} — the breaker is open, the upstream was never called →
  *       {@link EventType#UPSTREAM_CIRCUIT_OPEN} (503, {@code Retry-After} added by the edge);</li>
  *   <li>a timeout ({@link TimeoutException}, {@link java.util.concurrent.TimeoutException}, or a
- *       Vert.x timeout) — the upstream exceeded its configured deadline →
+ *       Vert.x timeout) — the upstream exceeded its configured deadline, including an attempt whose wait for a
+ *       pooled connection outlasted its bound ({@link DispatchStage.UpstreamConnectionWaitExpired}) →
  *       {@link EventType#UPSTREAM_TIMEOUT} (504);</li>
  *   <li>any other connection / protocol failure → {@link EventType#UPSTREAM_ERROR} (502).</li>
  * </ul>
- * An attempt that obtained no pooled connection because the gateway itself is saturated never reaches
- * that classification: the dispatch maps it inside the guard, through {@link #toPoolSaturation(Throwable)},
- * to {@link EventType#UPSTREAM_POOL_SATURATED} (503), a gateway rejection the breaker records as neutral:
- * neither a failure nor a success. Every mapped failure is metered on the shared {@link GatewayEventCounter}.
+ * An attempt that obtained no pooled connection because the client's wait queue was full — the gateway's own
+ * saturation — never reaches that classification: the dispatch maps it inside the guard, through
+ * {@link #toPoolSaturation(Throwable)}, to {@link EventType#UPSTREAM_POOL_SATURATED} (503), a gateway rejection
+ * the breaker records as neutral: neither a failure nor a success. An expired wait is not saturation: it is the
+ * upstream's timeout above, which the breaker counts. Every mapped failure is metered on the shared
+ * {@link GatewayEventCounter}.
  * Breaker state transitions are metered and logged through
  * {@link #recordBreakerTransition(String, CircuitBreakerState)}, which {@link UpstreamGuards#guardFor} installs
  * as the state-change consumer of each breaker it builds ({@link UpstreamCircuitBreaker}).
@@ -108,12 +111,13 @@ public final class UpstreamFailureMapper {
 
     /**
      * Meters an attempt that obtained no pooled upstream connection because the gateway itself is saturated —
-     * the upstream client's wait queue was full, or the wait outlasted the connection wait bound — and
-     * produces the {@link EventType#UPSTREAM_POOL_SATURATED} rejection the edge answers {@code 503}. The
-     * dispatch raises it inside the guard, so the breaker records it as neutral like every
-     * {@link GatewayException}: neither a failure nor a success.
+     * the upstream client's wait queue was full — and produces the {@link EventType#UPSTREAM_POOL_SATURATED}
+     * rejection the edge answers {@code 503}. The dispatch raises it inside the guard, so the breaker records it
+     * as neutral like every {@link GatewayException}: neither a failure nor a success. A wait that outlasted the
+     * connection wait bound is not saturation and never reaches this method: it is the upstream's timeout
+     * ({@link EventType#UPSTREAM_TIMEOUT}), which the breaker counts.
      *
-     * @param failure the pool's refusal or the expired wait, kept as the cause and never shown to the client
+     * @param failure the pool's refusal, kept as the cause and never shown to the client
      * @return the gateway exception carrying {@link EventType#UPSTREAM_POOL_SATURATED}
      */
     public GatewayException toPoolSaturation(Throwable failure) {

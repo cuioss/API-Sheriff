@@ -240,7 +240,7 @@ import org.jspecify.annotations.Nullable;
  * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. The
  * departure does not wake a dispatching thread that is still waiting for a pooled connection: that wait
  * ends when the pool hands the connection over, which reports the client's abort, or when the connection
- * wait bound passes, which ends it as the gateway's own saturation (see below). A client that left before the dispatch began has
+ * wait bound passes, which ends it as the upstream's timeout (see below). A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
  * departure is left to it. All of this holds only for a dispatch handed the armed {@link InboundBody}
  * itself — the HTTP dispatch and the gRPC dispatch both are; a decorator around the body would hide the
@@ -248,13 +248,18 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The wait for a pooled connection is bounded.</strong> Every attempt asks for its upstream connection
  * with a connection wait bound of {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms, which covers both its time in
- * the client's queue and the dial of a new connection for it. An attempt the client's bounded wait queue
- * refuses at once, and one whose wait outlasts the bound, obtained no connection because the gateway itself
- * is saturated: it ends, unsent, as an {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}),
- * raised inside the guard, so the breaker does not count it as a failure and the retry predicate refuses it.
- * Every other reason an attempt obtains no connection — the upstream refused it, or its dial or TLS handshake
- * did not complete within the clients' timeouts, which together are shorter and run from the start of the dial —
- * stays the upstream's failure (see {@link #poolSaturationOf}).
+ * the client's queue and the dial of a new connection for it. Only an attempt the client's bounded wait queue
+ * refuses at once obtained no connection because the gateway itself is saturated: it ends, unsent, as an
+ * {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}), raised inside the guard, so the breaker
+ * records it as neutral and the retry predicate refuses it (see {@link #poolSaturationOf}). An attempt whose
+ * wait outlasts the bound is the upstream's failure: the dial and TLS handshake timeouts together are shorter
+ * than the bound, so an expired wait almost always means the attempt queued behind connections the upstream is
+ * holding — an upstream that does not answer, or one too slow to serve the admitted load within the bound. It
+ * ends, unsent, as an {@link UpstreamConnectionWaitExpired}, a timeout the breaker counts and the failure mapper
+ * reports as {@link EventType#UPSTREAM_TIMEOUT} ({@code 504}), and the retry predicate refuses it: a retry would
+ * queue again behind the same held connections. Every other reason an attempt obtains no connection — the
+ * upstream refused it, or its dial or TLS handshake did not complete within the clients' timeouts — stays the
+ * upstream's failure as well, and the retry predicate treats it as any other upstream failure.
  * The bound keeps the wait from taking more than a minority of the request-body deadline or of the
  * pre-response deadline: an HTTP attempt hands its body over with at least
  * {@code bodyDeadline - UPSTREAM_CONNECTION_WAIT_MILLIS} of its whole-body deadline left, and a gRPC attempt
@@ -276,7 +281,8 @@ import org.jspecify.annotations.Nullable;
  * the running body-bytes-sent count through a {@link StreamAwareRetryGate} and refuses once the body
  * stream was subscribed. The decision is taken when an attempt fails, before any re-entry: a refused
  * retry is never re-entered, so it is not recorded by the circuit breaker, and no duplicate upstream
- * request is ever issued. A {@link GatewayException} is never retried. A bodyless request never
+ * request is ever issued. A {@link GatewayException} is never retried, nor is an expired wait for a pooled
+ * connection ({@link UpstreamConnectionWaitExpired}). A bodyless request never
  * subscribes the inbound stream to an attempt, so it stays retryable for as long as no body byte has
  * arrived.
  *
@@ -304,6 +310,10 @@ public final class DispatchStage {
     private static final String CLIENT_DEPARTED =
             "The client left before the request was answered; the upstream request was aborted";
 
+    /** Fixed disposition of an attempt whose wait for a pooled upstream connection outlasted its bound. */
+    private static final String CONNECTION_WAIT_EXPIRED =
+            "The wait for an upstream connection outlasted its bound; the request was not sent";
+
     /** The methods that carry no body upstream unless they declare a positive length. */
     private static final Set<HttpMethod> BODYLESS_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
 
@@ -312,14 +322,15 @@ public final class DispatchStage {
 
     /**
      * How long an attempt waits for a pooled upstream connection — in the client's queue and while the
-     * connection it waits for is dialled — before the dispatch gives up on it as the gateway's own
-     * saturation ({@link EventType#UPSTREAM_POOL_SATURATED}). It is shorter than the request-body deadline and
-     * the pre-response deadline by more than half of either, so an attempt always hands its body over with
-     * most of its deadline left (see {@link DispatchBody#send}), and longer than the clients' dial and TLS
-     * handshake timeouts together ({@code EgressClients}). The bound runs from the moment the attempt asks for
-     * its connection, those timeouts from the moment its dial starts: an attempt that dials at once fails as the
-     * upstream's when the upstream does not establish the connection, while one that queued first can reach this
-     * bound before them and is then reported as local saturation.
+     * connection it waits for is dialled — before the dispatch gives up on it as the upstream's timeout
+     * ({@link UpstreamConnectionWaitExpired}, {@link EventType#UPSTREAM_TIMEOUT}), which the breaker counts and
+     * the retry predicate refuses. It is shorter than the request-body deadline and the pre-response deadline by
+     * more than half of either, so an attempt always hands its body over with most of its deadline left (see
+     * {@link DispatchBody#send}), and longer than the clients' dial and TLS handshake timeouts together
+     * ({@code EgressClients}). The bound runs from the moment the attempt asks for its connection, those timeouts
+     * from the moment its dial starts: an attempt that dials at once fails on them when the upstream does not
+     * establish the connection, while one that queued first behind connections the upstream holds can reach this
+     * bound before them — either way the failure is the upstream's.
      */
     static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
 
@@ -688,7 +699,11 @@ public final class DispatchStage {
      * <p>
      * A {@link GatewayException} in the failure's cause chain (followed to a bounded depth) is never
      * retried: a dispatch the client ended, and a failure already mapped to the error contract, end
-     * the dispatch. Any other failure is retried only while the dispatch's own state permits it — the
+     * the dispatch. Nor is an {@link UpstreamConnectionWaitExpired} in that chain: the expired wait already
+     * used up the {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms bound, and a retry would queue again behind the
+     * very connections the upstream is holding, keeping the client's wait queue full under exactly the condition
+     * that caused the expiry. A connection the upstream refused fails fast and stays retryable. Any other
+     * failure is retried only while the dispatch's own state permits it — the
      * {@link StreamAwareRetryGate} allows a retry for the request method at the current
      * body-bytes-sent count, and the one-shot request-body stream was not subscribed by an attempt.
      * The inbound body {@link ReadStream} is single-use: re-attaching an already-subscribed stream to
@@ -703,7 +718,9 @@ public final class DispatchStage {
      * @return {@code true} only when the attempt may be retried
      */
     static boolean allowsRetryAfter(Throwable failure) {
-        if (extractGatewayException(failure) != null || !RETRY_STATE.isBound()) {
+        if (extractGatewayException(failure) != null
+                || causeOfType(failure, UpstreamConnectionWaitExpired.class) != null
+                || !RETRY_STATE.isBound()) {
             return false;
         }
         return RETRY_STATE.get().allowsRetry();
@@ -757,27 +774,42 @@ public final class DispatchStage {
     }
 
     /**
-     * Classifies a failure of the wait for a pooled upstream connection. The upstream client's queue of
-     * attempts waiting for a connection being full ({@link ConnectionPoolTooBusyException}) and the wait
-     * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS} (a {@link TimeoutException})
-     * are the gateway's own saturation: the attempt becomes an {@link EventType#UPSTREAM_POOL_SATURATED}
-     * rejection, which the breaker does not count. Every other failure — a connection the upstream refused, a
-     * dial or TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — stays
-     * the upstream's failure, unchanged. The dial and handshake timeouts together are shorter than the wait
-     * bound, but they run from the start of the dial while the wait bound runs from the request for a
-     * connection: an attempt that dials at once fails as the upstream's when the upstream does not establish the
-     * connection, while an attempt that queued first and dials late can reach the wait bound first. Vert.x tells
-     * the two apart nowhere, so that expiry is classified as local saturation.
+     * Classifies a failure of the wait for a pooled upstream connection. Only the upstream client's queue of
+     * attempts waiting for a connection being full ({@link ConnectionPoolTooBusyException}) is the gateway's own
+     * saturation: the attempt becomes an {@link EventType#UPSTREAM_POOL_SATURATED} rejection, which the breaker
+     * records as neutral. Every other failure stays the upstream's: a connection the upstream refused, a dial or
+     * TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — and the wait
+     * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}, which the dispatch ends as an
+     * {@link UpstreamConnectionWaitExpired} (see {@link #connectionWaitExpiryOf}).
      *
      * @param failure       why the attempt obtained no connection
      * @param failureMapper meters the saturation and builds its rejection
      * @return the saturation rejection the attempt ends with, or {@code null} when the failure is the
-     *         upstream's and stays as it is
+     *         upstream's
      */
     static @Nullable GatewayException poolSaturationOf(@Nullable Throwable failure,
             UpstreamFailureMapper failureMapper) {
-        if (failure instanceof ConnectionPoolTooBusyException || failure instanceof TimeoutException) {
+        if (failure instanceof ConnectionPoolTooBusyException) {
             return failureMapper.toPoolSaturation(failure);
+        }
+        return null;
+    }
+
+    /**
+     * Classifies a failure of the wait for a pooled upstream connection as an expired wait. The wait outlasting
+     * {@link #UPSTREAM_CONNECTION_WAIT_MILLIS} (a {@link TimeoutException}) is the upstream's timeout: the dial
+     * and TLS handshake timeouts together are shorter than the wait bound, so an expired wait almost always means
+     * the attempt queued behind connections the upstream is holding. The attempt becomes an
+     * {@link UpstreamConnectionWaitExpired}, which the breaker counts, the failure mapper reports as
+     * {@link EventType#UPSTREAM_TIMEOUT} and the retry predicate refuses.
+     *
+     * @param failure why the attempt obtained no connection
+     * @return the expired wait the attempt ends with, the original failure kept as its cause, or {@code null}
+     *         when the failure is not an expired wait
+     */
+    static @Nullable UpstreamConnectionWaitExpired connectionWaitExpiryOf(@Nullable Throwable failure) {
+        if (failure instanceof TimeoutException expiry) {
+            return new UpstreamConnectionWaitExpired(expiry);
         }
         return null;
     }
@@ -875,13 +907,20 @@ public final class DispatchStage {
         try {
             received = response.toCompletionStage().toCompletableFuture().get();
         } catch (ExecutionException dispatchFailure) {
-            // An attempt that obtained no pooled connection because the gateway is saturated is the gateway's
-            // own rejection, raised here, inside the guard, so the breaker records it as neutral.
-            GatewayException saturated = connectionObtained.get()
-                    ? null
-                    : poolSaturationOf(dispatchFailure.getCause(), failureMapper);
-            if (saturated != null) {
-                throw saturated;
+            if (!connectionObtained.get()) {
+                // An attempt that obtained no pooled connection because the client's wait queue was full is
+                // the gateway's own rejection, raised here, inside the guard, so the breaker records it as
+                // neutral.
+                GatewayException saturated = poolSaturationOf(dispatchFailure.getCause(), failureMapper);
+                if (saturated != null) {
+                    throw saturated;
+                }
+                // One whose wait outlasted its bound queued behind connections the upstream holds: it is the
+                // upstream's timeout, which the guard counts and the retry predicate refuses.
+                UpstreamConnectionWaitExpired expired = connectionWaitExpiryOf(dispatchFailure.getCause());
+                if (expired != null) {
+                    throw new ExecutionException(expired.getMessage(), expired);
+                }
             }
             // The body stream aborts the upstream request itself when the client ends the dispatch, and
             // the transport then reports that abort as a reset. Surface the recorded client-side cause
@@ -977,10 +1016,23 @@ public final class DispatchStage {
      * @return the first {@link GatewayException} in the chain, or {@code null} when there is none
      */
     static @Nullable GatewayException extractGatewayException(Throwable failure) {
+        return causeOfType(failure, GatewayException.class);
+    }
+
+    /**
+     * Finds the first throwable of {@code type} in a failure's cause chain, the failure itself included,
+     * followed to {@link #MAX_CAUSE_DEPTH} and stopped at a self-referential cause.
+     *
+     * @param failure the failure to inspect
+     * @param type    the type looked for
+     * @param <T>     the type looked for
+     * @return the first throwable of {@code type} in the chain, or {@code null} when there is none
+     */
+    private static <T extends Throwable> @Nullable T causeOfType(Throwable failure, Class<T> type) {
         Throwable current = failure;
         for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
-            if (current instanceof GatewayException gatewayException) {
-                return gatewayException;
+            if (type.isInstance(current)) {
+                return type.cast(current);
             }
             Throwable cause = current.getCause();
             if (cause == current) {
@@ -1955,6 +2007,33 @@ public final class DispatchStage {
 
         UpstreamStalledRequest() {
             super(STALLED_BY_UPSTREAM);
+        }
+    }
+
+    /**
+     * The failure of an attempt whose wait for a pooled upstream connection outlasted
+     * {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}. The dial and TLS handshake timeouts of the upstream clients
+     * together are shorter than that bound, so an expired wait almost always means the attempt queued behind
+     * connections the upstream is holding — an upstream that accepts but does not answer, or one too slow to
+     * serve the admitted load within the bound. The attempt's request was never sent and its body never read, so
+     * nothing the client did contributes to the failure — it is the upstream's. It is a {@link TimeoutException},
+     * not a {@link GatewayException}: the breaker counts it as an upstream failure, the failure mapper reports it
+     * as {@link EventType#UPSTREAM_TIMEOUT}, and the retry predicate refuses it (see
+     * {@link #allowsRetryAfter(Throwable)}), so a retry never queues again behind the same held connections.
+     * <p>
+     * Carries a fixed message and the expired wait as its cause; no request-specific state.
+     */
+    static final class UpstreamConnectionWaitExpired extends TimeoutException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * @param expiry the timeout the upstream client reported for the expired wait, kept as the cause
+         */
+        UpstreamConnectionWaitExpired(TimeoutException expiry) {
+            super(CONNECTION_WAIT_EXPIRED);
+            initCause(Objects.requireNonNull(expiry, "expiry"));
         }
     }
 

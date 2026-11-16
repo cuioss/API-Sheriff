@@ -52,12 +52,13 @@ import org.jspecify.annotations.Nullable;
  * <strong>Every upstream client bounds how it waits for a connection.</strong> Each client queues at most
  * {@linkplain #poolOptionsFor(int) a wait-queue bound} of attempts waiting for a pooled connection; an attempt
  * beyond it is refused at once, and the dispatch answers it as the gateway's own saturation
- * ({@code UPSTREAM_POOL_SATURATED}, {@code 503}), which the circuit breaker does not count. A TCP connect to
+ * ({@code UPSTREAM_POOL_SATURATED}, {@code 503}), which the circuit breaker records as neutral. A TCP connect to
  * the upstream is bounded by {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} and its TLS handshake by
  * {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS}; either expiring is the upstream's own failure, which the
  * breaker counts. The dispatch bounds an attempt's whole wait for a connection on its own
- * ({@code DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS}), longer than the dial and handshake timeouts together.
- * All of them are fixed values, not configuration keys.
+ * ({@code DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS}), longer than the dial and handshake timeouts together;
+ * a wait that reaches that bound is the upstream's timeout ({@code UPSTREAM_TIMEOUT}, {@code 504}), which the
+ * breaker counts as well. All of them are fixed values, not configuration keys.
  * <p>
  * Built once at boot and immutable afterwards; the clients it creates are Vert.x's own thread-safe
  * clients.
@@ -79,9 +80,9 @@ public final class EgressClients {
     /**
      * How long one TCP connect to an upstream may take before it fails as the upstream's own failure, which
      * the circuit breaker counts. Together with {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS} it is shorter than
-     * the dispatch's bound on the whole wait for a connection, so a dial that starts at once fails as the
-     * upstream's; a dial that starts only after a wait in the queue can meet that bound first (see
-     * {@code DispatchStage.poolSaturationOf}).
+     * the dispatch's bound on the whole wait for a connection, so a dial that starts at once fails on it as the
+     * upstream's; a dial that starts only after a wait in the queue can meet that bound first, and the attempt
+     * then ends as the upstream's timeout (see {@code DispatchStage.connectionWaitExpiryOf}).
      */
     static final int UPSTREAM_DIAL_TIMEOUT_MILLIS = 5_000;
 
@@ -89,8 +90,9 @@ public final class EgressClients {
      * How long the TLS handshake with an upstream may take before it fails as the upstream's own failure,
      * which the circuit breaker counts. Together with {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} it stays below the
      * dispatch's bound on the whole wait for a connection, so an attempt that dials at once and whose upstream
-     * accepts the TCP connection but does not complete its handshake fails as the upstream's; one that queued
-     * first can meet that bound before (see {@code DispatchStage.poolSaturationOf}).
+     * accepts the TCP connection but does not complete its handshake fails on it as the upstream's; one that
+     * queued first can meet that bound before, and then ends as the upstream's timeout (see
+     * {@code DispatchStage.connectionWaitExpiryOf}).
      */
     static final int UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS = 4_000;
 
@@ -248,8 +250,9 @@ public final class EgressClients {
     /**
      * Bounds how long establishing a connection to an upstream may take — the TCP connect by
      * {@link #UPSTREAM_DIAL_TIMEOUT_MILLIS} and the TLS handshake by {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS}
-     * — so, for an attempt that dials at once, a connection the upstream does not establish fails as the
-     * upstream's before the dispatch's wait bound could end the attempt as the gateway's own saturation.
+     * — so, for an attempt that dials at once, a connection the upstream does not establish fails on these
+     * bounds, as the upstream's connection failure, before the dispatch's wait bound could end the attempt as
+     * the upstream's timeout.
      */
     private static HttpClientOptions establishmentBound(HttpClientOptions options) {
         return options.setConnectTimeout(UPSTREAM_DIAL_TIMEOUT_MILLIS)

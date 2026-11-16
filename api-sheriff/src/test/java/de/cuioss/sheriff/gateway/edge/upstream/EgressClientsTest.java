@@ -74,7 +74,7 @@ class EgressClientsTest {
                 () -> assertTrue(EgressClients.UPSTREAM_DIAL_TIMEOUT_MILLIS + EgressClients.UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS
                         < DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS,
                         "a connection the upstream does not establish fails as the upstream's before the connection "
-                                + "wait bound ends the attempt as local saturation"));
+                                + "wait bound ends the attempt as the upstream's timeout"));
     }
 
     @Test
@@ -92,6 +92,6 @@ class EgressClientsTest {
                         "the forced-HTTP/2 client"),
                 () -> assertTrue(EgressClients.UPSTREAM_DIAL_TIMEOUT_MILLIS < DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS,
                         "a dial that does not complete fails as the upstream's before the connection wait bound "
-                                + "ends the attempt as local saturation"));
+                                + "ends the attempt as the upstream's timeout"));
     }
 }
