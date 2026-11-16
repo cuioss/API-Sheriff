@@ -171,7 +171,8 @@
     "auto_emit": true,
     "parallelization_scope": 2,
     "effort": {},
-    "use_worktree": true
+    "use_worktree": true,
+    "decision_confidence_threshold": 90
   },
   "build": {
     "queue": {
@@ -386,7 +387,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.2118",
-    "config_seed_fingerprint": "9aaf980d"
+    "provisioned_version": "0.1.2135",
+    "config_seed_fingerprint": "2bb2254b"
   }
 }
