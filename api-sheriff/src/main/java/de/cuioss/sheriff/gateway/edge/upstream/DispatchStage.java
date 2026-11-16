@@ -62,7 +62,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 6 — upstream dispatch over the route's shared Vert.x {@code HttpClient}, invoked through
- * that route's SmallRye Fault-Tolerance guard. Neither is a component of the route: both are
+ * that route's resilience guard ({@link UpstreamGuards}). Neither is a component of the route: both are
  * resolved from the boot-built {@link UpstreamClients} lookup, by the route's
  * {@linkplain UpstreamTarget upstream target} and
  * {@linkplain ResilienceShape resilience shape} respectively.
@@ -206,12 +206,10 @@ import org.jspecify.annotations.Nullable;
  * inbound body and for the body whose next complete message did not arrive,
  * {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for the idle body
  * and the body past its deadline), never as the transport error the aborted upstream
- * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
- * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
- * breaker, though: SmallRye Fault Tolerance has no neutral outcome, so a skipped exception is
- * recorded as a success, in the closed and in the half-open state alike. Keeping client-ended
- * dispatches out of the breaker's window altogether would need the guarded call to be restructured,
- * which the gateway does not do.
+ * request produced. The breaker ({@link UpstreamCircuitBreaker}) records a {@link GatewayException} as
+ * neutral: such a dispatch is neither counted as an upstream failure nor recorded as a success, so it
+ * neither dilutes the breaker's window in the closed state nor counts toward closing it in the half-open
+ * state, where it gives its trial back. The retry predicate refuses to retry it.
  * <p>
  * The client abort is honoured only when it preceded the transport failure: it is read once, at
  * the moment the attempt's send fails, so a client that goes away only after the upstream already
@@ -238,7 +236,7 @@ import org.jspecify.annotations.Nullable;
  * and whether or not the body has ended. The attempt is then released exactly as above: an upstream
  * request in flight is reset at once instead of being held until the guard's timeout, and one still
  * waiting for a pooled connection is never sent once the pool hands it one. The dispatch reports an
- * {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, so the breaker skips it: a body that was
+ * {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, which the breaker records as neutral: a body that was
  * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. The
  * departure does not wake a dispatching thread that is still waiting for a pooled connection: that wait
  * ends when the pool hands the connection over, which reports the client's abort, or when the connection
@@ -739,10 +737,10 @@ public final class DispatchStage {
                 } catch (ExecutionException executionFailure) {
                     // awaitDispatch blocks on CompletableFuture#get, which wraps the real cause (e.g. a
                     // client-side body-cap GatewayException from ByteCappedBodyStream) in an
-                    // ExecutionException. Unwrap it so the breaker's skipOn(GatewayException.class) rule
-                    // and the retry predicate see the actual GatewayException rather than the wrapper —
-                    // otherwise a client-caused rejection is miscounted as an upstream failure and can
-                    // trip the circuit breaker for reasons unrelated to upstream health.
+                    // ExecutionException. Unwrap it so the breaker, which records a GatewayException as
+                    // neutral, and the retry predicate see the actual GatewayException rather than the
+                    // wrapper — otherwise a client-caused rejection is miscounted as an upstream failure and
+                    // can trip the circuit breaker for reasons unrelated to upstream health.
                     Throwable cause = executionFailure.getCause();
                     throw cause instanceof Exception exception ? exception : executionFailure;
                 }
@@ -878,7 +876,7 @@ public final class DispatchStage {
             received = response.toCompletionStage().toCompletableFuture().get();
         } catch (ExecutionException dispatchFailure) {
             // An attempt that obtained no pooled connection because the gateway is saturated is the gateway's
-            // own rejection, raised here, inside the guard, so the breaker skips it.
+            // own rejection, raised here, inside the guard, so the breaker records it as neutral.
             GatewayException saturated = connectionObtained.get()
                     ? null
                     : poolSaturationOf(dispatchFailure.getCause(), failureMapper);
@@ -887,7 +885,7 @@ public final class DispatchStage {
             }
             // The body stream aborts the upstream request itself when the client ends the dispatch, and
             // the transport then reports that abort as a reset. Surface the recorded client-side cause
-            // in its place, so the guard sees a GatewayException — which it skips. Only the snapshot
+            // in its place, so the guard sees a GatewayException — which its breaker records as neutral. Only the snapshot
             // taken when the send failed counts: every body stream records its client abort before it
             // runs the abort action, so an abort that caused the failure is always in the snapshot,
             // while a client that went away only after the upstream had already failed is not — that
@@ -970,7 +968,15 @@ public final class DispatchStage {
                 : new ClientDeparted(cause);
     }
 
-    private static @Nullable GatewayException extractGatewayException(Throwable failure) {
+    /**
+     * Finds the {@link GatewayException} in a failure's cause chain, followed to a bounded depth. It is the one
+     * rule both the retry predicate ({@link #allowsRetryAfter(Throwable)}) and the upstream breaker
+     * ({@link UpstreamCircuitBreaker}) read a gateway rejection by.
+     *
+     * @param failure the failure to inspect
+     * @return the first {@link GatewayException} in the chain, or {@code null} when there is none
+     */
+    static @Nullable GatewayException extractGatewayException(Throwable failure) {
         Throwable current = failure;
         for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
             if (current instanceof GatewayException gatewayException) {

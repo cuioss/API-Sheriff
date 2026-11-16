@@ -172,8 +172,10 @@ public final class ApiSheriffLogMessages {
                 .build();
 
         /**
-         * The circuit breaker opened for an upstream: half or more of its last 20 calls failed (the
-         * gateway's fixed breaker policy, ADR-0064).
+         * The circuit breaker opened for an upstream: half or more of the last 20 calls whose outcome the
+         * upstream decided failed (the gateway's fixed breaker policy, ADR-0064), or a trial call failed
+         * while the breaker was half-open. A call the gateway itself ended — the client left, its body broke
+         * a bound, the wait queue for an upstream connection was full — is not among them.
          */
         public static final LogRecord CIRCUIT_BREAKER_OPEN = LogRecordModel.builder()
                 .prefix(PREFIX)

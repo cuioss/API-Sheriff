@@ -114,8 +114,8 @@ public enum EventType {
      * {@code security_filter.max_body_bytes} cap. This event is a body that stopped arriving, whatever
      * its size. It is <strong>not</strong> a {@link #SECURITY_FILTER_VIOLATION}: no filter judged the
      * request, and an ordinary dropped upload raises no security warning. It is attributed to the
-     * client, never to the upstream, so it is not counted as a failure by the route's circuit breaker
-     * and is recorded by it as a success.
+     * client, never to the upstream, so the route's circuit breaker records it as neutral: it is neither
+     * counted as a failure nor recorded as a success.
      */
     INBOUND_BODY_ABORTED(EventCategory.INPUT_VALIDATION, 400),
     /**
@@ -142,7 +142,7 @@ public enum EventType {
      * sustained stall at the pre-response deadline above and an upstream connection obtained too late to
      * leave the client time to send. This event is
      * attributed to the request, never to the upstream, which was given no request bytes to answer: it
-     * is not counted as a failure by the route's circuit breaker and is recorded by it as a success,
+     * is neutral to the route's circuit breaker — neither counted as a failure nor recorded as a success —
      * and it is never retried.
      */
     REQUEST_BODY_TIMEOUT(EventCategory.INPUT_VALIDATION, 408),
@@ -171,8 +171,8 @@ public enum EventType {
      * The attempt obtained no pooled upstream connection: the upstream client's queue of attempts waiting for
      * one was full, or the wait for one — in that queue and while the connection was dialled — outlasted the
      * gateway's connection wait bound. It is the gateway's own saturation rather than the upstream's failure,
-     * so the dispatch ends as a gateway rejection the route's circuit breaker does not count as a failure, and
-     * the upstream was never sent the request. A connection the upstream refuses, and a dial that does not
+     * so the dispatch ends as a gateway rejection the route's circuit breaker records as neutral — neither a
+     * failure nor a success — and the upstream was never sent the request. A connection the upstream refuses, and a dial that does not
      * complete within the dial timeout, remain {@link #UPSTREAM_ERROR} or {@link #UPSTREAM_TIMEOUT}, which the
      * breaker counts.
      */
