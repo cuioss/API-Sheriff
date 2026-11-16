@@ -270,7 +270,8 @@ service path.
 
 A gRPC call is not held to the request-body idle timeout of an HTTP route. Until the upstream
 answers, the time a client holds its request stream open is the client's, and two fixed bounds end
-it as the client's own abort, which the upstream's circuit breaker does not count as a failure:
+it as the client's own abort, which the upstream's circuit breaker records as neutral, neither a
+failure nor a success:
 
 * *One complete request message every 10 s.* Each request message must arrive whole -- its 5-byte
   length prefix and every payload byte the prefix declares -- within 10 s of the moment the gateway
@@ -292,10 +293,11 @@ Both bounds stop as soon as the upstream sends its response headers. The upstrea
 timeout runs from the start of the attempt and ends a call whose upstream holds the complete,
 half-closed request and does not answer, and a call whose upstream stops taking data mid-request and
 takes no more within the 30 s; each ends with `DEADLINE_EXCEEDED` and `grpc-message: upstream`, and the
-breaker counts it. A call whose wait for an upstream connection or HTTP/2 stream slot lasts 10 s ends
-earlier, unsent, with `UNAVAILABLE`: the gateway itself is saturated, so the breaker does not count it.
-Because of that bound the deadline leaves the client at least 19 s after the gateway hands the call
-over. While an upstream is not taking data, the 10 s message bound does not run and the
+breaker counts it. A call whose wait for an upstream connection or HTTP/2 stream slot runs its full
+10 s bound ends earlier, unsent, as the upstream's `UPSTREAM_TIMEOUT` -- `DEADLINE_EXCEEDED` with
+`grpc-message: upstream` -- which the breaker counts and which is never retried: the wait queued behind
+connections the upstream holds. Because of that bound the gateway hands a call over no later than 10 s
+after the attempt started, so the deadline leaves the client at least 19 s before the 29 s cap. While an upstream is not taking data, the 10 s message bound does not run and the
 25 s deadline does not end the call at once: a deadline that passed meanwhile ends the call the moment
 the upstream takes data again. Only a sustained upstream stall makes that the upstream's failure: when
 the upstream had then taken no data for at least 10 s without a break, the call is the upstream's
@@ -305,9 +307,9 @@ sending faster than its upstream reads is paused briefly again and again -- and 
 client's `REQUEST_BODY_TIMEOUT`, as does a deadline that passes while the gateway is reading the stream,
 however long the upstream paused it earlier. So a client that out-sends a healthy upstream and never
 ends its stream ends as its own deadline, and cannot open the upstream's breaker. The 10 s stall
-threshold is fixed. Because of the one-second grace, a
-client that had already ended its request stream is not ended by the
-deadline unless the gateway takes longer than that second to pass its end on. After the response
+threshold is fixed. Because the hand-over comes at least 19 s before the cap, a client that had
+already ended its request stream is not ended by the deadline unless the gateway takes longer than
+that to pass its end on. After the response
 headers, a client-streaming or bidirectional call may pause between its messages: the call stays
 open while a frame travels in either direction, and a call that carries no frame for five minutes is ended with `grpc-status: 4`
 (`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout` in place of the upstream's trailers.

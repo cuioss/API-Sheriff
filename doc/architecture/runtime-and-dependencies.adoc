@@ -53,8 +53,9 @@ image::../resources/diagrams/boot-assembly-and-object-reuse.svg[Boot-time assemb
 | Data-plane Vert.x `HttpClient` & resilience guards
 | Deduplicated per *distinct upstream target* (scheme + host + port + forced HTTP/2 for gRPC) so
   routes to the same backend share one client and connection pool
-  (link:../adr/0008-data-plane-transport.adoc[ADR-0008]). SmallRye Fault Tolerance guards are
-  deduplicated per *resilience shape* (upstream target + retry setting). WebSocket routes use the
+  (link:../adr/0008-data-plane-transport.adoc[ADR-0008]). Resilience guards -- SmallRye Fault
+  Tolerance's retry and timeout around the gateway's own circuit breaker -- are deduplicated per
+  *resilience shape* (upstream target + retry setting). WebSocket routes use the
   edge-wide WebSocket client.
 
 | `TokenValidator` & `ForwardedHeaderResolver`

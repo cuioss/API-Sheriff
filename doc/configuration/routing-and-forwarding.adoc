@@ -574,16 +574,21 @@ link:../user/endpoint-routes.adoc#_upstream_path[Endpoint Routes -- Upstream pat
 *Timeout and attempt count.* A route declares no timeout and no attempt count
 (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc#_amendment_2026_10_26_the_timeout_and_retry_keys_are_removed[ADR-0064, amendment]).
 Each attempt runs under the gateway's fixed 30 s timeout, so a dispatch on a route whose
-`retry.enabled` is `true` can take about 90 s across its three attempts. The upstream client keeps
-the Vert.x default connect timeout of 60 s, which the 30 s timeout ends first, and sets no idle
-timeout. `connect_timeout_ms` and `read_timeout_ms` in an `upstream` block, and `max_attempts` and
+`retry.enabled` is `true` can take about 90 s across its three attempts. The upstream client dials
+within a fixed 5 s, completes its TLS handshake within a fixed 4 s and sets no idle timeout, and an
+attempt waits at most a fixed 10 s for a pooled connection; an attempt whose wait reaches it ends as
+the upstream's `504` and is not retried (see
+link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream connection wait]). `connect_timeout_ms` and `read_timeout_ms` in an `upstream` block, and `max_attempts` and
 `idempotent_only` in its `retry` block, fail the boot as unknown keys, as `circuit_breaker` does.
 
 *Circuit breaker.* A route declares no circuit-breaker settings; `circuit_breaker` in an `upstream`
 block fails the boot as an unknown key. The gateway's fixed breaker
 (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064])
-judges a rolling window of the last 20 calls, opens when half or more failed, stays open for 5 seconds
-(the `Retry-After` of the `503` it answers meanwhile) and closes after two successful trial calls. Its
+judges a rolling window of the last 20 calls whose outcome the upstream decided, opens when half or
+more failed, stays open for 5 seconds (the `Retry-After` of the `503` it answers meanwhile) and closes
+after two successful trial calls. A call the client ended -- a body that broke a bound or did not
+arrive, a client that left -- and an attempt refused because the upstream connection wait queue was
+full are not in the window: the breaker records them as neutral, neither failures nor successes. Its
 state is per upstream target per gateway node (see
 link:../architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client]).
 

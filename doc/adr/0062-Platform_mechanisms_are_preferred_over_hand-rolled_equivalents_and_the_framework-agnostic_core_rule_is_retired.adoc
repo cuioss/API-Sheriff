@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Where the Quarkus platform already supplies a mechanism the gateway uses it, and a hand-rolled component stays only with a recorded reason -- EnvSecretResolver, the BFF session store, ClientHelloSniParser and the pre-boot configuration path each carry one. The framework-agnostic core rule of ADR-0005 and its six-package gate are retired; what remains is a narrowed gate, PreBootFrameworkFreeArchTest, that keeps the pre-boot packages config.boot, config.load, config.model, config.validation, config.topology and routing free of framework dependencies because the offline configuration check runs them before the framework starts. @SessionScoped and the Vert.x Web SessionStore are rejected for the BFF session, the session store and binding stay producer-built, and Quarkus command mode is not adopted for the offline check.
+// summary: Where the Quarkus platform already supplies a mechanism the gateway uses it, and a hand-rolled component stays only with a recorded reason -- EnvSecretResolver, the BFF session store, ClientHelloSniParser and the pre-boot configuration path each carry one. The framework-agnostic core rule of ADR-0005 and its six-package gate are retired; what remains is a narrowed gate, PreBootFrameworkFreeArchTest, that keeps the pre-boot packages config.boot, config.load, config.model, config.validation, config.topology and routing free of framework dependencies because the offline configuration check runs them before the framework starts. @SessionScoped and the Vert.x Web SessionStore are rejected for the BFF session, the session store and binding stay producer-built, and Quarkus command mode is not adopted for the offline check. Amended: the upstream circuit breaker (UpstreamCircuitBreaker) is a hand-rolled component that stays, because the platform breaker of SmallRye Fault Tolerance records every call as a success or a failure and has no neutral outcome for a client-ended or queue-full call; SmallRye's retry and timeout stay in use.
 // tags: module-structure, platform-adoption, quarkus, hand-rolled, arch-gate, pre-boot, session-store, cdi, configuration
 // affects: api-sheriff, documentation
 // supersedes: 0005
@@ -59,6 +59,9 @@ Each of the following was checked against the platform mechanism that would repl
 
 | Pre-boot configuration (`config/load`, `config/boot`, `ConfigValidationCommand`)
 | The offline configuration check answers before the framework starts, and the boot calls the same pipeline seam so the two verdicts cannot differ (ADR-0061). Code on that path cannot use a mechanism that needs a running container.
+
+| The upstream circuit breaker (`UpstreamCircuitBreaker`)
+| The SmallRye Fault Tolerance breaker has no neutral outcome for a call the gateway itself ended; see <<amendment-upstream-circuit-breaker>>.
 |===
 
 === The session store and the session binding stay producer-built
@@ -103,6 +106,16 @@ A narrowed gate stays over six pre-boot packages:
 The forbidden framework packages are the nine the retired gate listed: `io.quarkus..`, `io.vertx..`, `io.smallrye..`, `io.netty..`, `org.jboss..`, `jakarta.enterprise..`, `jakarta.inject..`, `org.eclipse.microprofile..` and `io.micrometer..`.
 
 `PreBootFrameworkFreeArchTest` enforces the rule. It is a plain JUnit 5 test that runs in the module test lane and in the quality gate. It carries a vacuity guard, which fails when a package entry resolves to no production class, and a negative control, which proves the check fails on a package that does depend on the framework.
+
+[[amendment-upstream-circuit-breaker]]
+=== Amendment: the upstream circuit breaker stays hand-rolled
+
+The upstream circuit breaker, `UpstreamCircuitBreaker`, is added to the components that stay hand-rolled (the table above).
+
+*Why it stays.* The platform mechanism is the circuit breaker of SmallRye Fault Tolerance. It records every call as a success or a failure and has no neutral outcome. The gateway needs one: a call the client ended, and an attempt refused because the wait queue for an upstream connection was full, say nothing about the upstream, so they must neither count against it nor be credited to it as a success. That is a property the platform mechanism does not have, which is the reason this record's rule requires
+(link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc#amendment-neutral-outcome[ADR-0064]).
+
+*What stays on the platform.* Only the breaker is replaced. The retry and the per-attempt timeout around it are still SmallRye Fault Tolerance's, built through its programmatic API, in the order retry, breaker, timeout.
 
 == Alternatives rejected
 

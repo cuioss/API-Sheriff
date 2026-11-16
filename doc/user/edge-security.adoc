@@ -656,8 +656,8 @@ deployment that never writes it keeps the behaviour shown here.
   keeps it -- a CDN or other cache those last two target obeys them in place of `Cache-Control`. The
   time spent waiting for a
   pooled upstream connection counts towards the 25 s, but that wait is bounded at 10 s (Upstream
-  connection wait, below), so a body always has at least 15 s after the gateway hands it to the
-  upstream. The deadline does not reset an upstream that is not taking data, but a body that
+  connection wait, below), so a body the gateway hands to the upstream always has at least 15 s left
+  after the hand-over. The deadline does not reset an upstream that is not taking data, but a body that
   upstream reads again after the deadline is ended then. Not applied to bodyless requests. On a
   `protocol: grpc` route it applies only until the upstream answers, and it counts from the moment the
   gateway hands the body to the upstream, so the wait for an upstream connection is not charged to the
@@ -678,12 +678,23 @@ deployment that never writes it keeps the behaviour shown here.
   (wait queue: `admission_cap`, at least 16; dial: 5 s; TLS handshake: 4 s)
 | How long an upstream attempt waits for a pooled upstream connection, in its upstream client's wait
   queue and while the connection is dialled. Each upstream client queues at most as many attempts as
-  the effective `admission_cap`, never fewer than 16. An attempt that finds the queue full, or whose
-  wait outlasts the 10 s, is answered `503` (`UPSTREAM_POOL_SATURATED`, problem type
-  `urn:api-sheriff:problem:upstream`) without the request ever being sent; it is the gateway's own
-  saturation, so the upstream's circuit breaker does not count it as a failure. A connection the
-  upstream refuses, and a TCP connect or TLS handshake that does not complete in time, stay the
-  upstream's failure, which the breaker counts. Not configurable. See
+  the effective `admission_cap`, never fewer than 16. Neither answer below ever sends the request.
+
+  *Full queue: `503`.* An attempt that finds the queue full is answered `503`
+  (`UPSTREAM_POOL_SATURATED`, problem type `urn:api-sheriff:problem:upstream`). It is the gateway's own
+  saturation, so the upstream's circuit breaker records it as neutral: neither a failure nor a success.
+
+  *Expired wait: `504`.* An attempt whose wait reaches the 10 s is answered `504` (`UPSTREAM_TIMEOUT`;
+  on a `protocol: grpc` route `grpc-status: 4`, `DEADLINE_EXCEEDED`, with `grpc-message: upstream`).
+  The dial and TLS-handshake timeouts are shorter than the wait, so such an attempt queued behind
+  connections the upstream holds: it is the upstream's timeout, the breaker counts it, and it is never
+  retried. More requests than a slow upstream serves within 10 s therefore end as `504` and can open
+  its breaker, after which the open circuit answers `503` with `Retry-After`.
+
+  A connection the upstream refuses, and a TCP connect or TLS handshake that does not complete in time,
+  stay the upstream's failure as well. A client that leaves while its request waits here ends its
+  request at once; its place in the queue is given up only when the pool hands it a connection, which
+  is then reset unsent, or when the 10 s pass. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream connection wait].
 
 | gRPC message bound
@@ -695,8 +706,8 @@ deployment that never writes it keeps the behaviour shown here.
   a message does not count. Time the upstream takes no data is not counted, but the time before it is:
   the wait for a message goes on from there when the upstream reads again. A
   call that sends nothing, only part of a message, or stops between two messages is ended with
-  `grpc-status: 3` (`INVALID_ARGUMENT`) as the client's abort, which the upstream's circuit breaker does
-  not count as a failure. Not configurable. See
+  `grpc-status: 3` (`INVALID_ARGUMENT`) as the client's abort, which the upstream's circuit breaker
+  records as neutral, neither a failure nor a success. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_grpc_message_bound[Architecture -- gRPC message bound and pre-response deadline].
 
 | gRPC stream-idle timeout
@@ -708,7 +719,7 @@ deployment that never writes it keeps the behaviour shown here.
   gRPC message bound and the request-body deadline bound the call instead, and the upstream guard's
   30 s timeout an upstream that holds the complete, half-closed request or an upstream that stops
   taking data mid-request and takes no more within the 30 s; a connection or stream-slot wait ends at
-  the 10 s upstream connection wait instead. One that takes data again after the request-body deadline passed ends the
+  the 10 s upstream connection wait instead, as the upstream's timeout. One that takes data again after the request-body deadline passed ends the
   call then, as the upstream's timeout when it had taken no data for at least 10 s, as the client's
   otherwise. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
