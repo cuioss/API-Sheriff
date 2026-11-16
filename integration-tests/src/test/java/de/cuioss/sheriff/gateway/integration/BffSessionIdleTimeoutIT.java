@@ -390,9 +390,11 @@ class BffSessionIdleTimeoutIT {
                             + "answered as unauthenticated, although its absolute lifetime of at least "
                             + MINIMUM_SOURCE_TTL_SECONDS + "s has not elapsed. " + gatewayLog(COOKIE_MODE.name())));
 
-            // Leg 5 — a logout clears both cookies
+            // Leg 5 — a logout clears both cookies; it carries the same-origin proof a browser navigating
+            // from a gateway page sends, which the logout leg asks for
             Session toLogOut = BffKeycloakLoginFlow.login(SESSION_ROUTE, COOKIE_MODE.origin());
             Response logout = BffKeycloakLoginFlow.gateway(toLogOut.gatewayCookies(), COOKIE_MODE.origin())
+                    .header("Sec-Fetch-Site", "same-origin")
                     .redirects().follow(false)
                     .when().get(LOGOUT_PATH)
                     .then().extract().response();

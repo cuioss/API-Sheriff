@@ -66,8 +66,15 @@ import org.junit.jupiter.api.Test;
  * <strong>What it does not assert.</strong> That the access token is revoked: it is not, and stays valid
  * at a resource server until it expires.
  * <p>
- * The {@code /bff/logout} entry redirects {@code 302} into the RP-initiated round-trip that ends at the
- * configured {@code final_redirect}. That redirect targets the realm's end-session endpoint and its query
+ * <strong>Same-origin proof.</strong> The logout leg acts only on a request that proves it came from
+ * the gateway's own pages: a trusted {@code Origin}, or {@code Sec-Fetch-Site: same-origin} or
+ * {@code none} without one. REST Assured sends no fetch metadata, so every logout that expects the
+ * redirect sends {@code Sec-Fetch-Site: same-origin}, as a browser navigating from a gateway page does.
+ * A {@code cross-site} logout is answered {@code 200} with a confirmation page and leaves the session
+ * serving; the page's {@code POST}, sent with the gateway's {@code Origin}, then logs out.
+ * <p>
+ * With that proof, the {@code /bff/logout} entry redirects {@code 302} into the RP-initiated round-trip
+ * that ends at the configured {@code final_redirect}. That redirect targets the realm's end-session endpoint and its query
  * carries the {@code id_token_hint}, so the suite also asserts the two headers the gateway answers it
  * with: {@code Referrer-Policy: no-referrer} and {@code Cache-Control: no-store}. Neither the location
  * nor the token it carries appears in any message of this suite.
@@ -110,6 +117,76 @@ class BffLogoutIT extends BaseIntegrationTest {
 
     private static final int OK = 200;
 
+    /** The fetch-metadata header a browser sends on every navigation. */
+    private static final String SEC_FETCH_SITE = "Sec-Fetch-Site";
+
+    @Test
+    @DisplayName("a cross-site logout gets the confirmation page and keeps the session; its same-origin POST logs out")
+    void crossSiteLogoutIsConfirmedBeforeItEndsTheSession() {
+        // Arrange — a real login, whose session serves the protected route.
+        Session session = BffKeycloakLoginFlow.login("/app/get");
+
+        // Act — a logout navigation another site started: no Origin, Sec-Fetch-Site: cross-site.
+        var confirmation = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header(SEC_FETCH_SITE, "cross-site")
+                .redirects().follow(false)
+                .when()
+                .get("/bff/logout")
+                .then()
+                .statusCode(OK)
+                .extract();
+
+        // Assert — the confirmation page: HTML, uncacheable, framing forbidden, one form posting back to
+        // the logout path, and no cookie set or cleared.
+        assertTrue(confirmation.contentType().startsWith("text/html"),
+                "a logout without same-origin proof must be answered with the HTML confirmation page");
+        assertEquals("no-store", confirmation.header("Cache-Control"),
+                "the confirmation page must not be cacheable");
+        String policy = confirmation.header("Content-Security-Policy");
+        assertNotNull(policy, "the confirmation page must carry a Content-Security-Policy");
+        assertTrue(policy.contains("frame-ancestors 'none'"),
+                "the confirmation page's policy must forbid framing, was: " + policy);
+        assertEquals("DENY", confirmation.header("X-Frame-Options"),
+                "the confirmation page must forbid framing for user agents without frame-ancestors");
+        String page = confirmation.body().asString();
+        assertTrue(page.contains("method=\"POST\"") && page.contains("action=\"/bff/logout\""),
+                "the confirmation page must carry one form posting to the logout path");
+        assertTrue(confirmation.headers().getValues("Set-Cookie").isEmpty(),
+                "the confirmation page must neither set nor clear a cookie");
+
+        // Assert — the session is untouched: it still serves the protected route.
+        BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header("Accept", "application/json")
+                .when()
+                .get("/app/get")
+                .then()
+                .statusCode(OK);
+
+        // Act — the page's button: a POST to the logout path, which the browser sends with the
+        // gateway's own Origin.
+        var logout = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header("Origin", BffKeycloakLoginFlow.GATEWAY_ORIGIN)
+                .contentType("application/x-www-form-urlencoded")
+                .redirects().follow(false)
+                .when()
+                .post("/bff/logout")
+                .then()
+                .statusCode(302)
+                .extract();
+
+        // Assert — the confirmed logout runs the RP-initiated round-trip and ends the session.
+        String location = logout.header("Location");
+        assertNotNull(location, "the confirmed logout must redirect into the logout round-trip");
+        assertTrue(location.startsWith(END_SESSION_ENDPOINT + "?"),
+                "the confirmed logout of a live session must redirect to the realm's end-session endpoint");
+        BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header("Accept", "application/json")
+                .when()
+                .get("/app/get")
+                .then()
+                .statusCode(401);
+    }
+
     @Test
     @DisplayName("RP-initiated logout destroys the local session and revokes its refresh token at Keycloak")
     void rpInitiatedLogoutDestroysLocalSession() {
@@ -121,7 +198,10 @@ class BffLogoutIT extends BaseIntegrationTest {
         Set<String> attachedBeforeLogout = sessionIdsNamingTheClient(adminToken, userId);
 
         // Act — log out without following the redirect, so the end-session request never reaches Keycloak.
+        // A browser marks a navigation from the gateway's own page Sec-Fetch-Site: same-origin;
+        // REST Assured sends no fetch metadata, so the proof the logout leg asks for is set explicitly.
         var logout = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                .header(SEC_FETCH_SITE, "same-origin")
                 .redirects().follow(false)
                 .when()
                 .get("/bff/logout")
