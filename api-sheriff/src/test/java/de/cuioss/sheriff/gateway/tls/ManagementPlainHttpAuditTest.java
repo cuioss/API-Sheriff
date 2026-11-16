@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Constructor;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -108,8 +109,13 @@ class ManagementPlainHttpAuditTest {
     /** The bean name the profile points the management credentials provider at. */
     static final String TEST_CREDENTIALS_PROVIDER = "sheriff-test-credentials";
 
-    /** The liveness probe beneath the shipped management root path. */
-    private static final String LIVENESS_PATH = "/q/health/live";
+    /**
+     * The liveness probe, relative to the management root path the injected {@link #managementUrl}
+     * carries. It is deliberately not absolute: the root is a build-time choice
+     * ({@code quarkus.management.root-path}), so a hard-coded root here would miss the listener of a
+     * build that moved it. {@link #livenessUri} appends it beneath that root.
+     */
+    private static final String LIVENESS_PATH = "health/live";
 
     /** The bound on connecting to, and being answered by, the booted management interface. */
     private static final Duration MANAGEMENT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
@@ -172,7 +178,7 @@ class ManagementPlainHttpAuditTest {
     @Test
     @DisplayName("The management interface this boot started really answers on plain HTTP")
     void managementInterfaceAnswersOnPlainHttp() throws Exception {
-        URI liveness = managementUrl.toURI().resolve(LIVENESS_PATH);
+        URI liveness = livenessUri(managementUrl);
         HttpRequest request = HttpRequest.newBuilder(liveness).timeout(MANAGEMENT_REQUEST_TIMEOUT).GET().build();
 
         HttpResponse<String> response;
@@ -311,6 +317,27 @@ class ManagementPlainHttpAuditTest {
                     Optional.empty(), certificateFiles, certificateKeyFiles, certificateKeyStoreFile,
                     MANAGEMENT_PORT);
         }
+    }
+
+    /**
+     * The liveness URI beneath the injected management root, joined on exactly one {@code /}.
+     * <p>
+     * {@link URI#resolve(String)} with the relative {@link #LIVENESS_PATH} alone is not enough: RFC
+     * 3986 resolution drops the last segment of a base path that does not end in {@code /}, so a root
+     * of {@code http://host:port/q} would resolve to {@code /health/live} and miss the listener. The
+     * root path is therefore given exactly one trailing {@code /} first, so the composition is correct
+     * whether or not the injected URL carries one. (This boot injects {@code http://localhost:{port}/q/},
+     * with the slash; dropping the root from the composition turns the liveness test red.)
+     *
+     * @param managementRoot the management interface's base URL, root path included
+     * @return the liveness probe's absolute URI
+     * @throws URISyntaxException if the injected URL is not a valid URI
+     */
+    private static URI livenessUri(URL managementRoot) throws URISyntaxException {
+        URI root = managementRoot.toURI();
+        String rootPath = root.getPath();
+        String rootDirectory = rootPath.endsWith("/") ? rootPath : rootPath + "/";
+        return root.resolve(rootDirectory + LIVENESS_PATH);
     }
 
     private static ManagementPlainHttpAudit auditOver(TlsConfigurationRegistry registry,
