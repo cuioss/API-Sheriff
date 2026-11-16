@@ -29,6 +29,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.tools.logging.CuiLogger;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The same-origin proof the gateway demands of an unsafe-method browser request, rejecting a request
@@ -71,6 +72,14 @@ import de.cuioss.tools.logging.CuiLogger;
  * rejection disposition ({@code untrusted-origin} / {@code no-origin-proof}) only, never the raw
  * offending {@code Origin} value; the counter is the authoritative observability signal for a
  * rejection.
+ * <p>
+ * <strong>The logout navigation.</strong> {@link #provesSameOriginNavigation(String, String)} asks the
+ * same proof of a request whatever its method, for the RP-initiated logout leg, which ends a session on
+ * a {@code GET} as well. It reads the same two signals through the same rules as {@link #enforce} — a
+ * present {@code Origin} decides alone and must be trusted — and differs in one value only: with
+ * {@code Origin} absent it also admits {@code Sec-Fetch-Site: none}, the value a browser sends for a
+ * navigation the user started (a typed URL, a bookmark). It throws nothing; the caller decides what a
+ * missing proof answers.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -82,6 +91,9 @@ public final class CsrfDefence {
     private static final String ORIGIN_HEADER = "Origin";
     private static final String SEC_FETCH_SITE_HEADER = "Sec-Fetch-Site";
     private static final String SAME_ORIGIN = "same-origin";
+    /** The {@code Sec-Fetch-Site} value of a navigation the user started: a typed URL or a bookmark. */
+    private static final String USER_INITIATED = "none";
+    private static final Set<String> NAVIGATION_FETCH_SITES = Set.of(SAME_ORIGIN, USER_INITIATED);
     private static final Set<HttpMethod> SAFE_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.OPTIONS);
 
     private static final String DISPOSITION_UNTRUSTED_ORIGIN = "untrusted-origin";
@@ -160,10 +172,38 @@ public final class CsrfDefence {
             }
             throw rejected(DISPOSITION_UNTRUSTED_ORIGIN);
         }
-        if (isSameOriginFetch(request)) {
+        if (fetchSite(request.firstHeader(SEC_FETCH_SITE_HEADER).orElse(null)).filter(SAME_ORIGIN::equals)
+                .isPresent()) {
             return;
         }
         throw rejected(DISPOSITION_NO_ORIGIN_PROOF);
+    }
+
+    /**
+     * Whether a request proves same-origin provenance for a navigation that ends a session — the
+     * RP-initiated logout leg — whatever its method. A present {@code Origin} decides alone and must be
+     * trusted, exactly as {@link #enforce} trusts it; with {@code Origin} absent, {@code Sec-Fetch-Site}
+     * must be {@code same-origin} or {@code none}.
+     * <p>
+     * {@code none} is admitted here and nowhere else. A browser sends it for a navigation the user
+     * started — a typed URL or a bookmark — which no other site can trigger, so it proves that the
+     * navigation was not forged cross-site. {@link #enforce} keeps refusing it for an unsafe method,
+     * where the request carries a state-changing intent of its own. A cookie-forwarding instance has no
+     * received origin to compare against here, so only its additional origins are trusted.
+     * <p>
+     * Thread-safe: the defence is immutable.
+     *
+     * @param origin       the request's first {@code Origin} header value, {@code null} when absent
+     * @param secFetchSite the request's first {@code Sec-Fetch-Site} header value, {@code null} when
+     *                     absent
+     * @return {@code true} when the request carries a trusted {@code Origin}, or no {@code Origin} and a
+     *         {@code same-origin} or {@code none} {@code Sec-Fetch-Site}; {@code false} otherwise
+     */
+    public boolean provesSameOriginNavigation(@Nullable String origin, @Nullable String secFetchSite) {
+        if (origin != null) {
+            return isTrusted(origin, null);
+        }
+        return fetchSite(secFetchSite).filter(NAVIGATION_FETCH_SITES::contains).isPresent();
     }
 
     /**
@@ -179,13 +219,18 @@ public final class CsrfDefence {
         return !SAFE_METHODS.contains(method);
     }
 
-    private boolean isTrusted(String origin, PipelineRequest request) {
+    /**
+     * The one origin-trust rule of both entry points. {@code request} supplies the received origin a
+     * cookie-forwarding instance also trusts; {@code null} when the caller has no request to read it
+     * from, in which case only the configured origins are trusted.
+     */
+    private boolean isTrusted(String origin, @Nullable PipelineRequest request) {
         if (!trustsReceivedOrigin) {
             return trustedOrigins.contains(origin.toLowerCase(Locale.ROOT));
         }
         String candidate = normaliseOrigin(origin);
         return trustedOrigins.contains(candidate)
-                || receivedOrigin(request).filter(candidate::equals).isPresent();
+                || (request != null && receivedOrigin(request).filter(candidate::equals).isPresent());
     }
 
     /**
@@ -217,11 +262,12 @@ public final class CsrfDefence {
         return lowered;
     }
 
-    private static boolean isSameOriginFetch(PipelineRequest request) {
-        return request.firstHeader(SEC_FETCH_SITE_HEADER)
-                .map(value -> value.toLowerCase(Locale.ROOT))
-                .filter(SAME_ORIGIN::equals)
-                .isPresent();
+    /**
+     * The one {@code Sec-Fetch-Site} parse of both entry points: the value lower-cased, empty when the
+     * header is absent.
+     */
+    private static Optional<String> fetchSite(@Nullable String value) {
+        return Optional.ofNullable(value).map(site -> site.toLowerCase(Locale.ROOT));
     }
 
     private static GatewayException rejected(String disposition) {

@@ -32,6 +32,7 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -111,7 +112,7 @@ class GatewayCookieContractTest {
                 session -> {
                 }, () -> Optional.of("https://idp.example.com/logout"),
                 ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1));
-        return new LogoutEndpoint(rpInitiatedLogout, binding);
+        return new LogoutEndpoint(rpInitiatedLogout, binding, new CsrfDefence(Set.of(ORIGIN)), "/auth/logout");
     }
 
     /** The {@code name=value} pair a browser sends back for {@code setCookie}. */
@@ -153,7 +154,7 @@ class GatewayCookieContractTest {
             SessionRecord resolved = cookieBinding.resolve(pair(sealedCookie), LOGIN).orElseThrow();
             lines.addAll(cookieBinding.recordAccess(resolved, pair(sealedCookie), LOGIN.plusSeconds(600)));
             lines.add(bindingCodec.toSetCookieHeader(Generators.letterStrings(16, 32).next()));
-            lines.addAll(logoutEndpoint(serverBinding).logout(pair(serverCookie), LOGIN).setCookieHeaders().stream()
+            lines.addAll(logoutEndpoint(serverBinding).logout(pair(serverCookie), ORIGIN, null, LOGIN).setCookieHeaders().stream()
                     .filter(line -> !valueOf(line).isEmpty()).toList());
             return lines;
         }

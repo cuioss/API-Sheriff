@@ -58,6 +58,8 @@ public final class ReservedPathHandler {
     private static final String RETURN_URL_PARAM = "returnUrl";
     private static final String STATE_PARAM = "state";
     private static final String COOKIE_HEADER = "Cookie";
+    private static final String ORIGIN_HEADER = "Origin";
+    private static final String SEC_FETCH_SITE_HEADER = "Sec-Fetch-Site";
     private static final String LOCATION_HEADER = "Location";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final int NOT_FOUND = 404;
@@ -162,8 +164,11 @@ public final class ReservedPathHandler {
         // the genuinely raw, never map-collapsed query string the BFF-13 duplicate-parameter defence
         // re-parses.
         String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? ReservedBodyReader.readFormBody(ctx) : null;
+        // Origin and Sec-Fetch-Site are the same-origin provenance the logout leg demands before it ends a
+        // session; every other handler ignores them.
         BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
-                ctx.request().query(), cookieHeader, firstQueryParam(ctx, CLAIMS_PARAM),
+                ctx.request().query(), cookieHeader, request.firstHeader(ORIGIN_HEADER).orElse(null),
+                request.firstHeader(SEC_FETCH_SITE_HEADER).orElse(null), firstQueryParam(ctx, CLAIMS_PARAM),
                 firstQueryParam(ctx, RETURN_URL_PARAM), firstQueryParam(ctx, STATE_PARAM), rawFormBody, method,
                 bffRuntime.pendingQuotaKey(request));
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
@@ -174,8 +179,8 @@ public final class ReservedPathHandler {
      * Writes a dispatched reserved path's normalized response. A failed OIDC callback — an error
      * status without a {@code Location} — negotiates an HTML error page
      * ({@link ErrorPageClassifier.Exit#CALLBACK_FAILURE}); its own {@code Set-Cookie} lines ride
-     * on the page. Every other reserved outcome written here, the user-info JSON and every redirect
-     * included, is written in its current shape.
+     * on the page. Every other reserved outcome written here, the user-info JSON, the logout
+     * confirmation page and every redirect included, is written in its current shape.
      * <p>
      * <strong>One outcome is not written here at all</strong>: the {@code 404} of the client JWKS
      * endpoint's withheld form (client-secret mode, where there is no key set to publish). It is
@@ -212,7 +217,7 @@ public final class ReservedPathHandler {
             // Multiple Set-Cookie headers must each be a distinct header line (never a comma-joined value).
             response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
             ResponseEnds.endResponse(ctx,
-                    () -> response.jsonBodyOptional().map(httpResponse::end).orElseGet(httpResponse::end));
+                    () -> response.bodyOptional().map(httpResponse::end).orElseGet(httpResponse::end));
         });
     }
 

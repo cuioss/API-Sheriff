@@ -324,7 +324,7 @@ class BffRuntimeProducerTest {
             assertTrue(assembled.isActive(),
                     "an unreachable issuer still yields an active runtime, because discovery is deferred");
             assertEquals(401, assembled.dispatch(ReservedEndpoint.USER_INFO,
-                            new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET", QUOTA_KEY),
+                            new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, null, "GET", QUOTA_KEY),
                             Instant.parse("2026-07-25T10:00:00Z")).status(),
                     "the reserved endpoints are wired although no discovery ever ran");
         }
@@ -333,7 +333,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should keep the back-channel path un-gated — an absent logout_token yields the 400 contract")
         void shouldNotGateBackchannelInServerMode() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, "other=value", "POST", QUOTA_KEY),
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, "other=value", "POST", QUOTA_KEY),
                     Instant.parse("2026-07-25T10:00:00Z"));
 
             assertEquals(400, response.status(),
@@ -344,7 +344,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should wire the user-info fold reachably — no session yields 401")
         void shouldWireUserInfo() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.USER_INFO,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET", QUOTA_KEY),
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, null, "GET", QUOTA_KEY),
                     Instant.parse("2026-07-25T10:00:00Z"));
             assertEquals(401, response.status());
         }
@@ -748,7 +748,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should wire the same reserved endpoints — no session yields 401 from the user-info fold")
         void shouldWireTheSameReservedEndpoints() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.USER_INFO,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET", QUOTA_KEY),
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, null, "GET", QUOTA_KEY),
                     Instant.parse("2026-07-25T10:00:00Z"));
             assertEquals(401, response.status(), "both modes drive identical wiring above the session binding");
         }
@@ -757,7 +757,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should still register the back-channel path, answering a deliberate uncacheable 404")
         void shouldRegisterBackchannelPathGatedTo404() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null,
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null,
                             "logout_token=abc.def.ghi", "POST", QUOTA_KEY),
                     Instant.parse("2026-07-25T10:00:00Z"));
 
@@ -976,12 +976,12 @@ class BffRuntimeProducerTest {
                                 "the configured key reserves the step-up path on the OIDC host");
                         BffRuntime runtime = producer(oidc).bffRuntime();
                         BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                                new BffRuntime.ReservedHttpRequest("", null, null, "/orders", null, null, "GET", QUOTA_KEY), NOW);
+                                new BffRuntime.ReservedHttpRequest("", null, null, null, null, "/orders", null, null, "GET", QUOTA_KEY), NOW);
                         assertEquals(401, response.status(),
                                 "a wired step-up endpoint answers a request without a session 401");
                         assertEquals("application/problem+json", response.headers().get("Content-Type"));
                         assertTrue(response.locationOptional().isEmpty(), "never an IdP redirect without a session");
-                        assertTrue(response.jsonBodyOptional().isPresent(), "the problem body is rendered");
+                        assertTrue(response.bodyOptional().isPresent(), "the problem body is rendered");
                         assertEquals(1, reachableInstancesOf(runtime, StepUpEndpoint.class).size(),
                                 "exactly one step-up endpoint is wired");
                     }));
@@ -1951,7 +1951,7 @@ class BffRuntimeProducerTest {
         void shouldRejectUseOfInert() {
             BffRuntime runtime = BffRuntime.inert();
             BffRuntime.ReservedHttpRequest request =
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET", QUOTA_KEY);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, null, "GET", QUOTA_KEY);
             Instant now = Instant.now();
             assertThrows(IllegalStateException.class, runtime::sessionStage);
             assertThrows(IllegalStateException.class,
@@ -2181,7 +2181,7 @@ class BffRuntimeProducerTest {
                     .build();
             BffRuntime runtime = producer(oidc, oidcHostname(false), TestTlsConfigurationRegistry.empty()).bffRuntime();
             BffRuntime.ReservedHttpRequest login =
-                    new BffRuntime.ReservedHttpRequest("", null, null, "/", null, null, "GET", QUOTA_KEY);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, "/", null, null, "GET", QUOTA_KEY);
             Instant now = Instant.parse("2026-07-25T10:00:00Z");
 
             GatewayException refused = assertThrows(GatewayException.class,
@@ -3496,7 +3496,7 @@ class BffRuntimeProducerTest {
             assertAll("POST on the client JWKS path in key mode",
                     () -> assertEquals(405, response.status()),
                     () -> assertEquals(Map.of("Allow", "GET"), response.headers()),
-                    () -> assertEquals(Optional.empty(), response.jsonBodyOptional()));
+                    () -> assertEquals(Optional.empty(), response.bodyOptional()));
         }
 
         @ParameterizedTest(name = "{0}")
@@ -3514,7 +3514,7 @@ class BffRuntimeProducerTest {
                     () -> assertEquals(Map.of(), response.headers(),
                             "no header of the endpoint's own — neither no-store nor Allow: the edge answers "
                                     + "this outcome with the response of an unrouted path"),
-                    () -> assertEquals(Optional.empty(), response.jsonBodyOptional(), "no body, not an empty key set"),
+                    () -> assertEquals(Optional.empty(), response.bodyOptional(), "no body, not an empty key set"),
                     () -> assertEquals(0, recordsContaining(TestLogLevel.INFO, GENERATED_CLIENT_AUTHENTICATION_KEY),
                             "no client-authentication key was generated to answer it"));
         }
@@ -4135,10 +4135,14 @@ class BffRuntimeProducerTest {
                             "a revocation the provider accepted is not reported as failed"));
         }
 
-        /** Dispatches the reserved logout path on a browser presenting {@code sessionCookie}. */
+        /**
+         * Dispatches the reserved logout path on a browser presenting {@code sessionCookie}, with the
+         * same-origin proof the logout leg demands before it ends a session.
+         */
         private static BffRuntime.ReservedHttpResponse logout(BffRuntime runtime, String sessionCookie) {
             return runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null, null, null, null, "POST", QUOTA_KEY),
+                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null, "same-origin", null, null, null, null,
+                            "POST", QUOTA_KEY),
                     NOW);
         }
 
@@ -4276,7 +4280,7 @@ class BffRuntimeProducerTest {
 
         private static BffRuntime.ReservedHttpResponse clientJwks(BffRuntime runtime, String method) {
             return runtime.dispatch(ReservedEndpoint.CLIENT_JWKS,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, method, QUOTA_KEY), NOW);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, null, method, QUOTA_KEY), NOW);
         }
 
         /** The one key a {@code GET} on the client JWKS path publishes, asserting that there is exactly one. */
@@ -4284,7 +4288,7 @@ class BffRuntimeProducerTest {
             BffRuntime.ReservedHttpResponse response = clientJwks(runtime, "GET");
             assertEquals(200, response.status(), "key mode publishes the client key set");
             assertEquals(Map.of("Cache-Control", "no-store", "Content-Type", "application/json"), response.headers());
-            JsonNode document = JSON.readTree(response.jsonBodyOptional().orElseThrow());
+            JsonNode document = JSON.readTree(response.bodyOptional().orElseThrow());
             assertEquals(List.of("keys"), memberNamesOf(document), "the document holds the key set and nothing else");
             JsonNode keys = document.path("keys");
             assertEquals(1, keys.size(), "exactly one key is published: " + keys);
@@ -4366,21 +4370,21 @@ class BffRuntimeProducerTest {
         /** Dispatches the reserved login path for {@code returnUrl} on a browser that holds no session. */
         private static BffRuntime.ReservedHttpResponse login(BffRuntime runtime, String returnUrl) {
             return runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", null, null, returnUrl, null, null, "GET", QUOTA_KEY), NOW);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, returnUrl, null, null, "GET", QUOTA_KEY), NOW);
         }
 
         /** Dispatches the reserved step-up path for {@code returnUrl} on a browser presenting {@code sessionCookie}. */
         private static BffRuntime.ReservedHttpResponse stepUp(BffRuntime runtime, String sessionCookie,
                 String returnUrl) {
             return runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null, returnUrl, null, null, "GET", QUOTA_KEY), NOW);
+                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null, null, null, returnUrl, null, null, "GET", QUOTA_KEY), NOW);
         }
 
         /** Dispatches the reserved callback path with the raw query and the {@code Cookie} header given. */
         private static BffRuntime.ReservedHttpResponse callback(BffRuntime runtime, String rawQuery,
                 String cookieHeader) {
             return runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest(rawQuery, cookieHeader, null, null, null, null, "GET", QUOTA_KEY), NOW);
+                    new BffRuntime.ReservedHttpRequest(rawQuery, cookieHeader, null, null, null, null, null, null, "GET", QUOTA_KEY), NOW);
         }
 
         /** The {@code name=value} pair of the browser-binding cookie a redirect set. */
@@ -4483,7 +4487,7 @@ class BffRuntimeProducerTest {
             return runtime.dispatch(ReservedEndpoint.CALLBACK,
                     new BffRuntime.ReservedHttpRequest(
                             "code=" + code + "&state=" + URLEncoder.encode(state, StandardCharsets.UTF_8),
-                            bindingCookie, null, null, null, null, "GET", QUOTA_KEY),
+                            bindingCookie, null, null, null, null, null, null, "GET", QUOTA_KEY),
                     NOW);
         }
 

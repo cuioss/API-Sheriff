@@ -32,6 +32,7 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.EndSessionEndpointSource;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.TokenRevocation;
@@ -48,6 +49,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -87,6 +89,11 @@ class LogoutEndpointTest {
     private static final String RESOLVED_REFRESH_TOKEN = "refresh-token-held-at-resolve";
     /** The refresh token a refresh rotates in after the logout resolved the session. */
     private static final String ROTATED_REFRESH_TOKEN = "refresh-token-rotated-before-destruction";
+    /** The gateway's own origin, the one origin the session CSRF defence trusts here. */
+    private static final String GATEWAY_ORIGIN = "https://gw.example.com";
+    private static final String LOGOUT_PATH = "/auth/logout";
+    private static final String SAME_ORIGIN = "same-origin";
+    private static final String CROSS_SITE = "cross-site";
 
     private InMemorySessionStore store;
     private SessionBinding binding;
@@ -128,7 +135,7 @@ class LogoutEndpointTest {
             String postLogoutRedirectUri, SessionBinding sessionBinding) {
         RpInitiatedLogout logout = new RpInitiatedLogout(endSessionFlow, revocation, endSessionEndpoint,
                 postLogoutRedirectUri, FINAL_REDIRECT, STATE_TTL);
-        return new LogoutEndpoint(logout, sessionBinding);
+        return new LogoutEndpoint(logout, sessionBinding, new CsrfDefence(Set.of(GATEWAY_ORIGIN)), LOGOUT_PATH);
     }
 
     /** A logout endpoint over the server-mode binding whose provider answers {@code endSessionEndpoint}. */
@@ -200,7 +207,7 @@ class LogoutEndpointTest {
         String sealedCookie = setCookie.substring(0, setCookie.indexOf(';'));
         LogoutEndpoint endpoint = endpoint(path.postLogoutRedirectUri, cookieBinding);
 
-        LogoutOutcome outcome = endpoint.logout(path.carriesSession ? sealedCookie : null, NOW);
+        LogoutOutcome outcome = endpoint.logout(path.carriesSession ? sealedCookie : null, null, SAME_ORIGIN, NOW);
 
         List<String> clearing = cookieBinding.clearingSetCookieHeaders();
         assertAll(path.name(),
@@ -218,7 +225,7 @@ class LogoutEndpointTest {
     void shouldClearTheSessionCookieOnEveryPathInServerMode(LogoutPath path) {
         LogoutEndpoint endpoint = endpoint(path.postLogoutRedirectUri);
 
-        LogoutOutcome outcome = endpoint.logout(path.carriesSession ? cookieHeader : null, NOW);
+        LogoutOutcome outcome = endpoint.logout(path.carriesSession ? cookieHeader : null, null, SAME_ORIGIN, NOW);
 
         List<String> clearing = binding.clearingSetCookieHeaders();
         assertAll(path.name(),
@@ -235,7 +242,7 @@ class LogoutEndpointTest {
         // An unregistered post_logout_redirect_uri makes the engine validator throw inside initiate().
         LogoutEndpoint endpoint = endpoint(UNREGISTERED_RETURN);
 
-        LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpoint.logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertTrue(outcome.isRedirect(), "local logout must still land the browser on a safe redirect");
         assertEquals(FINAL_REDIRECT, outcome.location(),
@@ -252,7 +259,7 @@ class LogoutEndpointTest {
     void shouldRedirectToIdpAndDestroyOnSuccess() {
         LogoutEndpoint endpoint = endpoint(REGISTERED_RETURN);
 
-        LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpoint.logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertTrue(outcome.isRedirect());
         assertTrue(outcome.location().startsWith(END_SESSION),
@@ -266,11 +273,112 @@ class LogoutEndpointTest {
     void shouldLandOnFinalRedirectWithoutSession() {
         LogoutEndpoint endpoint = endpoint(REGISTERED_RETURN);
 
-        LogoutOutcome outcome = endpoint.logout(null, NOW);
+        LogoutOutcome outcome = endpoint.logout(null, null, SAME_ORIGIN, NOW);
 
         assertTrue(outcome.isRedirect());
         assertEquals(FINAL_REDIRECT, outcome.location());
         assertTrue(outcome.setCookieHeaders().stream().anyMatch(header -> header.contains("Max-Age=0")));
+    }
+
+    /**
+     * Test-first case of the logout CSRF gate: shown red against the baseline before the gate existed
+     * (recorded in the task log), green with it.
+     */
+    @Test
+    @DisplayName("Should answer a cross-site logout with the confirmation page, keep the session and never reach the provider")
+    void shouldNotLogOutACrossSiteRequest() {
+        AtomicInteger revocations = new AtomicInteger();
+        AtomicInteger endSessionLookups = new AtomicInteger();
+        LogoutEndpoint endpoint = endpoint(ended -> revocations.incrementAndGet(), () -> {
+            endSessionLookups.incrementAndGet();
+            return Optional.of(END_SESSION);
+        }, REGISTERED_RETURN, binding);
+
+        LogoutOutcome outcome = endpoint.logout(cookieHeader, null, CROSS_SITE, NOW);
+
+        assertAll("a cross-site logout",
+                () -> assertEquals(200, outcome.status(), "answered with the confirmation page"),
+                () -> assertNull(outcome.location(), "no redirect"),
+                () -> assertTrue(outcome.setCookieHeaders().isEmpty(), "no cookie is cleared or set"),
+                () -> assertTrue(store.resolve(COOKIE_HANDLE, NOW).isPresent(), "the session still resolves"),
+                () -> assertEquals(0, revocations.get(), "RpInitiatedLogout never revokes"),
+                () -> assertEquals(0, endSessionLookups.get(), "RpInitiatedLogout never asks for the provider"));
+    }
+
+    @ParameterizedTest(name = "Origin={0}, Sec-Fetch-Site={1}")
+    @CsvSource(nullValues = "-", value = {
+            "-, same-origin",
+            "-, none",
+            GATEWAY_ORIGIN + ", -",
+            GATEWAY_ORIGIN + ", cross-site"})
+    @DisplayName("Should log out a request carrying same-origin proof — the matched control and the confirmation POST")
+    void shouldLogOutWithSameOriginProof(@Nullable String origin, @Nullable String secFetchSite) {
+        LogoutOutcome outcome = endpoint(REGISTERED_RETURN).logout(cookieHeader, origin, secFetchSite, NOW);
+
+        assertAll("a proven logout",
+                () -> assertEquals(302, outcome.status()),
+                () -> assertTrue(outcome.location().startsWith(END_SESSION), "the end-session redirect is built"),
+                () -> assertTrue(store.resolve(COOKIE_HANDLE, NOW).isEmpty(), "the session is destroyed"),
+                () -> assertNull(outcome.body(), "a redirect carries no body"));
+    }
+
+    @ParameterizedTest(name = "Origin={0}, Sec-Fetch-Site={1}")
+    @CsvSource(nullValues = "-", value = {
+            "-, -",
+            "-, same-site",
+            "https://evil.example.com, same-origin",
+            "null, none"})
+    @DisplayName("Should keep the session of every request without same-origin proof")
+    void shouldKeepTheSessionWithoutProof(@Nullable String origin, @Nullable String secFetchSite) {
+        LogoutOutcome outcome = endpoint(REGISTERED_RETURN).logout(cookieHeader, origin, secFetchSite, NOW);
+
+        assertEquals(200, outcome.status());
+        assertTrue(store.resolve(COOKIE_HANDLE, NOW).isPresent(), "the session still resolves");
+    }
+
+    @Test
+    @DisplayName("Should answer the confirmation page uncacheable, unframeable, posting to the logout path and reflecting nothing")
+    void shouldAnswerAHardenedConfirmationPage() {
+        String reflected = "<script>alert(1)</script>";
+        LogoutOutcome outcome = endpoint(REGISTERED_RETURN).logout(cookieHeader + "; x=" + reflected, reflected,
+                null, NOW);
+
+        String body = outcome.body();
+        assertAll("the confirmation page",
+                () -> assertNotNull(body, "the page carries an HTML body"),
+                () -> assertEquals("text/html; charset=utf-8", outcome.headers().get("Content-Type")),
+                () -> assertEquals("no-store", outcome.headers().get("Cache-Control")),
+                () -> assertTrue(outcome.headers().get("Content-Security-Policy").contains("frame-ancestors 'none'")),
+                () -> assertEquals("DENY", outcome.headers().get("X-Frame-Options")),
+                () -> assertTrue(body.contains("<form method=\"POST\" action=\"" + LOGOUT_PATH + "\">"),
+                        "one form posts to the configured logout path: " + body),
+                () -> assertFalse(body.contains(reflected), "no request input is reflected"),
+                () -> assertFalse(outcome.toString().contains("<form"), "the text form holds no body"));
+    }
+
+    @Test
+    @DisplayName("Should HTML-escape the configured logout path in the form action")
+    void shouldEscapeTheLogoutPath() {
+        RpInitiatedLogout logout = new RpInitiatedLogout(endSessionFlow, ignored -> {
+        }, () -> Optional.of(END_SESSION), REGISTERED_RETURN, FINAL_REDIRECT, STATE_TTL);
+        LogoutEndpoint endpoint = new LogoutEndpoint(logout, binding, new CsrfDefence(Set.of(GATEWAY_ORIGIN)),
+                "/a\"b<c>&'d");
+
+        String body = endpoint.logout(cookieHeader, null, CROSS_SITE, NOW).body();
+
+        assertNotNull(body);
+        assertTrue(body.contains("action=\"/a&quot;b&lt;c&gt;&amp;&#39;d\""), body);
+    }
+
+    @Test
+    @DisplayName("Should refuse to answer an unproven logout when no logout path is reserved")
+    void shouldRefuseWithoutReservedLogoutPath() {
+        RpInitiatedLogout logout = new RpInitiatedLogout(endSessionFlow, ignored -> {
+        }, () -> Optional.of(END_SESSION), REGISTERED_RETURN, FINAL_REDIRECT, STATE_TTL);
+        LogoutEndpoint endpoint = new LogoutEndpoint(logout, binding, new CsrfDefence(Set.of(GATEWAY_ORIGIN)), null);
+
+        assertThrows(IllegalStateException.class, () -> endpoint.logout(cookieHeader, null, CROSS_SITE, NOW));
+        assertTrue(store.resolve(COOKIE_HANDLE, NOW).isPresent(), "the session is untouched");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -282,9 +390,9 @@ class LogoutEndpointTest {
         String sealedCookie = setCookie.substring(0, setCookie.indexOf(';'));
 
         LogoutOutcome cookieMode = endpoint(path.postLogoutRedirectUri, cookieBinding)
-                .logout(path.carriesSession ? sealedCookie : null, NOW);
+                .logout(path.carriesSession ? sealedCookie : null, null, SAME_ORIGIN, NOW);
         LogoutOutcome serverMode = endpoint(path.postLogoutRedirectUri)
-                .logout(path.carriesSession ? cookieHeader : null, NOW);
+                .logout(path.carriesSession ? cookieHeader : null, null, SAME_ORIGIN, NOW);
 
         List<String> cookieModeClearing = cookieMode.setCookieHeaders().stream()
                 .filter(header -> header.contains("Max-Age=0")).toList();
@@ -300,7 +408,7 @@ class LogoutEndpointTest {
     @DisplayName("Should clear the logout-state cookie on the return leg with a line the __Host- prefix admits")
     void shouldClearLogoutStateCookieOnReturn() {
         LogoutEndpoint endpoint = endpoint(REGISTERED_RETURN);
-        String stateCookie = endpoint.logout(cookieHeader, NOW).setCookieHeaders().stream()
+        String stateCookie = endpoint.logout(cookieHeader, null, SAME_ORIGIN, NOW).setCookieHeaders().stream()
                 .filter(header -> header.startsWith(RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME + "="))
                 .findFirst().orElseThrow();
         String statePair = stateCookie.substring(0, stateCookie.indexOf(';'));
@@ -327,7 +435,7 @@ class LogoutEndpointTest {
         LogoutEndpoint endpoint = endpoint(observingStore, () -> Optional.of(END_SESSION), REGISTERED_RETURN,
                 binding);
 
-        LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpoint.logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertAll("the revocation seam of one logout",
                 () -> assertTrue(outcome.location().startsWith(END_SESSION), "precondition: the redirect was built"),
@@ -344,7 +452,7 @@ class LogoutEndpointTest {
         LogoutEndpoint endpoint = endpoint(ended -> revocations.incrementAndGet(), () -> Optional.of(END_SESSION),
                 REGISTERED_RETURN, binding);
 
-        LogoutOutcome outcome = endpoint.logout(null, NOW);
+        LogoutOutcome outcome = endpoint.logout(null, null, SAME_ORIGIN, NOW);
 
         assertEquals(FINAL_REDIRECT, outcome.location(), "precondition: the logout landed without a session");
         assertEquals(0, revocations.get(), "there is no session whose token could be revoked");
@@ -367,7 +475,7 @@ class LogoutEndpointTest {
         };
         String expectedLocation = published ? END_SESSION : FINAL_REDIRECT;
 
-        LogoutOutcome outcome = endpoint(failing, source, REGISTERED_RETURN, binding).logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpoint(failing, source, REGISTERED_RETURN, binding).logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertAll("a logout whose revocation fails",
                 () -> assertEquals(1, attempts.get(), "precondition: the seam was called and threw"),
@@ -384,7 +492,7 @@ class LogoutEndpointTest {
     @Test
     @DisplayName("Should send the browser to the provider with the ID token marked and a 60-second state cookie")
     void shouldMarkTheEndSessionRedirect() {
-        LogoutOutcome outcome = endpoint(REGISTERED_RETURN).logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpoint(REGISTERED_RETURN).logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertTrue(outcome.carriesIdToken(), "the end-session location carries the id_token_hint");
         assertTrue(outcome.location().contains("id_token_hint="), "the hint is in the location");
@@ -422,7 +530,7 @@ class LogoutEndpointTest {
     @EnumSource(NoEndSessionRedirect.class)
     @DisplayName("Should end the local session and land on final_redirect when no end-session redirect exists")
     void shouldLogOutLocallyWithoutEndSessionRedirect(NoEndSessionRedirect reason) {
-        LogoutOutcome outcome = endpointOver(reason.source).logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpointOver(reason.source).logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertAll(reason.name(),
                 () -> assertEquals(302, outcome.status(), "never an error answer"),
@@ -446,7 +554,7 @@ class LogoutEndpointTest {
                 .expiresAt(NOW.plus(SESSION_TTL))
                 .build(), COOKIE_HANDLE, NOW);
 
-        LogoutOutcome outcome = endpoint(REGISTERED_RETURN).logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpoint(REGISTERED_RETURN).logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertEquals(FINAL_REDIRECT, outcome.location());
         assertFalse(outcome.carriesIdToken());
@@ -468,7 +576,7 @@ class LogoutEndpointTest {
         LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
                 () -> Optional.of(END_SESSION), REGISTERED_RETURN, refreshedAfterResolve);
 
-        LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
+        LogoutOutcome outcome = endpoint.logout(cookieHeader, null, SAME_ORIGIN, NOW);
 
         assertAll("a logout overtaken by a refresh between its resolve and its destruction",
                 () -> assertEquals(List.of(RESOLVED_REFRESH_TOKEN), resolvedTokens,
@@ -500,7 +608,7 @@ class LogoutEndpointTest {
         LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
                 () -> Optional.of(END_SESSION), REGISTERED_RETURN, endedAfterResolve);
 
-        LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, NOW));
+        LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, null, SAME_ORIGIN, NOW));
 
         assertAll("a logout whose session something else ended after the resolve",
                 () -> assertEquals(List.of(Boolean.TRUE), endedByAnotherPath,
@@ -534,7 +642,7 @@ class LogoutEndpointTest {
         LogoutEndpoint endpoint = endpoint(handedToSeam::add, () -> Optional.of(END_SESSION), REGISTERED_RETURN,
                 endedAfterResolve);
 
-        LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, NOW));
+        LogoutOutcome outcome = assertDoesNotThrow(() -> endpoint.logout(cookieHeader, null, SAME_ORIGIN, NOW));
 
         assertAll("a logout whose session without a refresh token something else ended after the resolve",
                 () -> assertEquals(List.of(Boolean.TRUE), endedByAnotherPath,
@@ -562,7 +670,7 @@ class LogoutEndpointTest {
         LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
                 () -> Optional.of(END_SESSION), REGISTERED_RETURN, cookieBinding);
 
-        LogoutOutcome outcome = endpoint.logout(presentedCookie, NOW);
+        LogoutOutcome outcome = endpoint.logout(presentedCookie, null, SAME_ORIGIN, NOW);
 
         assertAll("a cookie-mode logout",
                 () -> assertTrue(outcome.location().startsWith(END_SESSION),

@@ -110,6 +110,9 @@ class GatewayEdgeGatewayCookieTest {
     private static final String REFERRER_POLICY = "Referrer-Policy";
     private static final String SET_COOKIE = "Set-Cookie";
     private static final String COOKIE = "Cookie";
+    private static final String SEC_FETCH_SITE = "Sec-Fetch-Site";
+    /** The fetch metadata of a same-origin navigation — the proof the logout leg demands. */
+    private static final String SAME_ORIGIN_FETCH = "same-origin";
     private static final String NO_STORE = "no-store";
     /** What the stub upstream declares on every response. */
     private static final String UPSTREAM_CACHE_POLICY = "public, max-age=600";
@@ -384,7 +387,7 @@ class GatewayEdgeGatewayCookieTest {
         void logoutRedirectCarryingTheIdTokenIsNotStoredAndSendsNoReferrer() throws Exception {
             String idToken = Generators.letterStrings(24, 32).next();
 
-            Answer answer = reserved(io.vertx.core.http.HttpMethod.GET, LOGOUT_PATH, login(idToken));
+            Answer answer = logout(login(idToken), SAME_ORIGIN_FETCH);
 
             assertAll("the 302 to the identity provider",
                     () -> assertEquals(302, answer.status()),
@@ -399,7 +402,7 @@ class GatewayEdgeGatewayCookieTest {
         @Test
         @DisplayName("a logout without a session is answered locally: no-store, and no Referrer-Policy of the logout's own")
         void localLogoutIsNotStoredAndSetsNoReferrerPolicy() throws Exception {
-            Answer answer = reserved(io.vertx.core.http.HttpMethod.GET, LOGOUT_PATH, null);
+            Answer answer = logout(null, SAME_ORIGIN_FETCH);
 
             assertAll("the 302 to the gateway's own final redirect",
                     () -> assertEquals(302, answer.status()),
@@ -408,6 +411,32 @@ class GatewayEdgeGatewayCookieTest {
                     () -> assertEquals(List.of(NO_STORE), answer.cacheControl()),
                     () -> assertEquals(List.of(), answer.referrerPolicy(),
                             "the no-referrer policy belongs to the redirect that carries the ID token only"));
+        }
+
+        /**
+         * The edge wiring of the logout gate: {@code dispatchReserved} must hand the request's
+         * {@code Sec-Fetch-Site} through to the logout leg. A cross-site logout is answered with the
+         * confirmation page and leaves the session alive; the same session then logs out on a
+         * same-origin request — which only happens if the edge passed both header values on.
+         */
+        @Test
+        @DisplayName("the edge hands Sec-Fetch-Site to the logout leg: cross-site gets the confirmation, same-origin logs out")
+        void edgeHandsFetchMetadataToTheLogoutLeg() throws Exception {
+            String idToken = Generators.letterStrings(24, 32).next();
+            String sessionCookie = login(idToken);
+
+            Answer crossSite = logout(sessionCookie, "cross-site");
+            Answer sameOrigin = logout(sessionCookie, SAME_ORIGIN_FETCH);
+
+            assertAll("one session, two logout requests",
+                    () -> assertEquals(200, crossSite.status(), "the cross-site request gets the confirmation page"),
+                    () -> assertEquals(List.of(NO_STORE), crossSite.cacheControl()),
+                    () -> assertTrue(crossSite.setCookies().isEmpty(), "the confirmation page clears no cookie"),
+                    () -> assertTrue(crossSite.body().contains("action=\"" + LOGOUT_PATH + "\""),
+                            "the form posts back to the logout path"),
+                    () -> assertEquals(302, sameOrigin.status(), "the same-origin request logs out"),
+                    () -> assertTrue(String.valueOf(sameOrigin.location()).contains("id_token_hint=" + idToken),
+                            "the session was still alive after the cross-site request"));
         }
 
         @Test
@@ -630,8 +659,9 @@ class GatewayEdgeGatewayCookieTest {
 
         private BffRuntime.ReservedHttpResponse dispatch(ReservedEndpoint kind, @Nullable String cookie,
                 String method) {
-            return runtime.dispatch(kind, new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null,
-                    method, "192.0.2.10"), now);
+            // Same-origin proof on every dispatch, so the logout leg ends the session and answers its 302.
+            return runtime.dispatch(kind, new BffRuntime.ReservedHttpRequest("", cookie, null, "same-origin", null,
+                    "/home", null, null, method, "192.0.2.10"), now);
         }
 
         @ParameterizedTest(name = "{0} without a session")
@@ -891,6 +921,14 @@ class GatewayEdgeGatewayCookieTest {
     private Answer reserved(io.vertx.core.http.HttpMethod method, String uri, @Nullable String cookie)
             throws Exception {
         return send(client, method, uri, cookie == null ? Map.of() : Map.of(COOKIE, cookie), null);
+    }
+
+    /** A {@code GET} of the logout path carrying {@code Sec-Fetch-Site: secFetchSite} and, when given, the cookie. */
+    private Answer logout(@Nullable String cookie, String secFetchSite) throws Exception {
+        Map<String, String> headers = cookie == null
+                ? Map.of(SEC_FETCH_SITE, secFetchSite)
+                : Map.of(COOKIE, cookie, SEC_FETCH_SITE, secFetchSite);
+        return send(client, io.vertx.core.http.HttpMethod.GET, LOGOUT_PATH, headers, null);
     }
 
     private Answer send(HttpClient via, io.vertx.core.http.HttpMethod method, String uri,

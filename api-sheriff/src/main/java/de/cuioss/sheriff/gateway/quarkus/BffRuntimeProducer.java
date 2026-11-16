@@ -64,6 +64,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ClientJwksEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.IdTokenClaimProjection;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -773,10 +774,11 @@ public class BffRuntimeProducer {
         // session, the session's refresh token is revoked at the identity provider (RFC 7009),
         // synchronously and before the end-session redirect is built. The local destruction stays the
         // authoritative logout; a failed revocation never turns the logout into an error.
-        Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata, sessionBinding, revocationClient, clientAuthentication));
-
+        // The one session CSRF defence: the edge enforces it on unsafe-method session requests, and the
+        // logout leg judges its same-origin provenance by the same instance, never a second derivation.
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
+        Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
+                metadata, sessionBinding, revocationClient, clientAuthentication, csrfDefence));
 
         // build(...) is reached for BOTH modes, so the diagnostic must name the mode that was actually
         // resolved — this is the line an operator greps to confirm which binding came up.
@@ -1457,6 +1459,11 @@ public class BffRuntimeProducer {
      * redirect is built, the session's refresh token is revoked at the identity provider (RFC 7009),
      * synchronously. The provider metadata that revocation needs is likewise read per request. The
      * access token is not revoked.
+     * <p>
+     * <strong>The logout acts only on same-origin provenance.</strong> The endpoint judges it by the
+     * runtime's one session {@link CsrfDefence}, and answers a request without it with a confirmation
+     * page whose form posts to the logout path the {@link ReservedPathRegistry} reserves — resolved
+     * through the registry's own derivation, so the form posts exactly to the path the edge dispatches.
      *
      * @param oidc                 the global {@code oidc} block
      * @param gatewayOrigin        the gateway's own origin, the base of the default return leg
@@ -1464,11 +1471,14 @@ public class BffRuntimeProducer {
      * @param sessionBinding       the session binding the logout resolves, destroys and clears through
      * @param revocationClient     the runtime's one engine revocation client
      * @param clientAuthentication the runtime's one confidential-client authentication
+     * @param csrfDefence          the runtime's one session CSRF defence
      * @return the logout endpoint
      */
+    // Each parameter is one runtime-wide collaborator the logout endpoint is assembled from.
+    @SuppressWarnings("java:S107")
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin,
             Supplier<ProviderMetadata> metadata, SessionBinding sessionBinding, RevocationClient revocationClient,
-            ClientAuthentication clientAuthentication) {
+            ClientAuthentication clientAuthentication, CsrfDefence csrfDefence) {
         OidcConfig.Logout logout = oidc.logout();
         String declaredPostLogoutRedirectUri = logout == null ? null : logout.postLogoutRedirectUri();
         String postLogoutRedirectUri = declaredPostLogoutRedirectUri == null
@@ -1483,7 +1493,23 @@ public class BffRuntimeProducer {
                 sessionRecord -> revokeOnLogout(revocationClient, metadata, clientAuthentication, sessionRecord),
                 () -> metadata.get().getEndSessionEndpoint(), postLogoutRedirectUri, finalRedirect,
                 LOGOUT_STATE_TTL);
-        return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);
+        return new LogoutEndpoint(rpInitiatedLogout, sessionBinding, csrfDefence, reservedLogoutPath(oidc));
+    }
+
+    /**
+     * The path the reserved-path registry dispatches to the logout leg, through the registry's own
+     * derivation, so the confirmation form posts exactly where the edge answers. {@code null} when the
+     * {@code oidc} block reserves no logout path — the logout leg is then never dispatched.
+     *
+     * @param oidc the global {@code oidc} block
+     * @return the reserved logout path, {@code null} when none is reserved
+     */
+    static @Nullable String reservedLogoutPath(OidcConfig oidc) {
+        return ReservedPathRegistry.reservedPaths(oidc).stream()
+                .filter(path -> ReservedPathRegistry.reservedKind(oidc, path)
+                        .filter(ReservedPathRegistry.ReservedEndpoint.LOGOUT::equals).isPresent())
+                .findFirst()
+                .orElse(null);
     }
 
     /**
