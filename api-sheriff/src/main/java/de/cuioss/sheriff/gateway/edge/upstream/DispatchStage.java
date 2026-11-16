@@ -126,8 +126,12 @@ import org.jspecify.annotations.Nullable;
  * {@code 408}). Before the response was handed over this is the dispatch's own failure, so a body the
  * gateway is still reading when the guard would end the attempt is ended as the request's instead; a
  * body the upstream has stopped reading can reach the guard's timeout first and then ends as an upstream
- * timeout. The wait for a pooled connection counts towards the deadline, but it is bounded on its own (see
- * below), so an attempt always hands its body over with more than half of the deadline left. After the hand-over —
+ * timeout. The wait for a pooled connection counts towards the deadline, and that is deliberate. The wait is
+ * bounded on its own at {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms (see below), so an attempt that obtains its
+ * connection hands its body over with at least the deadline less that bound left, and a wait that reaches the
+ * bound is the upstream's timeout, never the client's. Counting the deadline from the hand-over instead would let
+ * a slow body run past the guard's timeout, which is counted from the start of the attempt as well, and end there
+ * as the upstream's {@link EventType#UPSTREAM_TIMEOUT}. After the hand-over —
  * an upstream that answered at once and keeps reading — the refusal goes to the
  * {@linkplain BodyFraming#lateViolation() late-violation callback}, and the reset upstream request fails
  * the relay, which ends the client response with the status the upstream sent. Once it has passed, the
@@ -178,17 +182,12 @@ import org.jspecify.annotations.Nullable;
  * takes no data for again before the guard's timeout is not ended by the deadline at all: the guard's timeout ends
  * it, as the upstream's {@link EventType#UPSTREAM_TIMEOUT}. The deadline stops when the attempt's send
  * completes, so it never runs after the hand-over and a stream the upstream has answered is never ended by
- * it. An attempt that obtains its upstream connection with less than a hand-over grace left before the cap,
- * or only once the cap has passed — the connection wait used up the guard's timeout but for the margin the
- * cap leaves and less than the grace of it — gives its client too little time to send, and too little for an
- * end the client already sent to cross from the inbound connection before the deadline passes: it is refused
- * at once, before its request is sent or a byte of its body is read, as an {@link UpstreamConnectionTooLate},
- * a timeout the breaker counts and the failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. Every
- * attempt that is dispatched therefore has at least the grace between its hand-over and its deadline. The
- * deadline ends only a request stream whose end has not reached the dispatch when it passes: a client that
- * had ended its stream by the hand-over is ended by it only if the gateway takes longer than the grace to
- * deliver the end it already holds. A call whose end did reach the dispatch, and which the upstream then does
- * not answer, is ended by the guard's timeout as the upstream's. A dispatch
+ * it. The wait for the upstream connection is bounded on its own at {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms
+ * (see below), well short of the gRPC dispatch's cap, so an attempt hands its body over long before the cap and
+ * its deadline leaves the client at least the shorter of the deadline and the cap less that bound; a wait that
+ * reaches the bound ends the attempt unsent as the upstream's timeout. The deadline ends only a request stream
+ * whose end has not reached the dispatch when it passes. A call whose end did reach the dispatch, and which the
+ * upstream then does not answer, is ended by the guard's timeout as the upstream's. A dispatch
  * constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — arms neither the message bound
  * nor the pre-response deadline.
  * <p>
@@ -365,23 +364,10 @@ public final class DispatchStage {
     static final long NO_PRE_RESPONSE_CAP = 0L;
 
     /**
-     * The hand-over grace of a dispatch that arms no pre-response deadline — every dispatch but the gRPC one
-     * ({@link GrpcDispatchStage}): no attempt is refused for handing its body over too close to a cap.
-     */
-    static final long NO_HAND_OVER_GRACE = 0L;
-
-    /**
      * The upstream stall threshold of a dispatch that arms no pre-response deadline — every dispatch but the gRPC
      * one ({@link GrpcDispatchStage}): no deadline is ever charged to the upstream, so no stall is measured.
      */
     static final long NO_UPSTREAM_STALL = 0L;
-
-    /**
-     * Fixed disposition of an attempt whose upstream connection came too close to, or past, its pre-response
-     * cap.
-     */
-    private static final String CONNECTION_TOO_LATE =
-            "The upstream connection was obtained too close to the pre-response cap; the request was not sent";
 
     /**
      * Fixed disposition of an attempt whose pre-response deadline passed while the upstream was not taking its
@@ -403,7 +389,6 @@ public final class DispatchStage {
     private final long bodyDeadlineMillis;
     private final long messageTimeoutMillis;
     private final long preResponseCapMillis;
-    private final long handOverGraceMillis;
     private final long upstreamStallMillis;
     private final UpstreamFailureMapper failureMapper;
 
@@ -448,7 +433,7 @@ public final class DispatchStage {
     public DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
         this(upstreamClients, maxBodyBytes, bodyIdleTimeoutMillis, bodyDeadlineMillis, NO_FIRST_MESSAGE_TIMEOUT,
-                NO_PRE_RESPONSE_CAP, NO_HAND_OVER_GRACE, NO_UPSTREAM_STALL, failureMapper);
+                NO_PRE_RESPONSE_CAP, NO_UPSTREAM_STALL, failureMapper);
     }
 
     /**
@@ -479,11 +464,6 @@ public final class DispatchStage {
      *                              start of the attempt; shorter than the guard's timeout and no shorter than
      *                              {@code bodyDeadlineMillis}. {@link #NO_PRE_RESPONSE_CAP} exactly when no
      *                              pre-response deadline is armed
-     * @param handOverGraceMillis   the least time, in milliseconds, the pre-response deadline leaves after the
-     *                              hand-over: an attempt that hands its body over with less than this left
-     *                              before the cap is refused, unsent, as an {@link UpstreamConnectionTooLate};
-     *                              positive and shorter than {@code bodyDeadlineMillis} when a pre-response
-     *                              deadline is armed, {@link #NO_HAND_OVER_GRACE} exactly when none is
      * @param upstreamStallMillis   how long, in milliseconds, the upstream must have held the request stream
      *                              without a break — its backpressure pausing the stream — when a passed
      *                              pre-response deadline is acted on, for the deadline to be charged to the
@@ -495,13 +475,13 @@ public final class DispatchStage {
      * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis}, {@code bodyDeadlineMillis} or
      *                                  {@code messageTimeoutMillis} is negative, a deadline is given with
      *                                  neither an idle timeout nor a message bound, a pre-response deadline
-     *                                  is given a cap shorter than itself, or a grace or a stall threshold
-     *                                  that is not positive or not shorter than itself, or a cap, a grace or
-     *                                  a stall threshold is given with no pre-response deadline to hold
+     *                                  is given a cap shorter than itself, or a stall threshold that is not
+     *                                  positive or not shorter than itself, or a cap or a stall threshold is
+     *                                  given with no pre-response deadline to hold
      */
     @SuppressWarnings("java:S107") // package-private test seam; every bound is a distinct fixed value the gRPC stage derives, and a holder type would only re-bundle them for this one call
     DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, long bodyIdleTimeoutMillis,
-            long bodyDeadlineMillis, long messageTimeoutMillis, long preResponseCapMillis, long handOverGraceMillis,
+            long bodyDeadlineMillis, long messageTimeoutMillis, long preResponseCapMillis,
             long upstreamStallMillis, UpstreamFailureMapper failureMapper) {
         if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
@@ -518,9 +498,9 @@ public final class DispatchStage {
                     "a request-body deadline needs a request-body idle timeout or a message bound");
         }
         if (bodyDeadlineMillis != NO_BODY_DEADLINE && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
-            requirePreResponseBounds(bodyDeadlineMillis, preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
+            requirePreResponseBounds(bodyDeadlineMillis, preResponseCapMillis, upstreamStallMillis);
         } else {
-            requireNoPreResponseBounds(preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
+            requireNoPreResponseBounds(preResponseCapMillis, upstreamStallMillis);
         }
         this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
@@ -528,7 +508,6 @@ public final class DispatchStage {
         this.bodyDeadlineMillis = bodyDeadlineMillis;
         this.messageTimeoutMillis = messageTimeoutMillis;
         this.preResponseCapMillis = preResponseCapMillis;
-        this.handOverGraceMillis = handOverGraceMillis;
         this.upstreamStallMillis = upstreamStallMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
     }
@@ -539,21 +518,15 @@ public final class DispatchStage {
      *
      * @param preResponseDeadlineMillis the pre-response deadline in milliseconds, positive
      * @param preResponseCapMillis      the latest the deadline passes, counted from the start of the attempt
-     * @param handOverGraceMillis       the least time the deadline leaves after the hand-over
      * @param upstreamStallMillis       the upstream stall threshold
-     * @throws IllegalArgumentException when the cap is shorter than the deadline, or the grace or the stall
-     *                                  threshold is not positive or not shorter than the deadline
+     * @throws IllegalArgumentException when the cap is shorter than the deadline, or the stall threshold is
+     *                                  not positive or not shorter than the deadline
      */
     private static void requirePreResponseBounds(long preResponseDeadlineMillis, long preResponseCapMillis,
-            long handOverGraceMillis, long upstreamStallMillis) {
+            long upstreamStallMillis) {
         if (preResponseCapMillis < preResponseDeadlineMillis) {
             throw new IllegalArgumentException(
                     "a pre-response deadline needs a cap no shorter than itself: " + preResponseCapMillis);
-        }
-        if (handOverGraceMillis <= NO_HAND_OVER_GRACE || handOverGraceMillis >= preResponseDeadlineMillis) {
-            throw new IllegalArgumentException(
-                    "a pre-response deadline needs a positive hand-over grace shorter than itself: "
-                            + handOverGraceMillis);
         }
         if (upstreamStallMillis <= NO_UPSTREAM_STALL || upstreamStallMillis >= preResponseDeadlineMillis) {
             throw new IllegalArgumentException(
@@ -567,19 +540,13 @@ public final class DispatchStage {
      * would be silently ignored.
      *
      * @param preResponseCapMillis the pre-response cap, to be {@link #NO_PRE_RESPONSE_CAP}
-     * @param handOverGraceMillis  the hand-over grace, to be {@link #NO_HAND_OVER_GRACE}
      * @param upstreamStallMillis  the upstream stall threshold, to be {@link #NO_UPSTREAM_STALL}
-     * @throws IllegalArgumentException when a cap, a grace or a stall threshold is given
+     * @throws IllegalArgumentException when a cap or a stall threshold is given
      */
-    private static void requireNoPreResponseBounds(long preResponseCapMillis, long handOverGraceMillis,
-            long upstreamStallMillis) {
+    private static void requireNoPreResponseBounds(long preResponseCapMillis, long upstreamStallMillis) {
         if (preResponseCapMillis != NO_PRE_RESPONSE_CAP) {
             throw new IllegalArgumentException(
                     "a pre-response cap needs a pre-response deadline to hold: " + preResponseCapMillis);
-        }
-        if (handOverGraceMillis != NO_HAND_OVER_GRACE) {
-            throw new IllegalArgumentException(
-                    "a hand-over grace needs a pre-response deadline to hold: " + handOverGraceMillis);
         }
         if (upstreamStallMillis != NO_UPSTREAM_STALL) {
             throw new IllegalArgumentException(
@@ -1309,10 +1276,10 @@ public final class DispatchStage {
          * start of {@code attempt} and keeps running after the send completed, until the body ends. Armed
          * with the message clock — the gRPC pre-response deadline — it is counted from now, the hand-over,
          * passes no later than the pre-response cap after the start of {@code attempt}, and stops with
-         * that clock when the send completes; when less than the hand-over grace is left before the cap, or
-         * the cap has already passed, the request is reset unsent and the send fails as an
-         * {@link UpstreamConnectionTooLate} instead, before the inbound stream is subscribed, so an armed
-         * pre-response deadline always passes at least the hand-over grace after the hand-over. The body is attached to {@code attempt} before any clock is armed, so an attempt the
+         * that clock when the send completes. Either way the wait for the connection that preceded this
+         * call is bounded by {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}, so the deadline is armed with at least
+         * the deadline, or the cap, less that bound still to run. The body is attached to {@code attempt}
+         * before any clock is armed, so an attempt the
          * dispatch no longer waits for stops them all. Every timer is scheduled through the Vert.x instance
          * owning the context this callback runs on, the upstream request's own.
          *
@@ -1334,15 +1301,6 @@ public final class DispatchStage {
             }
             long handOverNanos = System.nanoTime();
             OptionalLong deadline = bodyDeadlineOf(attempt, handOverNanos);
-            if (preResponseCapMillis != NO_PRE_RESPONSE_CAP
-                    && deadline.orElseThrow() - handOverNanos < TimeUnit.MILLISECONDS.toNanos(handOverGraceMillis)) {
-                // The connection wait left less than the hand-over grace before the pre-response cap: too
-                // little time for the client to send, or for an end it already sent to be delivered before
-                // the deadline, so the attempt ends as the upstream's timeout, its request unsent and its
-                // body unread.
-                request.reset();
-                return Future.failedFuture(new UpstreamConnectionTooLate());
-            }
             if (declaredLength >= 0) {
                 request.putHeader(CONTENT_LENGTH, Long.toString(declaredLength));
             }
@@ -2018,30 +1976,6 @@ public final class DispatchStage {
     }
 
     /**
-     * The failure of an attempt that obtained its upstream connection with less than its hand-over grace
-     * left before its pre-response cap, or only once the cap had passed: the wait for the connection used up
-     * the guard's timeout but for the margin the cap leaves and less than the grace of it, so too little time
-     * is left in which the client could send its request — or in which an end the client already sent could
-     * be delivered before the deadline. The attempt's request is reset unsent and
-     * its body never read, so nothing the client did or did not send contributes to the failure — it is the
-     * upstream's. It is a {@link TimeoutException}, not a {@link GatewayException}: the breaker counts it as
-     * an upstream failure, and the failure mapper reports it as {@link EventType#UPSTREAM_TIMEOUT}, exactly as
-     * the guard's own timeout a moment later would have been reported. Only a dispatch that arms a
-     * pre-response deadline — the gRPC dispatch — raises it.
-     * <p>
-     * Carries no request-specific state.
-     */
-    static final class UpstreamConnectionTooLate extends TimeoutException {
-
-        @Serial
-        private static final long serialVersionUID = 1L;
-
-        UpstreamConnectionTooLate() {
-            super(CONNECTION_TOO_LATE);
-        }
-    }
-
-    /**
      * The failure of an attempt whose pre-response deadline passed while the upstream had stalled its request
      * stream: the upstream had stopped taking data, so its backpressure had paused the stream, and had not taken
      * any for at least the upstream stall threshold when the deadline was acted on. The stream is ended the
@@ -2143,8 +2077,15 @@ public final class DispatchStage {
      * threshold by then was the upstream's stall, and that read ends the stream as an
      * {@link UpstreamStalledRequest}, the upstream's timeout, instead. The third does not arise
      * there: the pre-response deadline is counted from the moment the attempt hands its body over, so the wait
-     * for the connection is not counted against it, and an attempt whose connection came only after its
-     * pre-response cap is ended as an {@link UpstreamConnectionTooLate}, the upstream's timeout, instead.
+     * for the connection is not counted against it, and that wait is bounded by
+     * {@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}, well short of the pre-response cap.
+     * <p>
+     * On an HTTP dispatch the third case is a deliberate consequence of counting the whole-body deadline from
+     * the start of the attempt (see {@link DispatchStage}): the connection wait is charged to the client's
+     * deadline, and it can use the deadline up only where the deadline is no longer than the wait bound. A wait
+     * that reaches the bound is the upstream's timeout ({@link UpstreamConnectionWaitExpired}), never this
+     * refusal.
+     * <p>
      * The refusal is an {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) like the idle timeout's,
      * told apart from it by its type so it is reported with its own record: the body did not end within the
      * deadline, whether or not it was still making progress. Like every client-ended dispatch it is a

@@ -91,14 +91,14 @@ public final class UpstreamGuards {
      * whose client does not send its next complete request message in time, or still holds its request
      * stream open at the deadline, is ended as the client's abort ({@link DispatchStage.RequestMessageTimeout}
      * or {@link DispatchStage.RequestBodyDeadlineExceeded}) before this timeout could end it as the upstream's.
-     * The wait for an upstream connection is counted by this timeout alone, and an attempt whose wait leaves
-     * less than the hand-over grace ({@link GrpcDispatchStage#GRPC_HAND_OVER_GRACE_MILLIS}) before the cap, or
-     * reaches the cap, is ended as the upstream's timeout ({@link DispatchStage.UpstreamConnectionTooLate})
-     * without its request being sent or its body read. On a gRPC call this timeout is therefore reached in three
-     * ways, all the upstream's: by an upstream holding a complete, half-closed request it does not answer; by a
-     * wait for an upstream connection or HTTP/2 stream slot that itself lasts this whole timeout, before any body
-     * is handed over; and by an upstream that stops taking data mid-request and does not take any more before
-     * this timeout. While that backpressure pauses the request stream the message bound is not counted, and the
+     * The wait for an upstream connection or HTTP/2 stream slot has its own, shorter bound
+     * ({@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}): an attempt whose wait reaches it is ended, without
+     * its request being sent or its body read, as the upstream's timeout
+     * ({@link DispatchStage.UpstreamConnectionWaitExpired}), which the breaker counts and the retry predicate
+     * refuses, so no connection wait runs into this timeout. On a gRPC call this timeout is therefore reached in
+     * two ways, both the upstream's: by an upstream holding a complete, half-closed request it does not answer;
+     * and by an upstream that stops taking data mid-request and does not take any more before this timeout.
+     * While that backpressure pauses the request stream the message bound is not counted, and the
      * pre-response deadline, which keeps counting, ends the call only once the upstream takes data again — then as
      * the upstream's timeout ({@link DispatchStage.UpstreamStalledRequest}) when the upstream had held the stream
      * without a break for at least the upstream stall threshold
@@ -138,14 +138,11 @@ public final class UpstreamGuards {
      * retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The request-body idle
      * timeout, the request-body deadline and the gRPC message bound and pre-response deadline are shorter,
      * so a body the gateway is still waiting for ends as the request's, and the timeout ends an attempt the
-     * upstream holds up — on a gRPC call, one whose request stream has ended, one whose upstream stopped taking
-     * data mid-request, or one whose connection wait lasts this whole timeout. The gRPC dispatch itself refuses
-     * an attempt whose hand-over leaves less than the hand-over grace
-     * ({@link GrpcDispatchStage#GRPC_HAND_OVER_GRACE_MILLIS}) before the pre-response cap
-     * ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_CAP_MILLIS}), that is, one that obtains its connection later
-     * than 28 s after its start, as {@link DispatchStage.UpstreamConnectionTooLate}; a connection wait lasting
-     * the whole {@value #UPSTREAM_TIMEOUT_SECONDS} seconds without a hand-over is ended by this guard itself.
-     * A gRPC call whose pre-response deadline passed while its upstream's backpressure had the request stream
+     * upstream holds up — on a gRPC call, one whose request stream has ended or one whose upstream stopped
+     * taking data mid-request. An attempt whose wait for an upstream connection or HTTP/2 stream slot reaches
+     * the connection wait bound ({@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}) is ended well before
+     * then, unsent, as {@link DispatchStage.UpstreamConnectionWaitExpired}, which the retry predicate never
+     * retries. A gRPC call whose pre-response deadline passed while its upstream's backpressure had the request stream
      * paused, and had kept it paused without a break for at least the upstream stall threshold
      * ({@link GrpcDispatchStage#GRPC_UPSTREAM_STALL_MILLIS}) when the upstream takes data again, is ended then, as
      * {@link DispatchStage.UpstreamStalledRequest}; a shorter pause leaves the deadline the client's. All three are

@@ -138,9 +138,8 @@ public enum EventType {
      * <p>
      * Contrast {@link #INBOUND_BODY_ABORTED}, which is a body stream that failed — this event is a body
      * that is still open but stopped arriving — and {@link #UPSTREAM_TIMEOUT}, which is attributed to the
-     * upstream: an attempt exceeding the upstream guard's timeout, and on a gRPC route also the upstream's
-     * sustained stall at the pre-response deadline above and an upstream connection obtained too late to
-     * leave the client time to send. This event is
+     * upstream: an attempt exceeding the upstream guard's timeout or the connection wait bound, and on a gRPC
+     * route also the upstream's sustained stall at the pre-response deadline above. This event is
      * attributed to the request, never to the upstream, which was given no request bytes to answer: it
      * is neutral to the route's circuit breaker — neither counted as a failure nor recorded as a success —
      * and it is never retried.
@@ -183,12 +182,10 @@ public enum EventType {
      * the attempt failed with, passed. That includes an attempt whose wait for a pooled upstream connection
      * outlasted the gateway's connection wait bound ({@code DispatchStage.UpstreamConnectionWaitExpired}): the
      * attempt queued behind connections the upstream is holding, its request unsent, and it is never retried.
-     * On a {@code protocol: grpc} route the same event reports two earlier
-     * ends the gRPC dispatch attributes to the upstream: a pre-response deadline acted on while the upstream's
-     * backpressure had held the request stream paused, without a break, for at least the gRPC upstream stall
-     * threshold ({@code DispatchStage.UpstreamStalledRequest}), and an attempt whose upstream connection came
-     * too close to, or past, the pre-response cap to leave the client time to send, refused unsent
-     * ({@code DispatchStage.UpstreamConnectionTooLate}). It is attributed to the upstream: the route's circuit
+     * On a {@code protocol: grpc} route the same event reports an earlier end the gRPC dispatch attributes to
+     * the upstream: a pre-response deadline acted on while the upstream's backpressure had held the request
+     * stream paused, without a break, for at least the gRPC upstream stall threshold
+     * ({@code DispatchStage.UpstreamStalledRequest}). It is attributed to the upstream: the route's circuit
      * breaker counts it as a failure.
      */
     UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504),
