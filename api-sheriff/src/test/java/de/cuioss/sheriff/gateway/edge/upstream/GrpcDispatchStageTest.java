@@ -254,7 +254,7 @@ class GrpcDispatchStageTest {
                                     + GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS + " ms less the connection wait bound of "
                                     + DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS + " ms leaves "
                                     + (GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS
-                                            - DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS)
+                                    - DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS)
                                     + " ms"));
         }
 
