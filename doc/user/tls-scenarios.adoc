@@ -385,8 +385,9 @@ The management listener takes its key material from the first of these that appl
   bucket serves HTTPS, a key-less one serves plain HTTP even with the certificate pair above set.
 . With no bucket selected, a default `+quarkus.tls.key-store.*+` bucket that carries key material
   serves HTTPS.
-. Otherwise the `+quarkus.management.ssl.certificate.*+` keys decide, in any spelling -- `files`,
-  `key-files`, `key-store-file` or `credentials-provider`.
+. Otherwise the `+quarkus.management.ssl.certificate.*+` keys decide, through a key-bearing
+  spelling -- `files` with `key-files`, or `key-store-file`. `credentials-provider` only supplies a
+  keystore password: on its own it supplies no certificate, and the port starts plain.
 
 [cols="2,2,2", options="header"]
 |===

@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.http.PathSlashes;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -345,7 +346,7 @@ public final class RouteTableBuilder {
             return null;
         }
         if (!cookies.effectiveSameOriginCheck()) {
-            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_SAME_ORIGIN_CHECK_DISABLED, routeId);
+            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_SAME_ORIGIN_CHECK_DISABLED, RuleSupport.renderForMessage(routeId));
             return null;
         }
         List<String> additionalOrigins = cookies.additionalOrigins();
@@ -541,10 +542,15 @@ public final class RouteTableBuilder {
      * rather than reading as a plain bearer route.
      */
     private static void logPosture(Route route, GatewayConfig gateway) {
-        String anchorName = route.anchor() != null ? route.anchor() : NO_ANCHOR_NAME;
+        // An explicit null check, not Objects.requireNonNullElse, for the reason resolveRoute gives
+        // for its protocol local: the analyser does not model requireNonNullElse as null-eliminating
+        // and raised java:S4449 on the renderForMessage argument below.
+        String declaredAnchor = route.anchor();
+        String anchorName = declaredAnchor != null ? declaredAnchor : NO_ANCHOR_NAME;
         SecurityProfile effectiveProfile = effectiveProfile(route.effectiveSecurityFilter(), gateway);
         AuthConfig effectiveAuth = route.effectiveAuth();
-        LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, effectiveAuth.require(),
+        LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, RuleSupport.renderForMessage(route.id()),
+                RuleSupport.renderForMessage(anchorName), effectiveAuth.require(),
                 effectiveAuth.effectiveSessionFallback(), effectiveProfile.name().toLowerCase(Locale.ROOT));
     }
 
@@ -599,6 +605,10 @@ public final class RouteTableBuilder {
      * endpoint, so the operator can find the replacing declaration. An unanchored route has no
      * anchor policy to override, and a block the route does not resolve from its scope chain
      * ({@link #resolvesFromChain}) has no replacement to announce.
+     * <p>
+     * The route id, endpoint id and anchor name are configured free-form scalars, so each passes
+     * through {@link RuleSupport#renderForMessage} before it reaches the record; the block key and
+     * the declaring scope are closed vocabulary and are echoed as they are.
      *
      * @param chain the route's scope chain
      */
@@ -613,8 +623,10 @@ public final class RouteTableBuilder {
             }
             Set<PolicyBlock.Scope> declaring = block.declaringScopes(chain);
             if (replacesAnchor(declaring)) {
-                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, chain.route().id(),
-                        chain.endpoint().id(), anchor.name(), block.yamlKey(), nearestScope(declaring));
+                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN,
+                        RuleSupport.renderForMessage(chain.route().id()),
+                        RuleSupport.renderForMessage(chain.endpoint().id()),
+                        RuleSupport.renderForMessage(anchor.name()), block.yamlKey(), nearestScope(declaring));
             }
         }
     }

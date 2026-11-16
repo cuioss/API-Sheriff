@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -125,7 +126,7 @@ public class EdgeRules {
             Optional<CidrRange> parsed = parseCidr(cidr);
             if (parsed.isEmpty()) {
                 errors.add(new ConfigError(GATEWAY_FILE, FORWARDED_TRUSTED_POINTER,
-                        "malformed trusted_proxies CIDR: " + cidr));
+                        "malformed trusted_proxies CIDR: " + renderForMessage(cidr)));
                 continue;
             }
             CidrRange range = parsed.get();
@@ -148,7 +149,7 @@ public class EdgeRules {
         }
         for (CidrRange range : ranges) {
             if (range.prefixLength() < broadPrefix) {
-                LOGGER.warn(ConfigLogMessages.WARN.BROAD_TRUSTED_PROXY, range.cidr(),
+                LOGGER.warn(ConfigLogMessages.WARN.BROAD_TRUSTED_PROXY, renderForMessage(range.cidr()),
                         Integer.toString(range.prefixLength()));
             }
         }
@@ -239,7 +240,7 @@ public class EdgeRules {
                     if (sniHost.equalsIgnoreCase(host)) {
                         errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
                                 "route '%s' matches host '%s', which is relayed at L4 by passthrough_sni and is never routed"
-                                        .formatted(route.id(), sniHost)));
+                                        .formatted(renderForMessage(route.id()), renderForMessage(sniHost))));
                     }
                 }
             }
@@ -264,14 +265,14 @@ public class EdgeRules {
             if (upstream.isEmpty()) {
                 errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
                         "unresolved topology alias '%s' referenced by passthrough_sni host '%s'"
-                                .formatted(alias, entry.getKey())));
+                                .formatted(renderForMessage(alias), renderForMessage(entry.getKey()))));
                 continue;
             }
             String basePath = upstream.get().basePath();
             if (!basePath.isEmpty() && !"/".equals(basePath)) {
                 errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
                         "passthrough_sni alias '%s' must resolve to an origin without a base path, but resolved to '%s'"
-                                .formatted(alias, basePath)));
+                                .formatted(renderForMessage(alias), renderForMessage(basePath))));
             }
         }
     }

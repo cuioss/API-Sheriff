@@ -122,11 +122,9 @@ The clock does not count:
   forced-HTTP/2 upstream shares its connection, so there is no pooled connection to free. The message
   bound counts complete messages instead (<<grpc-message-bound>>).
 
-What becomes of the upstream connection depends on what was written to it. `DispatchStage` sends the
-request head together with the first forwarded body chunk. On HTTP/1.1 the connection returns to the
-pool only when no body chunk had been forwarded. A partly sent request closes its connection, and the
-next dispatch obtains a new one. ADR-0066 decides how that connection closes. On an HTTP/2 upstream
-the reset ends one stream, and the connection carries on.
+On an HTTP/2 upstream the reset ends one stream, and the connection carries on. On HTTP/1.1,
+ADR-0066 decides what the reset leaves of the connection
+(link:../architecture/tls-and-inbound-security.adoc#_http2_post_response_reset[Architecture -- abortive upstream close]).
 
 [[request-body-deadline]]
 === A body that keeps arriving ends 25 s after its attempt started
@@ -145,8 +143,10 @@ the body is rejected as `REQUEST_BODY_TIMEOUT`:
   upstream sent, also when no upstream body byte had been relayed yet.
 
 *Amendment: an answer whose head was not yet written is unstorable.* It now carries
-`Cache-Control: no-store` and none of the upstream's `Expires`, `Age`, `ETag` or `Last-Modified`, so no
-cache keeps the empty answer as the upstream's response. Its status is kept rather than turned into a
+`Cache-Control: no-store` and none of the upstream's `Expires`, `Age`, `ETag`, `Last-Modified`,
+`CDN-Cache-Control` or `Surrogate-Control`, so no cache keeps the empty answer as the upstream's response.
+The last two are dropped because a cache they target obeys them in place of `Cache-Control` (RFC 9213).
+Its status is kept rather than turned into a
 `502`: the upstream has acted on the request, and a `502` would invite the client to send it again.
 
 A passed deadline stays in force. While the upstream takes no data, the deadline does not reset the
@@ -280,9 +280,8 @@ link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Arc
 An HTTP/2 stream whose body the gateway does not read returns no flow-control window while it stays
 open. Two such streams give their credit back. An upload rejected `503` by the admission cap ends
 through the one end rule of ADR-0066, whose `NO_ERROR` reset returns its credit to the connection. An
-upload whose client resets it while its dispatch waits for a pooled connection is closed by that
-reset; its credit returns, and its admission permit comes back at once. Both held before this
-decision. Two tests in `GatewayEdgeEarlyResponseResetTest` pin them, and no production code changed
+upload whose client resets it while its dispatch waits for a pooled connection ends with that reset.
+The reset returns its credit and its admission permit at once
 (link:../architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[unread upload release]).
 
 The inbound connection window stays derived: 100 streams times the 65,535-byte stream window,
@@ -307,14 +306,10 @@ rejection. The breaker skips it and records it as a success, and the retry predi
 bodyless request never subscribes the inbound stream to an attempt, so it stays retryable for as long
 as no body byte has arrived.
 
-Each bound's end is recorded at `INFO`, latched per route. A gRPC message-bound end is recorded under the
-`INBOUND_BODY_ABORTED` disposition `client-idle`. A pre-response deadline end the client held is also
-counted on that disposition's `sheriff_inbound_body_aborts_total` series, beside its
-`REQUEST_BODY_TIMEOUT` event. A pre-response deadline end the upstream stalled for
-the threshold is recorded as an upstream timeout, never as a passed request-body deadline. The log
-records, their latches and the counters are in
-link:../architecture/tls-and-inbound-security.adoc#_request_body_bound_recording[Architecture --
-recording of the request-body bounds].
+Each bound's end is recorded at `INFO`, latched per route. A pre-response deadline end the upstream
+stalled for the threshold is recorded as an upstream timeout. The log records, their latches and the
+counters are in
+link:../architecture/tls-and-inbound-security.adoc#_request_body_bound_recording[Architecture -- recording of the request-body bounds].
 
 == Alternatives rejected
 

@@ -26,7 +26,11 @@ import io.vertx.core.http.HttpServerOptions;
 /**
  * Edge hardening for the public data-plane HTTP server. It is BOTH the carrier of the
  * gateway's inbound-transport bounds AND the {@link HttpServerOptionsCustomizer} SPI bean that
- * applies them to every listener Quarkus opens.
+ * applies them to the listeners that customizer reaches: the main plain-HTTP listener, the main
+ * HTTPS listener and the main domain-socket listener, through the three callbacks Quarkus invokes for
+ * them. The management interface is built without consulting any {@link HttpServerOptionsCustomizer},
+ * so it keeps the transport defaults — the 8 KiB HTTP/2 header list among them — and none of the
+ * bounds below reaches it.
  * <p>
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
@@ -78,12 +82,15 @@ import io.vertx.core.http.HttpServerOptions;
  * derived from the listener's stream settings after the stream bound is applied, not configured.
  * <p>
  * <strong>The inbound HTTP/2 header block and stream-reset rate are transport bounds as well.</strong>
- * The listener announces a {@code SETTINGS_MAX_HEADER_LIST_SIZE} of at most 16 KiB — the same bound
- * the HTTP/1.1 header block has: a listener announcing more, or announcing no limit, is lowered to it,
- * and a lower value is kept. The bound covers the whole decoded header block, {@code CONTINUATION}
- * frames included, so a header block spread over many frames is refused by the codec once it passes
- * that size, and the codec ends the connection with a {@code GOAWAY} naming an error — a complete block
- * of 17 KiB does, as {@code GatewayEdgeHttp2AbuseTest} pins. The per-connection Rapid-Reset guard is pinned at 200 {@code RST_STREAM} frames per
+ * Every listener this customizer reaches (main HTTP, main HTTPS, main domain socket) announces a
+ * {@code SETTINGS_MAX_HEADER_LIST_SIZE} of exactly 16 KiB — the same bound the HTTP/1.1 header block
+ * has. The value is set whatever the listener announced before, so the transport default of 8 KiB
+ * never stays in effect on those listeners; the management interface, which no customizer reaches,
+ * keeps it. The bound covers the whole decoded header list,
+ * {@code CONTINUATION} frames included: a request whose decoded list passes it is answered {@code 431}
+ * and its stream reset, while the connection stays open; only a compressed header block larger than
+ * 1.25 times the bound (20 KiB) makes the codec end the connection with a {@code GOAWAY} naming an
+ * error. The per-connection Rapid-Reset guard is pinned at 200 {@code RST_STREAM} frames per
  * 30-second window, the transport's own default: a connection whose client resets more streams than
  * that inside one window is ended with {@code GOAWAY ENHANCE_YOUR_CALM}. The values are set explicitly
  * so a change of the transport default cannot move them, and they are never raised (ADR-0066). The
@@ -113,7 +120,10 @@ import io.vertx.core.http.HttpServerOptions;
  */
 public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
 
-    /** Maximum size of the whole request header block in bytes (default 16 KiB). */
+    /**
+     * Maximum size of the whole HTTP/1.x request header block in bytes, 16 KiB. The HTTP/2 header list
+     * has the same bound through {@link #MAX_HEADER_LIST_SIZE_BYTES}.
+     */
     private static final int MAX_HEADER_SIZE_BYTES = 16 * 1024;
 
     /** Maximum length of the HTTP/1.x request line ({@code METHOD SP request-target SP HTTP/x}). */
@@ -178,10 +188,13 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static final long MAX_CONCURRENT_STREAMS_PER_CONNECTION = 100L;
 
     /**
-     * Upper bound on the decoded HTTP/2 header block of one request, announced as the listener's
-     * initial {@code SETTINGS_MAX_HEADER_LIST_SIZE}. Defined as {@link #MAX_HEADER_SIZE_BYTES} so the
-     * HTTP/2 header block, {@code CONTINUATION} frames included, has the same 16 KiB bound as the
-     * HTTP/1.1 one.
+     * Bound on the decoded HTTP/2 header list of one request, announced as the initial
+     * {@code SETTINGS_MAX_HEADER_LIST_SIZE} of every listener this customizer reaches, in place of the
+     * transport default of 8 KiB. Defined as
+     * {@link #MAX_HEADER_SIZE_BYTES} so the HTTP/2 header list, {@code CONTINUATION} frames included,
+     * has the same 16 KiB bound as the HTTP/1.1 header block. A decoded list over it is answered
+     * {@code 431} and its stream reset; a compressed header block over 1.25 times it ends the
+     * connection.
      */
     private static final long MAX_HEADER_LIST_SIZE_BYTES = MAX_HEADER_SIZE_BYTES;
 
@@ -275,10 +288,16 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
         apply(options);
     }
 
+    @Override
+    public void customizeDomainSocketServer(HttpServerOptions options) {
+        apply(options);
+    }
+
     private static void apply(HttpServerOptions options) {
         Http2Settings settings = options.getInitialSettings();
         boundConcurrentStreams(settings);
-        boundHeaderListSize(settings);
+        // Set unconditionally: a lower announce, the transport default of 8 KiB included, is raised too.
+        settings.setMaxHeaderListSize(MAX_HEADER_LIST_SIZE_BYTES);
         options.setMaxHeaderSize(MAX_HEADER_SIZE_BYTES)
                 .setMaxInitialLineLength(MAX_INITIAL_LINE_LENGTH_BYTES)
                 .setMaxChunkSize(MAX_CHUNK_SIZE_BYTES)
@@ -289,18 +308,6 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
                 .setHttp2RstFloodMaxRstFramePerWindow(RST_FLOOD_MAX_RST_FRAMES_PER_WINDOW)
                 .setHttp2RstFloodWindowDuration(RST_FLOOD_WINDOW_SECONDS)
                 .setHttp2RstFloodWindowDurationTimeUnit(TimeUnit.SECONDS);
-    }
-
-    /**
-     * Lowers the listener's announced header-list size to {@link #MAX_HEADER_LIST_SIZE_BYTES} when it
-     * is unbounded or above that bound; a lower value is left as it is.
-     *
-     * @param settings the initial HTTP/2 settings of the listener, updated in place
-     */
-    private static void boundHeaderListSize(Http2Settings settings) {
-        if (settings.getMaxHeaderListSize() > MAX_HEADER_LIST_SIZE_BYTES) {
-            settings.setMaxHeaderListSize(MAX_HEADER_LIST_SIZE_BYTES);
-        }
     }
 
     /**

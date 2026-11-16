@@ -20,11 +20,15 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -876,7 +880,52 @@ class ConfigLoaderTest {
                 Arguments.of("a relative catalog entry", endpointWithCatalogEntry("orders"),
                         "/endpoint/catalog/entry"),
                 Arguments.of("a backslash catalog entry", endpointWithCatalogEntry("'/\\\\evil.example'"),
-                        "/endpoint/catalog/entry"));
+                        "/endpoint/catalog/entry"),
+                // The route id names the route in boot refusals and log records, so the schema holds it
+                // to the endpoint id's shape. The trailing-line-feed row pins that the pattern's
+                // terminator admits no line break after an otherwise well-shaped id.
+                Arguments.of("a route id with an upper-case letter and an underscore",
+                        endpointWithRouteId("Route_1"), "/endpoint/routes/0/id"),
+                Arguments.of("a route id starting with a digit", endpointWithRouteId("1route"),
+                        "/endpoint/routes/0/id"),
+                Arguments.of("a route id ending in a line feed", endpointWithRouteId("\"orders-read\\n\""),
+                        "/endpoint/routes/0/id"),
+                Arguments.of("a route id carrying a line feed and a forged line",
+                        endpointWithRouteId("\"orders-read\\nX-Forged: 1\""), "/endpoint/routes/0/id"),
+                // The endpoint id carries the same terminator as the route id. The pointer alone cannot
+                // tell the schema refusal from the name-equals-id one, which reports at /endpoint/id as
+                // well; refusesAnEndpointIdEndingInALineFeedAtTheSchema pins which of the two refuses it.
+                Arguments.of("an endpoint id ending in a line feed",
+                        """
+                                endpoint:
+                                  id: "orders\\n"
+                                  base_url: ORDERS
+                                  auth:
+                                    require: none
+                                  routes:
+                                    - id: orders-read
+                                      match:
+                                        path_prefix: /orders
+                                """,
+                        "/endpoint/id"));
+    }
+
+    /**
+     * @param routeIdYaml the route's {@code id} as a YAML scalar, quoted as the case needs
+     * @return an otherwise-valid {@code endpoints/orders.yaml} whose single route declares that id
+     */
+    private static String endpointWithRouteId(String routeIdYaml) {
+        return """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: %s
+                      match:
+                        path_prefix: /orders
+                """.formatted(routeIdYaml);
     }
 
     private static String endpointWithRouteProfile(String profile) {
@@ -1014,6 +1063,126 @@ class ConfigLoaderTest {
                                 && error.pointer().startsWith(pointerPrefix)),
                 () -> "expected " + description + " to be refused under the pointer '" + pointerPrefix
                         + "', got: " + exception.errors());
+    }
+
+    /**
+     * An endpoint id ending in a line feed must be refused by the schema's pattern, before the
+     * name-equals-id rule ever runs: were the pattern to admit it, the id would fail only as differing
+     * from its file name — a refusal that echoes the raw id and names the wrong cause. The pointer row
+     * in {@link #refusedEndpointDocuments()} cannot tell the two apart, because both report at
+     * {@code /endpoint/id}; this case can.
+     */
+    @Test
+    void refusesAnEndpointIdEndingInALineFeedAtTheSchema() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: "orders\\n"
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+        assertAll("the schema pattern, not the name-equals-id rule, refuses the id",
+                () -> assertTrue(exception.errors().stream().anyMatch(error -> "/endpoint/id".equals(error.pointer())),
+                        () -> "expected a refusal at /endpoint/id, got: " + exception.errors()),
+                () -> assertTrue(exception.errors().stream()
+                                .noneMatch(error -> error.message().contains("differs from its file name")),
+                        () -> "the id must never reach the name-equals-id rule, got: " + exception.errors()));
+    }
+
+    /**
+     * The matched control of the route-id rows above: the tightened schema must still accept every
+     * endpoint file the repository ships — the compose sample, the integration-test stack, the
+     * benchmark stack and this module's test fixtures. The set is discovered by walking the repository
+     * for {@code endpoints/*.yaml}, not listed, so an endpoint file added later is held to the pattern
+     * without anyone remembering to register it here.
+     */
+    @Nested
+    class ShippedEndpointFiles {
+
+        /** The repository root; surefire runs with the module root as the working directory. */
+        private static final Path REPOSITORY = Path.of(System.getProperty("user.dir")).toAbsolutePath().getParent();
+
+        /** Directories the walk never enters: build output, npm installs, and dot-directories. */
+        private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", "node_modules");
+
+        /**
+         * Every {@code endpoints/*.yaml} under the repository root, skipping build output, npm installs
+         * and dot-directories (which hold the plan workspace, never a shipped file).
+         */
+        static List<Path> discover() throws IOException {
+            List<Path> found = new ArrayList<>();
+            Files.walkFileTree(REPOSITORY, new SimpleFileVisitor<>() {
+
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attributes) {
+                    String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
+                    boolean skipped = !dir.equals(REPOSITORY)
+                            && (name.startsWith(".") || SKIPPED_DIRECTORIES.contains(name));
+                    return skipped ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                    Path parent = file.getParent();
+                    if (attributes.isRegularFile() && file.getFileName().toString().endsWith(".yaml")
+                            && parent != null && "endpoints".equals(parent.getFileName().toString())) {
+                        found.add(file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+            found.sort(Comparator.naturalOrder());
+            return found;
+        }
+
+        static Stream<Arguments> shippedEndpointFiles() throws IOException {
+            return discover().stream().map(file -> Arguments.of(REPOSITORY.relativize(file).toString(), file));
+        }
+
+        @Test
+        void discoversTheEndpointFilesOfEveryShippedConfigurationSet() throws Exception {
+            List<String> discovered = discover().stream().map(file -> REPOSITORY.relativize(file).toString())
+                    .map(path -> path.replace('\\', '/')).toList();
+
+            assertAll("the walk reaches every shipped set, so the control below is not vacuous",
+                    () -> assertTrue(discovered.stream().anyMatch(path -> path.startsWith("deployment/")),
+                            () -> "no compose-sample endpoint file was discovered: " + discovered),
+                    () -> assertTrue(discovered.stream().anyMatch(path -> path.startsWith("integration-tests/")),
+                            () -> "no integration-test endpoint file was discovered: " + discovered),
+                    () -> assertTrue(discovered.stream().anyMatch(path -> path.startsWith("api-sheriff/src/test/")),
+                            () -> "no test-fixture endpoint file was discovered: " + discovered));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("shippedEndpointFiles")
+        void loadsTheShippedEndpointFileUnderTheTightenedIdPattern(String relativePath, Path file) throws Exception {
+            // Arrange — the file alone beside a bare gateway.yaml, every placeholder on its in-file default
+            writeConfig("gateway.yaml", "version: 1\n");
+            Path target = configDir.resolve("endpoints").resolve(file.getFileName());
+            Files.createDirectories(target.getParent());
+            Files.copy(file, target);
+            ConfigLoader loader = loader(Map.of());
+
+            // Act
+            EndpointConfig endpoint = assertDoesNotThrow(() -> loader.load(IGNORE_DEFAULTED),
+                    () -> "the shipped endpoint file " + relativePath + " must load under the tightened schema")
+                    .endpoints().getFirst();
+
+            // Assert — the ids passed the schema and are the ones the file declares
+            String stem = file.getFileName().toString().replaceFirst("\\.yaml$", "");
+            assertAll(relativePath,
+                    () -> assertEquals(stem, endpoint.id(), "the endpoint id is the file stem"),
+                    () -> assertFalse(endpoint.routes().isEmpty(), "the file declares at least one route"));
+        }
     }
 
     @Test

@@ -487,9 +487,13 @@ Read it as a map of what you can and cannot change, and of where the answer is "
 
 [NOTE]
 ====
-*The `sheriff.token.issuers.*` property surface is unused.* The gateway builds its token validator
-from `gateway.yaml` only and configures no issuer on the token-validation extension's own property
-surface (link:../adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
+*The `sheriff.token.issuers.*` property surface is unused, and setting it refuses the boot.* The
+gateway builds its token validator from `gateway.yaml` only and configures no issuer on the
+token-validation extension's own property surface
+(link:../adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
+Any `sheriff.token.issuers.*` property or `SHERIFF_TOKEN_ISSUERS_*` environment variable aborts the
+start with `ERROR ApiSheriff-203`, which names the offending keys; remove them and configure the
+issuer in `token_validation` instead.
 The token-validation extension's own health probes are excluded; JWKS readiness on the readiness
 endpoint (beneath the management context path, see link:context-path.adoc[The Context Path]) comes
 from the gateway's own check against the validator on the request path. The extension's metrics are

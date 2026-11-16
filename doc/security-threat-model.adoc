@@ -1582,8 +1582,10 @@ stream-idle bound]):
   failure and the retry predicate refuses it. After the head the upstream request is reset and the
   relayed response is ended through the one end rule with the status the upstream sent, also when no
   body byte of the upstream had been relayed yet; such an answer, whose head was not yet written, is
-  made unstorable -- `Cache-Control: no-store`, with the upstream's `Expires`, `Age`, `ETag` and
-  `Last-Modified` removed -- so no cache keeps the empty answer as the upstream's response. Once passed, the deadline stays in force: the
+  made unstorable -- `Cache-Control: no-store`, with the upstream's `Expires`, `Age`, `ETag`,
+  `Last-Modified`, `CDN-Cache-Control` and `Surrogate-Control` removed, the last two because a cache
+  they target obeys them in place of `Cache-Control` (RFC 9213) -- so no cache keeps the empty answer
+  as the upstream's response. Once passed, the deadline stays in force: the
   wait for a pooled connection counts towards the 25 s, and a body whose attempt obtains its
   connection only after the deadline, or that the upstream is not taking data for when it passes, is
   ended the same way as soon as it is read again. An attempt that ends without handing its response
@@ -2075,8 +2077,10 @@ proxies gRPC over upstream h2 -- both the terminated and forced-h2-upstream side
 inherit this requirement.
 
 API Sheriff holds these bounds on the inbound HTTP/2 transport. `EdgeHardeningOptions` sets the first
-three on every listener as fixed gateway constants that no configuration key reaches; the last two
-follow from the never-forward set and from dispatch:
+three as fixed gateway constants that no configuration key reaches, on every data-plane listener it
+customizes: the main HTTP, main HTTPS and main domain-socket listeners. The management interface is
+built without the customizer and keeps the transport defaults. The last two follow from the
+never-forward set and from dispatch:
 
 * *Concurrent streams.* A connection announces at most 100 concurrent streams; a listener announcing
   more, or no limit, is lowered to that bound.
@@ -2087,9 +2091,11 @@ follow from the never-forward set and from dispatch:
   *sends* are counted as well, by Netty's encoder-side reset limit: every sent reset except `NO_ERROR`
   and `CANCEL`, including the `STREAM_CLOSED` reset for a DATA frame that arrives after an early
   answer, `REFUSED_STREAM`, and the reset after a `431`.
-* *Header block.* A connection announces a `SETTINGS_MAX_HEADER_LIST_SIZE` of at most 16 KiB, the
-  bound the HTTP/1.1 header block has. It covers the whole decoded header block, `CONTINUATION`
-  frames included, so a header block grown past it over any number of frames ends the connection.
+* *Header list.* A connection announces a `SETTINGS_MAX_HEADER_LIST_SIZE` of exactly 16 KiB, the
+  bound the HTTP/1.1 header block has, set in place of the transport default of 8 KiB. It covers the
+  whole decoded header list, `CONTINUATION` frames included: a request whose decoded list passes it is
+  answered `431` and its stream reset, and the connection stays open. Only a compressed header block
+  larger than 1.25 times the bound (20 KiB), however many frames carry it, ends the connection.
   Zero-length `CONTINUATION` frames add nothing to the block, so this bound cannot end a flood of
   them; the transport ends that connection before the stream is answered. That is the transport's
   default behaviour, not a gateway constant; `GatewayEdgeHttp2AbuseTest` pins the outcome.
@@ -2139,13 +2145,14 @@ none counts towards the Rapid-Reset limit, and none ends the connection or its o
 status below is unchanged.
 
 *Status:* COVERED. `EdgeHardeningOptionsTest` pins the reset-guard constants and the header-list
-bound (lowered when the listener announces more, kept when it announces less).
+announce at 16 KiB on the HTTP, HTTPS and domain-socket listener callbacks, whatever the listener
+announced before.
 `GatewayEdgeHttp2AbuseTest` drives the real edge with a raw HTTP/2 frame writer: a create-then-reset
 flood past the pinned window ends its connection with `GOAWAY ENHANCE_YOUR_CALM` while a fresh
 connection is served; early-answered uploads the gateway resets with `NO_ERROR` never trip the
-guard; a `CONTINUATION` flood past the header-list bound drops its connection, and so does a complete
-header block of 17 KiB or 32 KiB spread over `CONTINUATION` frames, with a `GOAWAY` naming an error and
-the stream never answered; and a flood of
+guard; a `CONTINUATION` flood past the header-list bound drops its connection; a single `HEADERS`
+frame whose decoded list is just under 16 KiB is served, and one just over is answered `431` with its
+stream reset; and a flood of
 zero-length `CONTINUATION` frames ends its connection before the stream is answered. `ConnectionHeadersTest` and
 `ForwardPolicyStageTest` pin that `HTTP2-Settings`, `Upgrade` and `Connection` are withheld under
 every forward mode, and the HTTP/2 legs of `GatewayEdgeFramingCorpusTest` pin the h2->h1
@@ -4746,7 +4753,7 @@ outstanding hardening work (next section).
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose client still holds its request stream open 25 s after its attempt handed the body over, never later than 29 s after the attempt started, ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, neither counted by the breaker as a failure; one whose upstream connection wait leaves less than the 1 s hand-over grace before that 29 s cap, or reaches it, ends unsent as the upstream's `UPSTREAM_TIMEOUT`, counted by the breaker, so a dispatched call always has at least the grace to deliver an end its client already sent; a wait for an upstream connection is bounded at 10 s behind a wait queue bounded by `admission_cap`, a 5 s dial timeout and a 4 s TLS-handshake timeout, and an attempt the full queue refuses or whose wait outlasts it ends unsent as `UPSTREAM_POOL_SATURATED` (`503`), not counted by the breaker; the guard's 30 s timeout is reached only as the upstream's, in two ways: by an upstream holding a complete, half-closed request, or by an upstream that stops taking data mid-request and takes no more within the 30 s -- while that backpressure pauses the request stream the message bound is not counted, and the pre-response deadline keeps counting but ends the call only once the upstream takes data again, then as the upstream's `UPSTREAM_TIMEOUT` (`UpstreamStalledRequest`), counted by the breaker, only when the upstream had held the stream paused without a break for at least the fixed 10 s stall threshold, and as the client's `REQUEST_BODY_TIMEOUT` after a shorter, flow-control pause -- so a client out-sending a healthy upstream cannot open its breaker; one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EgressClients`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)
 | <<gw-07-relay-failure-reset>> | A relay that fails to start or fails after the hand-over resets the upstream exchange once before the client is answered, so a client that leaves mid-body cannot keep a pooled upstream connection leased | Gateway (`TerminalDispatch`) | COVERED (driven against an HTTP/1.1 upstream only)
-| <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted while the transport's other sent resets (`STREAM_CLOSED`, `REFUSED_STREAM`, the reset after a `431`) count against Netty's encoder-side limit; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
+| <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound announced on every data-plane listener (`CONTINUATION` included; a decoded list past it answered `431` with its stream reset, only a compressed block past 1.25 times it ending the connection), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted while the transport's other sent resets (`STREAM_CLOSED`, `REFUSED_STREAM`, the reset after a `431`) count against Netty's encoder-side limit; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes, and on a `require: none` route that re-admits `Authorization` through `forward.headers_allow` or forwards a cookie; session cookie `SameSite=Lax`; a request that is no valid opening handshake refused `405`/`426`/`400`/`413` before tracking, relay permit or dial; a failed client upgrade always answered -- `502` where Vert.x has not answered it itself | ADR-0015 + configuration validator + `OriginValidationStage` + `WebSocketUpgradeGate` + `WebSocketRelayStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED

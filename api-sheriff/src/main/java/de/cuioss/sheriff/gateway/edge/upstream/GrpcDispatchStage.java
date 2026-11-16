@@ -44,8 +44,8 @@ import io.vertx.core.streams.ReadStream;
  * rendered as gRPC {@code UNAVAILABLE} by {@link de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper}.
  * <strong>The HTTP/2 stream-abuse bounds (threat {@code GW-08}) hold on the gRPC path</strong> because
  * they are bounds of the shared inbound transport, applied by
- * {@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions} to every listener rather than
- * per protocol: at most 100 concurrent streams per connection, a decoded header block of at most
+ * {@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions} to every data-plane listener
+ * (main HTTP, main HTTPS, main domain socket) rather than per protocol: at most 100 concurrent streams per connection, a decoded header block of at most
  * 16 KiB ({@code CONTINUATION} frames included), and the per-connection Rapid-Reset guard pinned at 200
  * client-sent {@code RST_STREAM} frames per 30-second window. Ordinary multi-stream gRPC traffic stays
  * inside all three. The forced-h2 upstream leg opens at most one upstream stream per admitted inbound

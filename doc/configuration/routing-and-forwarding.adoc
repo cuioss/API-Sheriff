@@ -9,6 +9,25 @@ Route protocols and WebSocket settings, the route matcher, the `forward`, `cooki
 
 Part of the link:../configuration.adoc[Configuration Model]; the annotated link:../configuration.adoc#_gateway_configuration_gateway_yaml[`gateway.yaml` skeleton] shows every block in place.
 
+[[_route_id]]
+== `id` (route)
+
+Every route declares an `id`. It names the route in boot refusals, in the boot posture line and in
+the route's log records and metrics.
+
+[cols="1,3"]
+|===
+| Attribute | Value
+
+| Type | String, mandatory.
+| Shape
+| A lowercase ASCII letter followed by lowercase ASCII letters, digits and hyphens -- the shape the
+  endpoint `id` has as well. The bundled schema holds both to `^[a-z][a-z0-9-]*$`.
+| Uniqueness | Unique across every enabled endpoint; a repeated id fails the boot.
+| Load refusal | An off-shape id (`Route_1`, `1route`, an id ending in a line break) fails the load,
+  naming the endpoint file.
+|===
+
 [[_protocols]]
 == `protocol`
 

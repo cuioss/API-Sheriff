@@ -156,10 +156,15 @@ link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_decla
 for the benchmark comparison against a fixed 2 MiB window).
 
 [[_http2_transport_bounds]]
-*Per-connection HTTP/2 transport bounds* (link:../security-threat-model.adoc#gw-08[GW-08]):
+*Per-connection HTTP/2 transport bounds* (link:../security-threat-model.adoc#gw-08[GW-08]). They
+reach the listeners `EdgeHardeningOptions` customizes -- the main HTTP listener, the main HTTPS
+listener and the main domain-socket listener. The management interface is built without the
+customizer and keeps the transport defaults.
 
-* *Header block (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Capped at 16 KiB across the whole decoded block
-  (`CONTINUATION` frames included); exceeding it ends the connection with `GOAWAY`.
+* *Header list (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Announced as 16 KiB on each of those listeners, in
+  place of the transport default of 8 KiB, across the whole decoded list (`CONTINUATION` frames included). A
+  decoded list over it is answered `431` and its stream reset; only a compressed header block over
+  1.25 times the bound (20 KiB) ends the connection with `GOAWAY`.
 
 * *Rapid-Reset.* Pinned at 200 `RST_STREAM` frames per 30-second window (`GOAWAY
   ENHANCE_YOUR_CALM` on breach). It counts the resets a client sends, and Netty's encoder-side limit
@@ -184,6 +189,7 @@ to the connection window once ended (having never acquired an admission permit),
 upload reset by its client while awaiting a pooled upstream connection returns its stream credit and
 releases its admission permit immediately
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#unread-upload-bodies[ADR-0060]).
+Neither release needs code of its own. Two tests in `GatewayEdgeEarlyResponseResetTest` pin both.
 
 == Request Body Framing and Timeouts
 
@@ -266,8 +272,9 @@ Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`);
 response head preserves the upstream status and resets/closes the stream. When the response head has not
 been written yet -- the upstream answered but no byte of its answer was relayed -- the answer carries the
 upstream's status and no body, and is made unstorable: `Cache-Control: no-store` replaces the upstream's
-directives, and `Expires`, `Age`, `ETag` and `Last-Modified` are removed, so no cache keeps the empty
-answer as the upstream's response. The status is kept rather than turned into a `502`: the upstream has
+directives, and `Expires`, `Age`, `ETag`, `Last-Modified`, `CDN-Cache-Control` and `Surrogate-Control`
+are removed, so no cache keeps the empty answer as the upstream's response. The last two go as well
+because a cache they target obeys them in place of `Cache-Control` (RFC 9213). The status is kept rather than turned into a `502`: the upstream has
 acted on the request, and a `502` would tell the client it may send it again. Every other relay that
 fails before its head is written is answered `502` with the same unstorable head. A passed deadline stays in
 force while upstream backpressure pauses the body: it ends the body as the request's when the pause

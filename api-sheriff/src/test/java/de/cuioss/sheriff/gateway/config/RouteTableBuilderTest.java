@@ -55,12 +55,14 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import de.cuioss.tools.logging.LogRecord;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -141,6 +143,119 @@ class RouteTableBuilderTest {
 
     private static Route find(RouteTable table, String id) {
         return table.routes().stream().filter(route -> route.id().equals(id)).findFirst().orElseThrow();
+    }
+
+    /**
+     * The log-side half of the CWE-117 contract {@code RuleSupport} states for boot refusals: the
+     * records route-table assembly writes per route — the posture line, the same-origin-check WARN and
+     * the anchor-override WARN — echo configured free-form scalars (the route id, the endpoint id, the
+     * anchor name) and render them through the same {@code RuleSupport.renderForMessage}, so a control
+     * character in any of them is logged as a {@code \\uXXXX} escape and cannot forge a log line.
+     * The ids are written straight into the bound model: the endpoint schema refuses such an id at load,
+     * but the escaping is assembly's own guarantee and must not depend on that earlier stage.
+     */
+    @Nested
+    @DisplayName("Log echoes of configured scalars — rendered escaped")
+    class LogEchoEscaping {
+
+        private static final String FORGED_ROUTE_ID = "orders\nX-Forged: 1";
+        private static final String ESCAPED_ROUTE_ID = "orders\\u000AX-Forged: 1";
+        private static final char ESCAPE = (char) 0x1B;
+
+        /** The captured messages of one log record, identified by its {@code ApiSheriff-NNN} identifier. */
+        private static List<String> messagesOf(LogRecord logRecord) {
+            String identifier = logRecord.resolveIdentifierString();
+            return SheriffDebugCapture.capturedRecords().stream().map(java.util.logging.LogRecord::getMessage)
+                    .filter(message -> message != null && message.startsWith(identifier)).toList();
+        }
+
+        private static void assertEscapedEcho(LogRecord logRecord, String escaped) {
+            List<String> messages = messagesOf(logRecord);
+            assertAll(logRecord.resolveIdentifierString(),
+                    () -> assertFalse(messages.isEmpty(), "the record must be logged at all"),
+                    () -> assertTrue(messages.stream().anyMatch(message -> message.contains(escaped)),
+                            () -> "the record must echo '" + escaped + "': " + messages),
+                    () -> assertTrue(messages.stream().allMatch(message -> message.chars()
+                                    .noneMatch(Character::isISOControl)),
+                            () -> "the record must carry no raw control character: " + messages));
+        }
+
+        @Test
+        @DisplayName("Should render a control character in the route id and anchor name escaped in the posture line")
+        void shouldRenderThePostureLineEscaped() {
+            // Arrange
+            String anchorName = "api" + ESCAPE + "[2J";
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(anchorName,
+                    anchorSeed(anchorName).pathPrefix("/api").auth(auth(Require.BEARER)).build()));
+            EndpointConfig endpoint = anchoredEndpointSeed("api", "API", anchorName)
+                    .routes(List.of(RouteConfig.builder().id(FORGED_ROUTE_ID).anchor(anchorName)
+                            .match(match("/api/read")).build()))
+                    .build();
+
+            // Act
+            builder.build(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertEscapedEcho(ConfigLogMessages.INFO.ROUTE_POSTURE, ESCAPED_ROUTE_ID);
+            assertEscapedEcho(ConfigLogMessages.INFO.ROUTE_POSTURE, "api\\u001B[2J");
+        }
+
+        @Test
+        @DisplayName("Should render a control character in the route id escaped in the same-origin-check WARN")
+        void shouldRenderTheSameOriginCheckWarnEscaped() {
+            // Arrange — a cookie-forwarding route that turns its same-origin check off
+            EndpointConfig endpoint = openEndpointSeed("orders", "ORDERS")
+                    .routes(List.of(RouteConfig.builder().id(FORGED_ROUTE_ID).match(match("/orders"))
+                            .cookies(new CookiesConfig(new CookieAllow.Named(List.of("theme")), false, null))
+                            .build()))
+                    .build();
+
+            // Act
+            builder.build(validGateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            assertEscapedEcho(ConfigLogMessages.WARN.COOKIE_SAME_ORIGIN_CHECK_DISABLED, ESCAPED_ROUTE_ID);
+        }
+
+        @Test
+        @DisplayName("Should render control characters in the route id, endpoint id and anchor name escaped in the anchor-override WARN")
+        void shouldRenderTheAnchorOverrideWarnEscaped() {
+            // Arrange — a route whose own security_filter replaces its anchor's
+            String anchorName = "api" + ESCAPE + "[2J";
+            String endpointId = "orders\rX-Forged: 2";
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(anchorName,
+                    anchorSeed(anchorName).pathPrefix("/api").auth(auth(Require.BEARER))
+                            .securityFilter(filter("strict")).build()));
+            EndpointConfig endpoint = anchoredEndpointSeed(endpointId, "API", anchorName)
+                    .routes(List.of(RouteConfig.builder().id(FORGED_ROUTE_ID).anchor(anchorName)
+                            .match(match("/api/read")).securityFilter(filter("lenient")).build()))
+                    .build();
+
+            // Act
+            builder.build(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertEscapedEcho(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, ESCAPED_ROUTE_ID);
+            assertEscapedEcho(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, "orders\\u000DX-Forged: 2");
+            assertEscapedEcho(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, "api\\u001B[2J");
+        }
+
+        @Test
+        @DisplayName("Should echo a printable route id verbatim in the posture line")
+        void shouldEchoAPrintableRouteIdVerbatim() {
+            // Arrange — the matched control: escaping applies only to what needs it
+            EndpointConfig endpoint = openEndpointSeed("orders", "ORDERS")
+                    .routes(List.of(RouteConfig.builder().id("orders-read").match(match("/orders")).build()))
+                    .build();
+
+            // Act
+            builder.build(validGateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            assertTrue(messagesOf(ConfigLogMessages.INFO.ROUTE_POSTURE).stream()
+                            .anyMatch(message -> message.contains("orders-read")),
+                    () -> "a printable route id is echoed as written: " + messagesOf(ConfigLogMessages.INFO.ROUTE_POSTURE));
+        }
     }
 
     @Nested

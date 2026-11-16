@@ -693,6 +693,12 @@ link:#_oidc_client_authentication[Client authentication].
   `session.max_cookie_size` is measured against. In `cookie` mode the gateway also sets the
   *activity cookie* `<cookie_name>-activity` (see `session.idle_timeout_seconds`).
 
+  *Renaming a custom name.* Each replica reads, sets and clears only the cookie under the name it
+  booted with; a cookie under a previous name is neither read nor cleared. A rename is therefore done
+  together with a sealing-key rotation (`cookie` mode, see `session.key_file`) or a full restart of
+  every replica, so that no replica still honours a session under the previous name while another
+  already uses the new one. It is not a rolling change.
+
 | `session.key_file`
 | *Cookie mode only*; in `server` mode a declared value is *refused at boot* at
   `/oidc/session/key_file`. Optional path of the AES-256-GCM sealing-key file (ADR-0072); a location,

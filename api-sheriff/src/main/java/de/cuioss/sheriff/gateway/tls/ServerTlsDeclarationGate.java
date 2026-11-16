@@ -161,10 +161,15 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
      */
     private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-z0-9]");
 
+    /**
+     * The key-bearing legacy spellings, as an operator writes them. The credentials provider is
+     * named only as what it is — the source of a keystore's password — so no refusal suggests it as
+     * a certificate on its own.
+     */
     private static final String SUPPORTED_SPELLINGS =
-            "quarkus.http.ssl.certificate.files (with .key-files), "
-                    + "quarkus.http.ssl.certificate.key-store-file, or "
-                    + "quarkus.http.ssl.certificate.credentials-provider";
+            "quarkus.http.ssl.certificate.files (with .key-files) or "
+                    + "quarkus.http.ssl.certificate.key-store-file (whose password "
+                    + "quarkus.http.ssl.certificate.credentials-provider may supply)";
 
     private static final String PLAIN_HTTP_REMEDY =
             "to serve plain HTTP deliberately — behind a TLS-terminating boundary — set "
@@ -314,8 +319,19 @@ public class ServerTlsDeclarationGate implements HttpServerOptionsCustomizer {
         return null;
     }
 
+    /**
+     * Names the first key-bearing legacy {@code quarkus.http.ssl.certificate.*} key that is declared.
+     * <p>
+     * Only the key-bearing spellings count. {@code credentials-provider} supplies a keystore password
+     * and nothing else: on its own the recorder builds no key options from it, drops the SSL options
+     * and serves plain HTTP. Counting it as a certificate let a boot with no certificate and no
+     * plain-HTTP opt-in through this gate into the framework's own confusing refusal, and refused a
+     * declared plain-HTTP listener over a key that could never have terminated anything.
+     *
+     * @return the declared key-bearing key, or {@code null} when none is declared
+     */
     private @Nullable String declaredLegacyCertificateKey() {
-        for (String key : DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS) {
+        for (String key : DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS) {
             if (declaredValue(key) != null) {
                 return key;
             }

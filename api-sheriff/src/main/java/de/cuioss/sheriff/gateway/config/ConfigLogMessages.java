@@ -662,5 +662,25 @@ public final class ConfigLogMessages {
                 .identifier(202)
                 .template("Refusing to start — portal template '%s' refused at line %s: %s")
                 .build();
+
+        /**
+         * Startup is aborted because a key of the token-validation extension's own issuer namespace,
+         * {@code sheriff.token.issuers.*} or its {@code SHERIFF_TOKEN_ISSUERS_*} environment spelling,
+         * is configured.
+         * <p>
+         * Such a key makes the extension build a second validator of its own, whose key-set fetches
+         * bypass the gateway's JWKS loader, the {@code jwks.tls_profile} resolution and the derived
+         * egress allowance (ADR-0074). The gateway configures its issuers only through
+         * {@code token_validation} in {@code gateway.yaml}, so the namespace must stay empty, and the
+         * refusal is raised before the extension's own startup observers run.
+         * <p>
+         * The template carries the offending configuration keys only, each rendered escaped — never a
+         * configured value, since an issuer key can hold a client secret or key material.
+         */
+        public static final LogRecord EXTENSION_ISSUER_NAMESPACE_CONFIGURED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(203)
+                .template("Refusing to start — the token-validation extension's own issuer namespace is configured: %s. This gateway configures its issuers only through token_validation in gateway.yaml; a sheriff.token.issuers.* key, or its SHERIFF_TOKEN_ISSUERS_* environment spelling, would make the extension build a second validator whose key-set fetches bypass the gateway's JWKS loader, TLS profile and egress allowance. Remove every such key from the deployment")
+                .build();
     }
 }

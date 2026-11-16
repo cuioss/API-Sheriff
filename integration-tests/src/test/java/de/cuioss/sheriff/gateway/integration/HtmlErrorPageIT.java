@@ -34,8 +34,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
+import io.restassured.path.json.JsonPath;
 import io.restassured.response.ExtractableResponse;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
@@ -69,10 +71,25 @@ import org.junit.jupiter.api.Test;
  * requests it, across runs on a stack that is not restarted. So the route may answer with the breaker's
  * {@code 503} instead of the gateway's {@code 502}. The test therefore first obtains the {@code 502}
  * within a bounded wait — once the breaker's five-second open delay has passed, a trial dial is refused
- * and answered {@code 502} — so a {@code 502} is required on every run. The negotiated pair that follows
- * may answer either {@code 502}, or an open circuit identified by its full signature: {@code 503} with
- * {@code Retry-After: 5} and the upstream problem type. A bare {@code 503} fails, and both legs must
- * answer the same status.
+ * and answered {@code 502} — so a {@code 502} is required on every run. Each leg of the negotiated pair
+ * that follows may answer either {@code 502}, or an open circuit identified by its full signature:
+ * {@code 503} with {@code Retry-After: 5} and, on the JSON leg, the upstream problem type. A bare
+ * {@code 503} fails at once. The two legs are sent one after the other, and the navigation's own refused
+ * dial is a failure the breaker counts — a bodyless {@code GET} is attempted three times, so one request
+ * can record three — while other suites refuse dials on the same route at the same time. So the
+ * navigation's refusal can itself open the circuit before the JSON client is answered: a pair answered
+ * {@code 502} and then {@code 503} is a breaker transition between the legs, not negotiation changing
+ * the status. Such a pair is therefore sent again, within the same bounded wait, until both legs answer
+ * the same status; the contract is asserted on that agreeing pair, and a disagreement that outlasts the
+ * wait fails. Every leg's whole shape — the HTML error page on the navigation, the problem document on
+ * the JSON leg, and the open-circuit signature on a leg that is not {@code 502} — is checked before a
+ * pair is sent again, so a malformed leg fails at once instead of being discarded with a disagreeing
+ * pair. The problem document is checked by its body, not only by its content type: whatever the leg's
+ * status, the body must parse as JSON, name the upstream problem type and carry a {@code status} member
+ * equal to the leg's HTTP status — on every JSON leg of a pair, and on the {@code 502} the first wait
+ * accepts. Each request of the two waits carries a connect and a response timeout that fit in the time
+ * left of its wait, so a request that is never answered fails the test, naming the route and the
+ * elapsed wait, instead of holding the wait past its bound.
  * <p>
  * <strong>The two upstream-fault tests.</strong> {@code 504} and {@code 503} are answers the gateway
  * gives about an upstream that misbehaves, so both tests misbehave one: the {@code upstream-fault}
@@ -186,10 +203,17 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     private static final long HEALTHY_POLL_INTERVAL_MILLIS = 250L;
 
     /**
-     * How long the refused-dial test may wait for its {@code 502}. It covers the five seconds a circuit
-     * that earlier refusals opened stays open, and the trial dial that follows.
+     * How long the refused-dial test may wait for its {@code 502}, and again for a negotiated pair whose
+     * two legs answer the same status. It covers the five seconds a circuit that earlier refusals opened
+     * stays open, and the trial dial that follows.
      */
     private static final Duration REFUSED_DIAL_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * The connect bound of one refused-dial request, in seconds, capped further by the time left in the
+     * wait. The gateway accepts at once, so the bound only stops a connect that hangs.
+     */
+    private static final int REFUSED_DIAL_CONNECT_SECONDS = 5;
 
     /**
      * The RFC 9457 problem type of an upstream failure. With status {@code 503} and
@@ -234,22 +258,18 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     void unreachableUpstream() {
         awaitRefusedDial();
 
-        ExtractableResponse<Response> html = send(BROWSER_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
-        ExtractableResponse<Response> json = send(JSON_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
+        // Every leg of every pair sent here has already been asserted to be the gateway's own 502 or an
+        // identified open circuit; a pair whose legs disagree is sent again within the bounded wait.
+        NegotiatedPair pair = awaitAgreeingPair();
+        ExtractableResponse<Response> html = pair.html();
+        ExtractableResponse<Response> json = pair.json();
 
         int status = json.statusCode();
         assertEquals(status, html.statusCode(), () -> "negotiation changes the body, never the status: the "
                 + "navigation was answered " + html.statusCode() + ", the JSON client " + status);
-        if (status == 503) {
-            assertOpenCircuit(json);
-            assertEquals(BREAKER_OPEN_SECONDS, html.header(RETRY_AFTER),
-                    "an open circuit's HTML error page names the seconds the breaker stays open");
-        } else {
-            assertEquals(502, status, () -> "the refused dial must be the gateway's own 502, or an identified "
-                    + "open circuit; body: " + json.asString());
-        }
         assertHtmlErrorPage(html, status);
         assertCurrentShape(json, status, true);
+        assertUpstreamProblemDocument(json);
     }
 
     @Test
@@ -494,13 +514,14 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
      * Requests the refused-dial route as a JSON client until it answers the gateway's own {@code 502}.
      * Every other answer on the way must be an open circuit identified by its full signature — the
      * breaker that earlier refusals opened, which lets a trial dial through once its open delay has
-     * passed. A bare {@code 503}, or any other status, fails at once.
+     * passed. A bare {@code 503}, or any other status, fails at once. The {@code 502} it accepts must
+     * carry the upstream problem document ({@link #assertUpstreamProblemDocument}).
      */
     @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded poll of a circuit breaker letting a trial dial through
     private static void awaitRefusedDial() {
-        long deadline = System.nanoTime() + REFUSED_DIAL_TIMEOUT.toNanos();
-        ExtractableResponse<Response> last = send(JSON_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
-        while (last.statusCode() != 502 && System.nanoTime() < deadline) {
+        RefusedDialWait wait = RefusedDialWait.start();
+        ExtractableResponse<Response> last = sendRefusedDial(JSON_ACCEPT, wait);
+        while (last.statusCode() != 502 && wait.hasTimeLeft()) {
             assertOpenCircuit(last);
             try {
                 Thread.sleep(HEALTHY_POLL_INTERVAL_MILLIS);
@@ -508,30 +529,204 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("interrupted while waiting for the refused dial", interrupted);
             }
-            last = send(JSON_ACCEPT, spec -> spec.when().get(UNREACHABLE_UPSTREAM_PATH));
+            if (!wait.hasTimeLeft()) {
+                break;
+            }
+            last = sendRefusedDial(JSON_ACCEPT, wait);
         }
         ExtractableResponse<Response> answered = last;
         assertEquals(502, answered.statusCode(), () -> UNREACHABLE_UPSTREAM_PATH + " must answer the gateway's own "
                 + "502 for a refused dial within " + REFUSED_DIAL_TIMEOUT.toSeconds() + "s; the last answer was "
                 + answered.statusCode() + ", body: " + answered.asString());
+        assertUpstreamProblemDocument(answered);
+    }
+
+    /**
+     * Sends the negotiated pair on the refused-dial route until its two legs answer the same status, for
+     * at most {@link #REFUSED_DIAL_TIMEOUT}. A pair whose legs disagree was taken across a breaker
+     * transition — the navigation's refused dial opened the circuit, or a trial dial closed it, before the
+     * JSON client was answered — and is sent again only when both of its legs passed the whole-shape
+     * checks of {@link #sendRefusedDialPair}. Every leg on the way must be the gateway's own {@code 502}
+     * or an identified open circuit; anything else, a bare {@code 503} or a malformed leg included, fails
+     * at once and is not sent again.
+     *
+     * @return the first pair whose legs agree, or the last pair sent once the wait has expired, so that a
+     *         disagreement which persists fails in the caller
+     */
+    @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded repeat of a pair a breaker transition split
+    private static NegotiatedPair awaitAgreeingPair() {
+        RefusedDialWait wait = RefusedDialWait.start();
+        NegotiatedPair pair = sendRefusedDialPair(wait);
+        while (!pair.agrees() && wait.hasTimeLeft()) {
+            try {
+                Thread.sleep(HEALTHY_POLL_INTERVAL_MILLIS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while waiting for an agreeing negotiated pair",
+                        interrupted);
+            }
+            if (!wait.hasTimeLeft()) {
+                break;
+            }
+            pair = sendRefusedDialPair(wait);
+        }
+        return pair;
+    }
+
+    /**
+     * Sends the refused-dial request as a navigation, then as a JSON client, and asserts each leg's whole
+     * shape before the caller decides whether to send the pair again: the HTML error page on the
+     * navigation and, on the JSON leg, the problem content type and the problem document itself
+     * ({@link #assertUpstreamProblemDocument} — parsed, the upstream type, a {@code status} member equal
+     * to the leg's status), at the status each was answered with, and on a leg that is not the gateway's
+     * own {@code 502} the open-circuit signature as well. So a malformed leg — a {@code 502} whose JSON
+     * body is not the problem document included — fails here, even beside a valid leg of the other
+     * status, instead of being discarded as one half of a breaker transition. Each leg is bounded by the
+     * time left in {@code wait}.
+     *
+     * @param wait the bounded wait the pair is sent within
+     * @return the pair, both legs asserted
+     */
+    private static NegotiatedPair sendRefusedDialPair(RefusedDialWait wait) {
+        ExtractableResponse<Response> html = sendRefusedDial(BROWSER_ACCEPT, wait);
+        ExtractableResponse<Response> json = sendRefusedDial(JSON_ACCEPT, wait);
+        assertHtmlErrorPage(html, html.statusCode());
+        assertCurrentShape(json, json.statusCode(), true);
+        if (html.statusCode() != 502) {
+            assertOpenCircuitPage(html);
+        }
+        if (json.statusCode() == 502) {
+            assertUpstreamProblemDocument(json);
+        } else {
+            // The open-circuit signature includes the problem-document check.
+            assertOpenCircuit(json);
+        }
+        return new NegotiatedPair(html, json);
+    }
+
+    /**
+     * Sends one refused-dial request with a connect and a response timeout that fit in the time left of
+     * {@code wait}, so a request that is never answered cannot hold the bounded wait past its end. A
+     * request that fails or times out fails the test, naming the route and how much of the wait had
+     * passed; it is not sent again. The other tests keep {@link #send}, whose waits are the gateway's own.
+     *
+     * @param accept the {@code Accept} the request carries
+     * @param wait   the bounded wait the request is sent within; it must have time left
+     * @return the answer
+     */
+    @SuppressWarnings("java:S2221") // NOSONAR java:S2221 - REST Assured surfaces a socket timeout as an undeclared checked exception; every failure is turned into a named test failure
+    private static ExtractableResponse<Response> sendRefusedDial(String accept, RefusedDialWait wait) {
+        int remainingSeconds = wait.remainingSeconds();
+        RequestSpecification spec = given()
+                .config(BffKeycloakLoginFlow.clientDeadlines(
+                        Math.min(REFUSED_DIAL_CONNECT_SECONDS, remainingSeconds), remainingSeconds))
+                .header("Accept", accept)
+                .redirects().follow(false);
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            return spec.when().get(UNREACHABLE_UPSTREAM_PATH).then().extract();
+        } catch (Exception unanswered) {
+            throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + " (" + accept + ") was not answered within the "
+                    + remainingSeconds + "s left of the " + REFUSED_DIAL_TIMEOUT.toSeconds()
+                    + "s refused-dial wait, " + wait.elapsedSeconds() + "s into it: " + unanswered, unanswered);
+        }
+    }
+
+    /**
+     * One bounded refused-dial wait of {@link #REFUSED_DIAL_TIMEOUT}, measured from its start. The time
+     * left is counted in whole seconds because that is the unit the request timeouts are set in; a wait
+     * with less than one whole second left has no time left, so no request is sent with a timeout of
+     * zero, which the HTTP client would read as no timeout at all.
+     *
+     * @param startNanos the {@link System#nanoTime()} the wait started at
+     */
+    private record RefusedDialWait(long startNanos) {
+
+        static RefusedDialWait start() {
+            return new RefusedDialWait(System.nanoTime());
+        }
+
+        int remainingSeconds() {
+            long left = startNanos + REFUSED_DIAL_TIMEOUT.toNanos() - System.nanoTime();
+            int seconds = (int) TimeUnit.NANOSECONDS.toSeconds(Math.max(0L, left));
+            if (seconds < 1) {
+                throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + ": the " + REFUSED_DIAL_TIMEOUT.toSeconds()
+                        + "s refused-dial wait has no whole second left for another request, "
+                        + elapsedSeconds() + "s into it");
+            }
+            return seconds;
+        }
+
+        boolean hasTimeLeft() {
+            return startNanos + REFUSED_DIAL_TIMEOUT.toNanos() - System.nanoTime() >= TimeUnit.SECONDS.toNanos(1);
+        }
+
+        long elapsedSeconds() {
+            return TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - startNanos);
+        }
+    }
+
+    /**
+     * Asserts that a navigation's answer is an open circuit: status {@code 503} and {@code Retry-After}
+     * naming the seconds the breaker stays open. The page itself is asserted by
+     * {@link #assertHtmlErrorPage}; it carries no problem type.
+     */
+    private static void assertOpenCircuitPage(ExtractableResponse<Response> html) {
+        assertAll("an open circuit's HTML error page",
+                () -> assertEquals(503, html.statusCode(), () -> "the refused dial must be the gateway's own 502, "
+                        + "or an identified open circuit; body: " + html.asString()),
+                () -> assertEquals(BREAKER_OPEN_SECONDS, html.header(RETRY_AFTER),
+                        "an open circuit's HTML error page names the seconds the breaker stays open"));
     }
 
     /**
      * Asserts that a JSON client's answer is an open circuit, identified by its full signature: status
-     * {@code 503}, {@code Retry-After} naming the seconds the breaker stays open, and a problem document
-     * of the upstream type. A {@code 503} lacking any of them is not the breaker's.
+     * {@code 503}, {@code Retry-After} naming the seconds the breaker stays open, and the upstream
+     * problem document ({@link #assertUpstreamProblemDocument}). A {@code 503} lacking any of them is not
+     * the breaker's.
      */
     private static void assertOpenCircuit(ExtractableResponse<Response> json) {
         String body = json.asString();
-        boolean problemDocument = contentType(json).startsWith(PROBLEM_JSON);
         assertAll("an open circuit, identified by its full signature",
                 () -> assertEquals(503, json.statusCode(), "only the breaker's 503 is tolerated; body: " + body),
                 () -> assertEquals(BREAKER_OPEN_SECONDS, json.header(RETRY_AFTER),
                         "an open circuit names the seconds the breaker stays open"),
-                () -> assertTrue(problemDocument,
+                () -> assertTrue(contentType(json).startsWith(PROBLEM_JSON),
                         "an open circuit renders RFC 9457 problem+json; content type was " + json.contentType()),
-                () -> assertEquals(UPSTREAM_PROBLEM_TYPE, problemDocument ? json.jsonPath().getString("type") : null,
-                        "an open circuit carries the upstream problem type; body: " + body));
+                () -> assertUpstreamProblemDocument(json));
+    }
+
+    /**
+     * Asserts that a JSON leg of the refused-dial route carries the gateway's upstream problem document,
+     * whatever its status: a body that parses as JSON, whose {@code type} is
+     * {@link #UPSTREAM_PROBLEM_TYPE} and whose {@code status} member equals the leg's HTTP status — the
+     * gateway's {@code 502} body is {@code {"type":"urn:api-sheriff:problem:upstream","title":"Upstream",
+     * "status":502}}. The content type alone proves none of that: a {@code 502} labelled
+     * {@code application/problem+json} over a body that is not a problem document would pass it. A body
+     * that does not parse fails with a message naming the route and quoting the body, not with the
+     * parser's own exception.
+     *
+     * @param json the JSON client's answer
+     */
+    private static void assertUpstreamProblemDocument(ExtractableResponse<Response> json) {
+        int status = json.statusCode();
+        String body = json.asString();
+        Object type;
+        Object statusMember;
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            JsonPath document = JsonPath.from(body);
+            type = document.get("type");
+            statusMember = document.get("status");
+        } catch (RuntimeException notJson) {
+            throw new AssertionError(UNREACHABLE_UPSTREAM_PATH + " answered its JSON leg " + status
+                    + " with a body that is not a JSON problem document: '" + body + "'", notJson);
+        }
+        assertAll("the upstream problem document of the " + status + " on " + UNREACHABLE_UPSTREAM_PATH,
+                () -> assertEquals(UPSTREAM_PROBLEM_TYPE, type,
+                        "the JSON leg names the upstream problem type; body: " + body),
+                () -> assertEquals(Integer.valueOf(status), statusMember,
+                        "the problem document's status member equals the leg's HTTP status; body: " + body));
     }
 
     /** One bodyless request on the fault route, as a JSON client; the status it is answered with. */
@@ -567,6 +762,20 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
         assertEquals(BREAKER_WINDOW, answered, () -> "through a healthy proxy " + FAULT_PATH + " must answer 200 "
                 + BREAKER_WINDOW + " times in a row within " + HEALTHY_TIMEOUT.toSeconds() + "s; the last answer was "
                 + last);
+    }
+
+    /**
+     * One negotiated pair on the refused-dial route: the navigation's answer and the JSON client's.
+     *
+     * @param html the answer to {@code Accept: text/html}
+     * @param json the answer to {@code Accept: application/json}
+     */
+    private record NegotiatedPair(ExtractableResponse<Response> html, ExtractableResponse<Response> json) {
+
+        /** @return whether both legs answered the same status */
+        boolean agrees() {
+            return html.statusCode() == json.statusCode();
+        }
     }
 
     /**

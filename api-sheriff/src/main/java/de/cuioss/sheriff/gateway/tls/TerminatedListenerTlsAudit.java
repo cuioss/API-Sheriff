@@ -59,11 +59,14 @@ import org.jspecify.annotations.Nullable;
  * {@code HttpServerOptionsCustomizer} that supplies material the configuration never declared — and
  * where they do, what this audit reports is what the listener is actually doing.
  * <p>
- * <strong>It reads every certificate spelling the runtime honours.</strong> The declared-material
- * question is asked through the shared {@link DeclaredKeyMaterialKeys} vocabulary rather than
- * through {@code ssl.certificate.files} alone: a deployment supplying a keystore file, or a PEM key
- * without a chain file, or a credentials provider, terminates TLS perfectly well, and an audit that
- * read one spelling reported a plain-HTTP downgrade against it.
+ * <strong>It reads every key-bearing certificate spelling, and only those.</strong> The
+ * declared-material question is asked through
+ * {@link DeclaredKeyMaterialKeys#HTTP_KEY_BEARING_CERTIFICATE_KEYS} rather than through
+ * {@code ssl.certificate.files} alone: a deployment supplying a keystore file terminates TLS
+ * perfectly well, and an audit that read one spelling reported a plain-HTTP downgrade against it.
+ * {@code ssl.certificate.credentials-provider} is deliberately <em>not</em> read: it supplies only a
+ * keystore password, so on its own it puts no certificate on the listener, and counting it would
+ * silence {@code ApiSheriff-121} on a listener that serves cleartext.
  * <p>
  * <strong>Why a WARN and never a boot refusal.</strong> A plain-HTTP main listener is a legitimate
  * deployment behind a TLS-terminating boundary, and the gateway must not block it. What must not
@@ -123,8 +126,6 @@ public class TerminatedListenerTlsAudit {
      *                                      deployment supplies none
      * @param certificateKeyStoreFile       the keystore file carrying chain and key, empty when the
      *                                      deployment supplies none
-     * @param certificateCredentialsProvider the credentials provider supplying the keystore
-     *                                      password, empty when the deployment supplies none
      * @param httpPort                      the plain HTTP port, reported in the warning
      * @param httpsPort                     the terminated HTTPS port, reported on the quiet path
      */
@@ -137,7 +138,6 @@ public class TerminatedListenerTlsAudit {
             @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES) Optional<List<String>> certificateFiles,
             @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_FILES) Optional<List<String>> certificateKeyFiles,
             @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_STORE_FILE) Optional<String> certificateKeyStoreFile,
-            @ConfigProperty(name = DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER) Optional<String> certificateCredentialsProvider,
             @ConfigProperty(name = "quarkus.http.port", defaultValue = "8080") int httpPort,
             @ConfigProperty(name = "quarkus.http.ssl-port", defaultValue = "8443") int httpsPort) {
         this.registry = Objects.requireNonNull(registry, "registry");
@@ -147,12 +147,12 @@ public class TerminatedListenerTlsAudit {
         // Each leg keeps the "blank/empty counts as no declaration" semantics: an empty list and a
         // key cleared to the empty string are both the shape a compose file's bare VAR= produces,
         // and neither supplies material. The disjunction is what removes the false positive a
-        // files-only predicate produced against a keystore or key-files deployment.
+        // files-only predicate produced against a keystore or key-files deployment. The credentials
+        // provider is not a leg: it only unlocks a keystore and supplies no certificate itself.
         this.certificateConfigured =
                 certificateFiles.filter(files -> !files.isEmpty()).isPresent()
                         || certificateKeyFiles.filter(files -> !files.isEmpty()).isPresent()
-                        || certificateKeyStoreFile.filter(value -> !value.isBlank()).isPresent()
-                        || certificateCredentialsProvider.filter(value -> !value.isBlank()).isPresent();
+                        || certificateKeyStoreFile.filter(value -> !value.isBlank()).isPresent();
         this.httpPort = httpPort;
         this.httpsPort = httpsPort;
     }

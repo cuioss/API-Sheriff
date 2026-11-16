@@ -108,7 +108,7 @@ public class AuthRules {
                 if (PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route)) == null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' has no resolvable auth: neither the route, its endpoint '%s', nor a declared anchor provides an auth posture"
-                                    .formatted(route.id(), endpoint.id())));
+                                    .formatted(renderForMessage(route.id()), renderForMessage(endpoint.id()))));
                 }
             }
         }
@@ -173,14 +173,15 @@ public class AuthRules {
         boolean oidcDeclared = gateway.oidc() != null;
         for (AnchorConfig anchor : gateway.anchors().values()) {
             checkSessionFallbackBlock(anchor.auth(), oidcDeclared, GATEWAY_FILE,
-                    ANCHORS_POINTER + "/" + anchor.name() + "/auth", "anchor '%s'".formatted(anchor.name()), errors);
+                    ANCHORS_POINTER + "/" + anchor.name() + "/auth",
+                    "anchor '%s'".formatted(renderForMessage(anchor.name())), errors);
         }
         for (EndpointConfig endpoint : endpoints) {
             checkSessionFallbackBlock(endpoint.auth(), oidcDeclared, endpointFile(endpoint), ENDPOINT_AUTH_POINTER,
-                    "endpoint '%s'".formatted(endpoint.id()), errors);
+                    "endpoint '%s'".formatted(renderForMessage(endpoint.id())), errors);
             for (RouteConfig route : endpoint.routes()) {
                 checkSessionFallbackBlock(route.auth(), oidcDeclared, endpointFile(endpoint),
-                        ENDPOINT_ROUTES_POINTER, "route '%s'".formatted(route.id()), errors);
+                        ENDPOINT_ROUTES_POINTER, "route '%s'".formatted(renderForMessage(route.id())), errors);
             }
         }
     }
@@ -230,7 +231,7 @@ public class AuthRules {
                                 + "scopes are consumed only by authenticated routes, so on an unauthenticated "
                                 + "endpoint they would never act — remove scopes, or give a route of this "
                                 + "endpoint a bearer or session posture")
-                                .formatted(endpoint.id())));
+                                .formatted(renderForMessage(endpoint.id()))));
             }
         }
     }

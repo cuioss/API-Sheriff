@@ -37,21 +37,40 @@ import lombok.experimental.UtilityClass;
  * {@link List} views over them.
  * <p>
  * {@code DeclaredKeyMaterialKeysDriftTest} reads each audit constructor's {@code @ConfigProperty}
- * annotations reflectively and asserts the injected name sets equal the lists here, so adding a
- * spelling at one site without the other fails the build rather than reintroducing the disagreement
- * this class was extracted to end.
+ * annotations reflectively and asserts the injected name sets equal the key-bearing lists here, so
+ * adding a spelling at one site without the other fails the build rather than reintroducing the
+ * disagreement this class was extracted to end.
  *
- * <h2>Every spelling Quarkus honours, and why nothing may be dropped</h2>
+ * <h2>Key-bearing spellings, and the one spelling that only supplies a password</h2>
  *
- * {@code TlsUtils.computeKeyStoreOptions} accepts server key material through four distinct
- * {@code ssl.certificate.*} spellings: a PEM chain ({@code files} + {@code key-files}), a keystore
- * file ({@code key-store-file}), and a credentials provider supplying the keystore password
- * ({@code credentials-provider}). A predicate that reads only {@code files} sees no material on a
- * keystore-based or credentials-provider-based deployment and reports plain HTTP for a listener that
- * is terminating TLS perfectly well. Narrowing this set is therefore never a safe simplification: it
- * turns a correct HTTPS deployment into a false plain-HTTP report on the audits, and it would turn
- * the same deployment into an inferred cleartext downgrade under any scheme that read intent out of
- * a missing certificate.
+ * The legacy {@code ssl.certificate.*} block takes part in server key material through four
+ * spellings, and they are not alike. Three of them <em>bear</em> the key:
+ * {@code TlsUtils.computeKeyStoreOptions} builds key options from a PEM chain ({@code files} +
+ * {@code key-files}) or from a keystore file ({@code key-store-file}), and from nothing else. The
+ * fourth, {@code credentials-provider}, names a credentials provider that supplies the keystore
+ * <em>password</em>: it is read only to unlock a {@code key-store-file}, and on its own it yields no
+ * key options at all. The recorder then drops the SSL options because no key options survived, and
+ * the listener serves plain HTTP. So only the three key-bearing spellings can answer "does a
+ * certificate reach this listener?", and every consumer of that question reads
+ * {@link #HTTP_KEY_BEARING_CERTIFICATE_KEYS} and {@link #MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS}.
+ * A consumer that counted the password source as a certificate would report HTTPS for a listener
+ * that is serving cleartext — the silent downgrade this vocabulary exists to make loud.
+ *
+ * <h2>Why no key-bearing spelling may be dropped</h2>
+ *
+ * A predicate that reads only {@code files} sees no material on a keystore-based deployment and
+ * reports plain HTTP for a listener that is terminating TLS perfectly well. Narrowing the key-bearing
+ * set is therefore never a safe simplification: it turns a correct HTTPS deployment into a false
+ * plain-HTTP report on the audits, and it would turn the same deployment into an inferred cleartext
+ * downgrade under any scheme that read intent out of a missing certificate. The complete four-spelling
+ * vocabulary — {@link #HTTP_CERTIFICATE_KEYS} and {@link #MANAGEMENT_CERTIFICATE_KEYS} — stays
+ * declared as well, password source included, so the distinction is stated where the names live
+ * rather than by leaving one of them out.
+ * <p>
+ * The complete lists are the single source of the spellings. Each key-bearing view is
+ * <em>derived</em> from its listener's complete list by dropping that listener's
+ * credentials-provider key, so a new spelling is added in one place and reaches both views of
+ * its listener at once.
  * <p>
  * A key that is present but <em>blank</em> is not a declaration. A compose file's bare
  * {@code QUARKUS_HTTP_SSL_CERTIFICATE_FILES=} and a test profile's empty override both produce that
@@ -86,7 +105,10 @@ public final class DeclaredKeyMaterialKeys {
     public static final String HTTP_CERTIFICATE_KEY_STORE_FILE =
             "quarkus.http.ssl.certificate.key-store-file";
 
-    /** Main listener — the credentials provider supplying the keystore password. */
+    /**
+     * Main listener — the credentials provider supplying the keystore password. A password source,
+     * not key material: on its own it puts no certificate on the listener.
+     */
     public static final String HTTP_CERTIFICATE_CREDENTIALS_PROVIDER =
             "quarkus.http.ssl.certificate.credentials-provider";
 
@@ -102,27 +124,64 @@ public final class DeclaredKeyMaterialKeys {
     public static final String MANAGEMENT_CERTIFICATE_KEY_STORE_FILE =
             "quarkus.management.ssl.certificate.key-store-file";
 
-    /** Management interface — the credentials provider supplying the keystore password. */
+    /**
+     * Management interface — the credentials provider supplying the keystore password. A password
+     * source, not key material: on its own it puts no certificate on the management port.
+     */
     public static final String MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER =
             "quarkus.management.ssl.certificate.credentials-provider";
 
-    /** The main listener's four certificate spellings, in the order they are documented. */
+    /**
+     * The main listener's complete certificate vocabulary — the three key-bearing spellings and the
+     * password source — in the order they are documented.
+     */
     public static final List<String> HTTP_CERTIFICATE_KEYS = List.of(
             HTTP_CERTIFICATE_FILES,
             HTTP_CERTIFICATE_KEY_FILES,
             HTTP_CERTIFICATE_KEY_STORE_FILE,
             HTTP_CERTIFICATE_CREDENTIALS_PROVIDER);
 
-    /** The management interface's four certificate spellings, mirroring the main listener's. */
+    /** The management interface's complete certificate vocabulary, mirroring the main listener's. */
     public static final List<String> MANAGEMENT_CERTIFICATE_KEYS = List.of(
             MANAGEMENT_CERTIFICATE_FILES,
             MANAGEMENT_CERTIFICATE_KEY_FILES,
             MANAGEMENT_CERTIFICATE_KEY_STORE_FILE,
             MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER);
 
+    /**
+     * The main listener's key-bearing spellings: the ones that can put a certificate on the
+     * listener. Derived from {@link #HTTP_CERTIFICATE_KEYS} by dropping the password source
+     * {@value #HTTP_CERTIFICATE_CREDENTIALS_PROVIDER} — see the class documentation — so a spelling
+     * added to the complete vocabulary reaches this view without a second edit. Immutable (the
+     * {@link List#copyOf(java.util.Collection)} at the declaration makes that visible), in the
+     * complete vocabulary's order.
+     */
+    public static final List<String> HTTP_KEY_BEARING_CERTIFICATE_KEYS = List.copyOf(
+            withoutPasswordSource(HTTP_CERTIFICATE_KEYS, HTTP_CERTIFICATE_CREDENTIALS_PROVIDER));
+
+    /**
+     * The management interface's key-bearing spellings, derived from
+     * {@link #MANAGEMENT_CERTIFICATE_KEYS} exactly as the main listener's view is derived from its
+     * vocabulary. Immutable, in the complete vocabulary's order.
+     */
+    public static final List<String> MANAGEMENT_KEY_BEARING_CERTIFICATE_KEYS = List.copyOf(
+            withoutPasswordSource(MANAGEMENT_CERTIFICATE_KEYS, MANAGEMENT_CERTIFICATE_CREDENTIALS_PROVIDER));
+
     /** The prefix every main-listener certificate key carries. */
     public static final String HTTP_CERTIFICATE_PREFIX = "quarkus.http.ssl.certificate.";
 
     /** The prefix every management certificate key carries. */
     public static final String MANAGEMENT_CERTIFICATE_PREFIX = "quarkus.management.ssl.certificate.";
+
+    /**
+     * A listener's key-bearing view: its complete certificate vocabulary minus the one spelling
+     * that only supplies a keystore password.
+     *
+     * @param vocabulary     the listener's complete certificate vocabulary
+     * @param passwordSource the listener's credentials-provider key
+     * @return the remaining keys, immutable, in the vocabulary's order
+     */
+    private static List<String> withoutPasswordSource(List<String> vocabulary, String passwordSource) {
+        return vocabulary.stream().filter(key -> !key.equals(passwordSource)).toList();
+    }
 }

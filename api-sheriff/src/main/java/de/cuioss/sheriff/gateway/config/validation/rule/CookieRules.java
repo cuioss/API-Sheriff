@@ -276,7 +276,7 @@ public class CookieRules {
                     errors.add(new ConfigError(endpointFile(endpoint), routePointer(index),
                             ("route '%s' declares a cookies block but serves an asset or a redirect, which has "
                                     + "no upstream to forward a cookie to — remove the block")
-                                    .formatted(route.id())));
+                                    .formatted(renderForMessage(route.id()))));
                 }
             }
         }
@@ -314,7 +314,7 @@ public class CookieRules {
                             ("websocket route '%s' forwards browser cookies to its upstream but declares no "
                                     + "websocket.allowed_origins; a cookie-forwarding upgrade is gated by that "
                                     + "allowlist alone, so declare the origins allowed to open the socket")
-                                    .formatted(route.id())));
+                                    .formatted(renderForMessage(route.id()))));
                 }
             }
         }
@@ -339,7 +339,7 @@ public class CookieRules {
             CookiesConfig anchorCookies = anchor.cookies();
             if (anchorCookies != null) {
                 declarations.add(new Declaration(GATEWAY_FILE, ANCHORS_POINTER + "/" + anchor.name() + COOKIES_KEY,
-                        "anchor '%s'".formatted(anchor.name()), anchorCookies));
+                        "anchor '%s'".formatted(renderForMessage(anchor.name())), anchorCookies));
             }
         }
         for (EndpointConfig endpoint : endpoints) {
@@ -347,7 +347,7 @@ public class CookieRules {
             CookiesConfig endpointCookies = endpoint.cookies();
             if (endpointCookies != null) {
                 declarations.add(new Declaration(file, "/endpoint" + COOKIES_KEY,
-                        "endpoint '%s'".formatted(endpoint.id()), endpointCookies));
+                        "endpoint '%s'".formatted(renderForMessage(endpoint.id())), endpointCookies));
             }
             List<RouteConfig> routes = endpoint.routes();
             for (int index = 0; index < routes.size(); index++) {
@@ -355,7 +355,7 @@ public class CookieRules {
                 CookiesConfig routeCookies = route.cookies();
                 if (routeCookies != null) {
                     declarations.add(new Declaration(file, routePointer(index),
-                            "route '%s'".formatted(route.id()), routeCookies));
+                            "route '%s'".formatted(renderForMessage(route.id())), routeCookies));
                 }
             }
         }

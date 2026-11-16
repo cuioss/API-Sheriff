@@ -135,6 +135,11 @@ class TerminalDispatchLateBodyTimeoutTest {
      * production removal policy itself, so a header added to it is seeded and checked here too.
      */
     private static final List<String> CACHING_METADATA = TerminalDispatch.UNSTORABLE_ANSWER_REMOVES;
+    /**
+     * The cache-targeted control fields (RFC 9213) a CDN or surrogate obeys in place of Cache-Control, named
+     * literally: the names are the contract, so a removal policy that loses one of them turns a case red.
+     */
+    private static final List<String> CACHE_TARGETED_FIELDS = List.of("CDN-Cache-Control", "Surrogate-Control");
     /** A status other than the {@code 200} the relay of a fresh response starts from. */
     private static final int UPSTREAM_STATUS = 201;
     private static final int BAD_GATEWAY = 502;
@@ -202,6 +207,24 @@ class TerminalDispatchLateBodyTimeoutTest {
                         "the 502 is never stored"),
                 () -> assertEquals(List.of(), CACHING_METADATA.stream().filter(response.headers::contains).toList(),
                         "no freshness or validator of the upstream's response is kept"));
+    }
+
+    @Test
+    @DisplayName("a failed relay's unwritten head carries neither CDN-Cache-Control nor Surrogate-Control, which a targeted cache obeys in place of Cache-Control")
+    void failedRelayHeadDropsTheCacheTargetedFields() {
+        FailedRelayResponse lateTimeout = new FailedRelayResponse(false).withCacheTargetedFields();
+        FailedRelayResponse otherFailure = new FailedRelayResponse(false).withCacheTargetedFields();
+
+        TerminalDispatch.prepareFailedRelayHead(lateTimeout.fake(), true, UPSTREAM_STATUS);
+        TerminalDispatch.prepareFailedRelayHead(otherFailure.fake(), false, UPSTREAM_STATUS);
+
+        assertAll("the cache-targeted fields of a failed relay's unwritten head",
+                () -> assertEquals(List.of(), CACHE_TARGETED_FIELDS.stream().filter(lateTimeout.headers::contains).toList(),
+                        "the upstream-status answer after a late request-body timeout keeps no cache-targeted field"),
+                () -> assertEquals(List.of(), CACHE_TARGETED_FIELDS.stream().filter(otherFailure.headers::contains).toList(),
+                        "the 502 keeps no cache-targeted field"),
+                () -> assertEquals(List.of("no-store"), lateTimeout.headers.getAll(CACHE_CONTROL),
+                        "Cache-Control is the only cache directive left on the answer"));
     }
 
     @Test
@@ -593,6 +616,12 @@ class TerminalDispatchLateBodyTimeoutTest {
         FailedRelayResponse(boolean headWritten) {
             this.headWritten = headWritten;
             CACHING_METADATA.forEach(name -> headers.add(name, "relayed"));
+        }
+
+        /** Adds the cache-targeted fields an upstream may send beside its Cache-Control. */
+        FailedRelayResponse withCacheTargetedFields() {
+            CACHE_TARGETED_FIELDS.forEach(name -> headers.set(name, RELAYED_CACHE_CONTROL));
+            return this;
         }
 
         HttpServerResponse fake() {

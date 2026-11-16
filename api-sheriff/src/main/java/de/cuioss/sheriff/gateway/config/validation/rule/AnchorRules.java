@@ -98,7 +98,8 @@ public class AnchorRules {
                         || prefixContains(second.pathPrefix(), first.pathPrefix())) {
                     errors.add(new ConfigError(GATEWAY_FILE, ANCHORS_POINTER,
                             "anchor prefixes must be pairwise disjoint, but '%s' (%s) and '%s' (%s) overlap"
-                                    .formatted(first.name(), first.pathPrefix(), second.name(), second.pathPrefix())));
+                                    .formatted(renderForMessage(first.name()), renderForMessage(first.pathPrefix()),
+                                            renderForMessage(second.name()), renderForMessage(second.pathPrefix()))));
                 }
             }
         }
@@ -118,13 +119,15 @@ public class AnchorRules {
             String endpointAnchor = endpoint.anchor();
             if (endpointAnchor != null && !gateway.anchors().containsKey(endpointAnchor)) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ANCHOR_POINTER,
-                        "endpoint '%s' references undefined anchor '%s'".formatted(endpoint.id(), endpointAnchor)));
+                        "endpoint '%s' references undefined anchor '%s'".formatted(renderForMessage(endpoint.id()),
+                                renderForMessage(endpointAnchor))));
             }
             for (RouteConfig route : endpoint.routes()) {
                 String routeAnchor = route.anchor();
                 if (routeAnchor != null && !gateway.anchors().containsKey(routeAnchor)) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' references undefined anchor '%s'".formatted(route.id(), routeAnchor)));
+                            "route '%s' references undefined anchor '%s'".formatted(renderForMessage(route.id()),
+                                    renderForMessage(routeAnchor))));
                 }
             }
         }
@@ -202,7 +205,8 @@ public class AnchorRules {
         if (anchor != null && !prefixContains(anchor.pathPrefix(), routeMatchKey)) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
-                            .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
+                            .formatted(renderForMessage(route.id()), renderForMessage(routeMatchKey),
+                                    renderForMessage(anchor.name()), renderForMessage(anchor.pathPrefix()))));
         }
     }
 
@@ -217,7 +221,8 @@ public class AnchorRules {
                     && !anchor.name().equals(declaredName)) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                         "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
-                                .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
+                                .formatted(renderForMessage(route.id()), renderForMessage(routeMatchKey),
+                                        renderForMessage(anchor.name()), renderForMessage(anchor.pathPrefix()))));
             }
         }
     }
@@ -248,8 +253,9 @@ public class AnchorRules {
                                 + "no route under that anchor covers the namespace; declare a route with "
                                 + "path_prefix '%s' under anchor '%s', or narrow this route so it stays outside "
                                 + "the namespace")
-                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix(),
-                                        anchor.pathPrefix(), anchor.name())));
+                                .formatted(renderForMessage(route.id()), renderForMessage(routePrefix),
+                                        renderForMessage(anchor.name()), renderForMessage(anchor.pathPrefix()),
+                                        renderForMessage(anchor.pathPrefix()), renderForMessage(anchor.name()))));
             }
         }
     }
@@ -311,7 +317,8 @@ public class AnchorRules {
                 if (anchorRequire != Require.NONE && requireOf(chain) == Require.NONE) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
-                                    .formatted(route.id(), anchor.name(), anchorRequire)));
+                                    .formatted(renderForMessage(route.id()), renderForMessage(anchor.name()),
+                                            anchorRequire)));
                 }
             }
         }
@@ -334,13 +341,14 @@ public class AnchorRules {
             String pointer = ANCHORS_POINTER + "/" + anchor.name();
             if (anchor.type() == AnchorType.BFF && anchor.access() != AccessLevel.AUTHENTICATED) {
                 errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                        "anchor '%s' is type 'bff' and must declare access: authenticated".formatted(anchor.name())));
+                        "anchor '%s' is type 'bff' and must declare access: authenticated"
+                                .formatted(renderForMessage(anchor.name()))));
             }
             if (anchor.access() == AccessLevel.PUBLIC) {
                 if (anchor.auth() != null) {
                     errors.add(new ConfigError(GATEWAY_FILE, pointer,
                             "anchor '%s' is access: public and must not declare an auth block"
-                                    .formatted(anchor.name())));
+                                    .formatted(renderForMessage(anchor.name()))));
                 }
             } else {
                 validateAuthenticatedAnchorBacking(gateway, anchor, pointer, errors);
@@ -361,17 +369,18 @@ public class AnchorRules {
         if (require == Require.NONE) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' is access: authenticated but declares no non-'none' auth floor"
-                            .formatted(anchor.name())));
+                            .formatted(renderForMessage(anchor.name()))));
             return;
         }
         if (require == Require.BEARER && lacksConfiguredIssuer(gateway)) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' access: authenticated bearer floor requires token_validation with at least one issuer"
-                            .formatted(anchor.name())));
+                            .formatted(renderForMessage(anchor.name()))));
         }
         if (require == Require.SESSION && gateway.oidc() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    "anchor '%s' access: authenticated session floor requires an oidc block".formatted(anchor.name())));
+                    "anchor '%s' access: authenticated session floor requires an oidc block"
+                            .formatted(renderForMessage(anchor.name()))));
         }
     }
 }

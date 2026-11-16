@@ -116,8 +116,9 @@ metrics). Neutral names only, like `tls`.
 
 | `tls.enabled`
 | *Default `true`* (the shipped value). `true` enforces nothing by itself: it projects no key, and the
-  management listener serves HTTPS only when the deployment supplies key material for it. Without key
-  material the listener serves plain HTTP. `false` selects a key-less named TLS bucket, so the listener
+  management listener serves HTTPS only when the deployment supplies key material for it (the settings
+  that do are listed in link:#_server_key_material_settings[Which settings supply key material]).
+  Without key material the listener serves plain HTTP. `false` selects a key-less named TLS bucket, so the listener
   serves plain HTTP. Whenever the listener resolved to plain HTTP, by either route, the boot logs
   `WARN ApiSheriff-115` (`ManagementPlainHttpAudit`) and still starts -- the audit only warns.
 
@@ -229,11 +230,42 @@ named explicitly.
   *Plain-HTTP boot refusals* below the table.
 |===
 
+[[_server_key_material_settings]]
+*Which settings supply key material.* Both listeners take their certificate from the first of these
+that applies, and only these put a certificate on the listener:
+
+[cols="2,2,2", options="header"]
+|===
+| Route | Main listener | Management interface
+
+| A selected named bucket -- decides alone; a key-less bucket means plain HTTP
+| `quarkus.http.tls-configuration-name` naming a `quarkus.tls.<name>.key-store.*` bucket with material
+| `quarkus.management.tls-configuration-name`, same rule
+
+| No bucket selected: a default bucket carrying key material
+| `+quarkus.tls.key-store.*+`
+| the same default bucket
+
+| Otherwise: a PEM certificate chain with its private keys
+| `quarkus.http.ssl.certificate.files` with `.key-files`
+| `quarkus.management.ssl.certificate.files` with `.key-files`
+
+| Otherwise: a keystore file
+| `quarkus.http.ssl.certificate.key-store-file`
+| `quarkus.management.ssl.certificate.key-store-file`
+|===
+
+`ssl.certificate.credentials-provider` is *not* key material on either listener. It names a
+credentials provider that supplies the keystore *password*, so it only unlocks a `key-store-file`.
+Set on its own, it gives the runtime no certificate: the main listener then has no key material (see
+the refusals below), and the management interface starts on plain HTTP with `WARN ApiSheriff-115`.
+
 *Plain-HTTP boot refusals.* Checked before the terminated listener is built, from *declared* keys
 only. Each refusal names the offending key and both remedies, replacing the runtime's own
-`Cannot set quarkus.http.insecure-requests without enabling SSL.` message. "Key material" means any of
-`quarkus.http.ssl.certificate.{files,key-files,key-store-file,credentials-provider}`, a default
-`quarkus.tls.key-store.*` bucket, or a `quarkus.http.tls-configuration-name` bucket carrying material.
+`Cannot set quarkus.http.insecure-requests without enabling SSL.` message. "Key material" means a main
+listener route from link:#_server_key_material_settings[the table above]: a
+`quarkus.http.tls-configuration-name` bucket carrying material, a default `quarkus.tls.key-store.*`
+bucket, or `quarkus.http.ssl.certificate.{files,key-files,key-store-file}`.
 
 [cols="3,3,1", options="header"]
 |===
@@ -266,8 +298,9 @@ only. Each refusal names the offending key and both remedies, replacing the runt
 |===
 
 An explicit `enabled` produces no exposure warning: the posture was declared. A missing certificate is
-never read as intent, because it cannot be distinguished from a certificate that failed to mount. All
-four `ssl.certificate.*` spellings count as declared material (see the seam amendment in
+never read as intent, because it cannot be distinguished from a certificate that failed to mount. The
+three key-bearing `ssl.certificate.*` spellings count as declared material; the password-only
+`credentials-provider` does not (see
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]).
 `ApiSheriff-121` reports the *resolved* listener state at startup and is authoritative where it
 disagrees with the declared-key gate: a declared path that resolves to no usable key passes the gate

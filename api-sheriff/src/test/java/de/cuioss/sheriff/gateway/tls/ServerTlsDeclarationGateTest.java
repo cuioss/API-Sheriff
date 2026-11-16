@@ -156,10 +156,13 @@ class ServerTlsDeclarationGateTest {
                             "it must name what is actually missing, rather than naming "
                                     + "insecure-requests as the framework's message does: " + message),
                     () -> assertTrue(message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_FILES)
-                            && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_STORE_FILE)
-                            && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER),
+                            && message.contains(DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_STORE_FILE),
                             "remedy one is 'declare a certificate', which is worthless unless the "
-                                    + "supported spellings are named: " + message),
+                                    + "key-bearing spellings are named: " + message),
+                    () -> assertTrue(message.contains("whose password "
+                                    + DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER),
+                            "the credentials provider may be named only as the keystore's password "
+                                    + "source, never offered as a certificate on its own: " + message),
                     () -> assertTrue(message.contains(DeclaredKeyMaterialKeys.INSECURE_REQUESTS + "="
                                     + DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED),
                             "remedy two is the explicit plain-HTTP opt-in, spelled out as the "
@@ -179,6 +182,31 @@ class ServerTlsDeclarationGateTest {
                             + "deployment using it terminates TLS and must not be refused. Reading "
                             + "only .files is the defect that made a keystore deployment look "
                             + "certificate-less");
+        }
+
+        @Test
+        @DisplayName("The credentials provider alone is no key material, so the refusal still fires")
+        void credentialsProviderAloneIsNoKeyMaterial() {
+            String message = messageOfRefusal(Map.of(
+                    DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER, "vault"));
+
+            assertTrue(message.contains("No TLS key material is declared"),
+                    "the credentials provider only supplies a keystore password: on its own "
+                            + "TlsUtils.computeKeyStoreOptions builds no key options from it and the "
+                            + "recorder drops the SSL options. Accepting it here let a certificate-less "
+                            + "boot through to the framework's own 'Cannot set "
+                            + "quarkus.http.insecure-requests without enabling SSL.': " + message);
+        }
+
+        @Test
+        @DisplayName("The credentials provider beside the keystore it unlocks satisfies it")
+        void credentialsProviderWithItsKeystoreSatisfiesIt() {
+            assertDoesNotThrow(() -> validate(Map.of(
+                            DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER, "vault",
+                            DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEY_STORE_FILE, KEYSTORE_PATH)),
+                    "the matched control for the refusal above: the same provider, now with the "
+                            + "keystore whose password it supplies, is a certificate the listener "
+                            + "terminates with");
         }
 
         @Test
@@ -440,6 +468,20 @@ class ServerTlsDeclarationGateTest {
         }
 
         @Test
+        @DisplayName("The credentials provider alone contradicts nothing, so the opt-in passes")
+        void credentialsProviderAloneDoesNotContradictTheOptIn() {
+            assertDoesNotThrow(() -> gateOver(Map.of(
+                                    DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_CREDENTIALS_PROVIDER, "vault"),
+                            DeclaredKeyMaterialKeys.INSECURE_REQUESTS_ENABLED)
+                            .assertServerTlsDeclarationIsCoherent(),
+                    "a password source puts no certificate on the listener, so it cannot contradict "
+                            + "the plain-HTTP opt-in. Refusing here named a key that could never have "
+                            + "terminated anything — a false refusal of a valid plain-HTTP listener. "
+                            + "The parameterized refusal above is the matched control: each "
+                            + "key-bearing spelling still refuses");
+        }
+
+        @Test
         @DisplayName("A default quarkus.tls.key-store.* bucket carrying material refuses too")
         void defaultBucketMaterialRefuses() {
             String message = messageOfIncoherentPlainHttp(Map.of(DEFAULT_BUCKET_MATERIAL, KEYSTORE_PATH));
@@ -622,17 +664,18 @@ class ServerTlsDeclarationGateTest {
      * rather than restated beside it.
      * <p>
      * {@code declaredLegacyCertificateKey()} walks
-     * {@link DeclaredKeyMaterialKeys#HTTP_CERTIFICATE_KEYS} and nothing else, so that list IS the set
-     * of spellings the gate honours. A hardcoded copy here would let a fifth spelling be added to the
-     * constant — changing what the gate accepts and what it refuses — with no case covering it, and
-     * the suite would stay green while the new spelling went untested in both directions. Deriving
-     * the population makes the test follow the constant, the same drift guard
-     * {@code DeclaredKeyMaterialKeysDriftTest} already applies to the startup audits.
+     * {@link DeclaredKeyMaterialKeys#HTTP_KEY_BEARING_CERTIFICATE_KEYS} and nothing else, so that
+     * list IS the set of spellings the gate honours as a certificate. A hardcoded copy here would let
+     * a further spelling be added to the constant — changing what the gate accepts and what it
+     * refuses — with no case covering it, and the suite would stay green while the new spelling went
+     * untested in both directions. Deriving the population makes the test follow the constant, the
+     * same drift guard {@code DeclaredKeyMaterialKeysDriftTest} already applies to the startup
+     * audits. The password-only credentials provider is outside the list and has its own cases.
      *
-     * @return every certificate spelling the main listener honours
+     * @return every key-bearing certificate spelling the main listener honours
      */
     static List<String> certificateSpellings() {
-        return DeclaredKeyMaterialKeys.HTTP_CERTIFICATE_KEYS;
+        return DeclaredKeyMaterialKeys.HTTP_KEY_BEARING_CERTIFICATE_KEYS;
     }
 
     private static void validate(Map<String, String> declared) {

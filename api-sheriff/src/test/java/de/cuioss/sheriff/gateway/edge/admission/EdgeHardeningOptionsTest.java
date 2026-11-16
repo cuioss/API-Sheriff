@@ -104,7 +104,7 @@ class EdgeHardeningOptionsTest {
         // Act
         hardening.customizeHttpsServer(options);
 
-        // Assert — the customizer applies to every listener Quarkus opens, TLS included.
+        // Assert — the customizer applies to every listener it reaches, TLS included.
         assertEquals(MAX_HEADER_SIZE_BYTES, options.getMaxHeaderSize(),
                 "The TLS listener bounds the header block identically");
         assertEquals(MAX_INITIAL_LINE_LENGTH_BYTES, options.getMaxInitialLineLength(),
@@ -115,6 +115,53 @@ class EdgeHardeningOptionsTest {
                 "The TLS listener reaps idle connections identically");
         assertEquals(TimeUnit.SECONDS, options.getIdleTimeoutUnit(),
                 "The TLS listener idle-timeout unit is seconds");
+    }
+
+    @Test
+    @DisplayName("applies the same transport bounds to the domain-socket listener as to the plaintext listener")
+    void appliesSameBoundsToDomainSocketListener() {
+        // Arrange — a listener announcing the unbounded Http2Settings stream default and the transport's
+        // 8 KiB header list, so every pinned and derived bound has something to change
+        HttpServerOptions domainSocket = new HttpServerOptions().setInitialSettings(new Http2Settings()
+                .setMaxConcurrentStreams(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS));
+        HttpServerOptions plaintext = new HttpServerOptions().setInitialSettings(new Http2Settings()
+                .setMaxConcurrentStreams(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS));
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions();
+
+        // Act — Quarkus calls customizeDomainSocketServer for an enabled domain-socket listener
+        hardening.customizeDomainSocketServer(domainSocket);
+        hardening.customizeHttpServer(plaintext);
+
+        // Assert — the anchors are the documented values, and each matches the plaintext listener's
+        Http2Settings settings = domainSocket.getInitialSettings();
+        assertAll("the domain-socket listener carries every transport bound",
+                () -> assertEquals(MAX_HEADER_SIZE_BYTES, settings.getMaxHeaderListSize(),
+                        "the HTTP/2 header list is pinned at 16 KiB"),
+                () -> assertEquals(100L, settings.getMaxConcurrentStreams(),
+                        "the concurrent streams are lowered to the bound of 100"),
+                () -> assertEquals(100 * settings.getInitialWindowSize(), domainSocket.getHttp2ConnectionWindowSize(),
+                        "the connection window lets every admitted stream fill its own window"),
+                () -> assertEquals(200, domainSocket.getHttp2RstFloodMaxRstFramePerWindow(),
+                        "the Rapid-Reset guard is pinned at 200 resets"),
+                () -> assertEquals(30, domainSocket.getHttp2RstFloodWindowDuration(),
+                        "the Rapid-Reset window is pinned at 30"),
+                () -> assertEquals(TimeUnit.SECONDS, domainSocket.getHttp2RstFloodWindowDurationTimeUnit(),
+                        "the Rapid-Reset window is counted in seconds"),
+                () -> assertEquals(MAX_HEADER_SIZE_BYTES, domainSocket.getMaxHeaderSize(),
+                        "the HTTP/1.x header block is bounded to 16 KiB"),
+                () -> assertEquals(MAX_INITIAL_LINE_LENGTH_BYTES, domainSocket.getMaxInitialLineLength(),
+                        "the HTTP/1.x request line is bounded to 8 KiB"),
+                () -> assertEquals(MAX_CHUNK_SIZE_BYTES, domainSocket.getMaxChunkSize(),
+                        "a chunked-transfer chunk is bounded to 16 KiB"),
+                () -> assertEquals(IDLE_TIMEOUT_SECONDS, domainSocket.getIdleTimeout(),
+                        "a connection idle for 60 seconds is reaped"),
+                () -> assertEquals(TimeUnit.SECONDS, domainSocket.getIdleTimeoutUnit(),
+                        "the idle-timeout unit is seconds"),
+                () -> assertEquals(plaintext.getInitialSettings(), settings,
+                        "the announced HTTP/2 settings equal the plaintext listener's"),
+                () -> assertEquals(plaintext.getHttp2ConnectionWindowSize(),
+                        domainSocket.getHttp2ConnectionWindowSize(),
+                        "the connection window equals the plaintext listener's"));
     }
 
     @Test
@@ -412,9 +459,10 @@ class EdgeHardeningOptionsTest {
     }
 
     /**
-     * The inbound HTTP/2 header-list bound: the decoded header block of one request, {@code CONTINUATION}
-     * frames included, is bounded like the HTTP/1.1 header block. An unbounded or larger announced value
-     * is lowered to 16 KiB, a lower one is kept.
+     * The inbound HTTP/2 header-list bound: the decoded header list of one request, {@code CONTINUATION}
+     * frames included, is bounded like the HTTP/1.1 header block. Every listener the customizer reaches
+     * announces exactly 16 KiB, whatever it announced before — a larger or unbounded value is lowered, and a lower one,
+     * the transport default of 8 KiB included, is raised, so the announced bound is the documented one.
      */
     @Nested
     @DisplayName("inbound HTTP/2 header-list bound")
@@ -422,6 +470,9 @@ class EdgeHardeningOptionsTest {
 
         /** The largest value a SETTINGS parameter can carry (2^32-1): no header-list limit at all. */
         private static final long UNBOUNDED_HEADER_LIST_SIZE = 0xFFFFFFFFL;
+
+        /** The transport's own default announce, restated so a change to it is noticed here. */
+        private static final long TRANSPORT_DEFAULT_HEADER_LIST_SIZE = 8_192L;
 
         private static HttpServerOptions listenerAnnouncing(long maxHeaderListSize) {
             return new HttpServerOptions()
@@ -441,44 +492,51 @@ class EdgeHardeningOptionsTest {
         }
 
         @ParameterizedTest(name = "{0} bytes")
-        @ValueSource(longs = {1_024L, 8_192L, MAX_HEADER_SIZE_BYTES})
-        @DisplayName("keeps an announced header list at or below 16 KiB")
-        void keepsAValueAtOrBelowTheBound(long maxHeaderListSize) {
+        @ValueSource(longs = {1_024L, TRANSPORT_DEFAULT_HEADER_LIST_SIZE, MAX_HEADER_SIZE_BYTES - 1L,
+                MAX_HEADER_SIZE_BYTES})
+        @DisplayName("announces exactly 16 KiB on a listener announcing that bound or less")
+        void pinsAValueAtOrBelowTheBound(long maxHeaderListSize) {
             HttpServerOptions options = listenerAnnouncing(maxHeaderListSize);
 
             new EdgeHardeningOptions().customizeHttpServer(options);
 
-            assertEquals(maxHeaderListSize, options.getInitialSettings().getMaxHeaderListSize(),
-                    "A value at or below the bound is never raised");
+            assertEquals(MAX_HEADER_SIZE_BYTES, options.getInitialSettings().getMaxHeaderListSize(),
+                    "A header list of " + maxHeaderListSize + " bytes is set to the documented 16 KiB bound");
         }
 
         @Test
-        @DisplayName("never announces more than 16 KiB on a listener left at the Vert.x defaults")
-        void boundsTheVertxDefaultListener() {
-            long vertxDefault = new HttpServerOptions().getInitialSettings().getMaxHeaderListSize();
+        @DisplayName("announces 16 KiB, not the 8 KiB transport default, on a listener left at the Vert.x defaults")
+        void pinsTheVertxDefaultListener() {
             HttpServerOptions options = new HttpServerOptions();
 
             new EdgeHardeningOptions().customizeHttpServer(options);
 
-            assertEquals(Math.min(vertxDefault, MAX_HEADER_SIZE_BYTES),
-                    options.getInitialSettings().getMaxHeaderListSize(),
-                    "The default listener keeps its own value when lower and is lowered to 16 KiB otherwise");
+            assertAll("a listener left at the Vert.x defaults",
+                    () -> assertEquals(TRANSPORT_DEFAULT_HEADER_LIST_SIZE,
+                            new HttpServerOptions().getInitialSettings().getMaxHeaderListSize(),
+                            "precondition: the transport default announce is 8 KiB"),
+                    () -> assertEquals(MAX_HEADER_SIZE_BYTES, options.getInitialSettings().getMaxHeaderListSize(),
+                            "The default listener announces the documented 16 KiB bound"));
         }
 
         @Test
-        @DisplayName("bounds the TLS listener's header list exactly as the plaintext listener's")
-        void boundsTheTlsListenerIdentically() {
+        @DisplayName("announces 16 KiB on the TLS listener exactly as on the plaintext listener")
+        void pinsTheTlsListenerIdentically() {
             HttpServerOptions unbounded = listenerAnnouncing(UNBOUNDED_HEADER_LIST_SIZE);
             HttpServerOptions lower = listenerAnnouncing(4_096L);
+            HttpServerOptions vertxDefault = new HttpServerOptions();
 
             new EdgeHardeningOptions().customizeHttpsServer(unbounded);
             new EdgeHardeningOptions().customizeHttpsServer(lower);
+            new EdgeHardeningOptions().customizeHttpsServer(vertxDefault);
 
-            assertAll("an unbounded and a lower TLS listener",
+            assertAll("an unbounded, a lower and a default TLS listener",
                     () -> assertEquals(MAX_HEADER_SIZE_BYTES, unbounded.getInitialSettings().getMaxHeaderListSize(),
-                            "The TLS listener is lowered to the 16 KiB bound identically"),
-                    () -> assertEquals(4_096L, lower.getInitialSettings().getMaxHeaderListSize(),
-                            "The TLS listener keeps a lower value identically"));
+                            "The TLS listener lowers an unbounded announce to 16 KiB"),
+                    () -> assertEquals(MAX_HEADER_SIZE_BYTES, lower.getInitialSettings().getMaxHeaderListSize(),
+                            "The TLS listener raises a lower announce to 16 KiB"),
+                    () -> assertEquals(MAX_HEADER_SIZE_BYTES, vertxDefault.getInitialSettings().getMaxHeaderListSize(),
+                            "The TLS listener left at the Vert.x defaults announces 16 KiB"));
         }
     }
 
