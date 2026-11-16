@@ -22,6 +22,7 @@ import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -235,12 +236,17 @@ import org.jspecify.annotations.Nullable;
  * the departure through the {@link InboundBody} the request body arrives in, whatever the body framing
  * and whether or not the body has ended. The attempt is then released exactly as above: an upstream
  * request in flight is reset at once instead of being held until the guard's timeout, and one still
- * waiting for a pooled connection is never sent once the pool hands it one. The dispatch reports an
- * {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, which the breaker records as neutral: a body that was
- * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. The
- * departure does not wake a dispatching thread that is still waiting for a pooled connection: that wait
- * ends when the pool hands the connection over, which reports the client's abort, or when the connection
- * wait bound passes, which ends it as the upstream's timeout (see below). A client that left before the dispatch began has
+ * waiting for a pooled connection is never sent once the pool hands it one. The departure also ends the
+ * dispatch at once: the dispatching thread waits for whichever comes first, its attempt's response or the
+ * client's departure, so a client that leaves while its attempt still waits for a pooled connection, or for
+ * the upstream's answer, is not kept waiting until the pool hands the connection over or the connection wait
+ * bound passes. The dispatch reports an {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, which
+ * the breaker records as neutral: a body that was still arriving as one that did not arrive whole, any other
+ * request as a {@link ClientDeparted}. Only an outcome recorded before the departure takes its place — a body
+ * the gateway had already refused, or a request stream the upstream had already stalled past its pre-response
+ * deadline. The released attempt keeps its place in the upstream client's wait queue until the pool hands it
+ * a connection, which is then reset unsent, or until its connection wait bound passes: Vert.x offers no way
+ * to withdraw a queued wait. A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
  * departure is left to it. All of this holds only for a dispatch handed the armed {@link InboundBody}
  * itself — the HTTP dispatch and the gRPC dispatch both are; a decorator around the body would hide the
@@ -903,9 +909,24 @@ public final class DispatchStage {
                         return received;
                     });
                 });
+        CompletableFuture<HttpClientResponse> pending = response.toCompletionStage().toCompletableFuture();
+        if (body.departedBefore(pending)) {
+            // The client left while this attempt still waited — for a pooled connection, or for the upstream's
+            // answer: the dispatch ends now, not when the pool hands the connection over or the wait bound passes.
+            // The departure already released the attempt, so a connection handed to it later is reset unsent. A stall
+            // the upstream caused before the client left keeps the failure the upstream's, as on the failure path
+            // below: it took the body stream's single abort claim, so the departure came too late to cause it.
+            ByteCappedBodyStream bodyAtDeparture = cappedBody.get();
+            UpstreamStalledRequest stalledBeforeDeparture =
+                    bodyAtDeparture == null ? null : bodyAtDeparture.upstreamStall();
+            if (stalledBeforeDeparture != null) {
+                throw new ExecutionException(stalledBeforeDeparture.getMessage(), stalledBeforeDeparture);
+            }
+            throw body.abortOnDeparture(bodyAtDeparture);
+        }
         HttpClientResponse received;
         try {
-            received = response.toCompletionStage().toCompletableFuture().get();
+            received = pending.get();
         } catch (ExecutionException dispatchFailure) {
             if (!connectionObtained.get()) {
                 // An attempt that obtained no pooled connection because the client's wait queue was full is
@@ -1154,6 +1175,11 @@ public final class DispatchStage {
         private @Nullable GatewayException departure;
         /** Whether the response was handed over for relay: from then on the relay owns the exchange. */
         private boolean handedOver;
+        /**
+         * Completed with the recorded departure when the client leaves before the hand-over, so a dispatching
+         * thread waiting on its attempt wakes at once (see {@link #departedBefore}). Never completed otherwise.
+         */
+        private final CompletableFuture<GatewayException> departed = new CompletableFuture<>();
 
         DispatchBody(ReadStream<Buffer> inbound, BodyFraming framing) {
             this.inbound = inbound;
@@ -1171,18 +1197,51 @@ public final class DispatchStage {
         /**
          * The client left before its response ended. Until the response is handed over, the dispatch
          * stops waiting: the client abort is recorded first, so the transport failure the release causes
-         * is reported as the client's, then the current attempt is released — a request still waiting for
-         * its pooled connection is never sent, one in flight is reset. Once the response was handed over
-         * the relay owns the exchange and the departure is left to it. Idempotent.
+         * is reported as the client's; then a dispatching thread waiting on its attempt is woken, so the
+         * dispatch ends at once; then the current attempt is released — a request still waiting for its
+         * pooled connection is never sent, one in flight is reset. Once the response was handed over the
+         * relay owns the exchange and the departure is left to it. Idempotent.
          */
         private void clientDeparted(Throwable cause) {
+            GatewayException recorded;
             synchronized (departureLock) {
                 if (handedOver || departure != null) {
                     return;
                 }
-                departure = departureAbort(cause, bodyStillArriving());
+                recorded = departureAbort(cause, bodyStillArriving());
+                departure = recorded;
             }
+            departed.complete(recorded);
             abandonCurrentAttempt();
+        }
+
+        /**
+         * Waits until {@code pending} — the current attempt's response — settles or the client departs,
+         * whichever comes first. Both are completion signals, so nothing is polled; the wait is interrupted
+         * like any other by the guard's timeout.
+         *
+         * @param pending the current attempt's response
+         * @return {@code true} when the client departed while {@code pending} had not settled; {@code false}
+         *         once it has settled, successfully or not — its outcome is then read from it
+         * @throws InterruptedException when the waiting thread is interrupted
+         * @throws ExecutionException   never in practice: neither signal waited on fails
+         */
+        boolean departedBefore(CompletableFuture<?> pending) throws InterruptedException, ExecutionException {
+            CompletableFuture.anyOf(pending.handle((_, _) -> null), departed).get();
+            return !pending.isDone();
+        }
+
+        /**
+         * The client abort a dispatch reports when its client departed while the current attempt was still
+         * waiting: the body's own refusal when one was recorded before, otherwise the departure itself.
+         *
+         * @param cappedBody the attempt's body stream, {@code null} while none was handed over
+         * @return the client abort; only valid once the client departed
+         * @throws IllegalStateException when the client has not departed
+         */
+        GatewayException abortOnDeparture(@Nullable ByteCappedBodyStream cappedBody) {
+            GatewayException bodyAbort = bodyAbort(cappedBody);
+            return bodyAbort != null ? bodyAbort : departed.resultNow();
         }
 
         /** @return {@code true} for a bodyless request: it is sent upstream with no body */
@@ -1371,13 +1430,21 @@ public final class DispatchStage {
          */
         @Nullable
         GatewayException clientAbort(@Nullable ByteCappedBodyStream cappedBody) {
-            GatewayException bodyAbort;
-            if (bodylessWatch != null) {
-                bodyAbort = bodylessWatch.clientAbort();
-            } else {
-                bodyAbort = cappedBody == null ? null : cappedBody.clientAbort();
-            }
+            GatewayException bodyAbort = bodyAbort(cappedBody);
             return bodyAbort != null ? bodyAbort : departure();
+        }
+
+        /**
+         * @param cappedBody the attempt's body stream, {@code null} for a bodyless request or while none was
+         *                   handed over
+         * @return the body's own refusal — a bodyless request's body byte, or the body stream's client abort —
+         *         or {@code null} when there was none
+         */
+        private @Nullable GatewayException bodyAbort(@Nullable ByteCappedBodyStream cappedBody) {
+            if (bodylessWatch != null) {
+                return bodylessWatch.clientAbort();
+            }
+            return cappedBody == null ? null : cappedBody.clientAbort();
         }
 
         /**
@@ -1677,8 +1744,9 @@ public final class DispatchStage {
      * can no longer be answered. The edge root therefore hands a response that ended without being
      * answered to {@link #clientDeparted(Throwable)}, which delivers it once — to the departure handler
      * registered at that moment, or to the one registered later — so a dispatch holding an upstream
-     * request releases it (see {@link DispatchStage}, which also states when a wait for a pooled
-     * connection ends). A stream the gateway reset itself records no departure.
+     * request releases it, and a dispatch still waiting on its attempt — for a pooled connection or for
+     * the upstream's answer — ends at once (see {@link DispatchStage}). A stream the gateway reset itself
+     * records no departure.
      * <p>
      * <strong>The dispatch is handed this body itself, never a decorator around it.</strong> The dispatch
      * finds the departure by the type of the stream it is handed, so a decorator between the two would
@@ -1925,8 +1993,8 @@ public final class DispatchStage {
      * The failure of an attempt the dispatch stopped waiting for before its request obtained a
      * connection: the request was reset unsent (see {@link UpstreamAttempt#publish}), which happens when
      * the pool hands the released attempt a connection. When the client's departure released the
-     * attempt, the dispatch reports that departure in its place, so the breaker skips it and the retry
-     * predicate refuses it.
+     * attempt, the dispatch reports that departure in its place, so the breaker records it as neutral and
+     * the retry predicate refuses it.
      * <p>
      * <strong>Deliberately not a {@link java.util.concurrent.CancellationException}.</strong> The
      * dispatching thread awaits the attempt through {@link java.util.concurrent.CompletableFuture#get()},
@@ -2042,7 +2110,8 @@ public final class DispatchStage {
      * before the response was handed over for relay (see {@link InboundBody#clientDeparted(Throwable)}).
      * It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told
      * apart from it by its type so it is reported with its own disposition. Like every client-ended
-     * dispatch it is a gateway rejection: the breaker skips it and the retry predicate refuses it.
+     * dispatch it is a gateway rejection: the breaker records it as neutral and the retry predicate refuses
+     * it.
      *
      * @since 1.0
      */
@@ -2079,7 +2148,7 @@ public final class DispatchStage {
      * The refusal is an {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) like the idle timeout's,
      * told apart from it by its type so it is reported with its own record: the body did not end within the
      * deadline, whether or not it was still making progress. Like every client-ended dispatch it is a
-     * gateway rejection: the breaker skips it and the retry predicate refuses it.
+     * gateway rejection: the breaker records it as neutral and the retry predicate refuses it.
      *
      * @since 1.0
      */
@@ -2120,8 +2189,8 @@ public final class DispatchStage {
      * or stopped between two messages without ending its request stream. The attempt's upstream request is
      * reset when it is raised. It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did
      * not arrive whole, told apart from it by its type so it is reported with its own disposition. Like
-     * every client-ended dispatch it is a gateway rejection: the breaker skips it and the retry predicate
-     * refuses it, so an idle client is never counted against a healthy upstream.
+     * every client-ended dispatch it is a gateway rejection: the breaker records it as neutral and the retry
+     * predicate refuses it, so an idle client is never counted against a healthy upstream.
      *
      * @since 1.0
      */

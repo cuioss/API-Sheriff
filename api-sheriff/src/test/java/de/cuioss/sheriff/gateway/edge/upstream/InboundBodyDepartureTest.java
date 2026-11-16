@@ -78,7 +78,8 @@ import org.junit.jupiter.api.Test;
  * request whose body had nothing left to arrive, a {@code body-stream-failed} abort for one whose body
  * was still arriving — both {@link EventType#INBOUND_BODY_ABORTED}, both refused by the retry predicate.
  * A departure that releases an attempt still waiting for its pooled upstream connection ends the same
- * way once the pool hands the connection over, and the circuit breaker counts no failure for it. And
+ * way at once, without waiting for the pool to hand the connection over; a connection handed over later
+ * is reset unsent, and the circuit breaker counts no failure for it. And
  * {@link RejectionReporter} records the two, and a gRPC call whose next complete message did not arrive
  * within the message bound ({@link DispatchStage.RequestMessageTimeout}), each under its own disposition:
  * counted per disposition on {@code sheriff_inbound_body_aborts_total}, and latched per route and
@@ -226,7 +227,8 @@ class InboundBodyDepartureTest {
      * {@link DispatchStage#dispatch} over an upstream client that hands the attempt its request only when
      * the case completes it, and under a guard whose breaker opens on the first failure it counts. The
      * case decides the order: the attempt asks for its connection, then the client leaves or the
-     * connection fails, then the request is handed out or the connection is refused.
+     * connection fails, then the request is handed out or the connection is refused — before the dispatch
+     * ended, or only after it.
      * <p>
      * The matched control is a connection that fails without any departure: the same rig ends it as an
      * upstream failure and the breaker opens on it, so a breaker that stays closed after a departure is a
@@ -278,6 +280,32 @@ class InboundBodyDepartureTest {
                             () -> "the client's abort, not an upstream failure: " + ended),
                     () -> assertSame(cause, ended.getCause(), "the departure is kept as the cause"),
                     () -> assertTrue(handedOut.resets.get() > 0, "the request handed out late is reset"),
+                    () -> assertEquals(List.of(), handedOut.unexpected, "the request is never sent"),
+                    () -> assertTrue(transitions.isEmpty(),
+                            () -> "the breaker counted the departure as a failure: " + transitions));
+        }
+
+        /**
+         * The departure alone ends the dispatch: the connection is still pending when the dispatch has ended,
+         * and is handed out only afterwards. A dispatching thread that waited on the pool alone would stay
+         * blocked until the pool handed the connection over or the wait bound passed, and this case would time
+         * out waiting for the dispatch to end.
+         */
+        @Test
+        @DisplayName("a departure ends the dispatch at once while its connection is still pending; the connection handed out afterwards is reset unsent")
+        void departureEndsTheConnectionWaitAtOnce() throws Exception {
+            Throwable cause = departureCause();
+            UnsentRequest handedOut = new UnsentRequest();
+
+            GatewayException ended = dispatchWhile(() -> body.clientDeparted(cause));
+            connection.complete(handedOut.proxy());
+
+            assertAll("an attempt released by the client while its connection was still pending",
+                    () -> assertInstanceOf(DispatchStage.ClientDeparted.class, ended,
+                            () -> "the client's abort, not an upstream failure: " + ended),
+                    () -> assertSame(cause, ended.getCause(), "the departure is kept as the cause"),
+                    () -> assertTrue(handedOut.resets.get() > 0,
+                            "the connection handed out after the dispatch ended is reset"),
                     () -> assertEquals(List.of(), handedOut.unexpected, "the request is never sent"),
                     () -> assertTrue(transitions.isEmpty(),
                             () -> "the breaker counted the departure as a failure: " + transitions));
