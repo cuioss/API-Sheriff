@@ -267,12 +267,8 @@ queue and dial together (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). An at
 refuses ends unsent inside the guard as `UPSTREAM_POOL_SATURATED` (`503`): the gateway's own saturation,
 which the breaker records as neutral and the retry predicate refuses. An attempt whose wait reaches the 10 s
 ends unsent as the upstream's `UPSTREAM_TIMEOUT` (`504`), which the breaker counts and the retry predicate
-refuses (<<breaker-accounting>>).
-A refused connection and a dial or handshake past its timeout stay the upstream's failure; together they are
-shorter than the wait bound but run from the dial's start, so an attempt that queued first can meet the wait
-bound first. The wait still counts towards the HTTP
-deadline (<<request-body-deadline>>), which must pass before the guard's timeout; the 10 s bound leaves a
-body at least 15 s of its 25 s after its hand-over, and a gRPC call at least 19 s before its 29 s cap. The values are fixed; the derivation is in
+refuses (<<breaker-accounting>>). The values are fixed. The derivation, how a refused connection and a slow
+dial or handshake count, and what the wait leaves of each deadline are in
 link:../architecture/tls-and-inbound-security.adoc#_upstream_connection_wait[Architecture -- upstream connection wait].
 
 [[breaker-accounting]]
@@ -287,7 +283,6 @@ count. Both judged the upstream on calls it had no part in.
 the full-queue refusal are neutral to it; an expired connection wait is the upstream's timeout.*
 
 * *A gateway rejection is neutral.* The breaker is now the gateway's own (link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc#amendment-neutral-outcome[ADR-0064 -- a gateway rejection is neutral]). It records every rejection of this record, every other client-ended outcome and the full-queue refusal as neutral: neither a failure nor a success. Such an outcome neither dilutes the closed window nor closes a half-open breaker. An attempt whose client left before the upstream answered tells the breaker nothing about the upstream, and is neutral too.
-* *A full queue stays the gateway's.* The full-queue refusal stays `UPSTREAM_POOL_SATURATED` (`503`).
 * *An expired wait is the upstream's.* The dial and the TLS handshake together are shorter than the 10 s, so an attempt that waits the whole bound has queued behind connections the upstream holds. It ends unsent as `DispatchStage.UpstreamConnectionWaitExpired`, reported as `UPSTREAM_TIMEOUT` (`504`; on gRPC `DEADLINE_EXCEEDED` with `grpc-message: upstream`). The breaker counts it, and the retry predicate refuses it, since a retry would queue behind the same connections. This holds under load too: when more calls are admitted than a slow upstream serves within the bound, the expired waits are counted, and enough of them open the breaker, whose open circuit then sheds that load with its `503`. Limiting how many calls one client sends is rate limiting, which is out of scope.
 * *A client that leaves ends its dispatch at once.* The dispatching thread waits for the attempt's response or the client's departure, whichever comes first, so a departed client is not held until the pool hands over a connection or the bound passes. Its Vert.x waiter keeps its place in the wait queue until it is handed a connection, which is then reset unsent, or until the 10 s bound passes: Vert.x offers no way to withdraw a queued wait.
 * *The deadlines are counted as before.* The HTTP whole-body deadline counts from the start of the attempt, so the connection wait is charged to it and leaves at least 15 s. The gRPC pre-response deadline counts from the hand-over, within the 29 s cap, which leaves at least 19 s.
@@ -309,7 +304,7 @@ than the 10% a change was allowed to cost
 (link:../architecture/tls-and-inbound-security.adoc#_http2_connection_window_measurement[connection-window
 measurement]).
 
-=== Fixed values, retry and recording
+=== Fixed values and retry
 
 The 10 s idle timeout, the 25 s deadline, the 10 s gRPC message bound, the 25 s gRPC pre-response
 deadline with its 29 s cap and 10 s upstream stall threshold, the 10 s upstream connection wait bound, and the five-minute
@@ -325,11 +320,6 @@ rejection. The breaker records it as neutral, neither a failure nor a success (<
 and the retry predicate does not retry it. A
 bodyless request never subscribes the inbound stream to an attempt, so it stays retryable for as long
 as no body byte has arrived.
-
-Each bound's end is recorded at `INFO`, latched per route. A pre-response deadline end the upstream
-stalled for the threshold is recorded as an upstream timeout. The log records, their latches and the
-counters are in
-link:../architecture/tls-and-inbound-security.adoc#_request_body_bound_recording[Architecture -- recording of the request-body bounds].
 
 == Alternatives rejected
 
@@ -510,9 +500,6 @@ for the property.
   a client's departure from the dispatch and leaves a call its client has left to the guard's timeout;
 * counting only one direction for the gRPC stream-idle bound.
 
-What the tests assert of the stream-idle bound, and the one hand-over line no test asserts, is in
-link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds].
-
 == Links
 
 * link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066 -- An HTTP/2 response answered while its request body is open] -- the one end rule every answer of this record passes, and the abortive close of an HTTP/1.1 upstream connection this record's resets cause.
@@ -525,6 +512,6 @@ link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body boun
 * `GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS`, `DispatchStage.RequestMessageTimeout` -- the message bound; `GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS` -- the pre-response deadline; `GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS` -- its cap; `GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS`, `DispatchStage.UpstreamStalledRequest` -- the stall threshold and the upstream's stall it decides; `GrpcDispatchStageTest` -- the idle-client, partial-message, steady-sender and never-half-closed tests, their guard-timeout control, the slow-connection and cap tests, and the check that the connection wait bound keeps every hand-over at least 19 s short of the cap; `GrpcProxyIT` -- the same through the native image.
 * `DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`, `DispatchStage.UpstreamConnectionWaitExpired` -- the connection wait bound and the upstream timeout an expired wait is; `UpstreamCircuitBreaker` -- the gateway's breaker and its neutral outcome; `UpstreamPoolSaturationTest` -- the full-queue `503`, the expired-wait `504` the breaker counts and never retries, and the expired waits under load that open the production breaker beside an answering control; `UpstreamCircuitBreakerTest` -- the three outcomes and the state machine.
 * link:0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016 -- gRPC trailers-only rejection mapping] -- the `DEADLINE_EXCEEDED` rendering of the pre-response deadline end.
-* link:../architecture/tls-and-inbound-security.adoc#_dispatch_body_framing[Architecture -- dispatch body framing], link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[request-body idle timeout], link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[request-body deadline], link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound], link:../architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[unread upload release] and link:../architecture/tls-and-inbound-security.adoc#_http2_connection_window_measurement[connection-window measurement].
-* link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class (GW-02), and link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds].
+* link:../architecture/tls-and-inbound-security.adoc#_dispatch_body_framing[Architecture -- dispatch body framing], link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[request-body idle timeout], link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[request-body deadline], link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound], link:../architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[unread upload release], link:../architecture/tls-and-inbound-security.adoc#_http2_connection_window_measurement[connection-window measurement] and link:../architecture/tls-and-inbound-security.adoc#_request_body_bound_recording[recording of the request-body bounds] -- the log records, their per-route latches and the counters each bound's end is recorded on.
+* link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class (GW-02), and link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds] -- what the tests assert of the stream-idle bound, and the one hand-over line no test asserts.
 * `DispatchStage`, `ByteCappedBodyStream`, `EdgeHardeningOptions` -- the implementation; `DispatchStageTest`, `GatewayEdgeRequestBodyIdleTimeoutTest`, `GrpcDispatchStageTest` -- the tests.
