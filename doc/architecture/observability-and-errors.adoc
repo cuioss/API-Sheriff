@@ -118,8 +118,11 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
 
 | `429`
 | Request from a source blocked by `enumeration_detection` under `action: block`, or exceeding its
-  held-answer sub-budget share under `action: delay` (`SOURCE_BLOCKED`, carrying `Retry-After`; see
-  link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]). The per-route
+  held-answer sub-budget share under `action: delay`, or -- under either action -- from a new source
+  the full ledger can neither track nor make room for (`Retry-After: 1`, the sweep interval); never
+  for the `unknown` source (`SOURCE_BLOCKED`, carrying `Retry-After`; see
+  link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection] and
+  link:../configuration/security-and-edge-hardening.adoc#_enumeration_detection_full_ledger[Configuration -- the full ledger]). The per-route
   `rate_limit` key is parsed and warned at boot but unenforced
   (link:../adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]).
 | `RATE_LIMITING`
@@ -303,7 +306,9 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
   link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]).
 
 | `sheriff_source_untracked_total` (no labels)
-| Counter of recon events whose source could not be tracked because the 65,536-source ledger was full.
+| Counter of recon events whose source could not be tracked because the 65,536-source ledger was full
+  of live sources, and, under `action: block` or `delay`, of requests from such a source refused
+  `429` at the edge.
 
 | `sheriff_threat_alerts_total` (no labels)
 | Counter of per-source threat-classification ALERTs (at most one per source and episode; see
@@ -379,7 +384,8 @@ link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat Clas
 link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078]):
 
 * *ECS 8.17.0 schema.* Field names follow Elastic Common Schema `8.17.0` (`@timestamp`, `event.*`,
-  `source.address`, `source.ip` for IPv4 only, `url.domain` for declared hosts, `threat.*` mapped to
+  `source.address` -- an IPv4 address, an IPv6 `/64`, an IPv6 `/48` when the ledger began tracking
+  the source above its 75% high-water mark, or `unknown` --, `source.ip` for IPv4 only, `url.domain` for declared hosts, `threat.*` mapped to
   MITRE ATT&CK `TA0043` / `T1595`) plus the gateway's `api_sheriff.threat.*` breakdown (`score`,
   `threshold`, `window_seconds`, `host`, `contributions`, `categories`). The full field table and
   OCSF (`class_uid` 2004 Detection Finding) mapping are in

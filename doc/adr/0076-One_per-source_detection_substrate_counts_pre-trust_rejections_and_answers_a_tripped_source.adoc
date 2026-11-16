@@ -6,8 +6,8 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event (a pre-trust internal failure carries no weight: it is not caller behaviour), and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer.
-// tags: edge, enumeration, detection, rate-limiting, secure-defaults, http2, hand-rolled, availability
+// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event (a pre-trust internal failure carries no weight: it is not caller behaviour), and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer. An amendment records that a trusted forwarder's contested Forwarded / X-Forwarded-For chain falls back to the X-Forwarded-For client before keying unknown; that the unknown source is counted, trips and is reported but is never blocked, delayed or refused, with boot WARN ApiSheriff-149 for block or delay combined with trusted proxies; that from a fixed high-water mark of 75% of the bound a new IPv6 key is tracked as its /48, one substrate rule every ledger built on SourceLedger follows; that under block or delay a full ledger answers a new untrackable source the block-style 429; and that no reserved slice for accruing sources exists, because such a source is never evicted.
+// tags: edge, enumeration, detection, rate-limiting, secure-defaults, http2, hand-rolled, availability, forwarded-headers, fail-closed
 // affects: api-sheriff, documentation
 // supersedes:
 // end-adr-metadata
@@ -206,6 +206,67 @@ neither count. The forced-h2 gRPC upstream leg opens at most one
 upstream stream per admitted inbound request, so it inherits the inbound bounds. HTTP/2 stream abuse
 is not a substrate consumer.
 
+[[amendment-unknown-and-pressure]]
+=== Amendment: the `unknown` source is never acted on, and a pressured ledger aggregates and fails closed
+
+Weighed against real forwarding chains and a full ledger, the decision above let `block` and `delay`
+act on the wrong key or not at all: a contested chain collapsed onto the shared `unknown` key, that key
+could be blocked for many clients at once, and a source past the bound could probe untracked. This
+amendment changes the keying, the treatment of `unknown` and the bound; the rest of the decision
+stands.
+
+[[amendment-forwarded-fallback]]
+*A contested forwarded chain falls back to `X-Forwarded-For`.* The forwarded-header resolver yields
+no client when a trusted forwarder's RFC 7239 `Forwarded` chain disagrees with its `X-Forwarded-For`
+chain, so every such request through that forwarder was keyed `unknown`. `ForwardedClientResolution`
+now resolves the combined headers first and, only when they yield no client, the `X-Forwarded-For`
+chain alone under the same trusted proxies. It is the one derivation the source key and the BFF's
+pending-login quota key share; a request that yields no client even then is still `unknown`.
+
+[[amendment-unknown]]
+*The `unknown` source is counted, never acted on.* `unknown` is one key for every client whose
+address did not resolve. Blocking, delaying or refusing it would act on all of them for the probing of
+one -- the outcome <<default-observe>> exists to prevent, reached through a key the operator cannot
+see. `SourceGate` therefore admits `unknown` like any source -- it is counted, trips, its trip is
+logged as `ApiSheriff-141` and fed to the threat ledger -- but never answers it `429`, never refuses it
+for a used-up held-answer share and never holds it, under every action. Because a trusted proxy that
+forwards no usable client address lets its requests escape `block` and `delay` this way, the boot logs
+WARN `ApiSheriff-149` when `enumeration_detection` is enabled with `block` or `delay` and
+`forwarded.trusted_proxies` is non-empty.
+
+[[amendment-aggregation]]
+*From a high-water mark on, a new IPv6 key is aggregated to its `/48`.* The `/64` key left a site
+holding a `/48` free to spread over 65,536 keys, enough to fill a ledger alone. From a fixed mark of
+75% of the bound, `SourceLedger` tracks a *new* IPv6 `/64` key under its `/48`; below the mark a new
+key keeps its `/64`, a tracked key keeps its key at any fill, and IPv4 and `unknown` are never
+aggregated. A `/64` that is not tracked itself is answered from its tracked `/48`. This is *one rule of
+the substrate*, not of a consumer: every ledger built on `SourceLedger` -- the recon ledger here and
+the threat ledger of
+link:0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078]
+-- follows it, and neither consumer carries an aggregation rule of its own. A per-consumer rule would
+let the ledgers drift apart in what one source is. The mark is a constant, not configuration.
+
+[[amendment-fail-closed]]
+*A full ledger fails closed under `block` and `delay`.* A source the full ledger cannot track can
+never trip, so under `block` or `delay` an unbounded number of fresh sources would get free probing
+once the ledger is full. `SourceLedger.hasRoomFor` answers whether an admission would track a key now,
+by the lookup, sweep and size check `admit` uses, without admitting anything. Before admission,
+`SourceGate.answersBlocked` answers an untracked, non-`unknown` source for which the ledger has no
+room with the same block-style `429`, its `Retry-After` the sweep interval (`1` second), counted as
+`SOURCE_BLOCKED` and on `sheriff_source_untracked_total`. The consequence is accepted on purpose:
+while a flood keeps the ledger full of live sources, every new source is refused, a legitimate one
+included, until the sweep frees room; tracked sources are answered as before. Under `observe` nothing
+is refused, and the threat ledger, which only observes, refuses nothing either. The check claims no
+slot, because the bound is soft by design: room that a concurrent admission takes after the check
+falls back to the untracked count, and room that appears after it costs one refused request.
+
+[[amendment-no-reserve]]
+*No slice of the bound is reserved for sources that are accruing.* A reserve was considered so that a
+source counting toward the threshold could not be crowded out by a flood of new keys. It is not
+needed: the sweep never evicts a key still holding weight, so such a source stays tracked however full
+the ledger gets. `SourceLedgerPressureTest` fills the bound with live keys while one source accrues and
+shows it keep being admitted and trip. No reserve exists.
+
 == Alternatives rejected
 
 *A default `block`.* Every gateway would refuse a probing source from the first trip. Rejected: the
@@ -276,9 +337,16 @@ admission.
    is visible.
 ** The count is per node. A scan spread over several nodes, or over many sources, stays below the
    threshold per key.
-** A source past the cardinality bound is not tracked and cannot trip. The overflow is counted on
+** A source past the cardinality bound is not tracked and cannot trip. Under `observe` it passes;
+   under `block` and `delay` it is refused `429` until the sweep frees room, so a flood that keeps
+   the ledger full refuses every new source (<<amendment-fail-closed>>). The overflow is counted on
    `sheriff_source_untracked_total`, and the first one per process is logged once as WARN
    `ApiSheriff-142`.
+** Requests keyed `unknown` are never blocked, delayed or refused, so a trusted proxy that forwards
+   no usable client address escapes `block` and `delay`; `ApiSheriff-149` names the configuration at
+   boot (<<amendment-unknown>>).
+** Above the high-water mark a new IPv6 source is one key per `/48`, so the clients of one `/48`
+   share that key from then on (<<amendment-aggregation>>).
 ** A restart clears every bucket and every block. `Retry-After` describes the block on this node
    only.
 ** Under the default `observe`, a scan is recorded, not slowed or stopped.
@@ -307,8 +375,11 @@ admission.
   per-route `rate_limit` block, which a future implementation builds on this substrate
 * link:../security-threat-model.adoc#gw-08[Threat model -- GW-08] and
   link:../security-threat-model.adoc#gw-16[GW-16]
-* link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-141` and `ApiSheriff-142`
+* link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-141`, `ApiSheriff-142` and
+  link:../LogMessages.adoc#apisheriff-149[`ApiSheriff-149`]
 * `SourceLedgerTest`, `SourceKeyResolverTest`, `ReconEventsTest`, `SourceGateTest`,
   `GatewayEdgeSourceDetectionTest`, `ConfigModelContractTest`, `EnumerationDetectionIT`,
   `EdgeHardeningOptionsTest`, `GatewayEdgeHttp2AbuseTest` and `Http2StreamAbuseIT` -- the tests that
   pin the substrate, the default, the trip response and the transport bounds
+* `ForwardedClientResolutionTest`, `SourceKeysTest`, `SourceLedgerPressureTest`,
+  `SourceGateFullLedgerTest` and `EdgeRulesTest` -- the tests that pin the amendment

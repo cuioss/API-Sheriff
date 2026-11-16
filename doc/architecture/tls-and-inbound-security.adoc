@@ -414,10 +414,18 @@ link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_
 image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key and rejection feed into the enumeration-detection tier and the threat-classification tier, align=center]
 
 * *Keying and bounds.* Requests are keyed by `(source, host)`: client IPv4, IPv6 `/64` prefix, or
-  `unknown` (honouring `forwarded.trusted_proxies`), paired with a declared `match.host` or `*`. The
-  ledger tracks at most 65,536 keys, draining linearly at `threshold / window` per second and
-  transitioning `CLEAR -> TRIPPED` (and `-> BLOCKED` when `action` is `block`) at most once per
-  `CLEAR` period.
+  `unknown` (honouring `forwarded.trusted_proxies`; a trusted proxy's contested `Forwarded` /
+  `X-Forwarded-For` chain falls back to the `X-Forwarded-For` client), paired with a declared
+  `match.host` or `*`. The ledger tracks at most 65,536 keys, draining linearly at
+  `threshold / window` per second and transitioning `CLEAR -> TRIPPED` (and `-> BLOCKED` when
+  `action` is `block`) at most once per `CLEAR` period. From 75% of the bound on, a new IPv6 key is
+  tracked under its `/48` (a substrate rule the threat ledger follows too).
+
+* *Two keys are treated apart.* `unknown` is counted and can trip but is never answered `429`,
+  delayed or refused under any action (boot WARN `ApiSheriff-149` names `block` or `delay` combined
+  with trusted proxies). Under `block` or `delay` a new source the full ledger cannot track is
+  answered the `block` `429` with `Retry-After: 1` until the sweep frees room; under `observe` it
+  passes untracked (link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#amendment-unknown-and-pressure[ADR-0076 amendment]).
 
 * *Feed.* Pre-trust rejections in the closed recon set add weight `1` (tagged by their true
   `EventType`, even when rendered as the uniform `404`). Post-trust rejections, upstream/boot

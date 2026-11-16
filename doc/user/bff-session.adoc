@@ -716,8 +716,10 @@ client address the forwarding headers name when the request arrives through a pr
 `forwarded.trusted_proxies`, otherwise the address of the TCP connection. Behind the gateway's own
 SNI front listener (`tls.passthrough_sni` set), that connection is the client's connection to the
 front listener, not the internal hop the gateway relays it over. An IPv6 address counts by
-its `/64`. Requests through a trusted proxy whose forwarding headers name no client, and requests
-without a usable address, are all counted as one source, `unknown`. When a source starts its 257th
+its `/64`. When a trusted proxy's `Forwarded` and `X-Forwarded-For` headers together name no client
+-- for example because the two chains disagree -- the client the `X-Forwarded-For` chain alone names
+is used. Requests through a trusted proxy whose forwarding headers name no client even then, and
+requests without a usable address, are all counted as one source, `unknown`. When a source starts its 257th
 pending login, its oldest one is dropped; that user's callback is refused `403` and the login has to
 be started again. Other sources are not touched.
 
@@ -755,9 +757,36 @@ Each replica counts its own pending logins (see <<multi-replica>>).
 [[logout]]
 == Logout
 
-A logout through `oidc.logout.path` *always ends the gateway session first*: the session is
-destroyed and its cookie cleared before anything is asked of the IdP. What follows depends on the
-IdP.
+[[logout-same-origin]]
+*A logout acts only on a request from the gateway's own pages.* The logout path is answered whatever
+the method, so without a check a link or an image on another site could end a user's session. Before
+it looks at the session, the gateway asks the request for same-origin proof by the rules of the CSRF
+defence (see <<csrf>>):
+
+* an `Origin` header naming a trusted origin -- one listed in `oidc.session.csrf.trusted_origins`,
+  which defaults to the origin of `oidc.redirect_uri`. A present `Origin` decides alone; or
+* with no `Origin`, `Sec-Fetch-Site: same-origin`, or `Sec-Fetch-Site: none` -- the value a browser
+  sends for a navigation the user started by typing the URL or opening a bookmark.
+
+*A request without that proof gets a confirmation page.* It is answered `200` with a fixed HTML page
+holding one *Sign out* button, and nothing else happens: the session and its cookies stay as they
+were and the IdP is not contacted. The page reflects nothing of the request, is sent with
+`Cache-Control: no-store`, and forbids framing (`Content-Security-Policy` with
+`frame-ancestors 'none'`, and `X-Frame-Options: DENY`). Its button `POST`s to `oidc.logout.path`. The
+browser sends that `POST` with the gateway's own origin as `Origin`, so it carries the proof and the
+logout below runs. If you set `oidc.session.csrf.trusted_origins`, list the gateway's own origin in it
+as well; otherwise that `POST` is answered with the confirmation page again.
+
+*The cost: a logout link on another trusted origin lands on the confirmation page.* A navigation
+from a page on a different origin -- an application or portal on another host, even one in
+`trusted_origins` -- is cross-origin to the gateway and sends no `Origin` on a plain link, so the
+user sees the confirmation page and has to press its button. A link or a script navigation
+(`window.location`) on a page the gateway serves, and a logout `POST` from a trusted origin, end the
+session at once.
+
+With the proof, a logout through `oidc.logout.path` *always ends the gateway session first*: the
+session is destroyed and its cookie cleared before anything is asked of the IdP. What follows depends
+on the IdP.
 
 * *The IdP publishes an end-session endpoint.* The browser is redirected there with
   `id_token_hint`, `post_logout_redirect_uri` and `state`, comes back to
@@ -802,8 +831,9 @@ once; repeats stay at `DEBUG`. If you see `ApiSheriff-147`, check that the gatew
 IdP's revocation endpoint over its back channel and that the IdP accepts the gateway's client
 authentication there -- until then, logouts leave refresh tokens valid until they expire.
 
-A logout without a live session answers the same redirect to `oidc.logout.final_redirect` and
-clears the cookie. There is no session token to revoke, so no revocation request is sent. A logout
+A logout with same-origin proof but without a live session answers the same redirect to
+`oidc.logout.final_redirect` and clears the cookie; without the proof it gets the confirmation page
+like any other, because the proof is checked before the session is looked up. There is no session token to revoke, so no revocation request is sent. A logout
 that found a live session which something else -- a new login of the same user, the expiry sweep, a
 back-channel logout -- ended before the logout destroyed it is different: the gateway revokes the
 refresh token of the session it found, as described above, and the browser is still redirected to

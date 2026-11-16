@@ -603,8 +603,18 @@ link:#_oidc_client_authentication[Client authentication].
   `user_info.allowed_claims`, or the boot fails.
 
 | `logout.path`
-| Gateway-served logout endpoint (default `/logout`). Destroys the local session and every
-  session-binding cookie *first*, then redirects to the IdP `end_session_endpoint` with
+| Gateway-served logout endpoint (default `/logout`), answered whatever the method. It acts only on
+  same-origin proof, checked before any session is looked up: an `Origin` in
+  `session.csrf.trusted_origins` (a present `Origin` decides alone), or, with no `Origin`,
+  `Sec-Fetch-Site: same-origin` or `none`. Any other request is answered `200` with a fixed HTML
+  confirmation page -- `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none';
+  form-action 'self'; frame-ancestors 'none'`, `X-Frame-Options: DENY` -- whose one form `POST`s to
+  this path; the session and its cookies are left untouched and the IdP is not contacted. A logout
+  link on a trusted origin other than the gateway's own therefore lands on that page (see
+  link:../user/bff-session.adoc#logout-same-origin[Logout -- same-origin proof]).
+
+  With the proof, it destroys the local session and every session-binding cookie *first*, then
+  redirects to the IdP `end_session_endpoint` with
   `id_token_hint`, `post_logout_redirect_uri` and a session-bound `state` (per `CLIENT-13`), sealed
   into a 60-second, single-use `+__Host-sheriff-logout+` cookie that the return leg verifies and
   clears (identical in both modes).
@@ -654,6 +664,8 @@ link:#_oidc_client_authentication[Client authentication].
   `allow_credentials: true`, and works only *same-site* (the session cookie is `SameSite=Lax`). A
   refused call is `CSRF_REJECTED` (`403`) before authentication, answered as the unrouted `404` while
   `uniform_not_found` is on (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]).
+  The same list is the trusted `Origin` set of the `logout.path` same-origin proof, so a declared list
+  should name the gateway's own origin too: the confirmation page's `POST` carries it.
   See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
 
 | `session.mode`
