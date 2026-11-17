@@ -318,7 +318,7 @@ class UpstreamGuardsTest {
                     ran.set(true);
                     throw thrown;
                 }, String.class);
-            } catch (CircuitBreakerOpenException refusal) {
+            } catch (CircuitBreakerOpenException _) {
                 assertFalse(ran.get(), "a refused call never runs its action");
                 return false;
             } catch (GatewayException ended) {
@@ -342,7 +342,7 @@ class UpstreamGuardsTest {
                     return ANSWER;
                 }, String.class);
                 return ran.get() && ANSWER.equals(answer);
-            } catch (CircuitBreakerOpenException refusal) {
+            } catch (CircuitBreakerOpenException _) {
                 assertFalse(ran.get(), "a refused call never runs its action");
                 return false;
             }

@@ -434,6 +434,7 @@ class UpstreamCircuitBreakerTest {
     @Test
     @DisplayName("refuses a policy outside its bounds")
     void refusesInvalidPolicies() {
+        Duration negativeOpenDelay = OPEN_DELAY.negated();
         assertAll("invalid policies",
                 () -> assertThrows(IllegalArgumentException.class, () -> breaker(0, 0.5, 1),
                         "an empty window"),
@@ -446,7 +447,7 @@ class UpstreamCircuitBreakerTest {
                 () -> assertThrows(IllegalArgumentException.class, () -> breaker(4, 0.5, 0),
                         "no successful trial needed to close"),
                 () -> assertThrows(IllegalArgumentException.class, () -> new UpstreamCircuitBreaker(4, 0.5,
-                        OPEN_DELAY.negated(), 1, clock::get, name, transitions::add), "a negative open delay"));
+                        negativeOpenDelay, 1, clock::get, name, transitions::add), "a negative open delay"));
     }
 
     /**
