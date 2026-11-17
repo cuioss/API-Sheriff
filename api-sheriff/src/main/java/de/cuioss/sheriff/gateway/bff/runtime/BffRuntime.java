@@ -350,7 +350,7 @@ public final class BffRuntime {
             // The logout path is matched whatever the method, so the confirmation page's POST reaches
             // this same arm and is judged by the same provenance check.
             case LOGOUT -> render(requireNonNull(logoutEndpoint).get().logout(req.cookieHeader(), req.origin(),
-                    req.secFetchSite(), now));
+                    req.fetchMetadata(), now));
             case LOGOUT_RETURN ->
                 render(requireNonNull(logoutEndpoint).get().completeReturn(req.stateParam(), req.cookieHeader()));
             case BACKCHANNEL_LOGOUT ->
@@ -445,16 +445,18 @@ public final class BffRuntime {
      * the raw request. Every field is optional at this level — each handler reads only the pieces it
      * needs (the callback reads {@link #rawQuery} and {@link #cookieHeader}, the back-channel receiver
      * reads {@link #rawFormBody}, the user-info fold reads {@link #claimsParam}, the logout leg reads
-     * {@link #origin} and {@link #secFetchSite}, and so on).
+     * {@link #origin} and {@link #fetchMetadata}, and so on).
      *
      * @param rawQuery       the raw query string (without the leading {@code ?}), never map-collapsed
      *                       — the {@code response_mode=query} GET callback re-parses it to re-detect a
      *                       duplicated {@code code}/{@code state} (BFF-13)
      * @param cookieHeader   the raw request {@code Cookie} header value, may be absent
      * @param origin         the request's first {@code Origin} header value, may be absent — part of
-     *                       the same-origin provenance the logout leg demands before it ends a session
-     * @param secFetchSite   the request's first {@code Sec-Fetch-Site} header value, may be absent —
-     *                       the other half of that provenance, read when {@code Origin} is absent
+     *                       the provenance the logout leg demands before it ends a session
+     * @param fetchMetadata  the request's Fetch Metadata headers ({@code Sec-Fetch-Site},
+     *                       {@code Sec-Fetch-Mode}, {@code Sec-Fetch-Dest}, {@code Sec-Purpose}) — the
+     *                       rest of that provenance; {@code null} normalizes to
+     *                       {@link CsrfDefence.FetchMetadata#ABSENT}
      * @param claimsParam    the raw {@code claims} selector for the user-info fold, may be absent
      * @param returnUrlParam the raw {@code returnUrl} target for the login fold and the step-up endpoint,
      *                       may be absent
@@ -484,7 +486,7 @@ public final class BffRuntime {
     String rawQuery,
     @Nullable String cookieHeader,
     @Nullable String origin,
-    @Nullable String secFetchSite,
+    CsrfDefence.FetchMetadata fetchMetadata,
     @Nullable String claimsParam,
     @Nullable String returnUrlParam,
     @Nullable String stateParam,
@@ -493,13 +495,15 @@ public final class BffRuntime {
     String quotaKey) {
 
         /**
-         * Canonical constructor normalizing an absent raw query to the empty string and an absent HTTP
-         * method to {@code GET} (the CSRF-safe default), and rejecting an absent quota key.
+         * Canonical constructor normalizing an absent raw query to the empty string, absent Fetch
+         * Metadata to {@link CsrfDefence.FetchMetadata#ABSENT} and an absent HTTP method to {@code GET}
+         * (the CSRF-safe default), and rejecting an absent quota key.
          *
          * @throws NullPointerException when {@code quotaKey} is {@code null}
          */
         public ReservedHttpRequest {
             rawQuery = Objects.requireNonNullElse(rawQuery, "");
+            fetchMetadata = Objects.requireNonNullElse(fetchMetadata, CsrfDefence.FetchMetadata.ABSENT);
             httpMethod = Objects.requireNonNullElse(httpMethod, "GET");
             Objects.requireNonNull(quotaKey, "quotaKey");
         }

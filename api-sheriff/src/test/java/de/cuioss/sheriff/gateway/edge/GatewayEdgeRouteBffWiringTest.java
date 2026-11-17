@@ -72,6 +72,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
@@ -650,8 +651,9 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("LOGOUT with same-origin proof and without a live session redirects (302) to final_redirect")
         void shouldDispatchLogout() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "same-origin", null, null, null, null, "GET",
-                            QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null,
+                            new CsrfDefence.FetchMetadata("same-origin", "navigate", "document", null), null, null,
+                            null, null, "GET", QUOTA_KEY), now);
             assertEquals(302, response.status());
         }
 
@@ -659,8 +661,9 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("LOGOUT without same-origin proof answers the 200 HTML confirmation page through the dispatch")
         void shouldDispatchLogoutConfirmation() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "cross-site", null, null, null, null, "GET",
-                            QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null,
+                            new CsrfDefence.FetchMetadata("cross-site", "navigate", "document", null), null, null,
+                            null, null, "GET", QUOTA_KEY), now);
 
             assertAll("the confirmation page through the dispatch",
                     () -> assertEquals(200, response.status()),

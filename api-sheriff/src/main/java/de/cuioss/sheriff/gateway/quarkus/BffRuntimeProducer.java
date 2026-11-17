@@ -775,10 +775,13 @@ public class BffRuntimeProducer {
         // synchronously and before the end-session redirect is built. The local destruction stays the
         // authoritative logout; a failed revocation never turns the logout into an error.
         // The one session CSRF defence: the edge enforces it on unsafe-method session requests, and the
-        // logout leg judges its same-origin provenance by the same instance, never a second derivation.
+        // logout leg judges its provenance by a derivation of the same trusted origins that also trusts
+        // the gateway's own origin — the origin its confirmation page posts back from — whatever
+        // session.csrf.trusted_origins lists.
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
+        CsrfDefence logoutDefence = csrfDefence.withGatewayOrigin(gatewayOrigin);
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata, sessionBinding, revocationClient, clientAuthentication, csrfDefence));
+                metadata, sessionBinding, revocationClient, clientAuthentication, logoutDefence));
 
         // build(...) is reached for BOTH modes, so the diagnostic must name the mode that was actually
         // resolved — this is the line an operator greps to confirm which binding came up.

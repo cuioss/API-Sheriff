@@ -3305,22 +3305,42 @@ acted on unremembered. Every refusal is the `400` of a rejected logout token, se
 `ApiSheriff-112` naming the reason. Each component that can refuse a token records each reason at
 `WARN` once and at `DEBUG` afterwards, because a refused token can be presented again at will.
 
-*An RP-initiated logout acts only on same-origin provenance.* The logout path is matched whatever the
-method, so a plain link or an image on another site could otherwise end a user's session. Before it
-resolves any session, the logout endpoint asks the session CSRF defence for the same proof its
-unsafe-method check reads (<<bff-11>>): a present `Origin` decides alone and must be a trusted origin;
-with `Origin` absent, `Sec-Fetch-Site` must be `same-origin` or `none` -- the value a browser sends
-for a navigation the user started, which no other site can trigger. `none` is admitted for this
-navigation only; the unsafe-method check still refuses it. One defence instance judges both, so the
-rule is not restated in the endpoint. A request without the proof is answered `200` with a fixed
+*An RP-initiated logout acts only on a top-level document navigation from a trusted origin.* The
+logout path is matched whatever the method, so a plain link or an image could otherwise end a user's
+session -- one on another site, and equally one in content served under the gateway's own origin,
+since a session variant serves its SPA and API upstreams there. Same-origin provenance alone
+therefore does not end a session. Before it resolves any session, the logout endpoint asks the
+`CsrfDefence` method `provesTrustedDocumentNavigation`, which requires all of the following:
+
+* no `Sec-Purpose` header -- a browser sends it on a prefetch or a prerender, which no user asked
+  for, even when the speculative load is a navigation;
+* `Sec-Fetch-Mode`, when present, is `navigate` and `Sec-Fetch-Dest`, when present, is `document` --
+  a same-origin image, script, `fetch()` call, link prefetch or frame carries a different mode or
+  destination;
+* a present `Origin` is a trusted origin and decides the provenance alone, as in the unsafe-method
+  check (<<bff-11>>); with `Origin` absent, `Sec-Fetch-Site` must be `same-origin`.
+
+Mode and destination are judged only when present: the threat is a request a browser sends on the
+victim's behalf, and a browser that sends `Sec-Fetch-Site` sends `Sec-Fetch-Mode` with it (and
+`Sec-Fetch-Dest` in every current version). `Sec-Fetch-Site: none` is not a proof. A browser sends
+it for a typed URL and a bookmark, but also for a link opened from another application, such as a
+mail client, so a link delivered to the user carries it as well. Such a request, and a request from
+a browser that sends neither Fetch Metadata nor `Origin`, is answered the confirmation page.
+
+A request without the proof is answered `200` with a fixed
 confirmation page that reflects nothing of the request, is served `no-store`, forbids framing
 (`Content-Security-Policy` `frame-ancestors 'none'` and `X-Frame-Options: DENY`) and carries one form
 that `POST`s to the configured logout path; the session and its cookies stay untouched and no
-identity-provider call is made. The browser sends that `POST` with the gateway's own `Origin`, so it
-returns with the proof. Because the proof is checked before the session is looked up, the answer
+identity-provider call is made. The browser sends that `POST` as a top-level document navigation with
+the gateway's own `Origin`. The logout leg's defence trusts that origin -- the origin of
+`redirect_uri`, the one host a session cookie is set on -- in addition to
+`session.csrf.trusted_origins`, so the confirming `POST` returns with the proof even when the
+configured list names only other origins; the unsafe-method check of session routes keeps trusting
+the configured list alone. Because the proof is checked before the session is looked up, the answer
 without it is the same whether or not a session exists. *Accepted cost:* a logout link on a trusted
-origin other than the gateway's own sends no `Origin` on a top-level navigation and lands on the
-confirmation page, which the user confirms with one click.
+origin other than the gateway's own sends no `Origin` on a top-level navigation, and a typed or
+bookmarked logout URL carries `Sec-Fetch-Site: none`; both land on the confirmation page, which the
+user confirms with one click.
 
 *A proven RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
 endpoint destroys the session and clears its cookies first and builds the redirect to the provider's

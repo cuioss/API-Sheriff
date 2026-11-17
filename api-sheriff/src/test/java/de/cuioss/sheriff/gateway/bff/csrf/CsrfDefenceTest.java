@@ -33,6 +33,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -387,50 +388,142 @@ class CsrfDefenceTest {
         }
     }
 
+    /**
+     * The logout leg's proof, {@link CsrfDefence#provesTrustedDocumentNavigation}. The header sets are
+     * the ones a browser sends for each kind of request (Fetch Metadata, W3C Working Draft, section 2:
+     * {@code Sec-Fetch-Dest}, {@code Sec-Fetch-Mode}, {@code Sec-Fetch-Site}; {@code Sec-Purpose} as
+     * Chromium sends it for a prefetch and a prerender).
+     */
     @Nested
     @DisplayName("the method-independent logout-navigation proof")
-    class SameOriginNavigation {
+    class TrustedDocumentNavigation {
+
+        private static final String NAVIGATE = "navigate";
+        private static final String DOCUMENT = "document";
+        private static final String GATEWAY_ORIGIN = "https://gw.example.com";
 
         private final CsrfDefence defence = new CsrfDefence(Set.of(TRUSTED_ORIGIN));
 
+        private static CsrfDefence.FetchMetadata navigation(String site) {
+            return new CsrfDefence.FetchMetadata(site, NAVIGATE, DOCUMENT, null);
+        }
+
         @Test
-        @DisplayName("a trusted Origin proves the navigation, case-insensitively")
+        @DisplayName("a trusted Origin proves a document navigation, case-insensitively, with or without Fetch Metadata")
         void trustedOriginAdmits() {
-            assertTrue(defence.provesSameOriginNavigation(TRUSTED_ORIGIN, null));
-            assertTrue(defence.provesSameOriginNavigation(TRUSTED_ORIGIN.toUpperCase(Locale.ROOT), null));
+            assertAll(
+                    () -> assertTrue(defence.provesTrustedDocumentNavigation(TRUSTED_ORIGIN, navigation("cross-site"))),
+                    () -> assertTrue(defence.provesTrustedDocumentNavigation(TRUSTED_ORIGIN.toUpperCase(Locale.ROOT),
+                            navigation(SAME_ORIGIN))),
+                    () -> assertTrue(defence.provesTrustedDocumentNavigation(TRUSTED_ORIGIN,
+                            CsrfDefence.FetchMetadata.ABSENT)));
         }
 
         @ParameterizedTest
         @ValueSource(strings = {SAME_ORIGIN, "none", "cross-site", "same-site"})
         @DisplayName("an untrusted Origin refuses whatever Sec-Fetch-Site says — the Origin decides alone")
         void untrustedOriginRefusesWhateverFetchSite(String fetchSite) {
-            assertFalse(defence.provesSameOriginNavigation(UNTRUSTED_ORIGIN, fetchSite));
+            assertFalse(defence.provesTrustedDocumentNavigation(UNTRUSTED_ORIGIN, navigation(fetchSite)));
         }
 
         @Test
-        @DisplayName("an opaque 'null' Origin refuses even with Sec-Fetch-Site: same-origin")
+        @DisplayName("an opaque 'null' Origin refuses even on a same-origin document navigation")
         void opaqueOriginRefuses() {
-            assertFalse(defence.provesSameOriginNavigation("null", SAME_ORIGIN));
+            assertFalse(defence.provesTrustedDocumentNavigation("null", navigation(SAME_ORIGIN)));
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {SAME_ORIGIN, "none", "SAME-ORIGIN", "None"})
-        @DisplayName("with Origin absent, Sec-Fetch-Site same-origin or none admits, case-insensitively")
-        void absentOriginSameOriginOrNoneAdmits(String fetchSite) {
-            assertTrue(defence.provesSameOriginNavigation(null, fetchSite));
+        @ValueSource(strings = {SAME_ORIGIN, "SAME-ORIGIN"})
+        @DisplayName("with Origin absent, a same-origin top-level document navigation admits, case-insensitively")
+        void absentOriginSameOriginDocumentNavigationAdmits(String fetchSite) {
+            assertAll(
+                    () -> assertTrue(defence.provesTrustedDocumentNavigation(null, navigation(fetchSite))),
+                    () -> assertTrue(defence.provesTrustedDocumentNavigation(null,
+                            new CsrfDefence.FetchMetadata(fetchSite, "NAVIGATE", "Document", null))));
+        }
+
+        @Test
+        @DisplayName("mode and destination are judged only when present: Sec-Fetch-Site: same-origin alone admits")
+        void absentModeAndDestinationAreNotJudged() {
+            assertTrue(defence.provesTrustedDocumentNavigation(null,
+                    new CsrfDefence.FetchMetadata(SAME_ORIGIN, null, null, null)));
+        }
+
+        @ParameterizedTest(name = "Sec-Fetch-Mode={0}, Sec-Fetch-Dest={1}")
+        @CsvSource({
+                "no-cors,  image",
+                "no-cors,  script",
+                "cors,     empty",
+                "no-cors,  empty",
+                "navigate, iframe",
+                "navigate, frame",
+                "navigate, object"
+        })
+        @DisplayName("a same-origin subresource, fetch, link prefetch or frame refuses — it is no top-level document navigation")
+        void sameOriginNonDocumentNavigationRefuses(String mode, String dest) {
+            CsrfDefence.FetchMetadata metadata = new CsrfDefence.FetchMetadata(SAME_ORIGIN, mode, dest, null);
+
+            assertAll(
+                    () -> assertFalse(defence.provesTrustedDocumentNavigation(null, metadata), "Origin absent"),
+                    () -> assertFalse(defence.provesTrustedDocumentNavigation(TRUSTED_ORIGIN, metadata),
+                            "a trusted Origin does not lift the navigation requirement"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"prefetch", "prefetch;prerender", "PREFETCH"})
+        @DisplayName("a speculative load refuses even as a same-origin document navigation (Sec-Purpose present)")
+        void speculativeLoadRefuses(String purpose) {
+            CsrfDefence.FetchMetadata metadata = new CsrfDefence.FetchMetadata(SAME_ORIGIN, NAVIGATE, DOCUMENT, purpose);
+
+            assertAll(
+                    () -> assertFalse(defence.provesTrustedDocumentNavigation(null, metadata), "Origin absent"),
+                    () -> assertFalse(defence.provesTrustedDocumentNavigation(TRUSTED_ORIGIN, metadata),
+                            "a trusted Origin does not lift the speculation refusal"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"none", "None"})
+        @DisplayName("with Origin absent, Sec-Fetch-Site: none refuses — a link opened from another application carries it")
+        void userInitiatedFetchSiteRefuses(String fetchSite) {
+            assertFalse(defence.provesTrustedDocumentNavigation(null, navigation(fetchSite)));
         }
 
         @ParameterizedTest
         @ValueSource(strings = {"cross-site", "same-site", ""})
         @DisplayName("with Origin absent, any other Sec-Fetch-Site refuses")
         void absentOriginOtherFetchSiteRefuses(String fetchSite) {
-            assertFalse(defence.provesSameOriginNavigation(null, fetchSite));
+            assertFalse(defence.provesTrustedDocumentNavigation(null, navigation(fetchSite)));
         }
 
         @Test
-        @DisplayName("both signals absent refuse")
+        @DisplayName("Origin and Fetch Metadata both absent refuse")
         void bothAbsentRefuse() {
-            assertFalse(defence.provesSameOriginNavigation(null, null));
+            assertFalse(defence.provesTrustedDocumentNavigation(null, CsrfDefence.FetchMetadata.ABSENT));
+        }
+
+        @Test
+        @DisplayName("a configured list without the gateway's origin refuses its Origin; the logout instance trusts it")
+        void gatewayOriginIsTrustedOnlyByTheLogoutInstance() {
+            CsrfDefence logoutDefence = defence.withGatewayOrigin(GATEWAY_ORIGIN + ":443");
+            CsrfDefence.FetchMetadata confirmingPost = navigation(SAME_ORIGIN);
+
+            assertAll(
+                    () -> assertFalse(defence.provesTrustedDocumentNavigation(GATEWAY_ORIGIN, confirmingPost),
+                            "the configured list alone does not name the gateway's origin"),
+                    () -> assertTrue(logoutDefence.provesTrustedDocumentNavigation(GATEWAY_ORIGIN, confirmingPost),
+                            "the logout instance trusts the gateway's origin, default port dropped"),
+                    () -> assertTrue(logoutDefence.provesTrustedDocumentNavigation(TRUSTED_ORIGIN, confirmingPost),
+                            "the configured origins stay trusted"),
+                    () -> assertFalse(logoutDefence.provesTrustedDocumentNavigation(UNTRUSTED_ORIGIN, confirmingPost)));
+        }
+
+        @Test
+        @DisplayName("enforce does not consult the gateway origin the logout instance adds")
+        void enforceIgnoresTheGatewayOrigin() {
+            CsrfDefence logoutDefence = defence.withGatewayOrigin(GATEWAY_ORIGIN);
+            PipelineRequest request = request(HttpMethod.POST, Map.of(ORIGIN_HEADER, List.of(GATEWAY_ORIGIN)));
+
+            assertRejected(logoutDefence, request, "the gateway origin is trusted by the logout proof alone");
         }
 
         @Test
@@ -438,9 +531,9 @@ class CsrfDefenceTest {
         void cookieForwardingInstanceTrustsAdditionalOriginsOnly() {
             CsrfDefence routeCheck = CsrfDefence.forCookieForwardingRoute(List.of(TRUSTED_ORIGIN + ":443"));
 
-            assertTrue(routeCheck.provesSameOriginNavigation(TRUSTED_ORIGIN, null),
+            assertTrue(routeCheck.provesTrustedDocumentNavigation(TRUSTED_ORIGIN, CsrfDefence.FetchMetadata.ABSENT),
                     "an additional origin is trusted, default port dropped");
-            assertFalse(routeCheck.provesSameOriginNavigation(UNTRUSTED_ORIGIN, null));
+            assertFalse(routeCheck.provesTrustedDocumentNavigation(UNTRUSTED_ORIGIN, CsrfDefence.FetchMetadata.ABSENT));
         }
 
         @Test
@@ -448,8 +541,6 @@ class CsrfDefenceTest {
         void enforceStillRefusesNoneForUnsafeMethod() {
             PipelineRequest request = request(HttpMethod.POST, Map.of(SEC_FETCH_SITE_HEADER, List.of("none")));
 
-            assertTrue(defence.provesSameOriginNavigation(null, "none"),
-                    "precondition: the navigation proof admits none");
             assertRejected(defence, request, "none never admits an unsafe method under enforce");
         }
     }

@@ -110,6 +110,7 @@ import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.bff.runtime.ForwardedTrust;
@@ -4141,8 +4142,9 @@ class BffRuntimeProducerTest {
          */
         private static BffRuntime.ReservedHttpResponse logout(BffRuntime runtime, String sessionCookie) {
             return runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null, "same-origin", null, null, null, null,
-                            "POST", QUOTA_KEY),
+                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null,
+                            new CsrfDefence.FetchMetadata("same-origin", "navigate", "document", null), null, null,
+                            null, null, "POST", QUOTA_KEY),
                     NOW);
         }
 
