@@ -1204,10 +1204,7 @@ public final class DispatchStage {
          *
          * @param pending the current attempt's response
          * @return {@code true} when the departure was signalled before {@code pending} settled; {@code false}
-         *         when {@code pending} settled first, successfully or not — its outcome is then read from it.
-         *         The decision is taken when {@code pending} settles, so an outcome arriving after the
-         *         departure, such as the connection wait bound passing in the instant the thread wakes, never
-         *         takes the departure's place
+         *         when {@code pending} settled first, successfully or not — its outcome is then read from it
          * @throws InterruptedException when the waiting thread is interrupted
          * @throws ExecutionException   never in practice: neither signal waited on fails
          */
