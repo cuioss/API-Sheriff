@@ -41,9 +41,11 @@ import org.jspecify.annotations.Nullable;
  * anchor-namespace containment ({@link #prefixContains} and {@link #strictlyContains}), and whether
  * the gateway lacks a configured token issuer ({@link #lacksConfiguredIssuer}).
  * <p>
- * Each helper exists exactly once. {@link #renderForMessage} above all must stay the single copy of
- * the CWE-117 escaping; the route-table and WebSocket-relay log records reuse it rather than carrying
- * a second escaper. The rule for every refusal message and every log record a rule emits: a
+ * Each helper exists exactly once. {@link #renderForMessage} and its uncapped sibling
+ * {@link #renderForLog} above all must stay the single copy of the CWE-117 escaping; the route-table
+ * and WebSocket-relay log records and the boot sink that logs every violation reuse them rather than
+ * carrying a second escaper. A pointer into the {@code anchors} map is built only through
+ * {@link #anchorPointer}, which encodes the configured name as a JSON-pointer token. The rule for every refusal message and every log record a rule emits: a
  * configured free-form scalar it echoes — an endpoint or route id, an anchor name, a path, a host, an
  * alias, a list entry — is passed through {@link #renderForMessage} first, so that a hostile value
  * cannot forge a boot log line. Only a value drawn from a closed vocabulary (an enum constant, a
@@ -129,8 +131,45 @@ public class RuleSupport {
      * @return the escaped and capped rendering, safe to embed in a refusal message
      */
     public static String renderForMessage(String value) {
-        StringBuilder rendered = new StringBuilder();
         int limit = Math.min(value.length(), ECHOED_VALUE_MAX_LENGTH);
+        String rendered = escapeNonPrintable(value, limit);
+        return value.length() > limit ? rendered + "..." : rendered;
+    }
+
+    /**
+     * Renders a whole value for a log line with the same escaping as {@link #renderForMessage} but
+     * without its length cap: every character outside printable ASCII becomes a {@code \\uXXXX}
+     * escape, and nothing is cut. For the boot sink that logs a {@link ConfigError}'s file, pointer and
+     * message, where a cut would hide which location failed. A value that is already escaped passes
+     * through unchanged, because an escape consists of printable characters only.
+     *
+     * @param value the value to log
+     * @return the escaped rendering, safe to embed in a log line
+     */
+    public static String renderForLog(String value) {
+        return escapeNonPrintable(value, value.length());
+    }
+
+    /**
+     * The JSON pointer of one anchor in {@code gateway.yaml}: {@code /anchors/<name>}, the name encoded
+     * as an RFC 6901 reference token so that a {@code /} or {@code ~} in the configured map key cannot
+     * make the pointer name a different location. The bundled schema restricts a loaded anchor name to
+     * {@code ^[a-z][a-z0-9_-]*$}, which admits neither character nor any control character, but the
+     * validator accepts any bound {@link GatewayConfig}, so the pointer does not rely on that pattern.
+     *
+     * @param anchorName the configured anchor name, the map key under {@code anchors}
+     * @return the pointer of that anchor
+     */
+    public static String anchorPointer(String anchorName) {
+        return ANCHORS_POINTER + "/" + anchorName.replace("~", "~0").replace("/", "~1");
+    }
+
+    /**
+     * The single copy of the CWE-117 escaping: the first {@code limit} characters of {@code value},
+     * each one outside printable ASCII replaced by its {@code \\uXXXX} escape.
+     */
+    private static String escapeNonPrintable(String value, int limit) {
+        StringBuilder rendered = new StringBuilder();
         for (int index = 0; index < limit; index++) {
             char current = value.charAt(index);
             if (current >= 0x20 && current < 0x7F) {
@@ -138,9 +177,6 @@ public class RuleSupport {
             } else {
                 rendered.append("\\u%04X".formatted((int) current));
             }
-        }
-        if (value.length() > limit) {
-            rendered.append("...");
         }
         return rendered.toString();
     }

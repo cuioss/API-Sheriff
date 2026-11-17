@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -275,6 +276,68 @@ class ConfigProducerTest {
         assertDoesNotThrow(() -> producer.onStartup(null),
                 "a declared cap equal to the framework limit is reachable and must boot clean");
         assertNotNull(producer.gatewayConfig(), "beans should be available after startup assembly");
+    }
+
+    /**
+     * The CWE-117 sink: every violation record renders its file, pointer and message through
+     * {@code RuleSupport.renderForLog}, because not every stage escapes what it echoes. The schema
+     * refuses an anchor name outside {@code ^[a-z][a-z0-9_-]*$} — a line feed included, even a trailing
+     * one — and its refusal names the configured key verbatim, so only the sink keeps that line feed
+     * out of the boot log. The refusal text is localised by the JVM, so only the key is asserted.
+     */
+    @Test
+    void shouldEscapeAControlCharacterTheSchemaEchoesFromAConfiguredKey() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_MATRIX_VIOLATION.replace("portal:",
+                "\"por\\ntal\":"));
+
+        assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
+                "the schema refusal of the anchor name must refuse the boot");
+
+        List<String> records = violationRecords();
+        assertAll("violation records",
+                () -> assertTrue(records.stream().anyMatch(message -> message.contains("por\\u000Atal")),
+                        () -> "the schema refusal must name the key escaped by the sink: " + records),
+                () -> assertTrue(records.stream().allMatch(message -> message.chars()
+                                .noneMatch(Character::isISOControl)),
+                        () -> "no record may carry a raw control character: " + records));
+    }
+
+    /**
+     * The other half of the sink contract: a validation rule already echoes a configured value through
+     * {@code RuleSupport.renderForMessage}, and the sink must pass that rendering through unchanged
+     * rather than escape the escape. A cookie name in a {@code cookies.allow} list carries no schema
+     * pattern, so a line feed in it reaches the RFC 6265 cookie-name rule, which echoes it escaped.
+     */
+    @Test
+    void shouldPassARulesEscapedEchoThroughTheSinkUnchanged() throws Exception {
+        ConfigProducer producer = producerForGateway("""
+                version: 1
+                metadata:
+                  config_version: "2026-07-13"
+                cookies:
+                  allow:
+                    - "a\\nb"
+                """);
+
+        assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
+                "the refused cookie name must refuse the boot");
+
+        List<String> records = violationRecords();
+        assertAll("violation records",
+                () -> assertTrue(records.stream().anyMatch(message -> message.contains("'a\\u000Ab'")),
+                        () -> "the record must carry the rule's escaping unchanged: " + records),
+                () -> assertTrue(records.stream().noneMatch(message -> message.contains("\\u005C")),
+                        () -> "no part may be escaped twice: " + records),
+                () -> assertTrue(records.stream().allMatch(message -> message.chars()
+                                .noneMatch(Character::isISOControl)),
+                        () -> "no record may carry a raw control character: " + records));
+    }
+
+    private static List<String> violationRecords() {
+        String identifier = ConfigLogMessages.ERROR.CONFIG_VALIDATION_FAILED.resolveIdentifierString();
+        return SheriffDebugCapture.capturedRecords().stream()
+                .map(java.util.logging.LogRecord::getMessage)
+                .filter(message -> message != null && message.startsWith(identifier)).toList();
     }
 
     @Test

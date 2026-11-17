@@ -338,7 +338,7 @@ public class AnchorRules {
      */
     public static void validateAccessAuthMatrix(GatewayConfig gateway, List<ConfigError> errors) {
         for (AnchorConfig anchor : gateway.anchors().values()) {
-            String pointer = ANCHORS_POINTER + "/" + anchor.name();
+            String pointer = anchorPointer(anchor.name());
             if (anchor.type() == AnchorType.BFF && anchor.access() != AccessLevel.AUTHENTICATED) {
                 errors.add(new ConfigError(GATEWAY_FILE, pointer,
                         "anchor '%s' is type 'bff' and must declare access: authenticated"

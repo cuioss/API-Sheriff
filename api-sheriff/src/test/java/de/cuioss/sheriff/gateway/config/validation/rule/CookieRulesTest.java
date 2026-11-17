@@ -201,6 +201,31 @@ class CookieRulesTest {
         }
     }
 
+    /**
+     * The validator accepts any bound gateway, not only one whose anchor names passed the schema's
+     * {@code ^[a-z][a-z0-9_-]*$}, so a refusal of an anchor's {@code cookies} block must encode a {@code /} or {@code ~} in it as an RFC 6901
+     * reference token: written raw, {@code /anchors/web/app/cookies} would name a location that does
+     * not exist instead of the anchor that failed.
+     */
+    @Nested
+    @DisplayName("anchor pointers — the anchor name is encoded as one JSON-pointer token")
+    class AnchorPointerEncoding {
+
+        @Test
+        @DisplayName("Should encode a '/' and '~' in the anchor name in the cookies pointer")
+        void shouldEncodeTheAnchorNameInTheCookiesPointer() {
+            String anchorName = "web/app~1";
+            AnchorConfig anchor = AnchorConfig.builder().name(anchorName).pathPrefix("/web").type(AnchorType.PROXY)
+                    .access(AccessLevel.PUBLIC).cookies(named("a b")).build();
+            GatewayConfig gateway = GatewayConfig.builder().version(1).anchors(Map.of(anchorName, anchor)).build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            ConfigError refusal = singleRefusalAt(errors, GATEWAY_FILE, "/anchors/web~1app~01/cookies/allow");
+            assertTrue(refusal.message().contains("anchor '" + anchorName + "'"), refusal::message);
+        }
+    }
+
     @Nested
     @DisplayName("(c) a listed name must not be one of the gateway's own cookies")
     class GatewayCookieNotListed {

@@ -173,7 +173,7 @@ public class AuthRules {
         boolean oidcDeclared = gateway.oidc() != null;
         for (AnchorConfig anchor : gateway.anchors().values()) {
             checkSessionFallbackBlock(anchor.auth(), oidcDeclared, GATEWAY_FILE,
-                    ANCHORS_POINTER + "/" + anchor.name() + "/auth",
+                    anchorPointer(anchor.name()) + "/auth",
                     "anchor '%s'".formatted(renderForMessage(anchor.name())), errors);
         }
         for (EndpointConfig endpoint : endpoints) {
