@@ -753,7 +753,7 @@ public final class DispatchStage {
      * records as neutral. Every other failure stays the upstream's: a connection the upstream refused, a dial or
      * TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — and the wait
      * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}, which the dispatch ends as an
-     * {@link UpstreamConnectionWaitExpired} (see {@link #connectionWaitExpiryOf}).
+     * {@link UpstreamConnectionWaitExpired}.
      *
      * @param failure       why the attempt obtained no connection
      * @param failureMapper meters the saturation and builds its rejection
@@ -764,25 +764,6 @@ public final class DispatchStage {
             UpstreamFailureMapper failureMapper) {
         if (failure instanceof ConnectionPoolTooBusyException) {
             return failureMapper.toPoolSaturation(failure);
-        }
-        return null;
-    }
-
-    /**
-     * Classifies a failure of the wait for a pooled upstream connection as an expired wait. The wait outlasting
-     * {@link #UPSTREAM_CONNECTION_WAIT_MILLIS} (a {@link TimeoutException}) is the upstream's timeout: the dial
-     * and TLS handshake timeouts together are shorter than the wait bound, so an expired wait almost always means
-     * the attempt queued behind connections the upstream is holding. The attempt becomes an
-     * {@link UpstreamConnectionWaitExpired}, which the breaker counts, the failure mapper reports as
-     * {@link EventType#UPSTREAM_TIMEOUT} and the retry predicate refuses.
-     *
-     * @param failure why the attempt obtained no connection
-     * @return the expired wait the attempt ends with, the original failure kept as its cause, or {@code null}
-     *         when the failure is not an expired wait
-     */
-    static @Nullable UpstreamConnectionWaitExpired connectionWaitExpiryOf(@Nullable Throwable failure) {
-        if (failure instanceof TimeoutException expiry) {
-            return new UpstreamConnectionWaitExpired(expiry);
         }
         return null;
     }
@@ -905,8 +886,8 @@ public final class DispatchStage {
                 }
                 // One whose wait outlasted its bound queued behind connections the upstream holds: it is the
                 // upstream's timeout, which the guard counts and the retry predicate refuses.
-                UpstreamConnectionWaitExpired expired = connectionWaitExpiryOf(dispatchFailure.getCause());
-                if (expired != null) {
+                if (dispatchFailure.getCause() instanceof TimeoutException expiry) {
+                    UpstreamConnectionWaitExpired expired = new UpstreamConnectionWaitExpired(expiry);
                     throw new ExecutionException(expired.getMessage(), expired);
                 }
             }

@@ -82,7 +82,7 @@ public final class EgressClients {
      * the circuit breaker counts. Together with {@link #UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS} it is shorter than
      * the dispatch's bound on the whole wait for a connection, so a dial that starts at once fails on it as the
      * upstream's; a dial that starts only after a wait in the queue can meet that bound first, and the attempt
-     * then ends as the upstream's timeout (see {@code DispatchStage.connectionWaitExpiryOf}).
+     * then ends as the upstream's timeout (see {@code DispatchStage.UpstreamConnectionWaitExpired}).
      */
     static final int UPSTREAM_DIAL_TIMEOUT_MILLIS = 5_000;
 
@@ -92,7 +92,7 @@ public final class EgressClients {
      * dispatch's bound on the whole wait for a connection, so an attempt that dials at once and whose upstream
      * accepts the TCP connection but does not complete its handshake fails on it as the upstream's; one that
      * queued first can meet that bound before, and then ends as the upstream's timeout (see
-     * {@code DispatchStage.connectionWaitExpiryOf}).
+     * {@code DispatchStage.UpstreamConnectionWaitExpired}).
      */
     static final int UPSTREAM_TLS_HANDSHAKE_TIMEOUT_MILLIS = 4_000;
 
