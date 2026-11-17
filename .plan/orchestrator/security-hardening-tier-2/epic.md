@@ -55,6 +55,8 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 - 2026-11-17 — PLAN-SEC2-02 landing (#627) analyzed and reconciled; its three-layer leaf read found items outside the spec's own deliverables (the attribution of an expired connection wait, the attribution of a client departure, a latent listener path, stale comments and ADR statements). They are folded into PLAN-SEC2-04 as deliverable 12 and into deliverable 9 under the operator's standing decision that this plan collects every leftover; the trigger detail went into `.plan/local/security_notes.adoc` as SEC2-L-12 to SEC2-L-15 under the operator's authorization of 2026-11-17, and the weakness-class items were reported to the operator in the session only.
 
+- 2026-11-17 — Operator dropped the Watch for the CodeRabbit review-body findings of #627 (landing claimed 3 total / 3 handled, provider shows 4 inline with no disposition). The count stays recorded as a false claim in `landings/PLAN-SEC2-02.md`; the handling is not re-verified.
+
 ## Open Defects
 
 - None open.
@@ -62,8 +64,5 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 
 ## Watches
-
-- CodeRabbit review-body findings of #627: the landing claimed 3 total / 3 handled, the provider shows 4 inline findings with no disposition (`review-gate`: `body_findings_undisposed`); the count is recorded as a false claim in `landings/PLAN-SEC2-02.md` and the handling is not re-verified. Retired on the operator's confirmation, as for #623 and #626.
-
 
 - Pre-commit formatter churn (carried from tier 1): #618 aligned `main` with the local formatter; a plan that reports churn again re-opens it.
