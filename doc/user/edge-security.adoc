@@ -677,7 +677,7 @@ deployment that never writes it keeps the behaviour shown here.
 | 10 s +
   (wait queue: `admission_cap`, at least 16; dial: 5 s; TLS handshake: 4 s)
 | How long an upstream attempt waits for a pooled upstream connection, in its upstream client's wait
-  queue and while the connection is dialled. Each upstream client queues at most as many attempts as
+  queue and while the upstream's host name is resolved and the connection is dialled. Each upstream client queues at most as many attempts as
   the effective `admission_cap`, never fewer than 16. Neither answer below ever sends the request.
 
   *Full queue: `503`.* An attempt that finds the queue full is answered `503`

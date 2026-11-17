@@ -237,7 +237,7 @@ to the guard's timeout as an upstream failure.
 *Upstream connection wait (10 s) and wait queue.* Every upstream client queues at most
 `max(edge_hardening.admission_cap, 16)` attempts waiting for a pooled connection, dials a new
 connection within a fixed 5 s and completes its TLS handshake within a fixed 4 s (`EgressClients`). An attempt waits at most a fixed 10 s for its
-connection, in that queue and while the connection is dialled
+connection, in that queue and while the upstream's host name is resolved and the connection is dialled
 (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). Only an attempt the full queue refuses obtained no
 connection because the gateway itself is saturated: it ends unsent as `UPSTREAM_POOL_SATURATED` (`503`,
 `urn:api-sheriff:problem:upstream`), which the circuit breaker records as neutral and the retry predicate
@@ -249,7 +249,9 @@ name for a new connection, which no shorter timeout bounds, so a resolution slow
 the same way. It ends unsent as
 `DispatchStage.UpstreamConnectionWaitExpired`, a timeout the breaker counts and the failure mapper reports
 as `UPSTREAM_TIMEOUT` (`504`; on a gRPC call `DEADLINE_EXCEEDED` with `grpc-message: upstream`), and the
-retry predicate refuses it, since a retry would queue behind the same connections. Enough such waits open
+retry predicate refuses it: the wait already used up the bound, and a retry would usually queue behind
+the same connections; an expiry caused by a slow host-name resolution is refused the same way. Enough such
+waits open
 the breaker, whose open circuit then answers `503` with `Retry-After` until its delay has passed. A
 connection the upstream refuses, and a dial or TLS handshake that does not complete in time, stay the
 upstream's `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT` as well, which the breaker counts. The queue bound

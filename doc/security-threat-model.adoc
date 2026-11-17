@@ -1663,8 +1663,9 @@ stream-idle bound]):
   the upstream's `UPSTREAM_TIMEOUT` (`504`; on gRPC `DEADLINE_EXCEEDED` with `grpc-message: upstream`):
   the dial and TLS-handshake timeouts together are shorter than the bound, so such an attempt usually
   queued behind connections the upstream holds; the bound also covers resolving the upstream's host name
-  for a new connection, which no shorter timeout bounds. The breaker counts it and the retry predicate refuses it, since
-  a retry would queue behind the same connections. That holds under load as well: when more calls are
+  for a new connection, which no shorter timeout bounds. The breaker counts it and the retry predicate refuses it: the
+  wait already used up the bound, and a retry would usually queue behind the same connections; an expiry
+  caused by a slow host-name resolution is refused the same way. That holds under load as well: when more calls are
   admitted than a slow upstream serves within the bound, the expired waits are counted and can open the
   breaker, whose open circuit then sheds that load with its `503`; limiting what one client sends is rate
   limiting, which is out of scope. A refused connection, and a dial or TLS handshake that does not

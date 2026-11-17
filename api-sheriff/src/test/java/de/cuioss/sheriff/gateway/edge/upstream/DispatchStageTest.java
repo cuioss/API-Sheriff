@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -136,19 +137,20 @@ class DispatchStageTest {
     class DepartureDecision {
 
         @Test
-        @DisplayName("A departure signalled before the wait bound expired wins over the expiry")
-        void departureBeforeAnExpiryWins() throws Exception {
+        @DisplayName("An attempt that failed before the wait began keeps its own outcome when the client departs after")
+        void attemptSettledBeforeTheWaitKeepsItsOutcome() throws Exception {
             // Arrange
             CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
             CompletableFuture<String> departed = new CompletableFuture<>();
+            pending.completeExceptionally(new ConnectException(Generators.nonEmptyStrings().next()));
             departed.complete(Generators.nonEmptyStrings().next());
-            pending.completeExceptionally(new TimeoutException(Generators.nonEmptyStrings().next()));
 
             // Act
             boolean departureEnded = DispatchStage.departureEndedWait(pending, departed);
 
             // Assert
-            assertTrue(departureEnded, "an expiry settling the attempt after the departure must not take its place");
+            assertFalse(departureEnded,
+                    "an upstream failure that settled the attempt before the departure stays the upstream's");
         }
 
         @Test

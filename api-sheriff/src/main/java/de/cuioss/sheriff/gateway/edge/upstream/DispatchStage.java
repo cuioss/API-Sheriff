@@ -775,23 +775,30 @@ public final class DispatchStage {
 
     /**
      * Waits until {@code pending} settles or {@code departed} completes, whichever comes first, and decides
-     * which of the two ended the wait. The decision is taken at one point: when {@code pending} settles, the
-     * dispatch records whether the departure had already been signalled. A {@code pending} that has not settled
-     * when the waiting thread reads it was overtaken by the departure; one that has settled is answered by that
-     * recorded verdict, never by re-reading the state after the thread woke. An outcome that settles
-     * {@code pending} after the departure — the connection wait bound passing, or a dial failing, in the instant
-     * the thread wakes — therefore never takes the departure's place, and an outcome that settled it before the
-     * departure keeps its own.
+     * which of the two ended the wait. A {@code pending} already settled when the wait begins keeps its own
+     * outcome: it settled before this dispatch could observe a departure, and a departure that also came
+     * before is left to the paths that read the attempt's outcome. Otherwise the decision is taken at one
+     * point: when {@code pending} settles, the dispatch records whether the departure had already been
+     * signalled. A {@code pending} that has not settled when the waiting thread reads it was overtaken by the
+     * departure; one that has settled is answered by that recorded verdict, never by re-reading the state after
+     * the thread woke. An outcome that settles {@code pending} during the wait after the departure — the
+     * connection wait bound passing, or a dial failing, in the instant the thread wakes — therefore never takes
+     * the departure's place, and an outcome that settled it before the departure keeps its own.
      *
      * @param pending  the current attempt's response
      * @param departed completed when the client departs; never completed exceptionally
-     * @return {@code true} when {@code departed} completed before {@code pending} settled — {@code departed} is
-     *         then complete; {@code false} when {@code pending} settled first
+     * @return {@code true} when {@code departed} completed before {@code pending} settled during the wait —
+     *         {@code departed} is then complete; {@code false} when {@code pending} settled first or had
+     *         already settled when the wait began
      * @throws InterruptedException when the waiting thread is interrupted
      * @throws ExecutionException   never in practice: neither signal waited on fails
      */
     static boolean departureEndedWait(CompletableFuture<?> pending, CompletableFuture<?> departed)
             throws InterruptedException, ExecutionException {
+        if (pending.isDone()) {
+            // Settled before the wait began: handle() would run now and read a departure that came later.
+            return false;
+        }
         // Computed by whichever thread settles pending, right after it settles: never long-blocking.
         CompletableFuture<Boolean> departedAtSettlement = pending.handle((_, _) -> departed.isDone());
         CompletableFuture.anyOf(departedAtSettlement, departed).get();
@@ -1203,8 +1210,9 @@ public final class DispatchStage {
          * wait is interrupted like any other by the guard's timeout.
          *
          * @param pending the current attempt's response
-         * @return {@code true} when the departure was signalled before {@code pending} settled; {@code false}
-         *         when {@code pending} settled first, successfully or not — its outcome is then read from it
+         * @return {@code true} when the departure was signalled before {@code pending} settled during the wait;
+         *         {@code false} when {@code pending} settled first or had already settled when the wait began,
+         *         successfully or not — its outcome is then read from it
          * @throws InterruptedException when the waiting thread is interrupted
          * @throws ExecutionException   never in practice: neither signal waited on fails
          */
