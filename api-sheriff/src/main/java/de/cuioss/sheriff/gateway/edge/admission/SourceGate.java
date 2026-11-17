@@ -95,11 +95,16 @@ import org.jspecify.annotations.Nullable;
  * in whole seconds, at least {@code 1}, and its overflow is reported like an untracked rejection's. A
  * source the ledger cannot count could never trip or be blocked, so letting it through would hand an
  * unbounded number of fresh sources free probing once the ledger is full. The consequence is accepted
- * on purpose: while a flood keeps the ledger full of live sources, every NEW source is refused, a
- * legitimate one included, until the flood drains and the sweep frees room; sources already tracked
- * are answered as before. Under {@code observe} nothing is refused, and the
- * {@link SourceKey#UNKNOWN_SOURCE unknown} source is never refused. The check claims no slot: room that
- * a concurrent admission takes after it falls back to the untracked count below.
+ * on purpose: while a flood keeps the ledger full of live sources, every NEW source is refused until
+ * the flood drains and the sweep frees room. A well-behaved client rejects nothing, builds no weight and
+ * is therefore not tracked, so in practice "every new source" is nearly all legitimate traffic, while
+ * the flooding sources already tracked are answered as before. The refusal is not bounded by evicting
+ * a live entry instead: that would let a flood push a source that is accruing toward the threshold out
+ * of the ledger, turning the denial into an evasion of detection. Under {@code observe} nothing is
+ * refused, and the {@link SourceKey#UNKNOWN_SOURCE unknown} source is never refused. The room query
+ * never sweeps on the event loop: a sweep it finds due runs on a virtual thread, and the request that
+ * found the ledger full is refused meanwhile. The check claims no slot: room that a concurrent
+ * admission takes after it falls back to the untracked count below.
  * <p>
  * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ReconFeed}, the gate admits every
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —
@@ -118,10 +123,12 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The trip.</strong> Every trip, whatever the action, is counted as
  * {@link EventType#SOURCE_TRIPPED} on the {@link GatewayEventCounter}, on
- * {@link SheriffMetrics#SOURCE_TRIPS_TOTAL} under its action, and logged as
+ * {@link SheriffMetrics#SOURCE_TRIPS_TOTAL} under the action taken, and logged as
  * {@link ApiSheriffLogMessages.WARN#SOURCE_TRIPPED} — the canonical source and the folded host, never
  * the raw {@code Host}, the path or any header; the logged source is the key the ledger tracks, the
- * {@code /48} when it aggregated the source. Under the default {@code observe} that is the whole
+ * {@code /48} when it aggregated the source. The action taken is the configured one, except for the
+ * {@link SourceKey#UNKNOWN_SOURCE unknown} source, whose trip is logged and metered as {@code observe}
+ * under any action, because the gate never acts on it. Under the default {@code observe} that is the whole
  * effect of a trip: no answer changes. The trip is then handed to the recon-trip observer — the threat
  * classifier's {@link ThreatClassifier#admitReconTrip}, which scores it as one more input, or a no-op
  * when threat classification is disabled. The gate admits each rejection under the source
@@ -372,11 +379,22 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * {@link SourceTrip#requestKey()} — to the recon-trip observer.
      */
     private void onTrip(SourceTrip trip) {
+        SourceLedger.Action taken = actionTaken(trip);
         gatewayEventCounter.increment(EventType.SOURCE_TRIPPED);
-        sheriffMetrics.recordSourceTrip(trip.action());
+        sheriffMetrics.recordSourceTrip(taken);
         LOGGER.warn(ApiSheriffLogMessages.WARN.SOURCE_TRIPPED, trip.key().source(), trip.key().host(),
-                trip.threshold(), trip.window().toSeconds(), trip.action().name().toLowerCase(Locale.ROOT));
+                trip.threshold(), trip.window().toSeconds(), taken.name().toLowerCase(Locale.ROOT));
         reconTripObserver.accept(trip);
+    }
+
+    /**
+     * The action the gate actually takes on a tripped source: the configured one, except for the
+     * {@link SourceKey#UNKNOWN_SOURCE unknown} source, which is never answered, refused or held and is
+     * therefore reported as {@link SourceLedger.Action#OBSERVE} — the ledger may still mark it
+     * {@code BLOCKED}, but nothing on the wire follows from that.
+     */
+    private static SourceLedger.Action actionTaken(SourceTrip trip) {
+        return isUnknownSource(trip.key()) ? SourceLedger.Action.OBSERVE : trip.action();
     }
 
     /**

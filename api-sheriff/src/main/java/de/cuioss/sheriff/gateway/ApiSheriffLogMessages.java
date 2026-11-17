@@ -267,8 +267,9 @@ public final class ApiSheriffLogMessages {
          * detection contract fixes (an IPv4 address whole, an IPv6 address as its {@code /64} prefix, or
          * as its {@code /48} aggregate when the ledger began tracking it above its high-water mark),
          * the host folded to the declared {@code match.host} set ({@code *} for any other), the
-         * threshold, the window in seconds and the configured action — never the raw {@code Host}, the
-         * request path or any header.
+         * threshold, the window in seconds and the action taken — the configured one, except
+         * {@code observe} for the {@code unknown} source, which the gate never acts on — never the raw
+         * {@code Host}, the request path or any header.
          */
         public static final LogRecord SOURCE_TRIPPED = LogRecordModel.builder()
                 .prefix(PREFIX)

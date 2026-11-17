@@ -87,9 +87,12 @@ turn every admission into a full scan. When the map is still full the key is not
 admission returns the state `UNTRACKED`, the event is not counted and the overflow is counted in
 `untrackedCount()` for the consumer to report. A tripped or blocked key is never evicted, and neither
 is a key still holding weight, so a source accruing toward the threshold stays tracked however full
-the map gets. No slice of the bound is reserved for such keys: none is needed, because the sweep never
-removes them (`SourceLedgerPressureTest` fills the bound with live keys while one source accrues, and
-that source keeps being admitted and trips).
+the map gets. No slice of the bound is reserved, neither for such keys nor for new ones. Accruing keys
+need none, because the sweep never removes them; that is a rule of the sweep, pinned by
+`SourceLedgerPressureTest.accruingSourceStaysTrackedInAFullLedger`, which fills the bound with live
+keys while one source accrues, lets a sweep run, and shows the source keep its count and trip -- the
+test goes red if the sweep removed a key still holding weight. New keys get none either: a full map
+refuses them rather than evicting a live entry (<<_full_ledger>>).
 
 The bound is *soft*. The size check and the insert are not one atomic step, so the map can exceed the
 bound by at most the number of threads inserting new keys at the same moment.
@@ -118,10 +121,14 @@ and neither consumer carries an aggregation rule of its own.
 === The Room Query
 
 `hasRoomFor(key)` answers whether an admission would track a key now: `true` when the key -- or the
-`/48` aggregate of a `/64` -- is tracked, or when a new key fits after the rate-limited sweep `admit`
-would run at the bound. It admits, counts and reserves nothing, so it is a decision about this instant
-only; `admit` decides again when it runs. It is the one query the recon consumer refuses on
-(<<_full_ledger>>).
+`/48` aggregate of a `/64` -- is tracked, or when a new key fits the map as it stands. The recon
+consumer asks it on the event loop, so the query never sweeps on its calling thread: at the bound, a
+sweep that is due is handed to the ledger's sweep executor -- one short-lived virtual thread in
+production -- and the answer is taken from the map as it stands, so a new key is answered `false`
+until that sweep has freed room. Only `admit`, which the consumers call on a virtual thread, sweeps on
+its own thread. At most one sweep starts per `SWEEP_INTERVAL` either way. The query admits, counts and
+reserves nothing, so it is a decision about this instant only; `admit` decides again when it runs. It
+is the one query the recon consumer refuses on (<<_full_ledger>>).
 
 == Weighted Admission and Tags
 
@@ -224,6 +231,9 @@ the wire. Two of its rules rest on the substrate's terms:
   key -- counted, able to trip, its trip logged and handed to the threat consumer -- but it is never
   answered `429`, never refused for a used-up held-answer share and never held, under any action. It
   stands for every client whose address did not resolve, so acting on it would act on all of them.
+  Its trip is therefore logged (`ApiSheriff-141`) and metered (`sheriff_source_trips_total`) with the
+  action the gate takes, `observe`, whatever action is configured, although under `block` the ledger
+  still marks the key `BLOCKED`.
   The boot WARN `ApiSheriff-149` (`EdgeRules`) names the combination that lets a trusted proxy's
   requests reach that key while `block` or `delay` is configured.
 * [[_full_ledger]]*The full ledger fails closed under `block` and `delay`.* Before admission the gate
@@ -233,9 +243,14 @@ the wire. Two of its rules rest on the substrate's terms:
   (`sheriff_source_untracked_total`, `ApiSheriff-142`). A source the ledger cannot count could never
   trip, so letting it through would hand an unbounded number of fresh sources free probing. The
   consequence is accepted: while a flood keeps the ledger full of live keys, every new source is
-  refused, a legitimate one included, until the sweep frees room. Under `observe` nothing is refused.
-  The check claims no slot -- room a concurrent admission takes after it falls back to the
-  `UNTRACKED` count, and room that appears after it costs one refused request.
+  refused until the sweep frees room. A well-behaved client is rejected for nothing and so is never
+  tracked, which makes "every new source" practically all legitimate traffic, while the flooding keys
+  already tracked keep being served. Evicting the lowest-level live entry instead of refusing was
+  rejected (ADR-0076, amendment "A full ledger fails closed"): it would let a flood push a source
+  accruing toward the threshold out of the ledger, and picking the entry costs a scan per admission at
+  the bound. Under `observe` nothing is refused. The check claims no slot -- room a concurrent
+  admission takes after it falls back to the `UNTRACKED` count, and room that appears after it costs
+  one refused request.
 
 The threat ledger never refuses: `ThreatClassifier` is `observe`-only and reports an `UNTRACKED`
 admission to the ALERT tier without changing any answer.

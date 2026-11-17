@@ -372,15 +372,24 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   65,536 live sources; WARN `ApiSheriff-142` reports the first of
   them. Under `observe` such a source passes and cannot trip. Under `block` or `delay` it is refused
   with the `block` answer, `Retry-After: 1`, until the gateway has room for it again -- so while a
-  scan keeps the gateway full, every *new* source is refused, a legitimate one included, and sources
-  already tracked are answered as before. A steady count means more distinct sources are being
-  rejected than the gateway tracks -- a scan spread over many addresses, or a deployment whose sources
-  are not per client.
-* A source of `unknown` -- a request whose client address did not resolve, for example through a
-  trusted proxy that sends no usable `X-Forwarded-For` -- is counted and can trip, but is never
-  blocked, delayed or refused, because it stands for every such client at once. WARN `ApiSheriff-149`
-  at startup reminds you of this when `block` or `delay` is configured together with
-  `forwarded.trusted_proxies`.
+  scan keeps the gateway full, every *new* source is refused, and sources already tracked are answered
+  as before. Read "new" literally: a well-behaved client is rejected for nothing, so the gateway does
+  not track it, and while the gateway is full *practically all legitimate traffic* is refused, while
+  the scanning sources it already tracks keep being served. The gateway frees room once a second, by
+  dropping the sources whose count has drained to zero and that are not blocked; a source still
+  holding a count is never dropped to make room, so a scan cannot push a source that is building up
+  toward the threshold out of detection. Keeping 65,536 sources live therefore takes a sustained
+  stream of rejections from that many distinct addresses -- at the defaults about 65,536 × threshold
+  / max(`window_seconds`, `block_seconds`) rejections per second, roughly 109,000 per second; a longer
+  `block_seconds` or a lower `threshold` makes it cheaper. A steady count means more distinct sources
+  are being rejected than the gateway tracks -- a scan spread over many addresses, or a deployment
+  whose sources are not per client. If that refusal is a risk you cannot accept, keep `observe`, or
+  place the per-address limit in front of the gateway.
+* A source of `unknown` -- a request through a trusted proxy that carries no `Forwarded` or
+  `X-Forwarded-For` at all -- is counted and can trip, but is never blocked, delayed or refused,
+  because it stands for every such client at once. Its trip is therefore logged and counted with the
+  action `observe`, whatever `action` is configured. WARN `ApiSheriff-149` at startup reminds you of
+  this when `block` or `delay` is configured together with `forwarded.trusted_proxies`.
 * `sheriff_errors_total{event}` keeps naming the true cause of every rejection the scanner received
   (see <<_uniform_not_found_operator_note>>).
 

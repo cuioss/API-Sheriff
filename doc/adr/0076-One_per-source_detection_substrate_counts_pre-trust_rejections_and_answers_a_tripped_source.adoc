@@ -234,7 +234,8 @@ address did not resolve. Blocking, delaying or refusing it would act on all of t
 one -- the outcome <<default-observe>> exists to prevent, reached through a key the operator cannot
 see. `SourceGate` therefore admits `unknown` like any source -- it is counted, trips, its trip is
 logged as `ApiSheriff-141` and fed to the threat ledger -- but never answers it `429`, never refuses it
-for a used-up held-answer share and never holds it, under every action. Because a trusted proxy that
+for a used-up held-answer share and never holds it, under every action. Its trip is logged and metered
+with the action actually taken, `observe`, whatever action is configured. Because a trusted proxy that
 forwards no client-address header lets its requests escape `block` and `delay` this way, the boot logs
 WARN `ApiSheriff-149` when `enumeration_detection` is enabled with `block` or `delay` and
 `forwarded.trusted_proxies` is non-empty.
@@ -255,22 +256,40 @@ let the ledgers drift apart in what one source is. The mark is a constant, not c
 *A full ledger fails closed under `block` and `delay`.* A source the full ledger cannot track can
 never trip, so under `block` or `delay` an unbounded number of fresh sources would get free probing
 once the ledger is full. `SourceLedger.hasRoomFor` answers whether an admission would track a key now,
-by the lookup, sweep and size check `admit` uses, without admitting anything. Before admission,
+by the lookup and size check `admit` uses, without admitting anything. Before admission,
 `SourceGate.answersBlocked` answers an untracked, non-`unknown` source for which the ledger has no
 room with the same block-style `429`, its `Retry-After` the sweep interval (`1` second), counted as
 `SOURCE_BLOCKED` and on `sheriff_source_untracked_total`. The consequence is accepted on purpose:
-while a flood keeps the ledger full of live sources, every new source is refused, a legitimate one
-included, until the sweep frees room; tracked sources are answered as before. Under `observe` nothing
-is refused, and the threat ledger, which only observes, refuses nothing either. The check claims no
-slot, because the bound is soft by design: room that a concurrent admission takes after the check
-falls back to the untracked count, and room that appears after it costs one refused request.
+while a flood keeps the ledger full of live sources, every new source is refused until the sweep
+frees room, and tracked sources are answered as before. A well-behaved client is rejected for nothing
+and is therefore not tracked, so "every new source" is practically all legitimate traffic, while the
+flooding sources already tracked keep being served. Under `observe` nothing is refused, and the
+threat ledger, which only observes, refuses nothing either. The check claims no slot, because the
+bound is soft by design: room that a concurrent admission takes after the check falls back to the
+untracked count, and room that appears after it costs one refused request.
+
+The room query runs on the event loop, so it never sweeps there: at the bound, a sweep that is due is
+handed to a virtual thread and the query answers from the map as it stands, so the request that found
+the ledger full is refused while that sweep runs. Only `admit`, which runs on a virtual thread, sweeps
+on its own thread. Either way at most one sweep starts per sweep interval.
+
+The refusal is not bounded by evicting the lowest-level live entry instead of refusing. Eviction keeps
+legitimate traffic flowing, but it lets a flood push a source that is accruing toward the threshold
+out of the ledger -- the denial becomes an evasion of detection, which is the outcome this rule exists
+to prevent -- and choosing the lowest entry costs a scan or an ordered index on every admission at the
+bound, the cost the rate-limited sweep exists to avoid. A reserved slice for new sources only delays
+the fill by the size of the slice. Keeping the ledger full takes a sustained stream of rejections from
+as many distinct sources as the bound, each holding its slot for at least `threshold / window`
+seconds; the documented consequence and the operator's choice of `observe` stand in for a bound.
 
 [[amendment-no-reserve]]
 *No slice of the bound is reserved for sources that are accruing.* A reserve was considered so that a
 source counting toward the threshold could not be crowded out by a flood of new keys. It is not
 needed: the sweep never evicts a key still holding weight, so such a source stays tracked however full
-the ledger gets. `SourceLedgerPressureTest` fills the bound with live keys while one source accrues and
-shows it keep being admitted and trip. No reserve exists.
+the ledger gets. `SourceLedgerPressureTest.accruingSourceStaysTrackedInAFullLedger` pins that sweep
+rule, not a change of it: it fills the bound with live keys while one source accrues, lets a sweep run,
+and shows the source keep its count and trip -- it goes red if the sweep removed a key still holding
+weight. No reserve exists.
 
 == Alternatives rejected
 

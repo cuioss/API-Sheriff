@@ -60,7 +60,8 @@ import org.jspecify.annotations.Nullable;
  *       {@code session_fallback} route selected per request, keyed by the {@link AuthBranch}
  *       label ({@code bearer} or {@code session});</li>
  *   <li>{@value #SOURCE_TRIPS_TOTAL}{@code {action}} — the per-source enumeration-detection trips,
- *       keyed by the configured action ({@code block}, {@code delay} or {@code observe});</li>
+ *       keyed by the action taken ({@code block}, {@code delay} or {@code observe}) — the configured
+ *       one, except {@code observe} for the {@code unknown} source, which is never acted on;</li>
  *   <li>{@value #SOURCE_UNTRACKED_TOTAL} — the recon events the detection substrate could not count
  *       because its ledger was at the bound on tracked sources (cardinality overflow);</li>
  *   <li>{@value #THREAT_ALERTS_TOTAL} — the per-source threat-classification ALERTs, one per
@@ -134,8 +135,9 @@ public class SheriffMetrics {
      */
     public static final String AUTH_BRANCH_TOTAL = "sheriff_auth_branch_total";
     /**
-     * Counter of per-source enumeration-detection trips, keyed by the configured action
-     * ({@code block} / {@code delay} / {@code observe}).
+     * Counter of per-source enumeration-detection trips, keyed by the action taken
+     * ({@code block} / {@code delay} / {@code observe}): the configured one, except {@code observe} for
+     * the {@code unknown} source, which is never acted on.
      */
     public static final String SOURCE_TRIPS_TOTAL = "sheriff_source_trips_total";
     /**
