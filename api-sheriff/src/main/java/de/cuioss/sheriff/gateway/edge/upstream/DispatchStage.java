@@ -242,8 +242,10 @@ import org.jspecify.annotations.Nullable;
  * bound passes. The dispatch reports an {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, which
  * the breaker records as neutral: a body that was still arriving as one that did not arrive whole, any other
  * request as a {@link ClientDeparted}. Only an outcome recorded before the departure takes its place — a body
- * the gateway had already refused, or a request stream the upstream had already stalled past its pre-response
- * deadline. The released attempt keeps its place in the upstream client's wait queue until the pool hands it
+ * the gateway had already refused, a request stream the upstream had already stalled past its pre-response
+ * deadline, or an attempt whose settlement reached the dispatch before the departure, which keeps its own
+ * outcome. The order of settlement and departure is recorded once, when the settlement reaches the dispatch
+ * through the attempt's response chain. The released attempt keeps its place in the upstream client's wait queue until the pool hands it
  * a connection, which is then reset unsent, or until its connection wait bound passes: Vert.x offers no way
  * to withdraw a queued wait. A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
@@ -774,36 +776,53 @@ public final class DispatchStage {
     }
 
     /**
-     * Waits until {@code pending} settles or {@code departed} completes, whichever comes first, and decides
-     * which of the two ended the wait. A {@code pending} already settled when the wait begins keeps its own
-     * outcome: it settled before this dispatch could observe a departure, and a departure that also came
-     * before is left to the paths that read the attempt's outcome. Otherwise the decision is taken at one
-     * point: when {@code pending} settles, the dispatch records whether the departure had already been
-     * signalled. A {@code pending} that has not settled when the waiting thread reads it was overtaken by the
-     * departure; one that has settled is answered by that recorded verdict, never by re-reading the state after
-     * the thread woke. An outcome that settles {@code pending} during the wait after the departure — the
-     * connection wait bound passing, or a dial failing, in the instant the thread wakes — therefore never takes
-     * the departure's place, and an outcome that settled it before the departure keeps its own.
+     * Records, at the moment an attempt's settlement reaches the dispatch through its response chain,
+     * whether the client's departure had already been signalled. It is the one point at which the order of
+     * the two is decided: the response chain runs it as its last step, before the response the dispatch
+     * waits on settles, so a settled response always carries its verdict (see
+     * {@link #departureEndedWait}). Never blocks: it only reads whether {@code departed} is complete.
      *
-     * @param pending  the current attempt's response
-     * @param departed completed when the client departs; never completed exceptionally
-     * @return {@code true} when {@code departed} completed before {@code pending} settled during the wait —
-     *         {@code departed} is then complete; {@code false} when {@code pending} settled first or had
-     *         already settled when the wait began
+     * @param departedAtSettlement receives {@code true} when {@code departed} was already complete when the
+     *                             attempt settled, {@code false} otherwise
+     * @param departed             completed when the client departs
+     */
+    static void recordSettlement(AtomicReference<@Nullable Boolean> departedAtSettlement,
+            CompletableFuture<?> departed) {
+        departedAtSettlement.set(departed.isDone());
+    }
+
+    /**
+     * Waits until {@code pending} settles or {@code departed} completes, whichever comes first, and decides
+     * which of the two came first. The order is not read here: it is recorded when the attempt's settlement
+     * reaches the dispatch through its response chain (see {@link #recordSettlement}), and the departure is
+     * signalled when {@code departed} completes. {@code pending} settles only after that record is taken, so
+     * the decision is the record alone, whatever the waiting thread observes when it wakes:
+     * <ul>
+     *   <li>no record yet — the attempt has not settled, so the wake came from the departure, which came
+     *       first; a settlement after it records the departure as well, since {@code departed} is already
+     *       complete;</li>
+     *   <li>a record of no departure — the attempt settled before the departure was signalled and keeps its
+     *       own outcome, read from {@code pending}, whether it settled before the wait began or during it;</li>
+     *   <li>a record of a departure — the departure was signalled before the attempt settled.</li>
+     * </ul>
+     * A {@code true} result therefore always means {@code departed} is complete: with no record the wake came
+     * from it, and a record of a departure was taken with it complete.
+     *
+     * @param pending              the current attempt's response, settled only after
+     *                             {@code departedAtSettlement} was recorded
+     * @param departed             completed when the client departs; never completed exceptionally
+     * @param departedAtSettlement the order recorded when the attempt settled, {@code null} while it has not
+     * @return {@code true} when {@code departed} completed before the attempt settled — {@code departed} is
+     *         then complete; {@code false} when the attempt settled first
      * @throws InterruptedException when the waiting thread is interrupted
      * @throws ExecutionException   never in practice: neither signal waited on fails
      */
-    static boolean departureEndedWait(CompletableFuture<?> pending, CompletableFuture<?> departed)
-            throws InterruptedException, ExecutionException {
-        if (pending.isDone()) {
-            // Settled before the wait began: handle() would run now and read a departure that came later.
-            return false;
-        }
-        // Computed by whichever thread settles pending, right after it settles: never long-blocking.
-        CompletableFuture<Boolean> departedAtSettlement = pending.handle((_, _) -> departed.isDone());
-        CompletableFuture.anyOf(departedAtSettlement, departed).get();
-        // A pending not yet settled means the wake came from departed; a settled one carries its verdict.
-        return !pending.isDone() || departedAtSettlement.get();
+    static boolean departureEndedWait(CompletableFuture<?> pending, CompletableFuture<?> departed,
+            AtomicReference<@Nullable Boolean> departedAtSettlement) throws InterruptedException, ExecutionException {
+        // handle() only lets the wait end on a failed attempt without throwing; it reads nothing.
+        CompletableFuture.anyOf(pending.handle((_, _) -> null), departed).get();
+        Boolean atSettlement = departedAtSettlement.get();
+        return atSettlement == null || atSettlement;
     }
 
     private static HttpClientResponse awaitDispatch(ResolvedUpstream upstream, HttpClient httpClient,
@@ -855,6 +874,9 @@ public final class DispatchStage {
         AtomicReference<@Nullable UpstreamStalledRequest> upstreamStallAtFailure = new AtomicReference<>();
         // Set once the pool handed the attempt its request: a failure before it is a connection not obtained.
         AtomicBoolean connectionObtained = new AtomicBoolean();
+        // Whether the client had departed when this attempt settled, recorded by the chain's last step below;
+        // null until the attempt settles (see departureEndedWait).
+        AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
                     connectionObtained.set(true);
@@ -895,9 +917,14 @@ public final class DispatchStage {
                         received.pause();
                         return received;
                     });
-                });
+                })
+                // The one point the order of settlement and departure is decided: whatever settles the attempt —
+                // a response, a refused dial, the connection wait bound — reaches the dispatch through this step,
+                // and the future it returns settles only after the step ran, so pending below never settles
+                // without its verdict.
+                .andThen(_ -> body.recordSettlement(departedAtSettlement));
         CompletableFuture<HttpClientResponse> pending = response.toCompletionStage().toCompletableFuture();
-        if (body.departedBefore(pending)) {
+        if (body.departedBefore(pending, departedAtSettlement)) {
             // The client left while this attempt still waited — for a pooled connection, or for the upstream's
             // answer: the dispatch ends now, not when the pool hands the connection over or the wait bound passes.
             // The departure already released the attempt, so a connection handed to it later is reset unsent. A stall
@@ -1204,20 +1231,36 @@ public final class DispatchStage {
         }
 
         /**
-         * Waits until {@code pending} — the current attempt's response — settles or the client departs,
-         * whichever comes first, and decides which of the two ended the wait (see
-         * {@link DispatchStage#departureEndedWait}). Both are completion signals, so nothing is polled; the
-         * wait is interrupted like any other by the guard's timeout.
+         * Records whether the client had departed at the moment the current attempt's settlement reaches the
+         * dispatch through its response chain (see {@link DispatchStage#recordSettlement}). Run as that
+         * chain's last step, on whichever thread settles the attempt; never blocks.
          *
-         * @param pending the current attempt's response
-         * @return {@code true} when the departure was signalled before {@code pending} settled during the wait;
-         *         {@code false} when {@code pending} settled first or had already settled when the wait began,
-         *         successfully or not — its outcome is then read from it
+         * @param departedAtSettlement receives the recorded order
+         */
+        void recordSettlement(AtomicReference<@Nullable Boolean> departedAtSettlement) {
+            DispatchStage.recordSettlement(departedAtSettlement, departed);
+        }
+
+        /**
+         * Waits until {@code pending} — the current attempt's response — settles or the client departs,
+         * whichever comes first, and decides which of the two came first (see
+         * {@link DispatchStage#departureEndedWait}). The order is the one recorded when the attempt's settlement
+         * reached the dispatch through its response chain ({@link #recordSettlement}); the departure is
+         * signalled when {@link #clientDeparted} completes {@code departed}. Both are completion signals, so
+         * nothing is polled; the wait is interrupted like any other by the guard's timeout.
+         *
+         * @param pending              the current attempt's response, settled only after
+         *                             {@code departedAtSettlement} was recorded
+         * @param departedAtSettlement the order recorded when the attempt settled, {@code null} while it has not
+         * @return {@code true} when the departure was signalled before the attempt settled — the departure is
+         *         then recorded; {@code false} when the attempt settled first, successfully or not — its
+         *         outcome is then read from {@code pending}
          * @throws InterruptedException when the waiting thread is interrupted
          * @throws ExecutionException   never in practice: neither signal waited on fails
          */
-        boolean departedBefore(CompletableFuture<?> pending) throws InterruptedException, ExecutionException {
-            return departureEndedWait(pending, departed);
+        boolean departedBefore(CompletableFuture<?> pending, AtomicReference<@Nullable Boolean> departedAtSettlement)
+                throws InterruptedException, ExecutionException {
+            return departureEndedWait(pending, departed, departedAtSettlement);
         }
 
         /**

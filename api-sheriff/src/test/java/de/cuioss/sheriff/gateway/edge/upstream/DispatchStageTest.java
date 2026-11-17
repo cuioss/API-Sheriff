@@ -133,24 +133,45 @@ class DispatchStageTest {
     }
 
     @Nested
-    @DisplayName("Departure decision — which signal ended the wait, decided when the attempt settles")
+    @DisplayName("Departure decision — which signal came first, recorded when the attempt settles")
     class DepartureDecision {
 
         @Test
-        @DisplayName("An attempt that failed before the wait began keeps its own outcome when the client departs after")
-        void attemptSettledBeforeTheWaitKeepsItsOutcome() throws Exception {
+        @DisplayName("An attempt that failed before the client departed keeps its own outcome")
+        void failureBeforeTheDepartureKeepsItsOutcome() throws Exception {
             // Arrange
             CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
             CompletableFuture<String> departed = new CompletableFuture<>();
-            pending.completeExceptionally(new ConnectException(Generators.nonEmptyStrings().next()));
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            settle(pending, departed, departedAtSettlement,
+                    new ConnectException(Generators.nonEmptyStrings().next()));
             departed.complete(Generators.nonEmptyStrings().next());
 
             // Act
-            boolean departureEnded = DispatchStage.departureEndedWait(pending, departed);
+            boolean departureFirst = DispatchStage.departureEndedWait(pending, departed, departedAtSettlement);
 
             // Assert
-            assertFalse(departureEnded,
+            assertFalse(departureFirst,
                     "an upstream failure that settled the attempt before the departure stays the upstream's");
+        }
+
+        @Test
+        @DisplayName("A client that departed before a fast connection failure keeps the departure")
+        void departureBeforeAFastFailureKeepsTheDeparture() throws Exception {
+            // Arrange
+            CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
+            CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            departed.complete(Generators.nonEmptyStrings().next());
+            settle(pending, departed, departedAtSettlement,
+                    new ConnectException(Generators.nonEmptyStrings().next()));
+
+            // Act
+            boolean departureFirst = DispatchStage.departureEndedWait(pending, departed, departedAtSettlement);
+
+            // Assert
+            assertTrue(departureFirst,
+                    "the client left before the connection failure settled the attempt, even before the wait began");
         }
 
         @Test
@@ -159,48 +180,56 @@ class DispatchStageTest {
             // Arrange
             CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
             CompletableFuture<String> departed = new CompletableFuture<>();
-            pending.completeExceptionally(new TimeoutException(Generators.nonEmptyStrings().next()));
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            settle(pending, departed, departedAtSettlement,
+                    new TimeoutException(Generators.nonEmptyStrings().next()));
 
             // Act
-            boolean departureEnded = DispatchStage.departureEndedWait(pending, departed);
+            boolean departureFirst = DispatchStage.departureEndedWait(pending, departed, departedAtSettlement);
 
             // Assert
-            assertFalse(departureEnded, "an attempt that settled with no departure signalled keeps its own outcome");
+            assertFalse(departureFirst, "an attempt that settled with no departure signalled keeps its own outcome");
             assertFalse(departed.isDone(), "the decision completes no signal");
         }
 
         @Test
-        @DisplayName("A waiting thread woken by the departure keeps the departure when the expiry follows at once")
-        void wokenByDepartureKeepsItWhenTheExpiryFollows() throws Exception {
+        @DisplayName("A waiting thread keeps the departure when the expiry settles the attempt right after it")
+        void departureDuringTheWaitBeforeTheExpiryWins() throws Exception {
             // Arrange
             CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
             CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
             try (ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor()) {
-                Future<Boolean> decision = waiter.submit(() -> DispatchStage.departureEndedWait(pending, departed));
+                Future<Boolean> decision = waiter.submit(
+                        () -> DispatchStage.departureEndedWait(pending, departed, departedAtSettlement));
                 awaitWaiting(departed);
 
                 // Act
                 departed.complete(Generators.nonEmptyStrings().next());
-                pending.completeExceptionally(new TimeoutException(Generators.nonEmptyStrings().next()));
+                settle(pending, departed, departedAtSettlement,
+                        new TimeoutException(Generators.nonEmptyStrings().next()));
 
                 // Assert
                 assertTrue(Awaits.connect(decision, "the departure decision"),
-                        "the departure ended the wait before the expiry settled the attempt");
+                        "the departure came before the expiry settled the attempt");
             }
         }
 
         @Test
-        @DisplayName("A waiting thread woken by the settled attempt keeps its outcome when the departure follows at once")
-        void wokenBySettlementKeepsItWhenTheDepartureFollows() throws Exception {
+        @DisplayName("A waiting thread keeps the attempt's outcome when the client departs right after it settled")
+        void expiryDuringTheWaitBeforeTheDepartureKeepsItsOutcome() throws Exception {
             // Arrange
             CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
             CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
             try (ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor()) {
-                Future<Boolean> decision = waiter.submit(() -> DispatchStage.departureEndedWait(pending, departed));
+                Future<Boolean> decision = waiter.submit(
+                        () -> DispatchStage.departureEndedWait(pending, departed, departedAtSettlement));
                 awaitWaiting(departed);
 
                 // Act
-                pending.completeExceptionally(new TimeoutException(Generators.nonEmptyStrings().next()));
+                settle(pending, departed, departedAtSettlement,
+                        new TimeoutException(Generators.nonEmptyStrings().next()));
                 departed.complete(Generators.nonEmptyStrings().next());
 
                 // Assert
@@ -210,9 +239,16 @@ class DispatchStageTest {
         }
 
         /**
-         * Waits until the decision is blocked on {@code departed}: it registers its wait on {@code departed}
-         * only after the verdict it records when the attempt settles, so both are in place from then on.
+         * Settles {@code pending} with {@code failure} the way the response chain does: the order is recorded
+         * first, by the chain's last step, and only then does the response the dispatch waits on settle.
          */
+        private static void settle(CompletableFuture<HttpClientResponse> pending, CompletableFuture<String> departed,
+                AtomicReference<@Nullable Boolean> departedAtSettlement, Throwable failure) {
+            DispatchStage.recordSettlement(departedAtSettlement, departed);
+            pending.completeExceptionally(failure);
+        }
+
+        /** Waits until the decision is blocked on {@code departed}, its wait in place on both signals. */
         private static void awaitWaiting(CompletableFuture<?> departed) throws TimeoutException {
             Awaits.until(() -> departed.getNumberOfDependents() > 0, "the decision to wait on the departure",
                     Awaits.TEARDOWN_CEILING_SECONDS);

@@ -1656,8 +1656,8 @@ stream-idle bound]):
 * *A dispatch waits a bounded time for its upstream connection.* Every upstream client queues at most
   `max(admission_cap, 16)` attempts waiting for a pooled connection, dials within a fixed 5 s and completes
   its TLS handshake within 4 s, and an
-  attempt waits at most a fixed 10 s for its connection, in the queue and while it is dialled
-  (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). An attempt the full queue refuses ends unsent as
+  attempt waits at most a fixed 10 s for its connection, in the queue and while the upstream's host name is
+  resolved and the connection is dialled (`DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS`). An attempt the full queue refuses ends unsent as
   `UPSTREAM_POOL_SATURATED` (`503`), the gateway's own saturation, which the breaker records as neutral.
   An attempt whose wait reaches the 10 s ends unsent as `DispatchStage.UpstreamConnectionWaitExpired`,
   the upstream's `UPSTREAM_TIMEOUT` (`504`; on gRPC `DEADLINE_EXCEEDED` with `grpc-message: upstream`):
@@ -1671,7 +1671,10 @@ stream-idle bound]):
   limiting, which is out of scope. A refused connection, and a dial or TLS handshake that does not
   complete in time, stay the upstream's failure as well. The queue bound is the admission cap, the number
   of requests admitted at once. A client that leaves while its attempt waits ends its dispatch at once,
-  as its own departure, which the breaker records as neutral; the attempt's queued wait keeps its place
+  as its own departure, which the breaker records as neutral; an attempt whose settlement -- a refused
+  connection, an expired wait -- reached the dispatch before the departure keeps its own outcome, the
+  order of the two being recorded once, when the settlement reaches the dispatch through the attempt's
+  response chain. The attempt's queued wait keeps its place
   until the pool hands it a connection, which is then reset unsent, or the 10 s bound passes, because
   Vert.x cannot withdraw a queued wait. The wait bound also
   keeps the wait to a minority of the request-body bounds: an HTTP body, whose deadline counts from the
