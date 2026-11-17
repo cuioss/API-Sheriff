@@ -68,8 +68,11 @@ import io.vertx.core.net.impl.ConnectionBase;
  * stays open without an acknowledgement. A client that never acknowledges would otherwise make every
  * early answer on a long-lived connection leave one more pending future behind. At most
  * {@value #MAX_OUTSTANDING_PINGS} PINGs sent through this class are unacknowledged on one connection at a
- * time; past that, {@link #ping()} sends nothing and fails at once, and the caller ends its wait without
- * the PING.
+ * time — the most concurrent streams the edge admits on one connection. Each early answer waits on at
+ * most one PING at a time, so a client that acknowledges its PINGs never reaches the bound. Past it,
+ * {@link #ping()} sends nothing and fails at once; the caller takes that like any failed PING: the PING
+ * ends nothing, the quiet period restarts, and the caller sends a new PING once the window has stood
+ * still for it again. An acknowledgement frees a place.
  * <p>
  * <strong>Thread confinement.</strong> Netty's HTTP/2 state belongs to the connection's event loop.
  * {@link #remoteOpen()}, {@link #sendableBytes()} and {@link #localEnded()} must be called there;
@@ -86,11 +89,14 @@ final class InboundStreamWindow {
     private static final int PING_PAYLOAD_BYTES = 8;
 
     /**
-     * The most PINGs sent through this class that may be unacknowledged on one connection at once. An
-     * acknowledging client holds a PING for one round trip, so this is far above what early answers on
-     * one connection keep outstanding; it bounds what a client that never acknowledges leaves pending.
+     * The most PINGs sent through this class that may be unacknowledged on one connection at once: the
+     * most concurrent streams the edge admits on one connection, 100 (the listener bound
+     * {@code EdgeHardeningOptions} applies). Each early answer waits on at most one PING at a time and a
+     * connection carries at most that many early answers at once, so a client that acknowledges its
+     * PINGs never reaches the bound, while a client that never acknowledges leaves at most this many
+     * pending. {@code InboundStreamWindowTest} holds it to the edge's stream bound.
      */
-    static final int MAX_OUTSTANDING_PINGS = 16;
+    static final int MAX_OUTSTANDING_PINGS = 100;
 
     /** The failure {@link #ping()} answers with once {@value #MAX_OUTSTANDING_PINGS} PINGs are unacknowledged. */
     private static final String PINGS_OUTSTANDING = "Too many unacknowledged PINGs on the connection";

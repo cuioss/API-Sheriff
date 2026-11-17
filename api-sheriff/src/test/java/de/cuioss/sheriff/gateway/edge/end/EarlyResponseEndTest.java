@@ -35,7 +35,8 @@ import org.junit.jupiter.api.Test;
  * nothing more, once the PING sent after its window had not moved for
  * {@value EarlyResponseEnd#QUIET_MILLIS} ms is acknowledged with the window still unmoved, or after
  * {@value EarlyResponseEnd#MAX_WAIT_MILLIS} ms — whichever comes first — and not before. An unmoved
- * window alone only asks for the PING; it never ends the wait.
+ * window alone only asks for the PING; it never ends the wait, and a PING that fails or is refused is
+ * followed by a new one once the window has stood still for the quiet period again.
  */
 @EnableGeneratorController
 @DisplayName("EarlyResponseEnd — when the end of an early-answered HTTP/2 response may go ahead")
@@ -151,7 +152,7 @@ class EarlyResponseEndTest {
     }
 
     @Test
-    @DisplayName("a PING that fails or is never acknowledged never ends the wait as quiet: one PING, then the cap")
+    @DisplayName("a PING that is never acknowledged never ends the wait as quiet: one PING, then the cap")
     void unacknowledgedPingLeavesTheWaitToTheCap() {
         Quiescence quiescence = new Quiescence(START);
         List<Outcome> outcomes = new ArrayList<>();
@@ -186,6 +187,79 @@ class EarlyResponseEndTest {
 
         assertEquals(Outcome.WAIT, secondAcknowledgement,
                 "only the acknowledgement of the PING the wait sent can end it as quiet");
+    }
+
+    @Test
+    @DisplayName("a PING that fails or is refused ends nothing: a new PING follows once the window stands still for the quiet period again")
+    void failedPingIsFollowedByANewPingAfterAnotherQuietPeriod() {
+        Quiescence quiescence = outstandingPing();
+        Quiescence closing = outstandingPing();
+        long failedAt = START + QUIET + POLL;
+
+        quiescence.pingFailed(failedAt);
+        closing.pingFailed(failedAt);
+        Outcome justBefore = quiescence.next(failedAt + QUIET - 1, true, window);
+        Outcome atQuiet = quiescence.next(failedAt + QUIET, true, window);
+
+        assertAll("a failed PING",
+                () -> assertEquals(Outcome.WAIT, justBefore,
+                        "the quiet period restarts at the failure, so no PING is asked for at once"),
+                () -> assertEquals(Outcome.PING, atQuiet,
+                        "the wait is not left without a PING: a new one follows after another quiet period"),
+                () -> assertEquals(Outcome.NOTHING_SENDABLE, closing.next(failedAt + POLL, false, window),
+                        "a client that can send nothing more still ends the wait after a failed PING"));
+    }
+
+    @Test
+    @DisplayName("an acknowledgement after the PING failed ends nothing: only an acknowledged PING is quiet")
+    void acknowledgementAfterAFailedPingIsNotQuiet() {
+        Quiescence quiescence = outstandingPing();
+        quiescence.pingFailed(START + QUIET + POLL);
+
+        Outcome acknowledged = quiescence.acknowledged(START + QUIET + 2 * POLL, true, window);
+
+        assertEquals(Outcome.WAIT, acknowledged, "a failed PING is no longer outstanding, so nothing it answers is quiet");
+    }
+
+    @Test
+    @DisplayName("a failure with no PING of the wait outstanding changes nothing")
+    void failureWithoutAnOutstandingPingChangesNothing() {
+        Quiescence quiescence = new Quiescence(START);
+        quiescence.next(START, true, window);
+
+        quiescence.pingFailed(START + QUIET - 1);
+        Outcome atQuiet = quiescence.next(START + QUIET, true, window);
+
+        assertEquals(Outcome.PING, atQuiet, "the quiet period is not restarted by a failure no PING of the wait had");
+    }
+
+    @Test
+    @DisplayName("a PING that fails every time never ends the wait as quiet: one new PING per quiet period, then the cap")
+    void pingFailingEveryTimeLeavesTheWaitToTheCap() {
+        Quiescence quiescence = new Quiescence(START);
+        List<Outcome> outcomes = new ArrayList<>();
+        Outcome outcome;
+        long lookedAt = START;
+        do {
+            outcome = quiescence.next(lookedAt, true, window);
+            outcomes.add(outcome);
+            if (outcome == Outcome.PING) {
+                quiescence.pingFailed(lookedAt);
+            }
+            lookedAt += POLL;
+        } while ((outcome == Outcome.WAIT || outcome == Outcome.PING) && lookedAt <= START + 2 * CAP);
+        Outcome ended = outcome;
+        long waited = lookedAt - POLL - START;
+        // A PING at every whole quiet period before the cap; the look at the cap itself ends the wait.
+        long expectedPings = EarlyResponseEnd.MAX_WAIT_MILLIS / EarlyResponseEnd.QUIET_MILLIS - 1;
+
+        assertAll("an unmoved window whose PING fails every time",
+                () -> assertEquals(expectedPings, outcomes.stream().filter(Outcome.PING::equals).count(),
+                        () -> "a failed PING is followed by a new one after each quiet period: " + outcomes),
+                () -> assertFalse(outcomes.contains(Outcome.QUIET), "no look ends the wait as quiet"),
+                () -> assertEquals(Outcome.TIME_CAP, ended),
+                () -> assertTrue(waited >= CAP && waited < CAP + POLL,
+                        () -> "the wait must end at the first look past the cap, ended after " + waited + " ns"));
     }
 
     /** A wait that has sent its PING on a window unmoved since {@link #START} and not had it acknowledged. */

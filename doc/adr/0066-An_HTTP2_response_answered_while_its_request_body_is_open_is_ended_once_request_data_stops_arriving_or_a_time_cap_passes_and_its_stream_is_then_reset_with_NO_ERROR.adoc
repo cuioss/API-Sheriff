@@ -101,9 +101,11 @@ latency, data a slow client has already sent is still in flight, and it would ar
 The `PING` closes that gap. A client acknowledges it only once it has received it, so every frame the
 client sent before then arrives ahead of the acknowledgement; a window still unmoved at the
 acknowledgement means the client sent nothing between its last frame and the `PING`. A window that
-moves before the acknowledgement restarts the quiet period. One `PING` is outstanding at a time, and a
-`PING` that fails or is never acknowledged ends nothing, so the wait then ends by the first condition or
-the cap. What remains exposed is a client that sends again after acknowledging the `PING`, or one still
+moves before the acknowledgement restarts the quiet period. One `PING` is outstanding at a time. A
+`PING` that fails, or is not sent because its connection already holds the most unacknowledged `PING`
+frames allowed, ends nothing: the quiet period restarts, and the wait sends a new `PING` once the window
+has stood still for it again. A `PING` that is never acknowledged ends nothing either, so the wait then
+ends by the first condition or the cap. What remains exposed is a client that sends again after acknowledging the `PING`, or one still
 trickling data when the cap ends the wait: that data arrives after the reset and draws a counted
 `RST_STREAM(STREAM_CLOSED)`.
 
@@ -113,11 +115,21 @@ reads can refill the connection window.
 
 The poll interval (`EarlyResponseEnd`), the 50 ms quiet period and the 1 s cap are gateway constants.
 Vert.x exposes no per-stream flow-control state, so `InboundStreamWindow` reads the windows from the
-Netty HTTP/2 codec underneath. It uses exactly one Vert.x internal and otherwise public Netty API,
-read-only, on the connection's event loop. The confirming `PING` is the one frame it writes, and it
-writes it through public Vert.x API (`HttpConnection#ping`) on the request's own connection, not
-through the Netty view. When that view cannot be attached, the seam ends the response at once and
-resets the stream after the end has been written.
+Netty HTTP/2 codec underneath. It uses exactly one Vert.x internal and otherwise public Netty API, on
+the connection's event loop. It reads the codec's state and writes no frame through it; the one thing
+it keeps on the connection's channel is the count of its own unacknowledged `PING` frames. The
+confirming `PING` is the one frame it writes, and it writes it through public Vert.x API
+(`HttpConnection#ping`) on the request's own connection, not through the Netty view.
+
+Vert.x keeps the future of a written `PING` until the client acknowledges it, also while the
+connection stays open without an acknowledgement. The unacknowledged `PING` frames on one connection
+are therefore bounded at 100, the most concurrent streams the edge admits on a connection: each
+early answer waits on at most one `PING` at a time, so a client that acknowledges them never reaches
+the bound, while a client that never acknowledges leaves at most that many pending. A `PING` past the
+bound is not sent; the wait asks again after its next quiet period, as for any failed `PING`.
+
+When the Netty view cannot be attached, the seam ends the response at once and resets the stream after
+the end has been written.
 
 === Step 3 -- the reset goes out right behind the end
 
@@ -330,6 +342,7 @@ about the data in flight, and it closes the upstream connection the one way that
   `STREAM_CLOSED` reset from the transport.
 * The gateway writes `PING` frames a client can provoke: one per quiet period of an early-answered
   stream, at most one outstanding per stream, so a wait sends at most one per 50 ms before the cap.
+  A client that never acknowledges them leaves at most 100 pending on one connection.
 * The transport view reaches one Vert.x internal. A Vert.x upgrade that changes it degrades the rule to
   "end at once, reset after the write" rather than failing. That build then writes the in-flight
   `STREAM_CLOSED` resets again.
@@ -354,6 +367,9 @@ about the data in flight, and it closes the upstream connection the one way that
 * treating the time cap as the normal exit, or tuning it down to shorten the delay;
 * taking an unconfirmed quiet period as quiet -- ending on an unmoved window without the acknowledged
   `PING` -- which brings back the `STREAM_CLOSED` resets for data in flight across a link with latency;
+* bounding the unacknowledged `PING` frames of a connection below the concurrent streams the edge
+  admits on it, or leaving a wait without a new `PING` after one failed, either of which holds an
+  acknowledging client's early answers to the cap;
 * moving the relay or the end of the response into the guarded call, which makes every early answer a
   breaker failure a client can drive. The pin test drives the reset after the dispatch has returned,
   so a change to where the edge ends the response has to be judged against this record;

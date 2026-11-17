@@ -17,13 +17,19 @@ package de.cuioss.sheriff.gateway.edge.end;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.test.generator.Generators;
@@ -39,6 +45,7 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.net.NetSocket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -50,7 +57,9 @@ import org.junit.jupiter.api.Test;
  * HTTP/2 request — and to nothing else — and reports what the transport knows of it. A request paused
  * by its handler returns no window to the client, so the window it reports shrinks by exactly the bytes
  * the client sends, and the stream stops being open to the client once the client ends it. The PING it
- * sends goes out on the request's own connection and completes once the client acknowledges it.
+ * sends goes out on the request's own connection and completes once the client acknowledges it, and the
+ * PINGs a connection's client holds unacknowledged are bounded: past the bound a PING is refused at once,
+ * until an acknowledgement frees a place.
  * <p>
  * This is the test that pins the one Vert.x internal the class reaches through: should a Vert.x upgrade
  * change it, the attach fails here rather than silently in production.
@@ -206,6 +215,56 @@ class InboundStreamWindowTest {
         assertTrue(failed, "a PING that cannot be acknowledged must fail, never complete");
     }
 
+    /**
+     * Each early answer waits on at most one PING at a time, and a connection carries at most as many
+     * early answers at once as it has streams, so the bound must not fall below the streams the edge
+     * admits on one connection — or a client acknowledging every PING would have the PING of its later
+     * early answers refused. Read from the listener settings the edge's customizer leaves, so the check follows
+     * the edge's bound wherever it is set.
+     */
+    @Test
+    @DisplayName("the per-connection PING bound is no lower than the concurrent streams the edge admits on a connection")
+    void pingBoundCoversEveryStreamTheEdgeAdmits() {
+        HttpServerOptions listener = new HttpServerOptions();
+        new EdgeHardeningOptions().customizeHttpServer(listener);
+        long admittedStreams = listener.getInitialSettings().getMaxConcurrentStreams();
+
+        assertTrue(InboundStreamWindow.MAX_OUTSTANDING_PINGS >= admittedStreams,
+                () -> "an acknowledging client may have one PING outstanding per admitted stream, but the bound is "
+                        + InboundStreamWindow.MAX_OUTSTANDING_PINGS + " for " + admittedStreams + " admitted streams");
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — past the per-connection bound a PING is refused at once, and an acknowledgement frees a place")
+    void pingPastTheBoundIsRefusedUntilAnAcknowledgementFreesAPlace() throws Exception {
+        PingHoldingClient holding = PingHoldingClient.open(vertx, server.actualPort());
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the request");
+        InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
+        List<Future<Void>> held = new ArrayList<>();
+        for (int sent = 0; sent < InboundStreamWindow.MAX_OUTSTANDING_PINGS; sent++) {
+            held.add(window.ping());
+        }
+        Awaits.until(() -> holding.pingsReceived() == InboundStreamWindow.MAX_OUTSTANDING_PINGS,
+                "every PING within the bound to reach the client", Awaits.CONNECT_CEILING_SECONDS);
+
+        Future<Void> refused = window.ping();
+        boolean refusedAtOnce = refused.failed();
+        boolean othersPendingAtRefusal = held.stream().noneMatch(Future::isComplete);
+        Awaits.connect(holding.acknowledgeOne(), "the client to acknowledge one PING");
+        Awaits.connect(held.getFirst(), "the acknowledged PING to complete");
+        Future<Void> afterRelease = window.ping();
+        Awaits.until(() -> holding.pingsReceived() > InboundStreamWindow.MAX_OUTSTANDING_PINGS,
+                "the PING sent after the acknowledgement to reach the client", Awaits.CONNECT_CEILING_SECONDS);
+
+        assertAll("the per-connection bound of unacknowledged PINGs",
+                () -> assertTrue(refusedAtOnce, "a PING past the bound fails at once, without waiting on the client"),
+                () -> assertTrue(othersPendingAtRefusal, "the refusal settles none of the PINGs the client holds"),
+                () -> assertFalse(afterRelease.isComplete(),
+                        "the acknowledgement freed a place: the next PING is sent and waits for its own acknowledgement"),
+                () -> assertTrue(held.stream().skip(1).noneMatch(Future::isComplete),
+                        "only the acknowledged PING completed"));
+    }
+
     @Test
     @DisplayName("HTTP/1.1 — no stream to attach to")
     void doesNotAttachToAnHttp1Request() throws Exception {
@@ -257,5 +316,113 @@ class InboundStreamWindowTest {
 
     /** What one look at the stream saw. */
     private record View(boolean remoteOpen, int sendable) {
+    }
+
+    /**
+     * A prior-knowledge HTTP/2 client written byte for byte, because an HTTP/2 client library
+     * acknowledges every PING itself: it opens one request stream, acknowledges the server's
+     * {@code SETTINGS}, and holds every PING it receives unacknowledged until {@link #acknowledgeOne()}.
+     * Frames are parsed on the socket's event loop; the counts are safe to read from the test thread.
+     */
+    private static final class PingHoldingClient {
+
+        private static final byte[] PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
+        private static final int FRAME_HEADER_BYTES = 9;
+        private static final int HEADERS = 0x1;
+        private static final int SETTINGS = 0x4;
+        private static final int PING = 0x6;
+        private static final int FLAG_ACK = 0x1;
+        private static final int FLAG_END_HEADERS = 0x4;
+
+        private final NetSocket socket;
+        private final Queue<byte[]> unacknowledged = new ConcurrentLinkedQueue<>();
+        private final AtomicInteger pingsReceived = new AtomicInteger();
+        /** Bytes received and not yet parsed into a whole frame; touched on the event loop only. */
+        private Buffer pending = Buffer.buffer();
+
+        private PingHoldingClient(NetSocket socket) {
+            this.socket = socket;
+            socket.handler(this::received);
+            socket.exceptionHandler(cause -> {
+                // The server closing the connection at teardown may reset it; nothing asserts on that.
+            });
+        }
+
+        /** Connects, sends the preface, and opens stream 1 with a request head that leaves the body open. */
+        static PingHoldingClient open(Vertx vertx, int port) throws Exception {
+            NetSocket socket = Awaits.connect(vertx.createNetClient().connect(port, LoopbackHost.ADDRESS),
+                    "the PING-holding client to connect");
+            PingHoldingClient client = new PingHoldingClient(socket);
+            Buffer head = Buffer.buffer(PREFACE)
+                    .appendBuffer(frame(SETTINGS, 0, 0, new byte[0]))
+                    .appendBuffer(frame(HEADERS, FLAG_END_HEADERS, 1, hpack(List.of(
+                            Map.entry(":method", "POST"), Map.entry(":scheme", "http"),
+                            Map.entry(":path", "/upload"), Map.entry(":authority", "localhost:" + port)))));
+            Awaits.connect(socket.write(head), "the preface and the request head to be sent");
+            return client;
+        }
+
+        /** How many PINGs the client has received in all, acknowledged or not. */
+        int pingsReceived() {
+            return pingsReceived.get();
+        }
+
+        /** Acknowledges the oldest PING the client holds. */
+        Future<Void> acknowledgeOne() {
+            byte[] payload = unacknowledged.remove();
+            return socket.write(frame(PING, FLAG_ACK, 0, payload));
+        }
+
+        private void received(Buffer chunk) {
+            pending.appendBuffer(chunk);
+            int offset = 0;
+            while (pending.length() - offset >= FRAME_HEADER_BYTES) {
+                int length = pending.getUnsignedMedium(offset);
+                if (pending.length() - offset < FRAME_HEADER_BYTES + length) {
+                    break;
+                }
+                int type = pending.getUnsignedByte(offset + 3);
+                int flags = pending.getUnsignedByte(offset + 4);
+                byte[] payload = pending.getBytes(offset + FRAME_HEADER_BYTES, offset + FRAME_HEADER_BYTES + length);
+                offset += FRAME_HEADER_BYTES + length;
+                boolean acknowledgement = (flags & FLAG_ACK) != 0;
+                if (type == SETTINGS && !acknowledgement) {
+                    socket.write(frame(SETTINGS, FLAG_ACK, 0, new byte[0]));
+                } else if (type == PING && !acknowledgement) {
+                    unacknowledged.add(payload);
+                    pingsReceived.incrementAndGet();
+                }
+            }
+            pending = pending.getBuffer(offset, pending.length());
+        }
+
+        /** One frame: the 9-byte frame header followed by {@code payload}. */
+        private static Buffer frame(int type, int flags, int streamId, byte[] payload) {
+            return Buffer.buffer(FRAME_HEADER_BYTES + payload.length)
+                    .appendUnsignedByte((short) (payload.length >>> 16 & 0xff))
+                    .appendUnsignedByte((short) (payload.length >>> 8 & 0xff))
+                    .appendUnsignedByte((short) (payload.length & 0xff))
+                    .appendUnsignedByte((short) type)
+                    .appendUnsignedByte((short) flags)
+                    .appendInt(streamId & 0x7fffffff)
+                    .appendBytes(payload);
+        }
+
+        /**
+         * HPACK-encodes {@code fields} as literal header fields without indexing, new name, no Huffman
+         * coding (RFC 7541 §6.2.2); every name and value here is shorter than 127 bytes, so each length
+         * fits the 7-bit prefix.
+         */
+        private static byte[] hpack(List<Map.Entry<String, String>> fields) {
+            Buffer block = Buffer.buffer();
+            for (Map.Entry<String, String> field : fields) {
+                byte[] name = field.getKey().getBytes(StandardCharsets.US_ASCII);
+                byte[] value = field.getValue().getBytes(StandardCharsets.US_ASCII);
+                block.appendUnsignedByte((short) 0x00)
+                        .appendUnsignedByte((short) name.length).appendBytes(name)
+                        .appendUnsignedByte((short) value.length).appendBytes(value);
+            }
+            return block.getBytes();
+        }
     }
 }

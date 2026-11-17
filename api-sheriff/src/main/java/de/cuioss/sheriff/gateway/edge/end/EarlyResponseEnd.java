@@ -57,9 +57,11 @@ import org.jspecify.annotations.Nullable;
  *       PING only once it has seen it, so every frame it sent before then arrives ahead of the
  *       acknowledgement — a window still unmoved at the acknowledgement means the client sent nothing
  *       between its last frame and the PING. A window that moves before the acknowledgement restarts
- *       the {@value #QUIET_MILLIS} ms check. One PING is outstanding at a time, and a PING that fails, is
- *       never acknowledged, or is not sent because its connection already holds the most unacknowledged
- *       PINGs {@link InboundStreamWindow#ping()} allows ends nothing;</li>
+ *       the {@value #QUIET_MILLIS} ms check. One PING is outstanding at a time. A PING that fails, or is
+ *       not sent because its connection already holds the most unacknowledged PINGs
+ *       {@link InboundStreamWindow#ping()} allows, ends nothing: the check restarts, and a new PING is
+ *       sent once the window has stood still for it again. A PING that is never acknowledged ends
+ *       nothing either;</li>
  *   <li>{@value #MAX_WAIT_MILLIS} ms have passed since the wait began, whatever the stream does.</li>
  * </ol>
  * Only the first shows that no more request data can arrive; the second shows it for everything the
@@ -145,8 +147,9 @@ final class EarlyResponseEnd {
      * Decides, from successive looks at one stream and the acknowledgement of the PING it asks for, when
      * the end may go ahead: the client can send nothing more, a PING sent once the window had not moved
      * for the quiet period was acknowledged with the window still unmoved, or the cap has passed. At most
-     * one PING is outstanding; a window that moves restarts the quiet period, and a PING that is never
-     * acknowledged leaves the wait to the cap. Pure: it reads nothing but its arguments, so the rule is
+     * one PING is outstanding; a window that moves restarts the quiet period, a PING that fails or is
+     * refused restarts it too and is followed by a new one once it has passed again, and a PING that is
+     * never acknowledged leaves the wait to the cap. Pure: it reads nothing but its arguments, so the rule is
      * tested without a transport. Not thread-safe — one instance serves one wait, confined to the
      * stream's event loop.
      */
@@ -216,6 +219,22 @@ final class EarlyResponseEnd {
             return Outcome.WAIT;
         }
 
+        /**
+         * The outstanding PING failed or was refused: it ends nothing and is no longer outstanding, and
+         * the quiet period restarts at {@code nowNanos}, so the next look that finds the window unmoved
+         * for the quiet period again asks for a new PING. A failure with no PING of this wait outstanding
+         * changes nothing.
+         *
+         * @param nowNanos the time the failure is handled, on the {@link System#nanoTime()} scale
+         */
+        void pingFailed(long nowNanos) {
+            if (!pingOutstanding) {
+                return;
+            }
+            pingOutstanding = false;
+            lastChangeNanos = nowNanos;
+        }
+
         /** Restarts the quiet period when what the client may send has changed. */
         private void observe(long nowNanos, int sendable) {
             if (sendable != lastSendable) {
@@ -281,8 +300,9 @@ final class EarlyResponseEnd {
                 return;
             }
             if (acknowledgement.failed()) {
-                // The PING stays outstanding: the wait ends when nothing more is sendable or at the cap.
+                // A failed or refused PING ends nothing; a new one follows after another quiet period.
                 LOGGER.debug(acknowledgement.cause(), "The PING confirming a quiet HTTP/2 stream failed");
+                quiescence.pingFailed(System.nanoTime());
                 return;
             }
             Outcome outcome = quiescence.acknowledged(System.nanoTime(), window.remoteOpen(),
