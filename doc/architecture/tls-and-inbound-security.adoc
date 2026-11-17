@@ -259,9 +259,11 @@ is the admission cap, the number of requests the gateway admits at once. A clien
 dispatch at once (<<_client_departure>>), but its attempt keeps its place in the queue until the pool
 hands it a connection, which is then reset unsent, or until its wait bound passes: Vert.x offers no way
 to withdraw a queued wait. The wait bound keeps the connection wait
-to a minority of the request-body bounds: an HTTP body has at least 15 s of its 25 s deadline left at the
-hand-over, and a gRPC call at least 19 s before its 29 s pre-response cap (<<_request_body_deadline>>,
-<<_grpc_message_bound>>). All of these values are fixed
+to a minority of the request-body bounds: when its attempt obtains its connection, an HTTP body has at
+least 15 s of its 25 s deadline left, and a gRPC call at least 19 s before its 29 s pre-response cap
+(<<_request_body_deadline>>, <<_grpc_message_bound>>). The guarantees are counted to that moment: the
+body is handed over in the callback that receives the connection, which only sets the request up -- its
+handlers and headers -- and waits for nothing. All of these values are fixed
 (link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#upstream-connection-wait[ADR-0060]).
 
 [[_request_body_idle_timeout]]
@@ -279,7 +281,8 @@ a fixed 25 s deadline from the start of the upstream attempt (including pool wai
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[ADR-0060]).
 The deadline bounds how long a request may hold the gateway before its body is in, so the wait for an
 upstream connection counts towards it; that wait is bounded at 10 s on its own
-(<<_upstream_connection_wait>>), so a body always has at least 15 s after the hand-over, and the deadline
+(<<_upstream_connection_wait>>), so a body always has at least 15 s left when its attempt obtains its
+connection, which the hand-over follows in the same callback without a further wait, and the deadline
 still passes before the guard's 30 s timeout, which is what keeps a slow body from ever being counted
 against the upstream's breaker.
 Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`); expiry after the
@@ -346,8 +349,9 @@ the start of the attempt and so counts the connection wait, the pre-response dea
 `GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS`, 29 s from the start of the attempt: a hand-over within
 the first 4 s keeps the whole 25 s, a later one has its deadline at the cap, so a client still holding its
 stream open is always ended as the client's a second before the guard. The connection wait is bounded at
-10 s (<<_upstream_connection_wait>>), so the hand-over comes no later than that and the deadline leaves the
-client at least 19 s. The deadline ends only a request stream whose end has not reached the dispatch when
+10 s (<<_upstream_connection_wait>>), so the attempt obtains its connection no later than that, at least
+19 s before the cap, and hands the body over in the callback that receives it, without a further wait. The
+deadline ends only a request stream whose end has not reached the dispatch when
 it passes — at its instant, read from the clock, so an end that arrives after it is too late even while
 the deadline's timer has not run yet (<<_request_body_deadline>>). A client that had already ended its
 stream at the hand-over is therefore ended by it only if the

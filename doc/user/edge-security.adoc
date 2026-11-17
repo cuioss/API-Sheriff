@@ -656,8 +656,8 @@ deployment that never writes it keeps the behaviour shown here.
   keeps it -- a CDN or other cache those last two target obeys them in place of `Cache-Control`. The
   time spent waiting for a
   pooled upstream connection counts towards the 25 s, but that wait is bounded at 10 s (Upstream
-  connection wait, below), so a body the gateway hands to the upstream always has at least 15 s left
-  after the hand-over. The deadline does not reset an upstream that is not taking data, but a body that
+  connection wait, below), so a body always has at least 15 s left when the gateway obtains its
+  upstream connection, and the gateway hands it over then, without a further wait. The deadline does not reset an upstream that is not taking data, but a body that
   upstream reads again after the deadline is ended then. Not applied to bodyless requests. On a
   `protocol: grpc` route it applies only until the upstream answers, and it counts from the moment the
   gateway hands the body to the upstream, so the wait for an upstream connection is not charged to the
@@ -669,8 +669,9 @@ deployment that never writes it keeps the behaviour shown here.
   ends with `grpc-message: upstream` and the upstream's circuit breaker counts it. A shorter pause is
   ordinary flow control, as when a client sends faster than its upstream reads, and stays the client's
   `input-validation`, so a client cannot open the breaker by out-sending a healthy upstream. Because the
-  wait for an upstream connection is bounded at 10 s, the deadline leaves a gRPC client at least 19 s
-  after the hand-over. Not configurable. See
+  wait for an upstream connection is bounded at 10 s, a gRPC client has at least 19 s before the 29 s limit
+  when the gateway obtains its upstream connection, and the gateway hands the body over then, without a
+  further wait. Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline].
 
 | Upstream connection wait
