@@ -136,6 +136,36 @@ never commit them as they are.
    - Skills: pm-dev-java:java-core, pm-dev-java:junit-core, pm-documents:ref-asciidoc, pm-dev-java:javadoc
    - Persona: implementer
 
+10. **The request-head deadline gap, stated (M1).** Neither the transport nor the gateway bounds the time a
+    connection may take to send a complete request head; the idle timer restarts on every byte, and the
+    connection cap is one global counter shared by the terminated listeners. The operator decided to state
+    the gap and the deployment requirement rather than build a deadline now. Document that a front proxy
+    with its own request-head timeout is a deployment requirement, in the edge-security user documentation,
+    the security-and-edge-hardening configuration page and the threat model's detection and listener
+    passages, and draft the text of an upstream request for a head-timeout or per-connection hook for the
+    operator to file.
+    - Verify first: re-confirm at the `main` the plan starts from that nothing in
+      `api-sheriff/src/main/java` installs a head deadline and that `quarkus.http.limits.max-connections`
+      is one counter for the terminated listeners (both are HYPOTHESIS in Claim Labels); a refutation
+      replaces this deliverable with a note in the landing message.
+    - Done when: each documented statement matches the code read at the start (`order: none`); the drafted
+      upstream request is in the landing message, not in a tracked document.
+    - Skills: pm-documents:ref-asciidoc, pm-documents:ref-documentation
+    - Persona: documenter
+11. **Back-channel logout revocation is per replica: say so at boot (C1).** Back-channel logout destroys
+    the session only in the store of the replica that received it, and the store is per process. Emit one
+    boot WARN, with a new `LogRecord`, whenever the server-mode session store and back-channel logout are
+    both enabled, naming the per-replica scope; no new configuration key, since no replica count is
+    declared. The WARN stays silent in cookie mode and when back-channel logout is not enabled.
+    - Verify first: confirm that no configuration key declares a replica count (HYPOTHESIS in Claim
+      Labels) and that the rule can read both enabled states at validation time.
+    - Done when: a test with server mode and back-channel logout enabled sees the WARN, failing at
+      `fa8dd54f`; cookie mode, and server mode without back-channel logout, see none (matched controls);
+      the record is in `doc/LogMessages.adoc` and the boot behaviour in `doc/variants/02-bff-session.adoc`
+      and `doc/user/bff-session.adoc` (`order: test-first`).
+    - Skills: pm-dev-java:java-core, pm-dev-java:java-security, pm-dev-java:junit-core, pm-dev-java-cui:cui-logging
+    - Persona: security-expert
+
 ## Standing Constraints
 
 - Pre-1.0 rules: no deprecation, no compatibility shims.
@@ -182,6 +212,9 @@ reported the same way, with the test that shows it.
 - HYPOTHESIS: the confirming logout POST is refused when `session.csrf.trusted_origins` omits the gateway's own origin — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/csrf/CsrfDefence.java` § `isTrusted` (verify-at-outline)
 - HYPOTHESIS: `ExtensionIssuerNamespaceGate` does not see a `%profile`-prefixed or build-time-resolved issuer key through `config.getPropertyNames()` — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ExtensionIssuerNamespaceGate.java:124` (verify-at-outline)
 - HYPOTHESIS: the extension's metrics collector can build its validator before the gate's `StartupEvent` observer — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ExtensionIssuerNamespaceGate.java:112` (verify-at-outline)
+- OBSERVED: the documented revocation scope is per replica — read at `doc/variants/02-bff-session.adoc:303` (main `fa8dd54f`)
+- HYPOTHESIS: no configuration key declares a replica count — confirm/refute by a search of `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/` (verify-at-outline; the orchestrator's search of `api-sheriff/src/main/java` found `replica` only in Javadoc, but its output was truncated)
+- HYPOTHESIS: nothing in `api-sheriff/src/main/java` installs a request-head deadline, and `quarkus.http.limits.max-connections` is one counter for the terminated listeners — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java` § `apply` and `api-sheriff/src/main/resources/application.properties` § `quarkus.http.limits.max-connections` (verify-at-outline; read from the private notes, not from code, by the orchestrator)
 - Verify-first clause: the verified results of SEC2-03-A to D in the notes were measured at `fa8dd54f`; re-measure at the `main` the plan starts from, and re-ground every `OBSERVED` claim above before scoping on it.
 
 ## Expected Surface
@@ -224,6 +257,9 @@ reported the same way, with the test that shows it.
 - OBSERVED: `doc/adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc`
 - OBSERVED: `doc/adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc`
 - OBSERVED: `doc/configuration/routing-and-forwarding.adoc`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/ConfigLogMessages.java`
+- OBSERVED: `doc/variants/02-bff-session.adoc`
+- OBSERVED: `doc/configuration/security-and-edge-hardening.adoc`
 - OBSERVED: `doc/user/bff-session.adoc`
 - OBSERVED: `doc/user/edge-security.adoc`
 - OBSERVED: `doc/development/source-detection-substrate.adoc`
@@ -236,7 +272,7 @@ reported the same way, with the test that shows it.
 
 - Depends on: PLAN-SEC2-02 shipped (it edits `edge/upstream/**`, `doc/security-threat-model.adoc` and `doc/LogMessages.adoc`, which this plan also edits), PLAN-SEC2-01 and PLAN-SEC2-03 (shipped).
 - Overlaps with: PLAN-SEC2-02 on `doc/security-threat-model.adoc`, `doc/LogMessages.adoc` and `edge/upstream/UpstreamFailureMapper.java`; hence sequenced after it.
-- Adjacent to: the items the epic Vision keeps in the private notes for a design decision (request-head deadline, early-response quiet rule, back-channel logout across replicas, a management boot refusal, the Info items): untouched; deliverable 8 pins management transport behaviour only and adds no boot refusal.
+- Adjacent to: the items the epic Vision kept in the private notes for a design decision, now decided by the operator on 2026-11-17: the request-head deadline is stated and documented (deliverable 10), back-channel logout across replicas gets a boot WARN (deliverable 11), the early-response quiet rule is PLAN-SEC2-05, the management plain-HTTP port is accepted with its existing WARN (deliverable 8 pins management transport behaviour only and adds no boot refusal), and the Info items are closed as recorded.
 
 ## Hand-Off Command
 
