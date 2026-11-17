@@ -47,17 +47,17 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 - 2026-11-17 — Operator confirmed the CodeRabbit review-body findings of #623 (landing claimed 2, provider shows 10) and #626 (2 inline, undisposed in the provider's record) were handled; the two Watches for them are retired. The 2-vs-10 mismatch stays recorded as a false claim in `landings/PLAN-SEC2-01.md`.
 - 2026-11-17 — Leftovers of the epic are collected in ONE plan, PLAN-SEC2-04 (workstream WS-04), on the operator's word; layer-3 items the landing reads raised are carried as `HYPOTHESIS` claims in its spec, mechanism-level, with the triggering detail only in the private notes.
+- 2026-11-17 — Routed to the plan-marshall `lessons-routing` inbox (sibling repo `plan-marshall`, message `api-sheriff-security-hardening-tier-2-001.md`) as one finding grouping three clusters: the `worktree_root_unreadable` pre-push gate failure behind the three `force-override` pushes, the `unknown` required keys of both incomplete landings (PLAN-SEC2-01 `effort`; PLAN-SEC2-03 five keys), and the review-body count / Sonar `head_revision_unavailable` reads. The two Open Defects for the incomplete landings and the `force-override` Watch are retired on that routing; the facts stay recorded in the two landing reports.
 
 ## Open Defects
 
-- 2026-11-16 — Incomplete landing `sec2-01-doc-honesty-and-config-guards-001.md` (PLAN-SEC2-01): `inbox landing-check` reports `complete: false`, missing key `effort` (the facts block carries `effort=unknown`). The landing was still reconciled and its facts used as far as they go; a manual paste from that plan may still surface the effort level.
+- None open.
 
-- 2026-11-17 — Incomplete landing `sec2-03-bff-logout-and-source-keys-001.md` (PLAN-SEC2-03): `inbox landing-check` reports `complete: false`, missing keys `total_tokens`, `unresolved_review_threads`, `review_body_findings_total`, `review_body_findings_handled`, `sonar_open_new_issues` (all `unknown`; the lane names the missing finalize-step producers). The landing was still reconciled; same producer gap as the 2026-11-16 entry for PLAN-SEC2-01, so one plan-marshall defect may cover both.
+
 
 ## Watches
 
-- 2026-11-16 — PLAN-SEC2-01 `sonar_open_new_issues=0` is not re-verified: the Sonar read on the merged PR is `undecidable` (`head_revision_unavailable`), so the figure is unknown. Retire on the operator's confirmation or a Sonar read that decides.
-- 2026-11-16 — PLAN-SEC2-01 pushed on the logged `force-override` basis three times because the pre-push freshness gate refused every pass with `worktree_root_unreadable` (null worktree root in every build row of the change ledger). The lane attributes it to a plan-marshall build-recording defect that was not investigated. Operator to route it to the plan-marshall lessons inbox; retire once routed.
+- 2026-11-16 — PLAN-SEC2-01 `sonar_open_new_issues=0` is not re-verified: the Sonar read on the merged PR is `undecidable` (`head_revision_unavailable`), so the figure is unknown. Retire on the operator's confirmation or a Sonar read that decides. Root cause (a merged PR has no head revision to read against) routed 2026-11-17; the figures themselves stay unknown.
 
 - 2026-11-17 — PLAN-SEC2-03: the Sonar read on merged PR 626 is `undecidable` (`head_revision_unavailable`); the lane's own `new_code_issue_count=0` is unconfirmed here. Same cause as the PLAN-SEC2-01 watch; retire both together.
 

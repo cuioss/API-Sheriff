@@ -4,7 +4,7 @@
 
 ## START HERE
 
-**Resume anchor**: PLAN-SEC2-01 (#623) and PLAN-SEC2-03 (#626) shipped and analyzed. PLAN-SEC2-02 running (operator-confirmed 2026-11-16); PLAN-SEC2-04 (leftover hardening, WS-04) staged, sequenced after 02. When 02 lands: analyze (folds 02's leftovers into PLAN-SEC2-04), land, then emit 04. Open defects (incomplete landings 01, 03) and Sonar/force-override watches in epic.md. Epic closes when 02 and 04 ship and the private notes hold no item this epic left open.
+**Resume anchor**: PLAN-SEC2-01 (#623) and PLAN-SEC2-03 (#626) shipped and analyzed. PLAN-SEC2-02 running (operator-confirmed 2026-11-16); PLAN-SEC2-04 (leftover hardening, WS-04) staged, sequenced after 02. When 02 lands: analyze (folds 02's leftovers into PLAN-SEC2-04), land, then emit 04. No Open Defects; two Sonar Watches (unknown figures, root cause routed) and the formatter-churn Watch in epic.md. Epic closes when 02 and 04 ship and the private notes hold no item this epic left open.
 **Phase**: orchestrating
 **Running**:
 - PLAN-SEC2-02 (WS-02)
