@@ -628,6 +628,28 @@ public final class ConfigLogMessages {
                 .identifier(148)
                 .template("edge_hardening.admission_cap is %s, which is above half the connection cap of %s open connections (quarkus.http.limits.max-connections) — on HTTP/1.1 every request holds a connection and the cap also counts connections carrying no admitted request, so the cap can close connections unserved, without a 503, before admission refuses a request. Keep edge_hardening.admission_cap at or below %s, or raise quarkus.http.limits.max-connections in the deployment together with the container's nofile limit")
                 .build();
+
+        /**
+         * {@code enumeration_detection} is enabled with the acting action {@code block} or
+         * {@code delay} while {@code forwarded.trusted_proxies} is non-empty.
+         * <p>
+         * A trusted proxy's request whose forwarding headers yield no client — neither the combined
+         * {@code Forwarded} / {@code X-Forwarded-For} chain nor the {@code X-Forwarded-For} fallback —
+         * is keyed on the one shared source {@code unknown}. Detection counts, trips and reports that
+         * source like any other, but never blocks, delays or refuses it, because it stands for every
+         * such client at once. Requests a proxy forwards without a usable client address therefore
+         * escape the configured action, and this record is the boot-time statement of that gap.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: the combination is the recommended posture
+         * behind a proxy that does send its clients' addresses. Emitted once per boot by
+         * {@code EdgeRules.validateForwardedTrust}. The template argument is the effective action —
+         * never a proxy range or any other address.
+         */
+        public static final LogRecord DETECTION_ACTION_BEHIND_TRUSTED_PROXIES = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(149)
+                .template("enumeration_detection.action is %s while forwarded.trusted_proxies is non-empty — a request a trusted proxy forwards without a usable client address is keyed on the shared source 'unknown', which detection counts and reports but never blocks, delays or refuses, so such requests escape the configured action. Make sure every trusted proxy sends its clients' addresses in X-Forwarded-For")
+                .build();
     }
 
     /**

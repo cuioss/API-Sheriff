@@ -63,6 +63,14 @@ import org.jspecify.annotations.Nullable;
  * it — the feed after the virtual-thread hop. A request that carries no stashed source is neither
  * answered nor admitted.
  * <p>
+ * <strong>The unknown source is never acted on.</strong> A request whose client did not resolve — a
+ * trusted proxy's request with no usable forwarding header — is keyed on the shared
+ * {@link SourceKey#UNKNOWN_SOURCE}, which stands for every such client at once. It is admitted to the
+ * ledger like any source, so it is counted, can trip, and its trip is logged and handed to the
+ * recon-trip observer; but whatever the action, it is never answered {@code 429}, never refused for a
+ * used-up held-answer share and never held, because acting on it would act on all of those clients for
+ * the probing of one.
+ * <p>
  * <strong>The block.</strong> A source can be {@code BLOCKED} only when the operator configured
  * {@code action: block}; the default {@code observe} never blocks. A request from a blocked source is
  * answered on the event loop, before {@link EdgeAdmission#tryAdmit()}: it is metered as
@@ -74,20 +82,38 @@ import org.jspecify.annotations.Nullable;
  * while that source's {@linkplain EdgeHardeningOptions#heldAnswerSourceShare() share} of the
  * held-answer sub-budget is used up, so one delayed source cannot occupy the whole sub-budget, once
  * that has more than one permit. Below an {@code edge_hardening.admission_cap} of {@code 8} the
- * sub-budget has one permit, and one source's share is that whole permit.
+ * sub-budget has one permit, and one source's share is that whole permit. The share is judged and counted
+ * under the key the ledger tracks the source under ({@link SourceState#key()}): an IPv6 {@code /64} the
+ * ledger aggregated to its {@code /48} under pressure draws on the {@code /48}'s one share, so a tripped
+ * site cannot gain a fresh share per {@code /64} it rotates through; a {@code /64} tracked under its own
+ * key keeps its own share. Neither answer is ever given to the {@link SourceKey#UNKNOWN_SOURCE unknown}
+ * source.
+ * <p>
+ * <strong>The full ledger fails closed.</strong> Under {@code block} and {@code delay} a source the
+ * ledger does not track and has no room for ({@link SourceLedger#hasRoomFor}) is answered the same
+ * block-style {@code 429}, with {@code Retry-After} the {@link SourceLedger#SWEEP_INTERVAL sweep interval}
+ * in whole seconds, at least {@code 1}, and its overflow is reported like an untracked rejection's. A
+ * source the ledger cannot count could never trip or be blocked, so letting it through would hand an
+ * unbounded number of fresh sources free probing once the ledger is full. The consequence is accepted
+ * on purpose: while a flood keeps the ledger full of live sources, every NEW source is refused, a
+ * legitimate one included, until the flood drains and the sweep frees room; sources already tracked
+ * are answered as before. Under {@code observe} nothing is refused, and the
+ * {@link SourceKey#UNKNOWN_SOURCE unknown} source is never refused. The check claims no slot: room that
+ * a concurrent admission takes after it falls back to the untracked count below.
  * <p>
  * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ReconFeed}, the gate admits every
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —
  * a recon event before the trust boundary that is not a static resource. Under {@code delay}, a
  * rejection whose source has tripped is held until admission plus {@code delay_millis}, and its hold
- * counts against that source's share ({@link EdgeAdmission#HELD_SOURCE_KEY}). An unexpected
+ * counts against that source's share under its tracked key ({@link EdgeAdmission#HELD_SOURCE_KEY}). An unexpected
  * internal failure answered as the uniform {@code 404} ({@link EventType#PRE_TRUST_INTERNAL_FAILURE})
  * is never admitted, but under {@code delay} it is held exactly as a recon rejection of the same
  * request would be: otherwise, for a tripped source, a crafted input that made a stage fail on a routed
  * address would be answered at the floor while the same input on an absent address waited for the
  * delay, and the timing would tell the two apart. A source the
  * ledger could not track — the cardinality bound — is counted on
- * {@link SheriffMetrics#SOURCE_UNTRACKED_TOTAL}, and the first overflow of the process is logged once
+ * {@link SheriffMetrics#SOURCE_UNTRACKED_TOTAL}, whether the gate refused it or the feed found no room
+ * for its rejection, and the first overflow of the process is logged once
  * ({@link ApiSheriffLogMessages.WARN#SOURCE_UNTRACKED}).
  * <p>
  * <strong>The trip.</strong> Every trip, whatever the action, is counted as
@@ -189,10 +215,12 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * Answers the request at once with the block-style {@code 429} when the source {@link SourceKeys}
      * stashed under {@link SourceKeys#SOURCE_KEY} is blocked ({@code block}), or when it has tripped
      * under {@code delay} and its share of the held-answer sub-budget is used up — its
-     * {@code Retry-After} is then the whole seconds of {@code delay_millis}, at least {@code 1}. Called
-     * on the event loop before {@link EdgeAdmission#tryAdmit()}, after the source was stashed; when it
-     * answers, it takes no admission permit, starts no virtual thread and arms no timer. A request
-     * without a stashed source is never answered here.
+     * {@code Retry-After} is then the whole seconds of {@code delay_millis}, at least {@code 1} — or,
+     * under either, when the ledger neither tracks the source nor has room for it, with
+     * {@code Retry-After} the sweep interval. Called on the event loop before
+     * {@link EdgeAdmission#tryAdmit()}, after the source was stashed; when it answers, it takes no
+     * admission permit, starts no virtual thread and arms no timer. A request without a stashed source,
+     * and a request keyed on {@link SourceKey#UNKNOWN_SOURCE}, is never answered here.
      *
      * @param ctx the incoming request
      * @return {@code true} when the request was answered {@code 429} and the caller must stop
@@ -203,12 +231,19 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
             return false;
         }
         SourceKey key = ctx.get(SourceKeys.SOURCE_KEY);
-        if (key == null) {
+        if (key == null || isUnknownSource(key)) {
             return false;
         }
         Optional<SourceState> state = ledger.state(key);
         if (state.isEmpty()) {
-            return false;
+            if (ledger.hasRoomFor(key)) {
+                return false;
+            }
+            // Fail closed: a source the full ledger cannot count could never trip, so it is refused
+            // rather than handed free probing; the check claims no slot, admit decides again.
+            reportUntracked();
+            answerBlocked(ctx, retryAfterSeconds(SourceLedger.SWEEP_INTERVAL.toNanos()));
+            return true;
         }
         if (action == SourceLedger.Action.BLOCK) {
             if (!state.get().isBlocked()) {
@@ -217,7 +252,9 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
             answerBlocked(ctx, retryAfterSeconds(state.get().remainingBlockNanos(System.nanoTime())));
             return true;
         }
-        if (!state.get().hasTripped() || !heldShareExhausted.test(key)) {
+        // The share is judged under the key the ledger tracks — a /64 aggregated to its /48 is judged under
+        // the /48 its held answers were counted on, so rotating /64s draws on one share.
+        if (!state.get().hasTripped() || !heldShareExhausted.test(state.get().key())) {
             return false;
         }
         // delay: the tripped source's share of the held-answer sub-budget is used up, so its further
@@ -254,7 +291,7 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * @param request   the pipeline request, {@code null} for a rejection raised before one was built
      * @param eventType the TRUE event of the rejection
      * @return admission plus {@code delay_millis} when the action is {@code delay} and the source has
-     *         tripped; empty otherwise
+     *         tripped and is not {@link SourceKey#UNKNOWN_SOURCE}; empty otherwise
      */
     @Override
     public OptionalLong admit(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType) {
@@ -274,19 +311,30 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
             reportUntracked();
             return OptionalLong.empty();
         }
-        if (delayNanos.isEmpty() || !state.hasTripped()) {
+        if (delayNanos.isEmpty() || !state.hasTripped() || isUnknownSource(key)) {
             return OptionalLong.empty();
         }
-        return delayedHold(ctx, key);
+        return delayedHold(ctx, state.key());
+    }
+
+    /**
+     * Whether {@code key} is the shared source of every request whose client did not resolve
+     * ({@link SourceKey#UNKNOWN_SOURCE}) — counted, tripped, logged and observed like any source, but
+     * never answered, refused or held: it stands for many clients at once, so acting on it would act on
+     * all of them for the probing of one.
+     */
+    private static boolean isUnknownSource(SourceKey key) {
+        return SourceKey.UNKNOWN_SOURCE.equals(key.source());
     }
 
     /**
      * The {@code delay} hold of a tripped source's answer: admission plus {@code delay_millis}. The
-     * source is stashed under {@link EdgeAdmission#HELD_SOURCE_KEY}, so the hold this answer enters
-     * counts against the source's share of the held-answer sub-budget.
+     * key the ledger tracks the source under — its {@code /48} aggregate when the ledger aggregated it —
+     * is stashed under {@link EdgeAdmission#HELD_SOURCE_KEY}, so the hold this answer enters counts
+     * against that tracked source's share of the held-answer sub-budget.
      */
-    private OptionalLong delayedHold(RoutingContext ctx, SourceKey key) {
-        ctx.put(EdgeAdmission.HELD_SOURCE_KEY, key);
+    private OptionalLong delayedHold(RoutingContext ctx, SourceKey trackedKey) {
+        ctx.put(EdgeAdmission.HELD_SOURCE_KEY, trackedKey);
         return OptionalLong.of(admittedAtNanos(ctx) + delayNanos.getAsLong());
     }
 
@@ -294,19 +342,24 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * The hold of a pre-trust internal failure, which carries no detection weight and is never admitted:
      * under {@code delay} it is held until admission plus {@code delay_millis} when the source has
      * already tripped and the request is one a recon rejection would be counted for — not past the trust
-     * boundary and not a static resource — and is answered without a hold otherwise. The source's state
+     * boundary and not a static resource — and is answered without a hold otherwise, as it always is for
+     * the {@link SourceKey#UNKNOWN_SOURCE unknown} source. The source's state
      * is only read, so the failure neither adds weight nor starts tracking an untracked source.
      */
     private OptionalLong holdUncounted(RoutingContext ctx, @Nullable PipelineRequest request, SourceKey key) {
-        if (delayNanos.isEmpty()) {
+        if (delayNanos.isEmpty() || isUnknownSource(key)) {
             return OptionalLong.empty();
         }
         boolean reconShaped = request == null
                 || !(request.trustBoundaryPassed() || ReconEvents.isStaticResource(request));
-        if (!reconShaped || !ledger.state(key).map(SourceState::hasTripped).orElse(false)) {
+        if (!reconShaped) {
             return OptionalLong.empty();
         }
-        return delayedHold(ctx, key);
+        Optional<SourceState> state = ledger.state(key).filter(SourceState::hasTripped);
+        if (state.isEmpty()) {
+            return OptionalLong.empty();
+        }
+        return delayedHold(ctx, state.get().key());
     }
 
     /**
@@ -322,8 +375,9 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     }
 
     /**
-     * Counts one untracked recon event and logs the first overflow of the process once; every later
-     * one is a {@code DEBUG} diagnostic.
+     * Counts one source the full ledger could not track — refused at the gate or left untracked by the
+     * feed — and logs the first overflow of the process once; every later one is a {@code DEBUG}
+     * diagnostic.
      */
     private void reportUntracked() {
         sheriffMetrics.recordSourceUntracked();

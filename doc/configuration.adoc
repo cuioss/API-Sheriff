@@ -424,7 +424,11 @@ enumeration_detection:             # OPTIONAL per-source scan detection. Omit th
                                    #   before admission.
                                    #   Switch only once a source address is ONE client: behind a
                                    #   NAT or an untrusted load balancer it is every client -- set
-                                   #   forwarded.trusted_proxies first.
+                                   #   forwarded.trusted_proxies first, and make sure they send
+                                   #   X-Forwarded-For: the shared source 'unknown' is never
+                                   #   blocked, delayed or refused (boot WARN ApiSheriff-149).
+                                   #   Under delay/block a new source the full ledger cannot track
+                                   #   is answered 429 until room frees up.
   block_seconds: 60                # how long a source stays blocked under block. Minimum 1.
   delay_millis: 2000               # how long rejection answers are held under delay. 1..10000.
 
@@ -570,7 +574,8 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   this key omitted
     ttl_seconds: 3600              # absolute session lifetime from login
     csrf:
-      trusted_origins: [https://app.example.com]   # app origins allowed on unsafe methods;
+      trusted_origins: [https://gw.example.com, https://app.example.com]   # app origins allowed on unsafe methods;
+                                   #   list the gateway's own origin too (logout);
                                    #   defaults to the origin of redirect_uri
     refresh:
       enabled: true

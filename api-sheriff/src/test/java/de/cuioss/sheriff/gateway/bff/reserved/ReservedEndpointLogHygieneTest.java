@@ -31,6 +31,7 @@ import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -289,14 +290,15 @@ class ReservedEndpointLogHygieneTest {
         LogoutEndpoint withEndpoint = new LogoutEndpoint(new RpInitiatedLogout(endSessionFlow, ended -> {
                 },
                 () -> Optional.of("https://idp.example.com/logout"), ORIGIN + "/auth/logout/return", "/",
-                Duration.ofMinutes(1)), sessionBinding);
+                Duration.ofMinutes(1)), sessionBinding, new CsrfDefence(Set.of(ORIGIN)), "/auth/logout");
         LogoutEndpoint withoutEndpoint = new LogoutEndpoint(new RpInitiatedLogout(endSessionFlow, ended -> {
-                },
-                Optional::empty, ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1)), sessionBinding);
+                        },
+                        Optional::empty, ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1)), sessionBinding,
+                new CsrfDefence(Set.of(ORIGIN)), "/auth/logout");
 
-        LogoutEndpoint.LogoutOutcome toProvider = withEndpoint.logout(cookie, NOW);
+        LogoutEndpoint.LogoutOutcome toProvider = withEndpoint.logout(cookie, null, "same-origin", NOW);
         LogoutEndpoint.LogoutOutcome local = withoutEndpoint.logout(
-                pair(sessionBinding.bind(session, NOW).setCookieHeaders().getFirst()), NOW);
+                pair(sessionBinding.bind(session, NOW).setCookieHeaders().getFirst()), null, "same-origin", NOW);
 
         assertEquals(List.of(302, 302), List.of(toProvider.status(), local.status()),
                 "precondition: both logouts were answered");

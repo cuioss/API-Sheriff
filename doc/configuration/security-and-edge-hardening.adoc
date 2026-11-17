@@ -344,10 +344,28 @@ every client behind a NAT, egress proxy or load balancer; enforcement is the ope
 
 * *Address* -- the client address a trusted forwarder reported, when the peer is listed in
   xref:routing-and-forwarding.adoc#_forwarded_headers[`forwarded.trusted_proxies`]; otherwise the TCP
-  peer, whose `X-Forwarded-For` is never read. IPv6 is reduced to its `/64`; an absent or unparseable
-  address is the one source `unknown`.
+  peer, whose `X-Forwarded-For` is never read. IPv6 is reduced to its `/64` (or, once the ledger is
+  under pressure, a new source to its `/48` -- see *Scope* below). When a trusted forwarder's
+  `Forwarded` and `X-Forwarded-For` headers together yield no client -- a contested chain, where the
+  two disagree, or an unresolvable one -- the client the `X-Forwarded-For` chain alone yields under the
+  same trusted proxies is used. Only a request that yields no client even then, and an absent or
+  unparseable TCP peer address, is the one source `unknown`.
 * *Host* -- the request host when a route declares it as `match.host`, otherwise `*`, so changing
   `Host` gives no fresh count.
+
+[[_enumeration_detection_unknown]]
+*The `unknown` source is counted, never acted on.* `unknown` stands for every client whose address did
+not resolve at once, so acting on it would act on all of them for the probing of one. It is counted,
+it trips, its trip is logged as `ApiSheriff-141` and fed to
+<<_threat_classification,`threat_classification`>>, but under every `action` it is never answered
+`429`, never delayed and never refused. The pending-login quota of the BFF uses the same address with
+the same `X-Forwarded-For` fallback and counts every `unknown` request as one source (see
+link:../user/bff-session.adoc#pending-logins[Server-Session BFF -- When too many logins are
+unfinished]). Because a trusted proxy that forwards no usable client address therefore lets its
+requests escape `block` and `delay`, the gateway logs WARN
+link:../LogMessages.adoc#apisheriff-149[`ApiSheriff-149`] once at startup when `enumeration_detection` is
+enabled with `action` `block` or `delay` while `forwarded.trusted_proxies` is non-empty. It names the
+action only. Make sure every trusted proxy sends its clients' addresses in `X-Forwarded-For`.
 
 *Shared addresses.* Behind a load balancer not listed in `forwarded.trusted_proxies`, every client is
 one source: one scanning client trips it, and under `block` every client is answered `429`; under
@@ -364,8 +382,24 @@ and the sized touch icons (`/apple-touch-icon-180x180.png`). Any other path coun
 extension (`/app.js` on no route counts).
 
 *Scope.* Counts live in one instance's memory, are not shared and are cleared by a restart. An instance
-tracks at most 65,536 sources; a source beyond that is not counted (`sheriff_source_untracked_total`,
-WARN `ApiSheriff-142`). Operator view:
+tracks at most 65,536 sources. From a high-water mark of 75% of that bound on, a *new* IPv6 source is
+tracked under its `/48` instead of its `/64`, so one site cannot fill the ledger by rotating through
+the `/64`s of its allocation; a source already tracked keeps its key, and IPv4 and `unknown` are never
+aggregated. A source tracked as its `/48` appears in that form in `ApiSheriff-141`. The mark is fixed;
+there is no key. A source still holding count, a tripped one and a blocked one are never evicted to
+make room.
+
+[[_enumeration_detection_full_ledger]]
+*A full ledger fails closed under `block` and `delay`.* When all 65,536 places hold live sources even
+after the ledger's once-a-second sweep, a new source cannot be tracked and so could never trip. Under
+`block` or `delay` its requests are therefore answered the same block-style `429` as a blocked
+source, with `Retry-After: 1` (the sweep interval), counted as `SOURCE_BLOCKED` and on
+`sheriff_source_untracked_total`, with WARN `ApiSheriff-142` logged once per process. *The
+consequence is accepted on purpose:* while a flood keeps the ledger full of live sources, every new
+source is refused, a legitimate one included, until the flood drains and the sweep frees room; sources
+already tracked are answered as before. The `unknown` source is never refused. Under `observe` nothing
+is refused: a source beyond the bound passes, is not counted and cannot trip
+(`sheriff_source_untracked_total`, `ApiSheriff-142`). Operator view:
 link:../user/edge-security.adoc#_enumeration_detection_operator_note[Edge Security -- Scanning
 sources and enumeration detection].
 
@@ -461,8 +495,10 @@ per request; it applies with `enumeration_detection` switched off.
 *Scope -- single node.* Scores live in one instance's memory, are not shared and are cleared by a
 restart; a source spread over several instances is scored per instance (cross-instance correlation is
 the SIEM's job). An instance tracks at most 65,536 sources and raises at most one ALERT per tracked
-source per episode; a rejection it cannot score at that bound is counted on
-`sheriff_threat_untracked_total` and reported once by WARN `ApiSheriff-144`. Clients behind one NAT
+source per episode. The same 75% high-water rule as for <<_enumeration_detection,`enumeration_detection`>>
+applies, so a new IPv6 source scored under pressure appears as its `/48` in the ALERT. A rejection it
+cannot score at the bound is counted on `sheriff_threat_untracked_total` and reported once by WARN
+`ApiSheriff-144`; classification refuses nothing, at the bound or anywhere else. Clients behind one NAT
 share a score; neither that nor a misbehaving client has a wire effect. Operator view:
 link:../user/edge-security.adoc#_threat_classification_operator_note[Edge Security -- Threat
 classification].

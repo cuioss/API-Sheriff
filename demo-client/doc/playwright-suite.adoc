@@ -385,8 +385,10 @@ later reader does not re-derive it -- or worse, reverse it.
 is PATH-based.*
 
 The prohibition protects the reserved endpoints: the info endpoint `/bff/session`, which answers
-`401 application/problem+json` without a session whatever `Accept` says, and `/bff/login` and
-`/bff/logout`, which answer `302` whatever `Accept` says. The contract itself -- that the reserved
+`401 application/problem+json` without a session whatever `Accept` says, `/bff/login`, which
+answers `302` whatever `Accept` says, and `/bff/logout`, which answers `302` to a same-origin request
+and its confirmation page to any other whatever `Accept` says -- what decides there is the request's
+origin, which the suite's same-origin navigation always proves (`tests/04-logout.spec.js`). The contract itself -- that the reserved
 endpoints are `Accept`-blind, and that which of the two answers a caller gets is determined by
 *which path it called* rather than by content negotiation -- is stated for integrators in
 link:integration-sample.adoc#_the_401_versus_302_split[Demo Client -- Integration Sample]. The

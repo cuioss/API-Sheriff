@@ -81,7 +81,9 @@ import org.junit.jupiter.params.provider.EnumSource;
  * {@code observe} pass, and a trip is reported as an event, on the trip meter and as the trip WARN, then
  * handed to the recon-trip observer exactly once. Under {@code delay} a tripped source whose share of
  * the held-answer sub-budget is used up gets the same {@code 429}, and a held rejection carries its
- * source for that share. How the source is keyed is {@code SourceKeysTest}'s subject.
+ * source for that share. The shared {@code unknown} source is counted, trips and is reported, but is
+ * never answered, refused or held under any action. How the source is keyed is
+ * {@code SourceKeysTest}'s subject.
  */
 @EnableTestLogger
 @DisplayName("SourceGate — the per-source answer before admission")
@@ -333,6 +335,75 @@ class SourceGateTest {
                 () -> assertNull(data.get(EdgeAdmission.HELD_SOURCE_KEY), "nothing counts against a share"));
     }
 
+    @Test
+    @DisplayName("under block a tripped unknown source is not answered, while a tripped resolvable source is")
+    void trippedUnknownSourceIsNotAnsweredUnderBlock() throws Exception {
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(1)
+                .action(EnumerationDetectionConfig.Action.BLOCK).blockSeconds(BLOCK_SECONDS).build());
+        Map<String, Object> unknownData = new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, unknownKey()));
+        sourceGate.admit(feedContext(unknownData), null, EventType.NO_ROUTE_MATCHED);
+        sourceGate.ledger().admit(loopbackKey(), 1, EventType.NO_ROUTE_MATCHED);
+
+        boolean unknownAnswered = sourceGate.answersBlocked(feedContext(unknownData));
+        Response resolvable = send();
+
+        assertAll("the unknown source is exempt from the block, and only it",
+                () -> assertTrue(sourceGate.ledger().state(unknownKey()).map(SourceState::isBlocked).orElse(false),
+                        "precondition: the unknown source is tracked, tripped and blocked in the ledger"),
+                () -> assertFalse(unknownAnswered, "the shared unknown source is never answered 429"),
+                () -> assertEquals(429, resolvable.status(), "control: a tripped resolvable source is still blocked"),
+                () -> assertEquals(1L, eventCounter.getCount(EventType.SOURCE_BLOCKED),
+                        "only the resolvable source was refused"));
+    }
+
+    @Test
+    @DisplayName("the unknown source's trip is still counted, logged and handed to the recon-trip observer")
+    void unknownSourceTripIsStillReported() {
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(1)
+                .action(EnumerationDetectionConfig.Action.BLOCK).blockSeconds(BLOCK_SECONDS).build());
+
+        sourceGate.admit(feedContext(new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, unknownKey()))), null,
+                EventType.NO_ROUTE_MATCHED);
+
+        assertAll("the trip of the unknown source",
+                () -> assertEquals(1L, eventCounter.getCount(EventType.SOURCE_TRIPPED)),
+                () -> assertEquals(1, observedTrips.size()),
+                () -> assertEquals(unknownKey(), observedTrips.getFirst().key()));
+        LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                ApiSheriffLogMessages.WARN.SOURCE_TRIPPED.resolveIdentifierString());
+    }
+
+    @Test
+    @DisplayName("under delay a tripped unknown source is neither held nor refused, while a tripped resolvable source is held")
+    void trippedUnknownSourceIsNotHeldUnderDelay() {
+        SourceGate sourceGate = gate(delay());
+        Map<String, Object> unknownFirst = new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, unknownKey(),
+                ResponseDelay.ADMITTED_AT_KEY, 0L));
+        Map<String, Object> unknownData = new HashMap<>(unknownFirst);
+        Map<String, Object> unknownFailure = new HashMap<>(unknownFirst);
+        Map<String, Object> resolvableData = new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, loopbackKey(),
+                ResponseDelay.ADMITTED_AT_KEY, 0L));
+        exhaustedShares.add(unknownKey());
+
+        OptionalLong firstHold = sourceGate.admit(feedContext(unknownFirst), null, EventType.NO_ROUTE_MATCHED);
+        OptionalLong hold = sourceGate.admit(feedContext(unknownData), null, EventType.NO_ROUTE_MATCHED);
+        OptionalLong failureHold = sourceGate.admit(feedContext(unknownFailure), null,
+                EventType.PRE_TRUST_INTERNAL_FAILURE);
+        boolean refused = sourceGate.answersBlocked(feedContext(unknownData));
+        OptionalLong resolvableHold = sourceGate.admit(feedContext(resolvableData), null, EventType.NO_ROUTE_MATCHED);
+
+        assertAll("the unknown source is exempt from the delay, and only it",
+                () -> assertTrue(sourceGate.ledger().state(unknownKey()).map(SourceState::hasTripped).orElse(false),
+                        "precondition: the unknown source is tracked and tripped in the ledger"),
+                () -> assertTrue(firstHold.isEmpty(), "the tripping rejection is not held"),
+                () -> assertTrue(hold.isEmpty(), "a further rejection is not held"),
+                () -> assertTrue(failureHold.isEmpty(), "a pre-trust internal failure is not held"),
+                () -> assertNull(unknownData.get(EdgeAdmission.HELD_SOURCE_KEY), "nothing counts against a share"),
+                () -> assertFalse(refused, "a used-up share does not refuse the unknown source"),
+                () -> assertEquals(OptionalLong.of(DELAY_NANOS), resolvableHold,
+                        "control: a tripped resolvable source is still held"));
+    }
+
     @ParameterizedTest(name = "{0}")
     @EnumSource(EnumerationDetectionConfig.Action.class)
     @DisplayName("every configured action maps onto the ledger action of the same name")
@@ -393,6 +464,11 @@ class SourceGateTest {
     /** The key a request from this test's client is tracked under: the loopback peer, host folded to {@code *}. */
     private static SourceKey loopbackKey() {
         return new SourceKey(SourceKeyResolver.canonicalSource(LoopbackHost.ADDRESS), SourceKey.UNDECLARED_HOST);
+    }
+
+    /** The shared key every request whose source does not resolve is tracked under. */
+    private static SourceKey unknownKey() {
+        return new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST);
     }
 
     private Response send() throws Exception {

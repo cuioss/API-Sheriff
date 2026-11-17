@@ -195,7 +195,9 @@ link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide])
 == Logout
 
 * *RP-initiated* (`oidc.logout.path`). Works as in the
-  link:02-bff-session.adoc[session-based variant]: the session cookie and the activity cookie are
+  link:02-bff-session.adoc#_logout[session-based variant]: it acts only on same-origin proof and
+  answers any other request with a `no-store`, framing-forbidden confirmation page that leaves both
+  cookies in place; with the proof, the session cookie and the activity cookie are
   expired first, then the browser is redirected to the IdP's end-session endpoint with a
   session-bound `state` (carried in the short-lived logout cookie, see
   link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`]). Before that redirect the

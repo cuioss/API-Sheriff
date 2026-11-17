@@ -641,16 +641,34 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("CALLBACK with a stateless query yields 400 from the callback handler")
         void shouldDispatchCallback() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET", QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, null, "GET", QUOTA_KEY),
+                    now);
             assertEquals(400, response.status());
         }
 
         @Test
-        @DisplayName("LOGOUT without a live session redirects (302) to final_redirect")
+        @DisplayName("LOGOUT with same-origin proof and without a live session redirects (302) to final_redirect")
         void shouldDispatchLogout() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    request(null, null), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, "same-origin", null, null, null, null, "GET",
+                            QUOTA_KEY), now);
             assertEquals(302, response.status());
+        }
+
+        @Test
+        @DisplayName("LOGOUT without same-origin proof answers the 200 HTML confirmation page through the dispatch")
+        void shouldDispatchLogoutConfirmation() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGOUT,
+                    new BffRuntime.ReservedHttpRequest("", null, null, "cross-site", null, null, null, null, "GET",
+                            QUOTA_KEY), now);
+
+            assertAll("the confirmation page through the dispatch",
+                    () -> assertEquals(200, response.status()),
+                    () -> assertEquals("text/html; charset=utf-8", response.headers().get("Content-Type")),
+                    () -> assertEquals("no-store", response.headers().get("Cache-Control")),
+                    () -> assertEquals("DENY", response.headers().get("X-Frame-Options")),
+                    () -> assertTrue(response.bodyOptional().orElseThrow().contains("method=\"POST\""),
+                            "the body is the confirmation form"));
         }
 
         @Test
@@ -665,7 +683,8 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("BACKCHANNEL_LOGOUT with no form body yields 400 and is uncacheable")
         void shouldDispatchBackchannel() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "POST", QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, null, null, "POST", QUOTA_KEY),
+                    now);
             assertEquals(400, response.status());
             assertEquals("no-store", response.headers().get("Cache-Control"));
         }
@@ -679,9 +698,10 @@ public class GatewayEdgeRouteBffWiringTest {
                     .expiresAt(now.plus(Duration.ofHours(1))).build(), cookieHandle, now);
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET", QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, null, null, "/home", null, null, "GET",
+                            QUOTA_KEY), now);
             BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, null, null, "https://evil.example.com/home",
                             null, null, "GET", QUOTA_KEY), now);
 
             assertEquals(302, response.status());
@@ -706,7 +726,7 @@ public class GatewayEdgeRouteBffWiringTest {
                     () -> assertEquals(404, response.status()),
                     () -> assertEquals(Map.of(), response.headers(),
                             "the dispatch adds no header: the edge answers this outcome as an unrouted path"),
-                    () -> assertEquals(Optional.empty(), response.jsonBodyOptional(),
+                    () -> assertEquals(Optional.empty(), response.bodyOptional(),
                             "an absent document stays absent rather than being serialized as the JSON literal null"));
         }
 
@@ -714,7 +734,8 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("STEP_UP without a session yields 401 problem+json and no redirect")
         void shouldDispatchStepUpWithoutSession() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "/home", null, null, "GET", QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, "/home", null, null, "GET",
+                            QUOTA_KEY), now);
 
             assertAll(
                     () -> assertEquals(401, response.status()),
@@ -733,9 +754,10 @@ public class GatewayEdgeRouteBffWiringTest {
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET", QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, null, null, "/home", null, null, "GET",
+                            QUOTA_KEY), now);
             BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.STEP_UP,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "https://evil.example.com/home",
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, null, null, "https://evil.example.com/home",
                             null, null, "GET", QUOTA_KEY), now);
 
             assertEquals(302, response.status());
@@ -746,7 +768,8 @@ public class GatewayEdgeRouteBffWiringTest {
         }
 
         private BffRuntime.ReservedHttpRequest request(String cookie, String claims) {
-            return new BffRuntime.ReservedHttpRequest("", cookie, claims, null, null, null, "GET", QUOTA_KEY);
+            return new BffRuntime.ReservedHttpRequest("", cookie, null, null, claims, null, null, null, "GET",
+                    QUOTA_KEY);
         }
     }
 
@@ -798,7 +821,8 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** A {@code response_mode=query} callback: GET, {@code code}/{@code state} in the raw query, no body. */
         private BffRuntime.ReservedHttpRequest queryCallback(String rawQuery) {
-            return new BffRuntime.ReservedHttpRequest(rawQuery, bindingCookieHeader, null, null, null, null, "GET", QUOTA_KEY);
+            return new BffRuntime.ReservedHttpRequest(rawQuery, bindingCookieHeader, null, null, null, null, null,
+                    null, "GET", QUOTA_KEY);
         }
 
         @Test
@@ -864,7 +888,8 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("A stray POST to the callback arrives bodyless and is rejected 400, never 500")
         void shouldRejectStrayPostBodyless() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null, null, "POST", QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null, null, null, null,
+                            "POST", QUOTA_KEY), now);
 
             assertEquals(400, response.status(),
                     "an absent form body normalizes to the empty string and fails for a missing state");
@@ -2526,7 +2551,7 @@ public class GatewayEdgeRouteBffWiringTest {
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow, session -> {
                 }, () -> Optional.of("https://idp.example.com/logout"), ORIGIN + LOGOUT_RETURN_PATH, "/",
                 Duration.ofMinutes(1));
-        return new LogoutEndpoint(rpInitiatedLogout, binding);
+        return new LogoutEndpoint(rpInitiatedLogout, binding, new CsrfDefence(Set.of(ORIGIN)), LOGOUT_PATH);
     }
 
     private static Route sessionRoute() {

@@ -339,7 +339,7 @@ public final class BffRuntime {
             }
         });
         headers.put(CACHE_CONTROL, NO_STORE);
-        return new ReservedHttpResponse(response.status(), response.location(), response.jsonBody(), headers,
+        return new ReservedHttpResponse(response.status(), response.location(), response.body(), headers,
                 response.setCookieHeaders());
     }
 
@@ -347,7 +347,10 @@ public final class BffRuntime {
         return switch (kind) {
             case CALLBACK -> render(requireNonNull(callbackEndpoint).handle(callbackParameters(req), req.cookieHeader(),
                     req.quotaKey(), now));
-            case LOGOUT -> render(requireNonNull(logoutEndpoint).get().logout(req.cookieHeader(), now));
+            // The logout path is matched whatever the method, so the confirmation page's POST reaches
+            // this same arm and is judged by the same provenance check.
+            case LOGOUT -> render(requireNonNull(logoutEndpoint).get().logout(req.cookieHeader(), req.origin(),
+                    req.secFetchSite(), now));
             case LOGOUT_RETURN ->
                 render(requireNonNull(logoutEndpoint).get().completeReturn(req.stateParam(), req.cookieHeader()));
             case BACKCHANNEL_LOGOUT ->
@@ -389,13 +392,15 @@ public final class BffRuntime {
     }
 
     private static ReservedHttpResponse render(LogoutEndpoint.LogoutOutcome outcome) {
-        // The end-session redirect carries the ID token in its query. The policy governs the request
-        // the browser makes when it follows the redirect; what the provider's own pages send on as a
-        // Referer afterwards is the provider's policy to set.
-        Map<String, String> headers = outcome.carriesIdToken()
-                ? Map.of(REFERRER_POLICY, NO_REFERRER)
-                : Map.of();
-        return new ReservedHttpResponse(outcome.status(), outcome.location(), null, headers,
+        // The confirmation page brings its own fixed headers and HTML body. The end-session redirect
+        // carries the ID token in its query. The policy governs the request the browser makes when it
+        // follows the redirect; what the provider's own pages send on as a Referer afterwards is the
+        // provider's policy to set.
+        Map<String, String> headers = new LinkedHashMap<>(outcome.headers());
+        if (outcome.carriesIdToken()) {
+            headers.put(REFERRER_POLICY, NO_REFERRER);
+        }
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), outcome.body(), headers,
                 outcome.setCookieHeaders());
     }
 
@@ -418,8 +423,8 @@ public final class BffRuntime {
 
     private ReservedHttpResponse render(StepUpEndpoint.StepUpOutcome outcome) {
         // A redirect carries no body; the 401 no-session answer carries the fixed problem body.
-        String jsonBody = outcome.body().isEmpty() ? null : requireNonNull(gatewayJson).toJson(outcome.body());
-        return new ReservedHttpResponse(outcome.status(), outcome.location(), jsonBody, outcome.headers(),
+        String body = outcome.body().isEmpty() ? null : requireNonNull(gatewayJson).toJson(outcome.body());
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), body, outcome.headers(),
                 outcome.setCookieHeaders());
     }
 
@@ -439,12 +444,17 @@ public final class BffRuntime {
      * The framework-agnostic request pieces a reserved endpoint consumes, extracted by the edge from
      * the raw request. Every field is optional at this level — each handler reads only the pieces it
      * needs (the callback reads {@link #rawQuery} and {@link #cookieHeader}, the back-channel receiver
-     * reads {@link #rawFormBody}, the user-info fold reads {@link #claimsParam}, and so on).
+     * reads {@link #rawFormBody}, the user-info fold reads {@link #claimsParam}, the logout leg reads
+     * {@link #origin} and {@link #secFetchSite}, and so on).
      *
      * @param rawQuery       the raw query string (without the leading {@code ?}), never map-collapsed
      *                       — the {@code response_mode=query} GET callback re-parses it to re-detect a
      *                       duplicated {@code code}/{@code state} (BFF-13)
      * @param cookieHeader   the raw request {@code Cookie} header value, may be absent
+     * @param origin         the request's first {@code Origin} header value, may be absent — part of
+     *                       the same-origin provenance the logout leg demands before it ends a session
+     * @param secFetchSite   the request's first {@code Sec-Fetch-Site} header value, may be absent —
+     *                       the other half of that provenance, read when {@code Origin} is absent
      * @param claimsParam    the raw {@code claims} selector for the user-info fold, may be absent
      * @param returnUrlParam the raw {@code returnUrl} target for the login fold and the step-up endpoint,
      *                       may be absent
@@ -473,6 +483,8 @@ public final class BffRuntime {
     public record ReservedHttpRequest(
     String rawQuery,
     @Nullable String cookieHeader,
+    @Nullable String origin,
+    @Nullable String secFetchSite,
     @Nullable String claimsParam,
     @Nullable String returnUrlParam,
     @Nullable String stateParam,
@@ -504,9 +516,10 @@ public final class BffRuntime {
 
     /**
      * The normalized response the edge renders for a dispatched reserved path: the HTTP status, an
-     * optional redirect {@code Location}, an optional already-serialized JSON body (the user-info
-     * fold, the step-up endpoint's no-session problem and the published client key set), the fixed
-     * response headers, and the {@code Set-Cookie} header values to emit.
+     * optional redirect {@code Location}, an optional already-rendered body (the JSON of the user-info
+     * fold, the step-up endpoint's no-session problem and the published client key set, and the HTML
+     * of the logout confirmation page), the fixed response headers — which name the body's media type
+     * — and the {@code Set-Cookie} header values to emit.
      * <p>
      * One location carries token material: the end-session redirect of an RP-initiated logout,
      * whose query holds the {@code id_token_hint} for the identity provider. Access and refresh
@@ -516,9 +529,10 @@ public final class BffRuntime {
      *
      * @param status           the HTTP status the edge returns
      * @param location         the redirect target, present only for a redirect outcome
-     * @param jsonBody         the already-serialized JSON body, present only for the user-info fold,
-     *                         the step-up endpoint's {@code 401} problem, and the client key set a
-     *                         {@code GET} on the client JWKS path publishes
+     * @param body             the already-rendered body, present only for the user-info fold, the
+     *                         step-up endpoint's {@code 401} problem, the client key set a {@code GET}
+     *                         on the client JWKS path publishes (all JSON), and the logout
+     *                         confirmation page (HTML)
      * @param headers          the fixed response headers the edge emits verbatim
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit
      * @author API Sheriff Team
@@ -536,7 +550,7 @@ public final class BffRuntime {
     public record ReservedHttpResponse(
     int status,
     @Nullable String location,
-    @Nullable String jsonBody,
+    @Nullable String body,
     Map<String, String> headers,
     List<String> setCookieHeaders) {
 
@@ -556,10 +570,10 @@ public final class BffRuntime {
         }
 
         /**
-         * @return the optional serialized JSON body
+         * @return the optional already-rendered body
          */
-        public Optional<String> jsonBodyOptional() {
-            return Optional.ofNullable(jsonBody);
+        public Optional<String> bodyOptional() {
+            return Optional.ofNullable(body);
         }
 
         /**
@@ -572,8 +586,8 @@ public final class BffRuntime {
          */
         @Override
         public String toString() {
-            return "ReservedHttpResponse[status=%s, location=%s, jsonBody=%s, headerNames=%s, setCookieHeaders=%s]"
-                    .formatted(status, presence(location), presence(jsonBody), headers.keySet(),
+            return "ReservedHttpResponse[status=%s, location=%s, body=%s, headerNames=%s, setCookieHeaders=%s]"
+                    .formatted(status, presence(location), presence(body), headers.keySet(),
                             setCookieHeaders.size());
         }
 

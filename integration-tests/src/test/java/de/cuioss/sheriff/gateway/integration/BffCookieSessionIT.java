@@ -196,8 +196,10 @@ class BffCookieSessionIT {
         // Arrange
         Session session = BffKeycloakLoginFlow.login(SESSION_ROUTE, COOKIE_ORIGIN);
 
-        // Act
+        // Act — the same-origin proof the logout leg asks for, as a browser navigating from a gateway
+        // page sends it; REST Assured sends no fetch metadata on its own.
         Response logout = BffKeycloakLoginFlow.gateway(session.gatewayCookies(), COOKIE_ORIGIN)
+                .header("Sec-Fetch-Site", "same-origin")
                 .redirects().follow(false)
                 .when().get("/bff/logout")
                 .then().statusCode(302).extract().response();

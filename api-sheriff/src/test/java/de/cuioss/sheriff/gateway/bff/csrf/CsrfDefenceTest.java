@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.csrf;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Contract of the gateway's same-origin proof. Both instances are fail-closed on unsafe methods: they
@@ -382,6 +384,73 @@ class CsrfDefenceTest {
         @DisplayName("every other method is unsafe")
         void unsafeMethods(HttpMethod method) {
             assertTrue(CsrfDefence.isUnsafeMethod(method));
+        }
+    }
+
+    @Nested
+    @DisplayName("the method-independent logout-navigation proof")
+    class SameOriginNavigation {
+
+        private final CsrfDefence defence = new CsrfDefence(Set.of(TRUSTED_ORIGIN));
+
+        @Test
+        @DisplayName("a trusted Origin proves the navigation, case-insensitively")
+        void trustedOriginAdmits() {
+            assertTrue(defence.provesSameOriginNavigation(TRUSTED_ORIGIN, null));
+            assertTrue(defence.provesSameOriginNavigation(TRUSTED_ORIGIN.toUpperCase(Locale.ROOT), null));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {SAME_ORIGIN, "none", "cross-site", "same-site"})
+        @DisplayName("an untrusted Origin refuses whatever Sec-Fetch-Site says — the Origin decides alone")
+        void untrustedOriginRefusesWhateverFetchSite(String fetchSite) {
+            assertFalse(defence.provesSameOriginNavigation(UNTRUSTED_ORIGIN, fetchSite));
+        }
+
+        @Test
+        @DisplayName("an opaque 'null' Origin refuses even with Sec-Fetch-Site: same-origin")
+        void opaqueOriginRefuses() {
+            assertFalse(defence.provesSameOriginNavigation("null", SAME_ORIGIN));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {SAME_ORIGIN, "none", "SAME-ORIGIN", "None"})
+        @DisplayName("with Origin absent, Sec-Fetch-Site same-origin or none admits, case-insensitively")
+        void absentOriginSameOriginOrNoneAdmits(String fetchSite) {
+            assertTrue(defence.provesSameOriginNavigation(null, fetchSite));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"cross-site", "same-site", ""})
+        @DisplayName("with Origin absent, any other Sec-Fetch-Site refuses")
+        void absentOriginOtherFetchSiteRefuses(String fetchSite) {
+            assertFalse(defence.provesSameOriginNavigation(null, fetchSite));
+        }
+
+        @Test
+        @DisplayName("both signals absent refuse")
+        void bothAbsentRefuse() {
+            assertFalse(defence.provesSameOriginNavigation(null, null));
+        }
+
+        @Test
+        @DisplayName("a cookie-forwarding instance trusts its additional origins only — it has no received origin here")
+        void cookieForwardingInstanceTrustsAdditionalOriginsOnly() {
+            CsrfDefence routeCheck = CsrfDefence.forCookieForwardingRoute(List.of(TRUSTED_ORIGIN + ":443"));
+
+            assertTrue(routeCheck.provesSameOriginNavigation(TRUSTED_ORIGIN, null),
+                    "an additional origin is trusted, default port dropped");
+            assertFalse(routeCheck.provesSameOriginNavigation(UNTRUSTED_ORIGIN, null));
+        }
+
+        @Test
+        @DisplayName("regression control: enforce still refuses an unsafe method carrying only Sec-Fetch-Site: none")
+        void enforceStillRefusesNoneForUnsafeMethod() {
+            PipelineRequest request = request(HttpMethod.POST, Map.of(SEC_FETCH_SITE_HEADER, List.of("none")));
+
+            assertTrue(defence.provesSameOriginNavigation(null, "none"),
+                    "precondition: the navigation proof admits none");
+            assertRejected(defence, request, "none never admits an unsafe method under enforce");
         }
     }
 }

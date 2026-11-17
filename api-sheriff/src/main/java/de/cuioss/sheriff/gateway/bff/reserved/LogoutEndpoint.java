@@ -18,10 +18,12 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -37,8 +39,23 @@ import org.jspecify.annotations.Nullable;
  * engine end-session redirect, and the return-leg {@code state} verification — lives in
  * {@link RpInitiatedLogout}.
  * <p>
- * <strong>Logout leg.</strong> {@link #logout(String, Instant)} resolves the request's live
- * {@link SessionRecord} through the mode-neutral {@link SessionBinding} seam and
+ * <strong>Same-origin provenance comes first.</strong> The logout path is matched whatever the method,
+ * so a cross-site page could otherwise end a user's session with a plain link or an image. Before any
+ * session is resolved, {@link #logout(String, String, String, Instant)} asks the session
+ * {@link CsrfDefence} whether the request proves same-origin provenance
+ * ({@link CsrfDefence#provesSameOriginNavigation(String, String)}: a trusted {@code Origin}, or with
+ * {@code Origin} absent a {@code Sec-Fetch-Site} of {@code same-origin} or {@code none}). Without that
+ * proof the answer is a {@code 200} confirmation page: a fixed HTML body that reflects nothing of the
+ * request, with one form whose button {@code POST}s to the configured logout path. The browser marks
+ * that {@code POST} with the gateway's own {@code Origin}, so it re-enters this leg with the proof. The
+ * page is {@code no-store}, forbids framing ({@code Content-Security-Policy} {@code frame-ancestors
+ * 'none'}, {@code X-Frame-Options: DENY}), carries no {@code form-action} so the {@code POST} can follow
+ * the identity provider's end-session redirect, and leaves the session and its cookies untouched;
+ * {@link RpInitiatedLogout} is not reached, so no identity-provider call is made.
+ * <p>
+ * <strong>Logout leg.</strong> With the proof, {@link #logout(String, String, String, Instant)}
+ * resolves the request's live {@link SessionRecord} through the mode-neutral {@link SessionBinding}
+ * seam and
  * <strong>destroys it first</strong> ({@link SessionBinding#destroy}): the local session
  * destruction is the authoritative, immediately-effective logout, and nothing that follows can
  * prevent it. Only then does it drive {@link RpInitiatedLogout#initiate}, which first revokes the
@@ -60,11 +77,11 @@ import org.jspecify.annotations.Nullable;
  * revokes anything, so the resolved record's refresh token is revoked here; if it was already spent
  * by a rotation, revoking it is harmless (RFC 7009, section 2.2).
  * <p>
- * Every answer clears every cookie the binding sets
+ * Every answer of a proven logout clears every cookie the binding sets
  * ({@link SessionBinding#clearingSetCookieHeaders()} — in cookie mode the session cookie and its
  * activity cookie).
  * <p>
- * The answer is always a {@code 302}. When an end-session redirect was built, the browser is sent to
+ * A proven logout is always answered with a {@code 302}. When an end-session redirect was built, the browser is sent to
  * the identity provider; that redirect is marked {@linkplain LogoutOutcome#carriesIdToken() as
  * carrying the ID token} so the edge answers it with {@code Referrer-Policy: no-referrer}. In every
  * other case the browser is redirected to {@link RpInitiatedLogout#finalRedirect()}: a logout
@@ -79,9 +96,9 @@ import org.jspecify.annotations.Nullable;
  * redirected to {@code final_redirect}; a missing/mismatched {@code state} is rejected {@code 400}, so
  * a forged logout-return cannot land the browser anywhere.
  * <p>
- * The endpoint is framework-agnostic (raw {@code Cookie} header in, a {@link LogoutOutcome} the edge
- * renders out — no JAX-RS/Vert.x coupling), so it is unit-testable without a container; the session
- * runtime wires it to the request/response edge.
+ * The endpoint is framework-agnostic (raw {@code Cookie}, {@code Origin} and {@code Sec-Fetch-Site}
+ * header values in, a {@link LogoutOutcome} the edge renders out — no JAX-RS/Vert.x coupling), so it is
+ * unit-testable without a container; the session runtime wires it to the request/response edge.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -93,37 +110,89 @@ public final class LogoutEndpoint {
 
     private static final CuiLogger LOGGER = new CuiLogger(LogoutEndpoint.class);
 
+    /**
+     * The fixed confirmation page. Its one placeholder is the HTML-escaped configured logout path; no
+     * request input is ever written into it.
+     */
+    private static final String CONFIRMATION_PAGE = """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+            <meta charset="utf-8">
+            <title>Sign out</title>
+            </head>
+            <body>
+            <h1>Sign out</h1>
+            <p>Do you want to sign out?</p>
+            <form method="POST" action="%s">
+            <button type="submit">Sign out</button>
+            </form>
+            </body>
+            </html>
+            """;
+
     private final RpInitiatedLogout rpInitiatedLogout;
     private final SessionBinding sessionBinding;
+    private final CsrfDefence csrfDefence;
+    /** The rendered confirmation page, {@code null} when no logout path is reserved. */
+    private final @Nullable String confirmationPage;
 
     /**
-     * Assembles the logout endpoint with the RP-initiated logout logic and the session binding.
+     * Assembles the logout endpoint with the RP-initiated logout logic, the session binding, the
+     * session CSRF defence the provenance is judged by, and the logout path the confirmation form
+     * posts to.
      *
      * @param rpInitiatedLogout the transport-free RP-initiated logout orchestration
      * @param sessionBinding    the mode-neutral session binding the session is resolved, destroyed,
      *                          and cleared through
+     * @param csrfDefence       the session CSRF defence — the one instance the edge enforces on
+     *                          unsafe-method session requests — whose trusted origins prove a logout
+     * @param logoutPath        the reserved {@code oidc.logout.path} the confirmation form posts to;
+     *                          {@code null} when no logout path is reserved, in which case only the
+     *                          return leg can be dispatched here
      */
-    public LogoutEndpoint(RpInitiatedLogout rpInitiatedLogout, SessionBinding sessionBinding) {
+    public LogoutEndpoint(RpInitiatedLogout rpInitiatedLogout, SessionBinding sessionBinding,
+            CsrfDefence csrfDefence, @Nullable String logoutPath) {
         this.rpInitiatedLogout = Objects.requireNonNull(rpInitiatedLogout, "rpInitiatedLogout");
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
+        this.csrfDefence = Objects.requireNonNull(csrfDefence, "csrfDefence");
+        this.confirmationPage = logoutPath == null ? null : CONFIRMATION_PAGE.formatted(escapeHtml(logoutPath));
     }
 
     /**
-     * Handles the RP-initiated logout leg: resolves the live session, destroys it, revokes the refresh
-     * token the destroyed session held — or the resolved session's, when another path had already ended
-     * it — drives the engine end-session redirect, and clears the session cookie.
+     * Handles the RP-initiated logout leg. Without same-origin provenance it answers the confirmation
+     * page and touches nothing else. With it, it resolves the live session, destroys it, revokes the
+     * refresh token the destroyed session held — or the resolved session's, when another path had
+     * already ended it — drives the engine end-session redirect, and clears the session cookie.
      * <p>
      * Thread-safe: the endpoint holds no mutable state and its collaborators are safe for concurrent
      * use.
      *
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
+     * @param origin       the request's first {@code Origin} header value, may be absent
+     * @param secFetchSite the request's first {@code Sec-Fetch-Site} header value, may be absent
      * @param now          the reference instant (the session-resolution TTL anchor)
-     * @return a {@code 302} redirect to the IdP {@code end_session_endpoint} (session-clearing and
-     *         logout-state {@code Set-Cookie} headers) when an end-session redirect was built,
-     *         otherwise a {@code 302} straight to {@code final_redirect} clearing the session cookie
+     * @return without same-origin provenance, a {@code 200} confirmation page that sets no cookie;
+     *         otherwise a {@code 302} redirect to the IdP {@code end_session_endpoint}
+     *         (session-clearing and logout-state {@code Set-Cookie} headers) when an end-session
+     *         redirect was built, or a {@code 302} straight to {@code final_redirect} clearing the
+     *         session cookie
+     * @throws IllegalStateException when the request lacks the proof and no logout path is reserved —
+     *                               the logout leg is dispatched only for a reserved logout path
      */
-    public LogoutOutcome logout(@Nullable String cookieHeader, Instant now) {
+    public LogoutOutcome logout(@Nullable String cookieHeader, @Nullable String origin, @Nullable String secFetchSite,
+            Instant now) {
         Objects.requireNonNull(now, "now");
+
+        // Judged before any session is resolved: a request without the proof learns nothing about the
+        // session, and no identity-provider call is made for it.
+        if (!csrfDefence.provesSameOriginNavigation(origin, secFetchSite)) {
+            if (confirmationPage == null) {
+                throw new IllegalStateException("logout leg dispatched without a reserved logout path");
+            }
+            LOGGER.debug("RP-initiated logout without same-origin provenance — answering the confirmation page, session untouched");
+            return LogoutOutcome.confirmation(confirmationPage);
+        }
 
         Optional<SessionRecord> resolved = sessionBinding.resolve(cookieHeader, now);
         if (resolved.isEmpty()) {
@@ -190,34 +259,91 @@ public final class LogoutEndpoint {
     }
 
     /**
-     * The framework-agnostic result of a logout leg: either a {@code 302} redirect (to the IdP
+     * HTML-escapes the configured logout path for the confirmation form's {@code action} attribute.
+     */
+    private static String escapeHtml(String value) {
+        StringBuilder escaped = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '&' -> escaped.append("&amp;");
+                case '<' -> escaped.append("&lt;");
+                case '>' -> escaped.append("&gt;");
+                case '"' -> escaped.append("&quot;");
+                case '\'' -> escaped.append("&#39;");
+                default -> escaped.append(c);
+            }
+        }
+        return escaped.toString();
+    }
+
+    /**
+     * The framework-agnostic result of a logout leg: a {@code 302} redirect (to the IdP
      * {@code end_session_endpoint}, or to {@code final_redirect} on the return, already-logged-out
-     * and local-only paths) carrying the {@code Set-Cookie} headers to emit, or a {@code 4xx} error
-     * with no redirect.
+     * and local-only paths) carrying the {@code Set-Cookie} headers to emit, a {@code 200}
+     * confirmation page carrying its HTML body and fixed headers, or a {@code 4xx} error with no
+     * redirect.
      * <p>
      * The redirect to the IdP is the one outcome that holds token material: its location's query
      * carries the {@code id_token_hint}. {@link #carriesIdToken()} marks it, and the record's string
-     * form prints neither the location nor a cookie value.
+     * form prints neither the location, the body nor a cookie value.
      *
      * @param status           the HTTP status the edge returns
      * @param location         the redirect target, {@code null} on anything but a redirect outcome
-     * @param setCookieHeaders the {@code Set-Cookie} header values to emit, empty on an error
+     * @param body             the HTML body, present only on the confirmation page
+     * @param headers          the fixed response headers to emit, present only on the confirmation
+     *                         page
+     * @param setCookieHeaders the {@code Set-Cookie} header values to emit, empty on an error and on
+     *                         the confirmation page
      * @param carriesIdToken   {@code true} when the location is the end-session redirect, whose
      *                         query carries the {@code id_token_hint}
      * @author API Sheriff Team
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
-    public record LogoutOutcome(int status, @Nullable String location, List<String> setCookieHeaders,
-    boolean carriesIdToken) {
+    public record LogoutOutcome(int status, @Nullable String location, @Nullable String body,
+    Map<String, String> headers, List<String> setCookieHeaders, boolean carriesIdToken) {
 
+        private static final int OK = 200;
         private static final int FOUND = 302;
 
         /**
-         * Canonical constructor defensively copying the cookies.
+         * The fixed headers of the confirmation page: an HTML media type, no caching, and a policy that
+         * loads nothing and forbids framing (the {@code X-Frame-Options} line for user agents that
+         * predate {@code frame-ancestors}).
+         * <p>
+         * The policy deliberately carries no {@code form-action}. A browser enforces that directive on
+         * every redirect of a form submission, so {@code form-action 'self'} would block the
+         * confirmation {@code POST}'s {@code 302} to the identity provider's cross-origin
+         * {@code end_session_endpoint}: the local session would end while the provider's single sign-on
+         * session survived. {@code form-action} does not fall back to {@code default-src}, so leaving it
+         * out allows the post and its redirect; the page's one form is fixed and reflects no request
+         * input, so the directive would protect nothing here.
+         */
+        private static final Map<String, String> CONFIRMATION_HEADERS = Map.of(
+                "Content-Type", "text/html; charset=utf-8",
+                "Cache-Control", "no-store",
+                "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'",
+                "X-Frame-Options", "DENY");
+
+        /**
+         * Canonical constructor defensively copying the headers and the cookies.
          */
         public LogoutOutcome {
+            headers = headers == null ? Map.of() : Map.copyOf(headers);
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
+        }
+
+        /**
+         * A {@code 200} confirmation page that sets no cookie and carries the fixed confirmation
+         * headers.
+         *
+         * @param body the rendered confirmation page
+         * @return the confirmation outcome
+         */
+        public static LogoutOutcome confirmation(String body) {
+            Objects.requireNonNull(body, "body");
+            return new LogoutOutcome(OK, null, body, CONFIRMATION_HEADERS, List.of(), false);
         }
 
         /**
@@ -230,7 +356,7 @@ public final class LogoutEndpoint {
          */
         public static LogoutOutcome redirect(String location, List<String> setCookieHeaders) {
             Objects.requireNonNull(location, LOCATION_PARAMETER);
-            return new LogoutOutcome(FOUND, location, setCookieHeaders, false);
+            return new LogoutOutcome(FOUND, location, null, Map.of(), setCookieHeaders, false);
         }
 
         /**
@@ -243,7 +369,7 @@ public final class LogoutEndpoint {
          */
         public static LogoutOutcome endSessionRedirect(String location, List<String> setCookieHeaders) {
             Objects.requireNonNull(location, LOCATION_PARAMETER);
-            return new LogoutOutcome(FOUND, location, setCookieHeaders, true);
+            return new LogoutOutcome(FOUND, location, null, Map.of(), setCookieHeaders, true);
         }
 
         /**
@@ -253,7 +379,7 @@ public final class LogoutEndpoint {
          * @return the error outcome
          */
         public static LogoutOutcome error(int status) {
-            return new LogoutOutcome(status, null, List.of(), false);
+            return new LogoutOutcome(status, null, null, Map.of(), List.of(), false);
         }
 
         /**
@@ -265,15 +391,17 @@ public final class LogoutEndpoint {
 
         /**
          * Overridden so that neither an end-session location — its query carries the
-         * {@code id_token_hint} — nor a cookie value reaches a log line or an exception message.
+         * {@code id_token_hint} — nor a body or a cookie value reaches a log line or an exception
+         * message.
          *
-         * @return the status, the location unless it carries the ID token, and the number of cookies
+         * @return the status, the location unless it carries the ID token, whether a body is present,
+         *         the header names and the number of cookies
          */
         @Override
         public String toString() {
-            return "LogoutOutcome[status=%s, location=%s, setCookieHeaders=%s, carriesIdToken=%s]"
-                    .formatted(status, carriesIdToken ? "<redacted>" : location, setCookieHeaders.size(),
-                            carriesIdToken);
+            return "LogoutOutcome[status=%s, location=%s, body=%s, headerNames=%s, setCookieHeaders=%s, carriesIdToken=%s]"
+                    .formatted(status, carriesIdToken ? "<redacted>" : location, body == null ? "absent" : "present",
+                            headers.keySet(), setCookieHeaders.size(), carriesIdToken);
         }
     }
 }

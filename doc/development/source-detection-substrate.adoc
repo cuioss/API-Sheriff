@@ -49,18 +49,24 @@ canonicalizes both parts.
 *The source* is the forwarded client address when the caller hands one over, otherwise the TCP peer
 address. The resolver does not judge trust: the edge's source-key stage, `SourceKeys`, hands over a
 forwarded address only for a peer `forwarded.trusted_proxies` trusts, resolved by the same resolver
-the forward stage regenerates `X-Forwarded-For` from. A trusted peer's request whose forwarding
-headers resolve to no client -- an absent or malformed header -- is keyed on the `unknown` source,
-never on the trusted peer's own address (`SourceKeysTest`). `SourceKeys` resolves the key once per
+the forward stage regenerates `X-Forwarded-For` from. The client is derived by
+`forward.ForwardedClientResolution`, the one derivation the BFF pending-authorization quota key
+(`PendingQuotaKeys`) shares: the combined `Forwarded` / `X-Forwarded-For` headers first, and when
+they yield no client -- the two chains disagree, or the combined chain is malformed -- the same
+resolver again with `Forwarded` masked, so the `X-Forwarded-For` result under the same trusted proxies
+(`ForwardedClientResolutionTest` pins cui-http's empty result for a disagreeing pair). A trusted
+peer's request that yields no client even then is keyed on the `unknown` source, never on the trusted
+peer's own address (`SourceKeysTest`). The edge never answers, refuses or holds a request keyed
+`unknown` (<<_unknown_source>>). `SourceKeys` resolves the key once per
 request, on the event loop before admission, and stashes it on the request context for every
-consumer, so both consumers key a request on the same source. The chosen address is canonicalized:
+consumer, so both consumers key a request's events on the same source. The chosen address is canonicalized:
 
 * an IPv4 address is kept whole, in dotted-decimal form;
 * an IPv6 address is reduced to its `/64` prefix, written `a:b:c:d::/64`. An end site is routinely
   given a whole `/64`, so keying on the full address would let one host rotate through unbounded
-  keys. The *residual*: a site holding a `/48` still controls 65,536 `/64` prefixes and can spread
-  across that many keys. The bound below caps what that costs the gateway; it does not make such a
-  source trip. An IPv4-mapped IPv6 address is an IPv4 address and is kept whole;
+  keys. A site holding a `/48` still controls 65,536 `/64` prefixes; below the ledger's high-water
+  mark it can spread across that many keys, and from the mark on a new key is aggregated to its `/48`
+  (<<_aggregation>>). An IPv4-mapped IPv6 address is an IPv4 address and is kept whole;
 
 * an absent, blank or unparseable address folds to the one fixed source `unknown`. The text is parsed
   as an address literal only, so a host name is never resolved.
@@ -76,10 +82,43 @@ the bound first sweeps the map and removes every entry whose level drained to ze
 blocked. A sweep runs at most once per `SWEEP_INTERVAL` (one second), so a flood of new keys cannot
 turn every admission into a full scan. When the map is still full the key is not tracked: the
 admission returns the state `UNTRACKED`, the event is not counted and the overflow is counted in
-`untrackedCount()` for the consumer to report. A tripped or blocked key is never evicted.
+`untrackedCount()` for the consumer to report. A tripped or blocked key is never evicted, and neither
+is a key still holding weight, so a source accruing toward the threshold stays tracked however full
+the map gets. No slice of the bound is reserved for such keys: none is needed, because the sweep never
+removes them (`SourceLedgerPressureTest` fills the bound with live keys while one source accrues, and
+that source keeps being admitted and trips).
 
 The bound is *soft*. The size check and the insert are not one atomic step, so the map can exceed the
 bound by at most the number of threads inserting new keys at the same moment.
+
+[[_aggregation]]
+=== Aggregation Above the High-Water Mark
+
+This is a rule of the substrate, not of a consumer: every ledger built on `SourceLedger` follows it --
+the recon ledger of `enumeration_detection` and the threat ledger of `threat_classification` alike --
+and neither consumer carries an aggregation rule of its own.
+
+* *The mark.* `HIGH_WATER_PERCENT = 75`: the mark is 75% of the ledger's bound, at least one key. It
+  is a constant, not configuration, and scales with the bound.
+* *A new key from the mark on.* While the map holds at least the mark, a *new* IPv6 `/64` key is
+  tracked under its `/48` aggregate (`SourceKeyResolver.aggregateSource`, `a:b:c:d::/64` ->
+  `a:b:c::/48`, on the same host). Below the mark a new key keeps its `/64`. One site therefore cannot
+  fill a pressured ledger by rotating through the `/64`s of its allocation.
+* *What is never aggregated.* A key already tracked keeps its key at any fill; an IPv4 source and
+  `unknown` pass `aggregateSource` unchanged.
+* *Lookup.* `admit`, `state` and `hasRoomFor` answer a `/64` that is not tracked itself from its
+  tracked `/48`, so a consumer keeps asking with the `/64` the edge resolved and finds the aggregated
+  entry. The key the state and the trip report is then the `/48`, which is the source text the trip
+  and ALERT records carry.
+
+[[_room_query]]
+=== The Room Query
+
+`hasRoomFor(key)` answers whether an admission would track a key now: `true` when the key -- or the
+`/48` aggregate of a `/64` -- is tracked, or when a new key fits after the rate-limited sweep `admit`
+would run at the bound. It admits, counts and reserves nothing, so it is a decision about this instant
+only; `admit` decides again when it runs. It is the one query the recon consumer refuses on
+(<<_full_ledger>>).
 
 == Weighted Admission and Tags
 
@@ -166,9 +205,37 @@ set to the window and never used.
 `observe` and `delay` never block; what a trip changes on the wire is the consumer's decision, taken
 from the returned state. The query API answers without admitting an event:
 
-* `state(key)` -- the key's `SourceState` after draining to now, or empty when the key is not tracked;
+* `state(key)` -- the key's `SourceState` after draining to now, or empty when the key is not tracked
+  (a `/64` is answered from its tracked `/48`, see <<_aggregation>>);
+* `hasRoomFor(key)` -- whether an admission would track the key now (<<_room_query>>);
 * `isBlocked(key)` -- whether the key is `BLOCKED`;
 * `trackedSources()` and `untrackedCount()` -- the map size and the overflow count.
+
+[[_unknown_source]]
+=== What the Edge Does With `unknown` and With a Full Ledger
+
+The substrate answers states; the recon consumer, `edge.admission.SourceGate`, decides what reaches
+the wire. Two of its rules rest on the substrate's terms:
+
+* *`unknown` is never acted on.* A key whose source is `SourceKey.UNKNOWN_SOURCE` is admitted like any
+  key -- counted, able to trip, its trip logged and handed to the threat consumer -- but it is never
+  answered `429`, never refused for a used-up held-answer share and never held, under any action. It
+  stands for every client whose address did not resolve, so acting on it would act on all of them.
+  The boot WARN `ApiSheriff-149` (`EdgeRules`) names the combination that lets a trusted proxy's
+  requests reach that key while `block` or `delay` is configured.
+* [[_full_ledger]]*The full ledger fails closed under `block` and `delay`.* Before admission the gate
+  asks `state(key)`; when the key is untracked, not `unknown`, and `hasRoomFor(key)` is `false`, the
+  request is answered the block-style `429` with `Retry-After` the `SWEEP_INTERVAL` in whole seconds
+  (at least `1`), and the overflow is reported like an untracked rejection's
+  (`sheriff_source_untracked_total`, `ApiSheriff-142`). A source the ledger cannot count could never
+  trip, so letting it through would hand an unbounded number of fresh sources free probing. The
+  consequence is accepted: while a flood keeps the ledger full of live keys, every new source is
+  refused, a legitimate one included, until the sweep frees room. Under `observe` nothing is refused.
+  The check claims no slot -- room a concurrent admission takes after it falls back to the
+  `UNTRACKED` count, and room that appears after it costs one refused request.
+
+The threat ledger never refuses: `ThreatClassifier` is `observe`-only and reports an `UNTRACKED`
+admission to the ALERT tier without changing any answer.
 
 A `SourceState` carries the key, the status (`CLEAR`, `TRIPPED`, `BLOCKED` or `UNTRACKED`), the level,
 the threshold, the monotonic instant the block ends (meaningful only while `BLOCKED`) and the per-tag
@@ -209,7 +276,8 @@ What the substrate serves it:
 
 * *Its own ledger.* `ThreatClassifier` builds a `SourceLedger` of its own, with the threshold and
   window of the `threat_classification` block and the action `observe`. Nothing is shared with the
-  recon ledger except the key derivation.
+  recon ledger except the key derivation and the substrate's own rules, the high-water aggregation
+  included (<<_aggregation>>).
 
 * *The shared key.* `SourceKeys` resolves the key once and stashes it, and runs whenever either
   consumer is enabled. The threat score therefore does not depend on `enumeration_detection` being
@@ -274,9 +342,10 @@ namespace:
 | `event.severity` | `47`, fixed: medium on the 0 to 100 scale.
 | `event.risk_score` | The source's score right after the admission that tripped it.
 | `source.address` | The canonical source text, always: an IPv4 address, an IPv6 `/64` prefix
-  (`a:b:c:d::/64`) or `unknown`.
-| `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 `/64` prefix or
-  `unknown` is not a valid ECS `ip` value).
+  (`a:b:c:d::/64`), an IPv6 `/48` prefix (`a:b:c::/48`) when the threat ledger began tracking the
+  source above its high-water mark (<<_aggregation>>), or `unknown`.
+| `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 prefix or `unknown`
+  is not a valid ECS `ip` value).
 | `url.domain` | The folded host, *only* when it is a declared `match.host`; absent for `*`.
 | `threat.framework` | `MITRE ATT&CK`.
 | `threat.tactic.id` / `threat.tactic.name` | `["TA0043"]` / `["Reconnaissance"]`.

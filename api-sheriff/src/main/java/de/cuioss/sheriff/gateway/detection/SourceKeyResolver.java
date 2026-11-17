@@ -21,6 +21,7 @@ import java.util.Collection;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 
@@ -49,6 +50,11 @@ import org.jspecify.annotations.Nullable;
  * ({@link InetAddress#ofLiteral(String)}), so a host name is never resolved: a name is unparseable and
  * folds to {@link SourceKey#UNKNOWN_SOURCE}, and no lookup is ever made.
  * <p>
+ * <strong>The aggregate.</strong> {@link #aggregateSource(String)} widens a canonical {@code /64}
+ * source to its {@code /48} aggregate, written {@code a:b:c::/48} in the same notation. The resolver
+ * itself never produces it: a {@link SourceLedger} under pressure tracks a new IPv6 source in that form,
+ * so one site holding a {@code /48} cannot fill the ledger by rotating through its {@code /64}s.
+ * <p>
  * <strong>The host.</strong> The authority host is lower-cased ({@link Locale#ROOT}) and kept when it
  * equals one of the hosts handed in at construction — the {@code match.host} values the routes
  * declare — otherwise it folds to the fixed {@link SourceKey#UNDECLARED_HOST}. A caller rotating
@@ -62,6 +68,11 @@ import org.jspecify.annotations.Nullable;
 public final class SourceKeyResolver {
 
     private static final int IPV6_PREFIX_HEXTETS = 4;
+    private static final String IPV6_PREFIX_SUFFIX = "::/64";
+    private static final String IPV6_AGGREGATE_SUFFIX = "::/48";
+    /** Exactly the {@code /64} text {@link #canonicalSource} writes: four lower-case hextets, no leading zeros. */
+    private static final Pattern CANONICAL_IPV6_PREFIX =
+            Pattern.compile("(?:(?:0|[1-9a-f][0-9a-f]{0,3}):){3}(?:0|[1-9a-f][0-9a-f]{0,3})::/64");
 
     private final Set<String> declaredHosts;
 
@@ -127,6 +138,23 @@ public final class SourceKeyResolver {
         return ipv6Prefix(parsed.getAddress());
     }
 
+    /**
+     * Widens a canonical IPv6 {@code /64} source text to its {@code /48} aggregate by dropping the
+     * fourth hextet: {@code 2001:db8:5:7::/64} becomes {@code 2001:db8:5::/48}.
+     *
+     * @param canonicalSource a source text as {@link #canonicalSource} writes it
+     * @return the {@code /48} aggregate of a canonical {@code /64} text; any other text — an IPv4
+     *         address, {@link SourceKey#UNKNOWN_SOURCE}, an aggregate already — unchanged
+     */
+    public static String aggregateSource(String canonicalSource) {
+        Objects.requireNonNull(canonicalSource, "canonicalSource");
+        if (!CANONICAL_IPV6_PREFIX.matcher(canonicalSource).matches()) {
+            return canonicalSource;
+        }
+        String hextets = canonicalSource.substring(0, canonicalSource.length() - IPV6_PREFIX_SUFFIX.length());
+        return hextets.substring(0, hextets.lastIndexOf(':')) + IPV6_AGGREGATE_SUFFIX;
+    }
+
     private static String stripDecoration(@Nullable String address) {
         if (address == null) {
             return "";
@@ -142,9 +170,12 @@ public final class SourceKeyResolver {
     private static String ipv6Prefix(byte[] bytes) {
         StringBuilder prefix = new StringBuilder();
         for (int hextet = 0; hextet < IPV6_PREFIX_HEXTETS; hextet++) {
+            if (hextet > 0) {
+                prefix.append(':');
+            }
             int value = ((bytes[2 * hextet] & 0xff) << 8) | (bytes[2 * hextet + 1] & 0xff);
-            prefix.append(Integer.toHexString(value)).append(':');
+            prefix.append(Integer.toHexString(value));
         }
-        return prefix.append(":/64").toString();
+        return prefix.append(IPV6_PREFIX_SUFFIX).toString();
     }
 }

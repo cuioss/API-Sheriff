@@ -17,16 +17,19 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
 import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
+import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -41,6 +44,7 @@ import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -52,7 +56,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for the edge rules the {@link ConfigValidator} runs through {@link EdgeRules}: the D5
  * boot-time hardening of {@code forwarded.trusted_proxies} (real-CIDR parsing with full-space
- * rejection and the broad-prefix boot WARN, ADR-0044), and the {@code tls.passthrough_sni} host
+ * rejection and the broad-prefix boot WARN, ADR-0044), the boot WARN for an acting
+ * {@code enumeration_detection} action behind trusted proxies, and the {@code tls.passthrough_sni} host
  * collision and alias-resolvability rules.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
@@ -62,6 +67,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 @EnableTestLogger
 @DisplayName("ConfigValidator — edge trust and TLS passthrough")
 class EdgeRulesTest {
+
+    private static final String DETECTION_BEHIND_TRUSTED_PROXIES_ID =
+            ConfigLogMessages.WARN.DETECTION_ACTION_BEHIND_TRUSTED_PROXIES.resolveIdentifierString();
 
     private final ConfigValidator validator = new ConfigValidator();
 
@@ -74,6 +82,10 @@ class EdgeRulesTest {
                 .host(host)
                 .build();
         return RouteConfig.builder().id(id).match(match).build();
+    }
+
+    private static EnumerationDetectionConfig detection(boolean enabled, EnumerationDetectionConfig.Action action) {
+        return EnumerationDetectionConfig.builder().enabled(enabled).action(action).build();
     }
 
     private static GatewayConfig gatewayWithPassthrough(Map<String, String> passthroughSni) {
@@ -204,6 +216,60 @@ class EdgeRulesTest {
                 assertTrue(TestLoggerFactory.getTestHandler()
                                 .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
                         () -> cidr + " is within the broad-prefix threshold and must not emit " + identifier);
+            }
+        }
+
+        /**
+         * The boot WARN that an acting detection action meets trusted proxies, whose requests without a
+         * resolvable client share the exempt {@code unknown} source: it fires for {@code block} and for
+         * {@code delay} together with a non-empty {@code trusted_proxies}, and its matched controls —
+         * {@code observe} with trusted proxies, {@code block} without them, an empty list, detection
+         * disabled and an omitted block — stay silent.
+         */
+        static Stream<Arguments> actingDetectionBehindTrustedProxiesControls() {
+            List<String> trusted = List.of("192.0.2.0/24");
+            return Stream.of(
+                    Arguments.of("block with trusted proxies", detection(true, EnumerationDetectionConfig.Action.BLOCK),
+                            trusted, true),
+                    Arguments.of("delay with trusted proxies", detection(true, EnumerationDetectionConfig.Action.DELAY),
+                            trusted, true),
+                    Arguments.of("observe with trusted proxies",
+                            detection(true, EnumerationDetectionConfig.Action.OBSERVE), trusted, false),
+                    Arguments.of("block without a forwarded block",
+                            detection(true, EnumerationDetectionConfig.Action.BLOCK), null, false),
+                    Arguments.of("block with an empty trusted_proxies",
+                            detection(true, EnumerationDetectionConfig.Action.BLOCK), List.of(), false),
+                    Arguments.of("block with detection disabled",
+                            detection(false, EnumerationDetectionConfig.Action.BLOCK), trusted, false),
+                    Arguments.of("an omitted enumeration_detection block", null, trusted, false));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("actingDetectionBehindTrustedProxiesControls")
+        @DisplayName("Should warn only when an acting enumeration_detection action meets non-empty trusted_proxies")
+        void shouldWarnOnActingDetectionBehindTrustedProxies(String label,
+                @Nullable EnumerationDetectionConfig detection, @Nullable List<String> trustedProxies,
+                boolean expectWarning) {
+            GatewayConfig.GatewayConfigBuilder builder = validGateway().enumerationDetection(detection);
+            if (trustedProxies != null) {
+                builder.forwarded(ForwardedConfig.builder().trustedProxies(trustedProxies).build());
+            }
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(builder.build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.isEmpty(), () -> "the combination boots, got: " + errors);
+            List<String> warnings = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, DETECTION_BEHIND_TRUSTED_PROXIES_ID).stream()
+                    .map(LogRecord::getMessage).toList();
+            if (expectWarning) {
+                assertEquals(1, warnings.size(), () -> label + " must warn once, got: " + warnings);
+                assertTrue(warnings.getFirst().contains(detection.effectiveAction().toString()),
+                        () -> "the warning names the action: " + warnings);
+                assertTrue(warnings.stream().noneMatch(message -> message.contains("192.0.2.")),
+                        () -> "the warning never names an address: " + warnings);
+            } else {
+                assertTrue(warnings.isEmpty(), () -> label + " must stay silent, got: " + warnings);
             }
         }
 

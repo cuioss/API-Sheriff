@@ -38,14 +38,17 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * The quota key a pending-authorization record is counted under: a trusted forwarder's client, else
- * the TCP peer (whose forwarding headers are never read), else {@code unknown}; IPv4 kept whole and IPv6
+ * The quota key a pending-authorization record is counted under: a trusted forwarder's client — its
+ * {@code X-Forwarded-For} client when a contested chain resolves none — else the TCP peer (whose
+ * forwarding headers are never read), else {@code unknown}; IPv4 kept whole and IPv6
  * reduced to its {@code /64}; derived from the request's peer and forwarding headers alone.
  */
 @DisplayName("PendingQuotaKeys — the requester source a pending record is counted under")
 class PendingQuotaKeysTest {
 
     private static final String FORWARDED_FOR = "X-Forwarded-For";
+    private static final String FORWARDED = "Forwarded";
+    private static final String OTHER_CLIENT = "203.0.113.9";
     private static final String PROXY = "192.0.2.10";
     private static final String PEER = "198.51.100.23";
     private static final String FORWARDED_CLIENT = "203.0.113.7";
@@ -79,6 +82,22 @@ class PendingQuotaKeysTest {
         String key = quotaKeys.quotaKeyOf(request(PROXY, Map.of(FORWARDED_FOR, forwardedFor)));
 
         assertEquals(SourceKey.UNKNOWN_SOURCE, key);
+    }
+
+    @Test
+    @DisplayName("a trusted forwarder whose Forwarded disagrees with X-Forwarded-For is keyed on the canonical X-Forwarded-For client")
+    void contestedChainIsKeyedOnTheXForwardedForClient() {
+        String ipv4 = quotaKeys.quotaKeyOf(request(PROXY,
+                Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT)));
+        String ipv6 = quotaKeys.quotaKeyOf(request(PROXY,
+                Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, "2001:db8:c:d:5:6:7:8")));
+        String agreeing = quotaKeys.quotaKeyOf(request(PROXY,
+                Map.of(FORWARDED, "for=" + FORWARDED_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT)));
+
+        assertAll("the X-Forwarded-For fallback, canonicalised as every quota key",
+                () -> assertEquals(FORWARDED_CLIENT, ipv4, "IPv4 kept whole, never unknown"),
+                () -> assertEquals("2001:db8:c:d::/64", ipv6, "IPv6 reduced to its /64, never unknown"),
+                () -> assertEquals(FORWARDED_CLIENT, agreeing, "control: an agreeing chain keys on its client"));
     }
 
     @Test

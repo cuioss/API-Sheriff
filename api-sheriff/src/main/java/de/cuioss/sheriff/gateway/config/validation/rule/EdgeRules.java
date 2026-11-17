@@ -30,6 +30,7 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
@@ -47,7 +48,11 @@ import org.jspecify.annotations.Nullable;
  * The forwarded-trust rule ({@link #validateForwardedTrust}, ADR-0044) requires every
  * {@code forwarded.trusted_proxies} entry to be a well-formed CIDR, refuses a set of ranges that
  * covers an entire address family, and emits {@link ConfigLogMessages.WARN#BROAD_TRUSTED_PROXY} for an
- * individually very broad range.
+ * individually very broad range. It also emits
+ * {@link ConfigLogMessages.WARN#DETECTION_ACTION_BEHIND_TRUSTED_PROXIES} when an acting
+ * {@code enumeration_detection} action ({@code block} or {@code delay}) meets a non-empty
+ * {@code trusted_proxies}, since a proxied request without a usable client address is keyed on the
+ * shared {@code unknown} source detection never acts on.
  * <p>
  * The passthrough host-collision rule ({@link #validatePassthroughHostCollision}) refuses a route whose
  * {@code match.host} is a {@code tls.passthrough_sni} host, since such a host is relayed at L4 and the
@@ -111,6 +116,11 @@ public class EdgeRules {
      * already surface. The un-warned residual applies unchanged: an environment-supplied IPv4
      * {@code /16} or IPv6 {@code /48} boots with no signal at all, the same chosen exposure with no
      * review behind it. The decision and its rejected alternatives are recorded in ADR-0044.
+     * <p>
+     * <strong>Trusted proxies and an acting detection action.</strong> When the set is non-empty and
+     * {@code enumeration_detection} is enabled with {@code block} or {@code delay}, the rule emits the
+     * boot WARN {@link ConfigLogMessages.WARN#DETECTION_ACTION_BEHIND_TRUSTED_PROXIES}, naming the
+     * action only.
      *
      * @param gateway the bound gateway document, whose {@code forwarded.trusted_proxies} are judged
      * @param errors  the shared violation list every refusal is appended to
@@ -134,6 +144,26 @@ public class EdgeRules {
         }
         checkFamilyTrust(ipv4, IPV4_BITS, BROAD_PREFIX_IPV4, "IPv4", errors);
         checkFamilyTrust(ipv6, IPV6_BITS, BROAD_PREFIX_IPV6, "IPv6", errors);
+        warnOnActingDetectionBehindTrustedProxies(gateway, forwarded);
+    }
+
+    /**
+     * Emits {@link ConfigLogMessages.WARN#DETECTION_ACTION_BEHIND_TRUSTED_PROXIES} when
+     * {@code enumeration_detection} is enabled with an effective action other than {@code observe} and
+     * {@code forwarded.trusted_proxies} is non-empty: a trusted proxy's request without a usable client
+     * address is keyed on the shared {@code unknown} source, which detection never acts on, so such
+     * requests escape the configured action. An omitted {@code enumeration_detection} block resolves to
+     * {@code observe} and stays silent. The record names the action only, never a proxy range.
+     */
+    private static void warnOnActingDetectionBehindTrustedProxies(GatewayConfig gateway, ForwardedConfig forwarded) {
+        EnumerationDetectionConfig detection = gateway.enumerationDetection();
+        if (detection == null || !detection.effectiveEnabled() || forwarded.trustedProxies().isEmpty()) {
+            return;
+        }
+        EnumerationDetectionConfig.Action action = detection.effectiveAction();
+        if (action != EnumerationDetectionConfig.Action.OBSERVE) {
+            LOGGER.warn(ConfigLogMessages.WARN.DETECTION_ACTION_BEHIND_TRUSTED_PROXIES, action.toString());
+        }
     }
 
     private static void checkFamilyTrust(List<CidrRange> ranges, int bits, int broadPrefix, String family,

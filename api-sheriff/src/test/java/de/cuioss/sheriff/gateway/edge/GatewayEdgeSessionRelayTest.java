@@ -772,9 +772,11 @@ class GatewayEdgeSessionRelayTest {
                 .setMethod(HttpMethod.GET).setURI(uri);
     }
 
+    /** A same-origin logout — the fetch metadata is the proof the logout leg demands before it ends a session. */
     private int logout(String cookie) throws Exception {
         return Awaits.connect(httpClient.request(reservedHostRequest(LOGOUT_PATH))
-                .compose(request -> request.putHeader("Cookie", cookie).send())
+                .compose(request -> request.putHeader("Cookie", cookie).putHeader("Sec-Fetch-Site", "same-origin")
+                        .send())
                 .map(HttpClientResponse::statusCode), "the edge's answer to the logout");
     }
 

@@ -115,7 +115,10 @@ class BffSessionWebSocketIT {
                     listener.firstMessage.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS),
                     "precondition: the relay must be established and carry frames before the session ends");
 
+            // The same-origin proof the logout leg asks for, as a browser navigating from a gateway page
+            // sends it; REST Assured sends no fetch metadata on its own.
             BffKeycloakLoginFlow.gateway(session.gatewayCookies())
+                    .header("Sec-Fetch-Site", "same-origin")
                     .redirects().follow(false)
                     .when().get("/bff/logout")
                     .then().statusCode(302);

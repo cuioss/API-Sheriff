@@ -22,6 +22,7 @@ import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
 import de.cuioss.sheriff.gateway.edge.request.EdgeRequests;
+import de.cuioss.sheriff.gateway.forward.ForwardedClientResolution;
 import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.core.http.HttpServerRequest;
@@ -43,9 +44,13 @@ import org.jspecify.annotations.Nullable;
  * resolved only for a peer the {@link TcpPeerGate} trusts, through a {@link ForwardedHeaderResolver}
  * configured exactly as the forward stage's, so the address keyed on is the one the gateway regenerates
  * {@code X-Forwarded-For} from — and otherwise the TCP peer. An untrusted peer's
- * {@code X-Forwarded-For} is never read. A trusted peer's request whose forwarding headers resolve to no
- * client is keyed on {@link SourceKey#UNKNOWN_SOURCE}, never on the trusted peer's own address, which
- * every such request through that peer would otherwise share. The authority host is folded to the
+ * {@code X-Forwarded-For} is never read. When a trusted peer's combined {@code Forwarded} /
+ * {@code X-Forwarded-For} chain resolves no client — a contested chain whose two headers disagree — the
+ * source falls back to the {@code X-Forwarded-For} client through {@link ForwardedClientResolution}, the
+ * one derivation the pending-authorization quota key shares. Only a request with no usable
+ * {@code X-Forwarded-For} either is keyed on {@link SourceKey#UNKNOWN_SOURCE}, never on the trusted
+ * peer's own address, which every such request through that peer would otherwise share; the per-source
+ * consumers count and report that shared key but never act on it. The authority host is folded to the
  * declared {@code match.host} set by the {@link SourceKeyResolver}; a malformed {@code Host} folds onto
  * the undeclared-host key ({@link SourceKey#UNDECLARED_HOST}).
  * <p>
@@ -108,9 +113,10 @@ public final class SourceKeys {
 
     /**
      * The key a request is tracked under, with the authority host folded to the declared set: for a
-     * trusted peer the forwarded client address, and {@link SourceKey#UNKNOWN_SOURCE} when its
-     * forwarding headers resolve to no client — never the trusted peer's own address; for any other peer
-     * the TCP peer.
+     * trusted peer the forwarded client address — the {@code X-Forwarded-For} client when a contested
+     * chain resolves none ({@link ForwardedClientResolution#clientOf}) — and
+     * {@link SourceKey#UNKNOWN_SOURCE} when neither resolves a client, never the trusted peer's own
+     * address; for any other peer the TCP peer.
      *
      * @param raw the incoming request
      * @return the canonical source key
@@ -122,7 +128,7 @@ public final class SourceKeys {
         if (!peerGate.isTrustedPeer(peerAddress)) {
             return keyResolver.resolve(peerAddress, null, host);
         }
-        return forwardedResolver.resolve(name -> raw.headers().getAll(name)).clientIp()
+        return ForwardedClientResolution.clientOf(forwardedResolver, name -> raw.headers().getAll(name))
                 .map(client -> keyResolver.resolve(peerAddress, client, host))
                 .orElseGet(() -> keyResolver.resolve(null, null, host));
     }

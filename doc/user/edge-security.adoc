@@ -355,15 +355,29 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 *Reading a trip.*
 
 * WARN `ApiSheriff-141` names the source, the host, the threshold, the window and the action. The
-  source is an IPv4 address, an IPv6 `/64` prefix, or `unknown`; for a request through a trusted
-  forwarder it is the client address the forwarder reported. The host is a host a route declares in
-  `match.host`, or `*`. The line never carries the requested path or a header. A source trips once
-  and is not reported again until it has stopped long enough for its count to drain.
+  source is an IPv4 address, an IPv6 `/64` prefix, an IPv6 `/48` prefix, or `unknown`. A `/48`
+  appears when the gateway began tracking the source while it already tracked 75% of its maximum of
+  65,536 sources: from that mark on a new IPv6 source is counted by its `/48`, so one site cannot fill
+  the gateway's memory by rotating through its `/64` prefixes. For a request through a trusted
+  forwarder the source is the client address the forwarder reported -- when its `Forwarded` and
+  `X-Forwarded-For` headers disagree, the address `X-Forwarded-For` alone names. The host is a host a
+  route declares in `match.host`, or `*`. The line never carries the requested path or a header. A
+  source trips once and is not reported again until it has stopped long enough for its count to drain.
 * `sheriff_source_trips_total{action}` on the management port counts the trips.
-* `sheriff_source_untracked_total` counts rejections from sources the gateway could not track because
-  it already tracks the maximum of 65,536 sources; WARN `ApiSheriff-142` reports the first of them.
-  A steady count there means more distinct sources are being rejected than the gateway tracks -- a
-  scan spread over many addresses, or a deployment whose sources are not per client.
+* `sheriff_source_untracked_total` counts rejections -- and, under `block` or `delay`, refused
+  requests -- from sources the gateway could not track because it already tracks the maximum of
+  65,536 live sources; WARN `ApiSheriff-142` reports the first of
+  them. Under `observe` such a source passes and cannot trip. Under `block` or `delay` it is refused
+  with the `block` answer, `Retry-After: 1`, until the gateway has room for it again -- so while a
+  scan keeps the gateway full, every *new* source is refused, a legitimate one included, and sources
+  already tracked are answered as before. A steady count means more distinct sources are being
+  rejected than the gateway tracks -- a scan spread over many addresses, or a deployment whose sources
+  are not per client.
+* A source of `unknown` -- a request whose client address did not resolve, for example through a
+  trusted proxy that sends no usable `X-Forwarded-For` -- is counted and can trip, but is never
+  blocked, delayed or refused, because it stands for every such client at once. WARN `ApiSheriff-149`
+  at startup reminds you of this when `block` or `delay` is configured together with
+  `forwarded.trusted_proxies`.
 * `sheriff_errors_total{event}` keeps naming the true cause of every rejection the scanner received
   (see <<_uniform_not_found_operator_note>>).
 
@@ -396,7 +410,9 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 . If the gateway sits behind a load balancer or reverse proxy, list it in `forwarded.trusted_proxies`
   (see link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]).
   Otherwise every client arrives from the balancer's address, one scanning client trips that address,
-  and `block` answers `429` to all of them.
+  and `block` answers `429` to all of them. Make sure that proxy sends each client's address in
+  `X-Forwarded-For`: a request it forwards without a usable one is keyed `unknown`, which `block` and
+  `delay` never act on.
 . If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
   proxy -- they are one source whatever the gateway is told. Keep `observe`, or raise `threshold` well
   above what those clients cause together.
@@ -473,7 +489,8 @@ because of a score or an ALERT. To slow or stop a probing source, use the `delay
 version `8.17.0`, so an ECS-aware pipeline can index it as it is: take the text after `ECS alert: `
 as the event. `event.kind` is `alert` and `event.dataset` is `api_sheriff.threat`, which is enough to
 route it. `source.ip` is present only for an IPv4 source; an IPv6 source appears as its `/64` prefix
-in `source.address`. A pipeline that normalizes to OCSF finds the mapping in the same document
+in `source.address`, or as its `/48` prefix when the gateway began scoring it while it already tracked
+75% of its maximum of sources. A pipeline that normalizes to OCSF finds the mapping in the same document
 reference. The SIEM is also where the ALERTs of several gateway instances are correlated: each
 instance scores only the requests it sees.
 
