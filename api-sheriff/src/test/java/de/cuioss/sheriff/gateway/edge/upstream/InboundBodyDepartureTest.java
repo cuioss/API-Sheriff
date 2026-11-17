@@ -365,8 +365,9 @@ class InboundBodyDepartureTest {
      * the client leaves; the matched control lets the client leave with no refusal recorded.
      * <p>
      * The guard holds the gateway's own {@link UpstreamCircuitBreaker} alone, opening on the first failure it
-     * counts, so a breaker that stays closed shows that both ends are recorded as the neutral gateway rejections
-     * they are.
+     * counts, so a breaker that stays closed shows that neither end is counted as a failure. With a one-call window
+     * it does not tell a neutral outcome from a success; {@code UpstreamGuardsTest} and
+     * {@code UpstreamCircuitBreakerTest} bind the neutral outcome itself.
      */
     @Nested
     @DisplayName("a body refusal recorded before the client departs ends the dispatch in place of the departure")
@@ -440,8 +441,10 @@ class InboundBodyDepartureTest {
      * stream and no stall has been claimed.
      * <p>
      * The guard holds the gateway's own {@link UpstreamCircuitBreaker} alone, opening on the first failure it
-     * counts, so an open breaker shows the stall counted as the upstream's failure, and a closed one the
-     * departure recorded as the neutral gateway rejection it is.
+     * counts, so an open breaker shows the stall counted as the upstream's failure, and a closed one that the
+     * departure was not counted as a failure. With a one-call window a closed breaker does not tell a neutral
+     * outcome from a success; {@code UpstreamGuardsTest} and {@code UpstreamCircuitBreakerTest} bind the neutral
+     * outcome itself.
      */
     @Nested
     @DisplayName("an upstream stall claimed before the client departs ends the dispatch as the upstream's timeout")

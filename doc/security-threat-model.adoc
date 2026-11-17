@@ -1784,7 +1784,7 @@ with, `GrpcStreamIdleBound.on(...)`, carries exactly the fixed five minutes
 `ApiSheriff-25` (`TerminalDispatchGrpcStreamIdleTest`, `idleExpiryRecordIsLatchedPerRoute`): a repeat
 on the same route stays at `DEBUG`, and a first occurrence on another route is recorded at `INFO`.
 `GrpcDispatchStageTest.StreamBounds` also drives the message bound and the pre-response deadline,
-shortened to 400 ms and 1.2 s, under a guard carrying the production breaker rules: calls beyond the
+shortened to 400 ms and 1.2 s, under a test-local guard that does not count a gateway rejection as a failure: calls beyond the
 breaker's threshold that send nothing, part of a first message, or a complete message and then hold
 the stream open each end as `DispatchStage.RequestMessageTimeout` (`INBOUND_BODY_ABORTED`, rendered
 `INVALID_ARGUMENT`) at the bound and the breaker makes no transition
