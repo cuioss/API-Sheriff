@@ -1336,7 +1336,7 @@ class GatewayEdgeEarlyResponseResetTest {
 
     /** An upload that trickles its body: its answer and, when the stream ended in a reset, that reset. */
     private record TricklingUpload(HttpClientRequest request, Future<Answer> answer,
-            CompletableFuture<Throwable> streamEnd) {
+    CompletableFuture<Throwable> streamEnd) {
 
         /** @return whether the answer arrived as a whole {@code 200} carrying {@code expectedBody} */
         boolean answeredWith(String expectedBody) {

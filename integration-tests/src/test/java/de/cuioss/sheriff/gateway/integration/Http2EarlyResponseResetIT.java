@@ -213,7 +213,7 @@ class Http2EarlyResponseResetIT {
                     () -> assertEquals(1, pingsAtAnswer.join(),
                             "exactly one PING must confirm the quiet exit before the answer ends"),
                     () -> assertTrue(reset instanceof StreamResetException streamReset
-                                    && streamReset.getCode() == HTTP2_NO_ERROR,
+                            && streamReset.getCode() == HTTP2_NO_ERROR,
                             () -> "the stream must be reset by the gateway with NO_ERROR: " + reset),
                     () -> assertTrue(goAwayCodes.isEmpty(), () -> "the gateway sent GOAWAY " + goAwayCodes),
                     () -> assertFalse(connectionClosed.get(), "the connection must stay open"),
