@@ -25,6 +25,7 @@ import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.http.HttpServerRequest;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Ends an HTTP/2 response answered while its request body is still open: <strong>once request data stops
@@ -56,8 +57,9 @@ import io.vertx.core.http.HttpServerRequest;
  *       PING only once it has seen it, so every frame it sent before then arrives ahead of the
  *       acknowledgement — a window still unmoved at the acknowledgement means the client sent nothing
  *       between its last frame and the PING. A window that moves before the acknowledgement restarts
- *       the {@value #QUIET_MILLIS} ms check. One PING is outstanding at a time, and a PING that fails or
- *       is never acknowledged ends nothing;</li>
+ *       the {@value #QUIET_MILLIS} ms check. One PING is outstanding at a time, and a PING that fails, is
+ *       never acknowledged, or is not sent because its connection already holds the most unacknowledged
+ *       PINGs {@link InboundStreamWindow#ping()} allows ends nothing;</li>
  *   <li>{@value #MAX_WAIT_MILLIS} ms have passed since the wait began, whatever the stream does.</li>
  * </ol>
  * Only the first shows that no more request data can arrive; the second shows it for everything the
@@ -236,6 +238,8 @@ final class EarlyResponseEnd {
         private final Promise<Void> written;
         private final Quiescence quiescence = new Quiescence(System.nanoTime());
         private boolean ended;
+        /** Hands PING acknowledgements to this wait; created with the first PING, released when the wait ends. */
+        private @Nullable AcknowledgementRelay relay;
 
         private Wait(InboundStreamWindow window, Supplier<Future<Void>> ending, Runnable reset,
                 Promise<Void> written) {
@@ -251,12 +255,25 @@ final class EarlyResponseEnd {
             }
             Outcome outcome = quiescence.next(System.nanoTime(), window.remoteOpen(), window.sendableBytes());
             if (outcome == Outcome.PING) {
-                window.ping().onComplete(acknowledgement -> window.execute(() -> acknowledged(acknowledgement)));
+                ping();
             } else if (outcome != Outcome.WAIT) {
                 finish(outcome);
                 return;
             }
             window.schedule(this::look, POLL_MILLIS);
+        }
+
+        /**
+         * Sends the confirming PING. Its acknowledgement reaches this wait only through the relay, which
+         * lets go of the wait once it has ended: a PING the client never acknowledges stays pending in the
+         * transport until the connection closes, and must not keep the response and its ending call alive
+         * that long.
+         */
+        private void ping() {
+            AcknowledgementRelay target = relay != null ? relay : new AcknowledgementRelay(this);
+            relay = target;
+            InboundStreamWindow view = window;
+            view.ping().onComplete(acknowledgement -> view.execute(() -> target.deliver(acknowledgement)));
         }
 
         private void acknowledged(AsyncResult<Void> acknowledgement) {
@@ -277,6 +294,9 @@ final class EarlyResponseEnd {
 
         private void finish(Outcome outcome) {
             ended = true;
+            if (relay != null) {
+                relay.release();
+            }
             LOGGER.debug("Ending the early response of an open HTTP/2 stream: %s", outcome);
             end();
         }
@@ -310,6 +330,35 @@ final class EarlyResponseEnd {
             if (window.remoteOpen()) {
                 reset.run();
             }
+        }
+    }
+
+    /**
+     * Hands the acknowledgement of a PING to the wait that sent it, for as long as that wait runs. A
+     * client that never acknowledges leaves the PING's future pending in the transport until the
+     * connection closes, and this relay is all that future keeps reachable; once the wait has ended it
+     * holds nothing, so no response, request or ending call outlives its wait through it. Confined to
+     * the stream's event loop.
+     */
+    private static final class AcknowledgementRelay {
+
+        private @Nullable Wait wait;
+
+        private AcknowledgementRelay(Wait wait) {
+            this.wait = wait;
+        }
+
+        /** Hands {@code acknowledgement} to the wait, unless it has ended. */
+        private void deliver(AsyncResult<Void> acknowledgement) {
+            Wait running = wait;
+            if (running != null) {
+                running.acknowledged(acknowledgement);
+            }
+        }
+
+        /** Lets go of the wait once it has ended. */
+        private void release() {
+            wait = null;
         }
     }
 }

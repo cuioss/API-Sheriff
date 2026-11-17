@@ -2148,7 +2148,10 @@ connection's flow-control window is used up, or the client ended or lost the str
 has not changed for 50 ms and has still not changed when the client acknowledges the one HTTP/2
 `PING` the gateway sends at that moment, or 1 s has passed. A window that moves before the
 acknowledgement restarts the 50 ms check, and a `PING` that fails or is never acknowledged ends
-nothing. Only the first exit shows that no more of the body can arrive. The `PING` exit shows that
+nothing. At most 16 of these `PING`s are unacknowledged on one connection at a time, so a client that
+never acknowledges cannot make the transport hold one more pending `PING` for every early answer on a
+long-lived connection; past that bound no `PING` is sent and the wait ends at the cap or once nothing
+more is sendable. Only the first exit shows that no more of the body can arrive. The `PING` exit shows that
 the client sent nothing between its last frame and the `PING`: a client acknowledges a `PING` only
 once it has received it, so every frame it sent before then arrives ahead of the acknowledgement,
 however much latency the link adds. The 1 s cap is a separate exit that ends the wait even while

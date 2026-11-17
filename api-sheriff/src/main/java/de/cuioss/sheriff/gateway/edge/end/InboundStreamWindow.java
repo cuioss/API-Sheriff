@@ -17,12 +17,15 @@ package de.cuioss.sheriff.gateway.edge.end;
 
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http2.Http2ConnectionHandler;
 import io.netty.handler.codec.http2.Http2LocalFlowController;
 import io.netty.handler.codec.http2.Http2Stream;
+import io.netty.util.Attribute;
+import io.netty.util.AttributeKey;
 import io.vertx.core.Future;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpConnection;
@@ -49,7 +52,8 @@ import io.vertx.core.net.impl.ConnectionBase;
  * {@link ConnectionBase#channelHandlerContext()} — for an HTTP/2 connection the context of the Netty
  * {@link Http2ConnectionHandler} Vert.x installs. Everything read from there is public Netty API:
  * {@link Http2ConnectionHandler#connection()}, {@link Http2Stream#state()} and the decoder's
- * {@code Http2LocalFlowController#windowSize}. Nothing is written through it. When the internal is not
+ * {@code Http2LocalFlowController#windowSize}. No frame is written through it; the one thing kept on the
+ * connection's channel is the count of this class's own unacknowledged PINGs. When the internal is not
  * what this class expects — a Vert.x upgrade changed it — {@link #of} answers empty and the caller does
  * without the wait it would have used this for.
  * <p>
@@ -58,6 +62,14 @@ import io.vertx.core.net.impl.ConnectionBase;
  * Netty codec, and reports the client's acknowledgement. A client acknowledges a PING only once it has
  * received it, so every frame it sent before then has reached the gateway by the time the
  * acknowledgement does: what the windows read at that moment already counts it.
+ * <p>
+ * <strong>Unacknowledged PINGs are bounded per connection.</strong> Vert.x keeps the future of every
+ * PING it has written until the client acknowledges it, and does not release it when the connection
+ * stays open without an acknowledgement. A client that never acknowledges would otherwise make every
+ * early answer on a long-lived connection leave one more pending future behind. At most
+ * {@value #MAX_OUTSTANDING_PINGS} PINGs sent through this class are unacknowledged on one connection at a
+ * time; past that, {@link #ping()} sends nothing and fails at once, and the caller ends its wait without
+ * the PING.
  * <p>
  * <strong>Thread confinement.</strong> Netty's HTTP/2 state belongs to the connection's event loop.
  * {@link #remoteOpen()}, {@link #sendableBytes()} and {@link #localEnded()} must be called there;
@@ -73,10 +85,25 @@ final class InboundStreamWindow {
     /** The PING payload length HTTP/2 prescribes (RFC 9113 §6.7) and Vert.x enforces. */
     private static final int PING_PAYLOAD_BYTES = 8;
 
+    /**
+     * The most PINGs sent through this class that may be unacknowledged on one connection at once. An
+     * acknowledging client holds a PING for one round trip, so this is far above what early answers on
+     * one connection keep outstanding; it bounds what a client that never acknowledges leaves pending.
+     */
+    static final int MAX_OUTSTANDING_PINGS = 16;
+
+    /** The failure {@link #ping()} answers with once {@value #MAX_OUTSTANDING_PINGS} PINGs are unacknowledged. */
+    private static final String PINGS_OUTSTANDING = "Too many unacknowledged PINGs on the connection";
+
+    /** The connection-wide count of unacknowledged PINGs sent through this class, kept on the channel. */
+    private static final AttributeKey<AtomicInteger> OUTSTANDING_PINGS = AttributeKey
+            .valueOf(InboundStreamWindow.class, "outstandingPings");
+
     private final HttpConnection connection;
     private final ChannelHandlerContext channel;
     private final Http2ConnectionHandler codec;
     private final int streamId;
+    private final AtomicInteger outstandingPings;
 
     private InboundStreamWindow(HttpConnection connection, ChannelHandlerContext channel,
             Http2ConnectionHandler codec, int streamId) {
@@ -84,6 +111,15 @@ final class InboundStreamWindow {
         this.channel = channel;
         this.codec = codec;
         this.streamId = streamId;
+        this.outstandingPings = outstandingPingsOf(channel);
+    }
+
+    /** @return the count of unacknowledged PINGs of {@code channel}'s connection, created on first use */
+    private static AtomicInteger outstandingPingsOf(ChannelHandlerContext channel) {
+        Attribute<AtomicInteger> attribute = channel.channel().attr(OUTSTANDING_PINGS);
+        AtomicInteger fresh = new AtomicInteger();
+        AtomicInteger present = attribute.setIfAbsent(fresh);
+        return present == null ? fresh : present;
     }
 
     /**
@@ -111,12 +147,19 @@ final class InboundStreamWindow {
      * matched to its PING by order, not by content.
      *
      * @return a future completing once the client has acknowledged the PING and failing when the PING
-     *         could not be written, a closed connection among the causes. A PING written on a connection
-     *         that closes before the acknowledgement arrives is never completed: Vert.x does not fail it,
-     *         so a caller must not depend on the future settling
+     *         could not be written, a closed connection among the causes, or was not sent because
+     *         {@value #MAX_OUTSTANDING_PINGS} PINGs are already unacknowledged on the connection. A PING
+     *         written on a connection that closes before the acknowledgement arrives is never completed:
+     *         Vert.x does not fail it, so a caller must not depend on the future settling
      */
     Future<Void> ping() {
-        return connection.ping(Buffer.buffer(new byte[PING_PAYLOAD_BYTES])).mapEmpty();
+        if (outstandingPings.incrementAndGet() > MAX_OUTSTANDING_PINGS) {
+            outstandingPings.decrementAndGet();
+            return Future.failedFuture(PINGS_OUTSTANDING);
+        }
+        Future<Void> acknowledgement = connection.ping(Buffer.buffer(new byte[PING_PAYLOAD_BYTES])).mapEmpty();
+        acknowledgement.onComplete(settled -> outstandingPings.decrementAndGet());
+        return acknowledgement;
     }
 
     /**
