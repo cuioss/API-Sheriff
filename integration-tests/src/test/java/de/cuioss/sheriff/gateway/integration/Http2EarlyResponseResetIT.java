@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.integration;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.vertx.core.Vertx;
@@ -40,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.DisplayName;
@@ -67,7 +69,10 @@ import org.junit.jupiter.api.Test;
  * stops arriving or a time cap passes, then ends it and resets the stream itself with {@code NO_ERROR}
  * (RFC 9113 §8.1): the client is told to stop sending and does not reset the stream on its own, and
  * request data still in flight that would draw a {@code STREAM_CLOSED} reset is waited out, for no
- * longer than the cap.
+ * longer than the cap. A window that has not moved for 50 ms is not taken as stopped on its own: the
+ * gateway sends one HTTP/2 {@code PING} and ends the wait only when the client's acknowledgement finds
+ * the window still unmoved, so data the client sent before the {@code PING} reached it arrives first —
+ * the case {@link #stoppedUploadIsConfirmedQuietWithOnePing} drives.
  * <p>
  * <strong>Why this client keeps sending.</strong> Every upload writes its body chunk after chunk, as
  * fast as flow control lets it, until its stream ends — so request data is in flight when the answer
@@ -124,14 +129,7 @@ class Http2EarlyResponseResetIT {
     void earlyAnsweredUploadsStayAnsweredWithoutGoAway() throws Exception {
         Vertx vertx = Vertx.vertx();
         try {
-            HttpClient client = vertx.createHttpClient(new HttpClientOptions()
-                    .setProtocolVersion(HttpVersion.HTTP_2)
-                    .setSsl(true)
-                    .setUseAlpn(true)
-                    // The stack serves its self-signed localhost certificate; trusting it blindly is
-                    // scoped to this black-box IT and is never a production trust decision.
-                    .setTrustAll(true)
-                    .setVerifyHost(false), new PoolOptions().setHttp2MaxSize(1));
+            HttpClient client = vertx.createHttpClient(clientOptions(), new PoolOptions().setHttp2MaxSize(1));
             List<StreamOutcome> outcomes = new ArrayList<>();
             long started = System.nanoTime();
 
@@ -173,15 +171,85 @@ class Http2EarlyResponseResetIT {
     }
 
     /**
+     * An upload that sends part of its body and then stops, on the native image: the gateway's window
+     * stands still, so it confirms the quiet exit with exactly one HTTP/2 {@code PING} on the upload's
+     * connection — the client acknowledges it, the window is still unmoved — and only then ends the
+     * whole {@code 200} and resets the stream with {@code NO_ERROR}. The connection stays open and serves
+     * a further request. This proves the PING route runs in the native executable.
+     */
+    @Test
+    @DisplayName("an upload that stops sending gets one PING, then the whole 200 and the NO_ERROR reset, on an open connection")
+    void stoppedUploadIsConfirmedQuietWithOnePing() throws Exception {
+        Vertx vertx = Vertx.vertx();
+        try {
+            HttpClient client = vertx.createHttpClient(clientOptions(), new PoolOptions().setHttp2MaxSize(1));
+            HttpClientRequest request = client.request(uploadOptions()).toCompletionStage().toCompletableFuture()
+                    .get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            HttpConnection connection = request.connection();
+            watch(connection);
+            AtomicInteger pings = new AtomicInteger();
+            connection.pingHandler(ping -> pings.incrementAndGet());
+            CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+            request.exceptionHandler(streamEnd::complete);
+            CompletableFuture<Integer> pingsAtAnswer = new CompletableFuture<>();
+            CompletableFuture<Integer> status = request.response()
+                    .compose(response -> response.body().map(body -> {
+                        pingsAtAnswer.complete(pings.get());
+                        return response.statusCode();
+                    }))
+                    .toCompletionStage().toCompletableFuture();
+
+            request.setChunked(true).write(CHUNK).toCompletionStage().toCompletableFuture()
+                    .get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            int answered = status.get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            Throwable reset = streamEnd.get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            HttpConnection furtherConnection = client.request(uploadOptions())
+                    .compose(further -> further.send().compose(response -> response.body())
+                            .map(body -> further.connection()))
+                    .toCompletionStage().toCompletableFuture().get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+            assertAll("an early-answered upload that stops sending",
+                    () -> assertEquals(200, answered),
+                    () -> assertEquals(1, pingsAtAnswer.join(),
+                            "exactly one PING must confirm the quiet exit before the answer ends"),
+                    () -> assertTrue(reset instanceof StreamResetException streamReset
+                                    && streamReset.getCode() == HTTP2_NO_ERROR,
+                            () -> "the stream must be reset by the gateway with NO_ERROR: " + reset),
+                    () -> assertTrue(goAwayCodes.isEmpty(), () -> "the gateway sent GOAWAY " + goAwayCodes),
+                    () -> assertFalse(connectionClosed.get(), "the connection must stay open"),
+                    () -> assertSame(connection, furtherConnection, "a further request reuses the connection"));
+        } finally {
+            vertx.close().toCompletionStage().toCompletableFuture().get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }
+    }
+
+    /** HTTP/2 over TLS with ALPN against the stack's self-signed localhost certificate. */
+    private static HttpClientOptions clientOptions() {
+        return new HttpClientOptions()
+                .setProtocolVersion(HttpVersion.HTTP_2)
+                .setSsl(true)
+                .setUseAlpn(true)
+                // The stack serves its self-signed localhost certificate; trusting it blindly is
+                // scoped to this black-box IT and is never a production trust decision.
+                .setTrustAll(true)
+                .setVerifyHost(false);
+    }
+
+    /** A {@code POST} to the early-answer route, under the configured root path and HTTPS port. */
+    private static RequestOptions uploadOptions() {
+        String uri = RootPaths.normalize(System.getProperty("test.http.root-path", "/")) + UPLOAD_PATH;
+        int port = Integer.parseInt(System.getProperty("test.https.port", DEFAULT_TEST_PORT));
+        return new RequestOptions().setMethod(HttpMethod.POST).setHost("localhost").setPort(port).setURI(uri);
+    }
+
+    /**
      * Sends one upload that keeps writing its body until its stream ends, reads the response whole, then
      * waits up to {@link #GATEWAY_RESET_GRACE_MILLIS} for the stream to be reset. A stream the gateway
      * has not reset by then is reset by this client with {@code CANCEL}, the way a Go client would.
      */
     private CompletableFuture<StreamOutcome> upload(Vertx vertx, HttpClient client) {
         CompletableFuture<StreamOutcome> outcome = new CompletableFuture<>();
-        String uri = RootPaths.normalize(System.getProperty("test.http.root-path", "/")) + UPLOAD_PATH;
-        int port = Integer.parseInt(System.getProperty("test.https.port", DEFAULT_TEST_PORT));
-        client.request(new RequestOptions().setMethod(HttpMethod.POST).setHost("localhost").setPort(port).setURI(uri))
+        client.request(uploadOptions())
                 .onFailure(failure -> outcome.complete(StreamOutcome.failed(failure)))
                 .onSuccess(request -> {
                     watch(request.connection());
