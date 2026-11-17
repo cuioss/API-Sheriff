@@ -574,7 +574,8 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   this key omitted
     ttl_seconds: 3600              # absolute session lifetime from login
     csrf:
-      trusted_origins: [https://app.example.com]   # app origins allowed on unsafe methods;
+      trusted_origins: [https://gw.example.com, https://app.example.com]   # app origins allowed on unsafe methods;
+                                   #   list the gateway's own origin too (logout);
                                    #   defaults to the origin of redirect_uri
     refresh:
       enabled: true

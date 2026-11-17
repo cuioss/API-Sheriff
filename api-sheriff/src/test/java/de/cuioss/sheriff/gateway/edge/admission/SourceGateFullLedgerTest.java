@@ -134,8 +134,8 @@ class SourceGateFullLedgerTest {
     }
 
     @ParameterizedTest(name = "{0}")
-    @EnumSource(value = EnumerationDetectionConfig.Action.class, names = {"BLOCK", "DELAY"})
-    @DisplayName("under block and delay a new source a full ledger cannot track is answered the block-style 429")
+    @EnumSource(value = EnumerationDetectionConfig.Action.class, mode = EnumSource.Mode.EXCLUDE, names = {"OBSERVE"})
+    @DisplayName("under any action but observe a new source a full ledger cannot track is answered the block-style 429")
     void untrackableSourceIsRefused(EnumerationDetectionConfig.Action action) throws Exception {
         SourceGate sourceGate = gate(action);
         fill(sourceGate);

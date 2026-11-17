@@ -59,7 +59,7 @@ peer's request that yields no client even then is keyed on the `unknown` source,
 peer's own address (`SourceKeysTest`). The edge never answers, refuses or holds a request keyed
 `unknown` (<<_unknown_source>>). `SourceKeys` resolves the key once per
 request, on the event loop before admission, and stashes it on the request context for every
-consumer, so both consumers key a request on the same source. The chosen address is canonicalized:
+consumer, so both consumers key a request's events on the same source. The chosen address is canonicalized:
 
 * an IPv4 address is kept whole, in dotted-decimal form;
 * an IPv6 address is reduced to its `/64` prefix, written `a:b:c:d::/64`. An end site is routinely

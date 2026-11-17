@@ -57,7 +57,7 @@ oidc:
     ttl_seconds: 3600                         # absolute lifetime from login
     idle_timeout_seconds: 1800                # optional: ends a session nobody uses; see "Idle timeout"
     csrf:
-      trusted_origins: [https://app.example.com]
+      trusted_origins: [https://gw.example.com, https://app.example.com]   # the gateway's own origin too (logout)
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
 ----
 
