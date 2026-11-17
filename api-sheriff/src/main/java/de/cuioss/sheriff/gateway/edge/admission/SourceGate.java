@@ -120,10 +120,14 @@ import org.jspecify.annotations.Nullable;
  * {@link EventType#SOURCE_TRIPPED} on the {@link GatewayEventCounter}, on
  * {@link SheriffMetrics#SOURCE_TRIPS_TOTAL} under its action, and logged as
  * {@link ApiSheriffLogMessages.WARN#SOURCE_TRIPPED} — the canonical source and the folded host, never
- * the raw {@code Host}, the path or any header. Under the default {@code observe} that is the whole
+ * the raw {@code Host}, the path or any header; the logged source is the key the ledger tracks, the
+ * {@code /48} when it aggregated the source. Under the default {@code observe} that is the whole
  * effect of a trip: no answer changes. The trip is then handed to the recon-trip observer — the threat
  * classifier's {@link ThreatClassifier#admitReconTrip}, which scores it as one more input, or a no-op
- * when threat classification is disabled.
+ * when threat classification is disabled. The gate admits each rejection under the source
+ * {@link SourceKeys} stashed for the request, so the trip it hands on carries that request's own key
+ * ({@link SourceTrip#requestKey()}) beside the tracked key, and the observer scores the trip on the
+ * request's own source.
  * <p>
  * Thread-safe: the ledger is thread-safe, the overflow latch is atomic, and every other field is
  * immutable or thread-safe. {@link #answersBlocked} runs on the event loop; {@link #admit} runs on the
@@ -363,8 +367,9 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     }
 
     /**
-     * The trip listener: counts the trip as an event and on the trip meter, writes the trip WARN, then
-     * hands the trip to the recon-trip observer.
+     * The trip listener: counts the trip as an event and on the trip meter, writes the trip WARN under the
+     * tracked key, then hands the trip — carrying the tripping request's own source as
+     * {@link SourceTrip#requestKey()} — to the recon-trip observer.
      */
     private void onTrip(SourceTrip trip) {
         gatewayEventCounter.increment(EventType.SOURCE_TRIPPED);

@@ -77,7 +77,8 @@ import org.jspecify.annotations.Nullable;
  * aggregated. Every lookup — {@link #admit}, {@link #state} and {@link #hasRoomFor} — answers a
  * {@code /64} that is not tracked itself from its tracked {@code /48}, so a caller keeps asking with the
  * {@code /64} it resolved and finds the aggregated entry; the reported key ({@link SourceState#key()},
- * {@link SourceTrip#key()}) is then the {@code /48}. The mark is a constant, not configuration, and it
+ * {@link SourceTrip#key()}) is then the {@code /48}, while {@link SourceTrip#requestKey()} keeps the
+ * {@code /64} the tripping admission was made for. The mark is a constant, not configuration, and it
  * scales with the bound. The rule is the substrate's: every ledger built on this class follows it.
  * <p>
  * <strong>The room query.</strong> {@link #hasRoomFor} answers whether an admission would track a key
@@ -211,7 +212,8 @@ public final class SourceLedger {
      * The event is counted on the key the source is tracked under: the key itself, the tracked
      * {@code /48} aggregate of an IPv6 {@code /64} that is not tracked itself, or — for a new key — the
      * key as given, or its {@code /48} from the high-water mark on. When the admission trips the source,
-     * the trip listener is called on this thread before the method returns.
+     * the trip listener is called on this thread before the method returns, with a {@link SourceTrip}
+     * carrying both the key the event was counted on and {@code key} itself.
      *
      * @param key    the source the event is attributed to
      * @param weight the event's weight, at least {@code 1}
@@ -242,8 +244,8 @@ public final class SourceLedger {
             boolean atThreshold = entry.level >= settings.threshold();
             if (atThreshold && !entry.tripped) {
                 entry.tripped = true;
-                outcome.trip = new SourceTrip(sourceKey, entry.level, settings.threshold(), settings.window(),
-                        entry.contributions, settings.action(), now);
+                outcome.trip = new SourceTrip(sourceKey, key, entry.level, settings.threshold(),
+                        settings.window(), entry.contributions, settings.action(), now);
             }
             if (atThreshold && settings.action() == Action.BLOCK && !entry.blocked) {
                 entry.blocked = true;

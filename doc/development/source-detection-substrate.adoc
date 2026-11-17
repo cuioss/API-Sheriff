@@ -246,10 +246,12 @@ contributions.
 
 == The Emit Shape and the Trip Listener
 
-A trip hands one `SourceTrip` to the listener registered at construction: the key, the level right
-after the admission that tripped, the threshold, the window, the per-tag contributions, the configured
-action and the monotonic trip instant. It is a *raw* record: no log template, no ECS or OCSF field
-names, no wire format. Every rendering is the consumer's.
+A trip hands one `SourceTrip` to the listener registered at construction: the key that tripped, the
+request key -- the key the tripping admission was made for, which differs from the tripped key only
+when the ledger counted a `/64` on its `/48` (<<_aggregation>>) -- the level right after the admission
+that tripped, the threshold, the window, the per-tag contributions, the configured action and the
+monotonic trip instant. It is a *raw* record: no log template, no ECS or OCSF field names, no wire
+format. Every rendering is the consumer's.
 
 The listener is called on the admitting thread, after the key's lock is released, and only by the
 admission that performed the transition. It must not block.
@@ -294,8 +296,11 @@ What the substrate serves it:
   that are answered without reaching the feed.
 
 * *The recon trip as an input.* The recon ledger's `SourceTrip` is admitted to the threat ledger
-  with the weight `weights.recon_trip` under the tag `SOURCE_TRIPPED`, for the tripped key. A recon
-  trip raises the score; it is never an ALERT of its own.
+  with the weight `weights.recon_trip` under the tag `SOURCE_TRIPPED`, for the trip's request key --
+  the source of the request whose rejection tripped it, not the recon ledger's tracked key. The threat
+  ledger's own lookup then places it, so a `/64` the threat ledger already tracks receives the trip
+  although the recon ledger counted that `/64` on its `/48`. A recon trip raises the score; it is
+  never an ALERT of its own.
 
 * *Dedup.* A trip is emitted once per `CLEAR` period, so the ALERT tier, `ThreatAlerts`, raises one
   ALERT per episode, not per event.

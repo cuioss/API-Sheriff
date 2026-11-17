@@ -171,8 +171,8 @@ class ThreatAlertsTest {
 
     private static SourceTrip trip(SourceKey key) {
         Map<Enum<?>, Long> contributions = Map.of(EventType.SECURITY_FILTER_VIOLATION, 100L);
-        return new SourceTrip(key, 100.0d, 100, Duration.ofSeconds(300), contributions, SourceLedger.Action.OBSERVE,
-                0L);
+        return new SourceTrip(key, key, 100.0d, 100, Duration.ofSeconds(300), contributions,
+                SourceLedger.Action.OBSERVE, 0L);
     }
 
     private static String alertIdentifier() {

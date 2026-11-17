@@ -105,10 +105,11 @@ once per request,* on the event loop before admission, and stashes it on the `Ro
 edge builds the stage whenever either consumer is enabled. The derivation is the one of ADR-0076:
 the trusted forwarder's client address or the TCP peer, IPv6 reduced to its `/64`, the host folded to
 the declared `match.host` set. `SourceGate` reads the stashed key, so both consumers key a request's
-events on the same source. A recon trip carries the key the recon ledger tracks the source under
-instead, which is the `/48` aggregate once that ledger aggregated it. When the trip reaches the threat
-ledger first, later events from that `/64` join the `/48` entry it created; when the threat ledger
-already tracks the `/64` itself, the trip gets an entry of its own. The
+events on the same source. A recon trip carries two keys: the key the recon ledger tracks the source
+under, which is the `/48` aggregate once that ledger aggregated it, and the key of the request whose
+rejection tripped it. The threat ledger scores the trip on the request's own key, so its own lookup
+decides the entry: a `/64` it already tracks receives the trip on that entry, whatever the recon ledger
+aggregated, and a source it does not track yet is placed as any new event of that source would be. The
 link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#amendment-unknown-and-pressure[ADR-0076
 amendment] applies to this ledger unchanged: the keying of a forwarded chain that resolves no client
 on its proxy's own unresolved source, and
@@ -119,7 +120,7 @@ track is counted and never refused.
 === Two tiers: the recon trip is an input, the threat trip is the ALERT
 
 `SourceGate` hands every recon trip to `ThreatClassifier.admitReconTrip`. The classifier admits
-`weights.recon_trip` (default `50`) under the tag `SOURCE_TRIPPED` for the tripped key. The recon
+`weights.recon_trip` (default `50`) under the tag `SOURCE_TRIPPED` for the tripping request's own key. The recon
 trip keeps its own record, `ApiSheriff-141`, and its meter, unchanged. It never raises an ALERT of its
 own. Only the threat ledger's trip does.
 

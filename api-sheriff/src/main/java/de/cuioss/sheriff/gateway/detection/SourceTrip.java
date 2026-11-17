@@ -26,8 +26,17 @@ import java.util.Objects;
  * It is emitted exactly once per {@code CLEAR} period of a source, by the admission that performed the
  * transition. It carries no rendering: no log template, no ECS or OCSF field names and no wire format
  * — a consumer formats it into whatever its own surface needs.
+ * <p>
+ * <strong>Two keys.</strong> {@link #key()} is the entry that tripped — the key the ledger counts the
+ * source on, which is the {@code /48} aggregate when the ledger tracks an IPv6 {@code /64} under it.
+ * {@link #requestKey()} is the source the tripping admission was made for — the request's own key, as the
+ * caller passed it to {@link SourceLedger#admit}. The two are equal unless the ledger aggregated the
+ * source. A consumer that keeps a ledger of its own attributes the trip on {@link #requestKey()}, so its
+ * own ledger decides — by its own tracked keys and pressure — which entry the trip lands on, instead of
+ * inheriting the aggregation this ledger chose.
  *
- * @param key            the source that tripped
+ * @param key            the source entry that tripped — the key the ledger counts the source on
+ * @param requestKey     the source the tripping admission was made for — the request's own key
  * @param levelAtTrip    the bucket level right after the admission that reached the threshold
  * @param threshold      the threshold of the ledger that tripped
  * @param window         the window over which that ledger drains a full threshold
@@ -38,17 +47,18 @@ import java.util.Objects;
  * @author API Sheriff Team
  * @since 1.0
  */
-public record SourceTrip(SourceKey key, double levelAtTrip, int threshold, Duration window,
+public record SourceTrip(SourceKey key, SourceKey requestKey, double levelAtTrip, int threshold, Duration window,
 Map<Enum<?>, Long> contributions, SourceLedger.Action action, long trippedAtNanos) {
 
     /**
      * Canonical constructor rejecting an absent component and copying the contributions.
      *
-     * @throws NullPointerException when {@code key}, {@code window}, {@code contributions} or
-     *                              {@code action} is {@code null}
+     * @throws NullPointerException when {@code key}, {@code requestKey}, {@code window},
+     *                              {@code contributions} or {@code action} is {@code null}
      */
     public SourceTrip {
         Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(requestKey, "requestKey");
         Objects.requireNonNull(window, "window");
         Objects.requireNonNull(action, "action");
         contributions = Map.copyOf(Objects.requireNonNull(contributions, "contributions"));
