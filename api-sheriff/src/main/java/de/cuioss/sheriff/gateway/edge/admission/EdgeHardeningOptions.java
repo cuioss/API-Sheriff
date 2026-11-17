@@ -97,8 +97,10 @@ import io.vertx.core.http.HttpServerOptions;
  * guard counts the resets a client sends on its connection. The resets the transport itself sends are
  * counted too, by Netty's encoder-side reset limit: every reset it writes except {@code NO_ERROR} and
  * {@code CANCEL} — including the {@code STREAM_CLOSED} reset for a DATA frame that arrives after an
- * early answer, {@code REFUSED_STREAM}, and the reset after a {@code 431}. The gateway's own
- * {@code RST_STREAM(NO_ERROR)} — the early-response reset of ADR-0066 and the request-body and
+ * early answer (its end waits for a PING acknowledgement on an unmoved window, so frames a client sent
+ * before it saw that PING arrive first; data a client still sends after acknowledging it, or up to the
+ * 1 s cap, still draws these resets), {@code REFUSED_STREAM}, and the reset after a {@code 431}. The
+ * gateway's own {@code RST_STREAM(NO_ERROR)} — the early-response reset of ADR-0066 and the request-body and
  * stream-idle resets of ADR-0060 — feeds neither count. The per-source detection substrate
  * ({@code de.cuioss.sheriff.gateway.detection}) is deliberately not used for these bounds: its key is a
  * source address, while stream creation and reset state belong to one connection, so per-source

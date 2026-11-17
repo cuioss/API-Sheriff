@@ -27,9 +27,14 @@
  * earlier than its release time from a Vert.x timer — the uniform {@code 404}'s response-timing floor
  * writes through it — the package-private {@code EarlyResponseEnd} that ends an early answer once
  * request data stops arriving or a time cap passes, the package-private {@code InboundStreamWindow} it
- * reads the stream's transport state from, and the
+ * reads the stream's transport state from and sends its confirming PING through, and the
  * {@link de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement} that retires a connection after a
  * framing rejection or a reserved-body {@code 413}.
+ * <p>
+ * <strong>When request data has stopped arriving.</strong> An early answer is ended once the client can
+ * send nothing more on its stream; or once the stream's window has not moved for 50 ms and is still
+ * unmoved when the client acknowledges the one HTTP/2 PING the gateway sends at that moment — a window
+ * that moves first restarts the 50 ms check; or once 1 s has passed since the wait began.
  * <p>
  * <strong>Dependencies.</strong> This package may depend on
  * {@link de.cuioss.sheriff.gateway.edge.upstream} only.

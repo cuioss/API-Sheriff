@@ -49,7 +49,8 @@ import org.junit.jupiter.api.Test;
  * {@link InboundStreamWindow} read against a live Vert.x HTTP/2 server: it attaches to the stream of an
  * HTTP/2 request — and to nothing else — and reports what the transport knows of it. A request paused
  * by its handler returns no window to the client, so the window it reports shrinks by exactly the bytes
- * the client sends, and the stream stops being open to the client once the client ends it.
+ * the client sends, and the stream stops being open to the client once the client ends it. The PING it
+ * sends goes out on the request's own connection and completes once the client acknowledges it.
  * <p>
  * This is the test that pins the one Vert.x internal the class reaches through: should a Vert.x upgrade
  * change it, the attach fails here rather than silently in production.
@@ -160,6 +161,49 @@ class InboundStreamWindowTest {
                 () -> assertTrue(Awaits.connect(endedInTheSameTurn, "the look right after the end"),
                         "an end the transport accepts at once ends the gateway's side in the same turn"),
                 () -> assertTrue(look(window).remoteOpen(), "the client's side is still open"));
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a PING goes out on the stream's own connection, and its acknowledgement completes the future")
+    void pingIsSentOnTheStreamsConnectionAndCompletesOnTheAcknowledgement() throws Exception {
+        HttpClientRequest upload = open(HttpVersion.HTTP_2);
+        List<Buffer> pingsReceived = new CopyOnWriteArrayList<>();
+        Awaits.connect(upload.setChunked(true).sendHead(), "the upload head to be sent");
+        upload.connection().pingHandler(pingsReceived::add);
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the upload");
+        InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
+
+        Future<Void> ping = window.ping();
+        Awaits.connect(ping, "the PING to be acknowledged");
+
+        assertAll("a PING on the stream's connection",
+                () -> assertTrue(ping.succeeded(), "the acknowledgement completes the future"),
+                () -> assertEquals(1, pingsReceived.size(),
+                        "the client of the stream's connection received exactly the one PING"),
+                () -> assertTrue(look(window).remoteOpen(), "the PING leaves the stream open"));
+    }
+
+    /**
+     * The PING future fails when the PING cannot be written. Vert.x does not fail a PING it has written
+     * when its connection closes before the acknowledgement arrives — that future never completes — so
+     * the case waits until the connection is observed closed before it pings.
+     */
+    @Test
+    @DisplayName("HTTP/2 — a PING on a connection that has closed fails its future")
+    void pingOnAClosedConnectionFails() throws Exception {
+        HttpClientRequest upload = open(HttpVersion.HTTP_2);
+        Awaits.connect(upload.setChunked(true).sendHead(), "the upload head to be sent");
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the upload");
+        InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
+        CompletableFuture<Void> closed = new CompletableFuture<>();
+        request.connection().closeHandler(closed::complete);
+        request.connection().close();
+        Awaits.connect(closed, "the connection to be closed");
+
+        boolean failed = Awaits.connect(window.ping().transform(result -> Future.succeededFuture(result.failed())),
+                "the PING on the closed connection to settle");
+
+        assertTrue(failed, "a PING that cannot be acknowledged must fail, never complete");
     }
 
     @Test

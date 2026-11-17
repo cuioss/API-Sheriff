@@ -18,7 +18,9 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,6 +29,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -70,6 +73,7 @@ import io.vertx.core.http.PoolOptions;
 import io.vertx.core.http.StreamResetException;
 import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
 import org.jspecify.annotations.Nullable;
@@ -95,7 +99,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  * client to stop sending, so it does not have to reset the stream itself. That reset must not race the
  * data the client is still sending, either: the transport answers every data frame that arrives after
  * it with a {@code STREAM_CLOSED} reset and counts those against the same limit — the case
- * {@link #uploadsStillSendingWhenAnsweredStayOnOneConnection} drives.
+ * {@link #uploadsStillSendingWhenAnsweredStayOnOneConnection} drives, and, for a client that trickles
+ * its body across a link with latency, {@link #uploadsTricklingAcrossLinkLatencyStayOnOneConnection}.
  * <p>
  * <strong>What the stub upstream does.</strong> A request to a path under {@value #EARLY} is answered
  * at once, before its body is read; one under {@value #PARTIAL} is answered at once with the first
@@ -174,6 +179,23 @@ class GatewayEdgeEarlyResponseResetTest {
     private static final long UPLOAD_CAP_BYTES = 16L * 1024 * 1024;
     /** Early-answered uploads the upstream-connection case sends, one after the other. */
     private static final int EARLY_ANSWERS = 24;
+    /** The delay the latency relay adds to everything it forwards, in each direction. */
+    private static final long LINK_LATENCY_MILLIS = 50L;
+    /**
+     * The gap between two DATA frames of a trickling upload: longer than the end rule's 50 ms check,
+     * shorter than that check plus one round trip of the latency relay.
+     */
+    private static final long TRICKLE_GAP_MILLIS = 100L;
+    /** The DATA frames a trickling upload writes after its first part; the last one ends its body. */
+    private static final int TRICKLE_FRAMES = 3;
+    /** Early-answered trickling uploads the trickle case sends over one connection: well above the limit. */
+    private static final int TRICKLING_UPLOADS = 10 * RESET_LIMIT;
+    /** The gap between two DATA frames of an upload trickling faster than the end rule's 50 ms check. */
+    private static final long FAST_TRICKLE_GAP_MILLIS = 20L;
+    /** The end rule's time cap: the longest the end of an early answer is held back. */
+    private static final long EARLY_ANSWER_CAP_MILLIS = 1_000L;
+    /** How much later than the cap the reset of a never-quiet upload may arrive across the latency relay. */
+    private static final long CAP_MARGIN_MILLIS = 1_000L;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -188,6 +210,7 @@ class GatewayEdgeEarlyResponseResetTest {
     private final CompletableFuture<HttpConnection> partialUpstreamConnection = new CompletableFuture<>();
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
     private final List<HttpServer> frontServers = new CopyOnWriteArrayList<>();
+    private final List<NetServer> latencyRelays = new CopyOnWriteArrayList<>();
     private final List<HttpClient> httpClients = new CopyOnWriteArrayList<>();
 
     /** Every request the stub upstream received a head for, as {@code METHOD path}. */
@@ -219,6 +242,9 @@ class GatewayEdgeEarlyResponseResetTest {
     void tearDown() throws Exception {
         for (HttpClient client : httpClients) {
             Awaits.teardown(client.close(), "an HTTP client to close");
+        }
+        for (NetServer relay : latencyRelays) {
+            Awaits.teardown(relay.close(), "a latency relay to close");
         }
         Awaits.teardown(netClient.close(), "the raw TCP client to close");
         for (HttpServer frontServer : frontServers) {
@@ -472,6 +498,177 @@ class GatewayEdgeEarlyResponseResetTest {
     void uploadsStillSendingWhenAnsweredStayOnOneConnectionUnderTheEdgesOptions() throws Exception {
         assertUploadsStillSendingWhenAnsweredStayOnOneConnection(
                 edgeServerOptions().setHttp2RstFloodMaxRstFramePerWindow(RESET_LIMIT), SENDING_BATCH);
+    }
+
+    /**
+     * Uploads that trickle their body — a few small DATA frames, {@value #TRICKLE_GAP_MILLIS} ms apart —
+     * when the upstream answers them, sent across a link with {@value #LINK_LATENCY_MILLIS} ms of
+     * latency in each direction, many more than the reset limit over one connection. A gap that long
+     * leaves the stream's window unmoved for longer than the end rule's 50 ms check, yet the next frame
+     * is already on the way: the client sent it before anything the gateway wrote after that check could
+     * reach it. Taking the unmoved window as a stopped sender would reset the stream while that frame
+     * is in flight, the transport would answer its arrival with a {@code STREAM_CLOSED} reset, and the
+     * reset limit would close the connection with {@code GOAWAY ENHANCE_YOUR_CALM}. The gateway instead
+     * confirms the quiet window with one HTTP/2 PING: the client acknowledges it only after the frames
+     * it sent before seeing it, so the frame on the way moves the window before the acknowledgement
+     * arrives and the wait goes on, until the client ends its body and the response is ended with it.
+     * <p>
+     * The latency relay is what makes the case: on bare loopback every frame the client sends arrives
+     * at once, so a slow sender and a stopped one look alike to the PING. The gap is longer than the
+     * 50 ms check and shorter than that check plus one round trip of the relay, with
+     * {@value #TRICKLE_GAP_MILLIS} - 50 = 50 ms of margin on the lower bound and
+     * 50 + 2 x {@value #LINK_LATENCY_MILLIS} - {@value #TRICKLE_GAP_MILLIS} = 50 ms on the upper one.
+     * The uploads are sent in batches of {@link #SENDING_BATCH}, so the whole run stays inside the
+     * reset guard's 30-second window and every transport reset it draws counts against one limit.
+     */
+    @Test
+    @DisplayName("uploads trickling across link latency when answered early: each answered whole; no GOAWAY; the connection is kept")
+    void uploadsTricklingAcrossLinkLatencyStayOnOneConnection() throws Exception {
+        int port = startEdge(new EdgeHardeningOptions(),
+                edgeServerOptions().setHttp2RstFloodMaxRstFramePerWindow(RESET_LIMIT));
+        int relayPort = startLatencyRelay(port);
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        List<HttpConnection> connections = new CopyOnWriteArrayList<>();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+        List<TricklingUpload> uploads = new ArrayList<>();
+
+        for (int started = 0; started < TRICKLING_UPLOADS; started += SENDING_BATCH) {
+            List<TricklingUpload> batch = new ArrayList<>();
+            for (int i = 0; i < SENDING_BATCH; i++) {
+                batch.add(startTricklingUpload(http2Client, relayPort, "/up" + EARLY + "-trickling-" + (started + i),
+                        connections, goAwayCodes));
+            }
+            Awaits.connect(Future.join(batch.stream().map(TricklingUpload::answer).toList()).otherwiseEmpty(),
+                    "every trickling upload of the batch to be answered or to fail");
+            uploads.addAll(batch);
+        }
+        Answer after = sendAfter(http2Client, relayPort);
+
+        List<TricklingUpload> notAnswered = uploads.stream().filter(upload -> !upload.answeredWith(earlyAnswer))
+                .toList();
+        assertAll("uploads trickling across link latency when answered early",
+                () -> assertEquals(TRICKLING_UPLOADS, uploads.size()),
+                () -> assertTrue(notAnswered.isEmpty(), () -> notAnswered.size()
+                        + " upload(s) were not answered whole, first: " + notAnswered.getFirst().outcome()),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes),
+                () -> assertEquals(1, connections.size(), "every upload must share the one connection"),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
+                () -> assertSame(connections.getFirst(), after.connection(),
+                        "the further stream reuses the connection"));
+    }
+
+    /**
+     * The matched control of {@link #uploadsTricklingAcrossLinkLatencyStayOnOneConnection} for a client
+     * that stops at once, across the same latency relay: its window stands still, the PING the gateway
+     * sends then is acknowledged with the window still unmoved, and the answer ends whole, followed by
+     * the gateway's {@code NO_ERROR} reset — the PING confirms the quiet exit, it does not take it away.
+     */
+    @Test
+    @DisplayName("across link latency, an upload that stops sending is answered whole after a PING, then reset NO_ERROR")
+    void stoppedSenderAcrossLinkLatencyIsAnsweredAndReset() throws Exception {
+        int relayPort = startLatencyRelay(frontPort);
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        HttpClientRequest request = open(http2Client, relayPort, "POST", "/up" + EARLY + "-stopped");
+        HttpConnection connection = request.connection();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+        List<Buffer> pings = new CopyOnWriteArrayList<>();
+        connection.goAwayHandler(goAway -> goAwayCodes.add(goAway.getErrorCode()));
+        connection.pingHandler(pings::add);
+        CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+        request.exceptionHandler(streamEnd::complete);
+        Future<Answer> answered = answerOf(request);
+
+        Awaits.connect(request.setChunked(true).write(Generators.letterStrings(16, 32).next()),
+                "the first and only part of the body to be sent");
+        Answer answer = Awaits.connect(answered, "the early answer to arrive whole");
+        Throwable reset = Awaits.connect(streamEnd, "the edge to reset the stopped upload");
+        Answer after = sendAfter(http2Client, relayPort);
+
+        assertAll("an upload that stops sending, across link latency",
+                () -> assertEquals(200, answer.response().statusCode()),
+                () -> assertEquals(earlyAnswer, answer.body(), "the response must arrive whole before the reset"),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, reset).getCode(),
+                        "the stream must be reset by the gateway with NO_ERROR"),
+                () -> assertFalse(pings.isEmpty(), "the quiet exit must have been confirmed with a PING"),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
+                () -> assertSame(connection, after.connection(), "the further stream reuses the connection"));
+    }
+
+    /**
+     * The matched control of {@link #uploadsTricklingAcrossLinkLatencyStayOnOneConnection} for a client
+     * that keeps sending as fast as flow control lets it, across the same latency relay: it uses its
+     * window up, so the answer still ends whole and is followed by the gateway's {@code NO_ERROR} reset.
+     */
+    @Test
+    @DisplayName("across link latency, an upload that keeps sending is answered whole, then reset NO_ERROR")
+    void continuousSenderAcrossLinkLatencyIsAnsweredAndReset() throws Exception {
+        int relayPort = startLatencyRelay(frontPort);
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        List<HttpConnection> connections = new CopyOnWriteArrayList<>();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+
+        SendingUpload upload = startSendingUpload(http2Client, relayPort, "/up" + EARLY + "-continuous", connections,
+                goAwayCodes);
+        upload.settle();
+        Answer after = sendAfter(http2Client, relayPort);
+
+        Answer answer = assertInstanceOf(Answer.class, upload.answer(),
+                () -> "the upload must be answered: " + upload.outcome(upstreamStarted));
+        assertAll("an upload that keeps sending, across link latency",
+                () -> assertEquals(200, answer.response().statusCode()),
+                () -> assertEquals(earlyAnswer, answer.body(), "the response must arrive whole before the reset"),
+                () -> assertTrue(upload.streamEnd() instanceof StreamResetException reset && reset.getCode() == 0L,
+                        () -> "the stream must be reset by the gateway with NO_ERROR: " + upload.outcome(upstreamStarted)),
+                () -> assertTrue(upload.sent().get() < UPLOAD_CAP_BYTES,
+                        "the upload must have been stopped by the gateway, not by its own cap"),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
+                () -> assertSame(connections.getFirst(), after.connection(), "the further stream reuses the connection"));
+    }
+
+    /**
+     * The matched control of {@link #uploadsTricklingAcrossLinkLatencyStayOnOneConnection} for a client
+     * that trickles faster than the end rule's 50 ms check and never stops, across the same latency
+     * relay: its window never stands still long enough for a PING to find it unmoved, so the wait runs
+     * to the {@value #EARLY_ANSWER_CAP_MILLIS} ms cap, which still ends it — the answer whole, then the
+     * gateway's {@code NO_ERROR} reset, no sooner than the cap and well inside cap plus margin.
+     */
+    @Test
+    @DisplayName("across link latency, an upload trickling faster than the quiet check forever is still ended by the cap")
+    void fastTricklerAcrossLinkLatencyIsEndedByTheCap() throws Exception {
+        int relayPort = startLatencyRelay(frontPort);
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        HttpClientRequest request = open(http2Client, relayPort, "POST", "/up" + EARLY + "-fast-trickle");
+        HttpConnection connection = request.connection();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+        connection.goAwayHandler(goAway -> goAwayCodes.add(goAway.getErrorCode()));
+        CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+        request.exceptionHandler(streamEnd::complete);
+        Future<Answer> answered = answerOf(request);
+        Buffer part = Buffer.buffer(Generators.letterStrings(16, 32).next());
+
+        long startedNanos = System.nanoTime();
+        Awaits.connect(request.setChunked(true).write(part), "the first part of the body to be sent");
+        trickleUntilEnded(request, part, streamEnd);
+        Answer answer = Awaits.connect(answered, "the early answer to arrive whole");
+        Throwable reset = Awaits.connect(streamEnd, "the edge to reset the trickling upload");
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+        Answer after = sendAfter(http2Client, relayPort);
+
+        assertAll("an upload trickling faster than the quiet check, across link latency",
+                () -> assertEquals(200, answer.response().statusCode()),
+                () -> assertEquals(earlyAnswer, answer.body(), "the response must arrive whole before the reset"),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, reset).getCode(),
+                        "the stream must be reset by the gateway with NO_ERROR"),
+                () -> assertTrue(elapsedMillis >= EARLY_ANSWER_CAP_MILLIS,
+                        () -> "a stream that never stood still must be ended by the cap, not before: " + elapsedMillis
+                                + " ms"),
+                () -> assertTrue(elapsedMillis < EARLY_ANSWER_CAP_MILLIS + CAP_MARGIN_MILLIS,
+                        () -> "the cap must end the wait: the reset arrived after " + elapsedMillis + " ms"),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
+                () -> assertSame(connection, after.connection(), "the further stream reuses the connection"));
     }
 
     /**
@@ -989,6 +1186,98 @@ class GatewayEdgeEarlyResponseResetTest {
         }
     }
 
+    /**
+     * Starts a TCP relay in front of {@code targetPort} that forwards everything it receives, in each
+     * direction, {@value #LINK_LATENCY_MILLIS} ms late and in the order it arrived — a link with latency
+     * between a client and the edge. A connection's close is forwarded the same way, behind its data.
+     *
+     * @return the port the relay listens on
+     */
+    private int startLatencyRelay(int targetPort) throws Exception {
+        NetServer relay = Awaits.connect(vertx.createNetServer().connectHandler(inbound -> {
+            inbound.pause();
+            netClient.connect(targetPort, LoopbackHost.ADDRESS).onComplete(connected -> {
+                if (connected.failed()) {
+                    inbound.close();
+                    return;
+                }
+                NetSocket outbound = connected.result();
+                relayLate(inbound, outbound);
+                relayLate(outbound, inbound);
+                inbound.resume();
+            });
+        }).listen(0, LoopbackHost.ADDRESS), "the latency relay to start listening");
+        latencyRelays.add(relay);
+        return relay.actualPort();
+    }
+
+    /** Forwards what {@code from} receives, and its close, to {@code to} {@value #LINK_LATENCY_MILLIS} ms late. */
+    private void relayLate(NetSocket from, NetSocket to) {
+        // Touched only on from's event loop: its handlers and the timers they set run there.
+        Deque<Runnable> pending = new ArrayDeque<>();
+        from.handler(chunk -> runLate(pending, () -> to.write(chunk)));
+        from.closeHandler(closed -> runLate(pending, to::close));
+    }
+
+    /**
+     * Runs {@code action} {@value #LINK_LATENCY_MILLIS} ms from now, after every action queued before it:
+     * each timer runs the oldest pending action, so the order holds even if two timers fire out of order.
+     */
+    private void runLate(Deque<Runnable> pending, Runnable action) {
+        pending.addLast(action);
+        vertx.setTimer(LINK_LATENCY_MILLIS, fired -> pending.removeFirst().run());
+    }
+
+    /**
+     * Opens an upload on {@code client} that trickles its body: a small first part at once, then
+     * {@value #TRICKLE_FRAMES} more small parts {@value #TRICKLE_GAP_MILLIS} ms apart, the last one
+     * ending the body — unless its stream has ended first. Records the first GOAWAY of every connection
+     * it is sent on.
+     */
+    private TricklingUpload startTricklingUpload(HttpClient client, int port, String path,
+            List<HttpConnection> connections, List<Long> goAwayCodes) throws Exception {
+        HttpClientRequest request = open(client, port, "POST", path);
+        HttpConnection connection = request.connection();
+        if (!connections.contains(connection)) {
+            connections.add(connection);
+            connection.goAwayHandler(goAway -> goAwayCodes.add(goAway.getErrorCode()));
+        }
+        CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+        request.exceptionHandler(streamEnd::complete);
+        request.setChunked(true);
+        Future<Answer> answer = answerOf(request);
+        Buffer part = Buffer.buffer(Generators.letterStrings(16, 32).next());
+        Awaits.connect(request.write(part), "the first part of the trickling " + path + " body to be sent");
+        trickle(request, part, streamEnd, TRICKLE_FRAMES);
+        return new TricklingUpload(request, answer, streamEnd);
+    }
+
+    /** Writes {@code part} to {@code request} {@value #TRICKLE_GAP_MILLIS} ms from now, the last of {@code remaining} ending the body. */
+    private void trickle(HttpClientRequest request, Buffer part, CompletableFuture<Throwable> streamEnd,
+            int remaining) {
+        vertx.setTimer(TRICKLE_GAP_MILLIS, fired -> {
+            if (streamEnd.isDone()) {
+                return;
+            }
+            if (remaining == 1) {
+                request.end(part);
+            } else {
+                request.write(part);
+                trickle(request, part, streamEnd, remaining - 1);
+            }
+        });
+    }
+
+    /** Writes {@code part} to {@code request} every {@value #FAST_TRICKLE_GAP_MILLIS} ms until its stream has ended. */
+    private void trickleUntilEnded(HttpClientRequest request, Buffer part, CompletableFuture<Throwable> streamEnd) {
+        vertx.setTimer(FAST_TRICKLE_GAP_MILLIS, fired -> {
+            if (!streamEnd.isDone()) {
+                request.write(part);
+                trickleUntilEnded(request, part, streamEnd);
+            }
+        });
+    }
+
     /** Sends a well-framed GET on {@code client}'s connection to {@code port} and returns its answer. */
     private Answer sendAfter(HttpClient client, int port) throws Exception {
         HttpClientRequest after = open(client, port, "GET", "/up/after");
@@ -1043,6 +1332,25 @@ class GatewayEdgeEarlyResponseResetTest {
 
     /** An upload whose body is still open, and the way its stream ended once it has. */
     private record Upload(HttpClientRequest request, CompletableFuture<Throwable> streamEnd) {
+    }
+
+    /** An upload that trickles its body: its answer and, when the stream ended in a reset, that reset. */
+    private record TricklingUpload(HttpClientRequest request, Future<Answer> answer,
+            CompletableFuture<Throwable> streamEnd) {
+
+        /** @return whether the answer arrived as a whole {@code 200} carrying {@code expectedBody} */
+        boolean answeredWith(String expectedBody) {
+            return answer.succeeded() && answer.result().response().statusCode() == 200
+                    && expectedBody.equals(answer.result().body());
+        }
+
+        /** @return how this upload ended, for a failure message */
+        String outcome() {
+            String answered = answer.succeeded()
+                    ? answer.result().response().statusCode() + " " + answer.result().body()
+                    : String.valueOf(answer.cause());
+            return request.path() + ": answer=" + answered + ", streamEnd=" + streamEnd.getNow(null);
+        }
     }
 
     /** An upload that keeps sending until its stream ends: its answer, how it ended and what it sent. */

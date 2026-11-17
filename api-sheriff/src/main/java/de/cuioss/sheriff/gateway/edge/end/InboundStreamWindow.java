@@ -23,12 +23,16 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http2.Http2ConnectionHandler;
 import io.netty.handler.codec.http2.Http2LocalFlowController;
 import io.netty.handler.codec.http2.Http2Stream;
+import io.vertx.core.Future;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.net.impl.ConnectionBase;
 
 /**
  * One inbound HTTP/2 stream as the transport sees it: whether the client may still send on it, how many
- * request-body bytes it may still send, and whether the gateway's side of the stream has ended.
+ * request-body bytes it may still send, and whether the gateway's side of the stream has ended — and a
+ * PING on its connection that tells when everything the client sent before it has arrived.
  * <p>
  * <strong>What the client may still send.</strong> A client may send DATA on a stream only within both
  * flow-control windows the gateway has granted and not yet received: the stream's own and the
@@ -45,24 +49,38 @@ import io.vertx.core.net.impl.ConnectionBase;
  * {@link ConnectionBase#channelHandlerContext()} — for an HTTP/2 connection the context of the Netty
  * {@link Http2ConnectionHandler} Vert.x installs. Everything read from there is public Netty API:
  * {@link Http2ConnectionHandler#connection()}, {@link Http2Stream#state()} and the decoder's
- * {@code Http2LocalFlowController#windowSize}. Nothing is written. When the internal is not what this
- * class expects — a Vert.x upgrade changed it — {@link #of} answers empty and the caller does without
- * the wait it would have used this for.
+ * {@code Http2LocalFlowController#windowSize}. Nothing is written through it. When the internal is not
+ * what this class expects — a Vert.x upgrade changed it — {@link #of} answers empty and the caller does
+ * without the wait it would have used this for.
+ * <p>
+ * <strong>The one frame it writes goes through public Vert.x API.</strong> {@link #ping()} sends an
+ * HTTP/2 PING on the request's own connection through {@code HttpConnection#ping}, not through the
+ * Netty codec, and reports the client's acknowledgement. A client acknowledges a PING only once it has
+ * received it, so every frame it sent before then has reached the gateway by the time the
+ * acknowledgement does: what the windows read at that moment already counts it.
  * <p>
  * <strong>Thread confinement.</strong> Netty's HTTP/2 state belongs to the connection's event loop.
  * {@link #remoteOpen()}, {@link #sendableBytes()} and {@link #localEnded()} must be called there;
- * {@link #execute} and {@link #schedule} hand work to it.
+ * {@link #execute} and {@link #schedule} hand work to it. {@link #ping()} may be called from any thread,
+ * and the future it returns may complete off that event loop: a caller that reads the windows on the
+ * acknowledgement hands that read to it through {@link #execute}.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 final class InboundStreamWindow {
 
+    /** The PING payload length HTTP/2 prescribes (RFC 9113 §6.7) and Vert.x enforces. */
+    private static final int PING_PAYLOAD_BYTES = 8;
+
+    private final HttpConnection connection;
     private final ChannelHandlerContext channel;
     private final Http2ConnectionHandler codec;
     private final int streamId;
 
-    private InboundStreamWindow(ChannelHandlerContext channel, Http2ConnectionHandler codec, int streamId) {
+    private InboundStreamWindow(HttpConnection connection, ChannelHandlerContext channel,
+            Http2ConnectionHandler codec, int streamId) {
+        this.connection = connection;
         this.channel = channel;
         this.codec = codec;
         this.streamId = streamId;
@@ -77,14 +95,28 @@ final class InboundStreamWindow {
      */
     static Optional<InboundStreamWindow> of(HttpServerRequest request) {
         int streamId = request.streamId();
-        if (streamId <= 0 || !(request.connection() instanceof ConnectionBase connection)) {
+        HttpConnection connection = request.connection();
+        if (streamId <= 0 || !(connection instanceof ConnectionBase transport)) {
             return Optional.empty();
         }
-        ChannelHandlerContext channel = connection.channelHandlerContext();
+        ChannelHandlerContext channel = transport.channelHandlerContext();
         if (channel == null || !(channel.handler() instanceof Http2ConnectionHandler codec)) {
             return Optional.empty();
         }
-        return Optional.of(new InboundStreamWindow(channel, codec, streamId));
+        return Optional.of(new InboundStreamWindow(connection, channel, codec, streamId));
+    }
+
+    /**
+     * Sends one HTTP/2 PING on the request's connection. The payload is fixed: an acknowledgement is
+     * matched to its PING by order, not by content.
+     *
+     * @return a future completing once the client has acknowledged the PING and failing when the PING
+     *         could not be written, a closed connection among the causes. A PING written on a connection
+     *         that closes before the acknowledgement arrives is never completed: Vert.x does not fail it,
+     *         so a caller must not depend on the future settling
+     */
+    Future<Void> ping() {
+        return connection.ping(Buffer.buffer(new byte[PING_PAYLOAD_BYTES])).mapEmpty();
     }
 
     /**

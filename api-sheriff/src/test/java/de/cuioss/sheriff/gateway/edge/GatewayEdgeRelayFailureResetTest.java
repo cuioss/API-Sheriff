@@ -101,8 +101,9 @@ import org.junit.jupiter.api.Test;
  * <strong>A client that leaves once the answer has been relayed whole.</strong> An HTTP/2 upload the
  * upstream answered before reading its body has the end of its relayed answer held back by the one end
  * rule (ADR-0066) until request data stops arriving. The upload of these cases keeps sending one byte every
- * {@value #TRICKLE_INTERVAL_MILLIS} ms — far inside the wait's quiet period — so the wait is still running
- * when the client, having read the whole answer, resets its stream. The relay itself succeeded; the
+ * {@value #TRICKLE_INTERVAL_MILLIS} ms — far inside the wait's 50 ms check, after which the rule would send
+ * the PING whose acknowledgement on an unmoved window ends the wait — so the wait is still running when
+ * the client, having read the whole answer, resets its stream. The relay itself succeeded; the
  * client leaving during the wait for its end must not be answered as a failed relay, whose failure path
  * would end the response a second time. A {@code DEBUG} record of the terminal dispatch names every relay
  * it answers as failed, and none may appear. A control without the reset pins that the record does not
@@ -133,8 +134,9 @@ class GatewayEdgeRelayFailureResetTest {
     /** The upstream path prefix of an upload the stub answers {@value #ANSWER} at once, before its body. */
     private static final String EARLY = "/early";
     /**
-     * How often an upload whose answer arrived early sends one more body byte: a fifth of the 50 ms quiet
-     * period after which the one end rule stops waiting for request data, so the wait keeps running.
+     * How often an upload whose answer arrived early sends one more body byte: a fifth of the 50 ms check
+     * after which the one end rule sends the PING that confirms request data has stopped arriving — the
+     * window never stands still that long, so no PING goes out and the wait keeps running.
      */
     private static final long TRICKLE_INTERVAL_MILLIS = 10L;
     /** The start of the {@code DEBUG} record the terminal dispatch writes for every relay it answers as failed. */
