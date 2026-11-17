@@ -3377,9 +3377,9 @@ posting to the logout path, the session still resolves afterwards and the identi
 called, while `same-origin`, and a confirmation `POST` with a trusted `Origin`, log out
 (`LogoutEndpointTest`); the predicate admits a trusted `Origin`, and with `Origin` absent
 `same-origin` or `none`, refuses an untrusted `Origin` even beside `same-origin`, and leaves the
-unsafe-method check refusing `none` (`CsrfDefenceTest`); the edge hands `Origin` and
-`Sec-Fetch-Site` through to the logout leg (`GatewayEdgeRouteBffWiringTest`), and against the native
-image a `cross-site` logout keeps the session serving while the confirmation `POST` ends it
+unsafe-method check refusing `none` (`CsrfDefenceTest`); the edge hands `Sec-Fetch-Site` through to
+the logout leg (`GatewayEdgeGatewayCookieTest`), and against the native image a `cross-site` logout
+keeps the session serving while the confirmation `POST`, which carries only `Origin`, ends it
 (`BffLogoutIT`). The session is destroyed before the redirect to the provider is built; a logout
 against a provider without a usable `end_session_endpoint`, with failing discovery, or for a session
 without an ID token ends the session, clears the cookies and lands on `final_redirect`, and

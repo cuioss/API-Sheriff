@@ -429,7 +429,7 @@ enumeration_detection:             # OPTIONAL per-source scan detection. Omit th
                                    #   blocked, delayed or refused (boot WARN ApiSheriff-149).
                                    #   Under delay/block a new source the full ledger cannot track
                                    #   is answered 429 until room frees up.
-  block_seconds: 60               # how long a source stays blocked under block. Minimum 1.
+  block_seconds: 60                # how long a source stays blocked under block. Minimum 1.
   delay_millis: 2000               # how long rejection answers are held under delay. 1..10000.
 
 threat_classification:             # OPTIONAL per-source threat score. Omit the block, or any key,
