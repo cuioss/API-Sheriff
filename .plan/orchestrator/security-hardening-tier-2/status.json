@@ -5,7 +5,8 @@
   "workstreams": [
     "WS-01",
     "WS-02",
-    "WS-03"
+    "WS-03",
+    "WS-04"
   ],
   "metadata": {
     "parallelization_scope": "2"
