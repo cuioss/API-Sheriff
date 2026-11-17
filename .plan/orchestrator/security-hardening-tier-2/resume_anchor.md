@@ -1,1 +1,1 @@
-PLAN-SEC2-01 shipped (#623, analyzed). PLAN-SEC2-02 and PLAN-SEC2-03 running (operator-confirmed 2026-11-16). After each lands run analyze. Open defect and watches in epic.md. Epic closes when both ship and the private notes hold no planned item.
+PLAN-SEC2-01 (#623) and PLAN-SEC2-03 (#626) shipped and analyzed. PLAN-SEC2-02 running (operator-confirmed 2026-11-16); when its landing arrives run analyze, then land. Open defects (incomplete landings 01, 03) and watches in epic.md. Epic closes when 02 ships and the private notes hold no planned item.

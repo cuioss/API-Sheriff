@@ -36,6 +36,7 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 - PLAN-SEC2-01 — shipped as #623 (`31595bca`), landing `landings/PLAN-SEC2-01.md`. Simple and documentation changes; ran alone first. 6 specified deliverables (the lane counts 8).
 - The post-landing re-check of `.plan/local/security_notes_verified.adoc` against `main` was done at `31595bca` (2026-11-16): the items still listed there are all unplanned ones, and nothing PLAN-SEC2-01 shipped reopens or closes one. The PLAN-SEC2-02/03 claims were re-grounded at the same HEAD (every `OBSERVED` claim holds; line numbers moved only in `DispatchStage`/`GrpcDispatchStage` Javadoc) and the verdicts are persisted on the specs.
+- PLAN-SEC2-03 — shipped as #626 (`fa8dd54f`), landing `landings/PLAN-SEC2-03.md`. 4 specified deliverables (the lane counts 5); 55 files against 20 declared. The reserved-slice clause of deliverable 3 was not built (the spec clause was incoherent; `source-detection-substrate.adoc:87` says why) and a test cited as its proof passes against the base. PLAN-SEC2-02 re-reads `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` at `fa8dd54f` before it edits them.
 - PLAN-SEC2-02 / PLAN-SEC2-03 — disjoint production surfaces (`edge/upstream/**` vs `bff/**`, `edge/reserved/**`, `edge/admission/Source*`, `detection/**`); they share only `doc/security-threat-model.adoc` and `doc/LogMessages.adoc`, so `next` puts the two-file overlap to the operator. Scope 2 allows them side by side. PLAN-SEC2-01 rewrote ADR-0060 and edited ADR-0076, which PLAN-SEC2-02 and PLAN-SEC2-03 amend again: each must check the ADR body ceiling (500 lines) before the amendment.
 
 ## Decisions
@@ -47,10 +48,15 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 - 2026-11-16 — Incomplete landing `sec2-01-doc-honesty-and-config-guards-001.md` (PLAN-SEC2-01): `inbox landing-check` reports `complete: false`, missing key `effort` (the facts block carries `effort=unknown`). The landing was still reconciled and its facts used as far as they go; a manual paste from that plan may still surface the effort level.
 
+- 2026-11-17 — Incomplete landing `sec2-03-bff-logout-and-source-keys-001.md` (PLAN-SEC2-03): `inbox landing-check` reports `complete: false`, missing keys `total_tokens`, `unresolved_review_threads`, `review_body_findings_total`, `review_body_findings_handled`, `sonar_open_new_issues` (all `unknown`; the lane names the missing finalize-step producers). The landing was still reconciled; same producer gap as the 2026-11-16 entry for PLAN-SEC2-01, so one plan-marshall defect may cover both.
+
 ## Watches
 
 - 2026-11-16 — PLAN-SEC2-01 landing claims `review_body_findings_total=2` but `runbook_lane review-gate --pr-number 623` on the merged head reports 10 review-body findings (all CodeRabbit, none dispositioned in the provider's own record). Recorded as a false claim, not a rounding difference. `review_body_findings_handled=2` is not re-verified (the dispositions live in the lane's own record). Retire once the operator confirms the ten were handled.
 - 2026-11-16 — PLAN-SEC2-01 `sonar_open_new_issues=0` is not re-verified: the Sonar read on the merged PR is `undecidable` (`head_revision_unavailable`), so the figure is unknown. Retire on the operator's confirmation or a Sonar read that decides.
 - 2026-11-16 — PLAN-SEC2-01 pushed on the logged `force-override` basis three times because the pre-push freshness gate refused every pass with `worktree_root_unreadable` (null worktree root in every build row of the change ledger). The lane attributes it to a plan-marshall build-recording defect that was not investigated. Operator to route it to the plan-marshall lessons inbox; retire once routed.
+
+- 2026-11-17 — PLAN-SEC2-03: `runbook_lane review-gate --pr-number 626` on the merged head shows 2 CodeRabbit inline findings with no disposition (`merge_allowed: false`, `body_findings_undisposed`); the landing carried `unknown`, so this is not a false claim. Their handling is not re-verified. Retire once the operator confirms them handled.
+- 2026-11-17 — PLAN-SEC2-03: the Sonar read on merged PR 626 is `undecidable` (`head_revision_unavailable`); the lane's own `new_code_issue_count=0` is unconfirmed here. Same cause as the PLAN-SEC2-01 watch; retire both together.
 
 - Pre-commit formatter churn (carried from tier 1): #618 aligned `main` with the local formatter; a plan that reports churn again re-opens it.
