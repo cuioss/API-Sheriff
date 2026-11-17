@@ -22,6 +22,7 @@ import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -62,7 +63,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 6 — upstream dispatch over the route's shared Vert.x {@code HttpClient}, invoked through
- * that route's SmallRye Fault-Tolerance guard. Neither is a component of the route: both are
+ * that route's resilience guard ({@link UpstreamGuards}). Neither is a component of the route: both are
  * resolved from the boot-built {@link UpstreamClients} lookup, by the route's
  * {@linkplain UpstreamTarget upstream target} and
  * {@linkplain ResilienceShape resilience shape} respectively.
@@ -125,8 +126,12 @@ import org.jspecify.annotations.Nullable;
  * {@code 408}). Before the response was handed over this is the dispatch's own failure, so a body the
  * gateway is still reading when the guard would end the attempt is ended as the request's instead; a
  * body the upstream has stopped reading can reach the guard's timeout first and then ends as an upstream
- * timeout. The wait for a pooled connection counts towards the deadline, but it is bounded on its own (see
- * below), so an attempt always hands its body over with more than half of the deadline left. After the hand-over —
+ * timeout. The wait for a pooled connection counts towards the deadline, and that is deliberate. The wait is
+ * bounded on its own at {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms (see below), so an attempt that obtains its
+ * connection hands its body over with at least the deadline less that bound left, and a wait that reaches the
+ * bound is the upstream's timeout, never the client's. Counting the deadline from the hand-over instead would let
+ * a slow body run past the guard's timeout, which is counted from the start of the attempt as well, and end there
+ * as the upstream's {@link EventType#UPSTREAM_TIMEOUT}. After the hand-over —
  * an upstream that answered at once and keeps reading — the refusal goes to the
  * {@linkplain BodyFraming#lateViolation() late-violation callback}, and the reset upstream request fails
  * the relay, which ends the client response with the status the upstream sent. Once it has passed, the
@@ -177,17 +182,12 @@ import org.jspecify.annotations.Nullable;
  * takes no data for again before the guard's timeout is not ended by the deadline at all: the guard's timeout ends
  * it, as the upstream's {@link EventType#UPSTREAM_TIMEOUT}. The deadline stops when the attempt's send
  * completes, so it never runs after the hand-over and a stream the upstream has answered is never ended by
- * it. An attempt that obtains its upstream connection with less than a hand-over grace left before the cap,
- * or only once the cap has passed — the connection wait used up the guard's timeout but for the margin the
- * cap leaves and less than the grace of it — gives its client too little time to send, and too little for an
- * end the client already sent to cross from the inbound connection before the deadline passes: it is refused
- * at once, before its request is sent or a byte of its body is read, as an {@link UpstreamConnectionTooLate},
- * a timeout the breaker counts and the failure mapper reports as {@link EventType#UPSTREAM_TIMEOUT}. Every
- * attempt that is dispatched therefore has at least the grace between its hand-over and its deadline. The
- * deadline ends only a request stream whose end has not reached the dispatch when it passes: a client that
- * had ended its stream by the hand-over is ended by it only if the gateway takes longer than the grace to
- * deliver the end it already holds. A call whose end did reach the dispatch, and which the upstream then does
- * not answer, is ended by the guard's timeout as the upstream's. A dispatch
+ * it. The wait for the upstream connection is bounded on its own at {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms
+ * (see below), well short of the gRPC dispatch's cap, so an attempt hands its body over long before the cap and
+ * its deadline leaves the client at least the shorter of the deadline and the cap less that bound; a wait that
+ * reaches the bound ends the attempt unsent as the upstream's timeout. The deadline ends only a request stream
+ * whose end has not reached the dispatch when it passes. A call whose end did reach the dispatch, and which the
+ * upstream then does not answer, is ended by the guard's timeout as the upstream's. A dispatch
  * constructed with {@link #NO_FIRST_MESSAGE_TIMEOUT} — every HTTP dispatch — arms neither the message bound
  * nor the pre-response deadline.
  * <p>
@@ -206,12 +206,10 @@ import org.jspecify.annotations.Nullable;
  * inbound body and for the body whose next complete message did not arrive,
  * {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for the idle body
  * and the body past its deadline), never as the transport error the aborted upstream
- * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
- * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
- * breaker, though: SmallRye Fault Tolerance has no neutral outcome, so a skipped exception is
- * recorded as a success, in the closed and in the half-open state alike. Keeping client-ended
- * dispatches out of the breaker's window altogether would need the guarded call to be restructured,
- * which the gateway does not do.
+ * request produced. The breaker ({@link UpstreamCircuitBreaker}) records a {@link GatewayException} as
+ * neutral: such a dispatch is neither counted as an upstream failure nor recorded as a success, so it
+ * neither dilutes the breaker's window in the closed state nor counts toward closing it in the half-open
+ * state, where it gives its trial back. The retry predicate refuses to retry it.
  * <p>
  * The client abort is honoured only when it preceded the transport failure: it is read once, at
  * the moment the attempt's send fails, so a client that goes away only after the upstream already
@@ -237,26 +235,40 @@ import org.jspecify.annotations.Nullable;
  * the departure through the {@link InboundBody} the request body arrives in, whatever the body framing
  * and whether or not the body has ended. The attempt is then released exactly as above: an upstream
  * request in flight is reset at once instead of being held until the guard's timeout, and one still
- * waiting for a pooled connection is never sent once the pool hands it one. The dispatch reports an
- * {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, so the breaker skips it: a body that was
- * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. The
- * departure does not wake a dispatching thread that is still waiting for a pooled connection: that wait
- * ends when the pool hands the connection over, which reports the client's abort, or when the connection
- * wait bound passes, which ends it as the gateway's own saturation (see below). A client that left before the dispatch began has
+ * waiting for a pooled connection is never sent once the pool hands it one. The departure also ends the
+ * dispatch at once: the dispatching thread waits for whichever comes first, its attempt's response or the
+ * client's departure, so a client that leaves while its attempt still waits for a pooled connection, or for
+ * the upstream's answer, is not kept waiting until the pool hands the connection over or the connection wait
+ * bound passes. The dispatch reports an {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, which
+ * the breaker records as neutral: a body that was still arriving as one that did not arrive whole, any other
+ * request as a {@link ClientDeparted}. Only an outcome recorded before the departure takes its place — a body
+ * the gateway had already refused, a request stream the upstream had already stalled past its pre-response
+ * deadline, or an attempt whose settlement reached the dispatch before the departure, which keeps its own
+ * outcome. The order of settlement and departure is recorded once, when the settlement reaches the dispatch
+ * through the attempt's response chain. The released attempt keeps its place in the upstream client's wait queue until the pool hands it
+ * a connection, which is then reset unsent, or until its connection wait bound passes: Vert.x offers no way
+ * to withdraw a queued wait. A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
  * departure is left to it. All of this holds only for a dispatch handed the armed {@link InboundBody}
  * itself — the HTTP dispatch and the gRPC dispatch both are; a decorator around the body would hide the
  * departure from the dispatch.
  * <p>
  * <strong>The wait for a pooled connection is bounded.</strong> Every attempt asks for its upstream connection
- * with a connection wait bound of {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms, which covers both its time in
- * the client's queue and the dial of a new connection for it. An attempt the client's bounded wait queue
- * refuses at once, and one whose wait outlasts the bound, obtained no connection because the gateway itself
- * is saturated: it ends, unsent, as an {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}),
- * raised inside the guard, so the breaker does not count it as a failure and the retry predicate refuses it.
- * Every other reason an attempt obtains no connection — the upstream refused it, or its dial or TLS handshake
- * did not complete within the clients' timeouts, which together are shorter and run from the start of the dial —
- * stays the upstream's failure (see {@link #poolSaturationOf}).
+ * with a connection wait bound of {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms, which covers its time in the
+ * client's queue and the acquisition of a new connection for it: resolving the upstream's host name, then the
+ * dial. Only an attempt the client's bounded wait queue
+ * refuses at once obtained no connection because the gateway itself is saturated: it ends, unsent, as an
+ * {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}), raised inside the guard, so the breaker
+ * records it as neutral and the retry predicate refuses it (see {@link #poolSaturationOf}). An attempt whose
+ * wait outlasts the bound is the upstream's failure: the dial and TLS handshake timeouts together are shorter
+ * than the bound, so an expired wait usually means the attempt queued behind connections the upstream is
+ * holding — an upstream that does not answer, or one too slow to serve the admitted load within the bound. The
+ * host-name resolution has no shorter timeout of its own, so a resolution slower than the bound ends the same
+ * way. It ends, unsent, as an {@link UpstreamConnectionWaitExpired}, a timeout the breaker counts and the failure
+ * mapper reports as {@link EventType#UPSTREAM_TIMEOUT} ({@code 504}), and the retry predicate refuses it: a retry
+ * would usually queue again behind the same held connections. Every other reason an attempt obtains no connection — the
+ * upstream refused it, or its dial or TLS handshake did not complete within the clients' timeouts — stays the
+ * upstream's failure as well, and the retry predicate treats it as any other upstream failure.
  * The bound keeps the wait from taking more than a minority of the request-body deadline or of the
  * pre-response deadline: an HTTP attempt hands its body over with at least
  * {@code bodyDeadline - UPSTREAM_CONNECTION_WAIT_MILLIS} of its whole-body deadline left, and a gRPC attempt
@@ -278,7 +290,8 @@ import org.jspecify.annotations.Nullable;
  * the running body-bytes-sent count through a {@link StreamAwareRetryGate} and refuses once the body
  * stream was subscribed. The decision is taken when an attempt fails, before any re-entry: a refused
  * retry is never re-entered, so it is not recorded by the circuit breaker, and no duplicate upstream
- * request is ever issued. A {@link GatewayException} is never retried. A bodyless request never
+ * request is ever issued. A {@link GatewayException} is never retried, nor is an expired wait for a pooled
+ * connection ({@link UpstreamConnectionWaitExpired}). A bodyless request never
  * subscribes the inbound stream to an attempt, so it stays retryable for as long as no body byte has
  * arrived.
  *
@@ -306,6 +319,10 @@ public final class DispatchStage {
     private static final String CLIENT_DEPARTED =
             "The client left before the request was answered; the upstream request was aborted";
 
+    /** Fixed disposition of an attempt whose wait for a pooled upstream connection outlasted its bound. */
+    private static final String CONNECTION_WAIT_EXPIRED =
+            "The wait for an upstream connection outlasted its bound; the request was not sent";
+
     /** The methods that carry no body upstream unless they declare a positive length. */
     private static final Set<HttpMethod> BODYLESS_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
 
@@ -314,14 +331,17 @@ public final class DispatchStage {
 
     /**
      * How long an attempt waits for a pooled upstream connection — in the client's queue and while the
-     * connection it waits for is dialled — before the dispatch gives up on it as the gateway's own
-     * saturation ({@link EventType#UPSTREAM_POOL_SATURATED}). It is shorter than the request-body deadline and
-     * the pre-response deadline by more than half of either, so an attempt always hands its body over with
-     * most of its deadline left (see {@link DispatchBody#send}), and longer than the clients' dial and TLS
-     * handshake timeouts together ({@code EgressClients}). The bound runs from the moment the attempt asks for
-     * its connection, those timeouts from the moment its dial starts: an attempt that dials at once fails as the
-     * upstream's when the upstream does not establish the connection, while one that queued first can reach this
-     * bound before them and is then reported as local saturation.
+     * connection it waits for is acquired, host-name resolution and dial included — before the dispatch gives up
+     * on it as the upstream's timeout
+     * ({@link UpstreamConnectionWaitExpired}, {@link EventType#UPSTREAM_TIMEOUT}), which the breaker counts and
+     * the retry predicate refuses. It is shorter than the request-body deadline and the pre-response deadline by
+     * more than half of either, so an attempt always hands its body over with most of its deadline left (see
+     * {@link DispatchBody#send}), and longer than the clients' dial and TLS handshake timeouts together
+     * ({@code EgressClients}). The bound runs from the moment the attempt asks for its connection, those timeouts
+     * from the moment its dial starts: an attempt that dials at once fails on them when the upstream does not
+     * establish the connection, while one that queued first behind connections the upstream holds, or whose
+     * upstream host name resolves slowly, can reach this bound before them — either way the failure is the
+     * upstream's.
      */
     static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
 
@@ -350,23 +370,10 @@ public final class DispatchStage {
     static final long NO_PRE_RESPONSE_CAP = 0L;
 
     /**
-     * The hand-over grace of a dispatch that arms no pre-response deadline — every dispatch but the gRPC one
-     * ({@link GrpcDispatchStage}): no attempt is refused for handing its body over too close to a cap.
-     */
-    static final long NO_HAND_OVER_GRACE = 0L;
-
-    /**
      * The upstream stall threshold of a dispatch that arms no pre-response deadline — every dispatch but the gRPC
      * one ({@link GrpcDispatchStage}): no deadline is ever charged to the upstream, so no stall is measured.
      */
     static final long NO_UPSTREAM_STALL = 0L;
-
-    /**
-     * Fixed disposition of an attempt whose upstream connection came too close to, or past, its pre-response
-     * cap.
-     */
-    private static final String CONNECTION_TOO_LATE =
-            "The upstream connection was obtained too close to the pre-response cap; the request was not sent";
 
     /**
      * Fixed disposition of an attempt whose pre-response deadline passed while the upstream was not taking its
@@ -388,7 +395,6 @@ public final class DispatchStage {
     private final long bodyDeadlineMillis;
     private final long messageTimeoutMillis;
     private final long preResponseCapMillis;
-    private final long handOverGraceMillis;
     private final long upstreamStallMillis;
     private final UpstreamFailureMapper failureMapper;
 
@@ -433,7 +439,7 @@ public final class DispatchStage {
     public DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes,
             long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
         this(upstreamClients, maxBodyBytes, bodyIdleTimeoutMillis, bodyDeadlineMillis, NO_FIRST_MESSAGE_TIMEOUT,
-                NO_PRE_RESPONSE_CAP, NO_HAND_OVER_GRACE, NO_UPSTREAM_STALL, failureMapper);
+                NO_PRE_RESPONSE_CAP, NO_UPSTREAM_STALL, failureMapper);
     }
 
     /**
@@ -464,11 +470,6 @@ public final class DispatchStage {
      *                              start of the attempt; shorter than the guard's timeout and no shorter than
      *                              {@code bodyDeadlineMillis}. {@link #NO_PRE_RESPONSE_CAP} exactly when no
      *                              pre-response deadline is armed
-     * @param handOverGraceMillis   the least time, in milliseconds, the pre-response deadline leaves after the
-     *                              hand-over: an attempt that hands its body over with less than this left
-     *                              before the cap is refused, unsent, as an {@link UpstreamConnectionTooLate};
-     *                              positive and shorter than {@code bodyDeadlineMillis} when a pre-response
-     *                              deadline is armed, {@link #NO_HAND_OVER_GRACE} exactly when none is
      * @param upstreamStallMillis   how long, in milliseconds, the upstream must have held the request stream
      *                              without a break — its backpressure pausing the stream — when a passed
      *                              pre-response deadline is acted on, for the deadline to be charged to the
@@ -480,13 +481,13 @@ public final class DispatchStage {
      * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis}, {@code bodyDeadlineMillis} or
      *                                  {@code messageTimeoutMillis} is negative, a deadline is given with
      *                                  neither an idle timeout nor a message bound, a pre-response deadline
-     *                                  is given a cap shorter than itself, or a grace or a stall threshold
-     *                                  that is not positive or not shorter than itself, or a cap, a grace or
-     *                                  a stall threshold is given with no pre-response deadline to hold
+     *                                  is given a cap shorter than itself, or a stall threshold that is not
+     *                                  positive or not shorter than itself, or a cap or a stall threshold is
+     *                                  given with no pre-response deadline to hold
      */
     @SuppressWarnings("java:S107") // package-private test seam; every bound is a distinct fixed value the gRPC stage derives, and a holder type would only re-bundle them for this one call
     DispatchStage(UpstreamClients upstreamClients, long maxBodyBytes, long bodyIdleTimeoutMillis,
-            long bodyDeadlineMillis, long messageTimeoutMillis, long preResponseCapMillis, long handOverGraceMillis,
+            long bodyDeadlineMillis, long messageTimeoutMillis, long preResponseCapMillis,
             long upstreamStallMillis, UpstreamFailureMapper failureMapper) {
         if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
@@ -503,9 +504,9 @@ public final class DispatchStage {
                     "a request-body deadline needs a request-body idle timeout or a message bound");
         }
         if (bodyDeadlineMillis != NO_BODY_DEADLINE && bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
-            requirePreResponseBounds(bodyDeadlineMillis, preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
+            requirePreResponseBounds(bodyDeadlineMillis, preResponseCapMillis, upstreamStallMillis);
         } else {
-            requireNoPreResponseBounds(preResponseCapMillis, handOverGraceMillis, upstreamStallMillis);
+            requireNoPreResponseBounds(preResponseCapMillis, upstreamStallMillis);
         }
         this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
@@ -513,7 +514,6 @@ public final class DispatchStage {
         this.bodyDeadlineMillis = bodyDeadlineMillis;
         this.messageTimeoutMillis = messageTimeoutMillis;
         this.preResponseCapMillis = preResponseCapMillis;
-        this.handOverGraceMillis = handOverGraceMillis;
         this.upstreamStallMillis = upstreamStallMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
     }
@@ -524,21 +524,15 @@ public final class DispatchStage {
      *
      * @param preResponseDeadlineMillis the pre-response deadline in milliseconds, positive
      * @param preResponseCapMillis      the latest the deadline passes, counted from the start of the attempt
-     * @param handOverGraceMillis       the least time the deadline leaves after the hand-over
      * @param upstreamStallMillis       the upstream stall threshold
-     * @throws IllegalArgumentException when the cap is shorter than the deadline, or the grace or the stall
-     *                                  threshold is not positive or not shorter than the deadline
+     * @throws IllegalArgumentException when the cap is shorter than the deadline, or the stall threshold is
+     *                                  not positive or not shorter than the deadline
      */
     private static void requirePreResponseBounds(long preResponseDeadlineMillis, long preResponseCapMillis,
-            long handOverGraceMillis, long upstreamStallMillis) {
+            long upstreamStallMillis) {
         if (preResponseCapMillis < preResponseDeadlineMillis) {
             throw new IllegalArgumentException(
                     "a pre-response deadline needs a cap no shorter than itself: " + preResponseCapMillis);
-        }
-        if (handOverGraceMillis <= NO_HAND_OVER_GRACE || handOverGraceMillis >= preResponseDeadlineMillis) {
-            throw new IllegalArgumentException(
-                    "a pre-response deadline needs a positive hand-over grace shorter than itself: "
-                            + handOverGraceMillis);
         }
         if (upstreamStallMillis <= NO_UPSTREAM_STALL || upstreamStallMillis >= preResponseDeadlineMillis) {
             throw new IllegalArgumentException(
@@ -552,19 +546,13 @@ public final class DispatchStage {
      * would be silently ignored.
      *
      * @param preResponseCapMillis the pre-response cap, to be {@link #NO_PRE_RESPONSE_CAP}
-     * @param handOverGraceMillis  the hand-over grace, to be {@link #NO_HAND_OVER_GRACE}
      * @param upstreamStallMillis  the upstream stall threshold, to be {@link #NO_UPSTREAM_STALL}
-     * @throws IllegalArgumentException when a cap, a grace or a stall threshold is given
+     * @throws IllegalArgumentException when a cap or a stall threshold is given
      */
-    private static void requireNoPreResponseBounds(long preResponseCapMillis, long handOverGraceMillis,
-            long upstreamStallMillis) {
+    private static void requireNoPreResponseBounds(long preResponseCapMillis, long upstreamStallMillis) {
         if (preResponseCapMillis != NO_PRE_RESPONSE_CAP) {
             throw new IllegalArgumentException(
                     "a pre-response cap needs a pre-response deadline to hold: " + preResponseCapMillis);
-        }
-        if (handOverGraceMillis != NO_HAND_OVER_GRACE) {
-            throw new IllegalArgumentException(
-                    "a hand-over grace needs a pre-response deadline to hold: " + handOverGraceMillis);
         }
         if (upstreamStallMillis != NO_UPSTREAM_STALL) {
             throw new IllegalArgumentException(
@@ -690,7 +678,12 @@ public final class DispatchStage {
      * <p>
      * A {@link GatewayException} in the failure's cause chain (followed to a bounded depth) is never
      * retried: a dispatch the client ended, and a failure already mapped to the error contract, end
-     * the dispatch. Any other failure is retried only while the dispatch's own state permits it — the
+     * the dispatch. Nor is an {@link UpstreamConnectionWaitExpired} in that chain: the expired wait already
+     * used up the {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms bound. Its usual cause is queueing behind
+     * connections the upstream is holding, and a retry would queue again behind them, keeping the client's wait
+     * queue full under exactly the condition that caused the expiry; an expiry caused by a slow resolution of the
+     * upstream's host name is refused the same way. A connection the upstream refused fails fast and stays retryable. Any other
+     * failure is retried only while the dispatch's own state permits it — the
      * {@link StreamAwareRetryGate} allows a retry for the request method at the current
      * body-bytes-sent count, and the one-shot request-body stream was not subscribed by an attempt.
      * The inbound body {@link ReadStream} is single-use: re-attaching an already-subscribed stream to
@@ -705,7 +698,9 @@ public final class DispatchStage {
      * @return {@code true} only when the attempt may be retried
      */
     static boolean allowsRetryAfter(Throwable failure) {
-        if (extractGatewayException(failure) != null || !RETRY_STATE.isBound()) {
+        if (extractGatewayException(failure) != null
+                || causeOfType(failure, UpstreamConnectionWaitExpired.class) != null
+                || !RETRY_STATE.isBound()) {
             return false;
         }
         return RETRY_STATE.get().allowsRetry();
@@ -739,10 +734,10 @@ public final class DispatchStage {
                 } catch (ExecutionException executionFailure) {
                     // awaitDispatch blocks on CompletableFuture#get, which wraps the real cause (e.g. a
                     // client-side body-cap GatewayException from ByteCappedBodyStream) in an
-                    // ExecutionException. Unwrap it so the breaker's skipOn(GatewayException.class) rule
-                    // and the retry predicate see the actual GatewayException rather than the wrapper —
-                    // otherwise a client-caused rejection is miscounted as an upstream failure and can
-                    // trip the circuit breaker for reasons unrelated to upstream health.
+                    // ExecutionException. Unwrap it so the breaker, which records a GatewayException as
+                    // neutral, and the retry predicate see the actual GatewayException rather than the
+                    // wrapper — otherwise a client-caused rejection is miscounted as an upstream failure and
+                    // can trip the circuit breaker for reasons unrelated to upstream health.
                     Throwable cause = executionFailure.getCause();
                     throw cause instanceof Exception exception ? exception : executionFailure;
                 }
@@ -759,36 +754,83 @@ public final class DispatchStage {
     }
 
     /**
-     * Classifies a failure of the wait for a pooled upstream connection. The upstream client's queue of
-     * attempts waiting for a connection being full ({@link ConnectionPoolTooBusyException}) and the wait
-     * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS} (a {@link TimeoutException})
-     * are the gateway's own saturation: the attempt becomes an {@link EventType#UPSTREAM_POOL_SATURATED}
-     * rejection, which the breaker does not count. Every other failure — a connection the upstream refused, a
-     * dial or TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — stays
-     * the upstream's failure, unchanged. The dial and handshake timeouts together are shorter than the wait
-     * bound, but they run from the start of the dial while the wait bound runs from the request for a
-     * connection: an attempt that dials at once fails as the upstream's when the upstream does not establish the
-     * connection, while an attempt that queued first and dials late can reach the wait bound first. Vert.x tells
-     * the two apart nowhere, so that expiry is classified as local saturation.
+     * Classifies a failure of the wait for a pooled upstream connection. Only the upstream client's queue of
+     * attempts waiting for a connection being full ({@link ConnectionPoolTooBusyException}) is the gateway's own
+     * saturation: the attempt becomes an {@link EventType#UPSTREAM_POOL_SATURATED} rejection, which the breaker
+     * records as neutral. Every other failure stays the upstream's: a connection the upstream refused, a dial or
+     * TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — and the wait
+     * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}, which the dispatch ends as an
+     * {@link UpstreamConnectionWaitExpired}.
      *
      * @param failure       why the attempt obtained no connection
      * @param failureMapper meters the saturation and builds its rejection
      * @return the saturation rejection the attempt ends with, or {@code null} when the failure is the
-     *         upstream's and stays as it is
+     *         upstream's
      */
     static @Nullable GatewayException poolSaturationOf(@Nullable Throwable failure,
             UpstreamFailureMapper failureMapper) {
-        if (failure instanceof ConnectionPoolTooBusyException || failure instanceof TimeoutException) {
+        if (failure instanceof ConnectionPoolTooBusyException) {
             return failureMapper.toPoolSaturation(failure);
         }
         return null;
+    }
+
+    /**
+     * Records, at the moment an attempt's settlement reaches the dispatch through its response chain,
+     * whether the client's departure had already been signalled. It is the one point at which the order of
+     * the two is decided: the response chain runs it as its last step, before the response the dispatch
+     * waits on settles, so a settled response always carries its verdict (see
+     * {@link #departureEndedWait}). Never blocks: it only reads whether {@code departed} is complete.
+     *
+     * @param departedAtSettlement receives {@code true} when {@code departed} was already complete when the
+     *                             attempt settled, {@code false} otherwise
+     * @param departed             completed when the client departs
+     */
+    static void recordSettlement(AtomicReference<@Nullable Boolean> departedAtSettlement,
+            CompletableFuture<?> departed) {
+        departedAtSettlement.set(departed.isDone());
+    }
+
+    /**
+     * Waits until {@code pending} settles or {@code departed} completes, whichever comes first, and decides
+     * which of the two came first. The order is not read here: it is recorded when the attempt's settlement
+     * reaches the dispatch through its response chain (see {@link #recordSettlement}), and the departure is
+     * signalled when {@code departed} completes. {@code pending} settles only after that record is taken, so
+     * the decision is the record alone, whatever the waiting thread observes when it wakes:
+     * <ul>
+     *   <li>no record yet — the attempt has not settled, so the wake came from the departure, which came
+     *       first; a settlement after it records the departure as well, since {@code departed} is already
+     *       complete;</li>
+     *   <li>a record of no departure — the attempt settled before the departure was signalled and keeps its
+     *       own outcome, read from {@code pending}, whether it settled before the wait began or during it;</li>
+     *   <li>a record of a departure — the departure was signalled before the attempt settled.</li>
+     * </ul>
+     * A {@code true} result therefore always means {@code departed} is complete: with no record the wake came
+     * from it, and a record of a departure was taken with it complete.
+     *
+     * @param pending              the current attempt's response, settled only after
+     *                             {@code departedAtSettlement} was recorded
+     * @param departed             completed when the client departs; never completed exceptionally
+     * @param departedAtSettlement the order recorded when the attempt settled, {@code null} while it has not
+     * @return {@code true} when {@code departed} completed before the attempt settled — {@code departed} is
+     *         then complete; {@code false} when the attempt settled first
+     * @throws InterruptedException when the waiting thread is interrupted
+     * @throws ExecutionException   never in practice: neither signal waited on fails
+     */
+    static boolean departureEndedWait(CompletableFuture<?> pending, CompletableFuture<?> departed,
+            AtomicReference<@Nullable Boolean> departedAtSettlement) throws InterruptedException, ExecutionException {
+        // handle() only lets the wait end on a failed attempt without throwing; it reads nothing.
+        CompletableFuture.anyOf(pending.handle((_, _) -> null), departed).get();
+        Boolean atSettlement = departedAtSettlement.get();
+        return atSettlement == null || atSettlement;
     }
 
     private static HttpClientResponse awaitDispatch(ResolvedUpstream upstream, HttpClient httpClient,
             io.vertx.core.http.HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
             DispatchBody body, UpstreamFailureMapper failureMapper) throws InterruptedException, ExecutionException {
         // The connect timeout of a request bounds the whole wait for its pooled connection: the time in the
-        // client's queue and the dial of a new connection for it (see UPSTREAM_CONNECTION_WAIT_MILLIS).
+        // client's queue and the acquisition of a new connection for it, host-name resolution and dial included
+        // (see UPSTREAM_CONNECTION_WAIT_MILLIS).
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
                 .setHost(upstream.host())
@@ -832,6 +874,9 @@ public final class DispatchStage {
         AtomicReference<@Nullable UpstreamStalledRequest> upstreamStallAtFailure = new AtomicReference<>();
         // Set once the pool handed the attempt its request: a failure before it is a connection not obtained.
         AtomicBoolean connectionObtained = new AtomicBoolean();
+        // Records whether the client had departed when this attempt settled. The last step of the chain
+        // below sets it and it stays null until the attempt settles. Read by departureEndedWait.
+        AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
                     connectionObtained.set(true);
@@ -872,22 +917,50 @@ public final class DispatchStage {
                         received.pause();
                         return received;
                     });
-                });
+                })
+                // The one point the order of settlement and departure is decided: whatever settles the attempt —
+                // a response, a refused dial, the connection wait bound — reaches the dispatch through this step,
+                // and the future it returns settles only after the step ran, so pending below never settles
+                // without its verdict.
+                .andThen(_ -> body.recordSettlement(departedAtSettlement));
+        CompletableFuture<HttpClientResponse> pending = response.toCompletionStage().toCompletableFuture();
+        if (body.departedBefore(pending, departedAtSettlement)) {
+            // The client left while this attempt still waited — for a pooled connection, or for the upstream's
+            // answer: the dispatch ends now, not when the pool hands the connection over or the wait bound passes.
+            // The departure already released the attempt, so a connection handed to it later is reset unsent. A stall
+            // the upstream caused before the client left keeps the failure the upstream's, as on the failure path
+            // below: it took the body stream's single abort claim, so the departure came too late to cause it.
+            ByteCappedBodyStream bodyAtDeparture = cappedBody.get();
+            UpstreamStalledRequest stalledBeforeDeparture =
+                    bodyAtDeparture == null ? null : bodyAtDeparture.upstreamStall();
+            if (stalledBeforeDeparture != null) {
+                throw new ExecutionException(stalledBeforeDeparture.getMessage(), stalledBeforeDeparture);
+            }
+            throw body.abortOnDeparture(bodyAtDeparture);
+        }
         HttpClientResponse received;
         try {
-            received = response.toCompletionStage().toCompletableFuture().get();
+            received = pending.get();
         } catch (ExecutionException dispatchFailure) {
-            // An attempt that obtained no pooled connection because the gateway is saturated is the gateway's
-            // own rejection, raised here, inside the guard, so the breaker skips it.
-            GatewayException saturated = connectionObtained.get()
-                    ? null
-                    : poolSaturationOf(dispatchFailure.getCause(), failureMapper);
-            if (saturated != null) {
-                throw saturated;
+            if (!connectionObtained.get()) {
+                // An attempt that obtained no pooled connection because the client's wait queue was full is
+                // the gateway's own rejection, raised here, inside the guard, so the breaker records it as
+                // neutral.
+                GatewayException saturated = poolSaturationOf(dispatchFailure.getCause(), failureMapper);
+                if (saturated != null) {
+                    throw saturated;
+                }
+                // One whose wait outlasted its bound usually queued behind connections the upstream holds (the
+                // bound also covers resolving its host name): it is the upstream's timeout, which the guard
+                // counts and the retry predicate refuses.
+                if (dispatchFailure.getCause() instanceof TimeoutException expiry) {
+                    UpstreamConnectionWaitExpired expired = new UpstreamConnectionWaitExpired(expiry);
+                    throw new ExecutionException(expired.getMessage(), expired);
+                }
             }
             // The body stream aborts the upstream request itself when the client ends the dispatch, and
             // the transport then reports that abort as a reset. Surface the recorded client-side cause
-            // in its place, so the guard sees a GatewayException — which it skips. Only the snapshot
+            // in its place, so the guard sees a GatewayException — which its breaker records as neutral. Only the snapshot
             // taken when the send failed counts: every body stream records its client abort before it
             // runs the abort action, so an abort that caused the failure is always in the snapshot,
             // while a client that went away only after the upstream had already failed is not — that
@@ -970,11 +1043,32 @@ public final class DispatchStage {
                 : new ClientDeparted(cause);
     }
 
-    private static @Nullable GatewayException extractGatewayException(Throwable failure) {
+    /**
+     * Finds the {@link GatewayException} in a failure's cause chain, followed to a bounded depth. It is the one
+     * rule both the retry predicate ({@link #allowsRetryAfter(Throwable)}) and the upstream breaker
+     * ({@link UpstreamCircuitBreaker}) read a gateway rejection by.
+     *
+     * @param failure the failure to inspect
+     * @return the first {@link GatewayException} in the chain, or {@code null} when there is none
+     */
+    static @Nullable GatewayException extractGatewayException(Throwable failure) {
+        return causeOfType(failure, GatewayException.class);
+    }
+
+    /**
+     * Finds the first throwable of {@code type} in a failure's cause chain, the failure itself included,
+     * followed to {@link #MAX_CAUSE_DEPTH} and stopped at a self-referential cause.
+     *
+     * @param failure the failure to inspect
+     * @param type    the type looked for
+     * @param <T>     the type looked for
+     * @return the first throwable of {@code type} in the chain, or {@code null} when there is none
+     */
+    private static <T extends Throwable> @Nullable T causeOfType(Throwable failure, Class<T> type) {
         Throwable current = failure;
         for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
-            if (current instanceof GatewayException gatewayException) {
-                return gatewayException;
+            if (type.isInstance(current)) {
+                return type.cast(current);
             }
             Throwable cause = current.getCause();
             if (cause == current) {
@@ -1096,6 +1190,11 @@ public final class DispatchStage {
         private @Nullable GatewayException departure;
         /** Whether the response was handed over for relay: from then on the relay owns the exchange. */
         private boolean handedOver;
+        /**
+         * Completed with the recorded departure when the client leaves before the hand-over, so a dispatching
+         * thread waiting on its attempt wakes at once (see {@link #departedBefore}). Never completed otherwise.
+         */
+        private final CompletableFuture<GatewayException> departed = new CompletableFuture<>();
 
         DispatchBody(ReadStream<Buffer> inbound, BodyFraming framing) {
             this.inbound = inbound;
@@ -1113,18 +1212,68 @@ public final class DispatchStage {
         /**
          * The client left before its response ended. Until the response is handed over, the dispatch
          * stops waiting: the client abort is recorded first, so the transport failure the release causes
-         * is reported as the client's, then the current attempt is released — a request still waiting for
-         * its pooled connection is never sent, one in flight is reset. Once the response was handed over
-         * the relay owns the exchange and the departure is left to it. Idempotent.
+         * is reported as the client's; then a dispatching thread waiting on its attempt is woken, so the
+         * dispatch ends at once; then the current attempt is released — a request still waiting for its
+         * pooled connection is never sent, one in flight is reset. Once the response was handed over the
+         * relay owns the exchange and the departure is left to it. Idempotent.
          */
         private void clientDeparted(Throwable cause) {
+            GatewayException recorded;
             synchronized (departureLock) {
                 if (handedOver || departure != null) {
                     return;
                 }
-                departure = departureAbort(cause, bodyStillArriving());
+                recorded = departureAbort(cause, bodyStillArriving());
+                departure = recorded;
             }
+            departed.complete(recorded);
             abandonCurrentAttempt();
+        }
+
+        /**
+         * Records whether the client had departed at the moment the current attempt's settlement reaches the
+         * dispatch through its response chain (see {@link DispatchStage#recordSettlement}). Run as that
+         * chain's last step, on whichever thread settles the attempt; never blocks.
+         *
+         * @param departedAtSettlement receives the recorded order
+         */
+        void recordSettlement(AtomicReference<@Nullable Boolean> departedAtSettlement) {
+            DispatchStage.recordSettlement(departedAtSettlement, departed);
+        }
+
+        /**
+         * Waits until {@code pending} — the current attempt's response — settles or the client departs,
+         * whichever comes first, and decides which of the two came first (see
+         * {@link DispatchStage#departureEndedWait}). The order is the one recorded when the attempt's settlement
+         * reached the dispatch through its response chain ({@link #recordSettlement}); the departure is
+         * signalled when {@link #clientDeparted} completes {@code departed}. Both are completion signals, so
+         * nothing is polled; the wait is interrupted like any other by the guard's timeout.
+         *
+         * @param pending              the current attempt's response, settled only after
+         *                             {@code departedAtSettlement} was recorded
+         * @param departedAtSettlement the order recorded when the attempt settled, {@code null} while it has not
+         * @return {@code true} when the departure was signalled before the attempt settled — the departure is
+         *         then recorded; {@code false} when the attempt settled first, successfully or not — its
+         *         outcome is then read from {@code pending}
+         * @throws InterruptedException when the waiting thread is interrupted
+         * @throws ExecutionException   never in practice: neither signal waited on fails
+         */
+        boolean departedBefore(CompletableFuture<?> pending, AtomicReference<@Nullable Boolean> departedAtSettlement)
+                throws InterruptedException, ExecutionException {
+            return departureEndedWait(pending, departed, departedAtSettlement);
+        }
+
+        /**
+         * The client abort a dispatch reports when its client departed while the current attempt was still
+         * waiting: the body's own refusal when one was recorded before, otherwise the departure itself.
+         *
+         * @param cappedBody the attempt's body stream, {@code null} while none was handed over
+         * @return the client abort; only valid once the client departed
+         * @throws IllegalStateException when the client has not departed
+         */
+        GatewayException abortOnDeparture(@Nullable ByteCappedBodyStream cappedBody) {
+            GatewayException bodyAbort = bodyAbort(cappedBody);
+            return bodyAbort != null ? bodyAbort : departed.resultNow();
         }
 
         /** @return {@code true} for a bodyless request: it is sent upstream with no body */
@@ -1192,10 +1341,10 @@ public final class DispatchStage {
          * start of {@code attempt} and keeps running after the send completed, until the body ends. Armed
          * with the message clock — the gRPC pre-response deadline — it is counted from now, the hand-over,
          * passes no later than the pre-response cap after the start of {@code attempt}, and stops with
-         * that clock when the send completes; when less than the hand-over grace is left before the cap, or
-         * the cap has already passed, the request is reset unsent and the send fails as an
-         * {@link UpstreamConnectionTooLate} instead, before the inbound stream is subscribed, so an armed
-         * pre-response deadline always passes at least the hand-over grace after the hand-over. The body is attached to {@code attempt} before any clock is armed, so an attempt the
+         * that clock when the send completes. Either way the wait for the connection that preceded this
+         * call is bounded by {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}, so the deadline is armed with at least
+         * the deadline, or the cap, less that bound still to run. The body is attached to {@code attempt}
+         * before any clock is armed, so an attempt the
          * dispatch no longer waits for stops them all. Every timer is scheduled through the Vert.x instance
          * owning the context this callback runs on, the upstream request's own.
          *
@@ -1217,15 +1366,6 @@ public final class DispatchStage {
             }
             long handOverNanos = System.nanoTime();
             OptionalLong deadline = bodyDeadlineOf(attempt, handOverNanos);
-            if (preResponseCapMillis != NO_PRE_RESPONSE_CAP
-                    && deadline.orElseThrow() - handOverNanos < TimeUnit.MILLISECONDS.toNanos(handOverGraceMillis)) {
-                // The connection wait left less than the hand-over grace before the pre-response cap: too
-                // little time for the client to send, or for an end it already sent to be delivered before
-                // the deadline, so the attempt ends as the upstream's timeout, its request unsent and its
-                // body unread.
-                request.reset();
-                return Future.failedFuture(new UpstreamConnectionTooLate());
-            }
             if (declaredLength >= 0) {
                 request.putHeader(CONTENT_LENGTH, Long.toString(declaredLength));
             }
@@ -1313,13 +1453,21 @@ public final class DispatchStage {
          */
         @Nullable
         GatewayException clientAbort(@Nullable ByteCappedBodyStream cappedBody) {
-            GatewayException bodyAbort;
-            if (bodylessWatch != null) {
-                bodyAbort = bodylessWatch.clientAbort();
-            } else {
-                bodyAbort = cappedBody == null ? null : cappedBody.clientAbort();
-            }
+            GatewayException bodyAbort = bodyAbort(cappedBody);
             return bodyAbort != null ? bodyAbort : departure();
+        }
+
+        /**
+         * @param cappedBody the attempt's body stream, {@code null} for a bodyless request or while none was
+         *                   handed over
+         * @return the body's own refusal — a bodyless request's body byte, or the body stream's client abort —
+         *         or {@code null} when there was none
+         */
+        private @Nullable GatewayException bodyAbort(@Nullable ByteCappedBodyStream cappedBody) {
+            if (bodylessWatch != null) {
+                return bodylessWatch.clientAbort();
+            }
+            return cappedBody == null ? null : cappedBody.clientAbort();
         }
 
         /**
@@ -1619,8 +1767,9 @@ public final class DispatchStage {
      * can no longer be answered. The edge root therefore hands a response that ended without being
      * answered to {@link #clientDeparted(Throwable)}, which delivers it once — to the departure handler
      * registered at that moment, or to the one registered later — so a dispatch holding an upstream
-     * request releases it (see {@link DispatchStage}, which also states when a wait for a pooled
-     * connection ends). A stream the gateway reset itself records no departure.
+     * request releases it, and a dispatch still waiting on its attempt — for a pooled connection or for
+     * the upstream's answer — ends at once (see {@link DispatchStage}). A stream the gateway reset itself
+     * records no departure.
      * <p>
      * <strong>The dispatch is handed this body itself, never a decorator around it.</strong> The dispatch
      * finds the departure by the type of the stream it is handed, so a decorator between the two would
@@ -1867,8 +2016,8 @@ public final class DispatchStage {
      * The failure of an attempt the dispatch stopped waiting for before its request obtained a
      * connection: the request was reset unsent (see {@link UpstreamAttempt#publish}), which happens when
      * the pool hands the released attempt a connection. When the client's departure released the
-     * attempt, the dispatch reports that departure in its place, so the breaker skips it and the retry
-     * predicate refuses it.
+     * attempt, the dispatch reports that departure in its place, so the breaker records it as neutral and
+     * the retry predicate refuses it.
      * <p>
      * <strong>Deliberately not a {@link java.util.concurrent.CancellationException}.</strong> The
      * dispatching thread awaits the attempt through {@link java.util.concurrent.CompletableFuture#get()},
@@ -1888,30 +2037,6 @@ public final class DispatchStage {
 
         AttemptReleasedUnsent() {
             super(ATTEMPT_ABANDONED, null, false, false);
-        }
-    }
-
-    /**
-     * The failure of an attempt that obtained its upstream connection with less than its hand-over grace
-     * left before its pre-response cap, or only once the cap had passed: the wait for the connection used up
-     * the guard's timeout but for the margin the cap leaves and less than the grace of it, so too little time
-     * is left in which the client could send its request — or in which an end the client already sent could
-     * be delivered before the deadline. The attempt's request is reset unsent and
-     * its body never read, so nothing the client did or did not send contributes to the failure — it is the
-     * upstream's. It is a {@link TimeoutException}, not a {@link GatewayException}: the breaker counts it as
-     * an upstream failure, and the failure mapper reports it as {@link EventType#UPSTREAM_TIMEOUT}, exactly as
-     * the guard's own timeout a moment later would have been reported. Only a dispatch that arms a
-     * pre-response deadline — the gRPC dispatch — raises it.
-     * <p>
-     * Carries no request-specific state.
-     */
-    static final class UpstreamConnectionTooLate extends TimeoutException {
-
-        @Serial
-        private static final long serialVersionUID = 1L;
-
-        UpstreamConnectionTooLate() {
-            super(CONNECTION_TOO_LATE);
         }
     }
 
@@ -1953,11 +2078,41 @@ public final class DispatchStage {
     }
 
     /**
+     * The failure of an attempt whose wait for a pooled upstream connection outlasted
+     * {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}. The dial and TLS handshake timeouts of the upstream clients
+     * together are shorter than that bound, so an expired wait usually means the attempt queued behind
+     * connections the upstream is holding — an upstream that accepts but does not answer, or one too slow to
+     * serve the admitted load within the bound. The bound also covers resolving the upstream's host name for a
+     * new connection, which no shorter timeout bounds, so a resolution slower than the bound ends the same way.
+     * The attempt's request was never sent and its body never read, so
+     * nothing the client did contributes to the failure — it is the upstream's. It is a {@link TimeoutException},
+     * not a {@link GatewayException}: the breaker counts it as an upstream failure, the failure mapper reports it
+     * as {@link EventType#UPSTREAM_TIMEOUT}, and the retry predicate refuses it (see
+     * {@link #allowsRetryAfter(Throwable)}), so a retry never queues again behind connections the upstream holds.
+     * <p>
+     * Carries a fixed message and the expired wait as its cause; no request-specific state.
+     */
+    static final class UpstreamConnectionWaitExpired extends TimeoutException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * @param expiry the timeout the upstream client reported for the expired wait, kept as the cause
+         */
+        UpstreamConnectionWaitExpired(TimeoutException expiry) {
+            super(CONNECTION_WAIT_EXPIRED);
+            initCause(Objects.requireNonNull(expiry, "expiry"));
+        }
+    }
+
+    /**
      * The client abort of a dispatch whose client left — reset its stream or closed its connection —
      * before the response was handed over for relay (see {@link InboundBody#clientDeparted(Throwable)}).
      * It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told
      * apart from it by its type so it is reported with its own disposition. Like every client-ended
-     * dispatch it is a gateway rejection: the breaker skips it and the retry predicate refuses it.
+     * dispatch it is a gateway rejection: the breaker records it as neutral and the retry predicate refuses
+     * it.
      *
      * @since 1.0
      */
@@ -1989,12 +2144,19 @@ public final class DispatchStage {
      * threshold by then was the upstream's stall, and that read ends the stream as an
      * {@link UpstreamStalledRequest}, the upstream's timeout, instead. The third does not arise
      * there: the pre-response deadline is counted from the moment the attempt hands its body over, so the wait
-     * for the connection is not counted against it, and an attempt whose connection came only after its
-     * pre-response cap is ended as an {@link UpstreamConnectionTooLate}, the upstream's timeout, instead.
+     * for the connection is not counted against it, and that wait is bounded by
+     * {@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}, well short of the pre-response cap.
+     * <p>
+     * On an HTTP dispatch the third case is a deliberate consequence of counting the whole-body deadline from
+     * the start of the attempt (see {@link DispatchStage}): the connection wait is charged to the client's
+     * deadline, and it can use the deadline up only where the deadline is no longer than the wait bound. A wait
+     * that reaches the bound is the upstream's timeout ({@link UpstreamConnectionWaitExpired}), never this
+     * refusal.
+     * <p>
      * The refusal is an {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) like the idle timeout's,
      * told apart from it by its type so it is reported with its own record: the body did not end within the
      * deadline, whether or not it was still making progress. Like every client-ended dispatch it is a
-     * gateway rejection: the breaker skips it and the retry predicate refuses it.
+     * gateway rejection: the breaker records it as neutral and the retry predicate refuses it.
      *
      * @since 1.0
      */
@@ -2035,8 +2197,8 @@ public final class DispatchStage {
      * or stopped between two messages without ending its request stream. The attempt's upstream request is
      * reset when it is raised. It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did
      * not arrive whole, told apart from it by its type so it is reported with its own disposition. Like
-     * every client-ended dispatch it is a gateway rejection: the breaker skips it and the retry predicate
-     * refuses it, so an idle client is never counted against a healthy upstream.
+     * every client-ended dispatch it is a gateway rejection: the breaker records it as neutral and the retry
+     * predicate refuses it, so an idle client is never counted against a healthy upstream.
      *
      * @since 1.0
      */

@@ -12,7 +12,7 @@ link:README.adoc[← Back to Architecture Index]
 
 The upstream client is split by plane (link:../adr/0008-data-plane-transport.adoc[ADR-0008]):
 
-image::../resources/diagrams/downstream-client-planes.svg[Upstream client split into a streaming Vert.x data plane, a fixed SmallRye Fault Tolerance guard and a cui-http control plane, align=center]
+image::../resources/diagrams/downstream-client-planes.svg[Upstream client split into a streaming Vert.x data plane, a fixed upstream guard of SmallRye retry and timeout around the gateway's own breaker, and a cui-http control plane, align=center]
 
 * *Data plane -- Vert.x `HttpClient`.* Proxied traffic for HTTP, GraphQL, and gRPC routes is
   dispatched on the Vert.x client that runs the edge: request and response bodies are piped as
@@ -24,19 +24,26 @@ image::../resources/diagrams/downstream-client-planes.svg[Upstream client split 
   forced-HTTP/2 (gRPC) client leaves its shared connection open and resets only the offending
   stream. WebSocket routes use the edge-wide WebSocket client without connection pooling.
 
-* *Resilience -- SmallRye Fault Tolerance, programmatic.* Built at boot for HTTP, GraphQL, and gRPC
-  routes: one programmatic guard per upstream target and retry setting, invoked around the dispatch
-  call in the edge layer (no annotations or CDI interception on the hot path; WebSocket routes
-  receive no resilience guard):
+* *Resilience -- SmallRye Fault Tolerance retry and timeout, the gateway's own breaker.* Built at boot
+  for HTTP, GraphQL, and gRPC routes: one guard per upstream target and retry setting, invoked around
+  the dispatch call in the edge layer, in the order retry, breaker, timeout. The retry and the timeout
+  are SmallRye Fault Tolerance's programmatic API (no annotations or CDI interception on the hot path);
+  the circuit breaker between them is the gateway's own `UpstreamCircuitBreaker`, because the SmallRye
+  breaker has no neutral outcome
+  (link:../adr/0008-data-plane-transport.adoc#amendment-hand-rolled-breaker[ADR-0008]). WebSocket routes
+  receive no resilience guard:
   ** *Stream-aware retry.* On a route with `retry.enabled`, the guard allows at most two retries
      (`maxRetries(2)`, 100 ms delay) and retries only for an idempotent method *while no attempt has
      consumed the one-shot request body*.
   ** *Fixed circuit breaker*
      (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
      rolling window of 20 calls, opening at 50% failures for 5 s, closing after 2 successful trial
-     calls. Only upstream failures count; client-ended dispatches (body-cap breaches, aborted
-     bodies, framing mismatches, and 10 s / 25 s request-body timeouts) are neither retried nor
-     counted as failures.
+     calls. Only outcomes the upstream decided enter the window: an answer is a success, and an upstream
+     failure -- the attempt timeout and an expired 10 s upstream connection wait included -- is a
+     failure. Client-ended dispatches (body-cap breaches, aborted bodies, framing mismatches, 10 s /
+     25 s request-body timeouts, a client that left) and the refusal of an attempt because the upstream
+     connection wait queue was full are neutral: never retried, and neither counted as failures nor
+     recorded as successes, so they neither dilute the window nor close a half-open breaker.
   ** *Attempt timeout.* Each attempt is bounded until its response head by a fixed 30 s timeout
      inside the retry loop (up to ~90 s across 3 attempts when `retry.enabled` is true). A route
      declares no timeout or attempt count

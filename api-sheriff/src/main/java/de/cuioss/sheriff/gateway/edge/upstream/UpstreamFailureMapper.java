@@ -30,24 +30,27 @@ import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;
 /**
  * Maps an upstream dispatch failure to the gateway error contract (stage 6/7).
  * <p>
- * The stage-6 dispatch runs through the route's SmallRye Fault-Tolerance guard, so a failure
+ * The stage-6 dispatch runs through the route's resilience guard ({@link UpstreamGuards}), so a failure
  * surfaces as one of three shapes, each with a distinct HTTP status per the error contract in
  * {@code doc/architecture/observability-and-errors.adoc}:
  * <ul>
  *   <li>{@link CircuitBreakerOpenException} — the breaker is open, the upstream was never called →
  *       {@link EventType#UPSTREAM_CIRCUIT_OPEN} (503, {@code Retry-After} added by the edge);</li>
  *   <li>a timeout ({@link TimeoutException}, {@link java.util.concurrent.TimeoutException}, or a
- *       Vert.x timeout) — the upstream exceeded its configured deadline →
+ *       Vert.x timeout) — the upstream exceeded its configured deadline, including an attempt whose wait for a
+ *       pooled connection outlasted its bound ({@link DispatchStage.UpstreamConnectionWaitExpired}) →
  *       {@link EventType#UPSTREAM_TIMEOUT} (504);</li>
  *   <li>any other connection / protocol failure → {@link EventType#UPSTREAM_ERROR} (502).</li>
  * </ul>
- * An attempt that obtained no pooled connection because the gateway itself is saturated never reaches
- * that classification: the dispatch maps it inside the guard, through {@link #toPoolSaturation(Throwable)},
- * to {@link EventType#UPSTREAM_POOL_SATURATED} (503), a gateway rejection the breaker does not count.
- * Every mapped failure is metered on the shared {@link GatewayEventCounter}. Breaker state
- * transitions are metered and logged through {@link #recordBreakerTransition(String, CircuitBreakerState)},
- * which the boot-time edge installs as each breaker's state-change callback
- * ({@code CircuitBreakerBuilder.onStateChange}).
+ * An attempt that obtained no pooled connection because the client's wait queue was full — the gateway's own
+ * saturation — never reaches that classification: the dispatch maps it inside the guard, through
+ * {@link #toPoolSaturation(Throwable)}, to {@link EventType#UPSTREAM_POOL_SATURATED} (503), a gateway rejection
+ * the breaker records as neutral: neither a failure nor a success. An expired wait is not saturation: it is the
+ * upstream's timeout above, which the breaker counts. Every mapped failure is metered on the shared
+ * {@link GatewayEventCounter}.
+ * Breaker state transitions are metered and logged through
+ * {@link #recordBreakerTransition(String, CircuitBreakerState)}, which {@link UpstreamGuards#guardFor} installs
+ * as the state-change consumer of each breaker it builds ({@link UpstreamCircuitBreaker}).
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -108,11 +111,13 @@ public final class UpstreamFailureMapper {
 
     /**
      * Meters an attempt that obtained no pooled upstream connection because the gateway itself is saturated —
-     * the upstream client's wait queue was full, or the wait outlasted the connection wait bound — and
-     * produces the {@link EventType#UPSTREAM_POOL_SATURATED} rejection the edge answers {@code 503}. The
-     * dispatch raises it inside the guard, so the breaker skips it like every {@link GatewayException}.
+     * the upstream client's wait queue was full — and produces the {@link EventType#UPSTREAM_POOL_SATURATED}
+     * rejection the edge answers {@code 503}. The dispatch raises it inside the guard, so the breaker records it
+     * as neutral like every {@link GatewayException}: neither a failure nor a success. A wait that outlasted the
+     * connection wait bound is not saturation and never reaches this method: it is the upstream's timeout
+     * ({@link EventType#UPSTREAM_TIMEOUT}), which the breaker counts.
      *
-     * @param failure the pool's refusal or the expired wait, kept as the cause and never shown to the client
+     * @param failure the pool's refusal, kept as the cause and never shown to the client
      * @return the gateway exception carrying {@link EventType#UPSTREAM_POOL_SATURATED}
      */
     public GatewayException toPoolSaturation(Throwable failure) {
@@ -123,8 +128,8 @@ public final class UpstreamFailureMapper {
     }
 
     /**
-     * Meters and logs a circuit-breaker state transition. Installed by the edge as the state-change
-     * callback of each breaker it builds.
+     * Meters and logs a circuit-breaker state transition. Installed by {@link UpstreamGuards#guardFor} as the
+     * state-change consumer of each breaker it builds.
      *
      * @param routeId the name of the breaker's upstream shape,
      *                {@code scheme://host:port:h2=<flag>:retry=<flag>}

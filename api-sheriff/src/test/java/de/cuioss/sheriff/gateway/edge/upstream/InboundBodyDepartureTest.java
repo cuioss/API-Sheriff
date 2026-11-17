@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge.upstream;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Proxy;
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,7 +30,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -57,6 +61,7 @@ import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
@@ -64,9 +69,12 @@ import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.RoutingContext;
+import jakarta.enterprise.util.TypeLiteral;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -78,7 +86,10 @@ import org.junit.jupiter.api.Test;
  * request whose body had nothing left to arrive, a {@code body-stream-failed} abort for one whose body
  * was still arriving — both {@link EventType#INBOUND_BODY_ABORTED}, both refused by the retry predicate.
  * A departure that releases an attempt still waiting for its pooled upstream connection ends the same
- * way once the pool hands the connection over, and the circuit breaker counts no failure for it. And
+ * way at once, without waiting for the pool to hand the connection over; a connection handed over later
+ * is reset unsent, and the circuit breaker counts no failure for it. What ended the attempt before the
+ * client left takes precedence over the departure: a body refusal recorded first is what the dispatch
+ * ends with, and an upstream stall claimed first stays the upstream's timeout, which the breaker counts. And
  * {@link RejectionReporter} records the two, and a gRPC call whose next complete message did not arrive
  * within the message bound ({@link DispatchStage.RequestMessageTimeout}), each under its own disposition:
  * counted per disposition on {@code sheriff_inbound_body_aborts_total}, and latched per route and
@@ -86,6 +97,7 @@ import org.junit.jupiter.api.Test;
  */
 @EnableGeneratorController
 @EnableTestLogger(debug = RejectionReporter.class)
+@Tag("isolated-fork")
 @DisplayName("InboundBody — a client departure reaches the dispatch once, ends it as the client's abort, and is reported as client-left")
 class InboundBodyDepartureTest {
 
@@ -226,7 +238,8 @@ class InboundBodyDepartureTest {
      * {@link DispatchStage#dispatch} over an upstream client that hands the attempt its request only when
      * the case completes it, and under a guard whose breaker opens on the first failure it counts. The
      * case decides the order: the attempt asks for its connection, then the client leaves or the
-     * connection fails, then the request is handed out or the connection is refused.
+     * connection fails, then the request is handed out or the connection is refused — before the dispatch
+     * ended, or only after it.
      * <p>
      * The matched control is a connection that fails without any departure: the same rig ends it as an
      * upstream failure and the breaker opens on it, so a breaker that stays closed after a departure is a
@@ -283,6 +296,32 @@ class InboundBodyDepartureTest {
                             () -> "the breaker counted the departure as a failure: " + transitions));
         }
 
+        /**
+         * The departure alone ends the dispatch: the connection is still pending when the dispatch has ended,
+         * and is handed out only afterwards. A dispatching thread that waited on the pool alone would stay
+         * blocked until the pool handed the connection over or the wait bound passed, and this case would time
+         * out waiting for the dispatch to end.
+         */
+        @Test
+        @DisplayName("a departure ends the dispatch at once while its connection is still pending; the connection handed out afterwards is reset unsent")
+        void departureEndsTheConnectionWaitAtOnce() throws Exception {
+            Throwable cause = departureCause();
+            UnsentRequest handedOut = new UnsentRequest();
+
+            GatewayException ended = dispatchWhile(() -> body.clientDeparted(cause));
+            connection.complete(handedOut.proxy());
+
+            assertAll("an attempt released by the client while its connection was still pending",
+                    () -> assertInstanceOf(DispatchStage.ClientDeparted.class, ended,
+                            () -> "the client's abort, not an upstream failure: " + ended),
+                    () -> assertSame(cause, ended.getCause(), "the departure is kept as the cause"),
+                    () -> assertTrue(handedOut.resets.get() > 0,
+                            "the connection handed out after the dispatch ended is reset"),
+                    () -> assertEquals(List.of(), handedOut.unexpected, "the request is never sent"),
+                    () -> assertTrue(transitions.isEmpty(),
+                            () -> "the breaker counted the departure as a failure: " + transitions));
+        }
+
         @Test
         @DisplayName("control — a connection that fails with no departure is an upstream failure the breaker counts")
         void connectionFailureWithoutDepartureIsCounted() throws Exception {
@@ -315,6 +354,198 @@ class InboundBodyDepartureTest {
                 assertNotNull(failure, "the dispatch must not be answered");
                 return failure;
             }
+        }
+    }
+
+    /**
+     * The first precedence rule of the departure wake: a body refusal recorded before the client departs is what
+     * the dispatch ends with, not the departure. Driven through {@link DispatchStage#dispatch} with a bodyless
+     * request whose attempt waits for a pooled connection the case never hands over, so the dispatch can end only
+     * through the departure wake. The refusal is a body byte on the bodyless request, which the case emits before
+     * the client leaves; the matched control lets the client leave with no refusal recorded.
+     * <p>
+     * The guard holds the gateway's own {@link UpstreamCircuitBreaker} alone, opening on the first failure it
+     * counts, so a breaker that stays closed shows that neither end is counted as a failure. With a one-call window
+     * it does not tell a neutral outcome from a success; {@code UpstreamGuardsTest} and
+     * {@code UpstreamCircuitBreakerTest} bind the neutral outcome itself.
+     */
+    @Nested
+    @DisplayName("a body refusal recorded before the client departs ends the dispatch in place of the departure")
+    class BodyRefusalBeforeDeparture {
+
+        private Route route;
+        private List<CircuitBreakerState> transitions;
+        private CountDownLatch requested;
+        private DispatchStage stage;
+        private ChunkStream inbound;
+        private DispatchStage.InboundBody body;
+
+        @BeforeEach
+        void setUp() {
+            route = departedRoute();
+            transitions = new CopyOnWriteArrayList<>();
+            requested = new CountDownLatch(1);
+            UpstreamClients clients = new UpstreamClients(
+                    Map.of(UpstreamTarget.of(route), pendingClient(Promise.promise(), requested)),
+                    Map.of(ResilienceShape.of(route), breakerGuard(route, transitions)));
+            stage = new DispatchStage(clients, 1024L, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+                    new UpstreamFailureMapper(new GatewayEventCounter()));
+            inbound = new ChunkStream();
+            body = DispatchStage.InboundBody.arm(inbound);
+        }
+
+        @Test
+        @DisplayName("a body byte on a bodyless request before the departure ends the dispatch as its SECURITY_FILTER_VIOLATION, not a ClientDeparted")
+        void refusalBeforeDepartureEndsTheDispatch() throws Exception {
+            GatewayException ended = dispatchUntilEnded(stage, route, body, bodyless(), requested, () -> {
+                inbound.emit(Buffer.buffer(Generators.letterStrings(1, 16).next()));
+                body.clientDeparted(departureCause());
+            });
+
+            assertAll("a refusal recorded before the client left",
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, ended.getEventType(),
+                            () -> "the body's refusal, not the departure: " + ended),
+                    () -> assertFalse(ended instanceof DispatchStage.ClientDeparted,
+                            "the later departure does not override the refusal"),
+                    () -> assertTrue(transitions.isEmpty(),
+                            () -> "the breaker counted the refusal as a failure: " + transitions));
+        }
+
+        @Test
+        @DisplayName("control — a departure with no refusal recorded before it ends the dispatch as a ClientDeparted")
+        void departureWithoutRefusalIsTheDeparture() throws Exception {
+            Throwable cause = departureCause();
+
+            GatewayException ended = dispatchUntilEnded(stage, route, body, bodyless(), requested,
+                    () -> body.clientDeparted(cause));
+
+            assertAll("a departure the body did not refuse before",
+                    () -> assertInstanceOf(DispatchStage.ClientDeparted.class, ended,
+                            () -> "the client's departure: " + ended),
+                    () -> assertSame(cause, ended.getCause(), "the departure is kept as the cause"),
+                    () -> assertTrue(transitions.isEmpty(),
+                            () -> "the breaker counted the departure as a failure: " + transitions));
+        }
+    }
+
+    /**
+     * The second precedence rule of the departure wake: an upstream stall claimed before the client departs keeps
+     * the failure the upstream's. The dispatch rethrows the stall, which reaches the guard as the upstream's
+     * timeout and is counted by the breaker. Driven through {@link DispatchStage#dispatch} on a gRPC-shaped stage
+     * — a pre-response deadline of {@value #DEADLINE_MILLIS} ms and an upstream stall threshold of
+     * {@value #STALL_THRESHOLD_MILLIS} ms — over an upstream client that hands the attempt, on a Vert.x context, a
+     * request which takes the body stream, pauses it at once as an upstream not taking data does, and never
+     * answers. The dispatch can therefore end only through the departure wake. The case resumes the stream once
+     * the pause has outlasted the deadline, so the resume ends the stream as the upstream's stall, and only then
+     * lets the client depart; the matched control lets the client depart while the upstream still holds the
+     * stream and no stall has been claimed.
+     * <p>
+     * The guard holds the gateway's own {@link UpstreamCircuitBreaker} alone, opening on the first failure it
+     * counts, so an open breaker shows the stall counted as the upstream's failure, and a closed one that the
+     * departure was not counted as a failure. With a one-call window a closed breaker does not tell a neutral
+     * outcome from a success; {@code UpstreamGuardsTest} and {@code UpstreamCircuitBreakerTest} bind the neutral
+     * outcome itself.
+     */
+    @Nested
+    @DisplayName("an upstream stall claimed before the client departs ends the dispatch as the upstream's timeout")
+    class UpstreamStallBeforeDeparture {
+
+        /** The test-only pre-response deadline, counted from the hand-over of the body. */
+        private static final long DEADLINE_MILLIS = 300L;
+        /** The test-only upstream stall threshold; shorter than the deadline, as the stage requires. */
+        private static final long STALL_THRESHOLD_MILLIS = 100L;
+        /** The pre-response cap, long enough that it never shortens the deadline counted from the hand-over. */
+        private static final long PRE_RESPONSE_CAP_MILLIS = 10_000L;
+        /** The message bound, far beyond every case, so none is ended by it. */
+        private static final long MESSAGE_BOUND_MILLIS = 60_000L;
+
+        private Vertx vertx;
+        private Route route;
+        private List<CircuitBreakerState> transitions;
+        private Promise<HttpClientRequest> connection;
+        private CountDownLatch requested;
+        private DispatchStage stage;
+        private DispatchStage.InboundBody body;
+        private HeldRequest held;
+
+        @BeforeEach
+        void setUp() {
+            vertx = Vertx.vertx();
+            route = departedRoute();
+            transitions = new CopyOnWriteArrayList<>();
+            connection = Promise.promise();
+            requested = new CountDownLatch(1);
+            UpstreamClients clients = new UpstreamClients(
+                    Map.of(UpstreamTarget.of(route), pendingClient(connection, requested)),
+                    Map.of(ResilienceShape.of(route), breakerGuard(route, transitions)));
+            stage = new DispatchStage(clients, 1024L, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
+                    MESSAGE_BOUND_MILLIS, PRE_RESPONSE_CAP_MILLIS, STALL_THRESHOLD_MILLIS,
+                    new UpstreamFailureMapper(new GatewayEventCounter()));
+            body = DispatchStage.InboundBody.arm(new SilentStream());
+            held = new HeldRequest();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(vertx.close(), "the Vert.x instance to close");
+        }
+
+        @Test
+        @DisplayName("a stall claimed before the departure ends the dispatch as the stall's UPSTREAM_TIMEOUT, which the breaker counts")
+        void stallBeforeDepartureStaysTheUpstreams() throws Exception {
+            GatewayException ended = dispatchUntilEnded(stage, route, body, streamed(), requested, () -> {
+                handOverBody();
+                Awaits.until(() -> System.nanoTime() - held.pausedAtNanos
+                                >= TimeUnit.MILLISECONDS.toNanos(DEADLINE_MILLIS),
+                        "the paused body stream to outlast the pre-response deadline",
+                        Awaits.CONNECT_CEILING_SECONDS);
+                held.body().resume();
+                assertNotNull(held.body().upstreamStall(),
+                        "precondition: the resume ends the paused stream as the upstream's stall");
+                body.clientDeparted(departureCause());
+            });
+
+            assertAll("a stall the upstream caused before the client left",
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, ended.getEventType(),
+                            () -> "the upstream's timeout, not the client's abort: " + ended),
+                    () -> assertInstanceOf(DispatchStage.UpstreamStalledRequest.class, ended.getCause(),
+                            "the stall is what the dispatch ended with"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), transitions,
+                            "the breaker opens on the stall it counts"),
+                    () -> assertTrue(held.resets.get() > 0, "the upstream request is reset"),
+                    () -> assertEquals(List.of(), held.unexpected, "the request is never asked for more"));
+        }
+
+        @Test
+        @DisplayName("control — a departure while the upstream still holds the stream ends the dispatch as the client's abort, which the breaker does not count")
+        void departureBeforeStallIsTheClients() throws Exception {
+            Throwable cause = departureCause();
+
+            GatewayException ended = dispatchUntilEnded(stage, route, body, streamed(), requested, () -> {
+                handOverBody();
+                body.clientDeparted(cause);
+            });
+
+            assertAll("a departure before any stall was claimed",
+                    () -> assertEquals(EventType.INBOUND_BODY_ABORTED, ended.getEventType(),
+                            () -> "the client's abort, not the upstream's timeout: " + ended),
+                    () -> assertEquals(DispatchStage.ByteCappedBodyStream.INBOUND_BODY_FAILED, ended.getMessage(),
+                            "the body was still arriving when the client left"),
+                    () -> assertSame(cause, ended.getCause(), "the departure is kept as the cause"),
+                    () -> assertNull(held.body().upstreamStall(), "no stall was claimed"),
+                    () -> assertTrue(transitions.isEmpty(),
+                            () -> "the breaker counted the departure as a failure: " + transitions),
+                    () -> assertTrue(held.resets.get() > 0, "the upstream request is reset"),
+                    () -> assertEquals(List.of(), held.unexpected, "the request is never asked for more"));
+        }
+
+        /**
+         * Hands the attempt its upstream request on a Vert.x context, where the dispatch arms the stream's clocks,
+         * and waits until the request took the body stream and paused it.
+         */
+        private void handOverBody() throws Exception {
+            vertx.getOrCreateContext().runOnContext(_ -> connection.complete(held.proxy()));
+            Awaits.connect(held.bodyHandedOver, "the attempt to hand its body stream to the upstream request");
         }
     }
 
@@ -624,6 +855,178 @@ class InboundBodyDepartureTest {
                             throw new AssertionError("the released request was asked for " + method.getName());
                         }
                     }));
+        }
+    }
+
+    /**
+     * The upstream request of an upstream that stops taking data the moment the body is handed to it and never
+     * answers: it takes the body stream, pauses it at once — as the upstream's backpressure does — and returns a
+     * send that never completes. It may take an exception handler and be reset any number of times; every other
+     * call is recorded and fails.
+     */
+    private static final class HeldRequest {
+
+        private final AtomicInteger resets = new AtomicInteger();
+        private final List<String> unexpected = new CopyOnWriteArrayList<>();
+        private final CountDownLatch bodyHandedOver = new CountDownLatch(1);
+        private final AtomicReference<DispatchStage.ByteCappedBodyStream> body = new AtomicReference<>();
+        /** The {@link System#nanoTime()} reading just after the body stream was paused. */
+        private volatile long pausedAtNanos;
+
+        /** @return the body stream the dispatch handed over; only valid once {@link #bodyHandedOver} reached zero */
+        DispatchStage.ByteCappedBodyStream body() {
+            DispatchStage.ByteCappedBodyStream handedOver = body.get();
+            assertNotNull(handedOver, "the dispatch handed no body stream to the upstream request");
+            return handedOver;
+        }
+
+        HttpClientRequest proxy() {
+            return HttpClientRequest.class.cast(Proxy.newProxyInstance(HttpClientRequest.class.getClassLoader(),
+                    new Class<?>[]{HttpClientRequest.class}, (proxy, method, args) -> switch (method.getName()) {
+                        case "exceptionHandler" -> proxy;
+                        case "send" -> holdBody(args);
+                        case "reset" -> {
+                            resets.incrementAndGet();
+                            yield Boolean.TRUE;
+                        }
+                        case "toString" -> "a held upstream request";
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "equals" -> proxy == args[0];
+                        default -> {
+                            unexpected.add(method.getName());
+                            throw new AssertionError("the held request was asked for " + method.getName());
+                        }
+                    }));
+        }
+
+        private Object holdBody(Object[] args) {
+            if (args == null || args.length != 1 || !(args[0] instanceof DispatchStage.ByteCappedBodyStream sent)) {
+                unexpected.add("send");
+                throw new AssertionError("the held request was sent without the dispatch's body stream");
+            }
+            sent.pause();
+            pausedAtNanos = System.nanoTime();
+            body.set(sent);
+            bodyHandedOver.countDown();
+            return Promise.<HttpClientResponse>promise().future();
+        }
+    }
+
+    /** A request body the case feeds by hand: each chunk it emits goes to the handler the dispatch registered. */
+    private static final class ChunkStream implements ReadStream<Buffer> {
+
+        /** Until the dispatch registers its handler, an emitted chunk fails the case. */
+        private volatile Handler<Buffer> handler =
+                chunk -> fail("a chunk was emitted before the dispatch read the request body");
+
+        void emit(Buffer chunk) {
+            handler.handle(chunk);
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(Handler<Throwable> exceptionHandler) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> handler(Handler<Buffer> chunkHandler) {
+            if (chunkHandler != null) {
+                handler = chunkHandler;
+            }
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(Handler<Void> endHandler) {
+            return this;
+        }
+    }
+
+    /**
+     * A guard holding the gateway's own {@link UpstreamCircuitBreaker} alone, with a window of one call, so it
+     * opens on the first failure it counts and stays closed on a neutral gateway rejection; no timeout and no
+     * retry.
+     */
+    private static Guard breakerGuard(Route route, List<CircuitBreakerState> transitions) {
+        return new BreakerGuard(new UpstreamCircuitBreaker(1, 1.0, Duration.ofSeconds(30), 1, System::nanoTime,
+                route.id(), transitions::add));
+    }
+
+    /** Serves the synchronous {@link Guard#call(Callable, Class)} the dispatch uses through the breaker alone. */
+    private record BreakerGuard(UpstreamCircuitBreaker breaker) implements Guard {
+
+        private static final String SYNCHRONOUS_ONLY = "the test guard serves only the synchronous call(Callable, Class)";
+
+        @Override
+        public <T> T call(Callable<T> action, Class<T> type) throws Exception {
+            return breaker.call(action);
+        }
+
+        @Override
+        public <T> T call(Callable<T> action, TypeLiteral<T> type) {
+            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
+        }
+
+        @Override
+        public <T> T get(Supplier<T> action, Class<T> type) {
+            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
+        }
+
+        @Override
+        public <T> T get(Supplier<T> action, TypeLiteral<T> type) {
+            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
+        }
+    }
+
+    /** What a case does while its dispatch waits; it may wait itself. */
+    @FunctionalInterface
+    private interface CaseSteps {
+
+        void run() throws Exception;
+    }
+
+    /**
+     * Dispatches a request framed by {@code framing} on a virtual thread, runs {@code steps} once its attempt asked
+     * for its upstream connection, and returns what the dispatch ended with. A dispatch still waiting when the case
+     * gives up — {@code steps} failed before the client departed — is interrupted, so the case never waits on it.
+     */
+    private static GatewayException dispatchUntilEnded(DispatchStage stage, Route route, DispatchStage.InboundBody body,
+            DispatchStage.BodyFraming framing, CountDownLatch requested, CaseSteps steps) throws Exception {
+        HttpMethod method = framing.bodyless() ? HttpMethod.GET : HttpMethod.POST;
+        String requestUri = "/" + route.id();
+        try (ExecutorService dispatching = Executors.newVirtualThreadPerTaskExecutor()) {
+            try {
+                CompletableFuture<GatewayException> ended = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        stage.dispatch(route, method, requestUri, Map.of(), body, framing);
+                        return null;
+                    } catch (GatewayException failure) {
+                        return failure;
+                    }
+                }, dispatching);
+                Awaits.connect(requested, "the attempt to ask for its upstream connection");
+                steps.run();
+                GatewayException failure = Awaits.connect(ended, "the dispatch to end");
+                assertNotNull(failure, "the dispatch must not be answered");
+                return failure;
+            } finally {
+                dispatching.shutdownNow();
+            }
         }
     }
 

@@ -6,8 +6,8 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The data plane streams over the shared Vert.x HttpClient and the control plane stays on cui-http; gateway-side response caching is rejected, not_modified means end-to-end conditional pass-through with both halves gated together under every forward mode, resilience uses SmallRye Fault Tolerance's programmatic API under a fixed gateway breaker (ADR-0064), and retry is stream-aware.
-// tags: data-plane, transport, vertx, resilience, conditional-requests, not-modified, smallrye-fault-tolerance
+// summary: The data plane streams over the shared Vert.x HttpClient and the control plane stays on cui-http; gateway-side response caching is rejected, not_modified means end-to-end conditional pass-through with both halves gated together under every forward mode, resilience uses SmallRye Fault Tolerance's programmatic retry and timeout around the gateway's own fixed circuit breaker (ADR-0064), and retry is stream-aware. Amended: the hand-rolled breaker this record named as the fallback is taken, because the SmallRye breaker has no neutral outcome for a call the gateway itself ended.
+// tags: data-plane, transport, vertx, resilience, conditional-requests, not-modified, smallrye-fault-tolerance, circuit-breaker, hand-rolled
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -43,15 +43,24 @@ Every path that relays upstream response headers strips the upstream identity he
 
 === Resilience
 
-*Resilience uses SmallRye Fault Tolerance's programmatic API* (`quarkus-smallrye-fault-tolerance`), without annotations or CDI interception on the hot path. `UpstreamGuards` builds the guards at boot in the edge layer, and the dispatch call runs inside its guard. Breaker state transitions surface as WARN records and metrics.
+*Resilience uses SmallRye Fault Tolerance's programmatic API* (`quarkus-smallrye-fault-tolerance`) for the retry and the timeout, without annotations or CDI interception on the hot path. The circuit breaker between them is the gateway's own (<<amendment-hand-rolled-breaker>>). `UpstreamGuards` builds the guards at boot in the edge layer, and the dispatch call runs inside its guard. Breaker state transitions surface as WARN records and metrics.
 
 The breaker is a fixed policy of the gateway, and one guard serves every route dialing the same upstream target with the same retry setting. link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064] records that policy and removes the `upstream.circuit_breaker` block. Its amendment removes the upstream timeout and retry keys that parsed and acted on nothing as well: a route declares no timeout and no attempt count, and a descriptor that declares one of those keys is a boot refusal.
 
 *Retry is stream-aware gateway policy.* The retry predicate retries a failed attempt only when the method is idempotent *and no attempt has taken up the one-shot request body*. Once an attempt has subscribed the body stream no retry follows, even when none of its bytes reached the upstream. A request without a body is sent upstream with no body: the gateway reads its inbound stream only to watch for a body byte it then refuses, and no attempt takes that stream up, so the request stays eligible for retry. No replay buffering in the initial release.
 
-*The upstream timeout is the guard's.* The shared Vert.x client of an upstream target sets no connect or idle timeout of its own, so the Vert.x defaults apply: a 60 s connect timeout, which the guard's timeout ends first, and no idle timeout. Each upstream attempt is bounded by the guard's fixed 30 s SmallRye Fault Tolerance timeout, and a request the retry predicate allows is retried, each retry with its own 30 s timeout (link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]). The guarded call returns when the upstream's response headers arrive. The response body is streamed after it, so the 30 s bound is not a deadline on the response stream.
+*The upstream timeout is the guard's.* The shared Vert.x client of an upstream target dials within a fixed 5 s, completes its TLS handshake within a fixed 4 s and sets no idle timeout, and an attempt waits at most 10 s for its connection, queue, host-name resolution and dial together (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#upstream-connection-wait[ADR-0060]). Each upstream attempt is bounded by the guard's fixed 30 s SmallRye Fault Tolerance timeout, and a request the retry predicate allows is retried, each retry with its own 30 s timeout (link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]). The guarded call returns when the upstream's response headers arrive. The response body is streamed after it, so the 30 s bound is not a deadline on the response stream.
 
 *No whole-second timeout rule applies.* That rule existed only because the `cui-http` `HttpHandler` builder takes whole seconds. The Vert.x client takes milliseconds.
+
+[[amendment-hand-rolled-breaker]]
+=== Amendment: the hand-rolled breaker fallback is taken
+
+This record named a small gateway-side breaker as the fallback if the shipped SmallRye surface lacked a needed hook. It lacks one. The SmallRye breaker records every call as a success or a failure and has no neutral outcome, and the gateway needs one for a call it ended itself: a call the client ended, or one refused because the wait queue for an upstream connection was full. Recording such a call as a success diluted the window and could close a half-open breaker; recording it as a failure would charge the upstream for it.
+
+*The circuit breaker is the gateway's own component, `UpstreamCircuitBreaker`. SmallRye Fault Tolerance's retry and timeout stay in use around it.*
+
+The breaker keeps the fixed policy of link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc#amendment-neutral-outcome[ADR-0064] and records a gateway rejection as neutral. Each guard still runs retry, breaker, timeout, from the outside in. link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#amendment-upstream-circuit-breaker[ADR-0062] records the breaker as a hand-rolled component that stays, with its reason.
 
 == Alternatives rejected
 
@@ -85,7 +94,7 @@ The ETag adapter on the data plane would serve a cached body on an upstream `304
 
 === A hand-rolled breaker
 
-*Not adopted.* The decision names the same policy as a small gateway-side component only as the fallback if the shipped SmallRye surface lacked a needed hook. It records no other reason against it.
+*Not adopted at first; superseded by <<amendment-hand-rolled-breaker>>.* The decision named the same policy as a small gateway-side component only as the fallback if the shipped SmallRye surface lacked a needed hook. The surface lacks a neutral outcome, so the fallback is now taken.
 
 === Replay buffering for retry
 
@@ -96,13 +105,14 @@ The ETag adapter on the data plane would serve a cached body on an upstream `304
 === Properties of the design
 
 * gRPC and WebSocket get trailers, upgrade streams and HTTP/2 natively, with no transport swap.
-* The breaker has a Quarkus-supported home.
+* The retry and the timeout have a Quarkus-supported home. The breaker is the gateway's own, small and tested on its own (<<amendment-hand-rolled-breaker>>).
 * `HttpHandler` is nearly invisible in API Sheriff's own code, because it lives behind the token-sheriff libraries. `cui-http` stays the standard for inbound security filtering, forwarded-header resolution and control-plane calls, and is not generalized to opaque byte relay.
 
 === Accepted costs
 
 * `quarkus-smallrye-fault-tolerance` is one more Quarkus extension dependency, with its version from the Quarkus BOM.
-* The exact SmallRye programmatic surface (`Guard`, `TypedGuard`, `CircuitBreakerMaintenance` state callbacks) is used as the shipped extension version provides it.
+* The exact SmallRye programmatic surface (`Guard` for the retry and the timeout, and the `CircuitBreakerState` type the gateway's breaker reports its transitions in) is used as the shipped extension version provides it.
+* The breaker is code the gateway maintains itself (`UpstreamCircuitBreaker`, `UpstreamCircuitBreakerTest`).
 
 == Links
 
@@ -112,6 +122,7 @@ The ETag adapter on the data plane would serve a cached body on an upstream `304
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]: the platform-mechanism rule SmallRye Fault Tolerance is used under
 * link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]: the fixed breaker policy and the removed upstream timeout and retry keys
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamGuards.java`: the guard
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamCircuitBreaker.java`: the gateway's breaker
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/ForwardPolicyStage.java`: the request half of `not_modified`
 * https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus, SmallRye Fault Tolerance]
 * https://vertx.io/docs/vertx-core/java/#_making_requests[Vert.x HttpClient]

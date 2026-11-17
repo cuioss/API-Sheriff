@@ -15,18 +15,31 @@
  */
 package de.cuioss.sheriff.gateway.edge.upstream;
 
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionStage;
+import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import io.smallrye.faulttolerance.api.Guard;
+import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 
 /**
- * Builds the per-shape SmallRye Fault-Tolerance guard every proxied dispatch runs under, and owns the
- * two upstream bounds the edge states: the breaker's reset window and the per-attempt upstream timeout.
+ * Builds the per-shape guard every proxied dispatch runs under, and owns the upstream bounds the edge
+ * states: the circuit breaker's fixed policy and reset window, and the per-attempt upstream timeout.
+ * <p>
+ * Each guard joins SmallRye Fault-Tolerance's retry (on a route that enables it) and timeout with the
+ * gateway's own {@link UpstreamCircuitBreaker}, in the order retry, breaker, timeout. The breaker is the
+ * gateway's because SmallRye's records every call as a success or a failure, while a gateway rejection
+ * ({@link GatewayException}) — a call the client ended, or one refused because the wait queue for an
+ * upstream connection was full — says nothing about the upstream and is neutral: neither counted as a
+ * failure nor recorded as a success.
  * <p>
  * Handed to the {@link de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler} as its
  * {@link de.cuioss.sheriff.gateway.edge.assembly.ResilienceGuardFactory}, which builds one guard per
@@ -46,6 +59,22 @@ public final class UpstreamGuards {
      */
     public static final int BREAKER_RESET_SECONDS = 5;
     /**
+     * The size of an upstream circuit breaker's rolling window: the most recent calls whose outcome the
+     * upstream decided, successes and failures, that the failure ratio is judged over.
+     */
+    static final int BREAKER_REQUEST_VOLUME_THRESHOLD = 20;
+    /** The share of failures in a full window that opens an upstream circuit breaker. */
+    static final double BREAKER_FAILURE_RATIO = 0.5;
+    /**
+     * How many successful trial calls close a half-open upstream circuit breaker — and how many trials it
+     * admits at once.
+     */
+    static final int BREAKER_SUCCESS_THRESHOLD = 2;
+    /** How long apart, in milliseconds, the retries of a retry-enabled route are. */
+    private static final long RETRY_DELAY_MILLIS = 100L;
+    /** How many times a retry-enabled route retries a failed attempt. */
+    private static final int MAX_RETRIES = 2;
+    /**
      * The upstream guard's timeout, in seconds ({@link #guardFor}). It bounds each upstream attempt, not
      * the whole dispatch: the timeout sits inside the retry, so a dispatch retried on a retry-enabled
      * route can run up to three attempts, about 90 s in all. The request-body idle
@@ -62,14 +91,14 @@ public final class UpstreamGuards {
      * whose client does not send its next complete request message in time, or still holds its request
      * stream open at the deadline, is ended as the client's abort ({@link DispatchStage.RequestMessageTimeout}
      * or {@link DispatchStage.RequestBodyDeadlineExceeded}) before this timeout could end it as the upstream's.
-     * The wait for an upstream connection is counted by this timeout alone, and an attempt whose wait leaves
-     * less than the hand-over grace ({@link GrpcDispatchStage#GRPC_HAND_OVER_GRACE_MILLIS}) before the cap, or
-     * reaches the cap, is ended as the upstream's timeout ({@link DispatchStage.UpstreamConnectionTooLate})
-     * without its request being sent or its body read. On a gRPC call this timeout is therefore reached in three
-     * ways, all the upstream's: by an upstream holding a complete, half-closed request it does not answer; by a
-     * wait for an upstream connection or HTTP/2 stream slot that itself lasts this whole timeout, before any body
-     * is handed over; and by an upstream that stops taking data mid-request and does not take any more before
-     * this timeout. While that backpressure pauses the request stream the message bound is not counted, and the
+     * The wait for an upstream connection or HTTP/2 stream slot has its own, shorter bound
+     * ({@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}): an attempt whose wait reaches it is ended, without
+     * its request being sent or its body read, as the upstream's timeout
+     * ({@link DispatchStage.UpstreamConnectionWaitExpired}), which the breaker counts and the retry predicate
+     * refuses, so no connection wait runs into this timeout. On a gRPC call this timeout is therefore reached in
+     * two ways, both the upstream's: by an upstream holding a complete, half-closed request it does not answer;
+     * and by an upstream that stops taking data mid-request and does not take any more before this timeout.
+     * While that backpressure pauses the request stream the message bound is not counted, and the
      * pre-response deadline, which keeps counting, ends the call only once the upstream takes data again — then as
      * the upstream's timeout ({@link DispatchStage.UpstreamStalledRequest}) when the upstream had held the stream
      * without a break for at least the upstream stall threshold
@@ -88,33 +117,32 @@ public final class UpstreamGuards {
     }
 
     /**
-     * Builds the per-shape SmallRye Fault-Tolerance guard: a circuit breaker plus an upstream
-     * timeout, with retry added only for a route that enables it. Gateway rejections
-     * ({@link GatewayException}) are skipped by the breaker, so they never count as an upstream
-     * failure. Whether a failed attempt is retried is decided by the retry predicate
-     * {@link DispatchStage#allowsRetryAfter(Throwable)}, after the attempt failed and before any
+     * Builds the per-shape guard: SmallRye's retry, only for a route that enables it, around the gateway's
+     * {@link UpstreamCircuitBreaker}, around SmallRye's upstream timeout. The breaker opens once the failures
+     * among its last {@link #BREAKER_REQUEST_VOLUME_THRESHOLD upstream-decided calls} reach the
+     * {@link #BREAKER_FAILURE_RATIO failure ratio}, stays open for {@value #BREAKER_RESET_SECONDS} seconds and
+     * closes after {@link #BREAKER_SUCCESS_THRESHOLD successful trials}. A gateway rejection ({@link GatewayException}) is
+     * neutral to it: never counted as an upstream failure, never recorded as a success, and a half-open trial
+     * that ends in one gives its trial back. Whether a failed attempt is retried is decided by the retry
+     * predicate {@link DispatchStage#allowsRetryAfter(Throwable)}, after the attempt failed and before any
      * re-entry: it never retries a gateway rejection, and a retry it refuses is not recorded by the
      * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
      * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
      * length, a body that made no progress for the request-body idle timeout, a body still arriving at
      * the request-body deadline, a gRPC call whose client did not send its next complete request message
      * within the message bound ({@link DispatchStage.RequestMessageTimeout}), a gRPC request stream its client
-     * still held open at its pre-response deadline — reaches the guard as such a skipped {@link GatewayException} (see
-     * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records a
-     * skipped exception as a success; keeping these dispatches out of its window would need the guarded call
-     * to be restructured. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each attempt: it is
+     * still held open at its pre-response deadline, a client that left — reaches the guard as such a neutral
+     * {@link GatewayException} (see {@link DispatchStage}), so it neither dilutes the breaker's window nor
+     * closes a half-open breaker. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each attempt: it is
      * nested inside the retry, so a route that enables retry gives each of up to three attempts (two
      * retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The request-body idle
      * timeout, the request-body deadline and the gRPC message bound and pre-response deadline are shorter,
      * so a body the gateway is still waiting for ends as the request's, and the timeout ends an attempt the
-     * upstream holds up — on a gRPC call, one whose request stream has ended, one whose upstream stopped taking
-     * data mid-request, or one whose connection wait lasts this whole timeout. The gRPC dispatch itself refuses
-     * an attempt whose hand-over leaves less than the hand-over grace
-     * ({@link GrpcDispatchStage#GRPC_HAND_OVER_GRACE_MILLIS}) before the pre-response cap
-     * ({@link GrpcDispatchStage#GRPC_PRE_RESPONSE_CAP_MILLIS}), that is, one that obtains its connection later
-     * than 28 s after its start, as {@link DispatchStage.UpstreamConnectionTooLate}; a connection wait lasting
-     * the whole {@value #UPSTREAM_TIMEOUT_SECONDS} seconds without a hand-over is ended by this guard itself.
-     * A gRPC call whose pre-response deadline passed while its upstream's backpressure had the request stream
+     * upstream holds up — on a gRPC call, one whose request stream has ended or one whose upstream stopped
+     * taking data mid-request. An attempt whose wait for an upstream connection or HTTP/2 stream slot reaches
+     * the connection wait bound ({@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}) is ended well before
+     * then, unsent, as {@link DispatchStage.UpstreamConnectionWaitExpired}, which the retry predicate never
+     * retries. A gRPC call whose pre-response deadline passed while its upstream's backpressure had the request stream
      * paused, and had kept it paused without a break for at least the upstream stall threshold
      * ({@link GrpcDispatchStage#GRPC_UPSTREAM_STALL_MILLIS}) when the upstream takes data again, is ended then, as
      * {@link DispatchStage.UpstreamStalledRequest}; a shorter pause leaves the deadline the client's. All three are
@@ -124,32 +152,83 @@ public final class UpstreamGuards {
      * @return the new guard
      */
     public Guard guardFor(ResilienceShape shape) {
-        // The name identifies the breaker in its description and its transition log lines only. It is
-        // deliberately NOT registered as the breaker's SmallRye name: that registry is JVM-global and
-        // refuses a name it already holds, so a second edge built in the same JVM for the same upstream
-        // host:port — any edge whose upstream port happens to be reused — would fail every dispatch to
-        // it with a 502. The name carries every dimension of the ResilienceShape that keys
-        // RouteAssembler's guardCache — scheme, host, port, the forced-HTTP/2 flag and
-        // retryEnabled — because each distinct shape holds its own breaker: a gRPC route and an HTTP/1.1
-        // route to one host:port, or two routes differing only in retryEnabled, open and close
+        // The name identifies the breaker in its refusal, the SmallRye guards' descriptions and its
+        // transition log lines; it is registered nowhere, so two edges built in one JVM for the same
+        // upstream host:port never collide over it. The name carries every dimension of the
+        // ResilienceShape that keys RouteAssembler's guardCache — scheme, host, port, the forced-HTTP/2
+        // flag and retryEnabled — because each distinct shape holds its own breaker: a gRPC route and an
+        // HTTP/1.1 route to one host:port, or two routes differing only in retryEnabled, open and close
         // independently, and an operator reading a transition must be able to tell which one moved.
         UpstreamTarget target = shape.target();
         String name = target.scheme() + "://" + target.host() + ":" + target.port()
                 + ":h2=" + target.forcedHttp2() + ":retry=" + shape.retryEnabled();
-        Guard.Builder builder = Guard.create().withDescription("upstream-" + name);
-        builder.withCircuitBreaker()
-                .requestVolumeThreshold(20)
-                .failureRatio(0.5)
-                .delay(BREAKER_RESET_SECONDS, ChronoUnit.SECONDS)
-                .successThreshold(2)
-                .skipOn(GatewayException.class)
-                .onStateChange(state -> upstreamFailureMapper.recordBreakerTransition(name, state))
-                .done();
-        builder.withTimeout().duration(UPSTREAM_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done();
-        if (shape.retryEnabled()) {
-            builder.withRetry().maxRetries(2).delay(100, ChronoUnit.MILLIS)
-                    .whenException(DispatchStage::allowsRetryAfter).done();
+        String description = "upstream-" + name;
+        Guard timeout = Guard.create().withDescription(description)
+                .withTimeout().duration(UPSTREAM_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done()
+                .build();
+        Guard retry = shape.retryEnabled()
+                ? Guard.create().withDescription(description)
+                .withRetry().maxRetries(MAX_RETRIES).delay(RETRY_DELAY_MILLIS, ChronoUnit.MILLIS)
+                .whenException(DispatchStage::allowsRetryAfter).done()
+                .build()
+                : null;
+        UpstreamCircuitBreaker breaker = new UpstreamCircuitBreaker(BREAKER_REQUEST_VOLUME_THRESHOLD,
+                BREAKER_FAILURE_RATIO, Duration.ofSeconds(BREAKER_RESET_SECONDS), BREAKER_SUCCESS_THRESHOLD,
+                System::nanoTime, name, state -> upstreamFailureMapper.recordBreakerTransition(name, state));
+        return new UpstreamGuard(retry, breaker, timeout);
+    }
+
+    /**
+     * One shape's guard: SmallRye's retry, when the route enables it, around the gateway's breaker, around
+     * SmallRye's timeout — the order SmallRye applies its own strategies in, so the timeout bounds each attempt,
+     * each attempt is recorded by the breaker once, and an open breaker refuses each attempt.
+     * <p>
+     * Only the synchronous {@link #call(Callable, Class)} the dispatch uses is served. The other entry points,
+     * and an asynchronous result type ({@link CompletionStage}), are refused with an
+     * {@link UnsupportedOperationException}: the breaker records an outcome when the action returns, which for
+     * an asynchronous result is before the upstream decided anything. Immutable; safe to share.
+     *
+     * @since 1.0
+     */
+    private static final class UpstreamGuard implements Guard {
+
+        private static final String SYNCHRONOUS_ONLY =
+                "The upstream guard serves only the synchronous call(Callable, Class)";
+
+        private final @Nullable Guard retry;
+        private final UpstreamCircuitBreaker breaker;
+        private final Guard timeout;
+
+        private UpstreamGuard(@Nullable Guard retry, UpstreamCircuitBreaker breaker, Guard timeout) {
+            this.retry = retry;
+            this.breaker = breaker;
+            this.timeout = timeout;
         }
-        return builder.build();
+
+        @Override
+        public <T> T call(Callable<T> action, Class<T> type) throws Exception {
+            Objects.requireNonNull(action, "action");
+            Objects.requireNonNull(type, "type");
+            if (CompletionStage.class.isAssignableFrom(type)) {
+                throw new UnsupportedOperationException(SYNCHRONOUS_ONLY + ", not an asynchronous " + type.getName());
+            }
+            Callable<T> attempt = () -> breaker.call(() -> timeout.call(action, type));
+            return retry == null ? attempt.call() : retry.call(attempt, type);
+        }
+
+        @Override
+        public <T> T call(Callable<T> action, TypeLiteral<T> type) {
+            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
+        }
+
+        @Override
+        public <T> T get(Supplier<T> action, Class<T> type) {
+            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
+        }
+
+        @Override
+        public <T> T get(Supplier<T> action, TypeLiteral<T> type) {
+            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
+        }
     }
 }

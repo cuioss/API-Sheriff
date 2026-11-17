@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,6 +43,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -98,6 +100,7 @@ import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.PoolOptions;
+import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -127,6 +130,146 @@ class DispatchStageTest {
     private static Buffer grpcMessage(String payload) {
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
         return Buffer.buffer().appendByte((byte) 0).appendInt(bytes.length).appendBytes(bytes);
+    }
+
+    @Nested
+    @DisplayName("Departure decision — which signal came first, recorded when the attempt settles")
+    class DepartureDecision {
+
+        @Test
+        @DisplayName("An attempt that failed before the client departed keeps its own outcome")
+        void failureBeforeTheDepartureKeepsItsOutcome() throws Exception {
+            // Arrange
+            CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
+            CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            settle(pending, departed, departedAtSettlement,
+                    new ConnectException(Generators.nonEmptyStrings().next()));
+            departed.complete(Generators.nonEmptyStrings().next());
+
+            // Act
+            boolean departureFirst = DispatchStage.departureEndedWait(pending, departed, departedAtSettlement);
+
+            // Assert
+            assertFalse(departureFirst,
+                    "an upstream failure that settled the attempt before the departure stays the upstream's");
+        }
+
+        @Test
+        @DisplayName("A client that departed before a fast connection failure keeps the departure")
+        void departureBeforeAFastFailureKeepsTheDeparture() throws Exception {
+            // Arrange
+            CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
+            CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            departed.complete(Generators.nonEmptyStrings().next());
+            settle(pending, departed, departedAtSettlement,
+                    new ConnectException(Generators.nonEmptyStrings().next()));
+
+            // Act
+            boolean departureFirst = DispatchStage.departureEndedWait(pending, departed, departedAtSettlement);
+
+            // Assert
+            assertTrue(departureFirst,
+                    "the client left before the connection failure settled the attempt, even before the wait began");
+        }
+
+        @Test
+        @DisplayName("An expiry with no departure signalled is the attempt's own outcome")
+        void expiryWithoutDepartureIsTheAttemptsOutcome() throws Exception {
+            // Arrange
+            CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
+            CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            settle(pending, departed, departedAtSettlement,
+                    new TimeoutException(Generators.nonEmptyStrings().next()));
+
+            // Act
+            boolean departureFirst = DispatchStage.departureEndedWait(pending, departed, departedAtSettlement);
+
+            // Assert
+            assertFalse(departureFirst, "an attempt that settled with no departure signalled keeps its own outcome");
+            assertFalse(departed.isDone(), "the decision completes no signal");
+        }
+
+        @Test
+        @DisplayName("A waiting thread keeps the departure when the expiry settles the attempt right after it")
+        void departureDuringTheWaitBeforeTheExpiryWins() throws Exception {
+            // Arrange
+            CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
+            CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            try (ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<Boolean> decision = waiter.submit(
+                        () -> DispatchStage.departureEndedWait(pending, departed, departedAtSettlement));
+                try {
+                    awaitWaiting(departed);
+
+                    // Act
+                    departed.complete(Generators.nonEmptyStrings().next());
+                    settle(pending, departed, departedAtSettlement,
+                            new TimeoutException(Generators.nonEmptyStrings().next()));
+
+                    // Assert
+                    assertTrue(Awaits.connect(decision, "the departure decision"),
+                            "the departure came before the expiry settled the attempt");
+                } finally {
+                    endDecision(decision);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("A waiting thread keeps the attempt's outcome when the client departs right after it settled")
+        void expiryDuringTheWaitBeforeTheDepartureKeepsItsOutcome() throws Exception {
+            // Arrange
+            CompletableFuture<HttpClientResponse> pending = new CompletableFuture<>();
+            CompletableFuture<String> departed = new CompletableFuture<>();
+            AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
+            try (ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<Boolean> decision = waiter.submit(
+                        () -> DispatchStage.departureEndedWait(pending, departed, departedAtSettlement));
+                try {
+                    awaitWaiting(departed);
+
+                    // Act
+                    settle(pending, departed, departedAtSettlement,
+                            new TimeoutException(Generators.nonEmptyStrings().next()));
+                    departed.complete(Generators.nonEmptyStrings().next());
+
+                    // Assert
+                    assertFalse(Awaits.connect(decision, "the departure decision"),
+                            "the attempt settled before the client departed, so its outcome stands");
+                } finally {
+                    endDecision(decision);
+                }
+            }
+        }
+
+        /**
+         * Settles {@code pending} with {@code failure} the way the response chain does: the order is recorded
+         * first, by the chain's last step, and only then does the response the dispatch waits on settle.
+         */
+        private static void settle(CompletableFuture<HttpClientResponse> pending, CompletableFuture<String> departed,
+                AtomicReference<@Nullable Boolean> departedAtSettlement, Throwable failure) {
+            DispatchStage.recordSettlement(departedAtSettlement, departed);
+            pending.completeExceptionally(failure);
+        }
+
+        /** Waits until the decision is blocked on {@code departed}, its wait in place on both signals. */
+        private static void awaitWaiting(CompletableFuture<?> departed) throws TimeoutException {
+            Awaits.until(() -> departed.getNumberOfDependents() > 0, "the decision to wait on the departure",
+                    Awaits.TEARDOWN_CEILING_SECONDS);
+        }
+
+        /**
+         * Interrupts a decision still waiting on its signals, which a failed setup or assertion leaves behind:
+         * the executor's close waits for every task, so the test fails instead of hanging its fork. A decision
+         * that already returned is left as it is.
+         */
+        private static void endDecision(Future<Boolean> decision) {
+            decision.cancel(true);
+        }
     }
 
     /**
@@ -159,8 +302,7 @@ class DispatchStageTest {
             Route route = route(id, upstream, false);
             return new Routed(route, new DispatchStage(clientsFor(route, client, guard), BODY_CAP,
                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, messageTimeoutMillis,
-                    DispatchStage.NO_PRE_RESPONSE_CAP, DispatchStage.NO_HAND_OVER_GRACE, DispatchStage.NO_UPSTREAM_STALL,
-                    failureMapper));
+                    DispatchStage.NO_PRE_RESPONSE_CAP, DispatchStage.NO_UPSTREAM_STALL, failureMapper));
         }
 
         private static Route route(String id, ResolvedUpstream upstream, boolean retryEnabled) {
@@ -245,8 +387,6 @@ class DispatchStageTest {
 
         private static final long IDLE_TIMEOUT_MILLIS = 300L;
         private static final long DEADLINE_MILLIS = 6 * IDLE_TIMEOUT_MILLIS;
-        /** A hand-over grace a pre-response deadline accepts: positive and shorter than the deadline. */
-        private static final long GRACE_MILLIS = IDLE_TIMEOUT_MILLIS / 3;
         /** An upstream stall threshold a pre-response deadline accepts: positive and shorter than the deadline. */
         private static final long STALL_MILLIS = IDLE_TIMEOUT_MILLIS;
 
@@ -276,7 +416,7 @@ class DispatchStageTest {
                             DEADLINE_MILLIS, failureMapper)),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, IDLE_TIMEOUT_MILLIS,
-                                    DEADLINE_MILLIS, GRACE_MILLIS, STALL_MILLIS, failureMapper),
+                                    DEADLINE_MILLIS, STALL_MILLIS, failureMapper),
                             "a message bound carries the deadline as the pre-response deadline, held to a cap"),
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                             DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, failureMapper)));
@@ -293,26 +433,10 @@ class DispatchStageTest {
         void refusesAPreResponseCapShorterThanTheDeadline(long shortOfTheDeadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS - shortOfTheDeadlineMillis, GRACE_MILLIS, STALL_MILLIS,
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS - shortOfTheDeadlineMillis, STALL_MILLIS,
                             failureMapper));
 
             assertTrue(refused.getMessage().contains("pre-response deadline needs a cap"), refused::getMessage);
-        }
-
-        /**
-         * A hand-over grace that is not positive would dispatch a hand-over just short of the cap with a deadline
-         * too short for an end the client already sent to arrive; one no shorter than the deadline would refuse
-         * even a prompt hand-over.
-         */
-        @ParameterizedTest(name = "a grace of {0} ms")
-        @ValueSource(longs = {DispatchStage.NO_HAND_OVER_GRACE, -1L, DEADLINE_MILLIS})
-        @DisplayName("refuses a pre-response deadline with a hand-over grace that is not positive or not shorter than itself")
-        void refusesAPreResponseGraceNotPositiveOrNotShorterThanTheDeadline(long graceMillis) {
-            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                    () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, graceMillis, STALL_MILLIS, failureMapper));
-
-            assertTrue(refused.getMessage().contains("positive hand-over grace"), refused::getMessage);
         }
 
         /**
@@ -325,7 +449,7 @@ class DispatchStageTest {
         void refusesAPreResponseStallThresholdNotPositiveOrNotShorterThanTheDeadline(long stallMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, GRACE_MILLIS, stallMillis, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, stallMillis, failureMapper));
 
             assertTrue(refused.getMessage().contains("positive upstream stall threshold"), refused::getMessage);
         }
@@ -337,24 +461,9 @@ class DispatchStageTest {
         void refusesAStallThresholdWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
-                            IDLE_TIMEOUT_MILLIS, DispatchStage.NO_PRE_RESPONSE_CAP, DispatchStage.NO_HAND_OVER_GRACE,
-                            STALL_MILLIS, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DispatchStage.NO_PRE_RESPONSE_CAP, STALL_MILLIS, failureMapper));
 
             assertTrue(refused.getMessage().contains("stall threshold needs a pre-response deadline"),
-                    refused::getMessage);
-        }
-
-        /** A grace with no pre-response deadline to hold would be silently ignored, so it is refused. */
-        @ParameterizedTest(name = "idle timeout {0} ms, deadline {1} ms")
-        @CsvSource({"300, 1800", "0, 0"})
-        @DisplayName("refuses a hand-over grace on a stage that arms no pre-response deadline")
-        void refusesAGraceWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
-            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                    () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
-                            IDLE_TIMEOUT_MILLIS, DispatchStage.NO_PRE_RESPONSE_CAP, GRACE_MILLIS,
-                            DispatchStage.NO_UPSTREAM_STALL, failureMapper));
-
-            assertTrue(refused.getMessage().contains("hand-over grace needs a pre-response deadline"),
                     refused::getMessage);
         }
 
@@ -365,8 +474,7 @@ class DispatchStageTest {
         void refusesACapWithoutAPreResponseDeadline(long idleTimeoutMillis, long deadlineMillis) {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, idleTimeoutMillis, deadlineMillis,
-                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, DispatchStage.NO_HAND_OVER_GRACE,
-                            DispatchStage.NO_UPSTREAM_STALL, failureMapper));
+                            IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, DispatchStage.NO_UPSTREAM_STALL, failureMapper));
 
             assertTrue(refused.getMessage().contains("needs a pre-response deadline"), refused::getMessage);
         }
@@ -1582,7 +1690,7 @@ class DispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new DispatchStage(noClients, BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
                             DispatchStage.NO_BODY_DEADLINE, -1L, DispatchStage.NO_PRE_RESPONSE_CAP,
-                            DispatchStage.NO_HAND_OVER_GRACE, DispatchStage.NO_UPSTREAM_STALL, failureMapper));
+                            DispatchStage.NO_UPSTREAM_STALL, failureMapper));
 
             assertAll("the message bound of a stage",
                     () -> assertTrue(refused.getMessage().contains("messageTimeoutMillis"),
@@ -1590,7 +1698,7 @@ class DispatchStageTest {
                     () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
                                     DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE,
                                     DispatchStage.NO_FIRST_MESSAGE_TIMEOUT, DispatchStage.NO_PRE_RESPONSE_CAP,
-                                    DispatchStage.NO_HAND_OVER_GRACE, DispatchStage.NO_UPSTREAM_STALL, failureMapper),
+                                    DispatchStage.NO_UPSTREAM_STALL, failureMapper),
                             "the unarmed bound is a valid bound"));
         }
 
@@ -3661,8 +3769,10 @@ class DispatchStageTest {
                 request.body().onSuccess(body -> request.response().end("ok"));
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
 
-            // The breaker rules of the production guard (UpstreamGuards#guardFor), with a window
-            // small enough to fill within one test.
+            // A test-local SmallRye guard whose breaker skips a gateway rejection, with a window small enough to
+            // fill within one test: it shows only that such a rejection is not counted as a failure. It is not the
+            // production guard, whose own UpstreamCircuitBreaker records a gateway rejection as neutral where
+            // skipOn records it as a success; UpstreamCircuitBreakerTest and UpstreamGuardsTest bind that outcome.
             guard = Guard.create()
                     .withCircuitBreaker()
                     .requestVolumeThreshold(REQUEST_VOLUME_THRESHOLD)
@@ -3885,11 +3995,14 @@ class DispatchStageTest {
     }
 
     /**
-     * What the circuit breaker records for a dispatch whose retry is not taken. The guard has the
-     * production shape — a breaker skipping {@link GatewayException}, a timeout inside it and a
-     * 1 + 2 retry outside it, deciding through the production retry predicate
-     * {@link DispatchStage#allowsRetryAfter(Throwable)} — over a retry-enabled route, and every
-     * breaker outcome is counted through the breaker's own success and failure callbacks.
+     * What the circuit breaker records for a dispatch whose retry is not taken. The guard is a test-local
+     * SmallRye guard in the production order — a breaker skipping {@link GatewayException}, a timeout inside it
+     * and a 1 + 2 retry outside it, deciding through the production retry predicate
+     * {@link DispatchStage#allowsRetryAfter(Throwable)} — over a retry-enabled route, and every breaker outcome
+     * is counted through the breaker's own success and failure callbacks. Its breaker is not the production one:
+     * the gateway's own {@link UpstreamCircuitBreaker} records a gateway rejection as neutral, where
+     * {@code skipOn} records it as a success; {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest}
+     * bind that outcome. The cases here end in upstream failures, which both breakers count alike.
      */
     @Nested
     @DisplayName("circuit-breaker accounting of a vetoed retry")
@@ -3967,7 +4080,7 @@ class DispatchStageTest {
                             "the retry that is not taken must not be recorded by the breaker at all"));
         }
 
-        /** A retry-enabled proxy route to {@code port} on loopback, guarded by the production-shaped guard. */
+        /** A retry-enabled proxy route to {@code port} on loopback, guarded by the test-local guard. */
         private Routed route(int port) {
             return Routed.of("vetoed-retry", new ResolvedUpstream("http", LoopbackHost.ADDRESS, port, ""), true,
                     upstreamClient, guard, DispatchStage.NO_BODY_IDLE_TIMEOUT,
@@ -4298,7 +4411,12 @@ class DispatchStageTest {
                     .build();
         }
 
-        /** The breaker rules of the production guard (UpstreamGuards#guardFor) inside a patient timeout. */
+        /**
+         * A test-local SmallRye guard: a breaker that skips a {@link GatewayException}, inside a patient timeout. It
+         * shows only that a gateway rejection is not counted as a failure; it is not the production guard, whose
+         * own {@link UpstreamCircuitBreaker} records a gateway rejection as neutral where {@code skipOn} records it
+         * as a success. {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest} bind that outcome.
+         */
         private Guard breakerGuard() {
             return Guard.create()
                     .withCircuitBreaker()
@@ -4530,6 +4648,147 @@ class DispatchStageTest {
         private void abandon(HttpServerRequest request, Throwable failure) {
             relayFailure.set(failure);
             request.connection().close();
+        }
+    }
+
+    /**
+     * The whole-body deadline of an HTTP dispatch is counted from the start of the attempt, not from the moment
+     * the attempt hands its body over, so the wait for the upstream connection is charged to it. That is a
+     * decision, not an accident: the guard's timeout is counted from the start of the attempt as well, and a
+     * deadline counted from the hand-over could run past it and end a slow body as the upstream's timeout. The
+     * case stands in for a slow upstream connection with a client that hands the dispatch its upstream request
+     * only {@value #CONNECTION_WAIT_MILLIS} ms after the dispatch asked for it, behind a client still sending its
+     * body in chunks well inside the request-body idle timeout, to an upstream that reads every byte and never
+     * answers.
+     */
+    @Nested
+    @DisplayName("whole-body deadline of an HTTP dispatch behind a slow upstream connection")
+    class BodyDeadlineBehindASlowConnection {
+
+        /** The request-body idle timeout: five chunk gaps, so the idle clock never ends the body. */
+        private static final long IDLE_TIMEOUT_MILLIS = 500L;
+        /** The shortened whole-body deadline, armed through the public constructor of an HTTP dispatch. */
+        private static final long DEADLINE_MILLIS = 1_500L;
+        /**
+         * How long after the dispatch asked for it the upstream request is handed over: shorter than the deadline,
+         * so the body is handed over before the deadline passes, and long enough that a deadline counted from the
+         * hand-over would pass a whole {@value #CONNECTION_WAIT_MILLIS} ms later than one counted from the start.
+         */
+        private static final long CONNECTION_WAIT_MILLIS = 1_000L;
+        /** The gap between the client's body chunks: a fifth of the idle timeout. */
+        private static final long CHUNK_GAP_MILLIS = IDLE_TIMEOUT_MILLIS / 5;
+        /** The guard's timeout: far past either reading of the deadline, so only the deadline can end the call. */
+        private static final long GUARD_TIMEOUT_SECONDS = 30L;
+        /** The marker of a slow client that never handed an upstream request over. */
+        private static final long NOT_HANDED_OVER = Long.MIN_VALUE;
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpClient upstreamClient;
+        /** Every body byte that reached the stub upstream. */
+        private final AtomicLong upstreamBodyBytes = new AtomicLong();
+        /** The {@link System#nanoTime()} reading at which the slow client began handing the upstream request over. */
+        private final AtomicLong handedOverAtNanos = new AtomicLong(NOT_HANDED_OVER);
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            // The stub upstream reads every body byte it is sent and never answers.
+            upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.handler(chunk -> upstreamBodyBytes.addAndGet(chunk.length())))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            upstreamClient = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the stub upstream to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("a body still arriving is ended at the deadline counted from the start of the attempt, not from the hand-over")
+        void bodyStillArrivingIsEndedAtTheDeadlineCountedFromTheStartOfTheAttempt() throws Exception {
+            Routed routed = Routed.of("slow-connection",
+                    new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""), false,
+                    slowToConnect(upstreamClient),
+                    Guard.create().withTimeout().duration(GUARD_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done().build(),
+                    IDLE_TIMEOUT_MILLIS, DEADLINE_MILLIS, new UpstreamFailureMapper(new GatewayEventCounter()));
+            TestReadStream body = new TestReadStream();
+            AtomicLong endedAtNanos = new AtomicLong();
+            long started = System.nanoTime();
+            Future<HttpClientResponse> dispatched = virtualThreadExecutor.submit(() -> {
+                try {
+                    return routed.dispatch(HttpMethod.POST, "/upload", Map.of(), body,
+                            DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH));
+                } finally {
+                    endedAtNanos.set(System.nanoTime());
+                }
+            });
+            long mostChunks = 2 * (CONNECTION_WAIT_MILLIS + DEADLINE_MILLIS) / CHUNK_GAP_MILLIS;
+            for (long chunk = 0; !dispatched.isDone() && chunk < mostChunks; chunk++) {
+                Awaits.connect(pause(CHUNK_GAP_MILLIS), "the gap before the next body chunk");
+                body.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+            }
+
+            Throwable ended = assertThrows(ExecutionException.class,
+                    () -> dispatched.get(Awaits.CONNECT_CEILING_SECONDS, TimeUnit.SECONDS),
+                    "a body that never ends is not answered").getCause();
+            long handedOverAfterMillis = TimeUnit.NANOSECONDS.toMillis(handedOverAtNanos.get() - started);
+            long endedAfterMillis = TimeUnit.NANOSECONDS.toMillis(endedAtNanos.get() - started);
+            assertAll("a body still arriving behind a %d ms upstream connection wait, its deadline %d ms"
+                    .formatted(CONNECTION_WAIT_MILLIS, DEADLINE_MILLIS),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, ended,
+                            () -> "the body is ended at its deadline as the client's, not by the guard: " + ended),
+                    () -> assertEquals(EventType.REQUEST_BODY_TIMEOUT,
+                            assertInstanceOf(GatewayException.class, ended).getEventType()),
+                    () -> assertNotEquals(NOT_HANDED_OVER, handedOverAtNanos.get(),
+                            "the slow client handed the upstream request over"),
+                    () -> assertTrue(handedOverAfterMillis >= CONNECTION_WAIT_MILLIS,
+                            () -> "the hand-over came only after the connection wait, but after "
+                                    + handedOverAfterMillis + " ms"),
+                    () -> assertTrue(upstreamBodyBytes.get() > 0,
+                            "the body was handed over before its deadline and reached the upstream"),
+                    () -> assertTrue(endedAfterMillis >= DEADLINE_MILLIS,
+                            () -> "nothing ends the body before its deadline, but it ended after " + endedAfterMillis
+                                    + " ms"),
+                    () -> assertTrue(endedAfterMillis < CONNECTION_WAIT_MILLIS + DEADLINE_MILLIS,
+                            () -> "the deadline is counted from the start of the attempt: counted from the hand-over"
+                                    + " it would not pass before " + (CONNECTION_WAIT_MILLIS + DEADLINE_MILLIS)
+                                    + " ms, but the body ended after " + endedAfterMillis + " ms"));
+        }
+
+        /**
+         * {@code delegate}, slow to connect: every upstream request it is asked for is handed to the dispatch
+         * only {@value #CONNECTION_WAIT_MILLIS} ms after the dispatch asked for it, as a pool or a dial that takes
+         * that long would hand it over.
+         */
+        private HttpClient slowToConnect(HttpClient delegate) {
+            return (HttpClient) Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                    new Class<?>[]{HttpClient.class}, (_, method, args) -> {
+                        if ("request".equals(method.getName()) && args != null && args.length == 1
+                                && args[0] instanceof RequestOptions options) {
+                            Promise<Void> connected = Promise.promise();
+                            vertx.setTimer(CONNECTION_WAIT_MILLIS, _ -> {
+                                handedOverAtNanos.set(System.nanoTime());
+                                connected.complete();
+                            });
+                            return connected.future().compose(_ -> delegate.request(options));
+                        }
+                        return invokeOn(delegate, method, args);
+                    });
+        }
+
+        /** A future completed once {@code millis} have passed. */
+        private CompletableFuture<Void> pause(long millis) {
+            CompletableFuture<Void> passed = new CompletableFuture<>();
+            vertx.setTimer(millis, _ -> passed.complete(null));
+            return passed;
         }
     }
 

@@ -156,8 +156,7 @@ class GrpcDispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper, messageTimeoutMillis,
                             GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
-                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS,
-                            GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
 
             assertTrue(refused.getMessage().contains("messageTimeoutMillis"), "the refusal names the bound");
         }
@@ -177,7 +176,7 @@ class GrpcDispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper, messageTimeoutMillis,
                             messageTimeoutMillis + pastTheBoundMillis, GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS,
-                            GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS, GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
+                            GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
 
             assertTrue(refused.getMessage().contains("preResponseDeadlineMillis"), "the refusal names the deadline");
         }
@@ -196,31 +195,9 @@ class GrpcDispatchStageTest {
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper,
                             GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS, deadlineMillis, deadlineMillis - 1,
-                            GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS, GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
-
-            assertTrue(refused.getMessage().contains("preResponseCapMillis"), "the refusal names the cap");
-        }
-
-        /**
-         * A hand-over grace that is not positive would let a hand-over just short of the cap be dispatched with
-         * a deadline too short for an end the client already sent to be delivered; one no shorter than the
-         * deadline would refuse even a prompt hand-over.
-         */
-        @ParameterizedTest(name = "a grace of {0} ms")
-        @ValueSource(longs = {DispatchStage.NO_HAND_OVER_GRACE, -1L, GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS})
-        @DisplayName("refuses a hand-over grace that is not positive or not shorter than the pre-response deadline")
-        void refusesAGraceNotPositiveOrNotShorterThanTheDeadline(long handOverGraceMillis) {
-            UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
-            UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
-
-            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                    () -> new GrpcDispatchStage(noClients, 1024L, failureMapper,
-                            GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS,
-                            GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
-                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, handOverGraceMillis,
                             GrpcDispatchStage.GRPC_UPSTREAM_STALL_MILLIS));
 
-            assertTrue(refused.getMessage().contains("handOverGraceMillis"), "the refusal names the grace");
+            assertTrue(refused.getMessage().contains("preResponseCapMillis"), "the refusal names the cap");
         }
 
         /**
@@ -239,8 +216,7 @@ class GrpcDispatchStageTest {
                     () -> new GrpcDispatchStage(noClients, 1024L, failureMapper,
                             GrpcDispatchStage.GRPC_MESSAGE_TIMEOUT_MILLIS,
                             GrpcDispatchStage.GRPC_PRE_RESPONSE_DEADLINE_MILLIS,
-                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS,
-                            upstreamStallMillis));
+                            GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, upstreamStallMillis));
 
             assertTrue(refused.getMessage().contains("upstreamStallMillis"), "the refusal names the stall threshold");
         }
@@ -250,10 +226,13 @@ class GrpcDispatchStageTest {
          * abort before the guard's timeout could end it as the upstream's. Both are counted from the hand-over,
          * the guard's timeout from the start of the attempt, so the deadline alone cannot promise that; the cap
          * does: the deadline never passes later than the cap after the start of the attempt, and the cap is
-         * shorter than the guard's timeout, which starts at the same moment.
+         * shorter than the guard's timeout, which starts at the same moment. The connection wait bound, counted
+         * from the start of the attempt as well, keeps every hand-over far enough ahead of the cap that the
+         * client always has at least nineteen seconds to send in, so no attempt needs refusing for handing its
+         * body over too late.
          */
         @Test
-        @DisplayName("the production message bound is below the pre-response deadline, the deadline within the cap, the cap below the guard's timeout, and the grace one second")
+        @DisplayName("the production message bound is below the pre-response deadline, the deadline within the cap, the cap below the guard's timeout, and the connection wait bound at least nineteen seconds short of the cap")
         void messageBoundDeadlineAndCapAreBelowTheGuardTimeout() {
             long guardMillis = TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS);
 
@@ -269,8 +248,14 @@ class GrpcDispatchStageTest {
                     () -> assertEquals(GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS, guardMillis - 1_000L,
                             () -> "the pre-response cap must pass one second before the guard's "
                                     + UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS + " s timeout"),
-                    () -> assertEquals(1_000L, GrpcDispatchStage.GRPC_HAND_OVER_GRACE_MILLIS,
-                            "a dispatched attempt keeps at least one second between its hand-over and its deadline"));
+                    () -> assertTrue(GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS
+                            - DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS >= 19_000L,
+                            () -> "every production hand-over must keep at least 19000 ms before the cap, but the cap of "
+                                    + GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS + " ms less the connection wait bound of "
+                                    + DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS + " ms leaves "
+                                    + (GrpcDispatchStage.GRPC_PRE_RESPONSE_CAP_MILLIS
+                                    - DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS)
+                                    + " ms"));
         }
 
         /**
@@ -484,15 +469,14 @@ class GrpcDispatchStageTest {
      * threshold when the deadline was acted on, which ends the call as the upstream's timeout once the upstream
      * reads again. The brief flow-control pauses of a client sending faster than a healthy upstream reads stay far
      * below that threshold, so such a client's deadline stays its own.
-     * That timeout is reached by an upstream holding a complete, half-closed request it does not answer, and by
-     * a connection wait that itself lasts it; an attempt whose connection wait leaves less than the hand-over
-     * grace before the cap, or reaches the cap, is ended as the same upstream timeout without its body being
-     * read. The cases on the two bounds build the stage with the bound shortened to
-     * {@value #MESSAGE_BOUND_MILLIS} ms, the deadline to {@value #DEADLINE_MILLIS} ms, the cap to
-     * {@value #DEADLINE_CAP_MILLIS} ms, the grace to {@value #HAND_OVER_GRACE_MILLIS} ms and the stall threshold to
+     * That timeout is reached by an upstream holding a complete, half-closed request it does not answer. The cases
+     * on the two bounds build the stage with the bound shortened to {@value #MESSAGE_BOUND_MILLIS} ms, the deadline
+     * to {@value #DEADLINE_MILLIS} ms, the cap to {@value #DEADLINE_CAP_MILLIS} ms and the stall threshold to
      * {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all under the {@value #BREAKER_GUARD_MILLIS} ms timeout of a
-     * guard
-     * carrying the production breaker rules, beside a matched control whose upstream reads every call's one
+     * test-local SmallRye guard whose breaker skips a gateway rejection — it shows only that such a rejection is not
+     * counted as a failure; the production guard's own breaker records it as neutral, which
+     * {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest} bind — beside a matched control whose
+     * upstream reads every call's one
      * complete message to the half-close and never answers. The connection-wait cases stand in for a slow
      * upstream connection with a client that hands the dispatch its upstream request only a set time after the
      * dispatch asked for it.
@@ -559,11 +543,6 @@ class GrpcDispatchStageTest {
          */
         private static final long DEADLINE_CAP_MILLIS = 1_600L;
         /**
-         * The test-only hand-over grace: an attempt handing its body over with less than this left before the
-         * cap — later than {@value #DEADLINE_CAP_MILLIS} ms less this after its start — is refused unsent.
-         */
-        private static final long HAND_OVER_GRACE_MILLIS = 100L;
-        /**
          * The test-only upstream stall threshold: shorter than the shortened deadline, as the production threshold
          * is, and far above the flow-control pauses of a client outpacing the {@value #SLOW_READER} upstream — a
          * few tens of milliseconds each — while the {@value #STOPS_READING} upstream holds its stream for more than
@@ -586,18 +565,11 @@ class GrpcDispatchStageTest {
          */
         private static final int MOST_OUTPACING_MESSAGES = 60;
         /**
-         * A connection wait longer than the shortened deadline and shorter than the cap less the grace: a
-         * deadline counted from the start of the attempt would already have passed at the hand-over, the one
-         * counted from the hand-over is held to the cap, and the hand-over still leaves more than the grace.
+         * A connection wait longer than the shortened deadline and shorter than the cap: a deadline counted from
+         * the start of the attempt would already have passed at the hand-over, and the one counted from the
+         * hand-over is held to the cap.
          */
         private static final long SLOW_CONNECTION_MILLIS = 1_350L;
-        /**
-         * A connection wait inside the grace window: past the cap less the grace, so less than the grace is left
-         * before the cap at the hand-over, and still short of the cap itself.
-         */
-        private static final long INSIDE_THE_GRACE_CONNECTION_MILLIS = 1_520L;
-        /** A connection wait past the cap and short of the breaker guard's timeout. */
-        private static final long PAST_THE_CAP_CONNECTION_MILLIS = 1_700L;
         /** The gap between a steady sender's complete messages: a quarter of the shortened bound. */
         private static final long STEADY_GAP_MILLIS = MESSAGE_BOUND_MILLIS / 4;
         /** The request-volume threshold of the breaker guard: this many counted failures open it. */
@@ -1564,96 +1536,6 @@ class GrpcDispatchStageTest {
         }
 
         /**
-         * An upstream connection that took {@value #PAST_THE_CAP_CONNECTION_MILLIS} ms — past the cap: the
-         * client is given no time to send anything before the guard's timeout. The attempt is ended the moment
-         * it obtains its connection, as the upstream's timeout, before its request is sent or its body read, and
-         * the breaker counts it — however complete the client's request was.
-         */
-        @Test
-        @DisplayName("a connection obtained only past the cap ends the call at once as the upstream's timeout, unsent, counted by the breaker")
-        void connectionPastTheCapIsTheUpstreamsTimeoutAndOpensTheBreaker() {
-            Route route = grpcRoute();
-            GrpcDispatchStage stage = boundedStage(route, slowToConnect(PAST_THE_CAP_CONNECTION_MILLIS),
-                    breakerGuard());
-            List<GatewayException> ended = new ArrayList<>();
-            List<Long> endedAfterMillis = new ArrayList<>();
-
-            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
-                PushedBody halfClosed = new PushedBody();
-                halfClosed.push("first");
-                halfClosed.end();
-                long started = System.nanoTime();
-                ended.add(assertThrows(GatewayException.class,
-                        () -> stage.dispatch(route, HttpMethod.POST, NEVER_ANSWERS, Map.of(), halfClosed, -1L),
-                        "a call whose connection came past the cap is not answered"));
-                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
-            }
-
-            assertAll("calls whose upstream connection came only past the cap",
-                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, EventType.UPSTREAM_TIMEOUT),
-                            ended.stream().map(GatewayException::getEventType).toList(),
-                            () -> "each call is the upstream's timeout, never the client's deadline: " + ended),
-                    () -> assertTrue(ended.stream().allMatch(
-                                    timeout -> timeout.getCause() instanceof DispatchStage.UpstreamConnectionTooLate),
-                            () -> "each call was ended at its hand-over, not by the guard's own timeout: " + ended),
-                    () -> assertTrue(endedAfterMillis.stream().allMatch(
-                                    millis -> millis >= PAST_THE_CAP_CONNECTION_MILLIS && millis < BREAKER_GUARD_MILLIS),
-                            () -> "each call ends when its connection came, before the guard's timeout: "
-                                    + endedAfterMillis),
-                    () -> assertEquals(0, upstreamCalls.get(), "no request was ever sent to the upstream"),
-                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), breakerTransitions,
-                            "the breaker counts the upstream timeouts and opens at its threshold"));
-        }
-
-        /**
-         * An upstream connection that took {@value #INSIDE_THE_GRACE_CONNECTION_MILLIS} ms — short of the cap, but
-         * leaving less than the hand-over grace before it — behind a client that had already sent its whole
-         * request and half-closed. Dispatched, such an attempt would get a deadline of a few milliseconds, which
-         * can pass before the client's buffered end crosses from the inbound stream to the dispatch, and end the
-         * call as the client's REQUEST_BODY_TIMEOUT, which the breaker skips: a connection stall charged to a
-         * client that had finished. The attempt is instead refused the moment it obtains its connection, as the
-         * upstream's timeout, unsent, and the breaker counts it.
-         */
-        @Test
-        @DisplayName("a connection obtained inside the grace before the cap ends a half-closed call at once as the upstream's timeout, unsent, counted by the breaker")
-        void connectionInsideTheGraceBeforeTheCapIsTheUpstreamsTimeoutAndOpensTheBreaker() {
-            Route route = grpcRoute();
-            GrpcDispatchStage stage = boundedStage(route, slowToConnect(INSIDE_THE_GRACE_CONNECTION_MILLIS),
-                    breakerGuard());
-            List<GatewayException> ended = new ArrayList<>();
-            List<Long> endedAfterMillis = new ArrayList<>();
-
-            for (int call = 0; call < BREAKER_THRESHOLD; call++) {
-                PushedBody halfClosed = new PushedBody();
-                halfClosed.push("first");
-                halfClosed.end();
-                long started = System.nanoTime();
-                ended.add(assertThrows(GatewayException.class,
-                        () -> stage.dispatch(route, HttpMethod.POST, NEVER_ANSWERS, Map.of(), halfClosed, -1L),
-                        "a call whose connection came inside the grace is not answered"));
-                endedAfterMillis.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
-            }
-
-            assertAll("half-closed calls whose upstream connection came inside the grace before the cap",
-                    () -> assertTrue(ended.stream().noneMatch(DispatchStage.RequestBodyDeadlineExceeded.class::isInstance),
-                            () -> "the connection stall is never charged to the client as its deadline: " + ended),
-                    () -> assertEquals(Collections.nCopies(BREAKER_THRESHOLD, EventType.UPSTREAM_TIMEOUT),
-                            ended.stream().map(GatewayException::getEventType).toList(),
-                            () -> "each call is the upstream's timeout: " + ended),
-                    () -> assertTrue(ended.stream().allMatch(
-                                    timeout -> timeout.getCause() instanceof DispatchStage.UpstreamConnectionTooLate),
-                            () -> "each call was refused at its hand-over, not dispatched: " + ended),
-                    () -> assertTrue(endedAfterMillis.stream().allMatch(
-                                    millis -> millis >= INSIDE_THE_GRACE_CONNECTION_MILLIS && millis < BREAKER_GUARD_MILLIS),
-                            () -> "each call ends when its connection came, before the guard's timeout: "
-                                    + endedAfterMillis),
-                    () -> assertEquals(0, upstreamCalls.get(), "no request was ever sent to the upstream"),
-                    () -> assertEquals(List.of(), upstreamFrames, "no message reached the upstream"),
-                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), breakerTransitions,
-                            "the breaker counts the upstream timeouts and opens at its threshold"));
-        }
-
-        /**
          * A request stream that ends without any message — END_STREAM only — is not an idle client. The
          * stub upstream answers {@value #LATE_ANSWER} three bounds after the stream ended — as long as the
          * shortened deadline — so the call is still waiting for its answer when the bound passes: only the end
@@ -1719,9 +1601,8 @@ class GrpcDispatchStageTest {
         /**
          * A stage whose message bound is shortened to {@value #MESSAGE_BOUND_MILLIS} ms, whose pre-response
          * deadline is shortened to {@value #DEADLINE_MILLIS} ms, whose pre-response cap is shortened to
-         * {@value #DEADLINE_CAP_MILLIS} ms, whose hand-over grace is shortened to {@value #HAND_OVER_GRACE_MILLIS} ms
-         * and whose upstream stall threshold is shortened to {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all
-         * below {@value #BREAKER_GUARD_MILLIS} ms.
+         * {@value #DEADLINE_CAP_MILLIS} ms and whose upstream stall threshold is shortened to
+         * {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all below {@value #BREAKER_GUARD_MILLIS} ms.
          */
         private GrpcDispatchStage boundedStage(Route route, Guard guard) {
             return boundedStage(route, forcedH2, guard);
@@ -1733,7 +1614,7 @@ class GrpcDispatchStageTest {
             UpstreamClients clients = new UpstreamClients(Map.of(target, client),
                     Map.of(new ResilienceShape(target, route.retryEnabled()), guard));
             return new GrpcDispatchStage(clients, ROOMY_CAP_BYTES, failureMapper, MESSAGE_BOUND_MILLIS,
-                    DEADLINE_MILLIS, DEADLINE_CAP_MILLIS, HAND_OVER_GRACE_MILLIS, UPSTREAM_STALL_THRESHOLD_MILLIS);
+                    DEADLINE_MILLIS, DEADLINE_CAP_MILLIS, UPSTREAM_STALL_THRESHOLD_MILLIS);
         }
 
         /**
@@ -1764,10 +1645,12 @@ class GrpcDispatchStageTest {
         }
 
         /**
-         * The breaker rules of the production guard (UpstreamGuards#guardFor) — the breaker skipping a
-         * {@link GatewayException}, the timeout inside it — with a threshold of {@value #BREAKER_THRESHOLD}
-         * and a timeout of {@value #BREAKER_GUARD_MILLIS} ms. {@code UpstreamGuardsTest} is the test that binds
-         * these mirrored rules to the production guard.
+         * A test-local SmallRye guard: a breaker with a threshold of {@value #BREAKER_THRESHOLD} that skips a
+         * {@link GatewayException}, around a timeout of {@value #BREAKER_GUARD_MILLIS} ms. It shows only that a
+         * gateway rejection is not counted as a failure, while the upstream's timeout is; it is not the production
+         * guard, whose breaker is the gateway's own {@link UpstreamCircuitBreaker} and records a gateway rejection
+         * as neutral, where SmallRye's {@code skipOn} records it as a success. That neutral outcome is bound by
+         * {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest}.
          */
         private Guard breakerGuard() {
             return Guard.create()

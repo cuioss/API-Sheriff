@@ -138,7 +138,9 @@ set of things well, with zero mandatory external dependencies.
   a fixed, stream-aware retry policy; the per-attempt timeout and the circuit breaker are the
   gateway's fixed policy, and a route declares neither a timeout, an attempt count nor a breaker
   shape (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
-  All three run in programmatic SmallRye Fault-Tolerance guards around the data-plane dispatch
+  Retry and the timeout run in programmatic SmallRye Fault-Tolerance guards; the circuit breaker is
+  the gateway's own, which records a gateway rejection as neutral rather than as a success. The three
+  wrap the data-plane dispatch in the order retry, breaker, timeout
   (link:adr/0008-data-plane-transport.adoc[ADR-0008]) -- component ownership is stated in
   link:architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client].
 
