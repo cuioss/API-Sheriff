@@ -82,8 +82,12 @@ import org.jspecify.annotations.Nullable;
  * while that source's {@linkplain EdgeHardeningOptions#heldAnswerSourceShare() share} of the
  * held-answer sub-budget is used up, so one delayed source cannot occupy the whole sub-budget, once
  * that has more than one permit. Below an {@code edge_hardening.admission_cap} of {@code 8} the
- * sub-budget has one permit, and one source's share is that whole permit. Neither answer is ever given
- * to the {@link SourceKey#UNKNOWN_SOURCE unknown} source.
+ * sub-budget has one permit, and one source's share is that whole permit. The share is judged and counted
+ * under the key the ledger tracks the source under ({@link SourceState#key()}): an IPv6 {@code /64} the
+ * ledger aggregated to its {@code /48} under pressure draws on the {@code /48}'s one share, so a tripped
+ * site cannot gain a fresh share per {@code /64} it rotates through; a {@code /64} tracked under its own
+ * key keeps its own share. Neither answer is ever given to the {@link SourceKey#UNKNOWN_SOURCE unknown}
+ * source.
  * <p>
  * <strong>The full ledger fails closed.</strong> Under {@code block} and {@code delay} a source the
  * ledger does not track and has no room for ({@link SourceLedger#hasRoomFor}) is answered the same
@@ -101,7 +105,7 @@ import org.jspecify.annotations.Nullable;
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —
  * a recon event before the trust boundary that is not a static resource. Under {@code delay}, a
  * rejection whose source has tripped is held until admission plus {@code delay_millis}, and its hold
- * counts against that source's share ({@link EdgeAdmission#HELD_SOURCE_KEY}). An unexpected
+ * counts against that source's share under its tracked key ({@link EdgeAdmission#HELD_SOURCE_KEY}). An unexpected
  * internal failure answered as the uniform {@code 404} ({@link EventType#PRE_TRUST_INTERNAL_FAILURE})
  * is never admitted, but under {@code delay} it is held exactly as a recon rejection of the same
  * request would be: otherwise, for a tripped source, a crafted input that made a stage fail on a routed
@@ -248,7 +252,9 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
             answerBlocked(ctx, retryAfterSeconds(state.get().remainingBlockNanos(System.nanoTime())));
             return true;
         }
-        if (!state.get().hasTripped() || !heldShareExhausted.test(key)) {
+        // The share is judged under the key the ledger tracks — a /64 aggregated to its /48 is judged under
+        // the /48 its held answers were counted on, so rotating /64s draws on one share.
+        if (!state.get().hasTripped() || !heldShareExhausted.test(state.get().key())) {
             return false;
         }
         // delay: the tripped source's share of the held-answer sub-budget is used up, so its further
@@ -308,7 +314,7 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
         if (delayNanos.isEmpty() || !state.hasTripped() || isUnknownSource(key)) {
             return OptionalLong.empty();
         }
-        return delayedHold(ctx, key);
+        return delayedHold(ctx, state.key());
     }
 
     /**
@@ -323,11 +329,12 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
 
     /**
      * The {@code delay} hold of a tripped source's answer: admission plus {@code delay_millis}. The
-     * source is stashed under {@link EdgeAdmission#HELD_SOURCE_KEY}, so the hold this answer enters
-     * counts against the source's share of the held-answer sub-budget.
+     * key the ledger tracks the source under — its {@code /48} aggregate when the ledger aggregated it —
+     * is stashed under {@link EdgeAdmission#HELD_SOURCE_KEY}, so the hold this answer enters counts
+     * against that tracked source's share of the held-answer sub-budget.
      */
-    private OptionalLong delayedHold(RoutingContext ctx, SourceKey key) {
-        ctx.put(EdgeAdmission.HELD_SOURCE_KEY, key);
+    private OptionalLong delayedHold(RoutingContext ctx, SourceKey trackedKey) {
+        ctx.put(EdgeAdmission.HELD_SOURCE_KEY, trackedKey);
         return OptionalLong.of(admittedAtNanos(ctx) + delayNanos.getAsLong());
     }
 
@@ -345,10 +352,14 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
         }
         boolean reconShaped = request == null
                 || !(request.trustBoundaryPassed() || ReconEvents.isStaticResource(request));
-        if (!reconShaped || !ledger.state(key).map(SourceState::hasTripped).orElse(false)) {
+        if (!reconShaped) {
             return OptionalLong.empty();
         }
-        return delayedHold(ctx, key);
+        Optional<SourceState> state = ledger.state(key).filter(SourceState::hasTripped);
+        if (state.isEmpty()) {
+            return OptionalLong.empty();
+        }
+        return delayedHold(ctx, state.get().key());
     }
 
     /**
