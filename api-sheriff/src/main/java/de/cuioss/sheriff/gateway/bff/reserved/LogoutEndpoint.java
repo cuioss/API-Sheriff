@@ -49,7 +49,8 @@ import org.jspecify.annotations.Nullable;
  * request, with one form whose button {@code POST}s to the configured logout path. The browser marks
  * that {@code POST} with the gateway's own {@code Origin}, so it re-enters this leg with the proof. The
  * page is {@code no-store}, forbids framing ({@code Content-Security-Policy} {@code frame-ancestors
- * 'none'}, {@code X-Frame-Options: DENY}) and leaves the session and its cookies untouched;
+ * 'none'}, {@code X-Frame-Options: DENY}), carries no {@code form-action} so the {@code POST} can follow
+ * the identity provider's end-session redirect, and leaves the session and its cookies untouched;
  * {@link RpInitiatedLogout} is not reached, so no identity-provider call is made.
  * <p>
  * <strong>Logout leg.</strong> With the proof, {@link #logout(String, String, String, Instant)}
@@ -308,13 +309,21 @@ public final class LogoutEndpoint {
 
         /**
          * The fixed headers of the confirmation page: an HTML media type, no caching, and a policy that
-         * loads nothing, lets the form post only to the gateway itself and forbids framing (the
-         * {@code X-Frame-Options} line for user agents that predate {@code frame-ancestors}).
+         * loads nothing and forbids framing (the {@code X-Frame-Options} line for user agents that
+         * predate {@code frame-ancestors}).
+         * <p>
+         * The policy deliberately carries no {@code form-action}. A browser enforces that directive on
+         * every redirect of a form submission, so {@code form-action 'self'} would block the
+         * confirmation {@code POST}'s {@code 302} to the identity provider's cross-origin
+         * {@code end_session_endpoint}: the local session would end while the provider's single sign-on
+         * session survived. {@code form-action} does not fall back to {@code default-src}, so leaving it
+         * out allows the post and its redirect; the page's one form is fixed and reflects no request
+         * input, so the directive would protect nothing here.
          */
         private static final Map<String, String> CONFIRMATION_HEADERS = Map.of(
                 "Content-Type", "text/html; charset=utf-8",
                 "Cache-Control", "no-store",
-                "Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'",
+                "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'",
                 "X-Frame-Options", "DENY");
 
         /**

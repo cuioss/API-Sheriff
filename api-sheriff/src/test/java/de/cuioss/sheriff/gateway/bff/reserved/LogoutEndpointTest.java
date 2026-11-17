@@ -336,6 +336,12 @@ class LogoutEndpointTest {
         assertTrue(store.resolve(COOKIE_HANDLE, NOW).isPresent(), "the session still resolves");
     }
 
+    /**
+     * The policy carries no {@code form-action}: a browser enforces that directive on every redirect of a
+     * form submission (CSP Level 3, section 6.4.1), so {@code form-action 'self'} would block the
+     * confirmation {@code POST}'s {@code 302} to the identity provider's cross-origin
+     * {@code end_session_endpoint}. {@code form-action} does not fall back to {@code default-src}.
+     */
     @Test
     @DisplayName("Should answer the confirmation page uncacheable, unframeable, posting to the logout path and reflecting nothing")
     void shouldAnswerAHardenedConfirmationPage() {
@@ -344,11 +350,16 @@ class LogoutEndpointTest {
                 null, NOW);
 
         String body = outcome.body();
+        String policy = outcome.headers().get("Content-Security-Policy");
         assertAll("the confirmation page",
                 () -> assertNotNull(body, "the page carries an HTML body"),
                 () -> assertEquals("text/html; charset=utf-8", outcome.headers().get("Content-Type")),
                 () -> assertEquals("no-store", outcome.headers().get("Cache-Control")),
-                () -> assertTrue(outcome.headers().get("Content-Security-Policy").contains("frame-ancestors 'none'")),
+                () -> assertNotNull(policy, "the page carries a Content-Security-Policy"),
+                () -> assertTrue(policy.contains("default-src 'none'"), "the page loads nothing: " + policy),
+                () -> assertTrue(policy.contains("frame-ancestors 'none'"), "the page cannot be framed: " + policy),
+                () -> assertFalse(policy.contains("form-action"),
+                        "no form-action, so the POST may follow the IdP end-session redirect: " + policy),
                 () -> assertEquals("DENY", outcome.headers().get("X-Frame-Options")),
                 () -> assertTrue(body.contains("<form method=\"POST\" action=\"" + LOGOUT_PATH + "\">"),
                         "one form posts to the configured logout path: " + body),

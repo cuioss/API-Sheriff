@@ -608,8 +608,10 @@ link:#_oidc_client_authentication[Client authentication].
   `session.csrf.trusted_origins` (a present `Origin` decides alone), or, with no `Origin`,
   `Sec-Fetch-Site: same-origin` or `none`. Any other request is answered `200` with a fixed HTML
   confirmation page -- `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none';
-  form-action 'self'; frame-ancestors 'none'`, `X-Frame-Options: DENY` -- whose one form `POST`s to
-  this path; the session and its cookies are left untouched and the IdP is not contacted. A logout
+  frame-ancestors 'none'`, `X-Frame-Options: DENY` -- whose one form `POST`s to this path; the session
+  and its cookies are left untouched and the IdP is not contacted. The policy carries no
+  `form-action`, because a browser enforces that directive on every redirect of the form's `POST`
+  and would block the `302` to the IdP's cross-origin `end_session_endpoint`. A logout
   link on a trusted origin other than the gateway's own therefore lands on that page (see
   link:../user/bff-session.adoc#logout-same-origin[Logout -- same-origin proof]).
 

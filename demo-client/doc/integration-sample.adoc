@@ -77,12 +77,15 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | To the IdP end-session endpoint, then to `/bff/logout/return`, then to `final_redirect`. The
   browser marks the navigation `Sec-Fetch-Site: same-origin`, which is the proof the gateway asks for.
 
-| `/bff/logout` -- without same-origin proof (a link on another site, a request with neither a
-  trusted `Origin` nor `Sec-Fetch-Site: same-origin` or `none`)
+| `/bff/logout` -- without same-origin proof. A present `Origin` decides alone: a trusted one is the
+  proof, and an untrusted one is refused even beside `Sec-Fetch-Site: same-origin`. Only with
+  `Origin` absent does `Sec-Fetch-Site: same-origin` or `none` suffice. Any other request -- a link
+  on another site included -- lands here
 | `200`
 | A `text/html` confirmation page, `Cache-Control: no-store`, framing forbidden
   (`frame-ancestors 'none'`, `X-Frame-Options: DENY`). The session is untouched; its *Sign out*
-  button `POST`s to `/bff/logout`, which then logs out as above.
+  button `POST`s to `/bff/logout` with the gateway's own `Origin`, which then logs out as above. The
+  page sets no `form-action`, so the `POST` can follow the redirect to the IdP.
 
 | `fetch /bff/session` -- after logout
 | `401`
