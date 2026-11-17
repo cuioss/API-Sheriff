@@ -18,7 +18,7 @@ test at the sha it names, then fixed, or recorded as refuted or accepted with th
 PR, so no leftover stays only in a landing report or a note.
 
 Disclosure is mechanism-level. Background: `.plan/local/security_notes.adoc` entries SEC2-01-A,
-SEC2-01-B, SEC2-03-A, SEC2-03-B, SEC2-03-C and SEC2-03-D (the last four carry verified results and fix
+SEC2-01-B, SEC2-03-A, SEC2-03-B, SEC2-03-C, SEC2-03-D and SEC2-L-01 to SEC2-L-11 (the orchestrator's landing-read items, each naming its deliverable; the SEC2-03 entries carry verified results and fix
 directions; the JUnit probes that produced them are under `.plan/local/security-probes/sec2-03/`), and
 the Follow-Ups of `landings/PLAN-SEC2-01.md` and `landings/PLAN-SEC2-03.md`. **Read them first.** Local
 only; never quote them into tracked text. The probes are local scratch: turn them into repository tests,

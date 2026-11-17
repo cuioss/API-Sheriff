@@ -48,6 +48,7 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 - 2026-11-17 — Operator confirmed the CodeRabbit review-body findings of #623 (landing claimed 2, provider shows 10) and #626 (2 inline, undisposed in the provider's record) were handled; the two Watches for them are retired. The 2-vs-10 mismatch stays recorded as a false claim in `landings/PLAN-SEC2-01.md`.
 - 2026-11-17 — Leftovers of the epic are collected in ONE plan, PLAN-SEC2-04 (workstream WS-04), on the operator's word; layer-3 items the landing reads raised are carried as `HYPOTHESIS` claims in its spec, mechanism-level, with the triggering detail only in the private notes.
 - 2026-11-17 — Routed to the plan-marshall `lessons-routing` inbox (sibling repo `plan-marshall`, message `api-sheriff-security-hardening-tier-2-001.md`) as one finding grouping three clusters: the `worktree_root_unreadable` pre-push gate failure behind the three `force-override` pushes, the `unknown` required keys of both incomplete landings (PLAN-SEC2-01 `effort`; PLAN-SEC2-03 five keys), and the review-body count / Sonar `head_revision_unavailable` reads. The two Open Defects for the incomplete landings and the `force-override` Watch are retired on that routing; the facts stay recorded in the two landing reports.
+- 2026-11-17 — Operator dropped the two Sonar Watches (`sonar_open_new_issues` of #623 and #626 stay unknown; the read cannot decide on a merged PR, root cause routed to the plan-marshall lessons inbox). Operator also authorized writing the orchestrator-found leftovers into the private notes: entries SEC2-L-01 to SEC2-L-11 in `.plan/local/security_notes.adoc`, each pointing at its PLAN-SEC2-04 deliverable.
 
 ## Open Defects
 
@@ -57,8 +58,6 @@ git-ignored `.plan/local/security_notes_verified.adoc` and `.plan/local/security
 
 ## Watches
 
-- 2026-11-16 — PLAN-SEC2-01 `sonar_open_new_issues=0` is not re-verified: the Sonar read on the merged PR is `undecidable` (`head_revision_unavailable`), so the figure is unknown. Retire on the operator's confirmation or a Sonar read that decides. Root cause (a merged PR has no head revision to read against) routed 2026-11-17; the figures themselves stay unknown.
 
-- 2026-11-17 — PLAN-SEC2-03: the Sonar read on merged PR 626 is `undecidable` (`head_revision_unavailable`); the lane's own `new_code_issue_count=0` is unconfirmed here. Same cause as the PLAN-SEC2-01 watch; retire both together.
 
 - Pre-commit formatter churn (carried from tier 1): #618 aligned `main` with the local formatter; a plan that reports churn again re-opens it.
