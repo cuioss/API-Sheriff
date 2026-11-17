@@ -13,14 +13,14 @@ workstream: WS-04
 
 Collect and close what the epic's first three plans found and did not fix: the observations the
 implementing plans recorded in the operator's private notes, and the observations the orchestrator's
-three-layer reads of the PLAN-SEC2-01 and PLAN-SEC2-03 landings raised. Each item is verified first by a
+three-layer reads of the PLAN-SEC2-01, PLAN-SEC2-02 and PLAN-SEC2-03 landings raised. Each item is verified first by a
 test at the sha it names, then fixed, or recorded as refuted or accepted with the reason. One plan, one
 PR, so no leftover stays only in a landing report or a note.
 
 Disclosure is mechanism-level. Background: `.plan/local/security_notes.adoc` entries SEC2-01-A,
-SEC2-01-B, SEC2-03-A, SEC2-03-B, SEC2-03-C, SEC2-03-D and SEC2-L-01 to SEC2-L-11 (the orchestrator's landing-read items, each naming its deliverable; the SEC2-03 entries carry verified results and fix
+SEC2-01-B, SEC2-03-A, SEC2-03-B, SEC2-03-C, SEC2-03-D and SEC2-L-01 to SEC2-L-15 (the orchestrator's landing-read items, each naming its deliverable; the SEC2-03 entries carry verified results and fix
 directions; the JUnit probes that produced them are under `.plan/local/security-probes/sec2-03/`), and
-the Follow-Ups of `landings/PLAN-SEC2-01.md` and `landings/PLAN-SEC2-03.md`. **Read them first.** Local
+the Follow-Ups of `landings/PLAN-SEC2-01.md`, `landings/PLAN-SEC2-02.md` and `landings/PLAN-SEC2-03.md`. **Read them first.** Local
 only; never quote them into tracked text. The probes are local scratch: turn them into repository tests,
 never commit them as they are.
 
@@ -129,7 +129,11 @@ never commit them as they are.
    went from 8 to 16 KiB is in the PR body but not in the Javadoc or ADR-0076; the `SourceKeys` Javadoc
    still says the key is the address `X-Forwarded-For` is regenerated from; the
    `@SuppressWarnings("java:S107")` in `BffRuntimeProducer` carries no rationale; and the documentation
-   says the `ApiSheriff-149` WARN is logged once at startup while it is emitted inside a validation rule.
+   says the `ApiSheriff-149` WARN is logged once at startup while it is emitted inside a validation rule;
+   three comments still describe the upstream breaker as skipping client-ended outcomes or overstate how they
+   are attributed (`TerminalDispatch` Javadoc and the test class comments that say "the breaker skips", the
+   `DispatchStage` class Javadoc on which outcome survives a client departure, and the `GrpcDispatchStage`
+   comment that counts upstream timeouts "three ways").
    - Done when: the 1.25× rule has a test that goes red when the factor changes (`order: test-first`); each
      other site is corrected where it is stated, or the suppression is removed by a parameter object
      (`order: none`).
@@ -165,6 +169,27 @@ never commit them as they are.
       and `doc/user/bff-session.adoc` (`order: test-first`).
     - Skills: pm-dev-java:java-core, pm-dev-java:java-security, pm-dev-java:junit-core, pm-dev-java-cui:cui-logging
     - Persona: security-expert
+12. **Upstream breaker attribution residuals (PLAN-SEC2-02).** PLAN-SEC2-02 made an expired wait for a
+    pooled connection the upstream's timeout and every client departure neutral. Settle by test, at the
+    `main` the plan starts from: (a) what an expired wait is attributed to when the pool's connections are
+    held by dispatches whose request body is still arriving, and, if it is charged to an upstream that is
+    answering normally, change the rule and state why; (b) whether an upstream that never answers goes
+    uncounted when its callers leave before the wait bound, and state the limit wherever the documentation
+    says the accounting holds under load; (c) whether a state-change consumer that throws can change the
+    outcome of the call that caused the transition, and make the report safe if it can. Also make the older
+    tests that still build a SmallRye breaker with `skipOn` use the gateway's breaker, add a concurrent test of
+    the breaker, and settle whether the SmallRye breaker's meters existed and ADR-0064's "same records and
+    metrics" statement holds.
+    - Verify first: (a) to (c) are HYPOTHESIS in Claim Labels; a refutation is recorded with the test that
+      shows it, not fixed. Re-read `edge/upstream/**` and the ADR statements at the `main` the plan starts from.
+    - Done when: a confirmed (a) has a test, failing at `14741380`, in which the pool is held by
+      request bodies still arriving and legitimate requests then wait out the bound without opening the
+      breaker, while a never-answering upstream with callers that wait out the bound still opens it (matched
+      control); (b) and (c) are each fixed by a test or stated as a limit in ADR-0060, GW-07 and
+      `doc/user/edge-security.adoc`; the fixtures use the gateway breaker and a concurrent test exists
+      (`order: test-first`).
+    - Skills: pm-dev-java:java-core, pm-dev-java:java-quarkus, pm-dev-java:java-security, pm-dev-java:junit-core
+    - Persona: security-expert
 
 ## Standing Constraints
 
@@ -179,11 +204,12 @@ never commit them as they are.
 - Fixed constants, no new `gateway.yaml` key unless unavoidable (then a test that goes red when the key
   is deleted).
 - Documentation states the mechanism only.
-- ADR body ceiling is 500 lines: `doc/adr/0060-…` is already at 513 lines, so this plan adds nothing to
-  it; ADR-0076 and ADR-0078 are under it and are amended only where a decision changes.
-- Where PLAN-SEC2-02 has shipped, re-read `doc/security-threat-model.adoc`, `doc/LogMessages.adoc` and
-  `edge/upstream/**` at the then-current `main` before editing; the orchestrator may fold PLAN-SEC2-02's
-  leftovers into this spec before it is emitted.
+- ADR body ceiling is 500 lines: `doc/adr/0060-…` is already at 517 lines, so this plan edits it by
+  replacing text and never grows it; ADR-0076 and ADR-0078 are under it and are amended only where a
+  decision changes.
+- PLAN-SEC2-02 (`14741380`), PLAN-SEC2-03 and PLAN-SEC2-01 have shipped: re-read
+  `doc/security-threat-model.adoc`, `doc/LogMessages.adoc` and `edge/upstream/**` at the `main` the plan
+  starts from before editing.
 - One PR, under CodeRabbit's 100-file cap (PLAN-SEC2-01 changed 63 files and PLAN-SEC2-03 55). If the work would exceed it, ship the remaining deliverables as a self-started second plan
   rather than dropping scope. Revert unrelated formatter churn.
 - Sonar: fix, or dismiss only on the operator's selection; `undecidable` blocks.
@@ -215,6 +241,12 @@ reported the same way, with the test that shows it.
 - OBSERVED: the documented revocation scope is per replica — read at `doc/variants/02-bff-session.adoc:303` (main `fa8dd54f`)
 - HYPOTHESIS: no configuration key declares a replica count — confirm/refute by a search of `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/` (verify-at-outline; the orchestrator's search of `api-sheriff/src/main/java` found `replica` only in Javadoc, but its output was truncated)
 - HYPOTHESIS: nothing in `api-sheriff/src/main/java` installs a request-head deadline, and `quarkus.http.limits.max-connections` is one counter for the terminated listeners — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java` § `apply` and `api-sheriff/src/main/resources/application.properties` § `quarkus.http.limits.max-connections` (verify-at-outline; read from the private notes, not from code, by the orchestrator)
+- OBSERVED: an expired wait for a pooled connection ends as `UpstreamConnectionWaitExpired`, a timeout the breaker counts as the upstream's failure and the retry predicate refuses, with no check of what holds the pool — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java:956-959`, `:700-707` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamCircuitBreaker.java:146-163` (main `14741380`)
+- OBSERVED: a dispatch holds a pooled upstream connection while it forwards the request body, and the egress client sets only the wait-queue size, not the pool size — read at `doc/adr/0060-…:33` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/EgressClients.java:169-170` (main `14741380`)
+- OBSERVED: a client departure ends the dispatch as a neutral outcome before the 10 s wait bound or the guard timeout — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java:927-940` (main `14741380`)
+- HYPOTHESIS: pooled connections held by dispatches whose request body is still arriving can make the waits of other requests expire and be counted against an upstream that answers normally — confirm/refute by a test that holds the pool with request bodies that keep arriving (verify-at-outline, deliverable 12)
+- HYPOTHESIS: an upstream that accepts and never answers goes uncounted while its callers leave before the wait bound — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java:927-940` by a test (verify-at-outline, deliverable 12)
+- HYPOTHESIS: a state-change consumer that throws changes the outcome of the call that caused the transition — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamCircuitBreaker.java:202-214,269-271` (verify-at-outline, deliverable 12)
 - Verify-first clause: the verified results of SEC2-03-A to D in the notes were measured at `fa8dd54f`; re-measure at the `main` the plan starts from, and re-ground every `OBSERVED` claim above before scoping on it.
 
 ## Expected Surface
@@ -233,6 +265,10 @@ reported the same way, with the test that shows it.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/reserved/ReservedPathHandler.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/terminal/TerminalDispatch.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamFailureMapper.java`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/GrpcDispatchStage.java`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamCircuitBreaker.java`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/EgressClients.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/DeclaredKeyMaterialKeys.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/`
@@ -253,7 +289,10 @@ reported the same way, with the test that shows it.
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/quarkus/`
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/pipeline/`
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/terminal/`
+- OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/upstream/`
 - OBSERVED: `doc/adr/0003-forwarded-headers.adoc`
+- OBSERVED: `doc/adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc` — replace text only, never grow
+- OBSERVED: `doc/adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc`
 - OBSERVED: `doc/adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc`
 - OBSERVED: `doc/adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc`
 - OBSERVED: `doc/configuration/routing-and-forwarding.adoc`
@@ -270,8 +309,8 @@ reported the same way, with the test that shows it.
 
 ## Dependencies and Sequencing
 
-- Depends on: PLAN-SEC2-02 shipped (it edits `edge/upstream/**`, `doc/security-threat-model.adoc` and `doc/LogMessages.adoc`, which this plan also edits), PLAN-SEC2-01 and PLAN-SEC2-03 (shipped).
-- Overlaps with: PLAN-SEC2-02 on `doc/security-threat-model.adoc`, `doc/LogMessages.adoc` and `edge/upstream/UpstreamFailureMapper.java`; hence sequenced after it.
+- Depends on: PLAN-SEC2-01, PLAN-SEC2-02 and PLAN-SEC2-03 (all shipped; PLAN-SEC2-02 edited `edge/upstream/**`, `doc/security-threat-model.adoc` and `doc/LogMessages.adoc`, which this plan also edits).
+- Overlaps with: PLAN-SEC2-05 on `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java`, `doc/security-threat-model.adoc` and `doc/user/edge-security.adoc`.
 - Adjacent to: the items the epic Vision kept in the private notes for a design decision, now decided by the operator on 2026-11-17: the request-head deadline is stated and documented (deliverable 10), back-channel logout across replicas gets a boot WARN (deliverable 11), the early-response quiet rule is PLAN-SEC2-05, the management plain-HTTP port is accepted with its existing WARN (deliverable 8 pins management transport behaviour only and adds no boot refusal), and the Info items are closed as recorded.
 
 ## Hand-Off Command

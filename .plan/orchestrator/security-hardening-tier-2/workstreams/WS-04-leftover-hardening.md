@@ -17,19 +17,19 @@ closes when that plan has shipped and the private notes hold no item this epic l
 
 ## Scope
 
-- In scope: the leftovers of PLAN-SEC2-01 and PLAN-SEC2-03 (and, folded in when it lands, PLAN-SEC2-02), as recorded in `.plan/local/security_notes.adoc` entries SEC2-01-A, SEC2-01-B, SEC2-03-A to D, and in `landings/PLAN-SEC2-01.md` and `landings/PLAN-SEC2-03.md`.
+- In scope: the leftovers of PLAN-SEC2-01, PLAN-SEC2-02 and PLAN-SEC2-03, as recorded in `.plan/local/security_notes.adoc` entries SEC2-01-A, SEC2-01-B, SEC2-03-A to D and SEC2-L-01 to SEC2-L-15, and in `landings/PLAN-SEC2-01.md`, `landings/PLAN-SEC2-02.md` and `landings/PLAN-SEC2-03.md`.
 - Also in scope, decided by the operator on 2026-11-17: the request-head deadline gap is documented and back-channel logout gets a boot WARN (both in PLAN-SEC2-04), and the early-response quiet rule is its own plan, PLAN-SEC2-05.
-- Out of scope: a management boot refusal (accepted with its existing WARN), the Info items (closed as recorded in the private notes), and anything PLAN-SEC2-02 owns (upstream breaker accounting, E1 to E3).
+- Out of scope: a management boot refusal (accepted with its existing WARN) and the Info items (closed as recorded in the private notes).
 
 ## Plans
 
 | Plan | Status | Notes |
 |------|--------|-------|
-| PLAN-SEC2-04-leftover-hardening | staged | One plan for every leftover; runs after PLAN-SEC2-02 so it can fold that plan's leftovers in |
+| PLAN-SEC2-04-leftover-hardening | staged | One plan for every leftover, 12 deliverables; PLAN-SEC2-02's leftovers are folded in |
 | PLAN-SEC2-05-early-response-quiet-exit | staged | Confirmed quiet exit for the early-response end; own plan because of its size and the framing-test flake history |
 
 ## Sequencing and Surface Notes
 
-- Depends on PLAN-SEC2-02 shipping: the plan touches `edge/upstream/UpstreamFailureMapper.java`, `doc/security-threat-model.adoc` and `doc/LogMessages.adoc`, all of which PLAN-SEC2-02 edits.
-- PLAN-SEC2-05 depends on PLAN-SEC2-02 and overlaps PLAN-SEC2-04 on `EdgeHardeningOptions.java`, `doc/security-threat-model.adoc` and `doc/user/edge-security.adoc`; sequenced after it or put to the operator by the gate.
-- Its other surfaces (`bff/**`, `detection/**`, `edge/admission/**`, `forward/**`, `config/**`, `tls/**`, `pipeline/**`) are disjoint from PLAN-SEC2-02's `edge/upstream/**`.
+- PLAN-SEC2-02 has shipped (#627, `14741380`); PLAN-SEC2-04 re-reads `edge/upstream/**`, `doc/security-threat-model.adoc` and `doc/LogMessages.adoc` at the `main` it starts from, and carries 02's leftovers as deliverable 12 and in deliverable 9.
+- PLAN-SEC2-05 overlaps PLAN-SEC2-04 on `EdgeHardeningOptions.java`, `doc/security-threat-model.adoc` and `doc/user/edge-security.adoc`; sequenced after it or put to the operator by the gate.
+- PLAN-SEC2-04 also edits `edge/upstream/**` (deliverable 12) and `doc/adr/0060-…`, which is over the 500-line ceiling and is edited by replacement only.
