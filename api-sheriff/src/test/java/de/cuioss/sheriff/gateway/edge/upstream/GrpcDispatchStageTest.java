@@ -473,7 +473,10 @@ class GrpcDispatchStageTest {
      * on the two bounds build the stage with the bound shortened to {@value #MESSAGE_BOUND_MILLIS} ms, the deadline
      * to {@value #DEADLINE_MILLIS} ms, the cap to {@value #DEADLINE_CAP_MILLIS} ms and the stall threshold to
      * {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all under the {@value #BREAKER_GUARD_MILLIS} ms timeout of a
-     * guard carrying the production breaker rules, beside a matched control whose upstream reads every call's one
+     * test-local SmallRye guard whose breaker skips a gateway rejection — it shows only that such a rejection is not
+     * counted as a failure; the production guard's own breaker records it as neutral, which
+     * {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest} bind — beside a matched control whose
+     * upstream reads every call's one
      * complete message to the half-close and never answers. The connection-wait cases stand in for a slow
      * upstream connection with a client that hands the dispatch its upstream request only a set time after the
      * dispatch asked for it.
@@ -1642,10 +1645,12 @@ class GrpcDispatchStageTest {
         }
 
         /**
-         * The breaker rules of the production guard (UpstreamGuards#guardFor) — the breaker skipping a
-         * {@link GatewayException}, the timeout inside it — with a threshold of {@value #BREAKER_THRESHOLD}
-         * and a timeout of {@value #BREAKER_GUARD_MILLIS} ms. {@code UpstreamGuardsTest} is the test that binds
-         * these mirrored rules to the production guard.
+         * A test-local SmallRye guard: a breaker with a threshold of {@value #BREAKER_THRESHOLD} that skips a
+         * {@link GatewayException}, around a timeout of {@value #BREAKER_GUARD_MILLIS} ms. It shows only that a
+         * gateway rejection is not counted as a failure, while the upstream's timeout is; it is not the production
+         * guard, whose breaker is the gateway's own {@link UpstreamCircuitBreaker} and records a gateway rejection
+         * as neutral, where SmallRye's {@code skipOn} records it as a success. That neutral outcome is bound by
+         * {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest}.
          */
         private Guard breakerGuard() {
             return Guard.create()

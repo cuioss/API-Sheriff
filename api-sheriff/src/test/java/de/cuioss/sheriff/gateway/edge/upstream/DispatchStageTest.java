@@ -3627,8 +3627,10 @@ class DispatchStageTest {
                 request.body().onSuccess(body -> request.response().end("ok"));
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
 
-            // The breaker rules of the production guard (UpstreamGuards#guardFor), with a window
-            // small enough to fill within one test.
+            // A test-local SmallRye guard whose breaker skips a gateway rejection, with a window small enough to
+            // fill within one test: it shows only that such a rejection is not counted as a failure. It is not the
+            // production guard, whose own UpstreamCircuitBreaker records a gateway rejection as neutral where
+            // skipOn records it as a success; UpstreamCircuitBreakerTest and UpstreamGuardsTest bind that outcome.
             guard = Guard.create()
                     .withCircuitBreaker()
                     .requestVolumeThreshold(REQUEST_VOLUME_THRESHOLD)
@@ -3851,11 +3853,14 @@ class DispatchStageTest {
     }
 
     /**
-     * What the circuit breaker records for a dispatch whose retry is not taken. The guard has the
-     * production shape — a breaker skipping {@link GatewayException}, a timeout inside it and a
-     * 1 + 2 retry outside it, deciding through the production retry predicate
-     * {@link DispatchStage#allowsRetryAfter(Throwable)} — over a retry-enabled route, and every
-     * breaker outcome is counted through the breaker's own success and failure callbacks.
+     * What the circuit breaker records for a dispatch whose retry is not taken. The guard is a test-local
+     * SmallRye guard in the production order — a breaker skipping {@link GatewayException}, a timeout inside it
+     * and a 1 + 2 retry outside it, deciding through the production retry predicate
+     * {@link DispatchStage#allowsRetryAfter(Throwable)} — over a retry-enabled route, and every breaker outcome
+     * is counted through the breaker's own success and failure callbacks. Its breaker is not the production one:
+     * the gateway's own {@link UpstreamCircuitBreaker} records a gateway rejection as neutral, where
+     * {@code skipOn} records it as a success; {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest}
+     * bind that outcome. The cases here end in upstream failures, which both breakers count alike.
      */
     @Nested
     @DisplayName("circuit-breaker accounting of a vetoed retry")
@@ -3933,7 +3938,7 @@ class DispatchStageTest {
                             "the retry that is not taken must not be recorded by the breaker at all"));
         }
 
-        /** A retry-enabled proxy route to {@code port} on loopback, guarded by the production-shaped guard. */
+        /** A retry-enabled proxy route to {@code port} on loopback, guarded by the test-local guard. */
         private Routed route(int port) {
             return Routed.of("vetoed-retry", new ResolvedUpstream("http", LoopbackHost.ADDRESS, port, ""), true,
                     upstreamClient, guard, DispatchStage.NO_BODY_IDLE_TIMEOUT,
@@ -4264,7 +4269,12 @@ class DispatchStageTest {
                     .build();
         }
 
-        /** The breaker rules of the production guard (UpstreamGuards#guardFor) inside a patient timeout. */
+        /**
+         * A test-local SmallRye guard: a breaker that skips a {@link GatewayException}, inside a patient timeout. It
+         * shows only that a gateway rejection is not counted as a failure; it is not the production guard, whose
+         * own {@link UpstreamCircuitBreaker} records a gateway rejection as neutral where {@code skipOn} records it
+         * as a success. {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest} bind that outcome.
+         */
         private Guard breakerGuard() {
             return Guard.create()
                     .withCircuitBreaker()
