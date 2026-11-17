@@ -100,8 +100,10 @@ import org.junit.jupiter.api.Test;
  * <strong>The rig.</strong> The front server's handler does what the edge root does around a dispatch:
  * it arms the request body, pauses the request and reports a response that ended without being written
  * as the client's departure. The call then runs through {@code dispatchGrpc} itself, with the gRPC
- * dispatch's production bounds, under a guard that carries the production breaker rule — a
- * {@link GatewayException} is skipped — and opens on the first failure it counts.
+ * dispatch's production bounds, under a test-local SmallRye guard that skips a {@link GatewayException}
+ * — so a gateway rejection is not counted as a failure — and opens on the first failure it counts. It is
+ * not the production guard, whose own {@code UpstreamCircuitBreaker} records a gateway rejection as
+ * neutral; {@code UpstreamGuardsTest} binds that behaviour.
  * <p>
  * <strong>What the stub upstream does.</strong> It reads every call to the end of its request stream. A
  * call to {@value #HELD_CALL} is then held, never answered; a call to {@value #REFUSED_CALL} is reset by
@@ -272,9 +274,9 @@ class TerminalDispatchGrpcClientDepartureTest {
     }
 
     /**
-     * The forced-h2 client and a guard that carries the production breaker rule — a
-     * {@link GatewayException} is skipped — opens on the first failure it counts, and times an attempt
-     * out after {@value #GUARD_SECONDS} s.
+     * The forced-h2 client and a test-local SmallRye guard that skips a {@link GatewayException} — a
+     * gateway rejection is not counted as a failure — opens on the first failure it counts, and times an
+     * attempt out after {@value #GUARD_SECONDS} s.
      */
     private UpstreamClients clients() {
         UpstreamTarget target = UpstreamTarget.of(route);
