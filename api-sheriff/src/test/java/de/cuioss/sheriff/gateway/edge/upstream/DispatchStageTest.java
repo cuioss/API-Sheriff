@@ -202,16 +202,20 @@ class DispatchStageTest {
             try (ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor()) {
                 Future<Boolean> decision = waiter.submit(
                         () -> DispatchStage.departureEndedWait(pending, departed, departedAtSettlement));
-                awaitWaiting(departed);
+                try {
+                    awaitWaiting(departed);
 
-                // Act
-                departed.complete(Generators.nonEmptyStrings().next());
-                settle(pending, departed, departedAtSettlement,
-                        new TimeoutException(Generators.nonEmptyStrings().next()));
+                    // Act
+                    departed.complete(Generators.nonEmptyStrings().next());
+                    settle(pending, departed, departedAtSettlement,
+                            new TimeoutException(Generators.nonEmptyStrings().next()));
 
-                // Assert
-                assertTrue(Awaits.connect(decision, "the departure decision"),
-                        "the departure came before the expiry settled the attempt");
+                    // Assert
+                    assertTrue(Awaits.connect(decision, "the departure decision"),
+                            "the departure came before the expiry settled the attempt");
+                } finally {
+                    endDecision(decision);
+                }
             }
         }
 
@@ -225,16 +229,20 @@ class DispatchStageTest {
             try (ExecutorService waiter = Executors.newVirtualThreadPerTaskExecutor()) {
                 Future<Boolean> decision = waiter.submit(
                         () -> DispatchStage.departureEndedWait(pending, departed, departedAtSettlement));
-                awaitWaiting(departed);
+                try {
+                    awaitWaiting(departed);
 
-                // Act
-                settle(pending, departed, departedAtSettlement,
-                        new TimeoutException(Generators.nonEmptyStrings().next()));
-                departed.complete(Generators.nonEmptyStrings().next());
+                    // Act
+                    settle(pending, departed, departedAtSettlement,
+                            new TimeoutException(Generators.nonEmptyStrings().next()));
+                    departed.complete(Generators.nonEmptyStrings().next());
 
-                // Assert
-                assertFalse(Awaits.connect(decision, "the departure decision"),
-                        "the attempt settled before the client departed, so its outcome stands");
+                    // Assert
+                    assertFalse(Awaits.connect(decision, "the departure decision"),
+                            "the attempt settled before the client departed, so its outcome stands");
+                } finally {
+                    endDecision(decision);
+                }
             }
         }
 
@@ -252,6 +260,15 @@ class DispatchStageTest {
         private static void awaitWaiting(CompletableFuture<?> departed) throws TimeoutException {
             Awaits.until(() -> departed.getNumberOfDependents() > 0, "the decision to wait on the departure",
                     Awaits.TEARDOWN_CEILING_SECONDS);
+        }
+
+        /**
+         * Interrupts a decision still waiting on its signals, which a failed setup or assertion leaves behind:
+         * the executor's close waits for every task, so the test fails instead of hanging its fork. A decision
+         * that already returned is left as it is.
+         */
+        private static void endDecision(Future<Boolean> decision) {
+            decision.cancel(true);
         }
     }
 

@@ -874,8 +874,8 @@ public final class DispatchStage {
         AtomicReference<@Nullable UpstreamStalledRequest> upstreamStallAtFailure = new AtomicReference<>();
         // Set once the pool handed the attempt its request: a failure before it is a connection not obtained.
         AtomicBoolean connectionObtained = new AtomicBoolean();
-        // Whether the client had departed when this attempt settled, recorded by the chain's last step below;
-        // null until the attempt settles (see departureEndedWait).
+        // Records whether the client had departed when this attempt settled. The last step of the chain
+        // below sets it and it stays null until the attempt settles. Read by departureEndedWait.
         AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
