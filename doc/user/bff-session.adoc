@@ -716,10 +716,11 @@ client address the forwarding headers name when the request arrives through a pr
 `forwarded.trusted_proxies`, otherwise the address of the TCP connection. Behind the gateway's own
 SNI front listener (`tls.passthrough_sni` set), that connection is the client's connection to the
 front listener, not the internal hop the gateway relays it over. An IPv6 address counts by
-its `/64`. When a trusted proxy's `Forwarded` and `X-Forwarded-For` headers together name no client
--- for example because the two chains disagree -- the client the `X-Forwarded-For` chain alone names
-is used. Requests through a trusted proxy whose forwarding headers name no client even then, and
-requests without a usable address, are all counted as one source, `unknown`. When a source starts its 257th
+its `/64`. When a trusted proxy's `Forwarded` or `X-Forwarded-For` carries a value yet the two
+together name no client -- for example because the two chains disagree -- the login is counted under
+that proxy's own source, `unresolved-via-<proxy address>`; neither chain is read on its own.
+Requests through a trusted proxy that carry neither header, and requests without a usable address,
+are all counted as one source, `unknown`. When a source starts its 257th
 pending login, its oldest one is dropped; that user's callback is refused `403` and the login has to
 be started again. Other sources are not touched.
 

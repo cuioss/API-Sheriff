@@ -44,15 +44,25 @@ import org.jspecify.annotations.Nullable;
  * resolved only for a peer the {@link TcpPeerGate} trusts, through a {@link ForwardedHeaderResolver}
  * configured exactly as the forward stage's, so the address keyed on is the one the gateway regenerates
  * {@code X-Forwarded-For} from — and otherwise the TCP peer. An untrusted peer's
- * {@code X-Forwarded-For} is never read. When a trusted peer's combined {@code Forwarded} /
- * {@code X-Forwarded-For} chain resolves no client — a contested chain whose two headers disagree — the
- * source falls back to the {@code X-Forwarded-For} client through {@link ForwardedClientResolution}, the
- * one derivation the pending-authorization quota key shares. Only a request with no usable
- * {@code X-Forwarded-For} either is keyed on {@link SourceKey#UNKNOWN_SOURCE}, never on the trusted
- * peer's own address, which every such request through that peer would otherwise share; the per-source
- * consumers count and report that shared key but never act on it. The authority host is folded to the
- * declared {@code match.host} set by the {@link SourceKeyResolver}; a malformed {@code Host} folds onto
- * the undeclared-host key ({@link SourceKey#UNDECLARED_HOST}).
+ * {@code X-Forwarded-For} is never read. The trusted peer's headers are read through
+ * {@link ForwardedClientResolution}, the one derivation the pending-authorization quota key shares,
+ * and its three outcomes key the request three ways:
+ * <ul>
+ *   <li>a resolved client — on that client;</li>
+ *   <li>a client-address header that resolves no client — a malformed chain, or a {@code Forwarded}
+ *       chain disagreeing with the {@code X-Forwarded-For} chain — on the proxy's own unresolved
+ *       source ({@link SourceKeyResolver#resolveUnresolvedForwarding}). A client can always produce
+ *       such a header, so the request is keyed on a source the per-source consumers act on like any
+ *       other, never on the shared {@link SourceKey#UNKNOWN_SOURCE}; and since no family can be shown
+ *       to be the proxy-managed one, neither family is resolved on its own, so the client cannot choose
+ *       the key either;</li>
+ *   <li>no client-address header at all — on {@link SourceKey#UNKNOWN_SOURCE}, never on the trusted
+ *       peer's own address, which every such request through that peer would otherwise share; the
+ *       per-source consumers count and report that shared key but never act on it. A client cannot
+ *       produce this case: it cannot remove the header its trusted proxy appends.</li>
+ * </ul>
+ * The authority host is folded to the declared {@code match.host} set by the {@link SourceKeyResolver};
+ * a malformed {@code Host} folds onto the undeclared-host key ({@link SourceKey#UNDECLARED_HOST}).
  * <p>
  * Usage:
  * <pre>{@code
@@ -113,10 +123,9 @@ public final class SourceKeys {
 
     /**
      * The key a request is tracked under, with the authority host folded to the declared set: for a
-     * trusted peer the forwarded client address — the {@code X-Forwarded-For} client when a contested
-     * chain resolves none ({@link ForwardedClientResolution#clientOf}) — and
-     * {@link SourceKey#UNKNOWN_SOURCE} when neither resolves a client, never the trusted peer's own
-     * address; for any other peer the TCP peer.
+     * trusted peer the forwarded client address, the proxy's unresolved source when a client-address
+     * header resolves no client, and {@link SourceKey#UNKNOWN_SOURCE} when the request carries no
+     * client-address header, never the trusted peer's own address; for any other peer the TCP peer.
      *
      * @param raw the incoming request
      * @return the canonical source key
@@ -128,9 +137,11 @@ public final class SourceKeys {
         if (!peerGate.isTrustedPeer(peerAddress)) {
             return keyResolver.resolve(peerAddress, null, host);
         }
-        return ForwardedClientResolution.clientOf(forwardedResolver, name -> raw.headers().getAll(name))
-                .map(client -> keyResolver.resolve(peerAddress, client, host))
-                .orElseGet(() -> keyResolver.resolve(null, null, host));
+        return switch (ForwardedClientResolution.clientOf(forwardedResolver, name -> raw.headers().getAll(name))) {
+            case ForwardedClientResolution.Resolved resolved -> keyResolver.resolve(peerAddress, resolved.address(), host);
+            case ForwardedClientResolution.Unresolvable _ -> keyResolver.resolveUnresolvedForwarding(peerAddress, host);
+            case ForwardedClientResolution.Absent _ -> keyResolver.resolve(null, null, host);
+        };
     }
 
     /**

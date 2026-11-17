@@ -39,8 +39,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The quota key a pending-authorization record is counted under: a trusted forwarder's client — its
- * {@code X-Forwarded-For} client when a contested chain resolves none — else the TCP peer (whose
- * forwarding headers are never read), else {@code unknown}; IPv4 kept whole and IPv6
+ * unresolved source when a present chain resolves none, {@code unknown} when it sends no chain — else
+ * the TCP peer (whose forwarding headers are never read); IPv4 kept whole and IPv6
  * reduced to its {@code /64}; derived from the request's peer and forwarding headers alone.
  */
 @DisplayName("PendingQuotaKeys — the requester source a pending record is counted under")
@@ -56,6 +56,8 @@ class PendingQuotaKeysTest {
     private static final String RELAY_LEG = "127.0.0.1";
     private static final String CLIENT_A = "198.51.100.1";
     private static final String CLIENT_B = "198.51.100.2";
+    /** The source a chain of {@link #PROXY} that resolves no client is counted under. */
+    private static final String UNRESOLVED_VIA_PROXY = "unresolved-via-" + PROXY;
 
     private final PendingQuotaKeys quotaKeys = quotaKeys(List.of(PROXY + "/32"));
 
@@ -76,17 +78,23 @@ class PendingQuotaKeysTest {
     }
 
     @ParameterizedTest(name = "[{0}]")
-    @ValueSource(strings = {"", "not-an-address", "999.0.0.1", "unknown"})
-    @DisplayName("a trusted forwarder whose header resolves no client is keyed on unknown, never on itself")
-    void trustedForwarderWithoutClientIsUnknown(String forwardedFor) {
+    @ValueSource(strings = {"not-an-address", "999.0.0.1", "unknown"})
+    @DisplayName("a trusted forwarder whose header carries a value that resolves no client is keyed on its unresolved source, never on unknown or on itself")
+    void trustedForwarderWithUnresolvableClientIsItsUnresolvedSource(String forwardedFor) {
         String key = quotaKeys.quotaKeyOf(request(PROXY, Map.of(FORWARDED_FOR, forwardedFor)));
 
-        assertEquals(SourceKey.UNKNOWN_SOURCE, key);
+        assertEquals(UNRESOLVED_VIA_PROXY, key);
     }
 
     @Test
-    @DisplayName("a trusted forwarder whose Forwarded disagrees with X-Forwarded-For is keyed on the canonical X-Forwarded-For client")
-    void contestedChainIsKeyedOnTheXForwardedForClient() {
+    @DisplayName("a trusted forwarder whose X-Forwarded-For is blank is keyed on unknown, never on itself")
+    void trustedForwarderWithBlankHeaderIsUnknown() {
+        assertEquals(SourceKey.UNKNOWN_SOURCE, quotaKeys.quotaKeyOf(request(PROXY, Map.of(FORWARDED_FOR, ""))));
+    }
+
+    @Test
+    @DisplayName("a trusted forwarder whose Forwarded disagrees with X-Forwarded-For is keyed on its unresolved source, never on either chain's client")
+    void contestedChainIsKeyedOnTheUnresolvedSource() {
         String ipv4 = quotaKeys.quotaKeyOf(request(PROXY,
                 Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT)));
         String ipv6 = quotaKeys.quotaKeyOf(request(PROXY,
@@ -94,9 +102,9 @@ class PendingQuotaKeysTest {
         String agreeing = quotaKeys.quotaKeyOf(request(PROXY,
                 Map.of(FORWARDED, "for=" + FORWARDED_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT)));
 
-        assertAll("the X-Forwarded-For fallback, canonicalised as every quota key",
-                () -> assertEquals(FORWARDED_CLIENT, ipv4, "IPv4 kept whole, never unknown"),
-                () -> assertEquals("2001:db8:c:d::/64", ipv6, "IPv6 reduced to its /64, never unknown"),
+        assertAll("no single-family fallback",
+                () -> assertEquals(UNRESOLVED_VIA_PROXY, ipv4, "an IPv4 X-Forwarded-For client is not taken alone"),
+                () -> assertEquals(UNRESOLVED_VIA_PROXY, ipv6, "an IPv6 X-Forwarded-For client is not taken alone"),
                 () -> assertEquals(FORWARDED_CLIENT, agreeing, "control: an agreeing chain keys on its client"));
     }
 

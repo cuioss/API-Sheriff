@@ -809,7 +809,14 @@ authoritative specification is `cui-http/doc/forwarded-header-resolution.adoc`. 
     skipping trusted hops; the first non-trusted, well-formed address is the client.
   * An *empty* list means the TCP peer is always the client.
   * Every listed proxy must append to or strip the `X-Forwarded-*` family (the mixed-family
-    requirement of link:../adr/0003-forwarded-headers.adoc[ADR-0003]).
+    requirement of link:../adr/0003-forwarded-headers.adoc[ADR-0003]). A proxy that does neither is
+    an *unsupported topology*: one that passes a client's `X-Forwarded-For` through unchanged lets
+    that client name the client IP, and one that appends only to `Forwarded` while passing
+    `X-Forwarded-For` through makes the two chains disagree whenever the client sends one.
+  * *No single-family fallback.* When the `X-Forwarded-For` and `Forwarded` chains of a trusted
+    proxy's request disagree, no client resolves. The request does not show which family the proxy
+    manages, so the gateway never resolves either family on its own (see
+    <<_unresolvable_chain>>).
   * Every host inside a listed range that reaches the gateway directly can spoof forwarding headers;
     list the exact proxy addresses.
 
@@ -872,6 +879,26 @@ backslash, checked on the *raw* value before normalization.
 | Raw-value guard failure | Value dropped; WARN `HTTP-120`..`HTTP-123`.
 | Trust miss (an untrusted immediate peer, or any forwarded scheme, host, port or prefix) | Value not honored; no log.
 |===
+
+*Several instances are judged as one value.* The resolver joins every instance of a header with
+`", "` and sanitizes the joined value. The pre-route header check judges `X-Forwarded-For` and
+`Forwarded` the same way: besides each instance, it validates their joined value under the same
+`security_defaults` baseline, so a request whose joined chain fails it -- for example two instances
+that are each under the length limit and together over it -- is refused `400`
+(`SECURITY_FILTER_VIOLATION`) instead of reaching the resolver with a chain it would drop.
+
+[[_unresolvable_chain]]
+*A chain that resolves no client.* A trusted proxy's request whose `X-Forwarded-For` or `Forwarded`
+carries a value, yet resolves no client -- a malformed chain, a dropped value, or two chains that
+disagree -- has no client IP: the forward stage regenerates no `X-Forwarded-For` for it. For
+per-source detection
+(xref:security-and-edge-hardening.adoc#_enumeration_detection[`enumeration_detection`],
+`threat_classification`) and for the BFF pending-login quota it is keyed on that proxy's own source,
+`unresolved-via-<proxy address>` (the proxy's address canonicalized as any source). Under `block` or
+`delay`, `enumeration_detection` acts on that source like on any other, because a client can always
+send such a header. Only a request that carries no `X-Forwarded-For` or `Forwarded` value at all is
+keyed on the shared `unknown` source, which detection never acts on; a client cannot produce that
+request, since it cannot remove the header its trusted proxy appends.
 
 *Emission is regeneration, never propagation.* Inbound chains are never appended to or forwarded; the
 gateway emits fresh headers from the resolved, sanitized facts, and `X-Forwarded-For` carries exactly

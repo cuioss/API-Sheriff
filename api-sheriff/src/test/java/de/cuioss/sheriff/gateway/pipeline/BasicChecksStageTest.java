@@ -21,10 +21,15 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.database.AttackTestCase;
 import de.cuioss.http.security.database.OWASPTop10AttackDatabase;
@@ -39,6 +44,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Contract of the non-skippable pre-route floor: collection caps, the URL path pipeline that
@@ -429,6 +435,124 @@ class BasicChecksStageTest {
         }
     }
 
+    @Nested
+    @DisplayName("Client-address headers — judged as the joined value the forwarded-header resolver reads")
+    class ClientAddressHeaders {
+
+        private static final String PROXY = "192.0.2.10";
+        private static final String CLIENT = "203.0.113.7";
+        private static final String XFF = "X-Forwarded-For";
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {XFF, "x-forwarded-for", "Forwarded"})
+        @DisplayName("refuses a client-address header whose instances pass alone but whose joined value exceeds the cap")
+        void refusesAJoinedChainOverTheCap(String name) {
+            int cap = STRICT.maxHeaderValueLength();
+            List<String> instances = List.of(clientLine(name, cap + 1 - proxyTail(name)), proxyLine(name));
+            PipelineRequest request = requestWithInstances(name, instances);
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> strictStage.process(request),
+                    "the joined value is " + String.join(", ", instances).length() + " characters");
+
+            assertAll("each instance alone is within the cap, the joined value is not",
+                    () -> assertTrue(instances.stream().allMatch(value -> value.length() <= cap)),
+                    () -> assertEquals(cap + 1, String.join(", ", instances).length()),
+                    () -> assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType()));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {XFF, "Forwarded"})
+        @DisplayName("admits a client-address header whose joined value is exactly at the cap")
+        void admitsAJoinedChainAtTheCap(String name) {
+            int cap = STRICT.maxHeaderValueLength();
+            List<String> instances = List.of(clientLine(name, cap - proxyTail(name)), proxyLine(name));
+            PipelineRequest request = requestWithInstances(name, instances);
+
+            assertAll("matched control",
+                    () -> assertEquals(cap, String.join(", ", instances).length(), "precondition: joined length"),
+                    () -> assertDoesNotThrow(() -> strictStage.process(request)));
+        }
+
+        @Test
+        @DisplayName("judges the same value the resolver judges: what the edge admits resolves, what it refuses would not")
+        void edgeAndResolverJudgeTheSameValue() {
+            int cap = STRICT.maxHeaderValueLength();
+            List<String> atCap = List.of(clientLine(XFF, cap - proxyTail(XFF)), CLIENT);
+            List<String> overCap = List.of(clientLine(XFF, cap + 1 - proxyTail(XFF)), CLIENT);
+            ForwardedHeaderResolver resolver = new ForwardedHeaderResolver(ForwardedResolverConfig.builder()
+                    .trustedProxies(Set.of(PROXY + "/32")).securityConfig(STRICT).build(), new SecurityEventCounter());
+
+            boolean edgeAdmitsAtCap = admits(strictStage, requestWithInstances(XFF, atCap));
+            boolean edgeAdmitsOverCap = admits(strictStage, requestWithInstances(XFF, overCap));
+            Optional<String> resolvedAtCap = resolver.resolve(xForwardedFor(atCap)).clientIp();
+            Optional<String> resolvedOverCap = resolver.resolve(xForwardedFor(overCap)).clientIp();
+
+            assertAll("one judgement at the edge and in the resolver",
+                    () -> assertTrue(edgeAdmitsAtCap, "the edge admits the chain at the cap"),
+                    () -> assertEquals(Optional.of(CLIENT), resolvedAtCap, "and the resolver reads its client"),
+                    () -> assertFalse(edgeAdmitsOverCap, "the edge refuses the chain one over the cap"),
+                    () -> assertEquals(Optional.empty(), resolvedOverCap, "which the resolver would have dropped"));
+        }
+
+        @Test
+        @DisplayName("a repeated header that is no client-address header is still judged per instance only")
+        void otherRepeatedHeaderIsJudgedPerInstance() {
+            int cap = STRICT.maxHeaderValueLength();
+            PipelineRequest request = requestWithInstances("X-Custom", List.of("a".repeat(cap), "b".repeat(cap)));
+
+            assertDoesNotThrow(() -> strictStage.process(request),
+                    "only the headers the resolver joins are judged joined");
+        }
+
+        @Test
+        @DisplayName("a single client-address instance over the cap is refused as before")
+        void singleInstanceOverTheCapIsRefused() {
+            PipelineRequest request = requestWithInstances(XFF,
+                    List.of(clientLine(XFF, STRICT.maxHeaderValueLength() + 1)));
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> strictStage.process(request));
+
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+
+        /** The proxy's own line: the real client, as the header's syntax writes it. */
+        private static String proxyLine(String name) {
+            return "Forwarded".equalsIgnoreCase(name) ? "for=" + CLIENT : CLIENT;
+        }
+
+        /** What the proxy's line adds to the joined value: the {@code ", "} and the line itself. */
+        private static int proxyTail(String name) {
+            return ", ".length() + proxyLine(name).length();
+        }
+
+        /**
+         * A client line exactly {@code length} characters long: address elements joined with {@code ", "}
+         * ({@code for=} elements for {@code Forwarded}) and a letter filler, which the resolver never
+         * reaches, because it walks the chain from the proxy's end.
+         */
+        private static String clientLine(String name, int length) {
+            String unit = "Forwarded".equalsIgnoreCase(name) ? "for=1.1.1.1, " : "1.1.1.1, ";
+            StringBuilder line = new StringBuilder();
+            while (length - line.length() > unit.length() + 7) {
+                line.append(unit);
+            }
+            return line.append("a".repeat(length - line.length())).toString();
+        }
+
+        private static Function<String, List<String>> xForwardedFor(List<String> instances) {
+            return name -> XFF.equalsIgnoreCase(name) ? instances : List.of();
+        }
+
+        private static boolean admits(BasicChecksStage stage, PipelineRequest request) {
+            try {
+                stage.process(request);
+                return true;
+            } catch (GatewayException _) {
+                return false;
+            }
+        }
+    }
+
     private BasicChecksStage stageWithoutCookieCarveOut(SecurityConfiguration baseline) {
         return new BasicChecksStage(baseline, counter, null, withHeaderValueCap(baseline, AUTHORIZATION_CAP));
     }
@@ -453,6 +577,15 @@ class BasicChecksStageTest {
                 .requestPath("/api")
                 .queryParameters(List.of())
                 .headers(Map.of(name, List.of(value)))
+                .build();
+    }
+
+    private static PipelineRequest requestWithInstances(String name, List<String> instances) {
+        return PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath("/api")
+                .queryParameters(List.of())
+                .headers(Map.of(name, instances))
                 .build();
     }
 

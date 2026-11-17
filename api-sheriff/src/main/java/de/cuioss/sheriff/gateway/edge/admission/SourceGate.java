@@ -64,7 +64,7 @@ import org.jspecify.annotations.Nullable;
  * answered nor admitted.
  * <p>
  * <strong>The unknown source is never acted on.</strong> A request whose client did not resolve — a
- * trusted proxy's request with no usable forwarding header — is keyed on the shared
+ * trusted proxy's request that carries no client-address header — is keyed on the shared
  * {@link SourceKey#UNKNOWN_SOURCE}, which stands for every such client at once. It is admitted to the
  * ledger like any source, so it is counted, can trip, and its trip is logged and handed to the
  * recon-trip observer; but whatever the action, it is never answered {@code 429}, never refused for a

@@ -346,10 +346,13 @@ every client behind a NAT, egress proxy or load balancer; enforcement is the ope
   xref:routing-and-forwarding.adoc#_forwarded_headers[`forwarded.trusted_proxies`]; otherwise the TCP
   peer, whose `X-Forwarded-For` is never read. IPv6 is reduced to its `/64` (or, once the ledger is
   under pressure, a new source to its `/48` -- see *Scope* below). When a trusted forwarder's
-  `Forwarded` and `X-Forwarded-For` headers together yield no client -- a contested chain, where the
-  two disagree, or an unresolvable one -- the client the `X-Forwarded-For` chain alone yields under the
-  same trusted proxies is used. Only a request that yields no client even then, and an absent or
-  unparseable TCP peer address, is the one source `unknown`.
+  `Forwarded` or `X-Forwarded-For` carries a value yet the two together yield no client -- a contested
+  chain, where the two disagree, or a malformed one -- the source is that forwarder's own unresolved
+  source, `unresolved-via-<proxy address>`, which detection acts on like any source; neither family is
+  resolved on its own
+  (xref:routing-and-forwarding.adoc#_unresolvable_chain[A chain that resolves no client]). Only a
+  trusted forwarder's request carrying neither header, and an absent or unparseable TCP peer address,
+  is the one source `unknown`.
 * *Host* -- the request host when a route declares it as `match.host`, otherwise `*`, so changing
   `Host` gives no fresh count.
 
@@ -358,10 +361,11 @@ every client behind a NAT, egress proxy or load balancer; enforcement is the ope
 not resolve at once, so acting on it would act on all of them for the probing of one. It is counted,
 it trips, its trip is logged as `ApiSheriff-141` and fed to
 <<_threat_classification,`threat_classification`>>, but under every `action` it is never answered
-`429`, never delayed and never refused. The pending-login quota of the BFF uses the same address with
-the same `X-Forwarded-For` fallback and counts every `unknown` request as one source (see
+`429`, never delayed and never refused. The pending-login quota of the BFF uses the same address,
+keys an unresolvable chain on the same unresolved source and counts every `unknown` request as one
+source (see
 link:../user/bff-session.adoc#pending-logins[Server-Session BFF -- When too many logins are
-unfinished]). Because a trusted proxy that forwards no usable client address therefore lets its
+unfinished]). Because a trusted proxy that forwards no client-address header therefore lets its
 requests escape `block` and `delay`, the gateway logs WARN
 link:../LogMessages.adoc#apisheriff-149[`ApiSheriff-149`] once at startup when `enumeration_detection` is
 enabled with `action` `block` or `delay` while `forwarded.trusted_proxies` is non-empty. It names the

@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The gateway resolves X-Forwarded-*, X-Proxy* and RFC 7239 Forwarded through cui-http behind a mandatory trusted-proxy allowlist checked against the TCP peer, regenerates canonical headers rather than propagating inbound chains, and emits X-Forwarded-* by default or both families on request; emitting Forwarded by default, a Forwarded-only mode, per-hop appending and a gateway-owned parser are rejected.
+// summary: The gateway resolves X-Forwarded-*, X-Proxy* and RFC 7239 Forwarded through cui-http behind a mandatory trusted-proxy allowlist checked against the TCP peer, never resolves one family on its own when the two disagree, judges a multi-instance chain at the edge as the joined value the resolver reads, regenerates canonical headers rather than propagating inbound chains, and emits X-Forwarded-* by default or both families on request; emitting Forwarded by default, a Forwarded-only mode, per-hop appending and a gateway-owned parser are rejected.
 // tags: forwarded-headers, trusted-proxies, rfc-7239, security
 // affects: api-sheriff
 // supersedes:
@@ -75,6 +75,34 @@ from the gateway. A route re-admits a member only by naming it in `headers_allow
 `ConnectionHeaders.REQUEST_READMITTABLE` holds the re-admittable members
 (link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
 
+=== Amendment: one family is never resolved on its own, and the chain is judged as it is read
+
+*The unsupported topology.* A trusted proxy that appends only to `Forwarded` and passes a client's
+`X-Forwarded-For` through, and a proxy that passes a client's `X-Forwarded-For` through without
+appending to it, both leave a client-written chain in a family the gateway reads. The second hands the
+client the client IP outright. The first makes the two chains disagree whenever the client sends
+`X-Forwarded-For`, and the resolver then names no client.
+
+*No single-family fallback.* A disagreeing pair carries no evidence of which family the proxy manages:
+an `X-Forwarded-For`-managing proxy behind which a client adds `Forwarded`, and a `Forwarded`-only
+proxy behind which a client adds `X-Forwarded-For`, produce the same shape. Resolving either family on
+its own would let the client choose the client IP in one of the two. The gateway therefore resolves
+the combined headers once (`forward.ForwardedClientResolution`) and takes no second pass. No setting
+declares a proxy's managed family (see <<_a_family_accept_setting>>), so no request can show one.
+
+*The per-source keys of an unresolved chain.* A trusted proxy's request whose `X-Forwarded-For` or
+`Forwarded` carries a value from which no client resolves -- a disagreeing pair, a malformed chain, a
+value sanitization drops -- is keyed by per-source detection and by the BFF pending-login quota on that
+proxy's own source, `unresolved-via-` followed by the proxy's canonical address. Detection acts on it
+like on any source, because a client can always produce such a header. Only a request carrying no such
+value at all is keyed on the shared `unknown` source, which detection counts but never acts on.
+
+*The judged value.* The resolver joins every instance of a header with `", "` and sanitizes the joined
+value. The pre-route header check (`BasicChecksStage`) validates the joined `X-Forwarded-For` and the
+joined `Forwarded` under the same baseline, besides each instance, so the check and the resolver judge
+one text. A request whose instances each pass but whose joined chain fails is refused `400` at the
+check instead of having its chain dropped by the resolver.
+
 == Alternatives rejected
 
 === Emit `Forwarded` by default
@@ -128,7 +156,7 @@ RFC 7239 section 6.3 suggests obfuscated identifiers to avoid leaking internal t
 
 === Accepted costs
 
-* A trusted proxy that does not manage `X-Forwarded-*` hands a spoofed chain the win, and no setting covers that deployment.
+* A trusted proxy that does not manage `X-Forwarded-*` is unsupported, and no setting covers that deployment. Passing a client's `X-Forwarded-For` through unchanged hands the spoofed chain the win. Appending only to `Forwarded` makes a client-sent `X-Forwarded-For` contest the chain: no client resolves, and every such request through that proxy shares the proxy's unresolved source.
 
 == Links
 

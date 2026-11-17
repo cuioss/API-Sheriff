@@ -51,8 +51,8 @@ import org.jspecify.annotations.Nullable;
  * individually very broad range. It also emits
  * {@link ConfigLogMessages.WARN#DETECTION_ACTION_BEHIND_TRUSTED_PROXIES} when an acting
  * {@code enumeration_detection} action ({@code block} or {@code delay}) meets a non-empty
- * {@code trusted_proxies}, since a proxied request without a usable client address is keyed on the
- * shared {@code unknown} source detection never acts on.
+ * {@code trusted_proxies}, since a proxied request without a {@code Forwarded} or
+ * {@code X-Forwarded-For} value is keyed on the shared {@code unknown} source detection never acts on.
  * <p>
  * The passthrough host-collision rule ({@link #validatePassthroughHostCollision}) refuses a route whose
  * {@code match.host} is a {@code tls.passthrough_sni} host, since such a host is relayed at L4 and the

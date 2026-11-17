@@ -440,9 +440,11 @@ link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_
 
 image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key and rejection feed into the enumeration-detection tier and the threat-classification tier, align=center]
 
-* *Keying and bounds.* Requests are keyed by `(source, host)`: client IPv4, IPv6 `/64` prefix, or
-  `unknown` (honouring `forwarded.trusted_proxies`; a trusted proxy's contested `Forwarded` /
-  `X-Forwarded-For` chain falls back to the `X-Forwarded-For` client), paired with a declared
+* *Keying and bounds.* Requests are keyed by `(source, host)`: client IPv4, IPv6 `/64` prefix, a
+  trusted proxy's unresolved source `unresolved-via-<proxy address>`, or `unknown` (honouring
+  `forwarded.trusted_proxies`; a trusted proxy's `Forwarded` / `X-Forwarded-For` chain that resolves
+  no client -- contested or malformed -- is keyed on that proxy's unresolved source, and only a request
+  carrying neither header on `unknown`), paired with a declared
   `match.host` or `*`. The ledger tracks at most 65,536 keys, draining linearly at
   `threshold / window` per second and transitioning `CLEAR -> TRIPPED` (and `-> BLOCKED` when
   `action` is `block`) at most once per `CLEAR` period. From 75% of the bound on, a new IPv6 key is

@@ -633,12 +633,13 @@ public final class ConfigLogMessages {
          * {@code enumeration_detection} is enabled with the acting action {@code block} or
          * {@code delay} while {@code forwarded.trusted_proxies} is non-empty.
          * <p>
-         * A trusted proxy's request whose forwarding headers yield no client — neither the combined
-         * {@code Forwarded} / {@code X-Forwarded-For} chain nor the {@code X-Forwarded-For} fallback —
+         * A trusted proxy's request that carries no {@code Forwarded} or {@code X-Forwarded-For} value
          * is keyed on the one shared source {@code unknown}. Detection counts, trips and reports that
          * source like any other, but never blocks, delays or refuses it, because it stands for every
-         * such client at once. Requests a proxy forwards without a usable client address therefore
-         * escape the configured action, and this record is the boot-time statement of that gap.
+         * such client at once. Requests a proxy forwards without a client-address header therefore
+         * escape the configured action, and this record is the boot-time statement of that gap. A
+         * request whose header carries a value that resolves no client is not in that gap: it is keyed
+         * on the proxy's own unresolved source, which detection acts on.
          * <p>
          * It is a {@code WARN} and never a boot refusal: the combination is the recommended posture
          * behind a proxy that does send its clients' addresses. Emitted once per boot by
@@ -648,7 +649,7 @@ public final class ConfigLogMessages {
         public static final LogRecord DETECTION_ACTION_BEHIND_TRUSTED_PROXIES = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(149)
-                .template("enumeration_detection.action is %s while forwarded.trusted_proxies is non-empty — a request a trusted proxy forwards without a usable client address is keyed on the shared source 'unknown', which detection counts and reports but never blocks, delays or refuses, so such requests escape the configured action. Make sure every trusted proxy sends its clients' addresses in X-Forwarded-For")
+                .template("enumeration_detection.action is %s while forwarded.trusted_proxies is non-empty — a request a trusted proxy forwards without a Forwarded or X-Forwarded-For value is keyed on the shared source 'unknown', which detection counts and reports but never blocks, delays or refuses, so such requests escape the configured action. Make sure every trusted proxy sends its clients' addresses in X-Forwarded-For")
                 .build();
     }
 

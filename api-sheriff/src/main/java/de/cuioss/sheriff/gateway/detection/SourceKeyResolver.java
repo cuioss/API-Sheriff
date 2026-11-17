@@ -50,6 +50,18 @@ import org.jspecify.annotations.Nullable;
  * ({@link InetAddress#ofLiteral(String)}), so a host name is never resolved: a name is unparseable and
  * folds to {@link SourceKey#UNKNOWN_SOURCE}, and no lookup is ever made.
  * <p>
+ * <strong>The unresolvable forwarding chain.</strong> A trusted proxy's request that carries a
+ * client-address header from which no client resolves — a malformed chain, or a {@code Forwarded}
+ * chain disagreeing with the {@code X-Forwarded-For} chain — is keyed by
+ * {@link #resolveUnresolvedForwarding} on a source of its own per proxy:
+ * {@value #UNRESOLVED_FORWARDING_PREFIX} followed by the proxy's canonical address
+ * ({@link #unresolvedForwardingSource}). A client can always add or break such a header, so that key
+ * must not be {@link SourceKey#UNKNOWN_SOURCE}, which the edge never acts on: it is a source like any
+ * other, shared only by the requests whose chain did not resolve through that one proxy. A request
+ * from a trusted proxy that carries no client-address header at all stays
+ * {@link SourceKey#UNKNOWN_SOURCE}, because a client cannot produce that request by itself. Which
+ * request is which is the caller's judgement; this class only writes the key.
+ * <p>
  * <strong>The aggregate.</strong> {@link #aggregateSource(String)} widens a canonical {@code /64}
  * source to its {@code /48} aggregate, written {@code a:b:c::/48} in the same notation. The resolver
  * itself never produces it: a {@link SourceLedger} under pressure tracks a new IPv6 source in that form,
@@ -66,6 +78,12 @@ import org.jspecify.annotations.Nullable;
  * @since 1.0
  */
 public final class SourceKeyResolver {
+
+    /**
+     * The prefix of the source a trusted proxy's unresolvable forwarding chain is keyed on; the proxy's
+     * canonical address follows it. No canonical address text starts with it.
+     */
+    public static final String UNRESOLVED_FORWARDING_PREFIX = "unresolved-via-";
 
     private static final int IPV6_PREFIX_HEXTETS = 4;
     private static final String IPV6_PREFIX_SUFFIX = "::/64";
@@ -99,6 +117,32 @@ public final class SourceKeyResolver {
             @Nullable String authorityHost) {
         String address = forwardedClientAddress != null ? forwardedClientAddress : peerAddress;
         return new SourceKey(canonicalSource(address), foldHost(authorityHost));
+    }
+
+    /**
+     * Resolves the key of a trusted proxy's request whose client-address headers carry a value from
+     * which no client resolves; see the class documentation.
+     *
+     * @param proxyAddress  the TCP peer address of the trusted proxy
+     * @param authorityHost the authority host without its port, {@code null} when absent
+     * @return the key, never {@code null}: the proxy's {@link #unresolvedForwardingSource} and the folded
+     *         host
+     */
+    public SourceKey resolveUnresolvedForwarding(@Nullable String proxyAddress, @Nullable String authorityHost) {
+        return new SourceKey(unresolvedForwardingSource(proxyAddress), foldHost(authorityHost));
+    }
+
+    /**
+     * The source text a trusted proxy's unresolvable forwarding chain is keyed on:
+     * {@value #UNRESOLVED_FORWARDING_PREFIX} followed by the proxy's {@linkplain #canonicalSource
+     * canonical address}, so {@code 192.0.2.10} gives {@code unresolved-via-192.0.2.10}. Shared by the
+     * edge's source key and the pending-authorization quota key.
+     *
+     * @param proxyAddress the TCP peer address of the trusted proxy
+     * @return the source text, never {@code null}
+     */
+    public static String unresolvedForwardingSource(@Nullable String proxyAddress) {
+        return UNRESOLVED_FORWARDING_PREFIX + canonicalSource(proxyAddress);
     }
 
     /**

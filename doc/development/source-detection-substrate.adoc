@@ -51,13 +51,16 @@ address. The resolver does not judge trust: the edge's source-key stage, `Source
 forwarded address only for a peer `forwarded.trusted_proxies` trusts, resolved by the same resolver
 the forward stage regenerates `X-Forwarded-For` from. The client is derived by
 `forward.ForwardedClientResolution`, the one derivation the BFF pending-authorization quota key
-(`PendingQuotaKeys`) shares: the combined `Forwarded` / `X-Forwarded-For` headers first, and when
-they yield no client -- the two chains disagree, or the combined chain is malformed -- the same
-resolver again with `Forwarded` masked, so the `X-Forwarded-For` result under the same trusted proxies
-(`ForwardedClientResolutionTest` pins cui-http's empty result for a disagreeing pair). A trusted
-peer's request that yields no client even then is keyed on the `unknown` source, never on the trusted
-peer's own address (`SourceKeysTest`). The edge never answers, refuses or holds a request keyed
-`unknown` (<<_unknown_source>>). `SourceKeys` resolves the key once per
+(`PendingQuotaKeys`) shares: the combined `Forwarded` / `X-Forwarded-For` headers, resolved once. When
+they yield no client -- the two chains disagree (`ForwardedClientResolutionTest` pins cui-http's empty
+result for a disagreeing pair), or a chain is malformed -- neither family is resolved on its own, since
+the request cannot show which family the proxy manages. Such a request, whose `Forwarded` or
+`X-Forwarded-For` carries a value, is keyed on the proxy's own unresolved source,
+`unresolved-via-<proxy address>` (`SourceKeyResolver.resolveUnresolvedForwarding`), which the edge
+acts on like any source. Only a trusted peer's request carrying neither header is keyed on the
+`unknown` source; neither key is ever the trusted peer's own address (`SourceKeysTest`). The edge
+never answers, refuses or holds a request keyed `unknown` (<<_unknown_source>>). `SourceKeys`
+resolves the key once per
 request, on the event loop before admission, and stashes it on the request context for every
 consumer, so both consumers key a request's events on the same source. The chosen address is canonicalized:
 
@@ -104,8 +107,8 @@ and neither consumer carries an aggregation rule of its own.
   tracked under its `/48` aggregate (`SourceKeyResolver.aggregateSource`, `a:b:c:d::/64` ->
   `a:b:c::/48`, on the same host). Below the mark a new key keeps its `/64`. One site therefore cannot
   fill a pressured ledger by rotating through the `/64`s of its allocation.
-* *What is never aggregated.* A key already tracked keeps its key at any fill; an IPv4 source and
-  `unknown` pass `aggregateSource` unchanged.
+* *What is never aggregated.* A key already tracked keeps its key at any fill; an IPv4 source,
+  `unknown` and an unresolved source (`unresolved-via-...`) pass `aggregateSource` unchanged.
 * *Lookup.* `admit`, `state` and `hasRoomFor` answer a `/64` that is not tracked itself from its
   tracked `/48`, so a consumer keeps asking with the `/64` the edge resolved and finds the aggregated
   entry. The key the state and the trip report is then the `/48`, which is the source text the trip
@@ -343,9 +346,10 @@ namespace:
 | `event.risk_score` | The source's score right after the admission that tripped it.
 | `source.address` | The canonical source text, always: an IPv4 address, an IPv6 `/64` prefix
   (`a:b:c:d::/64`), an IPv6 `/48` prefix (`a:b:c::/48`) when the threat ledger began tracking the
-  source above its high-water mark (<<_aggregation>>), or `unknown`.
-| `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 prefix or `unknown`
-  is not a valid ECS `ip` value).
+  source above its high-water mark (<<_aggregation>>), a proxy's unresolved source
+  (`unresolved-via-<proxy address>`), or `unknown`.
+| `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 prefix, an unresolved
+  source or `unknown` is not a valid ECS `ip` value).
 | `url.domain` | The folded host, *only* when it is a declared `match.host`; absent for `*`.
 | `threat.framework` | `MITRE ATT&CK`.
 | `threat.tactic.id` / `threat.tactic.name` | `["TA0043"]` / `["Reconnaissance"]`.

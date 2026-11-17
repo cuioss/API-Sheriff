@@ -355,12 +355,15 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 *Reading a trip.*
 
 * WARN `ApiSheriff-141` names the source, the host, the threshold, the window and the action. The
-  source is an IPv4 address, an IPv6 `/64` prefix, an IPv6 `/48` prefix, or `unknown`. A `/48`
+  source is an IPv4 address, an IPv6 `/64` prefix, an IPv6 `/48` prefix, a trusted forwarder's
+  unresolved source `unresolved-via-<proxy address>`, or `unknown`. A `/48`
   appears when the gateway began tracking the source while it already tracked 75% of its maximum of
   65,536 sources: from that mark on a new IPv6 source is counted by its `/48`, so one site cannot fill
   the gateway's memory by rotating through its `/64` prefixes. For a request through a trusted
-  forwarder the source is the client address the forwarder reported -- when its `Forwarded` and
-  `X-Forwarded-For` headers disagree, the address `X-Forwarded-For` alone names. The host is a host a
+  forwarder the source is the client address the forwarder reported; when its `Forwarded` or
+  `X-Forwarded-For` carries a value that names no client -- the two disagree, or one is malformed --
+  it is the forwarder's unresolved source, and only a request carrying neither header is `unknown`.
+  The host is a host a
   route declares in `match.host`, or `*`. The line never carries the requested path or a header. A
   source trips once and is not reported again until it has stopped long enough for its count to drain.
 * `sheriff_source_trips_total{action}` on the management port counts the trips.

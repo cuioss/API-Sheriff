@@ -60,7 +60,8 @@ import de.cuioss.sheriff.gateway.events.EventType;
  * <p>
  * <strong>The source trap.</strong> ECS types {@code source.ip} as an IP address. An IPv6 source is
  * keyed on its {@code /64} prefix ({@code a:b:c:d::/64}) or, tracked under ledger pressure, its
- * {@code /48} aggregate ({@code a:b:c::/48}), and an unresolvable one on
+ * {@code /48} aggregate ({@code a:b:c::/48}), a trusted proxy's unresolvable forwarding chain on that
+ * proxy's unresolved source ({@code unresolved-via-} and the proxy's address), and an absent client on
  * {@link SourceKey#UNKNOWN_SOURCE}; none is a valid {@code ip} value, so each appears in
  * {@code source.address} only. The IPv4 check reads the text as a dotted-decimal literal and performs
  * no name lookup.
