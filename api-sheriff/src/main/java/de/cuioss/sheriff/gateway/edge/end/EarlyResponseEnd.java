@@ -257,8 +257,8 @@ final class EarlyResponseEnd {
         private final Promise<Void> written;
         private final Quiescence quiescence = new Quiescence(System.nanoTime());
         private boolean ended;
-        /** Hands PING acknowledgements to this wait; created with the first PING, released when the wait ends. */
-        private @Nullable AcknowledgementRelay relay;
+        /** Hands PING acknowledgements to this wait; released when the wait ends. */
+        private final AcknowledgementRelay relay = new AcknowledgementRelay(this);
 
         private Wait(InboundStreamWindow window, Supplier<Future<Void>> ending, Runnable reset,
                 Promise<Void> written) {
@@ -289,8 +289,7 @@ final class EarlyResponseEnd {
          * that long.
          */
         private void ping() {
-            AcknowledgementRelay target = relay != null ? relay : new AcknowledgementRelay(this);
-            relay = target;
+            AcknowledgementRelay target = relay;
             InboundStreamWindow view = window;
             view.ping().onComplete(acknowledgement -> view.execute(() -> target.deliver(acknowledgement)));
         }
@@ -314,9 +313,7 @@ final class EarlyResponseEnd {
 
         private void finish(Outcome outcome) {
             ended = true;
-            if (relay != null) {
-                relay.release();
-            }
+            relay.release();
             LOGGER.debug("Ending the early response of an open HTTP/2 stream: %s", outcome);
             end();
         }
