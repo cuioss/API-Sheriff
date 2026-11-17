@@ -881,7 +881,7 @@ class InboundBodyDepartureTest {
             return HttpClientRequest.class.cast(Proxy.newProxyInstance(HttpClientRequest.class.getClassLoader(),
                     new Class<?>[]{HttpClientRequest.class}, (proxy, method, args) -> switch (method.getName()) {
                         case "exceptionHandler" -> proxy;
-                        case "send" -> holdBody(method.getName(), args);
+                        case "send" -> holdBody(args);
                         case "reset" -> {
                             resets.incrementAndGet();
                             yield Boolean.TRUE;
@@ -896,9 +896,9 @@ class InboundBodyDepartureTest {
                     }));
         }
 
-        private Object holdBody(String methodName, Object[] args) {
+        private Object holdBody(Object[] args) {
             if (args == null || args.length != 1 || !(args[0] instanceof DispatchStage.ByteCappedBodyStream sent)) {
-                unexpected.add(methodName);
+                unexpected.add("send");
                 throw new AssertionError("the held request was sent without the dispatch's body stream");
             }
             sent.pause();
