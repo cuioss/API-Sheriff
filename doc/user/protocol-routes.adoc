@@ -295,8 +295,9 @@ half-closed request and does not answer, and a call whose upstream stops taking 
 takes no more within the 30 s; each ends with `DEADLINE_EXCEEDED` and `grpc-message: upstream`, and the
 breaker counts it. A call whose wait for an upstream connection or HTTP/2 stream slot runs its full
 10 s bound ends earlier, unsent, as the upstream's `UPSTREAM_TIMEOUT` -- `DEADLINE_EXCEEDED` with
-`grpc-message: upstream` -- which the breaker counts and which is never retried: the wait queued behind
-connections the upstream holds. Because of that bound the gateway hands a call over no later than 10 s
+`grpc-message: upstream` -- which the breaker counts and which is never retried: such a wait usually
+queued behind connections the upstream holds, and the bound also covers resolving the upstream's host
+name for a new connection. Because of that bound the gateway hands a call over no later than 10 s
 after the attempt started, so the deadline leaves the client at least 19 s before the 29 s cap. While an upstream is not taking data, the 10 s message bound does not run and the
 25 s deadline does not end the call at once: a deadline that passed meanwhile ends the call the moment
 the upstream takes data again. Only a sustained upstream stall makes that the upstream's failure: when

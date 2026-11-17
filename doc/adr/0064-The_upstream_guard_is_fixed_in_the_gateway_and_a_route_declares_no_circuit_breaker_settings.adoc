@@ -92,7 +92,7 @@ The behaviour the keys appeared to configure is a fixed policy of the gateway. `
 
 | Connect timeout
 | 5 s dial, 10 s wait
-| The upstream client dials within 5 s and handshakes TLS within 4 s, and an attempt waits at most 10 s for its connection, queue and dial together. An expired wait is the upstream's timeout (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#upstream-connection-wait[ADR-0060]).
+| The upstream client dials within 5 s and handshakes TLS within 4 s, and an attempt waits at most 10 s for its connection, queue, host-name resolution and dial together. An expired wait is the upstream's timeout (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#upstream-connection-wait[ADR-0060]).
 
 | Idle timeout
 | None

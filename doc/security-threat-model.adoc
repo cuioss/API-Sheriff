@@ -1661,8 +1661,9 @@ stream-idle bound]):
   `UPSTREAM_POOL_SATURATED` (`503`), the gateway's own saturation, which the breaker records as neutral.
   An attempt whose wait reaches the 10 s ends unsent as `DispatchStage.UpstreamConnectionWaitExpired`,
   the upstream's `UPSTREAM_TIMEOUT` (`504`; on gRPC `DEADLINE_EXCEEDED` with `grpc-message: upstream`):
-  the dial and TLS-handshake timeouts together are shorter than the bound, so such an attempt queued
-  behind connections the upstream holds. The breaker counts it and the retry predicate refuses it, since
+  the dial and TLS-handshake timeouts together are shorter than the bound, so such an attempt usually
+  queued behind connections the upstream holds; the bound also covers resolving the upstream's host name
+  for a new connection, which no shorter timeout bounds. The breaker counts it and the retry predicate refuses it, since
   a retry would queue behind the same connections. That holds under load as well: when more calls are
   admitted than a slow upstream serves within the bound, the expired waits are counted and can open the
   breaker, whose open circuit then sheds that load with its `503`; limiting what one client sends is rate

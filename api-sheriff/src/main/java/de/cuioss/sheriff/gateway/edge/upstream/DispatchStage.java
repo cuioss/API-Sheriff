@@ -252,17 +252,19 @@ import org.jspecify.annotations.Nullable;
  * departure from the dispatch.
  * <p>
  * <strong>The wait for a pooled connection is bounded.</strong> Every attempt asks for its upstream connection
- * with a connection wait bound of {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms, which covers both its time in
- * the client's queue and the dial of a new connection for it. Only an attempt the client's bounded wait queue
+ * with a connection wait bound of {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms, which covers its time in the
+ * client's queue and the acquisition of a new connection for it: resolving the upstream's host name, then the
+ * dial. Only an attempt the client's bounded wait queue
  * refuses at once obtained no connection because the gateway itself is saturated: it ends, unsent, as an
  * {@link EventType#UPSTREAM_POOL_SATURATED} rejection ({@code 503}), raised inside the guard, so the breaker
  * records it as neutral and the retry predicate refuses it (see {@link #poolSaturationOf}). An attempt whose
  * wait outlasts the bound is the upstream's failure: the dial and TLS handshake timeouts together are shorter
- * than the bound, so an expired wait almost always means the attempt queued behind connections the upstream is
- * holding — an upstream that does not answer, or one too slow to serve the admitted load within the bound. It
- * ends, unsent, as an {@link UpstreamConnectionWaitExpired}, a timeout the breaker counts and the failure mapper
- * reports as {@link EventType#UPSTREAM_TIMEOUT} ({@code 504}), and the retry predicate refuses it: a retry would
- * queue again behind the same held connections. Every other reason an attempt obtains no connection — the
+ * than the bound, so an expired wait usually means the attempt queued behind connections the upstream is
+ * holding — an upstream that does not answer, or one too slow to serve the admitted load within the bound. The
+ * host-name resolution has no shorter timeout of its own, so a resolution slower than the bound ends the same
+ * way. It ends, unsent, as an {@link UpstreamConnectionWaitExpired}, a timeout the breaker counts and the failure
+ * mapper reports as {@link EventType#UPSTREAM_TIMEOUT} ({@code 504}), and the retry predicate refuses it: a retry
+ * would usually queue again behind the same held connections. Every other reason an attempt obtains no connection — the
  * upstream refused it, or its dial or TLS handshake did not complete within the clients' timeouts — stays the
  * upstream's failure as well, and the retry predicate treats it as any other upstream failure.
  * The bound keeps the wait from taking more than a minority of the request-body deadline or of the
@@ -327,15 +329,17 @@ public final class DispatchStage {
 
     /**
      * How long an attempt waits for a pooled upstream connection — in the client's queue and while the
-     * connection it waits for is dialled — before the dispatch gives up on it as the upstream's timeout
+     * connection it waits for is acquired, host-name resolution and dial included — before the dispatch gives up
+     * on it as the upstream's timeout
      * ({@link UpstreamConnectionWaitExpired}, {@link EventType#UPSTREAM_TIMEOUT}), which the breaker counts and
      * the retry predicate refuses. It is shorter than the request-body deadline and the pre-response deadline by
      * more than half of either, so an attempt always hands its body over with most of its deadline left (see
      * {@link DispatchBody#send}), and longer than the clients' dial and TLS handshake timeouts together
      * ({@code EgressClients}). The bound runs from the moment the attempt asks for its connection, those timeouts
      * from the moment its dial starts: an attempt that dials at once fails on them when the upstream does not
-     * establish the connection, while one that queued first behind connections the upstream holds can reach this
-     * bound before them — either way the failure is the upstream's.
+     * establish the connection, while one that queued first behind connections the upstream holds, or whose
+     * upstream host name resolves slowly, can reach this bound before them — either way the failure is the
+     * upstream's.
      */
     static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
 
@@ -673,9 +677,10 @@ public final class DispatchStage {
      * A {@link GatewayException} in the failure's cause chain (followed to a bounded depth) is never
      * retried: a dispatch the client ended, and a failure already mapped to the error contract, end
      * the dispatch. Nor is an {@link UpstreamConnectionWaitExpired} in that chain: the expired wait already
-     * used up the {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms bound, and a retry would queue again behind the
-     * very connections the upstream is holding, keeping the client's wait queue full under exactly the condition
-     * that caused the expiry. A connection the upstream refused fails fast and stays retryable. Any other
+     * used up the {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms bound. Its usual cause is queueing behind
+     * connections the upstream is holding, and a retry would queue again behind them, keeping the client's wait
+     * queue full under exactly the condition that caused the expiry; an expiry caused by a slow resolution of the
+     * upstream's host name is refused the same way. A connection the upstream refused fails fast and stays retryable. Any other
      * failure is retried only while the dispatch's own state permits it — the
      * {@link StreamAwareRetryGate} allows a retry for the request method at the current
      * body-bytes-sent count, and the one-shot request-body stream was not subscribed by an attempt.
@@ -768,11 +773,38 @@ public final class DispatchStage {
         return null;
     }
 
+    /**
+     * Waits until {@code pending} settles or {@code departed} completes, whichever comes first, and decides
+     * which of the two ended the wait. The decision is taken at one point: when {@code pending} settles, the
+     * dispatch records whether the departure had already been signalled. A {@code pending} that has not settled
+     * when the waiting thread reads it was overtaken by the departure; one that has settled is answered by that
+     * recorded verdict, never by re-reading the state after the thread woke. An outcome that settles
+     * {@code pending} after the departure — the connection wait bound passing, or a dial failing, in the instant
+     * the thread wakes — therefore never takes the departure's place, and an outcome that settled it before the
+     * departure keeps its own.
+     *
+     * @param pending  the current attempt's response
+     * @param departed completed when the client departs; never completed exceptionally
+     * @return {@code true} when {@code departed} completed before {@code pending} settled — {@code departed} is
+     *         then complete; {@code false} when {@code pending} settled first
+     * @throws InterruptedException when the waiting thread is interrupted
+     * @throws ExecutionException   never in practice: neither signal waited on fails
+     */
+    static boolean departureEndedWait(CompletableFuture<?> pending, CompletableFuture<?> departed)
+            throws InterruptedException, ExecutionException {
+        // Computed by whichever thread settles pending, right after it settles: never long-blocking.
+        CompletableFuture<Boolean> departedAtSettlement = pending.handle((_, _) -> departed.isDone());
+        CompletableFuture.anyOf(departedAtSettlement, departed).get();
+        // A pending not yet settled means the wake came from departed; a settled one carries its verdict.
+        return !pending.isDone() || departedAtSettlement.get();
+    }
+
     private static HttpClientResponse awaitDispatch(ResolvedUpstream upstream, HttpClient httpClient,
             io.vertx.core.http.HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
             DispatchBody body, UpstreamFailureMapper failureMapper) throws InterruptedException, ExecutionException {
         // The connect timeout of a request bounds the whole wait for its pooled connection: the time in the
-        // client's queue and the dial of a new connection for it (see UPSTREAM_CONNECTION_WAIT_MILLIS).
+        // client's queue and the acquisition of a new connection for it, host-name resolution and dial included
+        // (see UPSTREAM_CONNECTION_WAIT_MILLIS).
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
                 .setHost(upstream.host())
@@ -884,8 +916,9 @@ public final class DispatchStage {
                 if (saturated != null) {
                     throw saturated;
                 }
-                // One whose wait outlasted its bound queued behind connections the upstream holds: it is the
-                // upstream's timeout, which the guard counts and the retry predicate refuses.
+                // One whose wait outlasted its bound usually queued behind connections the upstream holds (the
+                // bound also covers resolving its host name): it is the upstream's timeout, which the guard
+                // counts and the retry predicate refuses.
                 if (dispatchFailure.getCause() instanceof TimeoutException expiry) {
                     UpstreamConnectionWaitExpired expired = new UpstreamConnectionWaitExpired(expiry);
                     throw new ExecutionException(expired.getMessage(), expired);
@@ -1165,18 +1198,21 @@ public final class DispatchStage {
 
         /**
          * Waits until {@code pending} — the current attempt's response — settles or the client departs,
-         * whichever comes first. Both are completion signals, so nothing is polled; the wait is interrupted
-         * like any other by the guard's timeout.
+         * whichever comes first, and decides which of the two ended the wait (see
+         * {@link DispatchStage#departureEndedWait}). Both are completion signals, so nothing is polled; the
+         * wait is interrupted like any other by the guard's timeout.
          *
          * @param pending the current attempt's response
-         * @return {@code true} when the client departed while {@code pending} had not settled; {@code false}
-         *         once it has settled, successfully or not — its outcome is then read from it
+         * @return {@code true} when the departure was signalled before {@code pending} settled; {@code false}
+         *         when {@code pending} settled first, successfully or not — its outcome is then read from it.
+         *         The decision is taken when {@code pending} settles, so an outcome arriving after the
+         *         departure, such as the connection wait bound passing in the instant the thread wakes, never
+         *         takes the departure's place
          * @throws InterruptedException when the waiting thread is interrupted
          * @throws ExecutionException   never in practice: neither signal waited on fails
          */
         boolean departedBefore(CompletableFuture<?> pending) throws InterruptedException, ExecutionException {
-            CompletableFuture.anyOf(pending.handle((_, _) -> null), departed).get();
-            return !pending.isDone();
+            return departureEndedWait(pending, departed);
         }
 
         /**
@@ -1996,13 +2032,15 @@ public final class DispatchStage {
     /**
      * The failure of an attempt whose wait for a pooled upstream connection outlasted
      * {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}. The dial and TLS handshake timeouts of the upstream clients
-     * together are shorter than that bound, so an expired wait almost always means the attempt queued behind
+     * together are shorter than that bound, so an expired wait usually means the attempt queued behind
      * connections the upstream is holding — an upstream that accepts but does not answer, or one too slow to
-     * serve the admitted load within the bound. The attempt's request was never sent and its body never read, so
+     * serve the admitted load within the bound. The bound also covers resolving the upstream's host name for a
+     * new connection, which no shorter timeout bounds, so a resolution slower than the bound ends the same way.
+     * The attempt's request was never sent and its body never read, so
      * nothing the client did contributes to the failure — it is the upstream's. It is a {@link TimeoutException},
      * not a {@link GatewayException}: the breaker counts it as an upstream failure, the failure mapper reports it
      * as {@link EventType#UPSTREAM_TIMEOUT}, and the retry predicate refuses it (see
-     * {@link #allowsRetryAfter(Throwable)}), so a retry never queues again behind the same held connections.
+     * {@link #allowsRetryAfter(Throwable)}), so a retry never queues again behind connections the upstream holds.
      * <p>
      * Carries a fixed message and the expired wait as its cause; no request-specific state.
      */

@@ -154,8 +154,9 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
   across three attempts when the route enables retry and the request is eligible for it; a `POST`,
   a `PATCH` and a request whose body an attempt has taken up end after one attempt;
   `UPSTREAM_TIMEOUT`). The same event reports an attempt whose wait for a pooled upstream connection
-  reached the fixed 10 s connection wait bound: it queued behind connections the upstream holds, its
-  request was never sent, the circuit breaker counts it, and it is never retried (see
+  reached the fixed 10 s connection wait bound: it usually queued behind connections the upstream holds
+  (the bound also covers resolving the upstream's host name for a new connection), its request was
+  never sent, the circuit breaker counts it, and it is never retried (see
   link:tls-and-inbound-security.adoc#_upstream_connection_wait[Upstream connection wait]). On a
   `protocol: grpc` route it also reports a pre-response deadline the upstream stalled for the stall
   threshold (see link:tls-and-inbound-security.adoc#_grpc_message_bound[gRPC message bound and

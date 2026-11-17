@@ -686,9 +686,10 @@ deployment that never writes it keeps the behaviour shown here.
 
   *Expired wait: `504`.* An attempt whose wait reaches the 10 s is answered `504` (`UPSTREAM_TIMEOUT`;
   on a `protocol: grpc` route `grpc-status: 4`, `DEADLINE_EXCEEDED`, with `grpc-message: upstream`).
-  The dial and TLS-handshake timeouts are shorter than the wait, so such an attempt queued behind
-  connections the upstream holds: it is the upstream's timeout, the breaker counts it, and it is never
-  retried. More requests than a slow upstream serves within 10 s therefore end as `504` and can open
+  The dial and TLS-handshake timeouts are shorter than the wait, so such an attempt usually queued behind
+  connections the upstream holds; the wait also covers resolving the upstream's host name for a new
+  connection, which no shorter timeout bounds. Either way it is the upstream's timeout, the breaker
+  counts it, and it is never retried. More requests than a slow upstream serves within 10 s therefore end as `504` and can open
   its breaker, after which the open circuit answers `503` with `Retry-After`.
 
   A connection the upstream refuses, and a TCP connect or TLS handshake that does not complete in time,

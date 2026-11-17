@@ -242,9 +242,11 @@ connection, in that queue and while the connection is dialled
 connection because the gateway itself is saturated: it ends unsent as `UPSTREAM_POOL_SATURATED` (`503`,
 `urn:api-sheriff:problem:upstream`), which the circuit breaker records as neutral and the retry predicate
 refuses. An attempt whose wait reaches the 10 s is the upstream's failure, not local saturation: the dial
-and TLS-handshake timeouts together are shorter than the wait bound, so an expired wait almost always
-means the attempt queued behind connections the upstream is holding -- an upstream that does not answer,
-or one too slow to serve the admitted load within the bound. It ends unsent as
+and TLS-handshake timeouts together are shorter than the wait bound, so an expired wait usually means the
+attempt queued behind connections the upstream is holding -- an upstream that does not answer, or one too
+slow to serve the admitted load within the bound. The bound also covers resolving the upstream's host
+name for a new connection, which no shorter timeout bounds, so a resolution slower than the bound ends
+the same way. It ends unsent as
 `DispatchStage.UpstreamConnectionWaitExpired`, a timeout the breaker counts and the failure mapper reports
 as `UPSTREAM_TIMEOUT` (`504`; on a gRPC call `DEADLINE_EXCEEDED` with `grpc-message: upstream`), and the
 retry predicate refuses it, since a retry would queue behind the same connections. Enough such waits open
