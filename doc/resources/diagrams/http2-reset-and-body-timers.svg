@@ -83,7 +83,7 @@
   <line class="arrow" x1="128" y1="432" x2="475" y2="432" marker-end="url(#arrow)"/>
   <text x="302" y="422" class="arrow-lbl">in-flight DATA frames drain against stream window</text>
   <text x="504" y="432" class="note">2. hold END_STREAM until: window == 0,</text>
-  <text x="504" y="450" class="note">   50 ms quiet period, or 1 s cap expires</text>
+  <text x="504" y="450" class="note">   50 ms quiet confirmed by PING ack, or 1 s cap</text>
 
   <!-- Step 3: Flush END_STREAM + RST_STREAM(NO_ERROR) -->
   <line class="arrow-return" x1="475" y1="492" x2="128" y2="492" marker-end="url(#arrow)"/>

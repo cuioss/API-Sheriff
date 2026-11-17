@@ -2145,11 +2145,18 @@ a client is told to stop sending and does not have to reset the stream itself. A
 body is still open stops being read, and its complete response is ended and the stream reset at the
 first of three points: the client can send nothing more on the stream (the stream's or the
 connection's flow-control window is used up, or the client ended or lost the stream), what it may send
-has not changed for 50 ms, or 1 s has passed. Only the first shows that no more of the body can
-arrive. The 50 ms quiet period infers it from a client that is not sending, and the 1 s cap is a
-separate exit that ends the wait even while request data may still be in flight. The gateway's own
-`NO_ERROR` reset is not counted by the encoder-side limit, but a DATA frame that arrives after it is
-answered by the transport with `RST_STREAM(STREAM_CLOSED)`, and that reset is counted. The guard itself is
+has not changed for 50 ms and has still not changed when the client acknowledges the one HTTP/2
+`PING` the gateway sends at that moment, or 1 s has passed. A window that moves before the
+acknowledgement restarts the 50 ms check, and a `PING` that fails or is never acknowledged ends
+nothing. Only the first exit shows that no more of the body can arrive. The `PING` exit shows that
+the client sent nothing between its last frame and the `PING`: a client acknowledges a `PING` only
+once it has received it, so every frame it sent before then arrives ahead of the acknowledgement,
+however much latency the link adds. The 1 s cap is a separate exit that ends the wait even while
+request data may still be in flight. The gateway's own `NO_ERROR` reset is not counted by the
+encoder-side limit, but a DATA frame that arrives after it is answered by the transport with
+`RST_STREAM(STREAM_CLOSED)`, and that reset is counted. That exposure remains for a client that sends
+again after acknowledging the `PING`, and for one still trickling data when the 1 s cap ends the wait;
+data already in flight when the window stood still no longer draws it. The guard itself is
 pinned at the transport default and never raised, and this note does not change the status below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
 availability threat of its own: it is recorded, with its control, under
 <<gw-07-upstream-ports,GW-07>>.
@@ -2177,7 +2184,10 @@ zero-length `CONTINUATION` frames ends its connection before the stream is answe
 `ForwardPolicyStageTest` pin that `HTTP2-Settings`, `Upgrade` and `Connection` are withheld under
 every forward mode, and the HTTP/2 legs of `GatewayEdgeFramingCorpusTest` pin the h2->h1
 declared-length framing. `GatewayEdgeEarlyResponseResetTest` keeps proving that the gateway's own
-`NO_ERROR` resets are not counted. Against the native image `Http2StreamAbuseIT` drives the same floods,
+`NO_ERROR` resets are not counted, and drives early-answered uploads that trickle their body across a
+test-local latency relay, with gaps longer than the 50 ms check but shorter than that check plus one
+round trip, well past a lowered reset limit on one connection: every upload is answered whole, no
+`GOAWAY` arrives and the connection is kept. Against the native image `Http2StreamAbuseIT` drives the same floods,
 the `HTTP2-Settings` withholding and the h2->h1 framing over TLS and ALPN.
 
 *Assertion.* A Rapid-Reset / CONTINUATION-flood load against the gateway does not exhaust
