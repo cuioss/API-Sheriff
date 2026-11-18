@@ -23,6 +23,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.LogRecord;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
@@ -336,7 +337,7 @@ class ConfigProducerTest {
     private static List<String> violationRecords() {
         String identifier = ConfigLogMessages.ERROR.CONFIG_VALIDATION_FAILED.resolveIdentifierString();
         return SheriffDebugCapture.capturedRecords().stream()
-                .map(java.util.logging.LogRecord::getMessage)
+                .map(LogRecord::getMessage)
                 .filter(message -> message != null && message.startsWith(identifier)).toList();
     }
 
