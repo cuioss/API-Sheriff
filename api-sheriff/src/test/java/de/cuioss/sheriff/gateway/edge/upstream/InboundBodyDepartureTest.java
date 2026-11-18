@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.edge.upstream;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Proxy;
-import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,7 +32,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -69,7 +67,6 @@ import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.RoutingContext;
-import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

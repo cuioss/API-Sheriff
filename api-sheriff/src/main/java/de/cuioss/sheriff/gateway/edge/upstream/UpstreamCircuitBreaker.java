@@ -283,7 +283,9 @@ final class UpstreamCircuitBreaker {
         for (CircuitBreakerState entered : transitions) {
             try {
                 stateChanges.accept(entered);
-            } catch (RuntimeException reportFailure) {
+            }
+            /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
+            catch (RuntimeException reportFailure) {
                 LOGGER.warn(reportFailure, ApiSheriffLogMessages.WARN.CIRCUIT_BREAKER_REPORT_FAILED, name, entered);
             }
         }
