@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-API Sheriff is a security-focused API Gateway with a lightweight approach, currently in pre-1.0 development. Built with Maven, Java 25 (compile + runtime; CI matrix 25 + 26), and Quarkus. Follows CUI (CUIoss) standards.
+API Sheriff is a security-focused API Gateway with a lightweight approach, currently in pre-1.0 development. Built with Maven, Java 25 (compile + runtime; CI matrix 25 + 27), and Quarkus. Follows CUI (CUIoss) standards.
 
 ## Project Structure
 

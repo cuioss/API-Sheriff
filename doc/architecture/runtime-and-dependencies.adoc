@@ -31,7 +31,7 @@ image::../resources/diagrams/threading-and-event-loop-boundary.svg[Threading mod
 
 To benefit from JEP 491 (JDK 24+, removing carrier-thread pinning on `synchronized` blocks), API
 Sheriff *compiles and runs on Java 25* (LTS) per
-link:../adr/0001-java25-runtime-baseline.adoc[ADR-0001] (with Java 26 exercised in CI as a
+link:../adr/0001-java25-runtime-baseline.adoc[ADR-0001] (with Java 27 exercised in CI as a
 forward-compatibility guard).
 
 [[_performance_object_reuse]]
