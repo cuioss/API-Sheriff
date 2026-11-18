@@ -74,7 +74,7 @@ class EarlyResponseEndTest {
                 () -> assertEquals(Outcome.WAIT, first, "the first look never ends the wait"),
                 () -> assertEquals(Outcome.WAIT, justBefore),
                 () -> assertEquals(Outcome.PING, atQuiet,
-                        "the quiet period only triggers the confirming PING; it is not an exit"));
+                        "the quiet period only triggers the PING; it is not an exit"));
     }
 
     @Test

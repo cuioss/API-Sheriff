@@ -72,10 +72,10 @@ import org.jspecify.annotations.Nullable;
  * writes for the connection after another stream on it consumed its body raises the connection window,
  * and the transport writes a {@code WINDOW_UPDATE} for this stream as well once enough padding has been
  * returned for it — padding on its DATA frames is returned at once, even while the request is paused.
- * DATA received on this stream lowers the value again, so it can read the same at every
- * look and at the acknowledgement although request data arrived on this stream in between; the second
- * exit therefore does not prove that nothing the client sent before the PING is still to come. What
- * remains exposed: such data, data a client sends after acknowledging the PING, and data it keeps
+ * DATA received on this stream lowers the value again, so it can read the same at every look and at the
+ * acknowledgement although request data arrived on this stream in between; the second exit therefore
+ * does not show that the client has stopped sending. What remains exposed: data a client keeps sending
+ * after a check such credit misled, data it sends after acknowledging the PING, and data it keeps
  * trickling until the cap ends the wait all arrive after the reset, and the transport answers each such
  * frame with a {@code RST_STREAM(STREAM_CLOSED)} counted against its reset limit. The last bound caps how
  * long any response can be held back. The three values are constants of the gateway, not configuration.
@@ -194,7 +194,7 @@ final class EarlyResponseEnd {
          * @param nowNanos   the time of this look, on the {@link System#nanoTime()} scale
          * @param remoteOpen whether the client may still send on the stream
          * @param sendable   the bytes the client may still send
-         * @return {@link Outcome#WAIT} to look again; {@link Outcome#PING} to send the confirming PING
+         * @return {@link Outcome#WAIT} to look again; {@link Outcome#PING} to send the PING
          *         and look again; otherwise why the end may go ahead now — never {@link Outcome#QUIET},
          *         which only {@link #acknowledged} answers
          */
@@ -309,7 +309,7 @@ final class EarlyResponseEnd {
         }
 
         /**
-         * Sends the confirming PING. Its acknowledgement reaches this wait only through the relay, which
+         * Sends the PING. Its acknowledgement reaches this wait only through the relay, which
          * lets go of the wait once it has ended: a PING the client never acknowledges stays pending in the
          * transport until the connection closes, and must not keep the response and its ending call alive
          * that long.
