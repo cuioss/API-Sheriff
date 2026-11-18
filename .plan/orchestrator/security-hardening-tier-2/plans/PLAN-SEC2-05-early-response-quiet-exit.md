@@ -73,9 +73,13 @@ into the PR, commits, docs or the inbox message.
 ## Claim Labels
 
 - OBSERVED: the early-response end looks at the stream every 10 ms, takes an unmoved window of 50 ms to mean nothing is on the way, and caps the hold at 1 s — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/end/EarlyResponseEnd.java` § `POLL_MILLIS`, `QUIET_MILLIS`, `MAX_WAIT_MILLIS`, `Outcome next` (main `fa8dd54f`)
+  - verdict: corroborated | checked_at: fa8dd54f | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: EarlyResponseEnd at fa8dd54f: POLL_MILLIS=10 (:78), QUIET_MILLIS=50 (:80), MAX_WAIT_MILLIS=1000 (:82); the 50 ms rule was replaced by #633
 - OBSERVED: the quiet outcome is reached when the sendable window has not changed for `QUIET_MILLIS` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/end/EarlyResponseEnd.java` § `next` (main `fa8dd54f`)
+  - verdict: corroborated | checked_at: fa8dd54f | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: EarlyResponseEnd at fa8dd54f: the quiet outcome is documented (:50) and decided in Outcome next (:148) on an unchanged window for QUIET_MILLIS
 - HYPOTHESIS: the transport counts every reset it sends except `NO_ERROR` and `CANCEL` against a 200-in-30 s limit, so a late DATA frame on a stream the gateway reset produces a counted `STREAM_CLOSED` reset — confirm/refute at Netty `Http2MaxRstFrameLimitEncoder` and Vert.x `HttpServerWorker` by a test that drives the trickle (verify-at-outline)
+  - verdict: unverifiable | checked_at: 7f09b60b83d9b8c57ff8e5321787eab28a82fb52 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: the repository only states the 200-in-30s counting rule (security-threat-model.adoc:2146, edge-security.adoc:634-642); Netty counting was not read and a run is needed
 - HYPOTHESIS: a PING can be sent and its acknowledgement observed from the stream's connection handler without an unsupported hook — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/end/ResponseEnds.java` § the reset path and the Vert.x `HttpConnection.ping` API (verify-at-outline)
+  - verdict: corroborated | checked_at: 7f09b60b83d9b8c57ff8e5321787eab28a82fb52 | by: security-hardening-tier-2/analyze | rescoped: n/a | evidence: Vert.x 4.5.34 Http2ConnectionBase#ping (:458-472) and onPingAckRead (:271-277) give a PING and an ordered ack through the public HttpConnection#ping, used at InboundStreamWindow.java:186; the Quarkus 3.40.1 resolved version was not read
 - Verify-first clause: re-measure the notes' trickle case at the `main` the plan starts from before scoping on it; a refutation loops back to re-scope.
 
 ## Expected Surface
