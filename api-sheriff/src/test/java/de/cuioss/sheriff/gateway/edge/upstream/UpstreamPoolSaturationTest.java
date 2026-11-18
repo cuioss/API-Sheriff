@@ -166,6 +166,14 @@ class UpstreamPoolSaturationTest {
         }, executor);
     }
 
+    /** Reads an answered response to its end; the future completes with its status. */
+    private static CompletableFuture<Integer> readToTheEnd(HttpClientResponse response) {
+        Future<Buffer> body = response.body();
+        // The dispatch hands its response over paused: resuming it lets the body, and the end, through.
+        response.resume();
+        return body.map(_ -> response.statusCode()).toCompletionStage().toCompletableFuture();
+    }
+
     /**
      * A real upstream that never answers, reached through a client pooling one connection and queueing
      * {@value #QUEUE_BOUND} attempts for it.
@@ -649,13 +657,6 @@ class UpstreamPoolSaturationTest {
                     () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_POOL_SATURATED),
                             "the expired wait is not metered as the gateway's own saturation"));
         }
-
-        private CompletableFuture<Integer> readToTheEnd(HttpClientResponse response) {
-            Future<Buffer> body = response.body();
-            // The dispatch hands its response over paused: resuming it lets the body, and the end, through.
-            response.resume();
-            return body.map(_ -> response.statusCode()).toCompletionStage().toCompletableFuture();
-        }
     }
 
     /**
@@ -752,13 +753,6 @@ class UpstreamPoolSaturationTest {
                             "a body its upstream request no longer takes stays open on the client"),
                     () -> assertFalse(arriving,
                             "a chunk arriving after the body was released still counts as a body arriving"));
-        }
-
-        private CompletableFuture<Integer> readToTheEnd(HttpClientResponse response) {
-            Future<Buffer> answer = response.body();
-            // The dispatch hands its response over paused: resuming it lets the body, and the end, through.
-            response.resume();
-            return answer.map(_ -> response.statusCode()).toCompletionStage().toCompletableFuture();
         }
     }
 
