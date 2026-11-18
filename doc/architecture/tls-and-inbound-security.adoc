@@ -124,17 +124,30 @@ paths, assets, redirects, short-circuits, gRPC trailers-only statuses, and admis
 completed WebSocket upgrade and L4 passthrough bypass it:
 
 . *Stop the body at once.* Reset any in-flight upstream request and pause the inbound stream,
-  returning no further flow-control window.
+  returning no flow-control window for the request data that still arrives.
 
 . *Wait until request data settles.* Hold `END_STREAM` until the stream or connection window is
-  exhausted (or the stream ended), the window is quiet for 50 ms, or the 1 s cap elapses. The wait
-  reduces, but does not remove, the transport's own resets: a DATA frame that still arrives after the
-  stream was reset is answered with `RST_STREAM(STREAM_CLOSED)`, and Netty's encoder-side reset limit
-  counts every reset the transport sends except `NO_ERROR` and `CANCEL` -- that `STREAM_CLOSED` reset,
-  `REFUSED_STREAM` and the reset after a `431` included. While request data keeps arriving at least
-  every 50 ms, only the 1 s cap ends the wait. The quiet period is an inference that the client has
-  stopped sending, not a guarantee: a DATA frame delayed in transit for longer than 50 ms still
-  arrives after the reset.
+  exhausted (or the stream ended), or the 1 s cap elapses, or the quiet check passes. The quiet check
+  compares one value -- what the client may still send, the smaller of the stream's and the
+  connection's receive window: it passes when that value has not moved for 50 ms, reads the same when
+  the client acknowledges the one HTTP/2 `PING` the gateway sends at that moment, and was not seen to
+  move while the `PING` was outstanding. The client acknowledges the `PING` only after every frame it
+  sent before receiving it, so those frames are counted in the value read at the acknowledgement. A
+  value seen to move before the acknowledgement -- even one back at its earlier value by then --
+  restarts the 50 ms check; one `PING` is outstanding at a time, and one that fails or is never
+  acknowledged ends nothing. The `PING` is written through public Vert.x API (`HttpConnection#ping`),
+  not through the Netty view the windows are read from. An equal value does not show that no request
+  data arrived: the value also rises while the stream is paused -- the connection window when the
+  gateway returns credit for another stream's body, the stream window once the transport has returned
+  enough padding from this stream's DATA frames -- so such credit can offset DATA arriving on this
+  stream, and the check can pass while the client is still sending. The
+  wait reduces, but does not remove, the transport's own resets: a DATA frame that still arrives after
+  the stream was reset is answered with `RST_STREAM(STREAM_CLOSED)`, and Netty's encoder-side reset
+  limit counts every reset the transport sends except `NO_ERROR` and `CANCEL` -- that `STREAM_CLOSED`
+  reset, `REFUSED_STREAM` and the reset after a `431` included. While request data keeps arriving at
+  least every 50 ms, only the 1 s cap ends the wait. What remains exposed is data a client keeps
+  sending after a quiet check such credit misled, data it sends after acknowledging the `PING`, and
+  data still trickling when the 1 s cap ends the wait: that data arrives after the reset.
 
 . *Emit end and `NO_ERROR` reset together.* Write `END_STREAM` followed immediately by `RST_STREAM
   (NO_ERROR)` (RFC 9113 §8.1) so other streams on the connection continue unaffected.

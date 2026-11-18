@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Every response end on the edge passes one seam; an HTTP/2 response answered while its request body is open stops reading the body at once, holds its final frame until the client can send nothing more, has been quiet for a short period or a hard cap has passed, and then writes the end and RST_STREAM(NO_ERROR) in one event-loop turn; the gateway's own reset is never recorded as INBOUND_BODY_ABORTED; the HTTP/1.1 upstream client closes its connections abortively (SO_LINGER 0) on every trigger -- the early upstream answer, the client abort, the request-body idle timeout and the request-body deadline -- so a client cannot exhaust the gateway's local ports; a FIN-first close, raised reset limits, per-writer resets and a reset straight after the write are rejected; what crosses to the upstream and the request-body bounds belong to ADR-0060
+// summary: Every response end on the edge passes one seam; an HTTP/2 response answered while its request body is open stops reading the body at once, holds its final frame until the client can send nothing more, what it may send has not moved for a short period and still reads the same, unmoved in between, at the acknowledgement of an HTTP/2 PING, or a hard cap has passed, and then writes the end and RST_STREAM(NO_ERROR) in one event-loop turn; the gateway's own reset is never recorded as INBOUND_BODY_ABORTED; the HTTP/1.1 upstream client closes its connections abortively (SO_LINGER 0) on every trigger -- the early upstream answer, the client abort, the request-body idle timeout and the request-body deadline -- so a client cannot exhaust the gateway's local ports; a FIN-first close, raised reset limits, per-writer resets and a reset straight after the write are rejected; what crosses to the upstream and the request-body bounds belong to ADR-0060
 // tags: http2, edge, flow-control, stream-reset, rapid-reset, early-response, rfc9113, response-end, upload, abort-attribution, framework-seam, upstream-connection, http1, so-linger, time-wait, port-exhaustion, circuit-breaker, availability, fin-first, half-close, rfc5961
 // affects: api-sheriff
 // supersedes:
@@ -50,7 +50,9 @@ the end and the reset written, and how does the gateway close the upstream conne
 
 *Every response end on the edge passes one seam. An HTTP/2 response answered while its request body
 is open stops reading the body at once. It holds its final frame until the client can send nothing
-more, has stopped sending for a quiet period, or a hard time cap has passed. It then writes the end
+more, what the client may send has not moved for a quiet period and still reads the same, unmoved in
+between, when the client acknowledges an HTTP/2 `PING`, or a hard time cap has passed. It then writes
+the end
 and a `NO_ERROR` reset together. A gateway-closed HTTP/1.1 upstream connection is closed abortively.
 The Rapid-Reset guard is left as it is.*
 
@@ -81,8 +83,10 @@ body and take the same branch.
 As soon as the answer is decided, the gateway stops receiving the body. The seam marks the armed
 inbound body as reset by the gateway. The upstream request still receiving the body is reset, so
 nothing more is forwarded. The inbound stream is paused for good. A paused HTTP/2 stream returns no
-flow-control window, so the client can send no more than the window it already holds. "Is request
-data still on the way?" becomes a bounded question.
+flow-control window for the request data that still arrives, so the client sends from the window it
+already holds, plus the credit the gateway still returns: connection window for the bodies of other
+streams it reads, and stream window for the padding of this stream's DATA frames, which the transport
+returns at once. "Is request data still on the way?" becomes a bounded question.
 
 === Step 2 -- the end waits until request data stops arriving
 
@@ -90,11 +94,30 @@ The seam holds the final frame back until the first of three conditions:
 
 . the client can send nothing more: the smaller of the stream's and the connection's receive window
   is used up, or the client has ended or lost the stream;
-. what the client may send has not changed for a quiet period;
+. what the client may send -- the smaller of the stream's and the connection's receive window -- has
+  not changed for a quiet period, reads the same when the client acknowledges the one HTTP/2 `PING`
+  the gateway sends at that moment, and was not seen to change while that `PING` was outstanding;
 . a hard time cap has passed since the wait began.
 
-Only the first condition shows that no more request data can arrive. The quiet period infers it from a
-client that is not sending. The cap ends the wait even while data may still be on the way.
+Only the first condition shows that no more request data can arrive. An unmoved value by itself shows
+only that no change was *seen* for the quiet period, not that no data is on the way: across a link
+with latency, data a slow client has already sent is still in flight, and it would arrive after the
+reset. The `PING` closes that gap for everything the client sent before receiving it: the client
+acknowledges it only once it has received it, so those frames arrive ahead of the acknowledgement and
+are counted in the value read there. A value seen to move before the acknowledgement -- even one back
+at its earlier value by then -- restarts the quiet period. One `PING` is outstanding at a time. A
+`PING` that fails, or is not sent because its connection already holds the most unacknowledged `PING`
+frames allowed, ends nothing: the quiet period restarts, and the wait sends a new `PING` once the value
+has stood still for it again. A `PING` that is never acknowledged ends nothing either, so the wait then
+ends by the first condition or the cap.
+
+The second condition compares one value, and it does not show that the client has stopped sending.
+The value rises as well as falls while the stream is paused: the credit described in Step 1 raises it,
+and DATA received on this stream lowers it. Credit can therefore offset DATA arriving on this stream,
+so the value can read the same at every look and at the acknowledgement while the client is still
+sending. What remains exposed is that data, a client that sends again after acknowledging the `PING`,
+and one still trickling data when the cap ends the wait: such data arrives after the reset and draws a
+counted `RST_STREAM(STREAM_CLOSED)`.
 
 Both windows count. Every stream draws from the shared connection window. A stream whose own window is
 open can send nothing once the connection window is exhausted. And a sibling stream that the gateway
@@ -102,13 +125,26 @@ reads can refill the connection window.
 
 The poll interval (`EarlyResponseEnd`), the 50 ms quiet period and the 1 s cap are gateway constants.
 Vert.x exposes no per-stream flow-control state, so `InboundStreamWindow` reads the windows from the
-Netty HTTP/2 codec underneath. It uses exactly one Vert.x internal and otherwise public Netty API,
-read-only, on the connection's event loop. When that view cannot be attached, the seam ends the
-response at once and resets the stream after the end has been written.
+Netty HTTP/2 codec underneath. It uses exactly one Vert.x internal and otherwise public Netty API, on
+the connection's event loop. It reads the codec's state and writes no frame through it; the one thing
+it keeps on the connection's channel is the count of its own unacknowledged `PING` frames. The
+`PING` is the one frame it writes, and it writes it through public Vert.x API
+(`HttpConnection#ping`) on the request's own connection, not through the Netty view.
+
+Vert.x keeps the future of a written `PING` until the client acknowledges it, also while the
+connection stays open without an acknowledgement. The unacknowledged `PING` frames on one connection
+are therefore bounded at 100, the most concurrent streams the edge admits on a connection: each
+early answer waits on at most one `PING` at a time, so a client that acknowledges them never reaches
+the bound, while a client that never acknowledges leaves at most that many pending. A `PING` past the
+bound is not sent; the wait asks again after its next quiet period, as for any failed `PING`.
+
+When the Netty view cannot be attached, the seam ends the response at once and resets the stream after
+the end has been written.
 
 === Step 3 -- the reset goes out right behind the end
 
-The seam writes the end and the reset in the same event-loop turn as the look that allowed them. No
+The seam writes the end and the reset in the same event-loop turn as the look, or the `PING`
+acknowledgement, that allowed them. No
 connection window that another stream returns in between can let the client send on this stream
 before the reset arrives. Only when flow control holds the final frame back does the reset wait until
 the frame has been written. A stream the client has ended in the meantime is complete and is not
@@ -289,8 +325,10 @@ about the data in flight, and it closes the upstream connection the one way that
 
 * An early-answered HTTP/2 upload ends with one reset, written by the gateway. The client's own resets
   no longer accumulate against the Rapid-Reset limit. When the wait ends because the client can send
-  nothing more, the transport writes no `STREAM_CLOSED` resets either. A burst of early answers no
-  longer costs the connection and its sibling streams. The time cap gives no such assurance.
+  nothing more, the transport writes no `STREAM_CLOSED` resets either; when it ends at the
+  acknowledgement of the `PING`, no frame the client sent before the `PING` reached it draws one. A burst of
+  early answers no longer costs the connection and its sibling streams. The time cap gives no such
+  assurance.
 * The guard keeps its limits and its meaning. The gateway stops producing traffic that looks like a
   flood instead of making the detector more tolerant of floods.
 * The rule is stated once and every writer passes it. A new writer cannot reintroduce a half-open
@@ -306,9 +344,16 @@ about the data in flight, and it closes the upstream connection the one way that
 
 *Negative.*
 
-* The final frame of an early answer on an open upload is delayed: by at most the quiet period for a
-  client that has stopped sending, and by at most the cap for one that keeps sending. Every other
-  response ends as it is written.
+* The final frame of an early answer on an open upload is delayed: by the quiet period plus one round
+  trip for the `PING` for a client that has stopped sending, and by at most the cap for one that keeps
+  sending. Every other response ends as it is written.
+* A client still sending when the quiet check passed because returned credit offset its data, a
+  client that sends again after acknowledging the `PING`, and one that keeps trickling data until the
+  cap ends the wait all have that data arrive after the reset, and each such frame draws a counted
+  `STREAM_CLOSED` reset from the transport.
+* The gateway writes `PING` frames a client can provoke: one per quiet period of an early-answered
+  stream, at most one outstanding per stream, so a wait sends at most one per 50 ms before the cap.
+  A client that never acknowledges them leaves at most 100 pending on one connection.
 * The transport view reaches one Vert.x internal. A Vert.x upgrade that changes it degrades the rule to
   "end at once, reset after the write" rather than failing. That build then writes the in-flight
   `STREAM_CLOSED` resets again.
@@ -331,6 +376,13 @@ about the data in flight, and it closes the upstream connection the one way that
   write future;
 * moving the reset back to the writers, or into a mark set only by selected paths;
 * treating the time cap as the normal exit, or tuning it down to shorten the delay;
+* taking an unconfirmed quiet period as quiet -- ending on an unmoved window without the acknowledged
+  `PING` -- which brings back the `STREAM_CLOSED` resets for data in flight across a link with latency;
+* taking the acknowledgement as quiet when the value reads its `PING`-time value but a look saw it move
+  while the `PING` was outstanding, which ends the wait on data that arrived in between;
+* bounding the unacknowledged `PING` frames of a connection below the concurrent streams the edge
+  admits on it, or leaving a wait without a new `PING` after one failed, either of which holds an
+  acknowledging client's early answers to the cap;
 * moving the relay or the end of the response into the guarded call, which makes every early answer a
   breaker failure a client can drive. The pin test drives the reset after the dispatch has returned,
   so a change to where the edge ends the response has to be judged against this record;

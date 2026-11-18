@@ -631,6 +631,16 @@ deployment that never writes it keeps the behaviour shown here.
   the `STREAM_CLOSED` reset for a DATA frame that arrives after an early answer, `REFUSED_STREAM`, and
   the reset after a `431`. The gateway's own reset of an early answer is `NO_ERROR` and does not count
   (link:../adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
+  It is written once the client can send nothing more on the stream; or once what the client may send
+  -- the smaller of the stream's and the connection's receive window -- has not moved for 50 ms, reads
+  the same when the client acknowledges the one HTTP/2 `PING` the gateway sends then, and was not seen
+  to move in between -- a value seen to move first, even one back where it was, restarts the 50 ms
+  check; or after 1 s. Data the client sent before it received that `PING` therefore arrives ahead of
+  the reset. The check does not show that the client has stopped sending: credit the gateway still
+  returns -- connection window for other streams' bodies, stream window for the padding of this
+  stream's DATA frames -- can offset data arriving on the stream. Data a client keeps sending past such
+  a check, sends after acknowledging the `PING`, or sends up to the 1 s cap draws a counted
+  `STREAM_CLOSED` reset.
   Not configurable. See
   link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[Architecture -- HTTP/2 transport bounds].
 
