@@ -172,7 +172,14 @@ for the benchmark comparison against a fixed 2 MiB window).
 *Per-connection HTTP/2 transport bounds* (link:../security-threat-model.adoc#gw-08[GW-08]). They
 reach the listeners `EdgeHardeningOptions` customizes -- the main HTTP listener, the main HTTPS
 listener and the main domain-socket listener. The management interface is built without the
-customizer and keeps the transport defaults.
+customizer, so none of them reaches it. It is bounded through the `quarkus.management.limits.*` family
+in the shipped `application.properties` instead, as far as Quarkus applies that family there: its
+HTTP/1.x header block at the main listener's 16 KiB, its request line (4 KiB) and chunk (8 KiB) at their
+transport defaults, which are tighter than the main listener's. Quarkus applies no HTTP/2 setting to
+the management listener, so it announces the transport's 8 KiB header list, keeps the transport's
+stream and reset defaults and gets no connection-window sizing; its idle reap is not part of that
+family and stays at the Quarkus default. `ManagementListenerTransportTest` pins the header block, the
+request line and the announced header list on a live management listener.
 
 * *Header list (`SETTINGS_MAX_HEADER_LIST_SIZE`).* Announced as 16 KiB on each of those listeners, in
   place of the transport default of 8 KiB, across the whole decoded list (`CONTINUATION` frames included). A
