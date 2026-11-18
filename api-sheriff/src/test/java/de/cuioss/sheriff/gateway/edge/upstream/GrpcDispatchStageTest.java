@@ -22,6 +22,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -1645,24 +1646,13 @@ class GrpcDispatchStageTest {
         }
 
         /**
-         * A test-local SmallRye guard: a breaker with a threshold of {@value #BREAKER_THRESHOLD} that skips a
-         * {@link GatewayException}, around a timeout of {@value #BREAKER_GUARD_MILLIS} ms. It shows only that a
-         * gateway rejection is not counted as a failure, while the upstream's timeout is; it is not the production
-         * guard, whose breaker is the gateway's own {@link UpstreamCircuitBreaker} and records a gateway rejection
-         * as neutral, where SmallRye's {@code skipOn} records it as a success. That neutral outcome is bound by
-         * {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest}.
+         * The gateway's own {@link UpstreamCircuitBreaker} with a window of {@value #BREAKER_THRESHOLD}, in the
+         * production composition around a timeout of {@value #BREAKER_GUARD_MILLIS} ms: a gateway rejection is
+         * neutral to it exactly as in production, while the upstream's timeout is counted.
          */
         private Guard breakerGuard() {
-            return Guard.create()
-                    .withCircuitBreaker()
-                    .requestVolumeThreshold(BREAKER_THRESHOLD)
-                    .failureRatio(0.5)
-                    .delay(1, ChronoUnit.MINUTES)
-                    .skipOn(GatewayException.class)
-                    .onStateChange(breakerTransitions::add)
-                    .done()
-                    .withTimeout().duration(BREAKER_GUARD_MILLIS, ChronoUnit.MILLIS).done()
-                    .build();
+            return UpstreamBreakerFixtures.breaker(BREAKER_THRESHOLD, 0.5, Duration.ofMinutes(1),
+                    Duration.ofMillis(BREAKER_GUARD_MILLIS), "grpc-breaker", breakerTransitions::add);
         }
 
         /** The stand-in guard of {@value #LONG_GUARD_SECONDS} s every case but the post-header one runs under. */

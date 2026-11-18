@@ -19,20 +19,31 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.Serial;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenException;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,6 +70,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * runs, so a nested call is a call that arrived while the outer one was still waiting for its upstream.
  */
 @EnableGeneratorController
+@EnableTestLogger
 @DisplayName("UpstreamCircuitBreaker — a neutral outcome is neither charged nor credited")
 class UpstreamCircuitBreakerTest {
 
@@ -428,6 +440,185 @@ class UpstreamCircuitBreakerTest {
                             CircuitBreakerState.CLOSED), transitions, "each transition was reported once"),
                     () -> assertEquals(List.of(false, false, false), heldTheMonitor,
                             "no transition was reported while the breaker's monitor was held"));
+        }
+
+        @Test
+        @DisplayName("a consumer that throws on the open does not replace the failure that opened the breaker")
+        void throwingReportKeepsTheOpeningFailure() {
+            UpstreamCircuitBreaker breaker = reportingTo(1, failingOn(CircuitBreakerState.OPEN));
+            IllegalStateException failure = new IllegalStateException(Generators.letterStrings(8, 16).next());
+
+            Exception surfaced = assertThrows(Exception.class, () -> breaker.call(() -> {
+                throw failure;
+            }));
+
+            assertAll("a failure that opens the breaker while its report throws",
+                    () -> assertSame(failure, surfaced, "the call surfaces its own failure, not the report's"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), transitions,
+                            "the transition was still delivered to the consumer"),
+                    () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                            ApiSheriffLogMessages.WARN.CIRCUIT_BREAKER_REPORT_FAILED.resolveIdentifierString()));
+            assertRefused(breaker);
+        }
+
+        @Test
+        @DisplayName("a consumer that throws on the close does not replace the answer of the trial that closed it")
+        void throwingReportKeepsTheClosingAnswer() throws Exception {
+            UpstreamCircuitBreaker breaker = reportingTo(1, failingOn(CircuitBreakerState.CLOSED));
+            failCall(breaker);
+            clock.addAndGet(OPEN_DELAY.toNanos());
+
+            String answer = succeed(breaker);
+
+            assertAll("a successful trial that closes the breaker while its report throws",
+                    () -> assertEquals(ANSWER, answer, "the trial returns its answer, not the report's failure"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN, CircuitBreakerState.HALF_OPEN,
+                            CircuitBreakerState.CLOSED), transitions, "the close was still delivered"));
+        }
+
+        @Test
+        @DisplayName("a consumer that throws on the half-open runs the admitted trial and leaves no permit behind")
+        void throwingReportOnHalfOpenRunsTheTrial() throws Exception {
+            UpstreamCircuitBreaker breaker = reportingTo(1, failingOn(CircuitBreakerState.HALF_OPEN));
+            failCall(breaker);
+            clock.addAndGet(OPEN_DELAY.toNanos());
+            AtomicBoolean trialRan = new AtomicBoolean();
+
+            String answer = breaker.call(() -> {
+                trialRan.set(true);
+                return ANSWER;
+            });
+            failCall(breaker);
+            List<CircuitBreakerState> afterReopen = List.copyOf(transitions);
+            clock.addAndGet(OPEN_DELAY.toNanos());
+            String laterAnswer = succeed(breaker);
+
+            assertAll("the call that moved the breaker to half-open while its report threw",
+                    () -> assertTrue(trialRan.get(), "the admitted trial ran its action"),
+                    () -> assertEquals(ANSWER, answer, "and returned its answer"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN, CircuitBreakerState.HALF_OPEN,
+                                    CircuitBreakerState.CLOSED, CircuitBreakerState.OPEN), afterReopen,
+                            "its success closed the breaker; a further failure opened it again"),
+                    () -> assertEquals(ANSWER, laterAnswer,
+                            "a trial is admitted after the next half-open report threw too: no permit leaked"));
+        }
+
+        /**
+         * @param successThreshold the trials that close it
+         * @param consumer         the state-change consumer
+         * @return a one-call, ratio-1 breaker on the manual clock reporting to {@code consumer}
+         */
+        private UpstreamCircuitBreaker reportingTo(int successThreshold, Consumer<CircuitBreakerState> consumer) {
+            return new UpstreamCircuitBreaker(1, 1.0, OPEN_DELAY, successThreshold, clock::get, name, consumer);
+        }
+
+        /**
+         * @param failing the state whose report throws
+         * @return a consumer that records every state in {@link #transitions} and then throws on {@code failing}
+         */
+        private Consumer<CircuitBreakerState> failingOn(CircuitBreakerState failing) {
+            return state -> {
+                transitions.add(state);
+                if (state == failing) {
+                    throw new IllegalStateException("report of " + state + " failed");
+                }
+            };
+        }
+    }
+
+    @Nested
+    @DisplayName("concurrent calls")
+    class Concurrent {
+
+        /** How many threads call one breaker at once. */
+        private static final int THREADS = 8;
+
+        /** How many calls each thread makes. */
+        private static final int CALLS_PER_THREAD = 500;
+
+        @Test
+        @DisplayName("concurrent failures open the breaker exactly once and every later call is refused")
+        void concurrentFailuresOpenItOnce() throws Exception {
+            UpstreamCircuitBreaker breaker = breaker(UpstreamGuards.BREAKER_REQUEST_VOLUME_THRESHOLD,
+                    UpstreamGuards.BREAKER_FAILURE_RATIO, UpstreamGuards.BREAKER_SUCCESS_THRESHOLD);
+            AtomicLong refused = new AtomicLong();
+            AtomicLong ran = new AtomicLong();
+
+            runConcurrently(() -> {
+                try {
+                    breaker.call(() -> {
+                        ran.incrementAndGet();
+                        throw new IllegalStateException("upstream failed");
+                    });
+                } catch (CircuitBreakerOpenException refusal) {
+                    refused.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    // the admitted call's own failure
+                } catch (Exception unexpected) {
+                    throw new AssertionError("a call ended neither in its own failure nor in a refusal",
+                            unexpected);
+                }
+            });
+
+            assertAll("8 threads x 500 failing calls on the production policy",
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), transitions,
+                            "the breaker reported one open and nothing else"),
+                    () -> assertEquals((long) THREADS * CALLS_PER_THREAD, ran.get() + refused.get(),
+                            "every call was either run or refused"),
+                    () -> assertTrue(ran.get() >= UpstreamGuards.BREAKER_REQUEST_VOLUME_THRESHOLD,
+                            "at least a full window of calls ran before the breaker opened"),
+                    () -> assertTrue(ran.get() < (long) THREADS * CALLS_PER_THREAD,
+                            "once open, calls were refused unrun"));
+            assertRefused(breaker);
+        }
+
+        @Test
+        @DisplayName("concurrent successful calls on a half-open breaker close it exactly once")
+        void concurrentTrialsCloseItOnce() throws Exception {
+            UpstreamCircuitBreaker breaker = halfOpenDue(UpstreamGuards.BREAKER_SUCCESS_THRESHOLD);
+            AtomicLong answered = new AtomicLong();
+
+            runConcurrently(() -> {
+                try {
+                    breaker.call(() -> ANSWER);
+                    answered.incrementAndGet();
+                } catch (CircuitBreakerOpenException refusal) {
+                    // a trial refused while the trials were all in flight
+                } catch (Exception unexpected) {
+                    throw new AssertionError("a successful call ended neither answered nor refused", unexpected);
+                }
+            });
+
+            assertAll("8 threads x 500 successful calls on a half-open breaker",
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN, CircuitBreakerState.HALF_OPEN,
+                            CircuitBreakerState.CLOSED), transitions, "the breaker closed exactly once"),
+                    () -> assertTrue(answered.get() >= UpstreamGuards.BREAKER_SUCCESS_THRESHOLD,
+                            "the successful trials were answered"),
+                    () -> assertEquals(ANSWER, succeed(breaker), "the closed breaker admits the next call"));
+        }
+
+        /**
+         * Runs {@code calls} {@value #CALLS_PER_THREAD} times on each of {@value #THREADS} threads released
+         * together, and waits for all of them.
+         */
+        private void runConcurrently(Runnable calls) throws Exception {
+            CountDownLatch start = new CountDownLatch(1);
+            try (ExecutorService pool = Executors.newFixedThreadPool(THREADS)) {
+                List<Future<?>> workers = new ArrayList<>(THREADS);
+                for (int thread = 0; thread < THREADS; thread++) {
+                    workers.add(pool.submit(() -> {
+                        start.await();
+                        for (int call = 0; call < CALLS_PER_THREAD; call++) {
+                            calls.run();
+                        }
+                        return null;
+                    }));
+                }
+                start.countDown();
+                for (Future<?> worker : workers) {
+                    worker.get(30, TimeUnit.SECONDS);
+                }
+            }
         }
     }
 

@@ -1693,6 +1693,13 @@ stream-idle bound]):
   window behind an upstream that accepts and never answers each end as `UPSTREAM_TIMEOUT`, open the
   breaker and leave the next dispatch refused unsent (`expiredWaitsOpenTheBreaker`), and the same load
   against an upstream that answers is served with the breaker closed (`answeredLoadLeavesTheBreakerClosed`).
+  A connection can also be held by a client still sending its body, which no upstream can answer before
+  it ends: an expired wait on an upstream client that forwarded a body chunk within the 10 s is the
+  gateway's neutral `UPSTREAM_POOL_SATURATED`, so a client trickling a body cannot open the breaker for
+  everyone (`waitsBehindABodyStillArrivingLeaveTheBreakerClosed`). Two limits follow. An upstream that
+  answers nothing while some client trickles a body to it does not open the breaker through expired
+  waits; its held requests still end on the guard's timeout. And callers that all leave before the 10 s
+  bound end as neutral, so against an upstream that never answers they never open it.
   `InboundBodyDepartureTest` (`departureEndsTheConnectionWaitAtOnce`) ends a dispatch on its client's
   departure while its connection is still pending and asserts that the connection handed out afterwards
   is reset unsent and the breaker makes no transition. `EgressClientsTest`

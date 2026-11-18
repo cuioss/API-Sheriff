@@ -24,7 +24,9 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 
+import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.tools.logging.CuiLogger;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenException;
 
@@ -58,7 +60,9 @@ import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenExce
  *       {@code successThreshold} trials succeeded it closes, with an empty window. A neutral trial gives its
  *       permit back without counting toward the close, so a further call is admitted in its place.</li>
  * </ul>
- * Each transition is reported once to the state-change consumer, with the state entered.
+ * Each transition is reported once to the state-change consumer, with the state entered. A consumer that
+ * throws loses only that report, logged as {@code ApiSheriff-151}: the call that caused the transition keeps
+ * its own result or failure, and a call admitted as a half-open trial still runs.
  * <p>
  * <strong>Thread-safety.</strong> Safe for concurrent use; one instance serves every dispatch of its shape.
  * Admission and recording are two moments, and the state can move on between them, so every admission
@@ -72,6 +76,8 @@ import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenExce
  * @since 1.0
  */
 final class UpstreamCircuitBreaker {
+
+    private static final CuiLogger LOGGER = new CuiLogger(UpstreamCircuitBreaker.class);
 
     private final int requestVolumeThreshold;
     private final int failureThreshold;
@@ -266,8 +272,21 @@ final class UpstreamCircuitBreaker {
         transitions.add(next);
     }
 
+    /**
+     * Delivers each noted transition to the state-change consumer. A consumer that throws loses only its own
+     * report: the transition has already happened, so the failure is logged and the remaining transitions
+     * are still delivered. It never reaches the caller — {@link #admit()} reports before the admitted call
+     * runs, so a throw there would strand a half-open trial permit, and {@link #settle(long, Outcome)} reports
+     * in a {@code finally}, so a throw there would replace the call's own result or failure.
+     */
     private void report(List<CircuitBreakerState> transitions) {
-        transitions.forEach(stateChanges);
+        for (CircuitBreakerState entered : transitions) {
+            try {
+                stateChanges.accept(entered);
+            } catch (RuntimeException reportFailure) {
+                LOGGER.warn(reportFailure, ApiSheriffLogMessages.WARN.CIRCUIT_BREAKER_REPORT_FAILED, name, entered);
+            }
+        }
     }
 
     /** How a call ended, as the breaker judges it. */

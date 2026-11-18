@@ -262,11 +262,7 @@ class InboundBodyDepartureTest {
             transitions = new CopyOnWriteArrayList<>();
             connection = Promise.promise();
             requested = new CountDownLatch(1);
-            Guard breakerOnFirstFailure = Guard.create()
-                    .withCircuitBreaker().requestVolumeThreshold(1).failureRatio(1.0).delay(30, ChronoUnit.SECONDS)
-                    .skipOn(GatewayException.class).onStateChange(transitions::add).done()
-                    .withTimeout().duration(30, ChronoUnit.SECONDS).done()
-                    .build();
+            Guard breakerOnFirstFailure = UpstreamBreakerFixtures.breakerOnFirstFailure(route.id(), transitions::add);
             UpstreamClients clients = new UpstreamClients(
                     Map.of(UpstreamTarget.of(route), pendingClient(connection, requested)),
                     Map.of(ResilienceShape.of(route), breakerOnFirstFailure));
@@ -958,39 +954,12 @@ class InboundBodyDepartureTest {
     }
 
     /**
-     * A guard holding the gateway's own {@link UpstreamCircuitBreaker} alone, with a window of one call, so it
-     * opens on the first failure it counts and stays closed on a neutral gateway rejection; no timeout and no
+     * A guard holding the gateway's own {@link UpstreamCircuitBreaker} with a window of one call, so it opens on
+     * the first failure it counts and stays closed on a neutral gateway rejection; the production composition, no
      * retry.
      */
     private static Guard breakerGuard(Route route, List<CircuitBreakerState> transitions) {
-        return new BreakerGuard(new UpstreamCircuitBreaker(1, 1.0, Duration.ofSeconds(30), 1, System::nanoTime,
-                route.id(), transitions::add));
-    }
-
-    /** Serves the synchronous {@link Guard#call(Callable, Class)} the dispatch uses through the breaker alone. */
-    private record BreakerGuard(UpstreamCircuitBreaker breaker) implements Guard {
-
-        private static final String SYNCHRONOUS_ONLY = "the test guard serves only the synchronous call(Callable, Class)";
-
-        @Override
-        public <T> T call(Callable<T> action, Class<T> type) throws Exception {
-            return breaker.call(action);
-        }
-
-        @Override
-        public <T> T call(Callable<T> action, TypeLiteral<T> type) {
-            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
-        }
-
-        @Override
-        public <T> T get(Supplier<T> action, Class<T> type) {
-            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
-        }
-
-        @Override
-        public <T> T get(Supplier<T> action, TypeLiteral<T> type) {
-            throw new UnsupportedOperationException(SYNCHRONOUS_ONLY);
-        }
+        return UpstreamBreakerFixtures.breakerOnFirstFailure(route.id(), transitions::add);
     }
 
     /** What a case does while its dispatch waits; it may wait itself. */

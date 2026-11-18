@@ -19,7 +19,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Proxy;
 import java.net.ConnectException;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -109,11 +108,7 @@ class UpstreamPoolSaturationTest {
     }
 
     private Guard breakerOnFirstFailure() {
-        return Guard.create()
-                .withCircuitBreaker().requestVolumeThreshold(1).failureRatio(1.0).delay(30, ChronoUnit.SECONDS)
-                .skipOn(GatewayException.class).onStateChange(transitions::add).done()
-                .withTimeout().duration(30, ChronoUnit.SECONDS).done()
-                .build();
+        return UpstreamBreakerFixtures.breakerOnFirstFailure("saturated", transitions::add);
     }
 
     /** A dispatch of a route without retry, under the guard whose breaker opens on the first failure it counts. */
@@ -471,6 +466,51 @@ class UpstreamPoolSaturationTest {
         }
 
         @Test
+        @DisplayName("a connection held by a request body still arriving: the queued waits that expire behind it are not the upstream's failures and do not open the breaker")
+        void waitsBehindABodyStillArrivingLeaveTheBreakerClosed() throws Exception {
+            DispatchStage stage = stageOverUpstream(request -> {
+                if (request.method() == io.vertx.core.http.HttpMethod.GET) {
+                    request.response().end();
+                }
+                // The POST's body is read as it arrives; it never ends, so the POST is never answered.
+            });
+            TricklingBody body = new TricklingBody(vertx);
+            List<CompletableFuture<@Nullable GatewayException>> queued = new ArrayList<>();
+            List<@Nullable GatewayException> queuedEnded;
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                try {
+                    CompletableFuture.runAsync(() -> stage.dispatch(route, HttpMethod.POST, HELD_PATH, Map.of(), body,
+                            DispatchStage.BodyFraming.of(HttpMethod.POST, DispatchStage.NO_DECLARED_LENGTH, violation -> {
+                                // The held POST is never handed over, so no late refusal can arrive.
+                            })), executor);
+                    Awaits.until(() -> upstreamReceived.get() == 1 && body.emitted() > 0,
+                            "the POST to hold the one connection with its body still arriving",
+                            Awaits.CONNECT_CEILING_SECONDS);
+                    for (int dispatched = 1; dispatched < DISPATCHES; dispatched++) {
+                        queued.add(dispatch(executor, stage, HELD_PATH));
+                    }
+
+                    Awaits.connect(CompletableFuture.allOf(queued.toArray(CompletableFuture[]::new)),
+                            "every queued dispatch to end");
+                    queuedEnded = queued.stream().map(CompletableFuture::join).toList();
+                } finally {
+                    body.stop();
+                    // Closing the client fails the POST still holding the connection, so the executor can close.
+                    Awaits.teardown(client.close(), "the upstream client to close");
+                }
+            }
+
+            assertAll("more queued waits than the breaker's window, behind a body the client is still sending",
+                    () -> assertTrue(queuedEnded.stream().allMatch(ended -> ended != null
+                                    && ended.getEventType() != EventType.UPSTREAM_TIMEOUT),
+                            () -> "an expired wait behind a client's body was charged to the upstream: " + queuedEnded),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_CIRCUIT_OPEN),
+                            "the breaker never opened on an upstream that answers every request it was sent"),
+                    () -> assertEquals(1, upstreamReceived.get(),
+                            "nothing beyond the held POST reached the upstream: the waits expired unsent"));
+        }
+
+        @Test
         @DisplayName("control — the same load against an upstream that answers each request after a short timer: every wait completes inside the bound, every dispatch is answered and the breaker stays closed")
         void answeredLoadLeavesTheBreakerClosed() throws Exception {
             DispatchStage stage = stageOverUpstream(
@@ -507,6 +547,74 @@ class UpstreamPoolSaturationTest {
                             "no wait expired"),
                     () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_CIRCUIT_OPEN),
                             "the breaker never opened"));
+        }
+    }
+
+    /**
+     * A request body still arriving: one byte every {@value #TRICKLE_MILLIS} ms while it is flowing, and never an
+     * end — a client sending its body slowly, well inside every per-byte bound.
+     */
+    private static final class TricklingBody implements ReadStream<Buffer> {
+
+        private static final long TRICKLE_MILLIS = 200L;
+
+        private final Vertx vertx;
+        private final long timer;
+        private final AtomicInteger emitted = new AtomicInteger();
+        private volatile @Nullable Handler<Buffer> handler;
+        private volatile boolean paused;
+
+        private TricklingBody(Vertx vertx) {
+            this.vertx = vertx;
+            this.timer = vertx.setPeriodic(TRICKLE_MILLIS, _ -> {
+                Handler<Buffer> current = handler;
+                if (current != null && !paused) {
+                    emitted.incrementAndGet();
+                    current.handle(Buffer.buffer("x"));
+                }
+            });
+        }
+
+        int emitted() {
+            return emitted.get();
+        }
+
+        void stop() {
+            vertx.cancelTimer(timer);
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> exceptionHandler) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> bodyHandler) {
+            this.handler = bodyHandler;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            paused = true;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            paused = false;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            paused = false;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
+            return this;
         }
     }
 

@@ -24,6 +24,7 @@ import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -3769,19 +3770,10 @@ class DispatchStageTest {
                 request.body().onSuccess(body -> request.response().end("ok"));
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
 
-            // A test-local SmallRye guard whose breaker skips a gateway rejection, with a window small enough to
-            // fill within one test: it shows only that such a rejection is not counted as a failure. It is not the
-            // production guard, whose own UpstreamCircuitBreaker records a gateway rejection as neutral where
-            // skipOn records it as a success; UpstreamCircuitBreakerTest and UpstreamGuardsTest bind that outcome.
-            guard = Guard.create()
-                    .withCircuitBreaker()
-                    .requestVolumeThreshold(REQUEST_VOLUME_THRESHOLD)
-                    .failureRatio(0.5)
-                    .delay(1, ChronoUnit.MINUTES)
-                    .skipOn(GatewayException.class)
-                    .onStateChange(breakerTransitions::add)
-                    .done()
-                    .build();
+            // The gateway's own breaker in the production composition, with a window small enough to fill within
+            // one test: a gateway rejection is neutral to it exactly as in production.
+            guard = UpstreamBreakerFixtures.breaker(REQUEST_VOLUME_THRESHOLD, 0.5, Duration.ofMinutes(1), "upload",
+                    breakerTransitions::add);
             RouteTable table = new RouteTable(List.of(ConfigFixtures.route("upload", "/upload")
                     .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
@@ -3995,14 +3987,12 @@ class DispatchStageTest {
     }
 
     /**
-     * What the circuit breaker records for a dispatch whose retry is not taken. The guard is a test-local
-     * SmallRye guard in the production order — a breaker skipping {@link GatewayException}, a timeout inside it
-     * and a 1 + 2 retry outside it, deciding through the production retry predicate
-     * {@link DispatchStage#allowsRetryAfter(Throwable)} — over a retry-enabled route, and every breaker outcome
-     * is counted through the breaker's own success and failure callbacks. Its breaker is not the production one:
-     * the gateway's own {@link UpstreamCircuitBreaker} records a gateway rejection as neutral, where
-     * {@code skipOn} records it as a success; {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest}
-     * bind that outcome. The cases here end in upstream failures, which both breakers count alike.
+     * What the circuit breaker records for a dispatch whose retry is not taken. The guard is the production
+     * composition — a 1 + 2 retry deciding through the production retry predicate
+     * {@link DispatchStage#allowsRetryAfter(Throwable)}, around the gateway's own {@link UpstreamCircuitBreaker},
+     * around a short attempt timeout — over a retry-enabled route, with a breaker that opens on the first failure
+     * it counts. The failure is counted when the breaker opens; a retry recorded or taken after it would meet the
+     * open breaker and end the dispatch as {@link EventType#UPSTREAM_CIRCUIT_OPEN} instead of the failure itself.
      */
     @Nested
     @DisplayName("circuit-breaker accounting of a vetoed retry")
@@ -4017,8 +4007,7 @@ class DispatchStageTest {
         private HttpServer upstream;
         private HttpClient upstreamClient;
         private Guard guard;
-        private final AtomicInteger breakerSuccesses = new AtomicInteger();
-        private final AtomicInteger breakerFailures = new AtomicInteger();
+        private final List<CircuitBreakerState> breakerTransitions = new CopyOnWriteArrayList<>();
 
         @BeforeEach
         void setUp() throws Exception {
@@ -4029,19 +4018,8 @@ class DispatchStageTest {
                 // Received, never answered.
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
             upstreamClient = vertx.createHttpClient();
-            guard = Guard.create()
-                    .withCircuitBreaker()
-                    .requestVolumeThreshold(20)
-                    .failureRatio(0.5)
-                    .delay(1, ChronoUnit.MINUTES)
-                    .skipOn(GatewayException.class)
-                    .onSuccess(breakerSuccesses::incrementAndGet)
-                    .onFailure(breakerFailures::incrementAndGet)
-                    .done()
-                    .withTimeout().duration(ATTEMPT_TIMEOUT_MILLIS, ChronoUnit.MILLIS).done()
-                    .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                    .whenException(DispatchStage::allowsRetryAfter).done()
-                    .build();
+            guard = UpstreamBreakerFixtures.breakerOnFirstFailure(true, Duration.ofMillis(ATTEMPT_TIMEOUT_MILLIS),
+                    "vetoed-retry", breakerTransitions::add);
         }
 
         @AfterEach
@@ -4060,10 +4038,10 @@ class DispatchStageTest {
             GatewayException rejection = rejectionOf(dispatchPost(unreachable));
 
             assertAll("a POST whose upstream could not be reached",
-                    () -> assertEquals(EventType.UPSTREAM_ERROR, rejection.getEventType()),
-                    () -> assertEquals(1, breakerFailures.get(), "the upstream failure is recorded exactly once"),
-                    () -> assertEquals(0, breakerSuccesses.get(),
-                            "the retry that is not taken must not be recorded by the breaker at all"));
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, rejection.getEventType(),
+                            "the dispatch ends with its own failure, not with a retry the open breaker refused"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), breakerTransitions,
+                            "the upstream failure is counted, and nothing after it is recorded"));
         }
 
         @Test
@@ -4074,10 +4052,10 @@ class DispatchStageTest {
             GatewayException rejection = rejectionOf(dispatchPost(unanswering));
 
             assertAll("a POST whose attempt timed out",
-                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, rejection.getEventType()),
-                    () -> assertEquals(1, breakerFailures.get(), "the attempt timeout is recorded exactly once"),
-                    () -> assertEquals(0, breakerSuccesses.get(),
-                            "the retry that is not taken must not be recorded by the breaker at all"));
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, rejection.getEventType(),
+                            "the dispatch ends with its own timeout, not with a retry the open breaker refused"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), breakerTransitions,
+                            "the attempt timeout is counted, and nothing after it is recorded"));
         }
 
         /** A retry-enabled proxy route to {@code port} on loopback, guarded by the test-local guard. */
@@ -4412,22 +4390,13 @@ class DispatchStageTest {
         }
 
         /**
-         * A test-local SmallRye guard: a breaker that skips a {@link GatewayException}, inside a patient timeout. It
-         * shows only that a gateway rejection is not counted as a failure; it is not the production guard, whose
-         * own {@link UpstreamCircuitBreaker} records a gateway rejection as neutral where {@code skipOn} records it
-         * as a success. {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest} bind that outcome.
+         * The gateway's own {@link UpstreamCircuitBreaker} in the production composition, with the production
+         * window and the production 30 s attempt timeout — far more than any idle timeout of these cases. A gateway
+         * rejection is neutral to it exactly as in production.
          */
         private Guard breakerGuard() {
-            return Guard.create()
-                    .withCircuitBreaker()
-                    .requestVolumeThreshold(REQUEST_VOLUME_THRESHOLD)
-                    .failureRatio(0.5)
-                    .delay(1, ChronoUnit.MINUTES)
-                    .skipOn(GatewayException.class)
-                    .onStateChange(breakerTransitions::add)
-                    .done()
-                    .withTimeout().duration(PATIENT_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done()
-                    .build();
+            return UpstreamBreakerFixtures.breaker(REQUEST_VOLUME_THRESHOLD, 0.5, Duration.ofMinutes(1), "idle-release",
+                    breakerTransitions::add);
         }
 
         /**

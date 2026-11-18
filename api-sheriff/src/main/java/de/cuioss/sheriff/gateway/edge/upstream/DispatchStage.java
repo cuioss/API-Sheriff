@@ -23,6 +23,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -266,7 +267,13 @@ import org.jspecify.annotations.Nullable;
  * host-name resolution has no shorter timeout of its own, so a resolution slower than the bound ends the same
  * way. It ends, unsent, as an {@link UpstreamConnectionWaitExpired}, a timeout the breaker counts and the failure
  * mapper reports as {@link EventType#UPSTREAM_TIMEOUT} ({@code 504}), and the retry predicate refuses it: a retry
- * would usually queue again behind the same held connections. Every other reason an attempt obtains no connection — the
+ * would usually queue again behind the same held connections. One exception: a connection can also be held by
+ * a client still sending its request body, which no upstream can answer before it ends. So an expiry on an
+ * upstream client that forwarded a request-body chunk within the last
+ * {@value #UPSTREAM_CONNECTION_WAIT_MILLIS} ms is the gateway's own pool pressure instead: the same neutral
+ * {@link EventType#UPSTREAM_POOL_SATURATED} rejection (see {@link #expiredWaitOf}). Its limit: an upstream that
+ * answers nothing while some client trickles a body to it does not open the breaker through expired waits;
+ * its held requests still fail on the guard's timeout. Every other reason an attempt obtains no connection — the
  * upstream refused it, or its dial or TLS handshake did not complete within the clients' timeouts — stays the
  * upstream's failure as well, and the retry predicate treats it as any other upstream failure.
  * The bound keeps the wait from taking more than a minority of the request-body deadline or of the
@@ -341,9 +348,18 @@ public final class DispatchStage {
      * from the moment its dial starts: an attempt that dials at once fails on them when the upstream does not
      * establish the connection, while one that queued first behind connections the upstream holds, or whose
      * upstream host name resolves slowly, can reach this bound before them — either way the failure is the
-     * upstream's.
+     * upstream's, unless the client forwarded a request-body chunk within this bound: the expiry is then the
+     * gateway's own pool pressure (see {@link #expiredWaitOf}).
      */
     static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
+
+    /**
+     * When each upstream target's client last forwarded a request-body chunk, as a {@link System#nanoTime()}
+     * reading, shared by the HTTP and the gRPC dispatch. A connection held by a body still arriving cannot be
+     * answered before the body ends, so an expired wait behind it is not the upstream's (see
+     * {@link #expiredWaitOf}). The targets are the boot-built route table's, so the map is bounded by it.
+     */
+    private static final Map<UpstreamTarget, AtomicLong> LAST_BODY_PROGRESS = new ConcurrentHashMap<>();
 
     /**
      * The request-body idle timeout of a dispatch whose body is not watched for progress: the idle
@@ -631,12 +647,13 @@ public final class DispatchStage {
             throw departureAbort(departedEarly, !framing.bodyless());
         }
         DispatchBody body = new DispatchBody(requestBody, framing);
+        AtomicLong bodyProgress = bodyProgressOf(shape.target());
         boolean handedToCaller = false;
         try {
             HttpClientResponse response = guardedDispatch(guard, retryGate, method, body.bytesSent::get,
                     body.subscribed::get,
                     () -> awaitDispatch(upstream, httpClient, upstreamMethod, requestUri, forwardHeaders, body,
-                            failureMapper));
+                            bodyProgress, failureMapper));
             handedToCaller = true;
             return response;
         } finally {
@@ -758,9 +775,8 @@ public final class DispatchStage {
      * attempts waiting for a connection being full ({@link ConnectionPoolTooBusyException}) is the gateway's own
      * saturation: the attempt becomes an {@link EventType#UPSTREAM_POOL_SATURATED} rejection, which the breaker
      * records as neutral. Every other failure stays the upstream's: a connection the upstream refused, a dial or
-     * TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — and the wait
-     * outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}, which the dispatch ends as an
-     * {@link UpstreamConnectionWaitExpired}.
+     * TLS handshake that did not complete within the clients' timeouts, a failed TLS handshake — and, as a rule,
+     * the wait outlasting {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}, which {@link #expiredWaitOf} classifies.
      *
      * @param failure       why the attempt obtained no connection
      * @param failureMapper meters the saturation and builds its rejection
@@ -773,6 +789,43 @@ public final class DispatchStage {
             return failureMapper.toPoolSaturation(failure);
         }
         return null;
+    }
+
+    /**
+     * Classifies a wait for a pooled upstream connection that outlasted {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}.
+     * It is the upstream's timeout, an {@link UpstreamConnectionWaitExpired} the breaker counts — unless the
+     * attempt's upstream client forwarded a request-body chunk within that bound. A body still arriving holds its
+     * connection until the client ends it, and no upstream can answer the request before that, so the wait then
+     * expired behind the gateway's own clients: the attempt becomes the neutral
+     * {@link EventType#UPSTREAM_POOL_SATURATED} rejection, exactly as a full wait queue does. Its limit: while
+     * some client keeps trickling a body to an upstream that answers nothing, the expired waits on that upstream
+     * do not open the breaker.
+     *
+     * @param expiry        the expired wait
+     * @param lastBodyNanos when the attempt's upstream client last forwarded a request-body chunk, a
+     *                      {@link System#nanoTime()} reading
+     * @param nowNanos      the {@link System#nanoTime()} reading of the expiry
+     * @param failureMapper meters the saturation and builds its rejection
+     * @return the saturation rejection the attempt ends with, or {@code null} when the expiry is the upstream's
+     *         timeout
+     */
+    static @Nullable GatewayException expiredWaitOf(TimeoutException expiry, long lastBodyNanos, long nowNanos,
+            UpstreamFailureMapper failureMapper) {
+        // Compared as a difference, never as absolute readings: System.nanoTime() may wrap.
+        if (nowNanos - lastBodyNanos < TimeUnit.MILLISECONDS.toNanos(UPSTREAM_CONNECTION_WAIT_MILLIS)) {
+            return failureMapper.toPoolSaturation(expiry);
+        }
+        return null;
+    }
+
+    /**
+     * @param target an upstream target
+     * @return when {@code target}'s client last forwarded a request-body chunk; one that never did reads as one
+     *         whose last chunk is older than {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}
+     */
+    private static AtomicLong bodyProgressOf(UpstreamTarget target) {
+        return LAST_BODY_PROGRESS.computeIfAbsent(target, _ -> new AtomicLong(
+                System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(UPSTREAM_CONNECTION_WAIT_MILLIS) - 1));
     }
 
     /**
@@ -827,7 +880,8 @@ public final class DispatchStage {
 
     private static HttpClientResponse awaitDispatch(ResolvedUpstream upstream, HttpClient httpClient,
             io.vertx.core.http.HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
-            DispatchBody body, UpstreamFailureMapper failureMapper) throws InterruptedException, ExecutionException {
+            DispatchBody body, AtomicLong bodyProgress, UpstreamFailureMapper failureMapper)
+            throws InterruptedException, ExecutionException {
         // The connect timeout of a request bounds the whole wait for its pooled connection: the time in the
         // client's queue and the acquisition of a new connection for it, host-name resolution and dial included
         // (see UPSTREAM_CONNECTION_WAIT_MILLIS).
@@ -849,7 +903,7 @@ public final class DispatchStage {
                 throw departed;
             }
             HttpClientResponse received = awaitResponse(httpClient, options, forwardHeaders, body, attempt,
-                    failureMapper);
+                    bodyProgress, failureMapper);
             handedBack = true;
             return received;
         } finally {
@@ -864,7 +918,7 @@ public final class DispatchStage {
     }
 
     private static HttpClientResponse awaitResponse(HttpClient httpClient, RequestOptions options,
-            Map<String, String> forwardHeaders, DispatchBody body, UpstreamAttempt attempt,
+            Map<String, String> forwardHeaders, DispatchBody body, UpstreamAttempt attempt, AtomicLong bodyProgress,
             UpstreamFailureMapper failureMapper) throws InterruptedException, ExecutionException {
         AtomicReference<@Nullable ByteCappedBodyStream> cappedBody = new AtomicReference<>();
         // The client-caused abort as it stood the moment this attempt's send failed — never re-read
@@ -905,7 +959,7 @@ public final class DispatchStage {
                     // dispatching (virtual) thread, which may only get there after the whole exchange
                     // completed; Vert.x then defers the listener onto the event loop, after the end. The
                     // pipe re-enables the stream when it subscribes.
-                    Future<HttpClientResponse> sent = body.send(attempt, request, cappedBody);
+                    Future<HttpClientResponse> sent = body.send(attempt, request, cappedBody, bodyProgress);
                     // Registered before the pause below, so it runs first when the send fails, on the
                     // context reporting that failure — before the failure can reach the dispatching thread.
                     sent.onFailure(failure -> {
@@ -952,8 +1006,13 @@ public final class DispatchStage {
                 }
                 // One whose wait outlasted its bound usually queued behind connections the upstream holds (the
                 // bound also covers resolving its host name): it is the upstream's timeout, which the guard
-                // counts and the retry predicate refuses.
+                // counts and the retry predicate refuses — unless a body still arriving held the connections.
                 if (dispatchFailure.getCause() instanceof TimeoutException expiry) {
+                    GatewayException behindBody =
+                            expiredWaitOf(expiry, bodyProgress.get(), System.nanoTime(), failureMapper);
+                    if (behindBody != null) {
+                        throw behindBody;
+                    }
                     UpstreamConnectionWaitExpired expired = new UpstreamConnectionWaitExpired(expiry);
                     throw new ExecutionException(expired.getMessage(), expired);
                 }
@@ -1348,11 +1407,16 @@ public final class DispatchStage {
          * dispatch no longer waits for stops them all. Every timer is scheduled through the Vert.x instance
          * owning the context this callback runs on, the upstream request's own.
          *
+         * <p>
+         * Every body chunk forwarded stamps {@code bodyProgress}, the upstream client's last request-body
+         * progress, which decides whom an expired connection wait on that client is charged to (see
+         * {@link DispatchStage#expiredWaitOf}).
+         *
          * @throws IllegalStateException when the idle clock or the message clock is to be armed and no
          *                               Vert.x context is current — the send callback always runs on one
          */
         Future<HttpClientResponse> send(UpstreamAttempt attempt, HttpClientRequest request,
-                AtomicReference<@Nullable ByteCappedBodyStream> cappedBody) {
+                AtomicReference<@Nullable ByteCappedBodyStream> cappedBody, AtomicLong bodyProgress) {
             if (bodylessWatch != null) {
                 GatewayException refused = bodylessWatch.clientAbort();
                 if (refused != null) {
@@ -1374,7 +1438,10 @@ public final class DispatchStage {
             // stall) — see allowsRetryAfter.
             subscribed.set(true);
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
-                    request::reset, bytesSent::addAndGet, idleClock(), deadline, messageClock(), upstreamStallMillis);
+                    request::reset, forwarded -> {
+                        bodyProgress.set(System.nanoTime());
+                        bytesSent.addAndGet(forwarded);
+                    }, idleClock(), deadline, messageClock(), upstreamStallMillis);
             cappedBody.set(body);
             attempt.attachBody(body);
             body.startIdleClock();

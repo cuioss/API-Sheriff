@@ -18,7 +18,7 @@ package de.cuioss.sheriff.gateway.edge.terminal;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.charset.StandardCharsets;
-import java.time.temporal.ChronoUnit;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -45,6 +45,7 @@ import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
 import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
+import de.cuioss.sheriff.gateway.edge.upstream.UpstreamBreakerFixtures;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
@@ -274,17 +275,13 @@ class TerminalDispatchGrpcClientDepartureTest {
     }
 
     /**
-     * The forced-h2 client and a test-local SmallRye guard that skips a {@link GatewayException} — a
-     * gateway rejection is not counted as a failure — opens on the first failure it counts, and times an
-     * attempt out after {@value #GUARD_SECONDS} s.
+     * The forced-h2 client and the gateway's own breaker in the production composition — a gateway rejection
+     * is neutral to it — which opens on the first failure it counts, around a timeout of {@value #GUARD_SECONDS} s.
      */
     private UpstreamClients clients() {
         UpstreamTarget target = UpstreamTarget.of(route);
-        Guard breakerOnFirstFailure = Guard.create()
-                .withCircuitBreaker().requestVolumeThreshold(1).failureRatio(1.0).delay(1, ChronoUnit.MINUTES)
-                .skipOn(GatewayException.class).onStateChange(breakerTransitions::add).done()
-                .withTimeout().duration(GUARD_SECONDS, ChronoUnit.SECONDS).done()
-                .build();
+        Guard breakerOnFirstFailure = UpstreamBreakerFixtures.breaker(1, 1.0, Duration.ofMinutes(1),
+                Duration.ofSeconds(GUARD_SECONDS), route.id(), breakerTransitions::add);
         return new UpstreamClients(Map.of(target, forcedH2),
                 Map.of(new ResilienceShape(target, route.retryEnabled()), breakerOnFirstFailure));
     }

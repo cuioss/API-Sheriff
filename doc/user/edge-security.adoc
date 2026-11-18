@@ -715,6 +715,15 @@ deployment that never writes it keeps the behaviour shown here.
   counts it, and it is never retried. More requests than a slow upstream serves within 10 s therefore end as `504` and can open
   its breaker, after which the open circuit answers `503` with `Retry-After`.
 
+  *Expired wait behind a body still arriving: `503`.* A connection held by a client still sending its
+  request body cannot be answered before that body ends. So when that upstream's client forwarded a
+  body chunk within the last 10 s, an expired wait is answered `503` (`UPSTREAM_POOL_SATURATED`) and is
+  neutral to the breaker: a client trickling a body cannot open the breaker for everyone else. The
+  limits: an upstream that answers nothing while some client trickles a body to it does not open its
+  breaker through expired waits, and its held requests still end on the 30 s guard timeout; callers
+  that all leave before the 10 s end as neutral, so against an upstream that never answers they never
+  open it.
+
   A connection the upstream refuses, and a TCP connect or TLS handshake that does not complete in time,
   stay the upstream's failure as well. A client that leaves while its request waits here ends its
   request at once; its place in the queue is given up only when the pool hands it a connection, which
