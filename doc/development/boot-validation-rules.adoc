@@ -119,8 +119,10 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 | `OidcSessionRules`
 | `validateSessionMode`, `validateSessionMaxSessions`, `validateSessionIdleTimeout`,
   `validateSessionMaxSessionsPerSubject`, `validateSessionMaxCookieSize`,
-  `validateSessionMaxCookieHeaderValueLength`, `validateSessionCookieName`
-| `oidc.session.*`
+  `validateBackchannelLogoutPerReplica`, `validateSessionMaxCookieHeaderValueLength`,
+  `validateSessionCookieName`
+| `oidc.session.*`, `oidc.logout.backchannel_path` (per-replica scope: boot WARN only, never a
+  refusal)
 | extracted
 
 | `OidcClientRules`

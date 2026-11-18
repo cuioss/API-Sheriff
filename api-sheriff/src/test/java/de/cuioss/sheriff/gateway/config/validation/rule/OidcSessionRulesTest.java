@@ -70,6 +70,58 @@ class OidcSessionRulesTest {
     private final ConfigValidator validator = new ConfigValidator();
 
     @Nested
+    @DisplayName("Back-channel logout in server mode — the per-replica scope is announced at boot")
+    class BackchannelLogoutPerReplica {
+
+        private static final String PER_REPLICA = ConfigLogMessages.WARN.BACKCHANNEL_LOGOUT_PER_REPLICA
+                .resolveIdentifierString();
+
+        /** Validates a gateway whose session runs in the given mode, with or without a back-channel path. */
+        private List<ConfigError> validate(String mode, @Nullable String backchannelPath) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer("https://idp.example")
+                    .clientId("gateway")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri("https://gw.example.com/auth/callback")
+                    .logout(OidcConfig.Logout.builder().backchannelPath(backchannelPath).build())
+                    .session(OidcConfig.Session.builder().mode(mode).store("memory").build())
+                    .build();
+            TestLoggerFactory.getTestHandler().clearRecords();
+            return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith());
+        }
+
+        @Test
+        @DisplayName("Should warn once, refusing nothing, in server mode with a declared backchannel_path")
+        void shouldWarnInServerModeWithBackchannelPath() {
+            List<ConfigError> errors = validate(OidcConfig.Session.MODE_SERVER, "/bff/backchannel-logout");
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, PER_REPLICA);
+            assertAll("the record names the per-replica scope and the boot continues",
+                    () -> LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                            "ends sessions only in the in-memory session store of the replica that receives it"),
+                    () -> assertTrue(errors.stream().noneMatch(e -> e.pointer().startsWith("/oidc/")),
+                            () -> "the warning must never become a refusal, got: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should stay silent in server mode without a backchannel_path (control)")
+        void shouldStaySilentInServerModeWithoutBackchannelPath() {
+            validate(OidcConfig.Session.MODE_SERVER, null);
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, PER_REPLICA);
+        }
+
+        @Test
+        @DisplayName("Should stay silent in cookie mode even with a declared backchannel_path (control)")
+        void shouldStaySilentInCookieMode() {
+            validate(OidcConfig.Session.MODE_COOKIE, "/bff/backchannel-logout");
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, PER_REPLICA);
+        }
+    }
+
+    @Nested
     @DisplayName("oidc.session.max_sessions_per_subject — its range, and its refusal in cookie mode")
     class SessionMaxSessionsPerSubject {
 

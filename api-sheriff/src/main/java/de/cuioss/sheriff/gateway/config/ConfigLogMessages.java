@@ -471,6 +471,37 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
+         * Warns once at boot that the gateway runs the server-mode session store with back-channel
+         * logout enabled, so a back-channel logout ends sessions on the receiving replica only.
+         * <p>
+         * In server mode the session store lives in the memory of one gateway process. The identity
+         * provider posts a logout token to whichever replica its request reaches; that replica destroys
+         * the matching sessions in its own store and answers {@code 200} even when it destroyed none,
+         * so neither the identity provider nor the operator learns from the answer that a session held
+         * by another replica stayed alive. On a single replica the revocation is complete; behind
+         * several it is not, and nothing reports the difference at request time.
+         * <p>
+         * <strong>Emitted on every such boot, because the replica count is not configuration.</strong>
+         * No {@code gateway.yaml} key declares how many replicas run, so the gateway cannot tell a
+         * single-replica deployment from a scaled one and cannot narrow the warning to the dangerous
+         * case. It therefore names the per-replica scope unconditionally whenever the two conditions
+         * hold, and stays silent in cookie mode (which serves no back-channel path) and whenever
+         * {@code oidc.logout.backchannel_path} is not declared.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: a single-replica server-mode BFF, or a scaled
+         * one whose operator accepts per-replica revocation, is a legitimate posture. What must not
+         * happen is an operator scaling out while believing a back-channel logout still ends every
+         * session of the user.
+         * <p>
+         * The template takes no parameter by design: it names no path, issuer, session or subject.
+         */
+        public static final LogRecord BACKCHANNEL_LOGOUT_PER_REPLICA = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(150)
+                .template("oidc.session.mode is server and oidc.logout.backchannel_path is declared — a back-channel logout ends sessions only in the in-memory session store of the replica that receives it, and that replica answers 200 even when it ended none. Behind several replicas, a session held by another replica stays alive after the identity provider ended it, and nothing reports it. No gateway.yaml key declares the replica count, so this is reported on every such boot: where back-channel revocation must reach every session, run a single replica")
+                .build();
+
+        /**
          * A {@code redirect} route opted into {@code allow_external: true} at boot, so its
          * {@code Location} may send clients to another origin.
          * <p>

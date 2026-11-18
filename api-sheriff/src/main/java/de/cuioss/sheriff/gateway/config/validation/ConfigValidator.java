@@ -204,7 +204,10 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * most the effective {@code max_sessions}, and is refused in cookie mode. The server-mode
  * {@code Cookie} header-value cap (owned by {@link OidcSessionRules} too) does the same for
  * {@code oidc.session.max_cookie_header_value_length}: at least the resolved header-value baseline, at
- * most {@code 8192}, and refused outside server mode.
+ * most {@code 8192}, and refused outside server mode. One more {@link OidcSessionRules} entry refuses
+ * nothing: a server-mode session store with a declared {@code oidc.logout.backchannel_path} is reported
+ * with a boot WARN, because a back-channel logout ends sessions on the receiving replica only, and the
+ * boot continues.
  * <p>
  * Pre-boot: the offline {@code --validate-config} check runs this validator before the framework
  * starts (ADR-0061, ADR-0062), so the rule set is supplied at construction and the validator carries
@@ -254,6 +257,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxSessionsPerSubject(gateway,
                     errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxCookieSize(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateBackchannelLogoutPerReplica(gateway),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxCookieHeaderValueLength(
                     gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionCookieName(gateway, errors),
