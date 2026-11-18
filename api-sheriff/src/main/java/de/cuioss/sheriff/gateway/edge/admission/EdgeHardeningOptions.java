@@ -35,8 +35,11 @@ import io.vertx.core.http.HttpServerOptions;
  * line (4 KiB) and chunk (8 KiB) at their transport defaults, which are tighter than the bounds below.
  * Quarkus applies no HTTP/2 setting to it, so it announces the transport's 8 KiB HTTP/2 header list,
  * and its idle reap, which is not part of that family ({@code quarkus.management.idle-timeout}), stays
- * at the Quarkus default. {@code ManagementListenerTransportTest} pins the three applied bounds and the
- * announced header list on a live management listener.
+ * at the Quarkus default. {@code ManagementListenerTransportTest} pins, on a live management listener,
+ * the header block (refused {@code 431} past 16 KiB, the one bound the shipped file sets), the request
+ * line (refused {@code 414} past the 4 KiB transport default) and the 8 KiB HTTP/2 header list it
+ * announces. The chunk bound is not asserted, because the codec delivers a larger chunk in pieces
+ * rather than refusing it, which no client can observe; the form limits are not asserted either.
  * <p>
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
