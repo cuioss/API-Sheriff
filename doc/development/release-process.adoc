@@ -459,10 +459,10 @@ version comparison.
 
 *What this section says about the guard holds for two pins, and must be re-checked when either
 moves.* The `uses:` of `release.yml`'s `release` job (currently line 132) pins
-`cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@5a641e5` (v0.44.0), and
-that workflow's `guard` job runs `cuioss/cuioss-organization/.github/actions/release-guard@3da96d2`
-(v0.44.0). The check order and the reason lines quoted above are those of that action's
-`release-guard.py` at `3da96d2`. A moved pin does not go unnoticed: `ReleaseGuardPinDocsContractTest`
+`cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@961a419` (v0.45.0), and
+that workflow's `guard` job runs `cuioss/cuioss-organization/.github/actions/release-guard@193adba`
+(v0.45.0). The check order and the reason lines quoted above are those of that action's
+`release-guard.py` at `193adba`. A moved pin does not go unnoticed: `ReleaseGuardPinDocsContractTest`
 fails the build when the workflow pin cited here is not the one the `release` job uses, and
 link:../../.github/workflows/release-guard-docs.yml[`release-guard-docs.yml`] fetches the
 cuioss-organization sources at both pins on every pull request into `main` that touches `release.yml`
