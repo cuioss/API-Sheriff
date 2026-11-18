@@ -65,8 +65,7 @@ import io.vertx.core.net.impl.ConnectionBase;
  * as visible: the windows also rise while the request is paused — the connection's when the gateway
  * returns credit for another stream's body, the stream's own once the transport has returned enough of
  * the padding of its DATA frames, which it returns at once — so a reading equal to an earlier one does
- * not show that no
- * DATA arrived in between.
+ * not show that no DATA arrived in between.
  * <p>
  * <strong>Unacknowledged PINGs are bounded per connection.</strong> Vert.x keeps the future of every
  * PING it has written until the client acknowledges it, and does not release it when the connection

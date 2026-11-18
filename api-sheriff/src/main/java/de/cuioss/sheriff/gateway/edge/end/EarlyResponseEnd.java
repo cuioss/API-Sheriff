@@ -67,14 +67,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@value #MAX_WAIT_MILLIS} ms have passed since the wait began, whatever the stream does.</li>
  * </ol>
  * Only the first shows that no more request data can arrive, and the cap ends the wait even while
- * request data may still be in flight. The second compares one number at a few moments, and that number
- * can be raised as well as lowered while the stream is paused: a {@code WINDOW_UPDATE} the gateway
- * writes for the connection after another stream on it consumed its body raises the connection window,
- * and the transport writes a {@code WINDOW_UPDATE} for this stream as well once enough padding has been
- * returned for it — padding on its DATA frames is returned at once, even while the request is paused.
- * DATA received on this stream lowers the value again, so it can read the same at every look and at the
- * acknowledgement although request data arrived on this stream in between; the second exit therefore
- * does not show that the client has stopped sending. What remains exposed: data a client keeps sending
+ * request data may still be in flight. The second does not show that the client has stopped sending: the
+ * value it compares also rises while the stream is paused, as {@link InboundStreamWindow} describes, so
+ * returned credit can offset DATA arriving on this stream and the value read the same at every look and
+ * at the acknowledgement. What remains exposed: data a client keeps sending
  * after a check such credit misled, data it sends after acknowledging the PING, and data it keeps
  * trickling until the cap ends the wait all arrive after the reset, and the transport answers each such
  * frame with a {@code RST_STREAM(STREAM_CLOSED)} counted against its reset limit. The last bound caps how
@@ -139,9 +135,8 @@ final class EarlyResponseEnd {
         /** Request data may still be on the way: look again. */
         WAIT,
         /**
-         * The window has not moved for {@value EarlyResponseEnd#QUIET_MILLIS} ms: send one PING, so that
-         * everything the client sent before it is counted when the window is read at its
-         * acknowledgement, and look again.
+         * The window has not moved for {@value EarlyResponseEnd#QUIET_MILLIS} ms: send one PING and look
+         * again.
          */
         PING,
         /** The client can send nothing more on the stream. */
@@ -163,11 +158,8 @@ final class EarlyResponseEnd {
      * refused restarts it too and is followed by a new one once it has passed again, and a PING that is
      * never acknowledged leaves the wait to the cap.
      * <p>
-     * The acknowledgement is quiet only when the window reads its PING-time value at the acknowledgement
-     * <em>and</em> no look while the PING was outstanding saw it move. A window that moved and is back at
-     * its PING-time value by the acknowledgement still moved — request data arrived on the stream in
-     * between — so it restarts the quiet period like any other move. A move that starts and is undone
-     * between two looks is not seen by either.
+     * A move counts once a look has seen it, even when the window is back at its PING-time value by the
+     * acknowledgement; a move that starts and is undone between two looks is not seen by either.
      * <p>
      * Pure: it reads nothing but its arguments, so the rule is tested without a transport. Not
      * thread-safe — one instance serves one wait, confined to the stream's event loop.
