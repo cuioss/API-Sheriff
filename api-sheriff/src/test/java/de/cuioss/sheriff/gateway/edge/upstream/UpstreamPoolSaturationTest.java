@@ -25,8 +25,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -51,8 +53,10 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -83,7 +87,8 @@ import org.junit.jupiter.api.Test;
  *       retries it. Under load, the production guard's breaker therefore opens on an upstream that accepts but
  *       never answers, while the same load against an upstream that answers leaves it closed. Only a request body
  *       still arriving on the same client makes an expired wait the gateway's neutral saturation; a body that has
- *       ended, however recently, never does.</li>
+ *       ended, however recently, never does — nor does one whose upstream request failed after its answer was
+ *       handed over, whatever its client sends afterwards.</li>
  * </ul>
  * The single-dispatch cases run under a guard whose breaker opens on the first failure it counts, so a breaker
  * that stays closed is a verdict, not a breaker unable to open — and one that opens is a counted failure. The
@@ -650,6 +655,180 @@ class UpstreamPoolSaturationTest {
             // The dispatch hands its response over paused: resuming it lets the body, and the end, through.
             response.resume();
             return body.map(_ -> response.statusCode()).toCompletionStage().toCompletableFuture();
+        }
+    }
+
+    /**
+     * A real upstream that answers a POST at once, before its body has ended, and then drops the connection the
+     * body was still arriving on — reached on a route with no request-body deadline, so nothing but the body's own
+     * end can release it. The client keeps sending after the drop and then ends its body cleanly, as an HTTP/1.1
+     * client whose answer has already arrived does.
+     */
+    @Nested
+    @DisplayName("a body whose upstream request failed after the answer was handed over")
+    class BodyBehindAFailedUpstreamRequest {
+
+        private static final String EARLY_ANSWER = "answered before the body ended";
+
+        private static final long WAIT_BOUND_NANOS =
+                TimeUnit.MILLISECONDS.toNanos(DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS);
+
+        private Vertx vertx;
+        private HttpServer upstream;
+        private HttpClient client;
+        private Context loop;
+        private final AtomicReference<@Nullable HttpServerRequest> received = new AtomicReference<>();
+        /** Counted down when the client sees the upstream connection closed. */
+        private final CountDownLatch upstreamDropped = new CountDownLatch(1);
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                received.set(request);
+                // Answered at once, while the body is still arriving.
+                request.response().end(EARLY_ANSWER);
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
+            client = vertx.httpClientBuilder()
+                    .withConnectHandler(connection -> connection.closeHandler(_ -> upstreamDropped.countDown()))
+                    .build();
+            loop = vertx.getOrCreateContext();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the stub upstream to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        /** Runs {@code action} on the inbound side's event loop and waits until it has run. */
+        private void onLoop(Runnable action) throws Exception {
+            Promise<Void> ran = Promise.promise();
+            loop.runOnContext(_ -> {
+                action.run();
+                ran.complete();
+            });
+            Awaits.connect(ran.future(), "the inbound side's event loop to run the step");
+        }
+
+        @Test
+        @DisplayName("the client's clean end after the upstream dropped the request leaves no body open on the client, and a later chunk counts for nothing")
+        void bodyIsReleasedOnceItsUpstreamRequestFailed() throws Exception {
+            DispatchStage stage = stageOver(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""),
+                    client);
+            ControlledBody body = new ControlledBody();
+            int status;
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                CompletableFuture<HttpClientResponse> dispatched = CompletableFuture.supplyAsync(
+                        () -> stage.dispatch(route, HttpMethod.POST, HELD_PATH, Map.of(), body,
+                                DispatchStage.BodyFraming.of(HttpMethod.POST, DispatchStage.NO_DECLARED_LENGTH,
+                                        violation -> {
+                                            // No request-body deadline: no late refusal can arrive.
+                                        })), executor);
+                Awaits.until(body::flowing, "the dispatch to start forwarding the body", Awaits.CONNECT_CEILING_SECONDS);
+                onLoop(() -> body.emit(Buffer.buffer("first")));
+                HttpClientResponse answered = Awaits.connect(dispatched, "the early answer to be handed over");
+                status = Awaits.connect(readToTheEnd(answered), "the early answer to be read to the end");
+
+                HttpServerRequest held = received.get();
+                assertNotNull(held, "the upstream received the POST");
+                Awaits.connect(held.connection().close(), "the upstream to drop the request");
+                Awaits.connect(upstreamDropped, "the upstream client to see the request dropped");
+                onLoop(() -> body.emit(Buffer.buffer("after the drop")));
+                Awaits.until(() -> !body.endWatched(),
+                        "the body's consumer to stop waiting for its end once its upstream request failed",
+                        Awaits.CONNECT_CEILING_SECONDS);
+                onLoop(body::end);
+                onLoop(() -> body.emit(Buffer.buffer("after the release")));
+            }
+
+            int answeredStatus = status;
+            int inFlight = bodyTraffic.openBodies();
+            boolean arriving = bodyTraffic.arrivingWithin(System.nanoTime(), WAIT_BOUND_NANOS);
+            assertAll("a body whose upstream request failed after the hand-over, ended cleanly by its client",
+                    () -> assertEquals(200, answeredStatus, "the upstream answered before the body ended"),
+                    () -> assertEquals(0, inFlight,
+                            "a body its upstream request no longer takes stays open on the client"),
+                    () -> assertFalse(arriving,
+                            "a chunk arriving after the body was released still counts as a body arriving"));
+        }
+
+        private CompletableFuture<Integer> readToTheEnd(HttpClientResponse response) {
+            Future<Buffer> answer = response.body();
+            // The dispatch hands its response over paused: resuming it lets the body, and the end, through.
+            response.resume();
+            return answer.map(_ -> response.statusCode()).toCompletionStage().toCompletableFuture();
+        }
+    }
+
+    /**
+     * A request body the test drives by hand: each chunk and the end are delivered the moment the test asks, to
+     * whichever handler is registered then — a chunk or an end with no handler registered reaches no one, as on
+     * a Vert.x server request. Flow control is recorded, never acted on.
+     */
+    private static final class ControlledBody implements ReadStream<Buffer> {
+
+        private volatile @Nullable Handler<Buffer> handler;
+        private volatile @Nullable Handler<Void> endHandler;
+        private volatile boolean flowing;
+
+        void emit(Buffer chunk) {
+            Handler<Buffer> current = handler;
+            if (current != null) {
+                current.handle(chunk);
+            }
+        }
+
+        void end() {
+            Handler<Void> current = endHandler;
+            if (current != null) {
+                current.handle(null);
+            }
+        }
+
+        /** @return {@code true} once a consumer has asked for data */
+        boolean flowing() {
+            return flowing;
+        }
+
+        /** @return {@code true} while a consumer waits for the body's end */
+        boolean endWatched() {
+            return endHandler != null;
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> exceptionHandler) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> bodyHandler) {
+            this.handler = bodyHandler;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            flowing = true;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            flowing = true;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
+            this.endHandler = endHandler;
+            return this;
         }
     }
 

@@ -20,9 +20,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The request bodies one upstream target's shared client is sending: each one {@linkplain #open() opened} the
- * moment a dispatch hands it to an upstream request, and {@linkplain OpenBody#end() ended} the moment it stops
- * arriving there — its end arrived, it was refused, aborted or reset, or its attempt is no longer waited for.
- * Each open body records when it last forwarded a chunk.
+ * moment a dispatch hands it to an upstream request, and {@linkplain OpenBody#end() ended} exactly once, the
+ * moment it stops arriving there — its end arrived, it was refused, aborted or reset, the upstream request it fed
+ * failed and its consumer stopped forwarding it, or its attempt is no longer waited for. Each open body records
+ * when it last forwarded a chunk; a chunk that arrives after the body ended is not recorded.
  * <p>
  * It answers one question: whether, at a given moment, some body on this client is still arriving and forwarded
  * a chunk within a bound ({@link #arrivingWithin}). A body that has ended answers nothing, however recently it

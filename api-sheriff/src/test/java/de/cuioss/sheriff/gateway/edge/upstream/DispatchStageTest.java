@@ -1388,6 +1388,47 @@ class DispatchStageTest {
 
             assertEquals(1, settlements.get(), "the late registration ran once, at once");
         }
+
+        @Test
+        @DisplayName("a body its consumer let go of records no later chunk as forwarded, and its clean end settles nothing again")
+        void bodyLetGoOfRecordsNothingAfterwards() {
+            TestReadStream source = new TestReadStream();
+            UpstreamBodyTraffic.OpenBody inFlight = traffic.open();
+            AtomicLong forwardedBytes = new AtomicLong();
+            AtomicInteger settlements = new AtomicInteger();
+            DispatchStage.ByteCappedBodyStream capped = new DispatchStage.ByteCappedBodyStream(source, BODY_CAP,
+                    DispatchStage.NO_DECLARED_LENGTH, () -> {
+                        // The upstream request reset is not what this case observes.
+                    }, forwarded -> {
+                        forwardedBytes.addAndGet(forwarded);
+                        inFlight.forwarded(System.nanoTime());
+                    });
+            capped.onSettled(() -> {
+                settlements.incrementAndGet();
+                inFlight.end();
+            });
+            capped.handler(_ -> {
+                // The forwarded bytes are counted through the stream's own record.
+            });
+            capped.endHandler(_ -> {
+                // A passed-on end is not what this case observes.
+            });
+            source.emit(Buffer.buffer("x"));
+            capped.handler(null);
+            capped.exceptionHandler(null);
+            capped.endHandler(null);
+            long released = System.nanoTime();
+
+            source.emit(Buffer.buffer("after the release"));
+            source.end();
+
+            assertAll("a body whose consumer let go of it, followed by a chunk and a clean end",
+                    () -> assertEquals(1, settlements.get(), "letting go of the body settled it, once"),
+                    () -> assertEquals(1L, forwardedBytes.get(), "only the chunk before the release was recorded"),
+                    () -> assertEquals(0, traffic.openBodies(), "the released body left the traffic"),
+                    () -> assertNull(expiryAt(released + 1),
+                            "a released body leaves an expiry right after it the upstream's"));
+        }
     }
 
     /** A body stream wired to the traffic exactly as {@code DispatchBody#send} wires it, counting its settlements. */
@@ -1484,6 +1525,17 @@ class DispatchStageTest {
                 DispatchStage.UpstreamAttempt attempt = new DispatchStage.UpstreamAttempt();
                 attempt.abandon();
                 attempt.attachBody(body.capped);
+            }
+        },
+        CONSUMER_LET_GO(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                body.source.emit(Buffer.buffer("x"));
+                // What the forwarding pipe does once the upstream request it writes to has failed: it clears
+                // every handler it registered, the end handler among them.
+                body.capped.handler(null);
+                body.capped.exceptionHandler(null);
+                body.capped.endHandler(null);
             }
         };
 

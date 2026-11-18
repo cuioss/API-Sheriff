@@ -1406,8 +1406,9 @@ public final class DispatchStage {
          * traffic, which decides whom an expired connection wait on that client is charged to (see
          * {@link DispatchStage#expiredWaitOf}): every chunk forwarded records its moment there, and the body is
          * ended there exactly once, the moment it stops arriving — its end arrived, it was refused, aborted or
-         * reset ({@link ByteCappedBodyStream#onSettled}), or its attempt is no longer waited for
-         * ({@link UpstreamAttempt#abandon()}).
+         * reset, the forwarding pipe let go of it because the upstream request had failed
+         * ({@link ByteCappedBodyStream#onSettled}), or its attempt is no longer waited for
+         * ({@link UpstreamAttempt#abandon()}). A chunk arriving after that is not recorded.
          *
          * @throws IllegalStateException when the idle clock or the message clock is to be armed and no
          *                               Vert.x context is current — the send callback always runs on one
@@ -2423,10 +2424,14 @@ public final class DispatchStage {
      * as is the hand-over, so a deadline refusal takes exactly one of them.
      * <p>
      * <strong>A body settles once.</strong> The moment the body stops arriving at its upstream request — its end
-     * arrives, whatever is made of it, an abort is claimed, or its attempt is no longer waited for
-     * ({@link #settle()}) — the action registered through {@link #onSettled} runs, exactly once whichever of
-     * those comes first and however many follow. The dispatch ends the body's mark in its upstream client's
-     * request-body traffic there, so a body that has ended never stands for one still arriving.
+     * arrives, whatever is made of it, an abort is claimed, its consumer lets go of it by clearing its end handler
+     * ({@link #endHandler}) — as the forwarding pipe does once the upstream request it writes to has failed — or
+     * its attempt is no longer waited for ({@link #settle()}) — the action registered through {@link #onSettled}
+     * runs, exactly once whichever of those comes first and however many follow. The dispatch ends the body's mark
+     * in its upstream client's request-body traffic there, so a body that has ended never stands for one still
+     * arriving. A chunk that arrives after the body settled is neither forwarded nor recorded as forwarded; it is
+     * still counted against the declared length and the {@code max_body_bytes} ceiling, so a breach still pauses
+     * the inbound stream.
      */
     static final class ByteCappedBodyStream implements ReadStream<Buffer> {
 
@@ -2555,7 +2560,10 @@ public final class DispatchStage {
          * loop, so the claim must be atomic across both callbacks.
          */
         private final AtomicReference<@Nullable Throwable> abortReason = new AtomicReference<>();
-        /** Whether the body has settled: its end arrived, an abort was claimed, or {@link #settle()} was called. */
+        /**
+         * Whether the body has settled: its end arrived, an abort was claimed, its consumer cleared its end handler,
+         * or {@link #settle()} was called.
+         */
         private final AtomicBoolean settled = new AtomicBoolean();
         /** Runs once when the body settles; {@code null} while none is registered and once it has run. */
         private final AtomicReference<@Nullable Runnable> settledAction = new AtomicReference<>();
@@ -2711,8 +2719,9 @@ public final class DispatchStage {
          * Registers {@code action} to run exactly once, the moment the body settles — at once when it already
          * has. A body settles when its end arrives, whatever is made of it, when an abort is claimed — a cap
          * breach, a framing refusal, an inbound failure, an expired clock or deadline, the gateway's own reset —
-         * or when {@link #settle()} is called because its attempt is no longer waited for. One action is held at
-         * a time; the dispatch registers it once, before the body can be read.
+         * when its consumer clears its end handler ({@link #endHandler}), or when {@link #settle()} is called
+         * because its attempt is no longer waited for. One action is held at a time; the dispatch registers it
+         * once, before the body can be read.
          *
          * @param action runs once the body no longer arrives at its upstream request
          */
@@ -2783,6 +2792,11 @@ public final class DispatchStage {
             }
             if (messageBoundExpired(chunk)) {
                 // The message bound or another abort ended the body before this chunk.
+                return;
+            }
+            if (settled.get()) {
+                // The body no longer arrives at its upstream request: the chunk is neither forwarded nor recorded
+                // as forwarded. It still counted against the bounds above, so the cap still stops the reading.
                 return;
             }
             // The chunk cleared every bound and is about to cross to the upstream — record it so the
@@ -3512,10 +3526,26 @@ public final class DispatchStage {
             return !endAtPassedDeadline();
         }
 
+        /**
+         * Registers the consumer's end handler. Clearing it settles the body (see {@link #settle()}): a consumer
+         * that no longer waits for the end forwards nothing more, so the body no longer arrives at its upstream
+         * request. The forwarding pipe clears it whenever it completes — on the end, on a failure of the inbound
+         * stream, and on a failed write once the upstream request it writes to has failed, which it learns only
+         * at the next chunk it forwards. In that last case the inbound end, still to come, is never passed to the
+         * stream, so without this settlement the body would stay open on its upstream client however it ends.
+         *
+         * @param endHandler the consumer's end handler, or {@code null} when the consumer lets go of the body
+         * @return this stream
+         */
         @Override
         public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
             this.endHandler = endHandler;
-            delegate.endHandler(endHandler == null ? null : this::onInboundEnd);
+            if (endHandler == null) {
+                delegate.endHandler(null);
+                settle();
+                return this;
+            }
+            delegate.endHandler(this::onInboundEnd);
             return this;
         }
     }
