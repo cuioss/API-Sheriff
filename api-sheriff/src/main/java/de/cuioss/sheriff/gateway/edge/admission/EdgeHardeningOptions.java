@@ -32,14 +32,18 @@ import io.vertx.core.http.HttpServerOptions;
  * so none of the bounds below reaches it. It is bounded through the
  * {@code quarkus.management.limits.*} family in the shipped {@code application.properties} instead, as
  * far as Quarkus applies that family there: its HTTP/1.x header block at the same 16 KiB, its request
- * line (4 KiB) and chunk (8 KiB) at their transport defaults, which are tighter than the bounds below.
+ * line (4 KiB) and chunk (8 KiB) at their transport defaults, which are tighter than the bounds below,
+ * its three form limits (256 fields, 2048 bytes per attribute, 1024 undecoded bytes) and its body
+ * (10 MiB, enforced by the body handler on every management route) at their Quarkus defaults.
  * Quarkus applies no HTTP/2 setting to it, so it announces the transport's 8 KiB HTTP/2 header list,
  * and its idle reap, which is not part of that family ({@code quarkus.management.idle-timeout}), stays
  * at the Quarkus default. {@code ManagementListenerTransportTest} pins, on a live management listener,
  * the header block (refused {@code 431} past 16 KiB, the one bound the shipped file sets), the request
- * line (refused {@code 414} past the 4 KiB transport default) and the 8 KiB HTTP/2 header list it
- * announces. The chunk bound is not asserted, because the codec delivers a larger chunk in pieces
- * rather than refusing it, which no client can observe; the form limits are not asserted either.
+ * line (refused {@code 414} past the 4 KiB transport default), each form limit (refused {@code 400}
+ * one unit past it), the body (refused {@code 413} past 10 MiB) and the 8 KiB HTTP/2 header list it
+ * announces, each refusal against a served control at or under the bound. The chunk bound refuses
+ * nothing: the codec delivers a larger chunk in pieces of at most 8 KiB, which no client can observe, so
+ * the test asserts what is observable — a chunk twice that size is served.
  * <p>
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
