@@ -634,7 +634,7 @@ class EdgeHardeningOptionsTest {
                     .writeBytes(frame(CONTINUATION, FLAG_END_HEADERS,
                             Arrays.copyOfRange(block, firstFragment, block.length)));
             try (DefaultHttp2FrameReader reader = new DefaultHttp2FrameReader(
-                    new DefaultHttp2HeadersDecoder(true, announced.getMaxHeaderListSize()))) {
+                         new DefaultHttp2HeadersDecoder(true, announced.getMaxHeaderListSize()))) {
                 reader.maxFrameSize(announced.getMaxFrameSize());
                 reader.readFrame(channel.pipeline().firstContext(), frames, new Http2FrameAdapter());
             } finally {
