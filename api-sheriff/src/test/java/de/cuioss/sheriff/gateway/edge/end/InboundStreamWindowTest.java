@@ -267,14 +267,10 @@ class InboundStreamWindowTest {
     }
 
     /**
-     * Vert.x 4.5 registers the handler that takes a PING's acknowledgement only once the PING write has
-     * completed, and drops an acknowledgement that arrives before any handler is registered. Off the
-     * connection's event loop the write is only queued, so the loop can flush the PING and read its
-     * acknowledgement before the registration runs: the acknowledgement is lost, the future never
-     * completes, and its place under the bound is never freed. The race lies inside Vert.x and cannot be
-     * forced from here, so the case pins the confinement that rules it out: a PING asked for off the loop
-     * is refused at once, sent nowhere and counted nowhere. Every PING within the bound is still sent
-     * afterwards — the refused one took no place — and the client receives exactly those.
+     * The lost-acknowledgement race {@link InboundStreamWindow#ping()} documents lies inside Vert.x and
+     * cannot be forced from here, so the case pins the confinement that rules it out: a PING asked for off
+     * the loop is refused at once, sent nowhere and counted nowhere. Every PING within the bound is still
+     * sent afterwards — the refused one took no place — and the client receives exactly those.
      */
     @Test
     @DisplayName("HTTP/2 — a PING asked for off the connection's event loop is refused at once, sends nothing and takes no place")

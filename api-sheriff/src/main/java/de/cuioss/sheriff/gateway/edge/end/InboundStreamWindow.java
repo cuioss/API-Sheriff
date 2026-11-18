@@ -76,15 +76,10 @@ import io.vertx.core.net.impl.ConnectionBase;
  * <p>
  * <strong>Thread confinement.</strong> Netty's HTTP/2 state belongs to the connection's event loop.
  * {@link #remoteOpen()}, {@link #sendableBytes()}, {@link #localEnded()} and {@link #ping()} must be
- * called there; {@link #execute} and {@link #schedule} hand work to it. The PING is confined for a reason
- * of its own. Vert.x 4.5 registers the handler that takes a PING's acknowledgement only once the PING
- * write has completed, and drops an acknowledgement that arrives while no handler is registered. Off the
- * event loop the write is only queued, so the loop can flush the PING and read its acknowledgement before
- * the registration runs: the acknowledgement is lost, the future never completes, and its place under the
- * bound is never freed. On the event loop the PING is written and the handler registered before control
- * returns to the loop, ahead of any frame the loop reads next. {@link #ping()} therefore refuses a call
- * from any other thread. The future it returns may complete off that event loop: a caller that reads the
- * windows on the acknowledgement hands that read to it through {@link #execute}.
+ * called there; {@link #execute} and {@link #schedule} hand work to it. {@link #ping()} refuses a call
+ * from any other thread, for the reason its documentation gives. The future it returns may complete off
+ * that event loop: a caller that reads the windows on the acknowledgement hands that read to it through
+ * {@link #execute}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -164,8 +159,9 @@ final class InboundStreamWindow {
      * Must be called on the connection's event loop. Vert.x 4.5 registers the acknowledgement handler
      * only once the PING write has completed and drops an acknowledgement no handler awaits, so a PING
      * written from another thread can have its acknowledgement read — and lost — before the handler is
-     * registered. A call from any other thread is therefore refused at once: nothing is sent and the
-     * PING takes no place under the per-connection bound.
+     * registered. On the event loop the PING is written and the handler registered before control
+     * returns to the loop, ahead of any frame it reads next. A call from any other thread is therefore
+     * refused at once: nothing is sent and the PING takes no place under the per-connection bound.
      *
      * @return a future completing once the client has acknowledged the PING and failing when the PING
      *         could not be written, a closed connection among the causes, or was not sent: because the
