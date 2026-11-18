@@ -38,8 +38,8 @@ import org.jspecify.annotations.Nullable;
  * gateway's own {@link UpstreamCircuitBreaker}, in the order retry, breaker, timeout. The breaker is the
  * gateway's because SmallRye's records every call as a success or a failure, while a gateway rejection
  * ({@link GatewayException}) — a call the client ended, one refused because the wait queue for an
- * upstream connection was full, or one whose connection wait expired while a client was still sending a
- * request body on that upstream client ({@link DispatchStage#expiredWaitOf}) — says nothing about the upstream
+ * upstream connection was full, or one whose connection wait expired while a request body on that upstream
+ * client was still arriving, not yet ended ({@link DispatchStage#expiredWaitOf}) — says nothing about the upstream
  * and is neutral: neither counted as a failure nor recorded as a success.
  * <p>
  * Handed to the {@link de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler} as its
@@ -96,8 +96,9 @@ public final class UpstreamGuards {
      * ({@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}): an attempt whose wait reaches it is ended, without
      * its request being sent or its body read, as the upstream's timeout
      * ({@link DispatchStage.UpstreamConnectionWaitExpired}), which the breaker counts and the retry predicate
-     * refuses — or, when a request body was still being forwarded on that upstream client within the bound, as
-     * the gateway's neutral pool saturation — so no connection wait runs into this timeout. On a gRPC call this timeout is therefore reached in
+     * refuses — or, when a request body on that upstream client was still arriving at the expiry, not yet ended,
+     * and had forwarded a chunk within the bound, as the gateway's neutral pool saturation — so no connection wait
+     * runs into this timeout. On a gRPC call this timeout is therefore reached in
      * two ways, both the upstream's: by an upstream holding a complete, half-closed request it does not answer;
      * and by an upstream that stops taking data mid-request and does not take any more before this timeout.
      * While that backpressure pauses the request stream the message bound is not counted, and the

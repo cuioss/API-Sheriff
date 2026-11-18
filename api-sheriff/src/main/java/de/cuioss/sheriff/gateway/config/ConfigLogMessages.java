@@ -471,8 +471,10 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
-         * Warns once at boot that the gateway runs the server-mode session store with back-channel
-         * logout enabled, so a back-channel logout ends sessions on the receiving replica only.
+         * Warns that the gateway runs the server-mode session store with back-channel logout enabled, so a
+         * back-channel logout ends sessions on the receiving replica only. It is emitted by the configuration
+         * validation rule that judges the {@code oidc} session settings, so it is emitted each time the
+         * configuration is validated: once at startup, and in a {@code --validate-config} run.
          * <p>
          * In server mode the session store lives in the memory of one gateway process. The identity
          * provider posts a logout token to whichever replica its request reaches; that replica destroys
@@ -481,7 +483,7 @@ public final class ConfigLogMessages {
          * by another replica stayed alive. On a single replica the revocation is complete; behind
          * several it is not, and nothing reports the difference at request time.
          * <p>
-         * <strong>Emitted on every such boot, because the replica count is not configuration.</strong>
+         * <strong>Emitted on every such validation, because the replica count is not configuration.</strong>
          * No {@code gateway.yaml} key declares how many replicas run, so the gateway cannot tell a
          * single-replica deployment from a scaled one and cannot narrow the warning to the dangerous
          * case. It therefore names the per-replica scope unconditionally whenever the two conditions

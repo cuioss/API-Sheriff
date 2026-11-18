@@ -718,9 +718,12 @@ deployment that never writes it keeps the behaviour shown here.
   its breaker, after which the open circuit answers `503` with `Retry-After`.
 
   *Expired wait behind a body still arriving: `503`.* A connection held by a client still sending its
-  request body cannot be answered before that body ends. So when that upstream's client forwarded a
-  body chunk within the last 10 s, an expired wait is answered `503` (`UPSTREAM_POOL_SATURATED`) and is
-  neutral to the breaker: a client trickling a body cannot open the breaker for everyone else. The
+  request body cannot be answered before that body ends. So when, at the moment the wait expires, some
+  request body to that upstream is still arriving -- handed over and not yet ended -- and forwarded a
+  chunk within the last 10 s, the expired wait is answered `503` (`UPSTREAM_POOL_SATURATED`) and is
+  neutral to the breaker: a client trickling a body cannot open the breaker for everyone else. A body
+  that has ended, however recently, never counts, so a load of complete uploads leaves every expired
+  wait the upstream's `504`. The
   limits: an upstream that answers nothing while some client trickles a body to it does not open its
   breaker through expired waits, and its held requests still end on the 30 s guard timeout; callers
   that all leave before the 10 s end as neutral, so against an upstream that never answers they never

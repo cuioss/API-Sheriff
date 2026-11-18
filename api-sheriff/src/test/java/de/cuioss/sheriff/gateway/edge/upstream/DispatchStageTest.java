@@ -69,6 +69,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
 import de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler;
 import de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture;
+import de.cuioss.sheriff.gateway.edge.assembly.UpstreamBodyTraffic;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
@@ -1252,6 +1253,247 @@ class DispatchStageTest {
                     () -> assertEquals(1, aborts.get(), "the upstream request is reset exactly once"),
                     () -> assertFalse(endPassedOn.get(), "the late end is not passed on"));
         }
+    }
+
+    /**
+     * Whom an expired wait for a pooled upstream connection is charged to ({@link DispatchStage#expiredWaitOf}),
+     * decided from the request-body traffic of the attempt's upstream client, and the bookkeeping that decision
+     * rests on: a body counts only while it is still arriving, and every way it stops arriving ends it in the
+     * traffic exactly once, so no ended body can keep neutralising expired waits.
+     */
+    @Nested
+    @DisplayName("expired connection wait — charged by the bodies still arriving on the upstream client")
+    class ExpiredWaitBehindBodies {
+
+        private static final long WAIT_BOUND_NANOS =
+                TimeUnit.MILLISECONDS.toNanos(DispatchStage.UPSTREAM_CONNECTION_WAIT_MILLIS);
+
+        private final GatewayEventCounter eventCounter = new GatewayEventCounter();
+        private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(eventCounter);
+        private final UpstreamBodyTraffic traffic = new UpstreamBodyTraffic();
+
+        private @Nullable GatewayException expiryAt(long nowNanos) {
+            return DispatchStage.expiredWaitOf(new TimeoutException("the wait for a pooled connection timed out"),
+                    traffic, nowNanos, failureMapper);
+        }
+
+        @Test
+        @DisplayName("a body that has ended, its last chunk forwarded a moment before, leaves the expiry the upstream's")
+        void endedBodyLeavesTheExpiryTheUpstreams() {
+            long now = System.nanoTime();
+            UpstreamBodyTraffic.OpenBody body = traffic.open();
+            body.forwarded(now);
+            body.end();
+
+            GatewayException expired = expiryAt(now + 1);
+
+            assertAll("an expiry right after a complete body on the same client",
+                    () -> assertNull(expired, () -> "an ended body made the expiry the gateway's: " + expired),
+                    () -> assertEquals(0, traffic.openBodies(), "the ended body is no longer in flight"),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_POOL_SATURATED),
+                            "nothing is metered as the gateway's saturation"));
+        }
+
+        @Test
+        @DisplayName("control — a body still arriving, its last chunk forwarded within the bound, makes the expiry the gateway's neutral saturation")
+        void bodyStillArrivingMakesTheExpiryTheGateways() {
+            long now = System.nanoTime();
+            traffic.open().forwarded(now);
+
+            GatewayException expired = expiryAt(now + WAIT_BOUND_NANOS - 1);
+
+            assertAll("an expiry behind a body still arriving on the same client",
+                    () -> assertNotNull(expired, "a body still arriving held the connection"),
+                    () -> assertEquals(EventType.UPSTREAM_POOL_SATURATED, expired.getEventType()),
+                    () -> assertEquals(1L, eventCounter.getCount(EventType.UPSTREAM_POOL_SATURATED),
+                            "the saturation is metered once"));
+        }
+
+        @Test
+        @DisplayName("a body still arriving whose last chunk is a whole bound old leaves the expiry the upstream's")
+        void bodySilentForTheWholeBoundLeavesTheExpiryTheUpstreams() {
+            long now = System.nanoTime();
+            traffic.open().forwarded(now);
+
+            assertNull(expiryAt(now + WAIT_BOUND_NANOS),
+                    "a body that forwarded nothing within the bound does not account for the expiry");
+        }
+
+        @Test
+        @DisplayName("a body handed over that has forwarded no chunk yet leaves the expiry the upstream's")
+        void bodyWithoutAChunkLeavesTheExpiryTheUpstreams() {
+            traffic.open();
+
+            assertNull(expiryAt(System.nanoTime()), "only a forwarded chunk shows a body still arriving");
+        }
+
+        @Test
+        @DisplayName("ending a body twice ends only that body: one still arriving beside it keeps the expiry the gateway's")
+        void secondEndLeavesTheOtherBodyInFlight() {
+            long now = System.nanoTime();
+            UpstreamBodyTraffic.OpenBody ended = traffic.open();
+            ended.forwarded(now);
+            ended.end();
+            ended.end();
+            traffic.open().forwarded(now);
+
+            int inFlight = traffic.openBodies();
+            GatewayException expired = expiryAt(now + 1);
+
+            assertAll("one ended body beside one still arriving",
+                    () -> assertEquals(1, inFlight, "the second end of the first body ended nothing else"),
+                    () -> assertNotNull(expired, "the body still arriving accounts for the expiry"),
+                    () -> assertEquals(EventType.UPSTREAM_POOL_SATURATED, expired.getEventType()));
+        }
+
+        /**
+         * Every way a body stops arriving at its upstream request ends it in the traffic, through the stream's one
+         * settlement, wired exactly as the dispatch wires it; and once it has, no other way — applied afterwards,
+         * all of them — runs the settlement again.
+         */
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(BodyStop.class)
+        @DisplayName("every way a body stops arriving ends it in the traffic exactly once, whatever follows")
+        void everyStopEndsTheBodyOnce(BodyStop stop) {
+            SettlingBody body = new SettlingBody(traffic, stop.declaredLength);
+            int inFlightBefore = traffic.openBodies();
+
+            stop.apply(body);
+            int inFlightAfter = traffic.openBodies();
+            int settledByTheStop = body.settlements.get();
+            for (BodyStop later : BodyStop.values()) {
+                later.apply(body);
+            }
+
+            assertAll(stop.name(),
+                    () -> assertEquals(1, inFlightBefore, "the body was in flight once handed over"),
+                    () -> assertEquals(1, settledByTheStop, "the stop settled the body"),
+                    () -> assertEquals(0, inFlightAfter, "the stop ended the body in the traffic"),
+                    () -> assertEquals(1, body.settlements.get(), "no later stop settles it again"),
+                    () -> assertEquals(0, traffic.openBodies(), "nothing is left in flight"));
+        }
+
+        @Test
+        @DisplayName("a settlement action registered after the body settled runs at once, and only once")
+        void actionRegisteredAfterTheSettlementRunsAtOnce() {
+            DispatchStage.ByteCappedBodyStream capped = new DispatchStage.ByteCappedBodyStream(new TestReadStream(),
+                    BODY_CAP, () -> {
+                        // No abort is exercised here.
+                    });
+            AtomicInteger settlements = new AtomicInteger();
+            capped.settle();
+
+            capped.onSettled(settlements::incrementAndGet);
+            capped.settle();
+
+            assertEquals(1, settlements.get(), "the late registration ran once, at once");
+        }
+    }
+
+    /** A body stream wired to the traffic exactly as {@code DispatchBody#send} wires it, counting its settlements. */
+    private static final class SettlingBody {
+
+        private static final long IDLE_TIMEOUT_MILLIS = 1_000L;
+
+        private final TestReadStream source = new TestReadStream();
+        private final DispatchStage.InboundBody inbound = DispatchStage.InboundBody.arm(source);
+        private final ManualTime time = new ManualTime();
+        private final AtomicInteger settlements = new AtomicInteger();
+        private final DispatchStage.ByteCappedBodyStream capped;
+
+        private SettlingBody(UpstreamBodyTraffic traffic, long declaredLength) {
+            UpstreamBodyTraffic.OpenBody inFlight = traffic.open();
+            capped = new DispatchStage.ByteCappedBodyStream(inbound, BODY_CAP, declaredLength, () -> {
+                // The upstream request reset is not what these cases observe.
+            }, _ -> inFlight.forwarded(System.nanoTime()),
+                    new DispatchStage.IdleClock(IDLE_TIMEOUT_MILLIS, time, time::nanoTime));
+            capped.onSettled(() -> {
+                settlements.incrementAndGet();
+                inFlight.end();
+            });
+            capped.handler(_ -> {
+                // The forwarded bytes are not what these cases observe.
+            });
+            capped.exceptionHandler(_ -> {
+                // A propagated failure is not what these cases observe.
+            });
+            capped.endHandler(_ -> {
+                // A passed-on end is not what these cases observe.
+            });
+        }
+    }
+
+    /** The ways a body stops arriving at its upstream request. */
+    private enum BodyStop {
+        END_ARRIVED_WHOLE(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                body.source.emit(Buffer.buffer("x"));
+                body.source.end();
+            }
+        },
+        END_SHORT_OF_THE_DECLARED_LENGTH(4L) {
+            @Override
+            void apply(SettlingBody body) {
+                body.source.emit(Buffer.buffer("x"));
+                body.source.end();
+            }
+        },
+        BEYOND_THE_DECLARED_LENGTH(4L) {
+            @Override
+            void apply(SettlingBody body) {
+                body.source.emit(Buffer.buffer("xxxxx"));
+            }
+        },
+        PAST_THE_BODY_CAP(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                body.source.emit(Buffer.buffer(new byte[(int) BODY_CAP + 1]));
+            }
+        },
+        INBOUND_FAILURE(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                body.source.fail(new IllegalStateException("the client connection was reset"));
+            }
+        },
+        GATEWAY_RESET(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                body.inbound.resetByGateway();
+            }
+        },
+        IDLE_TIMEOUT(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                body.capped.startIdleClock();
+                body.time.advanceMillis(SettlingBody.IDLE_TIMEOUT_MILLIS);
+            }
+        },
+        ATTEMPT_ABANDONED(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                DispatchStage.UpstreamAttempt attempt = new DispatchStage.UpstreamAttempt();
+                attempt.attachBody(body.capped);
+                attempt.abandon();
+            }
+        },
+        ATTEMPT_ABANDONED_BEFORE_THE_BODY_WAS_ATTACHED(DispatchStage.NO_DECLARED_LENGTH) {
+            @Override
+            void apply(SettlingBody body) {
+                DispatchStage.UpstreamAttempt attempt = new DispatchStage.UpstreamAttempt();
+                attempt.abandon();
+                attempt.attachBody(body.capped);
+            }
+        };
+
+        private final long declaredLength;
+
+        BodyStop(long declaredLength) {
+            this.declaredLength = declaredLength;
+        }
+
+        abstract void apply(SettlingBody body);
     }
 
     /**
@@ -3731,6 +3973,8 @@ class DispatchStageTest {
         private Guard guard;
         private Route route;
         private DispatchStage stage;
+        /** The request-body traffic of the route's upstream client. */
+        private UpstreamBodyTraffic bodyTraffic;
         /** The body the stub upstream answers a request to the early path with. */
         private String earlyAnswer;
         /** Every request the stub upstream received a head for. */
@@ -3788,6 +4032,7 @@ class DispatchStageTest {
                         throw new UnsupportedOperationException("no asset route in this test");
                     });
             route = assembled.routes().getFirst();
+            bodyTraffic = assembled.upstreamClients().bodyTraffic(UpstreamTarget.of(route)).orElseThrow();
             stage = new DispatchStage(assembled.upstreamClients(), BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
                     new UpstreamFailureMapper(new GatewayEventCounter()));
         }
@@ -3826,7 +4071,9 @@ class DispatchStageTest {
                     () -> assertEquals(List.of(), breakerTransitions,
                             "the breaker must stay closed through a full window of inbound failures"),
                     () -> assertEquals(200, response.statusCode(),
-                            "the upstream must still be called once the window is full"));
+                            "the upstream must still be called once the window is full"),
+                    () -> assertEquals(0, bodyTraffic.openBodies(),
+                            "every failed body and the one that ended left the client's body traffic"));
         }
 
         /**
@@ -3869,7 +4116,9 @@ class DispatchStageTest {
                     () -> assertEquals(List.of(), breakerTransitions,
                             "a gateway reset after a complete response must not move the breaker"),
                     () -> assertEquals(200, response.statusCode(),
-                            "the upstream must still be called behind the resets"));
+                            "the upstream must still be called behind the resets"),
+                    () -> assertEquals(0, bodyTraffic.openBodies(),
+                            "every reset body and the one that ended left the client's body traffic"));
         }
 
         @Test

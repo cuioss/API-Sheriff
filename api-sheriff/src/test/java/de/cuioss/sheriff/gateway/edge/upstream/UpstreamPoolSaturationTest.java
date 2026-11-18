@@ -39,6 +39,7 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
+import de.cuioss.sheriff.gateway.edge.assembly.UpstreamBodyTraffic;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
 import de.cuioss.sheriff.gateway.events.EventCategory;
@@ -80,7 +81,9 @@ import org.junit.jupiter.api.Test;
  *       behind connections the upstream is holding, so it is the upstream's failure: the dispatch ends as an
  *       {@link EventType#UPSTREAM_TIMEOUT} ({@code 504}) the breaker counts, and a retry-enabled route never
  *       retries it. Under load, the production guard's breaker therefore opens on an upstream that accepts but
- *       never answers, while the same load against an upstream that answers leaves it closed.</li>
+ *       never answers, while the same load against an upstream that answers leaves it closed. Only a request body
+ *       still arriving on the same client makes an expired wait the gateway's neutral saturation; a body that has
+ *       ended, however recently, never does.</li>
  * </ul>
  * The single-dispatch cases run under a guard whose breaker opens on the first failure it counts, so a breaker
  * that stays closed is a verdict, not a breaker unable to open — and one that opens is a counted failure. The
@@ -99,6 +102,8 @@ class UpstreamPoolSaturationTest {
     private GatewayEventCounter eventCounter;
     private UpstreamFailureMapper failureMapper;
     private Route route;
+    /** The request-body traffic of the dispatch's upstream client, built with the stage. */
+    private UpstreamBodyTraffic bodyTraffic;
 
     @BeforeEach
     void setUpGuard() {
@@ -133,6 +138,7 @@ class UpstreamPoolSaturationTest {
         ResilienceShape shape = ResilienceShape.of(route);
         UpstreamClients clients = new UpstreamClients(Map.of(UpstreamTarget.of(route), client),
                 Map.of(shape, guardFor.apply(shape)));
+        bodyTraffic = clients.bodyTraffic(UpstreamTarget.of(route)).orElseThrow();
         return new DispatchStage(clients, 1024L, DispatchStage.NO_BODY_IDLE_TIMEOUT, failureMapper);
     }
 
@@ -477,6 +483,7 @@ class UpstreamPoolSaturationTest {
             TricklingBody body = new TricklingBody(vertx);
             List<CompletableFuture<@Nullable GatewayException>> queued = new ArrayList<>();
             List<@Nullable GatewayException> queuedEnded;
+            int inFlightWhileTrickling;
             try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
                 try {
                     CompletableFuture.runAsync(() -> stage.dispatch(route, HttpMethod.POST, HELD_PATH, Map.of(), body,
@@ -493,6 +500,7 @@ class UpstreamPoolSaturationTest {
                     Awaits.connect(CompletableFuture.allOf(queued.toArray(CompletableFuture[]::new)),
                             "every queued dispatch to end");
                     queuedEnded = queued.stream().map(CompletableFuture::join).toList();
+                    inFlightWhileTrickling = bodyTraffic.openBodies();
                 } finally {
                     body.stop();
                     // Closing the client fails the POST still holding the connection, so the executor can close.
@@ -500,7 +508,9 @@ class UpstreamPoolSaturationTest {
                 }
             }
 
+            int inFlight = inFlightWhileTrickling;
             assertAll("more queued waits than the breaker's window, behind a body the client is still sending",
+                    () -> assertEquals(1, inFlight, "the POST's body is the one body still arriving on the client"),
                     () -> assertTrue(queuedEnded.stream().allMatch(ended -> ended != null
                                     && ended.getEventType() != EventType.UPSTREAM_TIMEOUT),
                             () -> "an expired wait behind a client's body was charged to the upstream: " + queuedEnded),
@@ -547,6 +557,156 @@ class UpstreamPoolSaturationTest {
                             "no wait expired"),
                     () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_CIRCUIT_OPEN),
                             "the breaker never opened"));
+        }
+    }
+
+    /**
+     * A real upstream that reads each request body whole and then answers, reached through a client that hands
+     * the dispatch a real connection for the first request it is asked for and an expired wait for every later
+     * one — so an expired wait follows, on the same upstream, a request whose body has already ended.
+     */
+    @Nested
+    @DisplayName("an expired wait after a body that has ended")
+    class WaitAfterAnEndedBody {
+
+        private static final String SMALL_BODY = "hello";
+
+        private Vertx vertx;
+        private HttpServer upstream;
+        private HttpClient realClient;
+        private final AtomicInteger asked = new AtomicInteger();
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.body().onComplete(_ -> request.response().end()))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            realClient = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(realClient.close(), "the upstream client to close");
+            Awaits.teardown(upstream.close(), "the stub upstream to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        /** The real client for the first request the dispatch asks for; an expired wait for every later one. */
+        private HttpClient expiringAfterTheFirstRequest() {
+            return HttpClient.class.cast(Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                    new Class<?>[]{HttpClient.class}, (proxy, method, args) -> {
+                        if ("request".equals(method.getName()) && args != null && args.length == 1
+                                && args[0] instanceof RequestOptions options) {
+                            if (asked.incrementAndGet() == 1) {
+                                return realClient.request(options);
+                            }
+                            return Future.failedFuture(
+                                    new TimeoutException("the wait for a pooled connection timed out"));
+                        }
+                        throw new AssertionError("the dispatch asked its upstream client for " + method.getName());
+                    }));
+        }
+
+        @Test
+        @DisplayName("a small POST answered moments ago does not make the next expired wait on its upstream the gateway's: it is the upstream's timeout, a 504 the breaker counts")
+        void expiredWaitAfterAnEndedBodyIsTheUpstreamsTimeout() throws Exception {
+            DispatchStage stage = stageOver(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""),
+                    expiringAfterTheFirstRequest());
+            int postStatus;
+            int inFlightAfterThePost;
+            GatewayException expired;
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                HttpClientResponse answered = Awaits.connect(CompletableFuture.supplyAsync(
+                        () -> stage.dispatch(route, HttpMethod.POST, HELD_PATH, Map.of(),
+                                new CompleteBody(Buffer.buffer(SMALL_BODY)),
+                                DispatchStage.BodyFraming.of(HttpMethod.POST, SMALL_BODY.length(), violation -> {
+                                    // The body ends before the answer, so no late refusal can arrive.
+                                })), executor), "the POST to be answered");
+                postStatus = Awaits.connect(readToTheEnd(answered), "the POST's answer to be read to the end");
+                inFlightAfterThePost = bodyTraffic.openBodies();
+                expired = Awaits.connect(dispatch(executor, stage, HELD_PATH), "the wait after the POST to end");
+            }
+
+            GatewayException ended = expired;
+            int answeredStatus = postStatus;
+            int inFlight = inFlightAfterThePost;
+            assertAll("an expired wait within the connection wait bound of a body that has ended",
+                    () -> assertEquals(200, answeredStatus, "the POST's body arrived whole and was answered"),
+                    () -> assertEquals(0, inFlight, "the POST's ended body left the client's body traffic"),
+                    () -> assertEquals(2, asked.get(), "the POST and the wait behind it each asked for a connection"),
+                    () -> assertNotNull(ended, "the dispatch whose wait expired must not be answered"),
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, ended.getEventType(),
+                            () -> "a body that has ended held no connection, so the expiry is the upstream's: " + ended),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), transitions,
+                            "the breaker counts the expired wait and opens on it"),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_POOL_SATURATED),
+                            "the expired wait is not metered as the gateway's own saturation"));
+        }
+
+        private CompletableFuture<Integer> readToTheEnd(HttpClientResponse response) {
+            Future<Buffer> body = response.body();
+            // The dispatch hands its response over paused: resuming it lets the body, and the end, through.
+            response.resume();
+            return body.map(_ -> response.statusCode()).toCompletionStage().toCompletableFuture();
+        }
+    }
+
+    /**
+     * A request body that arrives whole the moment its consumer first asks for data: one chunk, then its end.
+     */
+    private static final class CompleteBody implements ReadStream<Buffer> {
+
+        private final Buffer content;
+        private final AtomicInteger delivered = new AtomicInteger();
+        private volatile @Nullable Handler<Buffer> handler;
+        private volatile @Nullable Handler<Void> endHandler;
+
+        private CompleteBody(Buffer content) {
+            this.content = content;
+        }
+
+        private ReadStream<Buffer> deliver() {
+            Handler<Buffer> chunks = handler;
+            Handler<Void> end = endHandler;
+            if (chunks != null && end != null && delivered.compareAndSet(0, 1)) {
+                chunks.handle(content);
+                end.handle(null);
+            }
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> exceptionHandler) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> bodyHandler) {
+            this.handler = bodyHandler;
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            return deliver();
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            return deliver();
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
+            this.endHandler = endHandler;
+            return this;
         }
     }
 

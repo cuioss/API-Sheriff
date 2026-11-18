@@ -1704,7 +1704,7 @@ stream-idle bound]):
   breaker and leave the next dispatch refused unsent (`expiredWaitsOpenTheBreaker`), and the same load
   against an upstream that answers is served with the breaker closed (`answeredLoadLeavesTheBreakerClosed`).
   A connection can also be held by a client still sending its body, which no upstream can answer before
-  it ends: an expired wait on an upstream client that forwarded a body chunk within the 10 s is the
+  it ends: an expired wait while a request body on that upstream client is still arriving -- handed over, not yet ended -- and forwarded a chunk within the 10 s (a body that has ended, however recently, never counts) isthe
   gateway's neutral `UPSTREAM_POOL_SATURATED`, so a client trickling a body cannot open the breaker for
   everyone (`waitsBehindABodyStillArrivingLeaveTheBreakerClosed`). Two limits follow. An upstream that
   answers nothing while some client trickles a body to it does not open the breaker through expired
