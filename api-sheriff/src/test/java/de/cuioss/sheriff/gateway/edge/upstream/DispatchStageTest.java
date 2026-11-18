@@ -1404,8 +1404,8 @@ class DispatchStageTest {
         private SettlingBody(UpstreamBodyTraffic traffic, long declaredLength) {
             UpstreamBodyTraffic.OpenBody inFlight = traffic.open();
             capped = new DispatchStage.ByteCappedBodyStream(inbound, BODY_CAP, declaredLength, () -> {
-                // The upstream request reset is not what these cases observe.
-            }, _ -> inFlight.forwarded(System.nanoTime()),
+                        // The upstream request reset is not what these cases observe.
+                    }, _ -> inFlight.forwarded(System.nanoTime()),
                     new DispatchStage.IdleClock(IDLE_TIMEOUT_MILLIS, time, time::nanoTime));
             capped.onSettled(() -> {
                 settlements.incrementAndGet();
@@ -1426,12 +1426,12 @@ class DispatchStageTest {
     /** The ways a body stops arriving at its upstream request. */
     private enum BodyStop {
         END_ARRIVED_WHOLE(DispatchStage.NO_DECLARED_LENGTH) {
-            @Override
-            void apply(SettlingBody body) {
-                body.source.emit(Buffer.buffer("x"));
-                body.source.end();
-            }
-        },
+        @Override
+        void apply(SettlingBody body) {
+            body.source.emit(Buffer.buffer("x"));
+            body.source.end();
+        }
+    },
         END_SHORT_OF_THE_DECLARED_LENGTH(4L) {
             @Override
             void apply(SettlingBody body) {
