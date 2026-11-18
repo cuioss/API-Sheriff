@@ -23,6 +23,7 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.token.quarkus.config.IssuerConfigResolver;
 import de.cuioss.sheriff.token.quarkus.producer.TokenValidatorStartupInitializer;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -235,6 +236,100 @@ class ExtensionIssuerNamespaceGateTest {
         assertTrue(schedulerPriorities.stream().allMatch(priority -> gatePriority < priority),
                 "the gate must be notified before the scheduler starts; gate=" + gatePriority
                         + ", scheduler=" + schedulerPriorities);
+    }
+
+    /**
+     * Profile-prefixed and default-value keys: the gate must refuse exactly the configurations the
+     * extension acts on, including a key the enumeration could only miss through its profile spelling or
+     * through the default-value source a build-time-recorded key lands in.
+     * <p>
+     * The oracle is the extension's own enablement probe, {@link IssuerConfigResolver#hasEnabledIssuers},
+     * run over the same hand-built {@link Config} the gate reads. Each configuration carries the default
+     * interceptors and an active profile, as the Quarkus runtime configuration does, so a key spelled
+     * for that profile resolves exactly as it would at boot. The expected verdicts are stated as well as
+     * compared, so a probe that had stopped discovering anything could not make the agreement vacuous.
+     */
+    @Nested
+    @DisplayName("Profile-prefixed and default-value keys")
+    class ProfilePrefixedKeys {
+
+        private static final String ACTIVE_PROFILE = "prod";
+
+        private Config profiled(org.eclipse.microprofile.config.spi.ConfigSource source) {
+            return new SmallRyeConfigBuilder()
+                    .addDefaultInterceptors()
+                    .withProfile(ACTIVE_PROFILE)
+                    .withSources(source)
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Refuses a property key spelled for the active profile, which the extension acts on")
+        void refusesTheActiveProfilePropertySpelling() {
+            Config config = profiled(new PropertiesConfigSource(
+                    Map.of("%" + ACTIVE_PROFILE + "." + DOTTED_ISSUER_KEY, "true"), "gate-fixture", 300));
+            ExtensionIssuerNamespaceGate gate = new ExtensionIssuerNamespaceGate(config);
+
+            assertTrue(IssuerConfigResolver.hasEnabledIssuers(config),
+                    "control: the extension discovers an issuer spelled for the active profile");
+            assertThrows(IllegalStateException.class, gate::refuseConfiguredExtensionIssuers,
+                    "a key the extension acts on must refuse the boot, whatever its profile spelling");
+        }
+
+        @Test
+        @DisplayName("Refuses an environment variable spelled for the active profile, which the extension acts on")
+        void refusesTheActiveProfileEnvironmentSpelling() {
+            Config config = profiled(new EnvConfigSource(
+                    Map.of("_" + ACTIVE_PROFILE.toUpperCase(java.util.Locale.ROOT) + "_" + ENVIRONMENT_ISSUER_KEY,
+                            "true"), 300));
+            ExtensionIssuerNamespaceGate gate = new ExtensionIssuerNamespaceGate(config);
+
+            assertAll(
+                    () -> assertTrue(IssuerConfigResolver.hasEnabledIssuers(config),
+                            "control: the extension discovers an issuer whose environment variable is spelled "
+                                    + "for the active profile"),
+                    () -> assertTrue(refuses(gate),
+                            "a key the extension acts on must refuse the boot, whatever its profile spelling"));
+        }
+
+        @Test
+        @DisplayName("Refuses a key carried only as a default value, the shape a build-time-recorded key takes")
+        void refusesAKeyCarriedOnlyAsADefaultValue() {
+            Config config = new SmallRyeConfigBuilder()
+                    .addDefaultInterceptors()
+                    .withProfile(ACTIVE_PROFILE)
+                    .withDefaultValue(DOTTED_ISSUER_KEY, "true")
+                    .build();
+            ExtensionIssuerNamespaceGate gate = new ExtensionIssuerNamespaceGate(config);
+
+            assertAll(
+                    () -> assertTrue(IssuerConfigResolver.hasEnabledIssuers(config),
+                            "control: the extension discovers an issuer carried only as a default value"),
+                    () -> assertTrue(refuses(gate),
+                            "a key the extension acts on must refuse the boot, whichever source carries it"));
+        }
+
+        @Test
+        @DisplayName("Accepts a key spelled for an inactive profile, which the extension ignores (matched control)")
+        void acceptsAnInactiveProfileSpelling() {
+            Config config = profiled(new PropertiesConfigSource(
+                    Map.of("%dev." + DOTTED_ISSUER_KEY, "true"), "gate-fixture", 300));
+            ExtensionIssuerNamespaceGate gate = new ExtensionIssuerNamespaceGate(config);
+
+            assertFalse(IssuerConfigResolver.hasEnabledIssuers(config),
+                    "control: a key for an inactive profile enables nothing in the extension");
+            assertDoesNotThrow(gate::refuseConfiguredExtensionIssuers,
+                    "a key no active profile reads makes the extension build nothing, so the boot proceeds");
+        }
+
+        private boolean refuses(ExtensionIssuerNamespaceGate gate) {
+            try {
+                gate.refuseConfiguredExtensionIssuers();
+                return false;
+            } catch (IllegalStateException refused) {
+                return true;
+            }
+        }
     }
 
     /**

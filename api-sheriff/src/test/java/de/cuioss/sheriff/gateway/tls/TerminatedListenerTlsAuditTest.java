@@ -18,6 +18,8 @@ package de.cuioss.sheriff.gateway.tls;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Proxy;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -40,6 +42,8 @@ import io.quarkus.test.junit.TestProfile;
 import io.quarkus.tls.BaseTlsConfiguration;
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
+import io.quarkus.vertx.http.runtime.CertificateConfig;
+import io.quarkus.vertx.http.runtime.options.TlsUtils;
 import io.vertx.core.net.KeyCertOptions;
 import io.vertx.core.net.PemKeyCertOptions;
 import jakarta.enterprise.event.Event;
@@ -427,5 +431,73 @@ class TerminatedListenerTlsAuditTest {
                 return new PemKeyCertOptions();
             }
         };
+    }
+
+    /**
+     * Half a PEM pair never reaches either audit. Both audits count {@code files} alone, or
+     * {@code key-files} alone, as a configured certificate — and this pins why that is not a false
+     * HTTPS verdict waiting to happen: the legacy block both listeners share is resolved through
+     * {@code TlsUtils.computeKeyStoreOptions}, which refuses half a pair with an
+     * {@link IllegalArgumentException}. Nothing between it and the recorder catches that, so the boot
+     * fails before any {@code StartupEvent} observer runs. The complete pair and the empty block are the
+     * matched controls: neither throws, and only the complete pair builds key options. The block type is
+     * the one both {@code quarkus.http.ssl.certificate.*} and {@code quarkus.management.ssl.certificate.*}
+     * bind to, and both listeners resolve it through the same builder, so this covers
+     * {@link ManagementPlainHttpAudit} as well.
+     */
+    @Nested
+    @DisplayName("Half a PEM pair fails upstream before the audits run")
+    class HalfPemPair {
+
+        @Test
+        @DisplayName("Certificate files without key files are refused by the shared key-option builder")
+        void certificateFilesAloneAreRefused() {
+            CertificateConfig filesAlone = certificateConfig(
+                    Map.<String, Object>of("files", Optional.of(List.of(Path.of(CERTIFICATE_PATH)))));
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> TlsUtils.computeKeyStoreOptions(filesAlone, Optional.empty(), Optional.empty()),
+                    "half a PEM pair must fail the boot, so the audits never see it");
+        }
+
+        @Test
+        @DisplayName("Key files without certificate files are refused by the shared key-option builder")
+        void keyFilesAloneAreRefused() {
+            CertificateConfig keyFilesAlone = certificateConfig(
+                    Map.<String, Object>of("keyFiles", Optional.of(List.of(Path.of(CERTIFICATE_KEY_PATH)))));
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> TlsUtils.computeKeyStoreOptions(keyFilesAlone, Optional.empty(), Optional.empty()),
+                    "half a PEM pair must fail the boot, so the audits never see it");
+        }
+
+        @Test
+        @DisplayName("A complete PEM pair builds key options, so it still counts as a certificate (matched control)")
+        void aCompletePairBuildsKeyOptions() throws Exception {
+            CertificateConfig completePair = certificateConfig(Map.<String, Object>of(
+                    "files", Optional.of(List.of(Path.of(CERTIFICATE_PATH))),
+                    "keyFiles", Optional.of(List.of(Path.of(CERTIFICATE_KEY_PATH)))));
+
+            assertNotNull(TlsUtils.computeKeyStoreOptions(completePair, Optional.empty(), Optional.empty()),
+                    "a complete pair puts a certificate on the listener, which is the HTTPS verdict the audits report");
+        }
+
+        @Test
+        @DisplayName("An empty certificate block builds no key options and is not refused (matched control)")
+        void anEmptyBlockIsNotRefused() throws Exception {
+            assertNull(TlsUtils.computeKeyStoreOptions(certificateConfig(Map.of()), Optional.empty(), Optional.empty()),
+                    "no declared certificate yields no key options, which is the plain-HTTP verdict the audits report");
+        }
+
+        /**
+         * @param values the configured spellings by accessor name; every other accessor is unset
+         * @return a certificate block answering only the given accessors
+         */
+        private CertificateConfig certificateConfig(Map<String, Object> values) {
+            return (CertificateConfig) Proxy.newProxyInstance(CertificateConfig.class.getClassLoader(),
+                    new Class<?>[]{CertificateConfig.class},
+                    (proxy, method, args) -> values.getOrDefault(method.getName(),
+                            Optional.class.equals(method.getReturnType()) ? Optional.empty() : null));
+        }
     }
 }
