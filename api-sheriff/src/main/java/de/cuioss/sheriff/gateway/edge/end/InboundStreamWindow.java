@@ -75,10 +75,16 @@ import io.vertx.core.net.impl.ConnectionBase;
  * still for it again. An acknowledgement frees a place.
  * <p>
  * <strong>Thread confinement.</strong> Netty's HTTP/2 state belongs to the connection's event loop.
- * {@link #remoteOpen()}, {@link #sendableBytes()} and {@link #localEnded()} must be called there;
- * {@link #execute} and {@link #schedule} hand work to it. {@link #ping()} may be called from any thread,
- * and the future it returns may complete off that event loop: a caller that reads the windows on the
- * acknowledgement hands that read to it through {@link #execute}.
+ * {@link #remoteOpen()}, {@link #sendableBytes()}, {@link #localEnded()} and {@link #ping()} must be
+ * called there; {@link #execute} and {@link #schedule} hand work to it. The PING is confined for a reason
+ * of its own. Vert.x 4.5 registers the handler that takes a PING's acknowledgement only once the PING
+ * write has completed, and drops an acknowledgement that arrives while no handler is registered. Off the
+ * event loop the write is only queued, so the loop can flush the PING and read its acknowledgement before
+ * the registration runs: the acknowledgement is lost, the future never completes, and its place under the
+ * bound is never freed. On the event loop the PING is written and the handler registered before control
+ * returns to the loop, ahead of any frame the loop reads next. {@link #ping()} therefore refuses a call
+ * from any other thread. The future it returns may complete off that event loop: a caller that reads the
+ * windows on the acknowledgement hands that read to it through {@link #execute}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -100,6 +106,9 @@ final class InboundStreamWindow {
 
     /** The failure {@link #ping()} answers with once {@value #MAX_OUTSTANDING_PINGS} PINGs are unacknowledged. */
     private static final String PINGS_OUTSTANDING = "Too many unacknowledged PINGs on the connection";
+
+    /** The failure {@link #ping()} answers with when called off the connection's event loop. */
+    private static final String PING_OFF_EVENT_LOOP = "A PING must be sent on the connection's event loop";
 
     /** The connection-wide count of unacknowledged PINGs sent through this class, kept on the channel. */
     private static final AttributeKey<AtomicInteger> OUTSTANDING_PINGS = AttributeKey
@@ -151,14 +160,25 @@ final class InboundStreamWindow {
     /**
      * Sends one HTTP/2 PING on the request's connection. The payload is fixed: an acknowledgement is
      * matched to its PING by order, not by content.
+     * <p>
+     * Must be called on the connection's event loop. Vert.x 4.5 registers the acknowledgement handler
+     * only once the PING write has completed and drops an acknowledgement no handler awaits, so a PING
+     * written from another thread can have its acknowledgement read — and lost — before the handler is
+     * registered. A call from any other thread is therefore refused at once: nothing is sent and the
+     * PING takes no place under the per-connection bound.
      *
      * @return a future completing once the client has acknowledged the PING and failing when the PING
-     *         could not be written, a closed connection among the causes, or was not sent because
-     *         {@value #MAX_OUTSTANDING_PINGS} PINGs are already unacknowledged on the connection. A PING
-     *         written on a connection that closes before the acknowledgement arrives is never completed:
-     *         Vert.x does not fail it, so a caller must not depend on the future settling
+     *         could not be written, a closed connection among the causes, or was not sent: because the
+     *         call came from off the connection's event loop (failing with an
+     *         {@link IllegalStateException}) or because {@value #MAX_OUTSTANDING_PINGS} PINGs are already
+     *         unacknowledged on the connection. A PING written on a connection that closes before the
+     *         acknowledgement arrives is never completed: Vert.x does not fail it, so a caller must not
+     *         depend on the future settling
      */
     Future<Void> ping() {
+        if (!channel.executor().inEventLoop()) {
+            return Future.failedFuture(new IllegalStateException(PING_OFF_EVENT_LOOP));
+        }
         if (outstandingPings.incrementAndGet() > MAX_OUTSTANDING_PINGS) {
             outstandingPings.decrementAndGet();
             return Future.failedFuture(PINGS_OUTSTANDING);

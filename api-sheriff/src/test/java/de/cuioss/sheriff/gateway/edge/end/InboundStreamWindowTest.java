@@ -27,6 +27,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
@@ -59,7 +60,8 @@ import org.junit.jupiter.api.Test;
  * the client sends, and the stream stops being open to the client once the client ends it. The PING it
  * sends goes out on the request's own connection and completes once the client acknowledges it, and the
  * PINGs a connection's client holds unacknowledged are bounded: past the bound a PING is refused at once,
- * until an acknowledgement frees a place.
+ * until an acknowledgement frees a place. A PING is sent only on the connection's event loop, so every
+ * case that pings does so there, and a PING asked for anywhere else is refused at once.
  * <p>
  * This is the test that pins the one Vert.x internal the class reaches through: should a Vert.x upgrade
  * change it, the attach fails here rather than silently in production.
@@ -182,7 +184,7 @@ class InboundStreamWindowTest {
         HttpServerRequest request = Awaits.connect(received, "the server to receive the upload");
         InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
 
-        Future<Void> ping = window.ping();
+        Future<Void> ping = onTheLoop(window, window::ping);
         Awaits.connect(ping, "the PING to be acknowledged");
 
         assertAll("a PING on the stream's connection",
@@ -209,7 +211,8 @@ class InboundStreamWindowTest {
         request.connection().close();
         Awaits.connect(closed, "the connection to be closed");
 
-        boolean failed = Awaits.connect(window.ping().transform(result -> Future.succeededFuture(result.failed())),
+        boolean failed = Awaits.connect(onTheLoop(window, window::ping)
+                .transform(result -> Future.succeededFuture(result.failed())),
                 "the PING on the closed connection to settle");
 
         assertTrue(failed, "a PING that cannot be acknowledged must fail, never complete");
@@ -240,19 +243,17 @@ class InboundStreamWindowTest {
         PingHoldingClient holding = PingHoldingClient.open(vertx, server.actualPort());
         HttpServerRequest request = Awaits.connect(received, "the server to receive the request");
         InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
-        List<Future<Void>> held = new ArrayList<>();
-        for (int sent = 0; sent < InboundStreamWindow.MAX_OUTSTANDING_PINGS; sent++) {
-            held.add(window.ping());
-        }
+        List<Future<Void>> held = onTheLoop(window,
+                () -> pings(window, InboundStreamWindow.MAX_OUTSTANDING_PINGS));
         Awaits.until(() -> holding.pingsReceived() == InboundStreamWindow.MAX_OUTSTANDING_PINGS,
                 "every PING within the bound to reach the client", Awaits.CONNECT_CEILING_SECONDS);
 
-        Future<Void> refused = window.ping();
+        Future<Void> refused = onTheLoop(window, window::ping);
         boolean refusedAtOnce = refused.failed();
         boolean othersPendingAtRefusal = held.stream().noneMatch(Future::isComplete);
         Awaits.connect(holding.acknowledgeOne(), "the client to acknowledge one PING");
         Awaits.connect(held.getFirst(), "the acknowledged PING to complete");
-        Future<Void> afterRelease = window.ping();
+        Future<Void> afterRelease = onTheLoop(window, window::ping);
         Awaits.until(() -> holding.pingsReceived() > InboundStreamWindow.MAX_OUTSTANDING_PINGS,
                 "the PING sent after the acknowledgement to reach the client", Awaits.CONNECT_CEILING_SECONDS);
 
@@ -263,6 +264,40 @@ class InboundStreamWindowTest {
                         "the acknowledgement freed a place: the next PING is sent and waits for its own acknowledgement"),
                 () -> assertTrue(held.stream().skip(1).noneMatch(Future::isComplete),
                         "only the acknowledged PING completed"));
+    }
+
+    /**
+     * Vert.x 4.5 registers the handler that takes a PING's acknowledgement only once the PING write has
+     * completed, and drops an acknowledgement that arrives before any handler is registered. Off the
+     * connection's event loop the write is only queued, so the loop can flush the PING and read its
+     * acknowledgement before the registration runs: the acknowledgement is lost, the future never
+     * completes, and its place under the bound is never freed. The race lies inside Vert.x and cannot be
+     * forced from here, so the case pins the confinement that rules it out: a PING asked for off the loop
+     * is refused at once, sent nowhere and counted nowhere. Every PING within the bound is still sent
+     * afterwards — the refused one took no place — and the client receives exactly those.
+     */
+    @Test
+    @DisplayName("HTTP/2 — a PING asked for off the connection's event loop is refused at once, sends nothing and takes no place")
+    void pingOffTheEventLoopIsRefusedAtOnceAndTakesNoPlace() throws Exception {
+        PingHoldingClient holding = PingHoldingClient.open(vertx, server.actualPort());
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the request");
+        InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
+
+        Future<Void> offTheLoop = window.ping();
+        boolean refusedAtOnce = offTheLoop.failed();
+        List<Future<Void>> withinTheBound = onTheLoop(window,
+                () -> pings(window, InboundStreamWindow.MAX_OUTSTANDING_PINGS));
+        Awaits.until(() -> holding.pingsReceived() == InboundStreamWindow.MAX_OUTSTANDING_PINGS,
+                "every PING within the bound to reach the client", Awaits.CONNECT_CEILING_SECONDS);
+
+        assertAll("a PING asked for off the event loop",
+                () -> assertTrue(refusedAtOnce, "the PING fails at once, without waiting on the client"),
+                () -> assertInstanceOf(IllegalStateException.class, offTheLoop.cause(),
+                        "the refusal names the broken thread confinement"),
+                () -> assertTrue(withinTheBound.stream().noneMatch(Future::isComplete),
+                        "the refused PING took no place: every PING within the bound is sent and awaits its acknowledgement"),
+                () -> assertEquals(InboundStreamWindow.MAX_OUTSTANDING_PINGS, holding.pingsReceived(),
+                        "the client received the PINGs within the bound and not the refused one"));
     }
 
     @Test
@@ -309,9 +344,25 @@ class InboundStreamWindowTest {
 
     /** Reads the stream on its event loop, where the transport's state lives. */
     private static View look(InboundStreamWindow window) throws Exception {
-        CompletableFuture<View> view = new CompletableFuture<>();
-        window.execute(() -> view.complete(new View(window.remoteOpen(), window.sendableBytes())));
-        return Awaits.connect(view, "the stream to be looked at");
+        return onTheLoop(window, () -> new View(window.remoteOpen(), window.sendableBytes()));
+    }
+
+    /**
+     * Runs {@code action} on the stream's event loop — where the transport's state lives and where
+     * {@link InboundStreamWindow#ping()} must be called — and returns what it produced.
+     */
+    private static <T> T onTheLoop(InboundStreamWindow window, Supplier<T> action) throws Exception {
+        return Awaits.connect(CompletableFuture.supplyAsync(action, window::execute),
+                "the turn on the stream's event loop to run");
+    }
+
+    /** Sends {@code count} PINGs; to be run on the stream's event loop. */
+    private static List<Future<Void>> pings(InboundStreamWindow window, int count) {
+        List<Future<Void>> sent = new ArrayList<>(count);
+        for (int ping = 0; ping < count; ping++) {
+            sent.add(window.ping());
+        }
+        return sent;
     }
 
     /** What one look at the stream saw. */
