@@ -61,7 +61,12 @@ import io.vertx.core.net.impl.ConnectionBase;
  * HTTP/2 PING on the request's own connection through {@code HttpConnection#ping}, not through the
  * Netty codec, and reports the client's acknowledgement. A client acknowledges a PING only once it has
  * received it, so every frame it sent before then has reached the gateway by the time the
- * acknowledgement does: what the windows read at that moment already counts it.
+ * acknowledgement does: what the windows read at that moment already counts it. Counted is not the same
+ * as visible: the windows also rise while the request is paused — the connection's when the gateway
+ * returns credit for another stream's body, the stream's own once the transport has returned enough of
+ * the padding of its DATA frames, which it returns at once — so a reading equal to an earlier one does
+ * not show that no
+ * DATA arrived in between.
  * <p>
  * <strong>Unacknowledged PINGs are bounded per connection.</strong> Vert.x keeps the future of every
  * PING it has written until the client acknowledges it, and does not release it when the connection

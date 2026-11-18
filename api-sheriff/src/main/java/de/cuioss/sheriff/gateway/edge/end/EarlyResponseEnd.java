@@ -41,36 +41,44 @@ import org.jspecify.annotations.Nullable;
  * and the reset go out together, held back until request data has stopped arriving, for no longer than
  * a time cap.
  * <p>
- * <strong>How that moment is found.</strong> The caller has already stopped reading the body and
- * returning flow-control window for it (see {@code DispatchStage.InboundBody#resetByGateway}), so the
- * client can send no more than the window it already holds. The stream is looked at on its event loop
+ * <strong>How that moment is found.</strong> The caller has already stopped reading the body (see
+ * {@code DispatchStage.InboundBody#resetByGateway}), so the gateway returns no flow-control window for
+ * the request data that still arrives, and the client sends from the window it already holds. The
+ * stream is looked at on its event loop
  * every {@value #POLL_MILLIS} ms through {@link InboundStreamWindow}, and the end goes ahead at the
  * first of:
  * <ol>
  *   <li>the client can send nothing more — the stream's or the connection's window is used up, or the
  *       client ended or lost the stream (see {@link InboundStreamWindow#sendableBytes()});</li>
- *   <li>what the client may send has not changed for {@value #QUIET_MILLIS} ms, and has still not
- *       changed when the client acknowledges the one HTTP/2 PING the gateway sends at that moment
- *       (through {@link InboundStreamWindow#ping()}). An unmoved window by itself shows only that no
- *       request data <em>arrived</em> for that long, not that none is on the way: across a link with
- *       latency, data a slow client has already sent is still in flight. A client acknowledges the
- *       PING only once it has seen it, so every frame it sent before then arrives ahead of the
- *       acknowledgement — a window still unmoved at the acknowledgement means the client sent nothing
- *       between its last frame and the PING. A window that moves before the acknowledgement restarts
- *       the {@value #QUIET_MILLIS} ms check. One PING is outstanding at a time. A PING that fails, or is
- *       not sent because its connection already holds the most unacknowledged PINGs
+ *   <li>what the client may send — {@link InboundStreamWindow#sendableBytes()}, the smaller of the
+ *       stream's and the connection's receive window — has not changed for {@value #QUIET_MILLIS} ms,
+ *       reads the same when the client acknowledges the one HTTP/2 PING the gateway sends at that moment
+ *       (through {@link InboundStreamWindow#ping()}), and no look while that PING was outstanding saw it
+ *       change. An unmoved value by itself shows only that no change <em>was seen</em> for that long,
+ *       not that no request data is on the way: across a link with latency, data a slow client has
+ *       already sent is still in flight. A client acknowledges the PING only once it has seen it, so
+ *       every frame it sent before then arrives ahead of the acknowledgement and is counted in the value
+ *       read there. A value that moves before the acknowledgement — even one back at its PING-time value
+ *       by then — restarts the {@value #QUIET_MILLIS} ms check. One PING is outstanding at a time. A PING
+ *       that fails, or is not sent because its connection already holds the most unacknowledged PINGs
  *       {@link InboundStreamWindow#ping()} allows, ends nothing: the check restarts, and a new PING is
- *       sent once the window has stood still for it again. A PING that is never acknowledged ends
- *       nothing either;</li>
+ *       sent once the value has stood still for it again. A PING that is never acknowledged ends nothing
+ *       either;</li>
  *   <li>{@value #MAX_WAIT_MILLIS} ms have passed since the wait began, whatever the stream does.</li>
  * </ol>
- * Only the first shows that no more request data can arrive; the second shows it for everything the
- * client sent before the PING reached it, and the cap ends the wait even while request data may still
- * be in flight. What remains exposed: a client that sends again after acknowledging the PING, or keeps
- * trickling data until the cap ends the wait, has that data arrive after the reset, and the transport
- * answers each such frame with a {@code RST_STREAM(STREAM_CLOSED)} counted against its reset limit. The
- * last bound caps how long any response can be held back. The three values are constants of the
- * gateway, not configuration.
+ * Only the first shows that no more request data can arrive, and the cap ends the wait even while
+ * request data may still be in flight. The second compares one number at a few moments, and that number
+ * can be raised as well as lowered while the stream is paused: a {@code WINDOW_UPDATE} the gateway
+ * writes for the connection after another stream on it consumed its body raises the connection window,
+ * and the transport writes a {@code WINDOW_UPDATE} for this stream as well once enough padding has been
+ * returned for it — padding on its DATA frames is returned at once, even while the request is paused.
+ * DATA received on this stream lowers the value again, so it can read the same at every
+ * look and at the acknowledgement although request data arrived on this stream in between; the second
+ * exit therefore does not prove that nothing the client sent before the PING is still to come. What
+ * remains exposed: such data, data a client sends after acknowledging the PING, and data it keeps
+ * trickling until the cap ends the wait all arrive after the reset, and the transport answers each such
+ * frame with a {@code RST_STREAM(STREAM_CLOSED)} counted against its reset limit. The last bound caps how
+ * long any response can be held back. The three values are constants of the gateway, not configuration.
  * <p>
  * <strong>The reset goes out right behind the end.</strong> The end and the reset are written in the
  * same turn of the stream's event loop as the look or the PING acknowledgement that allowed them, so
@@ -93,7 +101,7 @@ final class EarlyResponseEnd {
 
     /** How often the stream is looked at while the end waits. */
     static final long POLL_MILLIS = 10L;
-    /** How long the window stays unmoved before one PING is sent to confirm that nothing is on the way. */
+    /** How long the window stays unmoved before one PING is sent to check it against the client's view. */
     static final long QUIET_MILLIS = 50L;
     /** The longest the end of a response is held back. */
     static final long MAX_WAIT_MILLIS = 1_000L;
@@ -131,13 +139,17 @@ final class EarlyResponseEnd {
         /** Request data may still be on the way: look again. */
         WAIT,
         /**
-         * The window has not moved for {@value EarlyResponseEnd#QUIET_MILLIS} ms: send one PING to confirm
-         * that nothing is on the way, and look again.
+         * The window has not moved for {@value EarlyResponseEnd#QUIET_MILLIS} ms: send one PING, so that
+         * everything the client sent before it is counted when the window is read at its
+         * acknowledgement, and look again.
          */
         PING,
         /** The client can send nothing more on the stream. */
         NOTHING_SENDABLE,
-        /** The PING sent on an unmoved window was acknowledged with the window still unmoved. */
+        /**
+         * The PING sent on an unmoved window was acknowledged with the window at its PING-time value and
+         * no move seen while the PING was outstanding.
+         */
         QUIET,
         /** {@value EarlyResponseEnd#MAX_WAIT_MILLIS} ms have passed. */
         TIME_CAP
@@ -146,12 +158,19 @@ final class EarlyResponseEnd {
     /**
      * Decides, from successive looks at one stream and the acknowledgement of the PING it asks for, when
      * the end may go ahead: the client can send nothing more, a PING sent once the window had not moved
-     * for the quiet period was acknowledged with the window still unmoved, or the cap has passed. At most
-     * one PING is outstanding; a window that moves restarts the quiet period, a PING that fails or is
+     * for the quiet period was acknowledged with the window unmoved all along, or the cap has passed. At
+     * most one PING is outstanding; a window that moves restarts the quiet period, a PING that fails or is
      * refused restarts it too and is followed by a new one once it has passed again, and a PING that is
-     * never acknowledged leaves the wait to the cap. Pure: it reads nothing but its arguments, so the rule is
-     * tested without a transport. Not thread-safe — one instance serves one wait, confined to the
-     * stream's event loop.
+     * never acknowledged leaves the wait to the cap.
+     * <p>
+     * The acknowledgement is quiet only when the window reads its PING-time value at the acknowledgement
+     * <em>and</em> no look while the PING was outstanding saw it move. A window that moved and is back at
+     * its PING-time value by the acknowledgement still moved — request data arrived on the stream in
+     * between — so it restarts the quiet period like any other move. A move that starts and is undone
+     * between two looks is not seen by either.
+     * <p>
+     * Pure: it reads nothing but its arguments, so the rule is tested without a transport. Not
+     * thread-safe — one instance serves one wait, confined to the stream's event loop.
      */
     static final class Quiescence {
 
@@ -160,6 +179,8 @@ final class EarlyResponseEnd {
         private int lastSendable = -1;
         private boolean pingOutstanding;
         private int sendableAtPing;
+        /** Whether a look saw the window move while the current PING was outstanding. */
+        private boolean movedSincePing;
 
         /** @param startNanos when the wait began, on the {@link System#nanoTime()} scale */
         Quiescence(long startNanos) {
@@ -187,6 +208,7 @@ final class EarlyResponseEnd {
             }
             if (!pingOutstanding && nowNanos - lastChangeNanos >= TimeUnit.MILLISECONDS.toNanos(QUIET_MILLIS)) {
                 pingOutstanding = true;
+                movedSincePing = false;
                 sendableAtPing = sendable;
                 return Outcome.PING;
             }
@@ -199,10 +221,10 @@ final class EarlyResponseEnd {
          * @param nowNanos   the time the acknowledgement is handled, on the {@link System#nanoTime()} scale
          * @param remoteOpen whether the client may still send on the stream
          * @param sendable   the bytes the client may still send
-         * @return {@link Outcome#QUIET} when the window has not moved since the PING was sent,
-         *         {@link Outcome#NOTHING_SENDABLE} when the client can send nothing more, otherwise
-         *         {@link Outcome#WAIT} — the quiet period restarts from the change — also for an
-         *         acknowledgement no PING of this wait is outstanding for
+         * @return {@link Outcome#QUIET} when the window reads its PING-time value and no look saw it move
+         *         while the PING was outstanding, {@link Outcome#NOTHING_SENDABLE} when the client can
+         *         send nothing more, otherwise {@link Outcome#WAIT} — the quiet period restarts from the
+         *         last move seen — also for an acknowledgement no PING of this wait is outstanding for
          */
         Outcome acknowledged(long nowNanos, boolean remoteOpen, int sendable) {
             if (!remoteOpen || sendable <= 0) {
@@ -212,7 +234,7 @@ final class EarlyResponseEnd {
                 return Outcome.WAIT;
             }
             pingOutstanding = false;
-            if (sendable == sendableAtPing) {
+            if (sendable == sendableAtPing && !movedSincePing) {
                 return Outcome.QUIET;
             }
             observe(nowNanos, sendable);
@@ -235,11 +257,15 @@ final class EarlyResponseEnd {
             lastChangeNanos = nowNanos;
         }
 
-        /** Restarts the quiet period when what the client may send has changed. */
+        /**
+         * Restarts the quiet period when what the client may send has changed, and remembers a change
+         * seen while a PING is outstanding.
+         */
         private void observe(long nowNanos, int sendable) {
             if (sendable != lastSendable) {
                 lastSendable = sendable;
                 lastChangeNanos = nowNanos;
+                movedSincePing |= pingOutstanding;
             }
         }
     }
@@ -319,13 +345,13 @@ final class EarlyResponseEnd {
         }
 
         private void end() {
-            Future<Void> ended;
+            Future<Void> endWrite;
             // Deliberately the broad RuntimeException: whatever the ending call throws, the caller waits
             // on the returned future and must learn of it. The failure is not swallowed — it fails that
             // future.
             // cui-rewrite:disable InvalidExceptionUsageRecipe
             try {
-                ended = ending.get();
+                endWrite = ending.get();
             } catch (RuntimeException endFailure) {
                 written.fail(endFailure);
                 return;
@@ -333,11 +359,11 @@ final class EarlyResponseEnd {
             if (window.localEnded()) {
                 // The final frame is in the transport's outbound buffer: the reset follows it at once.
                 resetIfOpen();
-                ended.onComplete(written);
+                endWrite.onComplete(written);
                 return;
             }
             // Flow control holds the final frame back; a reset now would discard it.
-            ended.onComplete(result -> window.execute(() -> {
+            endWrite.onComplete(result -> window.execute(() -> {
                 resetIfOpen();
                 written.handle(result);
             }));

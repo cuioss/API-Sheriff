@@ -267,6 +267,41 @@ class InboundStreamWindowTest {
     }
 
     /**
+     * The bound belongs to the connection, not to one view of a stream: every early answer on a connection
+     * attaches its own {@link InboundStreamWindow}, so the PINGs sent through one instance must count
+     * against the PINGs another may send. A count kept per instance would let the second instance send
+     * where this case expects a refusal.
+     */
+    @Test
+    @DisplayName("HTTP/2 — the PING bound is shared by every view of the connection: PINGs held through one view refuse a PING through another")
+    void pingBoundIsSharedByEveryViewOfTheConnection() throws Exception {
+        PingHoldingClient holding = PingHoldingClient.open(vertx, server.actualPort());
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the request");
+        InboundStreamWindow filling = InboundStreamWindow.of(request).orElseThrow();
+        InboundStreamWindow other = InboundStreamWindow.of(request).orElseThrow();
+        List<Future<Void>> held = onTheLoop(filling,
+                () -> pings(filling, InboundStreamWindow.MAX_OUTSTANDING_PINGS));
+        Awaits.until(() -> holding.pingsReceived() == InboundStreamWindow.MAX_OUTSTANDING_PINGS,
+                "every PING within the bound to reach the client", Awaits.CONNECT_CEILING_SECONDS);
+
+        Future<Void> refused = onTheLoop(other, other::ping);
+        boolean refusedAtOnce = refused.failed();
+        Awaits.connect(holding.acknowledgeOne(), "the client to acknowledge one PING");
+        Awaits.connect(held.getFirst(), "the acknowledged PING to complete");
+        Future<Void> afterRelease = onTheLoop(other, other::ping);
+        Awaits.until(() -> holding.pingsReceived() > InboundStreamWindow.MAX_OUTSTANDING_PINGS,
+                "the PING sent through the other view after the acknowledgement to reach the client",
+                Awaits.CONNECT_CEILING_SECONDS);
+
+        assertAll("one bound across every view of a connection",
+                () -> assertNotSame(filling, other, "the two views are distinct instances"),
+                () -> assertTrue(refusedAtOnce,
+                        "the PINGs held through one view fill the bound for the other view as well"),
+                () -> assertFalse(afterRelease.isComplete(),
+                        "an acknowledgement of a PING sent through one view frees a place for the other view"));
+    }
+
+    /**
      * The lost-acknowledgement race {@link InboundStreamWindow#ping()} documents lies inside Vert.x and
      * cannot be forced from here, so the case pins the confinement that rules it out: a PING asked for off
      * the loop is refused at once, sent nowhere and counted nowhere. Every PING within the bound is still

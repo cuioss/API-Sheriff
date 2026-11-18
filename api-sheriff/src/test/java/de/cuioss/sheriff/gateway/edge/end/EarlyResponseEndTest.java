@@ -35,8 +35,10 @@ import org.junit.jupiter.api.Test;
  * nothing more, once the PING sent after its window had not moved for
  * {@value EarlyResponseEnd#QUIET_MILLIS} ms is acknowledged with the window still unmoved, or after
  * {@value EarlyResponseEnd#MAX_WAIT_MILLIS} ms — whichever comes first — and not before. An unmoved
- * window alone only asks for the PING; it never ends the wait, and a PING that fails or is refused is
- * followed by a new one once the window has stood still for the quiet period again.
+ * window alone only asks for the PING; it never ends the wait, a window seen to move while the PING is
+ * outstanding — even one back at its PING-time value by the acknowledgement — restarts the quiet period,
+ * and a PING that fails or is refused is followed by a new one once the window has stood still for the
+ * quiet period again.
  */
 @EnableGeneratorController
 @DisplayName("EarlyResponseEnd — when the end of an early-answered HTTP/2 response may go ahead")
@@ -111,6 +113,63 @@ class EarlyResponseEndTest {
                         "the quiet period counts from the move, not from the PING"),
                 () -> assertEquals(Outcome.PING, atTheNewQuietPeriod,
                         "a new PING follows once the moved window has stood still for the quiet period"));
+    }
+
+    /**
+     * The value read at the acknowledgement is not enough on its own: a window that moved while the PING
+     * was outstanding and is back at its PING-time value when the acknowledgement is read still moved, and
+     * request data may have arrived in between. The matched control never moves and ends as quiet, so the
+     * restart is caused by the move a look saw, nothing else.
+     */
+    @Test
+    @DisplayName("a window that moves while the PING is outstanding and is back at its PING-time value at the acknowledgement restarts the quiet period")
+    void windowMovedAndReturnedBeforeTheAcknowledgementRestartsTheQuietPeriod() {
+        Quiescence returned = outstandingPing();
+        Quiescence unmoved = outstandingPing();
+        int moved = window - Generators.integers(1, window - 1).next();
+        long movedAt = START + QUIET + POLL;
+        long acknowledgedAt = movedAt + POLL;
+
+        Outcome lookAtTheMove = returned.next(movedAt, true, moved);
+        Outcome acknowledgedBack = returned.acknowledged(acknowledgedAt, true, window);
+        Outcome justBeforeTheNewQuietPeriod = returned.next(acknowledgedAt + QUIET - 1, true, window);
+        Outcome atTheNewQuietPeriod = returned.next(acknowledgedAt + QUIET, true, window);
+        Outcome controlLook = unmoved.next(movedAt, true, window);
+        Outcome controlAcknowledged = unmoved.acknowledged(acknowledgedAt, true, window);
+
+        assertAll("a window that moved and returned while the PING was outstanding",
+                () -> assertEquals(Outcome.WAIT, lookAtTheMove),
+                () -> assertEquals(Outcome.WAIT, acknowledgedBack,
+                        "a value equal to the PING-time one at the acknowledgement does not undo the move a look saw"),
+                () -> assertEquals(Outcome.WAIT, justBeforeTheNewQuietPeriod,
+                        "the quiet period counts from the last move, here the return seen at the acknowledgement"),
+                () -> assertEquals(Outcome.PING, atTheNewQuietPeriod,
+                        "a new PING follows once the window has stood still for the quiet period again"),
+                () -> assertEquals(Outcome.WAIT, controlLook),
+                () -> assertEquals(Outcome.QUIET, controlAcknowledged,
+                        "the matched control, whose window never moved, ends as quiet"));
+    }
+
+    @Test
+    @DisplayName("a window that moves and returns between two looks while the PING is outstanding is not quiet at the acknowledgement")
+    void windowReturnedAtALookBeforeTheAcknowledgementIsNotQuiet() {
+        Quiescence quiescence = outstandingPing();
+        int moved = window - Generators.integers(1, window - 1).next();
+        long movedAt = START + QUIET + POLL;
+        long returnedAt = movedAt + POLL;
+
+        quiescence.next(movedAt, true, moved);
+        Outcome lookAtTheReturn = quiescence.next(returnedAt, true, window);
+        Outcome acknowledged = quiescence.acknowledged(returnedAt + POLL, true, window);
+        Outcome justBeforeTheNewQuietPeriod = quiescence.next(returnedAt + QUIET - 1, true, window);
+        Outcome atTheNewQuietPeriod = quiescence.next(returnedAt + QUIET, true, window);
+
+        assertAll("a move and its return both seen by looks while the PING was outstanding",
+                () -> assertEquals(Outcome.WAIT, lookAtTheReturn),
+                () -> assertEquals(Outcome.WAIT, acknowledged, "the move was seen, so the acknowledgement is not quiet"),
+                () -> assertEquals(Outcome.WAIT, justBeforeTheNewQuietPeriod,
+                        "the quiet period counts from the return, the last move a look saw"),
+                () -> assertEquals(Outcome.PING, atTheNewQuietPeriod));
     }
 
     @Test
