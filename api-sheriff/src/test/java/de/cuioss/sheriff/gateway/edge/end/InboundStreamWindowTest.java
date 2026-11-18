@@ -212,7 +212,7 @@ class InboundStreamWindowTest {
         Awaits.connect(closed, "the connection to be closed");
 
         boolean failed = Awaits.connect(onTheLoop(window, window::ping)
-                .transform(result -> Future.succeededFuture(result.failed())),
+                        .transform(result -> Future.succeededFuture(result.failed())),
                 "the PING on the closed connection to settle");
 
         assertTrue(failed, "a PING that cannot be acknowledged must fail, never complete");
