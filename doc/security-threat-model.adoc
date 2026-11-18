@@ -2145,24 +2145,31 @@ a client is told to stop sending and does not have to reset the stream itself. A
 body is still open stops being read, and its complete response is ended and the stream reset at the
 first of three points: the client can send nothing more on the stream (the stream's or the
 connection's flow-control window is used up, or the client ended or lost the stream), what it may send
-has not changed for 50 ms and has still not changed when the client acknowledges the one HTTP/2
-`PING` the gateway sends at that moment, or 1 s has passed. A window that moves before the
-acknowledgement restarts the 50 ms check, and a `PING` that is never acknowledged ends nothing. At
+-- the smaller of the stream's and the connection's receive window -- has not changed for 50 ms,
+reads the same when the client acknowledges the one HTTP/2 `PING` the gateway sends at that moment,
+and was not seen to change while that `PING` was outstanding, or 1 s has passed. A value seen to move
+before the acknowledgement -- even one back at its earlier value by then -- restarts the 50 ms check,
+and a `PING` that is never acknowledged ends nothing. At
 most 100 of these `PING`s -- the most concurrent streams the edge admits on one connection -- are
 unacknowledged on one connection at a time, so a client that never acknowledges cannot make the
 transport hold one more pending `PING` for every early answer on a long-lived connection, while a
 client that acknowledges them never reaches the bound, because each early answer waits on at most one
 `PING` at a time. A `PING` that fails, or is not sent because the bound is reached, ends nothing
 either: the 50 ms check restarts and the wait sends a new `PING` once it passes again, and otherwise
-ends at the cap or once nothing more is sendable. Only the first exit shows that no more of the body can arrive. The `PING` exit shows that
-the client sent nothing between its last frame and the `PING`: a client acknowledges a `PING` only
-once it has received it, so every frame it sent before then arrives ahead of the acknowledgement,
-however much latency the link adds. The 1 s cap is a separate exit that ends the wait even while
-request data may still be in flight. The gateway's own `NO_ERROR` reset is not counted by the
-encoder-side limit, but a DATA frame that arrives after it is answered by the transport with
-`RST_STREAM(STREAM_CLOSED)`, and that reset is counted. That exposure remains for a client that sends
-again after acknowledging the `PING`, and for one still trickling data when the 1 s cap ends the wait;
-data already in flight when the window stood still no longer draws it. The guard itself is
+ends at the cap or once nothing more is sendable. Only the first exit shows that no more of the body can arrive. The `PING` exit makes
+every frame the client sent before receiving the `PING` arrive ahead of the acknowledgement, however
+much latency the link adds, because a client acknowledges a `PING` only once it has received it; it
+does not show that the client has stopped sending. The compared value rises as well as falls while
+the stream is paused -- credit the gateway returns for the body of another stream raises the
+connection window, and the padding of this stream's DATA frames, which the transport returns at once,
+raises the stream window -- so such credit can offset DATA arriving on this stream and the value can
+read the same while the client is still sending. The 1 s cap is a separate exit that ends the wait
+even while request data may still be in flight. The gateway's own `NO_ERROR` reset is not counted by
+the encoder-side limit, but a DATA frame that arrives after it is answered by the transport with
+`RST_STREAM(STREAM_CLOSED)`, and that reset is counted. That exposure remains for a client still
+sending when credit offset its data at the check, for one that sends again after acknowledging the
+`PING`, and for one still trickling data when the 1 s cap ends the wait; data already in flight when
+the `PING` was sent no longer draws it. The guard itself is
 pinned at the transport default and never raised, and this note does not change the status below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
 availability threat of its own: it is recorded, with its control, under
 <<gw-07-upstream-ports,GW-07>>.
