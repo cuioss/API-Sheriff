@@ -338,7 +338,7 @@ public class CookieRules {
         for (AnchorConfig anchor : gateway.anchors().values()) {
             CookiesConfig anchorCookies = anchor.cookies();
             if (anchorCookies != null) {
-                declarations.add(new Declaration(GATEWAY_FILE, anchorPointer(anchor.name()) + COOKIES_KEY,
+                declarations.add(new Declaration(GATEWAY_FILE, ANCHORS_POINTER + "/" + anchor.name() + COOKIES_KEY,
                         "anchor '%s'".formatted(renderForMessage(anchor.name())), anchorCookies));
             }
         }

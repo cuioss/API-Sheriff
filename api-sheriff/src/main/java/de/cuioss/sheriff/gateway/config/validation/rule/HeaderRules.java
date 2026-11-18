@@ -83,7 +83,7 @@ public class HeaderRules {
         checkContentSecurityPolicy(gateway.securityHeaders(), "/security_headers/content_security_policy", errors);
         for (AnchorConfig anchor : gateway.anchors().values()) {
             checkContentSecurityPolicy(anchor.securityHeaders(),
-                    anchorPointer(anchor.name()) + "/security_headers/content_security_policy", errors);
+                    "/anchors/%s/security_headers/content_security_policy".formatted(anchor.name()), errors);
         }
     }
 
@@ -116,7 +116,7 @@ public class HeaderRules {
         checkHeaderModes(gateway.securityHeaders(), "/security_headers/header_modes", errors);
         for (AnchorConfig anchor : gateway.anchors().values()) {
             checkHeaderModes(anchor.securityHeaders(),
-                    anchorPointer(anchor.name()) + "/security_headers/header_modes", errors);
+                    "/anchors/%s/security_headers/header_modes".formatted(anchor.name()), errors);
         }
     }
 

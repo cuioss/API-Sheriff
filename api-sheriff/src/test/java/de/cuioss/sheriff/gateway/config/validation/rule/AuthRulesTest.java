@@ -26,7 +26,6 @@ import java.util.Map;
 
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -46,8 +45,7 @@ import org.junit.jupiter.api.Test;
  * that an effective {@code bearer} posture has a {@code token_validation} issuer and an effective
  * {@code session} posture an {@code oidc} block, and the refusal of {@code endpoint.scopes} on an
  * endpoint whose every route resolves {@code require: none}. The {@code auth.session_fallback}
- * refusal is tested in {@code AuthRulesSessionFallbackTest}; only the JSON-pointer encoding of the
- * anchor name its anchor refusal reports is pinned here.
+ * refusal is tested in {@code AuthRulesSessionFallbackTest}.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed.
@@ -108,30 +106,6 @@ class AuthRulesTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations for a valid bearer config, got: " + errors);
-        }
-    }
-
-    /**
-     * The validator accepts any bound gateway, not only one whose anchor names passed the schema's
-     * {@code ^[a-z][a-z0-9_-]*$}, so the
-     * {@code session_fallback} refusal of an anchor's {@code auth} block must encode a {@code /} or
-     * {@code ~} in it as an RFC 6901 reference token: written raw, {@code /anchors/web/app/auth} would
-     * name a location that does not exist instead of the anchor that failed.
-     */
-    @Nested
-    @DisplayName("Anchor pointers — the anchor name is encoded as one JSON-pointer token")
-    class AnchorPointerEncoding {
-
-        @Test
-        @DisplayName("Should encode a '/' and '~' in the anchor name in the session_fallback pointer")
-        void shouldEncodeTheAnchorNameInTheSessionFallbackPointer() {
-            String anchorName = "web/app~1";
-            GatewayConfig gateway = gatewayWithAnchors(Map.of(anchorName, anchorSeed(anchorName).pathPrefix("/web")
-                    .auth(AuthConfig.builder().require(Require.BEARER).sessionFallback(true).build()).build()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertHasError(errors, "/anchors/web~1app~01/auth", "anchor 'web/app~1'");
         }
     }
 

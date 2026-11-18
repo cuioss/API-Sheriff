@@ -44,8 +44,7 @@ import org.jspecify.annotations.Nullable;
  * Each helper exists exactly once. {@link #renderForMessage} and its uncapped sibling
  * {@link #renderForLog} above all must stay the single copy of the CWE-117 escaping; the route-table
  * and WebSocket-relay log records and the boot sink that logs every violation reuse them rather than
- * carrying a second escaper. A pointer into the {@code anchors} map is built only through
- * {@link #anchorPointer}, which encodes the configured name as a JSON-pointer token. The rule for every refusal message and every log record a rule emits: a
+ * carrying a second escaper. The rule for every refusal message and every log record a rule emits: a
  * configured free-form scalar it echoes — an endpoint or route id, an anchor name, a path, a host, an
  * alias, a list entry — is passed through {@link #renderForMessage} first, so that a hostile value
  * cannot forge a boot log line. Only a value drawn from a closed vocabulary (an enum constant, a
@@ -148,20 +147,6 @@ public class RuleSupport {
      */
     public static String renderForLog(String value) {
         return escapeNonPrintable(value, value.length());
-    }
-
-    /**
-     * The JSON pointer of one anchor in {@code gateway.yaml}: {@code /anchors/<name>}, the name encoded
-     * as an RFC 6901 reference token so that a {@code /} or {@code ~} in the configured map key cannot
-     * make the pointer name a different location. The bundled schema restricts a loaded anchor name to
-     * {@code ^[a-z][a-z0-9_-]*$}, which admits neither character nor any control character, but the
-     * validator accepts any bound {@link GatewayConfig}, so the pointer does not rely on that pattern.
-     *
-     * @param anchorName the configured anchor name, the map key under {@code anchors}
-     * @return the pointer of that anchor
-     */
-    public static String anchorPointer(String anchorName) {
-        return ANCHORS_POINTER + "/" + anchorName.replace("~", "~0").replace("/", "~1");
     }
 
     /**
