@@ -714,7 +714,7 @@ class UpstreamPoolSaturationTest {
         }
 
         @Test
-        @DisplayName("the client's clean end after the upstream dropped the request leaves no body open on the client, and a later chunk counts for nothing")
+        @DisplayName("the client's clean end after the upstream dropped the request leaves no body open or arriving on the client")
         void bodyIsReleasedOnceItsUpstreamRequestFailed() throws Exception {
             DispatchStage stage = stageOver(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""),
                     client);
@@ -740,8 +740,10 @@ class UpstreamPoolSaturationTest {
                 Awaits.until(() -> !body.endWatched(),
                         "the body's consumer to stop waiting for its end once its upstream request failed",
                         Awaits.CONNECT_CEILING_SECONDS);
+                // The pipe cleared the end handler, so this end no longer reaches the body; the release above
+                // is what this test pins. That a chunk after the release is neither forwarded nor stamped is
+                // pinned at the stream itself, by DispatchStageTest.bodyLetGoOfRecordsNothingAfterwards.
                 onLoop(body::end);
-                onLoop(() -> body.emit(Buffer.buffer("after the release")));
             }
 
             int answeredStatus = status;
@@ -752,7 +754,7 @@ class UpstreamPoolSaturationTest {
                     () -> assertEquals(0, inFlight,
                             "a body its upstream request no longer takes stays open on the client"),
                     () -> assertFalse(arriving,
-                            "a chunk arriving after the body was released still counts as a body arriving"));
+                            "a body released after its upstream request failed still counts as arriving"));
         }
     }
 

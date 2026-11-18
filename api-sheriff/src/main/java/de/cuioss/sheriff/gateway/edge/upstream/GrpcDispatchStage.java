@@ -62,8 +62,9 @@ import io.vertx.core.streams.ReadStream;
  *   <li>a wait for an upstream connection or HTTP/2 stream slot that reaches the connection wait bound,
  *       {@value DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS} ms, before any body is handed over, which ends the
  *       attempt unsent as the upstream's {@link DispatchStage.UpstreamConnectionWaitExpired} — unless a request
- *       body was forwarded on that upstream client within the bound, in which case the expiry is the gateway's
- *       own pool saturation, which the breaker records as neutral;</li>
+ *       body to that upstream is still arriving, handed over and not yet ended, with a chunk forwarded within the
+ *       bound, in which case the expiry is the gateway's own pool saturation, which the breaker records as
+ *       neutral;</li>
  *   <li>the guard's timeout, reached by an upstream that stops taking data mid-request and does not take any
  *       more before it fires;</li>
  *   <li>an {@link DispatchStage.UpstreamStalledRequest}: while that backpressure pauses the request stream the
@@ -149,7 +150,8 @@ import io.vertx.core.streams.ReadStream;
  *   <li>An attempt whose wait for an upstream connection or HTTP/2 stream slot reaches the bound is ended when
  *       the bound passes, before its request is sent or a byte of its body is read, as
  *       {@link DispatchStage.UpstreamConnectionWaitExpired}: the upstream's {@link EventType#UPSTREAM_TIMEOUT},
- *       counted by the breaker and never retried.</li>
+ *       counted by the breaker and never retried — unless a request body to that upstream is still arriving,
+ *       when the expiry is the neutral pool saturation described above.</li>
  * </ul>
  * The message bound and the pre-response deadline stop when the upstream answers — the attempt's send
  * completes — so a bidirectional stream the upstream has answered is bounded by neither. A request stream whose

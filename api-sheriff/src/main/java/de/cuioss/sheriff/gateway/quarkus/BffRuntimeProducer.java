@@ -1463,7 +1463,8 @@ public class BffRuntimeProducer {
      * synchronously. The provider metadata that revocation needs is likewise read per request. The
      * access token is not revoked.
      * <p>
-     * <strong>The logout acts only on same-origin provenance.</strong> The endpoint judges it by the
+     * <strong>The logout acts only on a top-level document navigation from a trusted origin.</strong> The
+     * endpoint judges it by the
      * logout leg's own {@link CsrfDefence}: the runtime's session defence with the gateway's origin added
      * ({@link CsrfDefence#withGatewayOrigin(String)}), so the confirmation page the leg answers — served
      * under that origin — can post back even when {@code session.csrf.trusted_origins} names only other
