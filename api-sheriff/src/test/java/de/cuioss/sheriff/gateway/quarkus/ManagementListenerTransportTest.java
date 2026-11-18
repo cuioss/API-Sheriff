@@ -15,7 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -118,7 +119,7 @@ class ManagementListenerTransportTest {
 
     @Test
     @DisplayName("refuses a header block past the main listener's 16 KiB with 431, and serves one under it")
-    void boundsTheHeaderBlockAtTheMainListenersBound() throws IOException {
+    void boundsTheHeaderBlockAtTheMainListenersBound() throws Exception {
         int refused = statusOf(requestWithHeaderBlockOf(HEADER_BLOCK_BOUND + MARGIN));
         int served = statusOf(requestWithHeaderBlockOf(HEADER_BLOCK_BOUND - MARGIN));
 
@@ -130,7 +131,7 @@ class ManagementListenerTransportTest {
 
     @Test
     @DisplayName("refuses a request line past the 4 KiB transport default with 414, and serves one under it")
-    void boundsTheRequestLineAtTheTransportDefault() throws IOException {
+    void boundsTheRequestLineAtTheTransportDefault() throws Exception {
         int refused = statusOf(requestWithLineOf(REQUEST_LINE_BOUND + MARGIN));
         int served = statusOf(requestWithLineOf(REQUEST_LINE_BOUND - MARGIN));
 
@@ -147,7 +148,7 @@ class ManagementListenerTransportTest {
                 .setHttp2ClearTextUpgrade(false));
         try {
             HttpClientRequest request = client.request(HttpMethod.GET, managementUrl.getPort(),
-                            managementUrl.getHost(), livenessPath())
+                    managementUrl.getHost(), livenessPath())
                     .toCompletionStage().toCompletableFuture().get(EXCHANGE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
             HttpClientResponse response = request.send()
                     .toCompletionStage().toCompletableFuture().get(EXCHANGE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);

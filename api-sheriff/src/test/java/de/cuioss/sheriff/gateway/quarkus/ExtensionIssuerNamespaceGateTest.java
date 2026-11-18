@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.quarkus;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -39,6 +40,7 @@ import jakarta.enterprise.inject.spi.BeanManager;
 import jakarta.enterprise.inject.spi.ObserverMethod;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.spi.ConfigSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
@@ -255,7 +257,7 @@ class ExtensionIssuerNamespaceGateTest {
 
         private static final String ACTIVE_PROFILE = "prod";
 
-        private Config profiled(org.eclipse.microprofile.config.spi.ConfigSource source) {
+        private Config profiled(ConfigSource source) {
             return new SmallRyeConfigBuilder()
                     .addDefaultInterceptors()
                     .withProfile(ACTIVE_PROFILE)
@@ -280,7 +282,7 @@ class ExtensionIssuerNamespaceGateTest {
         @DisplayName("Refuses an environment variable spelled for the active profile, which the extension acts on")
         void refusesTheActiveProfileEnvironmentSpelling() {
             Config config = profiled(new EnvConfigSource(
-                    Map.of("_" + ACTIVE_PROFILE.toUpperCase(java.util.Locale.ROOT) + "_" + ENVIRONMENT_ISSUER_KEY,
+                    Map.of("_" + ACTIVE_PROFILE.toUpperCase(Locale.ROOT) + "_" + ENVIRONMENT_ISSUER_KEY,
                             "true"), 300));
             ExtensionIssuerNamespaceGate gate = new ExtensionIssuerNamespaceGate(config);
 
