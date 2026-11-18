@@ -1582,10 +1582,12 @@ stream-idle bound]):
   neither a failure nor a success, and the retry predicate refuses it. After the head the upstream request is reset and the
   relayed response is ended through the one end rule with the status the upstream sent, also when no
   body byte of the upstream had been relayed yet; such an answer, whose head was not yet written, is
-  made unstorable -- `Cache-Control: no-store`, with the upstream's `Expires`, `Age`, `ETag`,
-  `Last-Modified`, `CDN-Cache-Control` and `Surrogate-Control` removed, the last two because a cache
-  they target obeys them in place of `Cache-Control` (RFC 9213) -- so no cache keeps the empty answer
-  as the upstream's response. Once passed, the deadline stays in force: the
+  made unstorable -- `Cache-Control: no-store`, with every field a cache could store it by removed:
+  the freshness fields `Expires`, `Age` and `X-Accel-Expires`, the validators `ETag` and
+  `Last-Modified`, and every cache-targeted directive -- each field whose name ends in
+  `-Cache-Control` (RFC 9213), `Surrogate-Control` and `Edge-Control`, because a cache they target
+  obeys them in place of `Cache-Control` -- so no cache keeps the empty answer as the upstream's
+  response. Once passed, the deadline stays in force: the
   wait for a pooled connection counts towards the 25 s, and a body whose attempt obtains its
   connection only after the deadline, or that the upstream is not taking data for when it passes, is
   ended the same way as soon as it is read again. An attempt that ends without handing its response

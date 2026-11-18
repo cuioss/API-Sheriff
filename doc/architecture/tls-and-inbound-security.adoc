@@ -309,9 +309,13 @@ Expiry before the upstream response head answers `408` (`REQUEST_BODY_TIMEOUT`);
 response head preserves the upstream status and resets/closes the stream. When the response head has not
 been written yet -- the upstream answered but no byte of its answer was relayed -- the answer carries the
 upstream's status and no body, and is made unstorable: `Cache-Control: no-store` replaces the upstream's
-directives, and `Expires`, `Age`, `ETag`, `Last-Modified`, `CDN-Cache-Control` and `Surrogate-Control`
-are removed, so no cache keeps the empty answer as the upstream's response. The last two go as well
-because a cache they target obeys them in place of `Cache-Control` (RFC 9213). The status is kept rather than turned into a `502`: the upstream has
+directives, and every field a cache could store the empty answer by is removed, family by family -- the
+freshness fields `Expires`, `Age` and nginx's `X-Accel-Expires`; the validators `ETag` and
+`Last-Modified`, which would let a cache revalidate it into a stored answer; and every cache-targeted
+directive: each field whose name ends in `-Cache-Control` (RFC 9213 `CDN-Cache-Control` and any
+vendor's own), plus `Surrogate-Control` and Akamai's `Edge-Control`. A cache those directives target
+obeys them in place of `Cache-Control`, so a `no-store` beside them would not reach it. No cache keeps
+the empty answer as the upstream's response. The status is kept rather than turned into a `502`: the upstream has
 acted on the request, and a `502` would tell the client it may send it again. Every other relay that
 fails before its head is written is answered `502` with the same unstorable head. A passed deadline stays in
 force while upstream backpressure pauses the body: it ends the body as the request's when the pause

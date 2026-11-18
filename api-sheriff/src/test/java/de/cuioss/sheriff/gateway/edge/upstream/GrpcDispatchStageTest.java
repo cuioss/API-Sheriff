@@ -465,20 +465,18 @@ class GrpcDispatchStageTest {
      * without ending its stream is ended at the message bound as a {@link DispatchStage.RequestMessageTimeout};
      * a client that keeps sending complete messages, each within the bound, without ever ending its stream is
      * ended at the deadline as a {@link DispatchStage.RequestBodyDeadlineExceeded}. Both are the client's own
-     * aborts, which the breaker skips, instead of the guard's timeout, an upstream failure the breaker counts —
-     * unless the upstream's backpressure had stalled the stream without a break for at least the upstream stall
-     * threshold when the deadline was acted on, which ends the call as the upstream's timeout once the upstream
-     * reads again. The brief flow-control pauses of a client sending faster than a healthy upstream reads stay far
+     * aborts, which the breaker records as neutral, instead of the guard's timeout, an upstream failure the
+     * breaker counts — unless the upstream's backpressure had stalled the stream without a break for at least
+     * the upstream stall threshold when the deadline was acted on, which ends the call as the upstream's
+     * timeout once the upstream reads again. The brief flow-control pauses of a client sending faster than a healthy upstream reads stay far
      * below that threshold, so such a client's deadline stays its own.
      * That timeout is reached by an upstream holding a complete, half-closed request it does not answer. The cases
      * on the two bounds build the stage with the bound shortened to {@value #MESSAGE_BOUND_MILLIS} ms, the deadline
      * to {@value #DEADLINE_MILLIS} ms, the cap to {@value #DEADLINE_CAP_MILLIS} ms and the stall threshold to
-     * {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all under the {@value #BREAKER_GUARD_MILLIS} ms timeout of a
-     * test-local SmallRye guard whose breaker skips a gateway rejection — it shows only that such a rejection is not
-     * counted as a failure; the production guard's own breaker records it as neutral, which
-     * {@code UpstreamCircuitBreakerTest} and {@code UpstreamGuardsTest} bind — beside a matched control whose
-     * upstream reads every call's one
-     * complete message to the half-close and never answers. The connection-wait cases stand in for a slow
+     * {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms, all under the {@value #BREAKER_GUARD_MILLIS} ms timeout of
+     * the gateway's own {@link UpstreamCircuitBreaker} in the production composition ({@code UpstreamBreakerFixtures}),
+     * which records a gateway rejection as neutral — neither a failure nor a success — beside a matched control
+     * whose upstream reads every call's one complete message to the half-close and never answers. The connection-wait cases stand in for a slow
      * upstream connection with a client that hands the dispatch its upstream request only a set time after the
      * dispatch asked for it.
      * <p>
@@ -944,9 +942,9 @@ class GrpcDispatchStageTest {
         /**
          * A client that opens a call and sends no request message — the request body never emits, so the
          * forced-h2 upstream request head is never written. Every idle call is ended at the shortened
-         * message bound as the client's own abort, long before the breaker guard's timeout; the
-         * breaker skips the abort, so one more idle call than its threshold leaves it closed, and a call
-         * behind them still reaches the upstream.
+         * message bound as the client's own abort, long before the breaker guard's timeout; the guard
+         * does not count the abort, so one more idle call than its threshold leaves the breaker closed, and
+         * a call behind them still reaches the upstream.
          */
         @Test
         @DisplayName("an idle client sending no request message ends as its own abort within the message bound and never moves the breaker")
@@ -1077,8 +1075,8 @@ class GrpcDispatchStageTest {
          * ms after the one before — well within the message bound — and never ends its request stream. The
          * message bound never fires; the pre-response deadline does, ending each call as the client's own
          * {@link DispatchStage.RequestBodyDeadlineExceeded} before the guard's timeout, rendered to the client as
-         * {@code DEADLINE_EXCEEDED}. The breaker skips it: as many such calls as its threshold leave it closed,
-         * and a call behind them is answered.
+         * {@code DEADLINE_EXCEEDED}. The breaker does not count it: as many such calls as its threshold leave it
+         * closed, and a call behind them is answered.
          */
         @Test
         @DisplayName("a steady sender that never half-closes ends at the pre-response deadline before the guard, and never moves the breaker")
@@ -1132,7 +1130,7 @@ class GrpcDispatchStageTest {
          * for well over the {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms stall threshold. That sustained stall is the
          * upstream's, so each call ends when the upstream reads again as the upstream's timeout, counted by the
          * breaker, which opens at its threshold — never as the client's {@code REQUEST_BODY_TIMEOUT}, which the
-         * breaker would skip.
+         * breaker would not count.
          */
         @Test
         @DisplayName("an upstream whose backpressure stalls the stream past the deadline and the stall threshold, then reads again, ends the call as the upstream's timeout, counted by the breaker")
@@ -1202,7 +1200,7 @@ class GrpcDispatchStageTest {
          * paused whenever the deadline passes — but each pause lasts only until the upstream's next reads return
          * window, far below the {@value #UPSTREAM_STALL_THRESHOLD_MILLIS} ms stall threshold. The call is the
          * client's: each ends at the pre-response deadline as its {@code REQUEST_BODY_TIMEOUT}, which the breaker
-         * skips, so as many such calls as the breaker's threshold leave it closed and a call behind them is
+         * does not count, so as many such calls as the breaker's threshold leave it closed and a call behind them is
          * answered. Were any pause at the deadline charged to the upstream, each call would be an upstream timeout
          * and these calls would open the breaker for every caller of the route.
          */
@@ -1356,7 +1354,7 @@ class GrpcDispatchStageTest {
          * reads again only after the deadline, but a client whose small messages never fill the upstream's
          * flow-control window. The gateway's upstream request stays writable, the request stream is never paused,
          * and the client holds it open when the deadline passes: each call is the client's
-         * {@code REQUEST_BODY_TIMEOUT} at the deadline, which the breaker skips.
+         * {@code REQUEST_BODY_TIMEOUT} at the deadline, which the breaker does not count.
          */
         @Test
         @DisplayName("control — a client holding its stream open within the upstream's window is ended at the deadline as the client's, and never moves the breaker")
@@ -1499,7 +1497,8 @@ class GrpcDispatchStageTest {
          * The cap's side of the same slow connection: a client that keeps sending complete messages, each well
          * within the message bound, and never ends its stream. Counted from the hand-over alone, the deadline
          * would pass only after the guard's timeout, which would then end the call as the upstream's; held to the
-         * cap, it ends each call there, as the client's own abort, before the guard, and the breaker skips it.
+         * cap, it ends each call there, as the client's own abort, before the guard, and the breaker does not
+         * count it.
          */
         @Test
         @DisplayName("a steady sender that never half-closes behind a slow upstream connection is ended at the cap as the client's, and never moves the breaker")

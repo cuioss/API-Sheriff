@@ -42,9 +42,12 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The source.</strong> The source is the client address a trusted forwarder reported —
  * resolved only for a peer the {@link TcpPeerGate} trusts, through a {@link ForwardedHeaderResolver}
- * configured exactly as the forward stage's, so the address keyed on is the one the gateway regenerates
- * {@code X-Forwarded-For} from — and otherwise the TCP peer. An untrusted peer's
- * {@code X-Forwarded-For} is never read. The trusted peer's headers are read through
+ * configured exactly as the forward stage's — and otherwise the TCP peer. An untrusted peer's
+ * {@code X-Forwarded-For} is never read. Only when that resolver names a client is the key the address
+ * the gateway regenerates {@code X-Forwarded-For} from. When the headers name no client, the forward
+ * stage regenerates no {@code X-Forwarded-For} at all, and the key is not taken from either chain: a
+ * contested pair is not resolved through one family on its own, so the request is keyed on the
+ * proxy's unresolved source or on the shared unknown source below. The trusted peer's headers are read through
  * {@link ForwardedClientResolution}, the one derivation the pending-authorization quota key shares,
  * and its three outcomes key the request three ways:
  * <ul>

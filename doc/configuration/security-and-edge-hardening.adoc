@@ -367,9 +367,11 @@ source (see
 link:../user/bff-session.adoc#pending-logins[Server-Session BFF -- When too many logins are
 unfinished]). Because a trusted proxy that forwards no client-address header therefore lets its
 requests escape `block` and `delay`, the gateway logs WARN
-link:../LogMessages.adoc#apisheriff-149[`ApiSheriff-149`] once at startup when `enumeration_detection` is
-enabled with `action` `block` or `delay` while `forwarded.trusted_proxies` is non-empty. It names the
-action only. Make sure every trusted proxy sends its clients' addresses in `X-Forwarded-For`.
+link:../LogMessages.adoc#apisheriff-149[`ApiSheriff-149`] when `enumeration_detection` is enabled with
+`action` `block` or `delay` while `forwarded.trusted_proxies` is non-empty. The record is emitted by
+the configuration validation rule that judges `forwarded.trusted_proxies`, so it appears each time the
+configuration is validated: at startup, and in a `--validate-config` run as well. It names the action
+only. Make sure every trusted proxy sends its clients' addresses in `X-Forwarded-For`.
 
 *Shared addresses.* Behind a load balancer not listed in `forwarded.trusted_proxies`, every client is
 one source: one scanning client trips it, and under `block` every client is answered `429`; under

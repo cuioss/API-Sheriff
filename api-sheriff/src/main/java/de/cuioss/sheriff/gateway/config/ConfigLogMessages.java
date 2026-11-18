@@ -673,8 +673,9 @@ public final class ConfigLogMessages {
          * on the proxy's own unresolved source, which detection acts on.
          * <p>
          * It is a {@code WARN} and never a boot refusal: the combination is the recommended posture
-         * behind a proxy that does send its clients' addresses. Emitted once per boot by
-         * {@code EdgeRules.validateForwardedTrust}. The template argument is the effective action —
+         * behind a proxy that does send its clients' addresses. Emitted by the validation rule
+         * {@code EdgeRules.validateForwardedTrust}, so once per validation of the configuration: at boot,
+         * and in a {@code --validate-config} run. The template argument is the effective action —
          * never a proxy range or any other address.
          */
         public static final LogRecord DETECTION_ACTION_BEHIND_TRUSTED_PROXIES = LogRecordModel.builder()

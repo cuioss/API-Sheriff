@@ -1477,7 +1477,11 @@ public class BffRuntimeProducer {
      * @param csrfDefence          the runtime's one session CSRF defence
      * @return the logout endpoint
      */
-    // Each parameter is one runtime-wide collaborator the logout endpoint is assembled from.
+    // java:S107 suppressed deliberately: every parameter is a distinct runtime-wide instance build(...)
+    // creates once and shares with other legs (the session binding, the one revocation client and
+    // client authentication, the one CSRF defence), and the logout endpoint must receive those very
+    // instances, never second copies. A parameter object would exist only for this single private call
+    // and would hide which of the runtime's collaborators the logout leg depends on.
     @SuppressWarnings("java:S107")
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin,
             Supplier<ProviderMetadata> metadata, SessionBinding sessionBinding, RevocationClient revocationClient,

@@ -532,8 +532,10 @@ public final class TerminalDispatch {
      * {@link DispatchStage.InboundBody} in place and hands it back, so the dispatch still reads a client's
      * departure from it: a client that resets its call or closes its connection before the upstream
      * answers — also once it has ended its request stream, when only the response still reports it —
-     * releases the upstream request at once and ends the dispatch as the client's own abort, which the
-     * breaker skips, instead of holding it until the guard's timeout.
+     * releases the upstream request at once and ends the dispatch as the client's own abort, instead of
+     * holding it until the guard's timeout. That abort is a gateway rejection, so the upstream's
+     * {@code UpstreamCircuitBreaker} judges it neutral: neither counted as an upstream failure nor
+     * recorded as a success, and a half-open trial that ends in it gives its permit back.
      */
     private void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
             ResponseStage.GrpcStreamIdleBound idleBound, Function<ReadStream<Buffer>, HttpClientResponse> dispatch) {

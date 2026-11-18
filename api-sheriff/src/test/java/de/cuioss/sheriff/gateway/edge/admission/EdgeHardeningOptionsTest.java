@@ -17,14 +17,27 @@ package de.cuioss.sheriff.gateway.edge.admission;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.http2.DefaultHttp2FrameReader;
+import io.netty.handler.codec.http2.DefaultHttp2HeadersDecoder;
+import io.netty.handler.codec.http2.Http2Error;
+import io.netty.handler.codec.http2.Http2Exception;
+import io.netty.handler.codec.http2.Http2FrameAdapter;
 import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpServerOptions;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
@@ -537,6 +550,134 @@ class EdgeHardeningOptionsTest {
                             "The TLS listener raises a lower announce to 16 KiB"),
                     () -> assertEquals(MAX_HEADER_SIZE_BYTES, vertxDefault.getInitialSettings().getMaxHeaderListSize(),
                             "The TLS listener left at the Vert.x defaults announces 16 KiB"));
+        }
+    }
+
+    /**
+     * The compressed header-block bound that ends a connection: the HTTP/2 codec ends the connection with
+     * a {@code GOAWAY} naming an error once the compressed header block of one request, {@code CONTINUATION}
+     * frames included, runs past 1.25 times the announced header-list bound — 20 KiB at the 16 KiB bound —
+     * while a block up to that size whose decoded list passes the bound costs its stream only
+     * ({@code 431} and a reset).
+     * <p>
+     * The factor is the transport's, not a gateway constant: the codec derives the threshold from the
+     * {@code SETTINGS_MAX_HEADER_LIST_SIZE} a listener announces. The cases therefore feed header blocks
+     * to the frame reader the listener's codec builds for exactly the settings this customizer applies,
+     * one byte either side of 20 KiB, so a change of the factor — or of the bound it multiplies — turns
+     * one of them red.
+     */
+    @Nested
+    @DisplayName("inbound HTTP/2 compressed header-block GOAWAY bound")
+    class CompressedHeaderBlockBound {
+
+        /** 1.25 times the 16 KiB header-list bound, restated as a literal so that a change to it is noticed here. */
+        private static final int GOAWAY_HEADER_BLOCK_BYTES = 20 * 1024;
+
+        private static final int HEADERS = 0x1;
+        private static final int CONTINUATION = 0x9;
+        private static final int FLAG_END_STREAM = 0x1;
+        private static final int FLAG_END_HEADERS = 0x4;
+        private static final int STREAM_ID = 1;
+
+        private EmbeddedChannel channel;
+
+        @BeforeEach
+        void openChannel() {
+            channel = new EmbeddedChannel(new ChannelInboundHandlerAdapter());
+        }
+
+        @AfterEach
+        void closeChannel() {
+            channel.finishAndReleaseAll();
+        }
+
+        @Test
+        @DisplayName("a compressed header block of exactly 20 KiB costs its stream only (431), not the connection")
+        void aBlockOfExactlyOneAndAQuarterTimesTheBoundCostsItsStreamOnly() {
+            Http2Exception failure = assertThrows(Http2Exception.class,
+                    () -> readHeaderBlockOf(GOAWAY_HEADER_BLOCK_BYTES));
+
+            assertAll("a compressed header block of exactly 20 KiB",
+                    () -> assertTrue(Http2Exception.isStreamError(failure),
+                            () -> "the block must cost its stream only, but ended the connection: " + failure),
+                    () -> assertInstanceOf(Http2Exception.HeaderListSizeException.class, failure,
+                            "the stream is refused for its decoded header list, which the edge answers 431"));
+        }
+
+        @Test
+        @DisplayName("a compressed header block one byte over 20 KiB ends the connection with GOAWAY naming an error")
+        void aBlockOverOneAndAQuarterTimesTheBoundEndsTheConnection() {
+            Http2Exception failure = assertThrows(Http2Exception.class,
+                    () -> readHeaderBlockOf(GOAWAY_HEADER_BLOCK_BYTES + 1));
+
+            assertAll("a compressed header block one byte over 20 KiB",
+                    () -> assertFalse(Http2Exception.isStreamError(failure),
+                            () -> "the block must end the connection, but cost its stream only: " + failure),
+                    () -> assertNotEquals(Http2Error.NO_ERROR, failure.error(),
+                            "the GOAWAY names an error, not a graceful shutdown"));
+        }
+
+        /**
+         * Feeds one request header block of exactly {@code compressedBytes} — a {@code HEADERS} frame of the
+         * listener's maximum frame size and a {@code CONTINUATION} frame ending the block — to the frame
+         * reader the listener's HTTP/2 codec builds for the settings this customizer announces.
+         */
+        private void readHeaderBlockOf(int compressedBytes) throws Http2Exception {
+            HttpServerOptions options = new HttpServerOptions();
+            new EdgeHardeningOptions().customizeHttpServer(options);
+            Http2Settings announced = options.getInitialSettings();
+            byte[] block = literalHeaderBlockOf(compressedBytes);
+            int firstFragment = announced.getMaxFrameSize();
+            assertTrue(block.length > firstFragment, "precondition: the block needs a CONTINUATION frame");
+            ByteBuf frames = Unpooled.buffer()
+                    .writeBytes(frame(HEADERS, FLAG_END_STREAM, Arrays.copyOfRange(block, 0, firstFragment)))
+                    .writeBytes(frame(CONTINUATION, FLAG_END_HEADERS,
+                            Arrays.copyOfRange(block, firstFragment, block.length)));
+            try (DefaultHttp2FrameReader reader = new DefaultHttp2FrameReader(
+                    new DefaultHttp2HeadersDecoder(true, announced.getMaxHeaderListSize()))) {
+                reader.maxFrameSize(announced.getMaxFrameSize());
+                reader.readFrame(channel.pipeline().firstContext(), frames, new Http2FrameAdapter());
+            } finally {
+                frames.release();
+            }
+        }
+
+        /**
+         * One header field {@code x} encoded as a literal without indexing, new name, no Huffman coding
+         * (RFC 7541 §6.2.2), whose value is sized so the whole block is exactly {@code compressedBytes}.
+         */
+        private static byte[] literalHeaderBlockOf(int compressedBytes) {
+            // 0x00, the name length 1, the name, then the value length as a 7-bit-prefix integer whose
+            // continuation takes 3 bytes for any value length between 16,511 and 2,097,278.
+            int valueLength = compressedBytes - 3 - 4;
+            int rest = valueLength - 0x7f;
+            assertTrue(rest >= 1 << 14 && rest < 1 << 21, "precondition: the value length takes 4 bytes");
+            byte[] block = new byte[compressedBytes];
+            int at = 0;
+            block[at++] = 0x00;
+            block[at++] = 0x01;
+            block[at++] = 'x';
+            block[at++] = 0x7f;
+            block[at++] = (byte) (rest & 0x7f | 0x80);
+            block[at++] = (byte) (rest >>> 7 & 0x7f | 0x80);
+            block[at++] = (byte) (rest >>> 14);
+            Arrays.fill(block, at, block.length, (byte) 'a');
+            return block;
+        }
+
+        /** One frame on stream {@value #STREAM_ID}: the 9-byte frame header followed by {@code payload}. */
+        private static byte[] frame(int type, int flags, byte[] payload) {
+            ByteBuf frame = Unpooled.buffer(9 + payload.length)
+                    .writeMedium(payload.length)
+                    .writeByte(type)
+                    .writeByte(flags)
+                    .writeInt(STREAM_ID)
+                    .writeBytes(payload);
+            try {
+                return ByteBufUtil.getBytes(frame);
+            } finally {
+                frame.release();
+            }
         }
     }
 

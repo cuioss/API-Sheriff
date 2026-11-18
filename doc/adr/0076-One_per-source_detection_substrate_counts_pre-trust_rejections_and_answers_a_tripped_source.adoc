@@ -191,7 +191,12 @@ transport defaults:
 * The listener announces a header-list size of exactly 16 KiB, the HTTP/1.1 header-block bound, in
   place of the transport default of 8 KiB. The bound covers the whole decoded header list,
   `CONTINUATION` frames included. A decoded list over it is answered `431` and its stream reset; only
-  a compressed header block over 1.25 times the bound ends the connection.
+  a compressed header block over 1.25 times the bound ends the connection. The announce was raised from
+  8 KiB to 16 KiB so that both protocols admit the same requests. At 8 KiB, a request whose headers
+  fell between 8 and 16 KiB, such as one with a large cookie or bearer token, was served over HTTP/1.1
+  and answered `431` over HTTP/2, so the protocol a client negotiated decided whether it was served. The
+  raise keeps the `CONTINUATION`-flood defence: the bound still caps the whole decoded list of one
+  request, and the 1.25 factor still ends a connection whose compressed block runs past it.
 * The Rapid-Reset guard is pinned at the transport's own default of 200 client-sent `RST_STREAM`
   frames per 30-second window. It is set explicitly so that a change of the transport default cannot
   move it, and it is never raised

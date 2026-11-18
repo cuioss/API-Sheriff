@@ -242,11 +242,14 @@ import org.jspecify.annotations.Nullable;
  * the upstream's answer, is not kept waiting until the pool hands the connection over or the connection wait
  * bound passes. The dispatch reports an {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, which
  * the breaker records as neutral: a body that was still arriving as one that did not arrive whole, any other
- * request as a {@link ClientDeparted}. Only an outcome recorded before the departure takes its place — a body
- * the gateway had already refused, a request stream the upstream had already stalled past its pre-response
- * deadline, or an attempt whose settlement reached the dispatch before the departure, which keeps its own
- * outcome. The order of settlement and departure is recorded once, when the settlement reaches the dispatch
- * through the attempt's response chain. The released attempt keeps its place in the upstream client's wait queue until the pool hands it
+ * request as a {@link ClientDeparted}. Only an outcome recorded before the departure takes its place: a body
+ * the gateway had already refused keeps that refusal, a request stream the upstream had already stalled past
+ * its pre-response deadline stays the upstream's timeout, and an attempt that had already failed when its
+ * settlement reached the dispatch keeps its own failure. A response is the exception: one that reached the
+ * dispatch before the departure but was not yet handed over for relay does not survive it. It is released
+ * with its attempt and the dispatch reports the departure instead — unless the upstream had stalled the
+ * request stream first, which stays the upstream's timeout. The order of settlement and departure is
+ * recorded once, when the settlement reaches the dispatch through the attempt's response chain. The released attempt keeps its place in the upstream client's wait queue until the pool hands it
  * a connection, which is then reset unsent, or until its connection wait bound passes: Vert.x offers no way
  * to withdraw a queued wait. A client that left before the dispatch began has
  * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the

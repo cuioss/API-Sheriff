@@ -54,21 +54,29 @@ import io.vertx.core.streams.ReadStream;
  * <strong>Time the client holds the request open is the client's; time spent reaching the upstream is
  * the upstream's.</strong> A gRPC call ends as an upstream failure only when the upstream had everything the
  * client was going to send, could not be reached within the connection wait bound, or stopped taking what the
- * client sent. The breaker counts an upstream timeout in three ways: the guard's timeout, reached by an upstream
- * holding a complete, half-closed request it does not answer; a wait for an upstream connection or HTTP/2 stream
- * slot that reaches the connection wait bound, {@value DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS} ms, before
- * any body is handed over, which ends the attempt unsent as the upstream's
- * {@link DispatchStage.UpstreamConnectionWaitExpired}; and the guard's timeout, reached by an upstream that stops
- * taking data mid-request and does not take any more before it fires. While that backpressure pauses the request
- * stream the message bound is not counted, and the pre-response deadline, which keeps counting, does not end the
- * call at once: a deadline that passes during the pause ends it the moment the upstream takes data again — no
- * later than the deadline would have ended a client holding the stream open — and when the upstream had by then
- * stalled the stream without a break for at least the upstream stall threshold below, as the upstream's
- * {@link DispatchStage.UpstreamStalledRequest}, a timeout the breaker counts and the failure mapper reports as
- * {@link EventType#UPSTREAM_TIMEOUT}. Every way a call can wait on its client is ended first, as the client's own
- * abort, which the breaker records as neutral.
+ * client sent. The breaker counts an upstream timeout in four ways, each reported by the failure mapper as
+ * {@link EventType#UPSTREAM_TIMEOUT}:
+ * <ul>
+ *   <li>the guard's timeout, reached by an upstream holding a complete, half-closed request it does not
+ *       answer;</li>
+ *   <li>a wait for an upstream connection or HTTP/2 stream slot that reaches the connection wait bound,
+ *       {@value DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS} ms, before any body is handed over, which ends the
+ *       attempt unsent as the upstream's {@link DispatchStage.UpstreamConnectionWaitExpired} — unless a request
+ *       body was forwarded on that upstream client within the bound, in which case the expiry is the gateway's
+ *       own pool saturation, which the breaker records as neutral;</li>
+ *   <li>the guard's timeout, reached by an upstream that stops taking data mid-request and does not take any
+ *       more before it fires;</li>
+ *   <li>an {@link DispatchStage.UpstreamStalledRequest}: while that backpressure pauses the request stream the
+ *       message bound is not counted, and the pre-response deadline, which keeps counting, does not end the call
+ *       at once. A deadline that passes during the pause ends it the moment the upstream takes data again — no
+ *       later than the deadline would have ended a client holding the stream open — and it is the upstream's
+ *       when the upstream had by then stalled the stream without a break for at least the upstream stall
+ *       threshold below.</li>
+ * </ul>
+ * Every way a call can wait on its client is ended first, as the client's own abort, which the breaker records
+ * as neutral.
  * <p>
- * <strong>A client that leaves ends the call at once.</strong> Each of those three ways holds only while the
+ * <strong>A client that leaves ends the call at once.</strong> Each of those four ways holds only while the
  * client stays. A client that resets its call or closes its connection before the upstream answers — also once
  * it has ended its request stream, when only the response still reports it — releases the upstream request at
  * once and ends the dispatch as its own abort ({@link DispatchStage.ClientDeparted}, or a failed body while the

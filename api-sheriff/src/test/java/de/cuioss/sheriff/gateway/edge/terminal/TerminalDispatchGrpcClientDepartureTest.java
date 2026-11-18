@@ -93,18 +93,17 @@ import org.junit.jupiter.api.Test;
  * it can no longer be answered. The edge root hands that to the request body it armed
  * ({@link DispatchStage.InboundBody#clientDeparted}), and the dispatch reads the departure from the body
  * it is handed: it releases the upstream request at once and ends as the client's own abort, which the
- * breaker skips. The gRPC path hands the dispatch the request body its stream-idle bound watches, so
- * that body has to be the armed one. A dispatch that is handed a decorator around it never learns of the
- * departure: the upstream request stays in flight until the upstream answers or the guard's timeout ends
+ * breaker records as neutral — neither an upstream failure nor a success. The gRPC path hands the
+ * dispatch the request body its stream-idle bound watches, so that body has to be the armed one. A
+ * dispatch that is handed a decorator around it never learns of the departure: the upstream request stays in flight until the upstream answers or the guard's timeout ends
  * the attempt, which the breaker counts as the upstream's failure.
  * <p>
  * <strong>The rig.</strong> The front server's handler does what the edge root does around a dispatch:
  * it arms the request body, pauses the request and reports a response that ended without being written
  * as the client's departure. The call then runs through {@code dispatchGrpc} itself, with the gRPC
- * dispatch's production bounds, under a test-local SmallRye guard that skips a {@link GatewayException}
- * — so a gateway rejection is not counted as a failure — and opens on the first failure it counts. It is
- * not the production guard, whose own {@code UpstreamCircuitBreaker} records a gateway rejection as
- * neutral; {@code UpstreamGuardsTest} binds that behaviour.
+ * dispatch's production bounds, under the gateway's own {@code UpstreamCircuitBreaker} in the production
+ * composition ({@link UpstreamBreakerFixtures}), which opens on the first failure it counts and records a
+ * gateway rejection — a {@link GatewayException} — as neutral, neither a failure nor a success.
  * <p>
  * <strong>What the stub upstream does.</strong> It reads every call to the end of its request stream. A
  * call to {@value #HELD_CALL} is then held, never answered; a call to {@value #REFUSED_CALL} is reset by
