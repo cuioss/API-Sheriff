@@ -1345,6 +1345,14 @@ and streamed responses (never materialized). The gateway is an *opaque* passthro
 not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must
 still cap body bytes. Explicit YAML `StreamReadConstraints` are applied at config load.
 
+*No request-head deadline.* The gateway sets no deadline on the arrival of a request head -- the
+HTTP/1.1 request line and header block, or an HTTP/2 header block with its `CONTINUATION` frames.
+Until a head is complete, the idle timeout, which any byte restarts, and the connection cap are the
+only bounds on its connection, and a connection the cap has counted holds its slot until it closes,
+whether or not a request head ever completes on it. A front proxy that enforces its own request-head
+timeout is therefore a deployment requirement
+(link:user/edge-security.adoc#_request_head_deadline[Edge security -- A front proxy times out the request head]).
+
 *Status:* PARTIAL. Streaming + the `max_body_bytes` counter is ADR-0006 + pipeline
 stage 6; edge limits, idle timeout, connection cap, admission cap and graceful drain are delivered
 as the edge-hardening bounds; YAML limits are applied at config load. The individual controls are
@@ -2140,6 +2148,11 @@ never-forward set and from dispatch:
   `Content-Length`, an undeclared one keeps the framing the upstream client chooses
   (link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060],
   <<gw-02>>).
+
+The per-source detection substrate counts rejected requests, so it does not see a connection whose
+request head has not completed: that connection carries no request to reject. No gateway bound
+limits how long a head may take to arrive (<<gw-07>>); a front proxy with its own request-head
+timeout is a deployment requirement.
 
 The per-source detection substrate does not key these bounds. Its key is a source address, while
 stream and reset state belong to one connection, so each bound is a property of the connection

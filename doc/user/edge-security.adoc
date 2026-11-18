@@ -795,6 +795,32 @@ deployment that never writes it keeps the behaviour shown here.
   shutdown timeout so the drain completes within the shutdown window rather than being cut short.
 |===
 
+[[_request_head_deadline]]
+=== A front proxy times out the request head
+
+The gateway sets no deadline on the arrival of a request head -- the HTTP/1.1 request line and
+header block, or an HTTP/2 header block with its `CONTINUATION` frames. Until a head is complete the
+connection carries no request: the admission cap, per-source enumeration detection and threat
+classification do not see it, and the request-body bounds have not started. Two bounds in the table
+above act on such a connection:
+
+* the *idle-connection reap*, which any byte restarts, so a client that sends something within every
+  60 s keeps its connection open;
+* the *connection cap*, one counter shared by the plain-HTTP redirect listener and the HTTPS listener
+  of the Quarkus-terminated side. A connection the cap has counted holds its slot until it closes,
+  whether or not a request head ever completes on it, and a connection beyond the cap is closed
+  without being served.
+
+Under `tls.passthrough_sni` the SNI front listener ends a connection whose TLS ClientHello is not
+complete within 10 s (link:tls-edge.adoc[TLS edge]); it sets no deadline on the request head that
+follows the handshake.
+
+*Deployment requirement.* Run the gateway behind a front proxy or load balancer that enforces its
+own timeout on the request head and closes a connection that does not deliver a complete head in
+time -- for example nginx `client_header_timeout`, HAProxy `timeout http-request` or Envoy
+`request_headers_timeout`. The gateway itself cannot be set to do this: neither `gateway.yaml` nor
+the shipped `application.properties` carries a key for it.
+
 == Asset Content Types (`asset_defaults.content_types`)
 
 The gateway -- never the backing directory or upstream -- decides the `Content-Type` of every asset
