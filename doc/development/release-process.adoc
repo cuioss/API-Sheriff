@@ -556,7 +556,7 @@ before "already tagged", so a guard stuck on "changed" would have passed the fir
 the tag reason -- `release.current-version changed to 0.1.1, but a tag for 0.1.1 already exists` --
 instead. On that line the control proves the guard *refused*, and refused on the version check.
 The run executed the guard at the earlier action pin `b94a4a9`; `decide`'s check order and both
-reason strings are unchanged at the current pin `3da96d2`, and the diff between the two is
+reason strings are unchanged at the current pin `5b9a36e`, and the diff between the two is
 formatting only.
 
 *The caveat, undiminished:* a guard permanently stuck on "unchanged" logs exactly the same line and
