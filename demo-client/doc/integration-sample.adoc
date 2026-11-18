@@ -75,12 +75,17 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | navigate `/bff/logout` -- from a page the gateway serves
 | `302`
 | To the IdP end-session endpoint, then to `/bff/logout/return`, then to `final_redirect`. The
-  browser marks the navigation `Sec-Fetch-Site: same-origin`, which is the proof the gateway asks for.
+  browser marks the navigation `Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: navigate` and
+  `Sec-Fetch-Dest: document` -- a top-level document navigation from the gateway's own origin, which
+  is the proof the gateway asks for.
 
-| `/bff/logout` -- without same-origin proof. A present `Origin` decides alone: a trusted one is the
-  proof, and an untrusted one is refused even beside `Sec-Fetch-Site: same-origin`. Only with
-  `Origin` absent does `Sec-Fetch-Site: same-origin` or `none` suffice. Any other request -- a link
-  on another site included -- lands here
+| `/bff/logout` -- without that proof. A request that is not a top-level document navigation (a
+  `fetch`, an image, a script, a frame, a prefetch or prerender) is refused whatever its origin. For
+  a navigation, a present `Origin` decides alone: a trusted one -- the gateway's own included -- is
+  the proof, and an untrusted one is refused even beside `Sec-Fetch-Site: same-origin`. Only with
+  `Origin` absent does `Sec-Fetch-Site: same-origin` suffice; `Sec-Fetch-Site: none` (a typed URL, a
+  bookmark, a link opened from another application) does not. Any other request -- a link on another
+  site included -- lands here
 | `200`
 | A `text/html` confirmation page, `Cache-Control: no-store`, framing forbidden
   (`frame-ancestors 'none'`, `X-Frame-Options: DENY`). The session is untouched; its *Sign out*
@@ -142,8 +147,8 @@ common way to mis-integrate:
   `/bff/session` is an XHR probe and answers `401 application/problem+json` without a session -- it
   never redirects, whatever you send -- and `/bff/login` answers `302` whatever you send.
   `/bff/logout` answers `302` to a request that proves it comes from the gateway's own pages and the
-  `200` confirmation page to any other, whatever its `Accept`; the proof is the request's origin
-  (see the next bullet), not its media type. Do not write a client that sends `Accept: text/html`
+  `200` confirmation page to any other, whatever its `Accept`; the proof is the request's origin and
+  its Fetch Metadata (see the next bullet), not its media type. Do not write a client that sends `Accept: text/html`
   to the info endpoint expecting a redirect, and do not write one that treats a `302` from the info
   endpoint as reachable. It is not.
   The rest of the gateway is different by design: its own rejections and a session route's floor
@@ -152,7 +157,8 @@ common way to mis-integrate:
   into the identity provider. A `fetch` cannot follow that meaningfully -- the browser must own the
   navigation. Use `window.location.assign(...)`, never `fetch`. For logout the navigation must also
   start on a page of the gateway's own origin, as the sample's does: the browser then sends
-  `Sec-Fetch-Site: same-origin`, and the gateway logs out at once. A logout link on another origin
+  `Sec-Fetch-Site: same-origin` on a top-level document navigation, and the gateway logs out at
+  once. A `fetch('/bff/logout')` is not a navigation and only gets the confirmation page back. A logout link on another origin
   -- a portal on another host, even one listed in `oidc.session.csrf.trusted_origins` -- lands the
   user on the confirmation page instead, which takes one more click. That is the price of refusing a
   logout another site forged.
@@ -411,7 +417,7 @@ nothing about any other.
 
 === Logging out is authoritative locally, immediately
 
-For a logout request with same-origin proof, the gateway destroys the server-side session and
+For a logout request with that proof, the gateway destroys the server-side session and
 clears the session cookie as the *authoritative* step; the identity-provider round-trip is layered
 on top. A request without that proof is answered the `200` confirmation page before any session is
 looked up, so none of the following applies to it until its button is pressed. Two consequences

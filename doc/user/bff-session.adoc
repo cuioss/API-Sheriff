@@ -759,31 +759,49 @@ Each replica counts its own pending logins (see <<multi-replica>>).
 == Logout
 
 [[logout-same-origin]]
-*A logout acts only on a request from the gateway's own pages.* The logout path is answered whatever
-the method, so without a check a link or an image on another site could end a user's session. Before
-it looks at the session, the gateway asks the request for same-origin proof by the rules of the CSRF
-defence (see <<csrf>>):
+*A logout acts only on a top-level navigation from a trusted origin.* The logout path is answered
+whatever the method, so without a check a link or an image on another site -- or an image, a script
+or a frame placed in content the gateway itself serves -- could end a user's session. Before it looks
+at the session, the gateway asks the request for two things.
+
+*It must be a top-level document navigation the user asked for.* The browser's Fetch Metadata
+headers decide this, and each is judged only when the request carries it:
+
+* no `Sec-Purpose` header -- a browser sends one on a prefetch or a prerender, which no user asked
+  for;
+* `Sec-Fetch-Mode: navigate` -- an image, a script, a `fetch()` call or a link prefetch carries a
+  different mode;
+* `Sec-Fetch-Dest: document` -- a frame or an iframe carries a different destination.
+
+*It must come from a trusted origin*, by the rules of the CSRF defence (see <<csrf>>):
 
 * an `Origin` header naming a trusted origin -- one listed in `oidc.session.csrf.trusted_origins`,
-  which defaults to the origin of `oidc.redirect_uri`. A present `Origin` decides alone; or
-* with no `Origin`, `Sec-Fetch-Site: same-origin`, or `Sec-Fetch-Site: none` -- the value a browser
-  sends for a navigation the user started by typing the URL or opening a bookmark.
+  which defaults to the origin of `oidc.redirect_uri`, or the gateway's own origin. A present
+  `Origin` decides alone; or
+* with no `Origin`, `Sec-Fetch-Site: same-origin`.
 
-*A request without that proof gets a confirmation page.* It is answered `200` with a fixed HTML page
-holding one *Sign out* button, and nothing else happens: the session and its cookies stay as they
-were and the IdP is not contacted. The page reflects nothing of the request, is sent with
-`Cache-Control: no-store`, and forbids framing (`Content-Security-Policy` with
-`frame-ancestors 'none'`, and `X-Frame-Options: DENY`). Its button `POST`s to `oidc.logout.path`. The
-browser sends that `POST` with the gateway's own origin as `Origin`, so it carries the proof and the
-logout below runs. If you set `oidc.session.csrf.trusted_origins`, list the gateway's own origin in it
-as well; otherwise that `POST` is answered with the confirmation page again.
+`Sec-Fetch-Site: none` is not a proof. A browser sends it for a typed URL or a bookmark, but also for
+a link opened from another application -- a mail client or a chat -- so it cannot tell a navigation
+the user started from a link someone delivered.
+
+*A request without that proof gets a confirmation page.* That includes a typed URL, a bookmark, a link
+opened from another application, a prefetch or prerender, and a request from a browser that sends
+neither Fetch Metadata nor `Origin`. It is answered `200` with a fixed HTML page holding one *Sign
+out* button, and nothing else happens: the session and its cookies stay as they were and the IdP is
+not contacted. The page reflects nothing of the request, is sent with `Cache-Control: no-store`, and
+forbids framing (`Content-Security-Policy` with `frame-ancestors 'none'`, and
+`X-Frame-Options: DENY`). Its button `POST`s to `oidc.logout.path`. The browser sends that `POST` as
+a top-level navigation with the gateway's own origin as `Origin`, so it carries the proof and the
+logout below runs. The logout path trusts the gateway's own origin implicitly, so
+`oidc.session.csrf.trusted_origins` need not list it.
 
 *The cost: a logout link on another trusted origin lands on the confirmation page.* A navigation
 from a page on a different origin -- an application or portal on another host, even one in
 `trusted_origins` -- is cross-origin to the gateway and sends no `Origin` on a plain link, so the
 user sees the confirmation page and has to press its button. A link or a script navigation
-(`window.location`) on a page the gateway serves, and a logout `POST` from a trusted origin, end the
-session at once.
+(`window.location`) on a page the gateway serves, and a logout form `POST` from a trusted origin, end
+the session at once. A `fetch()` or `XMLHttpRequest` call to the logout path is not a navigation and
+gets the confirmation page as its answer; navigate the window to the logout path instead.
 
 With the proof, a logout through `oidc.logout.path` *always ends the gateway session first*: the
 session is destroyed and its cookie cleared before anything is asked of the IdP. What follows depends

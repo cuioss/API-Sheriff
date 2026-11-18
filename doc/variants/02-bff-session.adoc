@@ -159,12 +159,16 @@ attached. Same-origin deployments need neither.
 [[_logout]]
 == Logout
 
-* *Only on same-origin proof.* The logout path is answered whatever the method, so it asks the proof
-  of <<_csrf_defence>> of every request, before the session is resolved, admitting additionally
-  `Sec-Fetch-Site: none` (a navigation the user started). Any other request -- a link or an image on
-  another site -- gets a `200` confirmation page (`no-store`, framing forbidden) whose button `POST`s
-  back; nothing else happens. A logout link on another trusted origin lands there too
-  (link:../user/bff-session.adoc#logout-same-origin[operator guide]).
+* *Only on a trusted top-level navigation.* The logout path is answered whatever the method, so it
+  asks every request, before the session is resolved, for the origin proof of <<_csrf_defence>> --
+  with the gateway's own origin trusted as well, so `trusted_origins` need not list it -- and, where
+  the browser sends Fetch Metadata, for a top-level document navigation: no `Sec-Purpose`,
+  `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`. `Sec-Fetch-Site: none` is not a proof: a
+  link opened from another application carries it as well as a typed URL. Any other request -- a
+  link or an image on another site, a same-origin image, script, `fetch()` or frame, a prefetch or
+  prerender -- gets a `200` confirmation page (`no-store`, framing forbidden) whose button `POST`s
+  back as a same-origin navigation; nothing else happens. A logout link on another trusted origin
+  lands there too (link:../user/bff-session.adoc#logout-same-origin[operator guide]).
 * *RP-initiated* (`oidc.logout.path`, `CLIENT-13`). With the proof, the gateway destroys the stored session and
   expires the cookie *first*, then redirects to the IdP's end-session endpoint with `id_token_hint`
   and a session-bound `state` verified on the return leg. The local logout does not depend on the

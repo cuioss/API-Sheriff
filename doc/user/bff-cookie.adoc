@@ -495,12 +495,15 @@ IdP-driven destruction is *unsupported*:
 
 RP-initiated logout (the user logging themselves out) works normally: the browser's cookie is
 cleared, and an expired cookie the browser keeps anyway is still refused server-side by the absolute
-TTL check. It acts only on a request with same-origin proof, exactly as in the server-session
-variant: a trusted `Origin`, or with no `Origin` a `Sec-Fetch-Site` of `same-origin` or `none`. Any
-other request -- a link from another site, a logout link on a trusted origin other than the
-gateway's own -- gets a `no-store` confirmation page that forbids framing, clears no cookie and
-whose button `POST`s back to the logout path (see
-link:bff-session.adoc#logout-same-origin[Logout -- same-origin proof]). Before the redirect to the IdP, the gateway also revokes at the IdP the refresh token
+TTL check. It acts only on a trusted top-level navigation, exactly as in the server-session
+variant: a trusted `Origin` -- the gateway's own origin is always trusted here -- or with no `Origin`
+`Sec-Fetch-Site: same-origin`; and, where the browser sends Fetch Metadata, no `Sec-Purpose`,
+`Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`. `Sec-Fetch-Site: none` is not a proof.
+Any other request -- a link from another site, a logout link on a trusted origin other than the
+gateway's own, a typed URL or a link opened from another application, a same-origin image, script,
+`fetch()` or frame, a prefetch or prerender -- gets a `no-store` confirmation page that forbids
+framing, clears no cookie and whose button `POST`s back to the logout path (see
+link:bff-session.adoc#logout-same-origin[Logout -- the navigation proof]). Before the redirect to the IdP, the gateway also revokes at the IdP the refresh token
 sealed in the cookie the logout request presents (RFC 7009), as described for the server-session
 variant in link:bff-session.adoc#logout[Logout]. Once that revocation succeeded, a copy of the
 logged-out cookie stops working at its next transparent refresh, which the revoked refresh token fails -- until then it still
@@ -587,7 +590,7 @@ session continues.
   An ordinary request does not: it sets at most the activity cookie.
 * *Logout clears two cookies.* The session cookie and the activity cookie are cleared together, at
   logout and whenever the gateway ends a session. Logout itself behaves as in the server-session
-  variant: it acts only on same-origin proof and answers any other request with a confirmation page
+  variant: it acts only on a trusted top-level navigation and answers any other request with a confirmation page
   that leaves both cookies in place; with the proof the cookies are cleared first, and an IdP without
   a usable end-session endpoint lands the browser on `oidc.logout.final_redirect` with
   `ApiSheriff-135` logged once (see link:bff-session.adoc#logout[Logout]).
