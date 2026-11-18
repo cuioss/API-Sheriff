@@ -281,11 +281,10 @@ final class UpstreamCircuitBreaker {
      */
     private void report(List<CircuitBreakerState> transitions) {
         for (CircuitBreakerState entered : transitions) {
+            // cui-rewrite:disable InvalidExceptionUsageRecipe
             try {
                 stateChanges.accept(entered);
-            }
-            /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
-            catch (RuntimeException reportFailure) {
+            } catch (RuntimeException reportFailure) {
                 LOGGER.warn(reportFailure, ApiSheriffLogMessages.WARN.CIRCUIT_BREAKER_REPORT_FAILED, name, entered);
             }
         }
