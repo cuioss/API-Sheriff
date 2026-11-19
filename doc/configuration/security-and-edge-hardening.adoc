@@ -360,7 +360,8 @@ every client behind a NAT, egress proxy or load balancer; enforcement is the ope
   peer, whose `X-Forwarded-For` is never read. IPv6 is reduced to its `/64` (or, once the ledger is
   under pressure, a new source to its `/48` -- see *Scope* below). When a trusted forwarder's
   `Forwarded` or `X-Forwarded-For` carries a value yet the two together yield no client -- a contested
-  chain, where the two disagree, or a malformed one -- the source is that forwarder's own unresolved
+  chain, where the two disagree, a malformed one, or one that names its client by something other than
+  an address -- the source is that forwarder's own unresolved
   source, `unresolved-via-<proxy address>`, which detection acts on like any source; neither family is
   resolved on its own
   (xref:routing-and-forwarding.adoc#_unresolvable_chain[A chain that resolves no client]). Only a

@@ -4352,7 +4352,7 @@ An operator who needs a tighter bound places it in front of the gateway.
 shares its 256 records: users behind one NAT or shared egress address, users behind one IPv6 `/64`,
 every request through one trusted proxy whose forwarding chain names no client (that proxy's
 unresolved source), and every request whose source resolves to `unknown` -- a trusted proxy's
-request carrying no forwarding header, or a peer with no parseable address. When more than 256 logins from one such source
+request carrying no forwarding header or only blank ones, or a peer with no parseable address. When more than 256 logins from one such source
 are pending at once, each new one removes that source's own oldest, and that user's callback is
 refused `403`. Other sources are not affected.
 

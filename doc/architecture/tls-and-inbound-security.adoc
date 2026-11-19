@@ -459,7 +459,7 @@ image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key 
 * *Keying and bounds.* Requests are keyed by `(source, host)`: client IPv4, IPv6 `/64` prefix, a
   trusted proxy's unresolved source `unresolved-via-<proxy address>`, or `unknown` (honouring
   `forwarded.trusted_proxies`; a trusted proxy's `Forwarded` / `X-Forwarded-For` chain that resolves
-  no client -- contested or malformed -- is keyed on that proxy's unresolved source, and only a request
+  no client -- contested, malformed or naming its client by something other than an address -- is keyed on that proxy's unresolved source, and only a request
   carrying neither header, or only blank ones, on `unknown`), paired with a declared
   `match.host` or `*`. The ledger tracks at most 65,536 keys, draining linearly at
   `threshold / window` per second and transitioning `CLEAR -> TRIPPED` (and `-> BLOCKED` when

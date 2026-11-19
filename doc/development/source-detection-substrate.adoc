@@ -53,7 +53,8 @@ the forward stage regenerates `X-Forwarded-For` from. The client is derived by
 `forward.ForwardedClientResolution`, the one derivation the BFF pending-authorization quota key
 (`PendingQuotaKeys`) shares: the combined `Forwarded` / `X-Forwarded-For` headers, resolved once. When
 they yield no client -- the two chains disagree (`ForwardedClientResolutionTest` pins cui-http's empty
-result for a disagreeing pair), or a chain is malformed -- neither family is resolved on its own, since
+result for a disagreeing pair), a chain is malformed, or it names its client by something other than an
+address literal -- neither family is resolved on its own, since
 the request cannot show which family the proxy manages. Such a request, whose `Forwarded` or
 `X-Forwarded-For` carries a value, is keyed on the proxy's own unresolved source,
 `unresolved-via-<proxy address>` (`SourceKeyResolver.resolveUnresolvedForwarding`), which the edge
