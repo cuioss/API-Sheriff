@@ -389,8 +389,9 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   are being rejected than the gateway tracks -- a scan spread over many addresses, or a deployment
   whose sources are not per client. If that refusal is a risk you cannot accept, keep `observe`, or
   place the per-address limit in front of the gateway.
-* A source of `unknown` -- a request through a trusted proxy that carries no `Forwarded` or
-  `X-Forwarded-For` at all -- is counted and can trip, but is never blocked, delayed or refused,
+* A source of `unknown` -- a request through a trusted proxy that carries no client-address header
+  (`Forwarded` or `X-Forwarded-For`), or only blank ones -- is counted and can trip, but is never
+  blocked, delayed or refused,
   because it stands for every such client at once. Its trip is therefore logged and counted with the
   action `observe`, whatever `action` is configured. WARN `ApiSheriff-149` at startup reminds you of
   this when `block` or `delay` is configured together with `forwarded.trusted_proxies`.
@@ -427,10 +428,11 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   (see link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]).
   Otherwise every client arrives from the balancer's address, one scanning client trips that address,
   and `block` answers `429` to all of them. Make sure that proxy sends each client's address in
-  `Forwarded` or `X-Forwarded-For`. A request it forwards with neither header is keyed `unknown`,
-  which `block` and `delay` never act on. A request whose header is present but names no client --
-  malformed, or the two headers disagreeing -- is keyed on the proxy's own unresolved source,
-  `unresolved-via-<proxy address>`, which `block` and `delay` do act on.
+  `Forwarded` or `X-Forwarded-For`. A request it forwards with neither header, or with only blank
+  ones, is keyed `unknown`, which `block` and `delay` never act on. A request whose header carries a
+  value that names no client that is an address literal -- malformed, the two headers disagreeing, or
+  an RFC 7239 obfuscated identifier such as `for=_hidden` -- is keyed on the proxy's own unresolved
+  source, `unresolved-via-<proxy address>`, which `block` and `delay` do act on.
 . If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
   proxy -- they are one source whatever the gateway is told. Keep `observe`, or raise `threshold` well
   above what those clients cause together.

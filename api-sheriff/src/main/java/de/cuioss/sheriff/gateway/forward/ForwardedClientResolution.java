@@ -103,7 +103,8 @@ public final class ForwardedClientResolution {
     }
 
     /**
-     * The resolver named a client.
+     * The resolver named a client that is an address literal — one {@link SourceKeyResolver#canonicalSource}
+     * does not fold to {@link SourceKey#UNKNOWN_SOURCE}.
      *
      * @param address the client address as the resolver returned it, not yet canonicalized
      */
@@ -118,13 +119,15 @@ public final class ForwardedClientResolution {
     }
 
     /**
-     * A client-address header carries a non-blank value, yet the resolver named no client.
+     * A client-address header carries a non-blank value, yet the resolver named no client, or named one
+     * that is no address literal — such as an RFC 7239 obfuscated identifier like {@code _hidden}.
      */
     public record Unresolvable() implements ForwardedClient {
     }
 
     /**
-     * No client-address header carries a non-blank value.
+     * No client-address header carries a non-blank value: none is present, or every one present is
+     * blank.
      */
     public record Absent() implements ForwardedClient {
     }

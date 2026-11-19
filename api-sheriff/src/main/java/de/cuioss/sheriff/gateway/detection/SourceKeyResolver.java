@@ -51,15 +51,17 @@ import org.jspecify.annotations.Nullable;
  * folds to {@link SourceKey#UNKNOWN_SOURCE}, and no lookup is ever made.
  * <p>
  * <strong>The unresolvable forwarding chain.</strong> A trusted proxy's request that carries a
- * client-address header from which no client resolves — a malformed chain, or a {@code Forwarded}
- * chain disagreeing with the {@code X-Forwarded-For} chain — is keyed by
+ * client-address header with a non-blank value from which no client that is an address literal
+ * resolves — a malformed chain, a {@code Forwarded} chain disagreeing with the {@code X-Forwarded-For}
+ * chain, or a client named by an RFC 7239 obfuscated identifier such as {@code _hidden} — is keyed by
  * {@link #resolveUnresolvedForwarding} on a source of its own per proxy:
  * {@value #UNRESOLVED_FORWARDING_PREFIX} followed by the proxy's canonical address
  * ({@link #unresolvedForwardingSource}). A client can always add or break such a header, so that key
  * must not be {@link SourceKey#UNKNOWN_SOURCE}, which the edge never acts on: it is a source like any
  * other, shared only by the requests whose chain did not resolve through that one proxy. A request
- * from a trusted proxy that carries no client-address header at all stays
- * {@link SourceKey#UNKNOWN_SOURCE}, because a client cannot produce that request by itself. Which
+ * from a trusted proxy that carries no client-address header ({@code Forwarded} or
+ * {@code X-Forwarded-For}), or only blank ones, stays {@link SourceKey#UNKNOWN_SOURCE}, because a client
+ * cannot produce that request by itself. Which
  * request is which is the caller's judgement; this class only writes the key.
  * <p>
  * <strong>The aggregate.</strong> {@link #aggregateSource(String)} widens a canonical {@code /64}

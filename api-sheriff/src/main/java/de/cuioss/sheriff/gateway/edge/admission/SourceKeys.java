@@ -52,14 +52,17 @@ import org.jspecify.annotations.Nullable;
  * and its three outcomes key the request three ways:
  * <ul>
  *   <li>a resolved client — on that client;</li>
- *   <li>a client-address header that resolves no client — a malformed chain, or a {@code Forwarded}
- *       chain disagreeing with the {@code X-Forwarded-For} chain — on the proxy's own unresolved
+ *   <li>a client-address header with a non-blank value that resolves no client that is an address
+ *       literal — a malformed chain, a {@code Forwarded} chain disagreeing with the
+ *       {@code X-Forwarded-For} chain, or a client named by an RFC 7239 obfuscated identifier such as
+ *       {@code _hidden} — on the proxy's own unresolved
  *       source ({@link SourceKeyResolver#resolveUnresolvedForwarding}). A client can always produce
  *       such a header, so the request is keyed on a source the per-source consumers act on like any
  *       other, never on the shared {@link SourceKey#UNKNOWN_SOURCE}; and since no family can be shown
  *       to be the proxy-managed one, neither family is resolved on its own, so the client cannot choose
  *       the key either;</li>
- *   <li>no client-address header at all — on {@link SourceKey#UNKNOWN_SOURCE}, never on the trusted
+ *   <li>no client-address header ({@code Forwarded} or {@code X-Forwarded-For}), or only blank ones —
+ *       on {@link SourceKey#UNKNOWN_SOURCE}, never on the trusted
  *       peer's own address, which every such request through that peer would otherwise share; the
  *       per-source consumers count and report that shared key but never act on it. A client cannot
  *       produce this case: it cannot remove the header its trusted proxy appends.</li>
