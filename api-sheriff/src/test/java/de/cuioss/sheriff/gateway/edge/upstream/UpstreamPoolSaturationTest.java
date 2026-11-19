@@ -413,8 +413,8 @@ class UpstreamPoolSaturationTest {
             return Proxy.newProxyInstance(Future.class.getClassLoader(), new Class<?>[]{Future.class},
                     (proxy, method, args) -> {
                         if ("compose".equals(method.getName()) && args != null && args.length == 2
-                                && args[1] instanceof Function<?, ?> failureMapper) {
-                            return method.invoke(source, args[0], followedBy(failureMapper, () -> {
+                                && args[1] instanceof Function<?, ?> failureStep) {
+                            return method.invoke(source, args[0], followedBy(failureStep, () -> {
                                 afterTheExpiry.get().run();
                                 changedInsideTheFailureStep.set(true);
                             }));
