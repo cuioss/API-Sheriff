@@ -18,11 +18,13 @@ package de.cuioss.sheriff.gateway.forward;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
@@ -255,6 +257,71 @@ class ForwardedClientResolutionTest {
                     () -> assertFalse(passes(perInstance, ForwardedClientResolution.judgedValue(overCap)),
                             "the joined value fails the same check"),
                     () -> assertEquals(new Unresolvable(), client, "and the resolver drops the chain"));
+        }
+    }
+
+    /**
+     * {@link ForwardedClientResolution#CLIENT_ADDRESS_HEADERS} is kept as a constant because cui-http does not
+     * expose the headers its {@link ForwardedHeaderResolver} reads a client address from. These cases keep the two
+     * in step: every header a client address is commonly carried in, and every other header of the forwarded
+     * family, is handed to the real resolver alone, carrying an address it would resolve, from a trusted proxy.
+     * The headers it resolves a client from must be exactly the constant — so a resolver release that reads one
+     * more header, or one fewer, turns this red instead of leaving the edge's header check and the
+     * unresolved-chain keying judging a set the resolver no longer reads.
+     */
+    @Nested
+    @DisplayName("the client-address headers are the headers the resolver reads a client from")
+    class HeaderSetInStepWithTheResolver {
+
+        /**
+         * The headers tried: those a client address is commonly carried in by proxies, CDNs and load balancers,
+         * and the rest of the forwarded family the resolver reads for other fields.
+         */
+        private static final List<String> CANDIDATE_HEADERS = List.of(FORWARDED, FORWARDED_FOR, "X-Real-IP",
+                "Forwarded-For", "X-Forwarded", "X-Client-IP", "Client-IP", "True-Client-IP", "CF-Connecting-IP",
+                "Fastly-Client-IP", "X-Cluster-Client-IP", "X-Original-Forwarded-For", "X-ProxyUser-Ip", "Via",
+                "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port", "X-Forwarded-Prefix", "X-ProxyHost",
+                "X-ProxyScheme", "X-ProxyPort", "X-ProxyContextPath");
+
+        /** Whether the resolver names a client from {@code header} alone, in either value shape. */
+        private boolean resolvesAClientFrom(ForwardedHeaderResolver resolver, String header) {
+            return List.of(XFF_CLIENT, "for=" + XFF_CLIENT).stream()
+                    .anyMatch(value -> resolver.resolve(lookup(Map.of(header, List.of(value)))).clientIp()
+                            .filter(XFF_CLIENT::equals).isPresent());
+        }
+
+        @Test
+        @DisplayName("the resolver names a client from exactly the headers of CLIENT_ADDRESS_HEADERS")
+        void resolverReadsExactlyTheClientAddressHeaders() {
+            ForwardedHeaderResolver resolver = resolver();
+
+            Set<String> read = CANDIDATE_HEADERS.stream()
+                    .filter(header -> resolvesAClientFrom(resolver, header))
+                    .map(header -> header.toLowerCase(Locale.ROOT))
+                    .collect(Collectors.toSet());
+
+            assertEquals(ForwardedClientResolution.CLIENT_ADDRESS_HEADERS, read,
+                    "the headers the resolver reads a client address from drifted from CLIENT_ADDRESS_HEADERS");
+        }
+
+        @Test
+        @DisplayName("every header of CLIENT_ADDRESS_HEADERS is tried, so none can drop out unnoticed")
+        void everyClientAddressHeaderIsACandidate() {
+            Set<String> tried = CANDIDATE_HEADERS.stream()
+                    .map(header -> header.toLowerCase(Locale.ROOT))
+                    .collect(Collectors.toSet());
+
+            assertTrue(tried.containsAll(ForwardedClientResolution.CLIENT_ADDRESS_HEADERS),
+                    () -> "a client-address header is not among the headers tried: " + tried);
+        }
+
+        @Test
+        @DisplayName("control — a header outside the set, alone, leaves the request without a client-address header")
+        void headerOutsideTheSetIsAbsent() {
+            ForwardedClient client = ForwardedClientResolution.clientOf(resolver(),
+                    lookup(Map.of("X-Real-IP", List.of(XFF_CLIENT))));
+
+            assertEquals(new Absent(), client, "a header the resolver does not read is no client-address header");
         }
     }
 
