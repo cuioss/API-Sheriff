@@ -19,13 +19,20 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 
+import de.cuioss.sheriff.gateway.edge.end.EarlyResponseEnd.AcknowledgementRelay;
 import de.cuioss.sheriff.gateway.edge.end.EarlyResponseEnd.Outcome;
 import de.cuioss.sheriff.gateway.edge.end.EarlyResponseEnd.Quiescence;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +45,9 @@ import org.junit.jupiter.api.Test;
  * window alone only asks for the PING; it never ends the wait, a window seen to move while the PING is
  * outstanding — even one back at its PING-time value by the acknowledgement — restarts the quiet period,
  * and a PING that fails or is refused is followed by a new one once the window has stood still for the
- * quiet period again.
+ * quiet period again. The {@link AcknowledgementRelay} a wait hands its PING acknowledgements through
+ * reaches that wait only until the wait has ended: after its release no acknowledgement or failure
+ * reaches it, and a late acknowledgement does not end it a second time.
  */
 @EnableGeneratorController
 @DisplayName("EarlyResponseEnd — when the end of an early-answered HTTP/2 response may go ahead")
@@ -344,6 +353,79 @@ class EarlyResponseEndTest {
                 () -> assertEquals(Outcome.WAIT, afterTheFirstQuietPeriod,
                         "the quiet period counts from the last movement, not from the start"),
                 () -> assertEquals(Outcome.NOTHING_SENDABLE, usedUp));
+    }
+
+    @Test
+    @DisplayName("the relay hands acknowledgements to the running wait, and once released reaches the wait with neither a success nor a failure")
+    void releasedRelayReachesTheWaitWithNoAcknowledgement() {
+        List<AsyncResult<Void>> running = new ArrayList<>();
+        List<AsyncResult<Void>> released = new ArrayList<>();
+        AcknowledgementRelay runningRelay = new AcknowledgementRelay(running::add);
+        AcknowledgementRelay releasedRelay = new AcknowledgementRelay(released::add);
+        AsyncResult<Void> success = Future.succeededFuture();
+        AsyncResult<Void> failure = Future.failedFuture(Generators.letterStrings(8, 16).next());
+
+        releasedRelay.release();
+        runningRelay.deliver(success);
+        releasedRelay.deliver(success);
+        releasedRelay.deliver(failure);
+
+        assertAll("a relay before and after its release",
+                () -> assertEquals(List.of(success), running, "a relay that was not released hands the acknowledgement on"),
+                () -> assertEquals(List.of(), released,
+                        "a released relay drops the wait: neither an acknowledgement nor a failed PING reaches it"));
+    }
+
+    /**
+     * The wait ends at a look — here the cap — while its PING is still outstanding, and lets go of its
+     * relay as it does. The acknowledgement of that PING, arriving afterwards, must reach nothing: the wait
+     * it would feed has ended, and its quiet-period state is left as the end found it.
+     */
+    @Test
+    @DisplayName("an acknowledgement delivered after the wait ended at a look reaches nothing")
+    void acknowledgementAfterTheWaitEndedIsANoOp() {
+        Quiescence quiescence = outstandingPing();
+        AtomicInteger delivered = new AtomicInteger();
+        AcknowledgementRelay relay = new AcknowledgementRelay(acknowledgement -> delivered.incrementAndGet());
+        Outcome ended = quiescence.next(START + CAP, true, window);
+        // The look ended the wait, which lets go of its relay as it finishes.
+        relay.release();
+
+        relay.deliver(Future.succeededFuture());
+
+        assertAll("an acknowledgement after a look ended the wait",
+                () -> assertEquals(Outcome.TIME_CAP, ended, "precondition: the look ends the wait at the cap"),
+                () -> assertEquals(0, delivered.get(), "the late acknowledgement must reach no ended wait"));
+    }
+
+    /**
+     * The wait ends at the acknowledgement of its PING, as quiet, and lets go of its relay there, the way
+     * the running wait does. A further acknowledgement handed to the same relay — late, or a second
+     * completion of the same PING — must not reach the wait, so the response is not ended a second time.
+     */
+    @Test
+    @DisplayName("an acknowledgement arriving after the one that ended the wait does not end it a second time")
+    void lateAcknowledgementDoesNotEndTheWaitASecondTime() {
+        Quiescence quiescence = outstandingPing();
+        List<Outcome> ends = new ArrayList<>();
+        AtomicInteger delivered = new AtomicInteger();
+        AtomicReference<@Nullable AcknowledgementRelay> relayOfTheWait = new AtomicReference<>();
+        AcknowledgementRelay relay = new AcknowledgementRelay(acknowledgement -> {
+            delivered.incrementAndGet();
+            Outcome outcome = quiescence.acknowledged(START + QUIET + POLL, true, window);
+            if (outcome != Outcome.WAIT) {
+                ends.add(outcome);
+                Objects.requireNonNull(relayOfTheWait.get()).release();
+            }
+        });
+        relayOfTheWait.set(relay);
+
+        relay.deliver(Future.succeededFuture());
+        relay.deliver(Future.succeededFuture());
+
+        assertAll("two acknowledgements handed to one wait",
+                () -> assertEquals(List.of(Outcome.QUIET), ends, "the first acknowledgement ends the wait as quiet, once"),
+                () -> assertEquals(1, delivered.get(), "the late acknowledgement must not reach the ended wait"));
     }
 
     @Test

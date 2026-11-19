@@ -196,6 +196,15 @@ class GatewayEdgeEarlyResponseResetTest {
     private static final long EARLY_ANSWER_CAP_MILLIS = 1_000L;
     /** How much later than the cap the reset of a never-quiet upload may arrive across the latency relay. */
     private static final long CAP_MARGIN_MILLIS = 1_000L;
+    /**
+     * How far below the cap the reset of an upload that stopped sending must arrive, counted from its
+     * first body write. The wait cannot begin before that write has crossed the latency relay, so a reset
+     * written at the cap reaches the client no sooner than the cap plus one round trip of the relay after
+     * it — {@value #EARLY_ANSWER_CAP_MILLIS} + 2 x {@value #LINK_LATENCY_MILLIS} ms at the least, so a
+     * cap exit lands at least this margin plus 100 ms above the bound. A quiet exit reaches it within a
+     * few hundred milliseconds, after {@value #TRICKLE_FRAMES} trickled frames about 600 ms.
+     */
+    private static final long QUIET_EXIT_MARGIN_MILLIS = 100L;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -562,9 +571,11 @@ class GatewayEdgeEarlyResponseResetTest {
      * that stops at once, across the same latency relay: its window stands still, the PING the gateway
      * sends then is acknowledged with the window still unmoved, and the answer ends whole, followed by
      * the gateway's {@code NO_ERROR} reset — the PING confirms the quiet exit, it does not take it away.
+     * The reset must arrive less than {@value #EARLY_ANSWER_CAP_MILLIS} - {@value #QUIET_EXIT_MARGIN_MILLIS}
+     * ms after the one body write, so a wait that ran to the cap instead fails the case.
      */
     @Test
-    @DisplayName("across link latency, an upload that stops sending is answered whole after a PING, then reset NO_ERROR")
+    @DisplayName("across link latency, an upload that stops sending is answered whole after a PING, then reset NO_ERROR well before the cap")
     void stoppedSenderAcrossLinkLatencyIsAnsweredAndReset() throws Exception {
         int relayPort = startLatencyRelay(frontPort);
         HttpClient http2Client = client(HttpVersion.HTTP_2);
@@ -578,10 +589,12 @@ class GatewayEdgeEarlyResponseResetTest {
         request.exceptionHandler(streamEnd::complete);
         Future<Answer> answered = answerOf(request);
 
+        long lastWriteNanos = System.nanoTime();
         Awaits.connect(request.setChunked(true).write(Generators.letterStrings(16, 32).next()),
                 "the first and only part of the body to be sent");
         Answer answer = Awaits.connect(answered, "the early answer to arrive whole");
         Throwable reset = Awaits.connect(streamEnd, "the edge to reset the stopped upload");
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastWriteNanos);
         Answer after = sendAfter(http2Client, relayPort);
 
         assertAll("an upload that stops sending, across link latency",
@@ -590,6 +603,63 @@ class GatewayEdgeEarlyResponseResetTest {
                 () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, reset).getCode(),
                         "the stream must be reset by the gateway with NO_ERROR"),
                 () -> assertFalse(pings.isEmpty(), "the quiet exit must have been confirmed with a PING"),
+                () -> assertTrue(elapsedMillis < EARLY_ANSWER_CAP_MILLIS - QUIET_EXIT_MARGIN_MILLIS,
+                        () -> "a stopped sender must be ended by the quiet exit, not the cap: the reset arrived "
+                                + elapsedMillis + " ms after the last body write"),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
+                () -> assertSame(connection, after.connection(), "the further stream reuses the connection"));
+    }
+
+    /**
+     * The matched control of {@link #uploadsTricklingAcrossLinkLatencyStayOnOneConnection} for a client
+     * that trickles {@value #TRICKLE_FRAMES} frames {@value #TRICKLE_GAP_MILLIS} ms apart across the same
+     * latency relay and then stops <em>without</em> ending its body. While it trickles, each frame moves
+     * the window before the acknowledgement of the PING the unmoved window asked for, so the wait goes on;
+     * once it has stopped, nothing ends the stream from the client's side, the window can never be used
+     * up by it, and the wait can end only through the quiet exit — a PING acknowledged on a window that
+     * stayed unmoved — or the cap. The answer ends whole, then the gateway's {@code NO_ERROR} reset, after
+     * every trickled frame, and less than {@value #EARLY_ANSWER_CAP_MILLIS} -
+     * {@value #QUIET_EXIT_MARGIN_MILLIS} ms after the first body write: the wait cannot begin before that
+     * write has crossed the relay, so a reset written at the cap would arrive later than that.
+     */
+    @Test
+    @DisplayName("across link latency, an upload that trickles and then stops without ending its body is ended quietly, well before the cap")
+    void tricklerThatStopsAcrossLinkLatencyIsEndedQuietly() throws Exception {
+        int relayPort = startLatencyRelay(frontPort);
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        HttpClientRequest request = open(http2Client, relayPort, "POST", "/up" + EARLY + "-trickle-stopped");
+        HttpConnection connection = request.connection();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+        List<Buffer> pings = new CopyOnWriteArrayList<>();
+        connection.goAwayHandler(goAway -> goAwayCodes.add(goAway.getErrorCode()));
+        connection.pingHandler(pings::add);
+        CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+        request.exceptionHandler(streamEnd::complete);
+        Future<Answer> answered = answerOf(request);
+        Buffer part = Buffer.buffer(Generators.letterStrings(16, 32).next());
+        CompletableFuture<Integer> trickled = new CompletableFuture<>();
+
+        long firstWriteNanos = System.nanoTime();
+        Awaits.connect(request.setChunked(true).write(part), "the first part of the body to be sent");
+        trickleThenStop(request, part, streamEnd, TRICKLE_FRAMES, trickled);
+        int framesTrickled = Awaits.connect(trickled, "the trickled frames to be written or the stream to end");
+        Answer answer = Awaits.connect(answered, "the early answer to arrive whole");
+        Throwable reset = Awaits.connect(streamEnd, "the edge to reset the upload that stopped trickling");
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - firstWriteNanos);
+        Answer after = sendAfter(http2Client, relayPort);
+
+        assertAll("an upload that trickles and then stops without ending its body, across link latency",
+                () -> assertEquals(TRICKLE_FRAMES, framesTrickled,
+                        "the wait must go on while the client trickles: every frame is written before the reset"),
+                () -> assertEquals(200, answer.response().statusCode()),
+                () -> assertEquals(earlyAnswer, answer.body(), "the response must arrive whole before the reset"),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, reset).getCode(),
+                        "the stream must be reset by the gateway with NO_ERROR"),
+                () -> assertFalse(pings.isEmpty(), "the quiet exit must have been confirmed with a PING"),
+                () -> assertTrue(elapsedMillis < EARLY_ANSWER_CAP_MILLIS - QUIET_EXIT_MARGIN_MILLIS,
+                        () -> "a sender that stopped must be ended by the quiet exit, not the cap: the reset arrived "
+                                + elapsedMillis + " ms after the first body write"),
                 () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes),
                 () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
                 () -> assertSame(connection, after.connection(), "the further stream reuses the connection"));
@@ -1264,6 +1334,33 @@ class GatewayEdgeEarlyResponseResetTest {
             } else {
                 request.write(part);
                 trickle(request, part, streamEnd, remaining - 1);
+            }
+        });
+    }
+
+    /**
+     * Writes {@code part} to {@code request} {@value #TRICKLE_GAP_MILLIS} ms from now and again after each
+     * gap, {@code remaining} times in all, and then stops without ending the body. Completes
+     * {@code trickled} with the frames written, which falls short of {@code remaining} only when the
+     * stream ended first.
+     */
+    private void trickleThenStop(HttpClientRequest request, Buffer part, CompletableFuture<Throwable> streamEnd,
+            int remaining, CompletableFuture<Integer> trickled) {
+        trickleThenStop(request, part, streamEnd, remaining, 0, trickled);
+    }
+
+    private void trickleThenStop(HttpClientRequest request, Buffer part, CompletableFuture<Throwable> streamEnd,
+            int remaining, int written, CompletableFuture<Integer> trickled) {
+        vertx.setTimer(TRICKLE_GAP_MILLIS, fired -> {
+            if (streamEnd.isDone()) {
+                trickled.complete(written);
+                return;
+            }
+            request.write(part);
+            if (remaining == 1) {
+                trickled.complete(written + 1);
+            } else {
+                trickleThenStop(request, part, streamEnd, remaining - 1, written + 1, trickled);
             }
         });
     }
