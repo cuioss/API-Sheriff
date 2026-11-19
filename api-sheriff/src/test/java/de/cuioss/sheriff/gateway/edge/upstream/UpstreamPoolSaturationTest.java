@@ -30,6 +30,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -370,9 +371,14 @@ class UpstreamPoolSaturationTest {
     /**
      * An upstream client faked at {@link HttpClient#request(RequestOptions)} whose wait for a connection the case
      * expires by hand, once the dispatching thread is parked waiting for it. Whether a body on the same client is
-     * still arriving is arranged directly on the client's {@link UpstreamBodyTraffic}, and the case changes it the
-     * moment the expiry has been reported — before the dispatching thread has resumed — so the outcome shows at
-     * which moment the expiry was judged.
+     * still arriving is arranged directly on the client's {@link UpstreamBodyTraffic}, and the case changes it at a
+     * sequencing point, not at a moment chosen by timing: the acquisition the faked client hands the dispatch runs
+     * the change inside the failure step the dispatch composes on it, right after the dispatch's own failure mapper
+     * returned and before that step's result is handed on. The chain that wakes the dispatching thread completes
+     * only from that result, so the change always lands after the expiry was reported to the dispatch and before
+     * the dispatching thread can observe the failure or read the body traffic. A verdict taken at the expiry sees
+     * the traffic as it stood before the change; one taken when the dispatching thread resumes always sees it
+     * after — so the outcome shows at which moment the expiry was judged, on every run.
      */
     @Nested
     @DisplayName("the moment an expired wait is judged")
@@ -380,6 +386,12 @@ class UpstreamPoolSaturationTest {
 
         private final Promise<HttpClientRequest> acquisition = Promise.promise();
         private final AtomicReference<@Nullable Thread> dispatching = new AtomicReference<>();
+        /** The change to the body traffic the failure step runs once the dispatch's failure mapper returned. */
+        private final AtomicReference<Runnable> afterTheExpiry = new AtomicReference<>(() -> {
+            throw new AssertionError("the case arranged no change to the body traffic for the expiry");
+        });
+        /** Set once the change ran inside the failure step, ahead of the completion that wakes the dispatch. */
+        private final AtomicBoolean changedInsideTheFailureStep = new AtomicBoolean();
 
         private HttpClient expiringByHand() {
             return HttpClient.class.cast(Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
@@ -387,21 +399,50 @@ class UpstreamPoolSaturationTest {
                         if ("request".equals(method.getName()) && args != null && args.length == 1
                                 && args[0] instanceof RequestOptions) {
                             dispatching.set(Thread.currentThread());
-                            return acquisition.future();
+                            return changingTheTrafficInItsFailureStep(acquisition.future());
                         }
                         throw new AssertionError("the dispatch asked its upstream client for " + method.getName());
                     }));
         }
 
         /**
+         * The acquisition as the dispatch sees it: {@code source} itself, except that the failure mapper of the
+         * one compose the dispatch makes on it is followed, inside the same step, by {@link #afterTheExpiry}.
+         */
+        private Object changingTheTrafficInItsFailureStep(Future<HttpClientRequest> source) {
+            return Proxy.newProxyInstance(Future.class.getClassLoader(), new Class<?>[]{Future.class},
+                    (proxy, method, args) -> {
+                        if ("compose".equals(method.getName()) && args != null && args.length == 2
+                                && args[1] instanceof Function<?, ?> failureMapper) {
+                            return method.invoke(source, args[0], followedBy(failureMapper, () -> {
+                                afterTheExpiry.get().run();
+                                changedInsideTheFailureStep.set(true);
+                            }));
+                        }
+                        throw new AssertionError("the dispatch asked its connection acquisition for " + method.getName());
+                    });
+        }
+
+        /** @return {@code step}, then {@code after}, then {@code step}'s result handed on */
+        private static <T, R> Function<T, R> followedBy(Function<T, R> step, Runnable after) {
+            return input -> {
+                R result = step.apply(input);
+                after.run();
+                return result;
+            };
+        }
+
+        /**
          * Dispatches one bodyless GET, waits until its thread is parked on the wait for a connection, then reports
-         * the expiry and, right after, runs {@code afterTheExpiry}, which changes the client's body traffic.
+         * the expiry. The dispatch's failure step runs {@code change} after its failure mapper took the expiry and
+         * before the step's result is handed on to the chain that wakes the dispatching thread.
          *
-         * @param stage          the dispatch under test
-         * @param afterTheExpiry the change made to the body traffic once the expiry has been reported
+         * @param stage  the dispatch under test
+         * @param change the change made to the body traffic once the expiry has been reported to the dispatch
          * @return what the dispatch ended with
          */
-        private GatewayException expireWhileParked(DispatchStage stage, Runnable afterTheExpiry) throws Exception {
+        private GatewayException expireWhileParked(DispatchStage stage, Runnable change) throws Exception {
+            afterTheExpiry.set(change);
             try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
                 CompletableFuture<@Nullable GatewayException> dispatched = dispatch(executor, stage, HELD_PATH);
                 Awaits.until(() -> {
@@ -409,8 +450,9 @@ class UpstreamPoolSaturationTest {
                     return thread != null && thread.getState() == Thread.State.WAITING;
                 }, "the dispatching thread to wait for its connection", Awaits.CONNECT_CEILING_SECONDS);
                 acquisition.fail(new TimeoutException("the wait for a pooled connection timed out"));
-                afterTheExpiry.run();
                 GatewayException ended = Awaits.connect(dispatched, "the dispatch to end");
+                assertTrue(changedInsideTheFailureStep.get(),
+                        "the body traffic changed inside the dispatch's failure step, ahead of the dispatch's wake-up");
                 assertNotNull(ended, "the dispatch whose wait expired must not be answered");
                 return ended;
             }
