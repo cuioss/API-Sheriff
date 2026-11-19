@@ -4299,7 +4299,7 @@ by these rules, in this order:
   the two chains together resolve none, that proxy's own unresolved source
   (`unresolved-via-<proxy address>`), never one chain read on its own, the one derivation the
   detection source key shares (`ForwardedClientResolution`) -- and `unknown` when the request carries
-  neither header; for any other peer, the
+  neither header, or only blank ones; for any other peer, the
   TCP peer address, whose forwarding headers are never read. Behind the gateway's own SNI front
   listener (`tls.passthrough_sni` set) every terminated connection reaches the edge from the relay's
   loopback leg, so there the client address the relay hands over in process, never in a header,

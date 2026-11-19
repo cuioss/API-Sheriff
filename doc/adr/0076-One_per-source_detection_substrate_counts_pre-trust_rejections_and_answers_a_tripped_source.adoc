@@ -231,7 +231,7 @@ the one derivation the source key and the BFF's pending-login quota key share, t
 combined headers once and tells a chain that resolves no client apart from no chain at all. A request
 whose `Forwarded` or `X-Forwarded-For` carries a value yet resolves no client is keyed on its proxy's
 own source, `unresolved-via-<proxy address>`, which is acted on like any source; only a request that
-carries neither header is `unknown`.
+carries neither header, or only blank ones, is `unknown`.
 
 [[amendment-unknown]]
 *The `unknown` source is counted, never acted on.* `unknown` is one key for every client whose

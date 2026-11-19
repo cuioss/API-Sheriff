@@ -149,7 +149,7 @@ threat ALERT document]. The fixed values are these:
   Scanning.
 
 *The `source.ip` trap.* ECS types `source.ip` as an IP address. The key of an IPv6 source is its
-`/64` prefix, a request that carries no client-address header is `unknown`, and a forwarded chain
+`/64` prefix, a request that carries no client-address header, or only blank ones, is `unknown`, and a forwarded chain
 that resolves no client is its proxy's `unresolved-via-<proxy address>`. None of these is a valid
 `ip` value, and a SIEM would reject the document or drop the field. `source.address` therefore always carries the key text,
 and `source.ip` appears only when that text is a whole IPv4 address. `url.domain` appears only for a

@@ -57,7 +57,7 @@ result for a disagreeing pair), or a chain is malformed -- neither family is res
 the request cannot show which family the proxy manages. Such a request, whose `Forwarded` or
 `X-Forwarded-For` carries a value, is keyed on the proxy's own unresolved source,
 `unresolved-via-<proxy address>` (`SourceKeyResolver.resolveUnresolvedForwarding`), which the edge
-acts on like any source. Only a trusted peer's request carrying neither header is keyed on the
+acts on like any source. Only a trusted peer's request carrying neither header, or only blank ones, is keyed on the
 `unknown` source; neither key is ever the trusted peer's own address (`SourceKeysTest`). The edge
 never answers, refuses or holds a request keyed `unknown` (<<_unknown_source>>). `SourceKeys`
 resolves the key once per

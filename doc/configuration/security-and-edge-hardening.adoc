@@ -364,7 +364,7 @@ every client behind a NAT, egress proxy or load balancer; enforcement is the ope
   source, `unresolved-via-<proxy address>`, which detection acts on like any source; neither family is
   resolved on its own
   (xref:routing-and-forwarding.adoc#_unresolvable_chain[A chain that resolves no client]). Only a
-  trusted forwarder's request carrying neither header, and an absent or unparseable TCP peer address,
+  trusted forwarder's request carrying neither header, or only blank ones, and an absent or unparseable TCP peer address,
   is the one source `unknown`.
 * *Host* -- the request host when a route declares it as `match.host`, otherwise `*`, so changing
   `Host` gives no fresh count.

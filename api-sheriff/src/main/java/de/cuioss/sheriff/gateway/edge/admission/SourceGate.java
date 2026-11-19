@@ -329,10 +329,11 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     }
 
     /**
-     * Whether {@code key} is the shared source of every request whose client did not resolve
-     * ({@link SourceKey#UNKNOWN_SOURCE}) — counted, tripped, logged and observed like any source, but
-     * never answered, refused or held: it stands for many clients at once, so acting on it would act on
-     * all of them for the probing of one.
+     * Whether {@code key} is the shared source of every trusted proxy's request that carries no
+     * client-address header, or only blank ones ({@link SourceKey#UNKNOWN_SOURCE}); a header that names
+     * no client is keyed on its proxy's own unresolved source instead. The unknown source is counted,
+     * tripped, logged and observed like any source, but never answered, refused or held: it stands for
+     * many clients at once, so acting on it would act on all of them for the probing of one.
      */
     private static boolean isUnknownSource(SourceKey key) {
         return SourceKey.UNKNOWN_SOURCE.equals(key.source());

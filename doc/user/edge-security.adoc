@@ -362,7 +362,8 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   the gateway's memory by rotating through its `/64` prefixes. For a request through a trusted
   forwarder the source is the client address the forwarder reported; when its `Forwarded` or
   `X-Forwarded-For` carries a value that names no client -- the two disagree, or one is malformed --
-  it is the forwarder's unresolved source, and only a request carrying neither header is `unknown`.
+  it is the forwarder's unresolved source, and only a request carrying neither header, or only blank
+  ones, is `unknown`.
   The host is a host a
   route declares in `match.host`, or `*`. The line never carries the requested path or a header. A
   source trips once and is not reported again until it has stopped long enough for its count to drain.
