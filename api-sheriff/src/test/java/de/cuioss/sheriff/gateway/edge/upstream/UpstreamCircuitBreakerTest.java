@@ -550,9 +550,9 @@ class UpstreamCircuitBreakerTest {
                         ran.incrementAndGet();
                         throw new IllegalStateException("upstream failed");
                     });
-                } catch (CircuitBreakerOpenException refusal) {
+                } catch (CircuitBreakerOpenException _) {
                     refused.incrementAndGet();
-                } catch (IllegalStateException expected) {
+                } catch (IllegalStateException _) {
                     // the admitted call's own failure
                 } catch (Exception unexpected) {
                     throw new AssertionError("a call ended neither in its own failure nor in a refusal",
@@ -582,7 +582,7 @@ class UpstreamCircuitBreakerTest {
                 try {
                     breaker.call(() -> ANSWER);
                     answered.incrementAndGet();
-                } catch (CircuitBreakerOpenException refusal) {
+                } catch (CircuitBreakerOpenException _) {
                     // a trial refused while the trials were all in flight
                 } catch (Exception unexpected) {
                     throw new AssertionError("a successful call ended neither answered nor refused", unexpected);

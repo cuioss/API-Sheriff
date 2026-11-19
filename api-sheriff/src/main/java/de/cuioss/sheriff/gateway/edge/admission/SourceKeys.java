@@ -141,7 +141,7 @@ public final class SourceKeys {
             return keyResolver.resolve(peerAddress, null, host);
         }
         return switch (ForwardedClientResolution.clientOf(forwardedResolver, name -> raw.headers().getAll(name))) {
-            case ForwardedClientResolution.Resolved resolved -> keyResolver.resolve(peerAddress, resolved.address(), host);
+            case ForwardedClientResolution.Resolved(String address) -> keyResolver.resolve(peerAddress, address, host);
             case ForwardedClientResolution.Unresolvable _ -> keyResolver.resolveUnresolvedForwarding(peerAddress, host);
             case ForwardedClientResolution.Absent _ -> keyResolver.resolve(null, null, host);
         };

@@ -284,8 +284,9 @@ out of the ledger -- the denial becomes an evasion of detection, which is the ou
 to prevent -- and choosing the lowest entry costs a scan or an ordered index on every admission at the
 bound, the cost the rate-limited sweep exists to avoid. A reserved slice for new sources only delays
 the fill by the size of the slice. Keeping the ledger full takes a sustained stream of rejections from
-as many distinct sources as the bound, each holding its slot for at least `threshold / window`
-seconds; the documented consequence and the operator's choice of `observe` stand in for a bound.
+as many distinct sources as the bound, each holding its slot for at least `window / threshold`
+seconds per unit of weight it added -- the level drains at `threshold / window` per second; the
+documented consequence and the operator's choice of `observe` stand in for a bound.
 
 [[amendment-no-reserve]]
 *No slice of the bound is reserved for sources that are accruing.* A reserve was considered so that a
@@ -371,9 +372,13 @@ admission.
    the ledger full refuses every new source (<<amendment-fail-closed>>). The overflow is counted on
    `sheriff_source_untracked_total`, and the first one per process is logged once as WARN
    `ApiSheriff-142`.
-** Requests keyed `unknown` are never blocked, delayed or refused, so a trusted proxy that forwards
-   no usable client address escapes `block` and `delay`; `ApiSheriff-149` names the configuration at
-   boot (<<amendment-unknown>>).
+** Requests keyed `unknown` are never blocked, delayed or refused. Through a trusted proxy only a
+   request that carries no client-address header (`Forwarded` or `X-Forwarded-For`) is keyed
+   `unknown`, so a trusted proxy that forwards no such header escapes `block` and `delay`;
+   `ApiSheriff-149` names the configuration at boot (<<amendment-unknown>>). A header that is present
+   but resolves no client -- a malformed chain, one over a cap, or the two families disagreeing -- is
+   keyed on that proxy's own unresolved source, `unresolved-via-<proxy address>`, which `block` and
+   `delay` act on (<<amendment-unresolved-chain>>).
 ** Above the high-water mark a new IPv6 source is one key per `/48`, so the clients of one `/48`
    share that key from then on (<<amendment-aggregation>>).
 ** A restart clears every bucket and every block. `Retry-After` describes the block on this node

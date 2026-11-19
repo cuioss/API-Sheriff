@@ -654,8 +654,8 @@ public final class DispatchStage {
         try {
             HttpClientResponse response = guardedDispatch(guard, retryGate, method, body.bytesSent::get,
                     body.subscribed::get,
-                    () -> awaitDispatch(upstream, httpClient, upstreamMethod, requestUri, forwardHeaders, body,
-                            bodyTraffic, failureMapper));
+                    () -> awaitDispatch(httpClient, requestOptions(upstream, upstreamMethod, requestUri),
+                            forwardHeaders, body, bodyTraffic, failureMapper));
             handedToCaller = true;
             return response;
         } finally {
@@ -872,20 +872,30 @@ public final class DispatchStage {
         return atSettlement == null || atSettlement;
     }
 
-    private static HttpClientResponse awaitDispatch(ResolvedUpstream upstream, HttpClient httpClient,
-            io.vertx.core.http.HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
-            DispatchBody body, UpstreamBodyTraffic bodyTraffic, UpstreamFailureMapper failureMapper)
-            throws InterruptedException, ExecutionException {
-        // The connect timeout of a request bounds the whole wait for its pooled connection: the time in the
-        // client's queue and the acquisition of a new connection for it, host-name resolution and dial included
-        // (see UPSTREAM_CONNECTION_WAIT_MILLIS).
-        RequestOptions options = new RequestOptions()
+    /**
+     * The request options of one attempt, built afresh for every attempt. The connect timeout of a request
+     * bounds the whole wait for its pooled connection: the time in the client's queue and the acquisition of a
+     * new connection for it, host-name resolution and dial included (see {@link #UPSTREAM_CONNECTION_WAIT_MILLIS}).
+     *
+     * @param upstream   the resolved upstream target
+     * @param method     the upstream request method
+     * @param requestUri the upstream request URI
+     * @return the attempt's request options
+     */
+    private static RequestOptions requestOptions(ResolvedUpstream upstream, io.vertx.core.http.HttpMethod method,
+            String requestUri) {
+        return new RequestOptions()
                 .setMethod(method)
                 .setHost(upstream.host())
                 .setPort(upstream.port())
                 .setSsl("https".equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri)
                 .setConnectTimeout(UPSTREAM_CONNECTION_WAIT_MILLIS);
+    }
+
+    private static HttpClientResponse awaitDispatch(HttpClient httpClient, RequestOptions options,
+            Map<String, String> forwardHeaders, DispatchBody body, UpstreamBodyTraffic bodyTraffic,
+            UpstreamFailureMapper failureMapper) throws InterruptedException, ExecutionException {
         // Begun before the request is asked for, so an attempt the dispatch stops waiting for is
         // released whatever state its upstream exchange has reached by then.
         UpstreamAttempt attempt = body.beginAttempt();

@@ -524,9 +524,9 @@ class UpstreamPoolSaturationTest {
             int inFlight = inFlightWhileTrickling;
             assertAll("more queued waits than the breaker's window, behind a body the client is still sending",
                     () -> assertEquals(1, inFlight, "the POST's body is the one body still arriving on the client"),
-                    () -> assertTrue(queuedEnded.stream().allMatch(ended -> ended != null
-                                    && ended.getEventType() != EventType.UPSTREAM_TIMEOUT),
-                            () -> "an expired wait behind a client's body was charged to the upstream: " + queuedEnded),
+                    () -> assertEquals(Collections.nCopies(DISPATCHES - 1, EventType.UPSTREAM_POOL_SATURATED),
+                            queuedEnded.stream().map(ended -> ended == null ? null : ended.getEventType()).toList(),
+                            "every queued dispatch ended as the gateway's own neutral pool saturation, never as the upstream's timeout"),
                     () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_CIRCUIT_OPEN),
                             "the breaker never opened on an upstream that answers every request it was sent"),
                     () -> assertEquals(1, upstreamReceived.get(),

@@ -45,15 +45,14 @@ public final class UpstreamClients {
     private final Map<UpstreamTarget, UpstreamBodyTraffic> bodyTraffic;
 
     /**
-     * Copies both maps into unmodifiable form, an absent one becoming empty, and builds one body
-     * traffic per client.
+     * Copies both maps into unmodifiable form and builds one body traffic per client.
      *
      * @param clients one Vert.x client per upstream target tuple
      * @param guards  one Fault-Tolerance guard per resilience shape
      */
     public UpstreamClients(Map<UpstreamTarget, HttpClient> clients, Map<ResilienceShape, Guard> guards) {
-        this.clients = clients == null ? Map.of() : Map.copyOf(clients);
-        this.guards = guards == null ? Map.of() : Map.copyOf(guards);
+        this.clients = Map.copyOf(clients);
+        this.guards = Map.copyOf(guards);
         Map<UpstreamTarget, UpstreamBodyTraffic> traffic = HashMap.newHashMap(this.clients.size());
         this.clients.keySet().forEach(target -> traffic.put(target, new UpstreamBodyTraffic()));
         this.bodyTraffic = Map.copyOf(traffic);

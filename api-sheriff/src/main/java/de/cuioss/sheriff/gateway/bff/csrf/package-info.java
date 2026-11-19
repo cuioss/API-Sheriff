@@ -39,7 +39,8 @@
  * de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence.FetchMetadata)}): no {@code Sec-Purpose} (no prefetch
  * or prerender), {@code Sec-Fetch-Mode: navigate} and {@code Sec-Fetch-Dest: document} when present,
  * and a trusted {@code Origin} or, with {@code Origin} absent, {@code Sec-Fetch-Site: same-origin}.
- * {@code Sec-Fetch-Site: none} is not admitted: a link opened from another application carries it.
+ * With {@code Origin} absent, {@code Sec-Fetch-Site: none} is not admitted: a link opened from another
+ * application carries it.
  * <p>
  * The class is framework-agnostic and immutable; the session runtime wires the session instance into
  * the request edge, and route-table assembly builds one cookie-forwarding instance per qualifying

@@ -792,7 +792,12 @@ not contacted. The page reflects nothing of the request, is sent with `Cache-Con
 forbids framing (`Content-Security-Policy` with `frame-ancestors 'none'`, and
 `X-Frame-Options: DENY`). Its button `POST`s to `oidc.logout.path`. The browser sends that `POST` as
 a top-level navigation with the gateway's own origin as `Origin`, so it carries the proof and the
-logout below runs. The logout path trusts the gateway's own origin implicitly, so
+logout below runs. That holds as long as the confirmation response gives the page no referrer
+policy under which a browser sends `Origin: null` on a form `POST`, such as
+`Referrer-Policy: no-referrer`. The gateway sets no `Referrer-Policy` on the confirmation page -- only
+on the end-session redirect that carries the ID token -- so a front proxy must not add such a policy
+to the confirmation response: the `POST` would then lack the proof, and the user would get the
+confirmation page again. The logout path trusts the gateway's own origin implicitly, so
 `oidc.session.csrf.trusted_origins` need not list it.
 
 *The cost: a logout link on another trusted origin lands on the confirmation page.* A navigation

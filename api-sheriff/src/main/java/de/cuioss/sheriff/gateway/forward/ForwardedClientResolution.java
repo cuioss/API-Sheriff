@@ -71,9 +71,9 @@ import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
  * <pre>{@code
  * ForwardedClient client = ForwardedClientResolution.clientOf(resolver, name -> raw.headers().getAll(name));
  * String key = switch (client) {
- *     case ForwardedClientResolution.Resolved resolved -> resolved.address();
- *     case ForwardedClientResolution.Unresolvable unresolvable -> keyOfTheProxy;
- *     case ForwardedClientResolution.Absent absent -> sharedUnknownKey;
+ *     case ForwardedClientResolution.Resolved(String address) -> address;
+ *     case ForwardedClientResolution.Unresolvable _ -> keyOfTheProxy;
+ *     case ForwardedClientResolution.Absent _ -> sharedUnknownKey;
  * };
  * }</pre>
  * <p>

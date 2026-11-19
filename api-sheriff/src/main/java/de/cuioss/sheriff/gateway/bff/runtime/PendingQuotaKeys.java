@@ -114,7 +114,7 @@ public final class PendingQuotaKeys {
             return SourceKeyResolver.canonicalSource(peerAddress);
         }
         return switch (ForwardedClientResolution.clientOf(forwardedResolver, request::headerValues)) {
-            case ForwardedClientResolution.Resolved resolved -> SourceKeyResolver.canonicalSource(resolved.address());
+            case ForwardedClientResolution.Resolved(String address) -> SourceKeyResolver.canonicalSource(address);
             case ForwardedClientResolution.Unresolvable _ -> SourceKeyResolver.unresolvedForwardingSource(peerAddress);
             case ForwardedClientResolution.Absent _ -> SourceKey.UNKNOWN_SOURCE;
         };

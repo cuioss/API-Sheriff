@@ -379,9 +379,13 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   dropping the sources whose count has drained to zero and that are not blocked; a source still
   holding a count is never dropped to make room, so a scan cannot push a source that is building up
   toward the threshold out of detection. Keeping 65,536 sources live therefore takes a sustained
-  stream of rejections from that many distinct addresses -- at the defaults about 65,536 × threshold
-  / max(`window_seconds`, `block_seconds`) rejections per second, roughly 109,000 per second; a longer
-  `block_seconds` or a lower `threshold` makes it cheaper. A steady count means more distinct sources
+  stream of rejections from that many distinct addresses. Under `delay` a source never blocks, so it
+  keeps its place only while its count drains: about 65,536 × `threshold` / `window_seconds`
+  rejections per second. Under `block` the block holds a tripped source as well: about 65,536 ×
+  `threshold` / max(`window_seconds`, `block_seconds`) rejections per second. At the defaults
+  (`threshold` 100, `window_seconds` 60, `block_seconds` 60) both come to roughly 109,000 per second;
+  a lower `threshold` makes either cheaper, and under `block` so does a longer `block_seconds`. A
+  steady count means more distinct sources
   are being rejected than the gateway tracks -- a scan spread over many addresses, or a deployment
   whose sources are not per client. If that refusal is a risk you cannot accept, keep `observe`, or
   place the per-address limit in front of the gateway.
@@ -423,8 +427,10 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   (see link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]).
   Otherwise every client arrives from the balancer's address, one scanning client trips that address,
   and `block` answers `429` to all of them. Make sure that proxy sends each client's address in
-  `X-Forwarded-For`: a request it forwards without a usable one is keyed `unknown`, which `block` and
-  `delay` never act on.
+  `Forwarded` or `X-Forwarded-For`. A request it forwards with neither header is keyed `unknown`,
+  which `block` and `delay` never act on. A request whose header is present but names no client --
+  malformed, or the two headers disagreeing -- is keyed on the proxy's own unresolved source,
+  `unresolved-via-<proxy address>`, which `block` and `delay` do act on.
 . If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
   proxy -- they are one source whatever the gateway is told. Keep `observe`, or raise `threshold` well
   above what those clients cause together.

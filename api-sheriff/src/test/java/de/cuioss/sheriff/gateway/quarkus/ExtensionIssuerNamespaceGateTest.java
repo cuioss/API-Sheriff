@@ -328,7 +328,7 @@ class ExtensionIssuerNamespaceGateTest {
             try {
                 gate.refuseConfiguredExtensionIssuers();
                 return false;
-            } catch (IllegalStateException refused) {
+            } catch (IllegalStateException _) {
                 return true;
             }
         }
