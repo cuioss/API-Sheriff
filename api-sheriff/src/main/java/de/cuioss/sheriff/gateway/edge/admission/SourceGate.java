@@ -65,7 +65,9 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The unknown source is never acted on.</strong> A trusted proxy's request that carries no
  * client-address header, or only blank ones, is keyed on the shared
- * {@link SourceKey#UNKNOWN_SOURCE}, which stands for every such client at once. It is admitted to the
+ * {@link SourceKey#UNKNOWN_SOURCE}, as is a request without a usable peer address; a header that names
+ * no client is keyed on its proxy's own unresolved source instead. The unknown source stands for every
+ * such client at once. It is admitted to the
  * ledger like any source, so it is counted, can trip, and its trip is logged and handed to the
  * recon-trip observer; but whatever the action, it is never answered {@code 429}, never refused for a
  * used-up held-answer share and never held, because acting on it would act on all of those clients for
@@ -329,11 +331,8 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     }
 
     /**
-     * Whether {@code key} is the shared source of every trusted proxy's request that carries no
-     * client-address header, or only blank ones ({@link SourceKey#UNKNOWN_SOURCE}); a header that names
-     * no client is keyed on its proxy's own unresolved source instead. The unknown source is counted,
-     * tripped, logged and observed like any source, but never answered, refused or held: it stands for
-     * many clients at once, so acting on it would act on all of them for the probing of one.
+     * Whether {@code key} is {@link SourceKey#UNKNOWN_SOURCE}, which the gate never acts on (see the class
+     * note on the unknown source).
      */
     private static boolean isUnknownSource(SourceKey key) {
         return SourceKey.UNKNOWN_SOURCE.equals(key.source());
