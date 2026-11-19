@@ -27,6 +27,7 @@ import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.http.security.pipeline.PipelineFactory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.ForwardedClientResolution;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -92,6 +93,14 @@ import org.jspecify.annotations.Nullable;
  * header under the ROUTE's configuration whenever that configuration diverges from the gateway
  * baseline, and it repeats this same three-way dispatch so neither carve-out is undone one stage
  * later. See that class for the {@code max}-bounded per-route cap.
+ * <p>
+ * <strong>A client-address header is judged as the value it is read as.</strong> The forwarded-header
+ * resolver that names the request's client — for the forward stage and for every per-source key —
+ * reads all instances of {@code Forwarded}, and all of {@code X-Forwarded-For}, as one value joined
+ * with {@code ", "} ({@link ForwardedClientResolution#judgedValue}), validated under the same resolved
+ * baseline. A request that sends one of these headers more than once therefore has the joined value
+ * judged here too, besides each instance: otherwise each instance could pass under the cap while the
+ * joined value fails it, and the resolver would silently drop a chain this stage had admitted.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -180,8 +189,14 @@ public final class BasicChecksStage {
                 // off. Only Authorization and Cookie / Set-Cookie values may use a raised cap;
                 // every other header falls through to the resolved baseline pipeline.
                 HttpSecurityValidator valuePipeline = valuePipelineFor(name);
-                for (String value : header.getValue()) {
+                List<String> values = header.getValue();
+                for (String value : values) {
                     valuePipeline.validate(value);
+                }
+                // The forwarded-header resolver reads every instance of a client-address header as
+                // one joined value; judging only each instance would admit a chain the resolver drops.
+                if (values.size() > 1 && ForwardedClientResolution.isClientAddressHeader(name)) {
+                    valuePipeline.validate(ForwardedClientResolution.judgedValue(values));
                 }
             }
         } catch (UrlSecurityException violation) {

@@ -112,11 +112,37 @@ public final class TerminalDispatch {
     /** The {@code Cache-Control} value forced on an authenticated or cookie-bearing redirect answer. */
     private static final String NO_STORE = "no-store";
     /**
-     * The freshness, validator and cache-targeted control headers a failed relay's unwritten head drops,
-     * beside replacing its {@code Cache-Control} (see {@link #prepareFailedRelayHead}).
+     * The fields a failed relay's unwritten head drops by name, beside replacing its {@code Cache-Control}
+     * and dropping every field ending in {@value #TARGETED_CACHE_CONTROL_SUFFIX} (see
+     * {@link #prepareFailedRelayHead}).
+     * <p>
+     * <strong>The rule is a removal list, completed by family, and deliberately not an allowlist.</strong>
+     * The question it answers is bounded: which fields could a cache act on to store an answer whose body
+     * is gone? There are three families, and the list closes each one:
+     * <ul>
+     *   <li><em>Freshness</em> — {@code Expires}, {@code Age}, and nginx's {@code X-Accel-Expires}, which an
+     *       nginx cache obeys before {@code Cache-Control} and {@code Expires};</li>
+     *   <li><em>Validators</em> — {@code ETag} and {@code Last-Modified}, which would let a cache revalidate
+     *       the empty answer into a stored one;</li>
+     *   <li><em>Cache-targeted directives</em> — a cache they target obeys them in place of
+     *       {@code Cache-Control}, so a {@code no-store} written beside them would not reach it: every RFC
+     *       9213 field, matched by its {@value #TARGETED_CACHE_CONTROL_SUFFIX} suffix so a vendor's own
+     *       ({@code CDN-Cache-Control}, {@code Cloudflare-CDN-Cache-Control}, …) is covered without being
+     *       named, plus the two older fields outside that naming, {@code Surrogate-Control} and Akamai's
+     *       {@code Edge-Control}.</li>
+     * </ul>
+     * An allowlist would answer the opposite, open question — which fields may this head carry? — and the
+     * head carries more than the upstream's fields: the {@code Set-Cookie} lines a pipeline stage set (a
+     * rotated BFF session among them), the gateway's own security headers, whose names follow the
+     * configuration, and the fields of the upstream status a late request-body timeout keeps, such as a
+     * redirect's {@code Location}. Each of those would have to be named, and one left off — a security
+     * header added later, a cookie the stage starts setting — would be stripped silently from exactly the
+     * answers no test exercises. Matching is case-insensitive, as header names are.
      */
-    static final List<String> UNSTORABLE_ANSWER_REMOVES = List.of("Expires", "Age", "ETag", "Last-Modified",
-            "CDN-Cache-Control", "Surrogate-Control");
+    static final List<String> UNSTORABLE_ANSWER_REMOVES = List.of("Expires", "Age", "X-Accel-Expires", "ETag",
+            "Last-Modified", "Surrogate-Control", "Edge-Control");
+    /** The name suffix of every RFC 9213 targeted cache-control field, matched case-insensitively. */
+    static final String TARGETED_CACHE_CONTROL_SUFFIX = "-Cache-Control";
     /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
     private static final String VARY_HEADER = "Vary";
     private static final String CONTENT_LENGTH_HEADER = "Content-Length";
@@ -506,8 +532,10 @@ public final class TerminalDispatch {
      * {@link DispatchStage.InboundBody} in place and hands it back, so the dispatch still reads a client's
      * departure from it: a client that resets its call or closes its connection before the upstream
      * answers — also once it has ended its request stream, when only the response still reports it —
-     * releases the upstream request at once and ends the dispatch as the client's own abort, which the
-     * breaker skips, instead of holding it until the guard's timeout.
+     * releases the upstream request at once and ends the dispatch as the client's own abort, instead of
+     * holding it until the guard's timeout. That abort is a gateway rejection, so the upstream's
+     * {@code UpstreamCircuitBreaker} judges it neutral: neither counted as an upstream failure nor
+     * recorded as a success, and a half-open trial that ends in it gives its permit back.
      */
     private void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
             ResponseStage.GrpcStreamIdleBound idleBound, Function<ReadStream<Buffer>, HttpClientResponse> dispatch) {
@@ -1030,13 +1058,14 @@ public final class TerminalDispatch {
      * <strong>The answer is never storable.</strong> The head still carries the caching metadata the relay
      * copied from the upstream response, which describes a body this answer does not carry. A cache honouring
      * it would store the empty answer as that response and serve it again, so the head is made uncacheable:
-     * {@code Cache-Control: no-store} replaces the upstream's directives, and {@code Expires}, {@code Age},
-     * the validators {@code ETag} and {@code Last-Modified} and the cache-targeted fields
-     * {@code CDN-Cache-Control} and {@code Surrogate-Control} are removed. The last two must go as well:
-     * a cache they target obeys them in place of {@code Cache-Control} (RFC 9213), so a {@code no-store}
-     * written beside them would not reach that cache. The status is kept rather than turned
-     * into a {@code 502} for a {@code 2xx}: the upstream has acted on the request, and a {@code 502} would tell
-     * the client it may simply send it again (see the architecture's late request-body timeout).
+     * {@code Cache-Control: no-store} replaces the upstream's directives, and the freshness fields, the
+     * validators and the cache-targeted directives are removed — the rule, and why it is a removal list
+     * rather than an allowlist, is stated at {@link #UNSTORABLE_ANSWER_REMOVES}. The cache-targeted fields
+     * must go as well: a cache they target obeys them in place of {@code Cache-Control} (RFC 9213), so a
+     * {@code no-store} written beside them would not reach that cache. Every other field is kept. The
+     * status is kept rather than turned into a {@code 502} for a {@code 2xx}: the upstream has acted on the
+     * request, and a {@code 502} would tell the client it may simply send it again (see the architecture's
+     * late request-body timeout).
      */
     static void prepareFailedRelayHead(HttpServerResponse response, boolean bodyTimedOutLate, int upstreamStatus) {
         if (response.headWritten()) {
@@ -1045,7 +1074,21 @@ public final class TerminalDispatch {
         MultiMap headers = response.headers();
         headers.remove(CONTENT_LENGTH_HEADER);
         UNSTORABLE_ANSWER_REMOVES.forEach(headers::remove);
+        // A copy of the names: the map is changed while they are walked.
+        List.copyOf(headers.names()).stream()
+                .filter(TerminalDispatch::isTargetedCacheControl)
+                .forEach(headers::remove);
         headers.set(CACHE_CONTROL_HEADER, NO_STORE);
         response.setStatusCode(bodyTimedOutLate ? upstreamStatus : BAD_GATEWAY);
+    }
+
+    /**
+     * @param name a response header name
+     * @return whether the name is an RFC 9213 targeted cache-control field, in any letter case
+     */
+    private static boolean isTargetedCacheControl(String name) {
+        int suffixStart = name.length() - TARGETED_CACHE_CONTROL_SUFFIX.length();
+        return suffixStart > 0 && name.regionMatches(true, suffixStart, TARGETED_CACHE_CONTROL_SUFFIX, 0,
+                TARGETED_CACHE_CONTROL_SUFFIX.length());
     }
 }

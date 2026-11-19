@@ -73,13 +73,14 @@ import org.jspecify.annotations.Nullable;
  * offending {@code Origin} value; the counter is the authoritative observability signal for a
  * rejection.
  * <p>
- * <strong>The logout navigation.</strong> {@link #provesSameOriginNavigation(String, String)} asks the
- * same proof of a request whatever its method, for the RP-initiated logout leg, which ends a session on
- * a {@code GET} as well. It reads the same two signals through the same rules as {@link #enforce} — a
- * present {@code Origin} decides alone and must be trusted — and differs in one value only: with
- * {@code Origin} absent it also admits {@code Sec-Fetch-Site: none}, the value a browser sends for a
- * navigation the user started (a typed URL, a bookmark). It throws nothing; the caller decides what a
- * missing proof answers.
+ * <strong>The logout navigation.</strong> {@link #provesTrustedDocumentNavigation(String, FetchMetadata)}
+ * asks a stricter proof of a request whatever its method, for the RP-initiated logout leg, which ends a
+ * session on a {@code GET} as well. Same-origin provenance alone is not enough there: any same-origin
+ * subresource, frame or speculative load carries it, so the request must also be a top-level document
+ * navigation. It throws nothing; the caller decides what a missing proof answers. The logout leg's
+ * instance is built with {@link #withGatewayOrigin(String)}, so the gateway's own origin — the origin of
+ * the confirmation page whose form posts back to the logout path — is trusted there even when the
+ * configured {@code session.csrf.trusted_origins} leaves it out.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -91,9 +92,10 @@ public final class CsrfDefence {
     private static final String ORIGIN_HEADER = "Origin";
     private static final String SEC_FETCH_SITE_HEADER = "Sec-Fetch-Site";
     private static final String SAME_ORIGIN = "same-origin";
-    /** The {@code Sec-Fetch-Site} value of a navigation the user started: a typed URL or a bookmark. */
-    private static final String USER_INITIATED = "none";
-    private static final Set<String> NAVIGATION_FETCH_SITES = Set.of(SAME_ORIGIN, USER_INITIATED);
+    /** The {@code Sec-Fetch-Mode} value of a navigation, top-level or nested. */
+    private static final String NAVIGATE_MODE = "navigate";
+    /** The {@code Sec-Fetch-Dest} value of a top-level navigation; a frame sends {@code iframe} or {@code frame}. */
+    private static final String DOCUMENT_DEST = "document";
     private static final Set<HttpMethod> SAFE_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.OPTIONS);
 
     private static final String DISPOSITION_UNTRUSTED_ORIGIN = "untrusted-origin";
@@ -107,6 +109,11 @@ public final class CsrfDefence {
 
     private final Set<String> trustedOrigins;
     private final boolean trustsReceivedOrigin;
+    /**
+     * The gateway's own origin, normalised, trusted by the logout navigation proof alone; {@code null}
+     * unless the instance was built through {@link #withGatewayOrigin(String)}.
+     */
+    private final @Nullable String gatewayOrigin;
 
     /**
      * Assembles the fixed session-route defence with the effective trusted-origin allowlist.
@@ -123,11 +130,30 @@ public final class CsrfDefence {
                 .map(origin -> origin.toLowerCase(Locale.ROOT))
                 .collect(Collectors.toUnmodifiableSet());
         this.trustsReceivedOrigin = false;
+        this.gatewayOrigin = null;
     }
 
-    private CsrfDefence(Set<String> trustedOrigins, boolean trustsReceivedOrigin) {
+    private CsrfDefence(Set<String> trustedOrigins, boolean trustsReceivedOrigin, @Nullable String gatewayOrigin) {
         this.trustedOrigins = trustedOrigins;
         this.trustsReceivedOrigin = trustsReceivedOrigin;
+        this.gatewayOrigin = gatewayOrigin;
+    }
+
+    /**
+     * Derives the logout leg's instance: the same trusted origins, plus the gateway's own origin for
+     * {@link #provesTrustedDocumentNavigation(String, FetchMetadata)} alone. The confirmation page the
+     * logout leg answers is served under the gateway's origin, so its form posts back with that
+     * {@code Origin}; without this, a {@code session.csrf.trusted_origins} list that names only other
+     * origins (a separately hosted SPA, say) would refuse that post and the session could never be ended
+     * through the logout path. {@link #enforce} does not consult the added origin.
+     *
+     * @param gatewayOrigin the gateway's own origin — the origin of {@code redirect_uri}, the one origin
+     *                      a session cookie is set on; lower-cased and default-port normalised here
+     * @return a new instance trusting the gateway's origin on the logout navigation
+     */
+    public CsrfDefence withGatewayOrigin(String gatewayOrigin) {
+        Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
+        return new CsrfDefence(trustedOrigins, trustsReceivedOrigin, normaliseOrigin(gatewayOrigin));
     }
 
     /**
@@ -148,7 +174,7 @@ public final class CsrfDefence {
         Set<String> normalised = additionalOrigins.stream()
                 .map(CsrfDefence::normaliseOrigin)
                 .collect(Collectors.toUnmodifiableSet());
-        return new CsrfDefence(normalised, true);
+        return new CsrfDefence(normalised, true, null);
     }
 
     /**
@@ -180,30 +206,55 @@ public final class CsrfDefence {
     }
 
     /**
-     * Whether a request proves same-origin provenance for a navigation that ends a session — the
-     * RP-initiated logout leg — whatever its method. A present {@code Origin} decides alone and must be
-     * trusted, exactly as {@link #enforce} trusts it; with {@code Origin} absent, {@code Sec-Fetch-Site}
-     * must be {@code same-origin} or {@code none}.
+     * Whether a request is a top-level document navigation from a trusted origin — the proof the
+     * RP-initiated logout leg asks before it ends a session, whatever the method. All of the following
+     * must hold:
+     * <ol>
+     *   <li>No {@code Sec-Purpose} header. A browser sends it on a speculative load (a prefetch or a
+     *       prerender), which no user asked for, even when that load is a navigation.</li>
+     *   <li>{@code Sec-Fetch-Mode}, when present, is {@code navigate}, and {@code Sec-Fetch-Dest}, when
+     *       present, is {@code document}. A same-origin image, script, {@code fetch()}, link prefetch or
+     *       frame carries a different mode or destination and is refused.</li>
+     *   <li>A present {@code Origin} is trusted — a configured origin, or the
+     *       {@linkplain #withGatewayOrigin(String) gateway's own origin} — and decides the provenance
+     *       alone; with {@code Origin} absent, {@code Sec-Fetch-Site} must be {@code same-origin}.</li>
+     * </ol>
+     * Mode and destination are judged only when present because the threat is a request a browser
+     * sends on the victim's behalf, and a browser that sends {@code Sec-Fetch-Site} sends
+     * {@code Sec-Fetch-Mode} with it (and {@code Sec-Fetch-Dest} in every current version); a client
+     * that omits them is not a browser forged into the request and holds no victim's cookie.
      * <p>
-     * {@code none} is admitted here and nowhere else. A browser sends it for a navigation the user
-     * started — a typed URL or a bookmark — which no other site can trigger, so it proves that the
-     * navigation was not forged cross-site. {@link #enforce} keeps refusing it for an unsafe method,
-     * where the request carries a state-changing intent of its own. A cookie-forwarding instance has no
-     * received origin to compare against here, so only its additional origins are trusted.
+     * {@code Sec-Fetch-Site: none} is not a proof. A browser sends it for a typed URL and a bookmark, but
+     * also for a link opened from another application — a mail client or a chat — so a delivered link
+     * carries it too. Such a request is answered the confirmation page by the caller, as is a request
+     * from a browser without Fetch Metadata and without {@code Origin}. A cookie-forwarding instance
+     * has no received origin to compare against here, so only its additional origins are trusted.
      * <p>
      * Thread-safe: the defence is immutable.
      *
-     * @param origin       the request's first {@code Origin} header value, {@code null} when absent
-     * @param secFetchSite the request's first {@code Sec-Fetch-Site} header value, {@code null} when
-     *                     absent
-     * @return {@code true} when the request carries a trusted {@code Origin}, or no {@code Origin} and a
-     *         {@code same-origin} or {@code none} {@code Sec-Fetch-Site}; {@code false} otherwise
+     * @param origin        the request's first {@code Origin} header value, {@code null} when absent
+     * @param fetchMetadata the request's Fetch Metadata headers, each {@code null} when absent
+     * @return {@code true} when the request is a non-speculative top-level document navigation with a
+     *         trusted {@code Origin}, or with no {@code Origin} and a {@code same-origin}
+     *         {@code Sec-Fetch-Site}; {@code false} otherwise
      */
-    public boolean provesSameOriginNavigation(@Nullable String origin, @Nullable String secFetchSite) {
-        if (origin != null) {
-            return isTrusted(origin, null);
+    public boolean provesTrustedDocumentNavigation(@Nullable String origin, FetchMetadata fetchMetadata) {
+        Objects.requireNonNull(fetchMetadata, "fetchMetadata");
+        if (fetchMetadata.purpose() != null
+                || !absentOrEqual(fetchMetadata.mode(), NAVIGATE_MODE)
+                || !absentOrEqual(fetchMetadata.dest(), DOCUMENT_DEST)) {
+            return false;
         }
-        return fetchSite(secFetchSite).filter(NAVIGATION_FETCH_SITES::contains).isPresent();
+        if (origin != null) {
+            return isTrusted(origin, null)
+                    || (gatewayOrigin != null && gatewayOrigin.equals(normaliseOrigin(origin)));
+        }
+        return fetchSite(fetchMetadata.site()).filter(SAME_ORIGIN::equals).isPresent();
+    }
+
+    /** Whether a Fetch Metadata value is absent or, compared case-insensitively, the expected one. */
+    private static boolean absentOrEqual(@Nullable String value, String expected) {
+        return value == null || expected.equals(value.toLowerCase(Locale.ROOT));
     }
 
     /**
@@ -273,5 +324,24 @@ public final class CsrfDefence {
     private static GatewayException rejected(String disposition) {
         LOGGER.debug(REJECTION_TEXT + "%s", disposition);
         return new GatewayException(EventType.CSRF_REJECTED, REJECTION_TEXT + disposition);
+    }
+
+    /**
+     * The Fetch Metadata request headers the logout navigation proof reads, each the request's first
+     * value as received, {@code null} when the header is absent.
+     *
+     * @param site    {@code Sec-Fetch-Site}
+     * @param mode    {@code Sec-Fetch-Mode}
+     * @param dest    {@code Sec-Fetch-Dest}
+     * @param purpose {@code Sec-Purpose}
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record FetchMetadata(@Nullable String site, @Nullable String mode, @Nullable String dest,
+    @Nullable String purpose) {
+
+        /** A request that carries none of the headers — a browser without Fetch Metadata, or no browser. */
+        public static final FetchMetadata ABSENT = new FetchMetadata(null, null, null, null);
     }
 }

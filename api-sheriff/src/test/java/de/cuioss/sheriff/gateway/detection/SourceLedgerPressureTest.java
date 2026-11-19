@@ -33,8 +33,9 @@ import org.junit.jupiter.api.Test;
 /**
  * The detection substrate under pressure, on a small-bound ledger driven by a controllable clock: from
  * the high-water mark on, a new IPv6 source is tracked under its {@code /48} aggregate while a tracked
- * key keeps its key, a {@code /64} finds its tracked aggregate, and a source already accruing weight
- * stays tracked when the rest of the ledger fills.
+ * key keeps its key, a {@code /64} finds its tracked aggregate, a source already accruing weight
+ * stays tracked when the rest of the ledger fills, and the room query hands the sweep it finds due to
+ * the sweep executor — here a list the test runs explicitly — instead of sweeping on its own thread.
  */
 @EnableGeneratorController
 @DisplayName("SourceLedger — the high-water aggregation and the full ledger")
@@ -56,10 +57,12 @@ class SourceLedgerPressureTest {
 
     private final AtomicLong clock = new AtomicLong(Long.MAX_VALUE - Duration.ofMinutes(5).toNanos());
     private final List<SourceTrip> trips = new CopyOnWriteArrayList<>();
+    /** The sweeps the room query handed off; run only where a test runs them. */
+    private final List<Runnable> handedOffSweeps = new CopyOnWriteArrayList<>();
 
     private SourceLedger ledger(int threshold) {
         return new SourceLedger(new Settings(threshold, WINDOW, Action.BLOCK, WINDOW), clock::get, trips::add,
-                BOUND);
+                BOUND, handedOffSweeps::add);
     }
 
     private void advance(Duration duration) {
@@ -152,22 +155,45 @@ class SourceLedgerPressureTest {
     }
 
     @Test
-    @DisplayName("the room query is false on a ledger full of live keys and true once they drained and the sweep ran")
-    void roomQueryFollowsTheSweep() {
+    @DisplayName("the room query never sweeps on its calling thread: it hands a due sweep off and answers from the map as it stands")
+    void roomQueryHandsTheDueSweepOff() {
+        SourceLedger ledger = ledger(THRESHOLD);
+        fill(ledger, BOUND);
+        advance(WINDOW.plusSeconds(1));
+        SourceKey newcomer = ipv4(200);
+
+        boolean beforeTheSweep = ledger.hasRoomFor(newcomer);
+        int trackedAfterTheQuery = ledger.trackedSources();
+        int handedOff = handedOffSweeps.size();
+        handedOffSweeps.forEach(Runnable::run);
+        boolean afterTheSweep = ledger.hasRoomFor(newcomer);
+
+        assertAll("the query sweeps nothing itself; the handed-off sweep frees the drained keys",
+                () -> assertFalse(beforeTheSweep, "the drained keys still fill the map when the query answers"),
+                () -> assertEquals(BOUND, trackedAfterTheQuery, "the query removed nothing on its own thread"),
+                () -> assertEquals(1, handedOff, "the due sweep was handed to the sweep executor once"),
+                () -> assertTrue(afterTheSweep),
+                () -> assertEquals(0, ledger.trackedSources(), "the handed-off sweep removed the drained keys"),
+                () -> assertEquals(0L, ledger.untrackedCount(), "a query is never counted as an overflow"),
+                () -> assertTrue(ledger.state(newcomer).isEmpty(), "nothing was tracked by asking"));
+    }
+
+    @Test
+    @DisplayName("the room query hands off at most one sweep per sweep interval")
+    void roomQueryHandsOffOneSweepPerInterval() {
         SourceLedger ledger = ledger(THRESHOLD);
         fill(ledger, BOUND);
         SourceKey newcomer = ipv4(200);
 
-        boolean whileFull = ledger.hasRoomFor(newcomer);
-        advance(WINDOW.plusSeconds(1));
-        boolean afterDrain = ledger.hasRoomFor(newcomer);
+        ledger.hasRoomFor(newcomer);
+        ledger.hasRoomFor(newcomer);
+        int withinTheInterval = handedOffSweeps.size();
+        advance(SourceLedger.SWEEP_INTERVAL);
+        ledger.hasRoomFor(newcomer);
 
-        assertAll("the query asks what admit would decide, and admits nothing",
-                () -> assertFalse(whileFull),
-                () -> assertTrue(afterDrain),
-                () -> assertEquals(0, ledger.trackedSources(), "the sweep the query ran removed the drained keys"),
-                () -> assertEquals(0L, ledger.untrackedCount(), "a query is never counted as an overflow"),
-                () -> assertTrue(ledger.state(newcomer).isEmpty(), "nothing was tracked by asking"));
+        assertAll("the sweep interval rate-limits the hand-off",
+                () -> assertEquals(1, withinTheInterval, "a second query in the same interval hands off nothing"),
+                () -> assertEquals(2, handedOffSweeps.size(), "the next interval allows one more"));
     }
 
     @Test
@@ -190,14 +216,21 @@ class SourceLedgerPressureTest {
                 () -> assertEquals(Status.UNTRACKED, newcomerAdmitted.status(), "admit agrees with the query"));
     }
 
+    /**
+     * Pins the sweep's rule that a key still holding weight is never removed. The newcomer's admission
+     * at the bound runs the sweep on the admitting thread — the first sweep is due from construction on
+     * — so a sweep that removed weighted keys would drop the accruing source here: its count would
+     * restart and four more events would no longer trip it.
+     */
     @Test
-    @DisplayName("a source accruing weight stays tracked and trips when the rest of the ledger is full")
+    @DisplayName("a source accruing weight keeps its count through a sweep at the full bound and trips")
     void accruingSourceStaysTrackedInAFullLedger() {
         SourceLedger ledger = ledger(5);
         SourceKey accruing = ipv4(100);
         ledger.admit(accruing, 1, Tag.PROBE);
         fill(ledger, BOUND - 1);
         SourceState newcomer = ledger.admit(ipv4(101), 1, Tag.PROBE);
+        double levelAfterTheSweep = ledger.state(accruing).map(SourceState::level).orElse(0.0);
 
         Status last = null;
         for (int event = 0; event < 4; event++) {
@@ -207,6 +240,7 @@ class SourceLedgerPressureTest {
         Status tripped = last;
         assertAll("the full ledger refuses a newcomer, never the tracked source",
                 () -> assertEquals(Status.UNTRACKED, newcomer.status(), "precondition: the ledger is full"),
+                () -> assertEquals(1.0, levelAfterTheSweep, 1e-6, "the sweep kept the accruing source's count"),
                 () -> assertEquals(Status.BLOCKED, tripped),
                 () -> assertEquals(1, trips.size()),
                 () -> assertEquals(accruing, trips.getFirst().key()));

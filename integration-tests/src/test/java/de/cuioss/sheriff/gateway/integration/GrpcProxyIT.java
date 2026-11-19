@@ -262,8 +262,9 @@ class GrpcProxyIT extends BaseIntegrationTest {
 
         assertEquals("after-idle-call", next.getMessage(),
                 "THE CONTROL: the next ordinary call on the same route is relayed, so the idle call left "
-                        + "the route serving (the breaker skip itself is proven by the INVALID_ARGUMENT client-abort "
-                        + "classification above and at unit level; one call cannot reach the breaker's request volume)");
+                        + "the route serving (that the breaker records the abort as neutral is proven by the "
+                        + "INVALID_ARGUMENT client-abort classification above and at unit level; one call cannot "
+                        + "reach the breaker's request volume)");
     }
 
     /**

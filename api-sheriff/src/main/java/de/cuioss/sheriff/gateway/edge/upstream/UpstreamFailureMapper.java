@@ -45,8 +45,12 @@ import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;
  * An attempt that obtained no pooled connection because the client's wait queue was full — the gateway's own
  * saturation — never reaches that classification: the dispatch maps it inside the guard, through
  * {@link #toPoolSaturation(Throwable)}, to {@link EventType#UPSTREAM_POOL_SATURATED} (503), a gateway rejection
- * the breaker records as neutral: neither a failure nor a success. An expired wait is not saturation: it is the
- * upstream's timeout above, which the breaker counts. Every mapped failure is metered on the shared
+ * the breaker records as neutral: neither a failure nor a success. An expired wait is, as a rule, not saturation:
+ * it is the upstream's timeout above, which the breaker counts — except when, at the moment of expiry, a request
+ * body on the same upstream client is still arriving, not yet ended, and forwarded a chunk within the wait bound:
+ * the wait then expired behind a client's body and is mapped to the same saturation
+ * ({@link DispatchStage#expiredWaitOf}). A body that has ended, however recently, does not count. Every mapped
+ * failure is metered on the shared
  * {@link GatewayEventCounter}.
  * Breaker state transitions are metered and logged through
  * {@link #recordBreakerTransition(String, CircuitBreakerState)}, which {@link UpstreamGuards#guardFor} installs
@@ -114,10 +118,12 @@ public final class UpstreamFailureMapper {
      * the upstream client's wait queue was full — and produces the {@link EventType#UPSTREAM_POOL_SATURATED}
      * rejection the edge answers {@code 503}. The dispatch raises it inside the guard, so the breaker records it
      * as neutral like every {@link GatewayException}: neither a failure nor a success. A wait that outlasted the
-     * connection wait bound is not saturation and never reaches this method: it is the upstream's timeout
+     * connection wait bound reaches this method only when, at its expiry, a request body on its upstream client is
+     * still arriving, not yet ended, and forwarded a chunk within that bound — the wait expired behind a client's
+     * body; otherwise, a body that has ended included, it is the upstream's timeout
      * ({@link EventType#UPSTREAM_TIMEOUT}), which the breaker counts.
      *
-     * @param failure the pool's refusal, kept as the cause and never shown to the client
+     * @param failure the pool's refusal or the expired wait, kept as the cause and never shown to the client
      * @return the gateway exception carrying {@link EventType#UPSTREAM_POOL_SATURATED}
      */
     public GatewayException toPoolSaturation(Throwable failure) {

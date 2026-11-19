@@ -34,6 +34,7 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -660,7 +661,8 @@ class GatewayEdgeGatewayCookieTest {
         private BffRuntime.ReservedHttpResponse dispatch(ReservedEndpoint kind, @Nullable String cookie,
                 String method) {
             // Same-origin proof on every dispatch, so the logout leg ends the session and answers its 302.
-            return runtime.dispatch(kind, new BffRuntime.ReservedHttpRequest("", cookie, null, "same-origin", null,
+            return runtime.dispatch(kind, new BffRuntime.ReservedHttpRequest("", cookie, null,
+                    new CsrfDefence.FetchMetadata("same-origin", "navigate", "document", null), null,
                     "/home", null, null, method, "192.0.2.10"), now);
         }
 

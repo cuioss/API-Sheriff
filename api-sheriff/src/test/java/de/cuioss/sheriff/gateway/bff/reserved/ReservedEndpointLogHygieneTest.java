@@ -296,9 +296,12 @@ class ReservedEndpointLogHygieneTest {
                         Optional::empty, ORIGIN + "/auth/logout/return", "/", Duration.ofMinutes(1)), sessionBinding,
                 new CsrfDefence(Set.of(ORIGIN)), "/auth/logout");
 
-        LogoutEndpoint.LogoutOutcome toProvider = withEndpoint.logout(cookie, null, "same-origin", NOW);
+        CsrfDefence.FetchMetadata sameOriginNavigation =
+                new CsrfDefence.FetchMetadata("same-origin", "navigate", "document", null);
+        LogoutEndpoint.LogoutOutcome toProvider = withEndpoint.logout(cookie, null, sameOriginNavigation, NOW);
         LogoutEndpoint.LogoutOutcome local = withoutEndpoint.logout(
-                pair(sessionBinding.bind(session, NOW).setCookieHeaders().getFirst()), null, "same-origin", NOW);
+                pair(sessionBinding.bind(session, NOW).setCookieHeaders().getFirst()), null, sameOriginNavigation,
+                NOW);
 
         assertEquals(List.of(302, 302), List.of(toProvider.status(), local.status()),
                 "precondition: both logouts were answered");

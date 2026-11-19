@@ -23,6 +23,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.LogRecord;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
@@ -32,15 +34,20 @@ import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.quarkus.runtime.configuration.MemorySize;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Tests for {@link ConfigProducer}: CDI bean assembly from a valid configuration
@@ -275,6 +282,166 @@ class ConfigProducerTest {
         assertDoesNotThrow(() -> producer.onStartup(null),
                 "a declared cap equal to the framework limit is reachable and must boot clean");
         assertNotNull(producer.gatewayConfig(), "beans should be available after startup assembly");
+    }
+
+    /**
+     * The CWE-117 sink: every violation record renders its file, pointer and message through
+     * {@code RuleSupport.renderForLog}, because not every stage escapes what it echoes. The schema
+     * refuses an anchor name outside {@code ^[a-z][a-z0-9_-]*$} — a line feed included, even a trailing
+     * one — and its refusal names the configured key verbatim, so only the sink keeps that line feed
+     * out of the boot log. The refusal text is localised by the JVM, so only the key is asserted.
+     */
+    @Test
+    void shouldEscapeAControlCharacterTheSchemaEchoesFromAConfiguredKey() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_MATRIX_VIOLATION.replace("portal:",
+                "\"por\\ntal\":"));
+
+        assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
+                "the schema refusal of the anchor name must refuse the boot");
+
+        List<String> records = violationRecords();
+        assertAll("violation records",
+                () -> assertTrue(records.stream().anyMatch(message -> message.contains("por\\u000Atal")),
+                        () -> "the schema refusal must name the key escaped by the sink: " + records),
+                () -> assertTrue(records.stream().allMatch(message -> message.chars()
+                                .noneMatch(Character::isISOControl)),
+                        () -> "no record may carry a raw control character: " + records));
+    }
+
+    /**
+     * The other half of the sink contract: a validation rule already echoes a configured value through
+     * {@code RuleSupport.renderForMessage}, and the sink must pass that rendering through unchanged
+     * rather than escape the escape. A cookie name in a {@code cookies.allow} list carries no schema
+     * pattern, so a line feed in it reaches the RFC 6265 cookie-name rule, which echoes it escaped.
+     */
+    @Test
+    void shouldPassARulesEscapedEchoThroughTheSinkUnchanged() throws Exception {
+        ConfigProducer producer = producerForGateway("""
+                version: 1
+                metadata:
+                  config_version: "2026-07-13"
+                cookies:
+                  allow:
+                    - "a\\nb"
+                """);
+
+        assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
+                "the refused cookie name must refuse the boot");
+
+        List<String> records = violationRecords();
+        assertAll("violation records",
+                () -> assertTrue(records.stream().anyMatch(message -> message.contains("'a\\u000Ab'")),
+                        () -> "the record must carry the rule's escaping unchanged: " + records),
+                () -> assertTrue(records.stream().noneMatch(message -> message.contains("\\u005C")),
+                        () -> "no part may be escaped twice: " + records),
+                () -> assertTrue(records.stream().allMatch(message -> message.chars()
+                                .noneMatch(Character::isISOControl)),
+                        () -> "no record may carry a raw control character: " + records));
+    }
+
+    /**
+     * The sink escapes what can forge or disguise a log line, not what is merely outside ASCII. A
+     * configured key the schema refuses is echoed into its refusal, so the record carries a printable
+     * non-ASCII letter as the operator wrote it — the offline report prints the same — while a bidi
+     * override in the same key is escaped. The two keys differ in that one character only.
+     */
+    @Test
+    void shouldLogAPrintableNonAsciiKeyAsWrittenAndEscapeABidiOverride() throws Exception {
+        ConfigProducer printable = producerForGateway(GATEWAY_WITH_MATRIX_VIOLATION.replace("portal:",
+                "\"portäl\":"));
+        assertThrows(IllegalStateException.class, () -> printable.onStartup(null),
+                "the schema refusal of the anchor name must refuse the boot");
+        List<String> printableRecords = violationRecords();
+
+        ConfigProducer bidi = producerForGateway(GATEWAY_WITH_MATRIX_VIOLATION.replace("portal:",
+                "\"port" + (char) 0x202E + "l\":"));
+        assertThrows(IllegalStateException.class, () -> bidi.onStartup(null),
+                "the schema refusal of the anchor name must refuse the boot");
+        List<String> bidiRecords = violationRecords();
+
+        assertAll("violation records",
+                () -> assertTrue(printableRecords.stream().anyMatch(message -> message.contains("portäl")),
+                        () -> "a printable non-ASCII letter must reach the record unescaped: " + printableRecords),
+                () -> assertTrue(printableRecords.stream().noneMatch(message -> message.contains("\\u00E4")),
+                        () -> "a printable non-ASCII letter must not be escaped: " + printableRecords),
+                () -> assertTrue(bidiRecords.stream().anyMatch(message -> message.contains("port\\u202El")),
+                        () -> "a bidi override must reach the record escaped: " + bidiRecords),
+                () -> assertTrue(bidiRecords.stream().noneMatch(message -> message.indexOf(0x202E) >= 0),
+                        () -> "no record may carry the raw bidi override: " + bidiRecords));
+    }
+
+    /**
+     * Printable text passes the sink's escaper unchanged whatever its script: a letter with a
+     * diacritic, the em dash the gateway's own refusal messages use, CJK ideographs and an emoji
+     * written as a valid surrogate pair. Both renderings share the one escaper.
+     */
+    @Test
+    void shouldRenderPrintableNonAsciiTextUnchanged() {
+        String printable = "café — 日本 😀 naïve";
+
+        assertAll("printable non-ASCII text",
+                () -> assertEquals(printable, RuleSupport.renderForLog(printable),
+                        "the uncapped log rendering keeps printable text as written"),
+                () -> assertEquals(printable, RuleSupport.renderForMessage(printable),
+                        "the capped message rendering keeps printable text as written"));
+    }
+
+    /**
+     * Every character that can break a log line or disguise its text is escaped as {@code \\uXXXX}:
+     * the ISO controls (C0 and C1), the line and paragraph separators, the format characters — the
+     * bidi overrides and isolates, the zero-width characters, the byte order mark and the tag
+     * characters outside the Basic Multilingual Plane — and an unpaired surrogate, high or low.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("forgingCharacters")
+    void shouldEscapeEveryCharacterThatCanForgeOrDisguiseALine(String name, String character, String escaped) {
+        String value = "a" + character + "b";
+
+        assertAll(name,
+                () -> assertEquals("a" + escaped + "b", RuleSupport.renderForLog(value), "the log rendering"),
+                () -> assertEquals("a" + escaped + "b", RuleSupport.renderForMessage(value),
+                        "the message rendering"));
+    }
+
+    static Stream<Arguments> forgingCharacters() {
+        return Stream.of(
+                Arguments.of("carriage return", "\r", "\\u000D"),
+                Arguments.of("line feed", "\n", "\\u000A"),
+                Arguments.of("tab", "\t", "\\u0009"),
+                Arguments.of("escape", String.valueOf((char) 0x1B), "\\u001B"),
+                Arguments.of("delete", String.valueOf((char) 0x7F), "\\u007F"),
+                Arguments.of("next line (C1)", String.valueOf((char) 0x85), "\\u0085"),
+                Arguments.of("line separator", String.valueOf((char) 0x2028), "\\u2028"),
+                Arguments.of("paragraph separator", String.valueOf((char) 0x2029), "\\u2029"),
+                Arguments.of("right-to-left override", String.valueOf((char) 0x202E), "\\u202E"),
+                Arguments.of("left-to-right isolate", String.valueOf((char) 0x2066), "\\u2066"),
+                Arguments.of("zero-width space", String.valueOf((char) 0x200B), "\\u200B"),
+                Arguments.of("byte order mark", String.valueOf((char) 0xFEFF), "\\uFEFF"),
+                Arguments.of("tag character (supplementary format)", new String(Character.toChars(0xE0041)),
+                        "\\uDB40\\uDC41"),
+                Arguments.of("lone high surrogate", String.valueOf((char) 0xD83D), "\\uD83D"),
+                Arguments.of("lone low surrogate", String.valueOf((char) 0xDE00), "\\uDE00"),
+                Arguments.of("reversed surrogate pair", String.valueOf((char) 0xDE00) + (char) 0xD83D,
+                        "\\uDE00\\uD83D"));
+    }
+
+    /**
+     * The message rendering caps the input at 60 characters. A cap that falls between the two halves
+     * of a surrogate pair leaves the high half without its partner in the rendering, so that half is
+     * escaped rather than emitted as an unpaired surrogate.
+     */
+    @Test
+    void shouldEscapeAHighSurrogateTheMessageCapSeparatesFromItsPair() {
+        String value = "x".repeat(59) + "😀";
+
+        assertEquals("x".repeat(59) + "\\uD83D...", RuleSupport.renderForMessage(value));
+    }
+
+    private static List<String> violationRecords() {
+        String identifier = ConfigLogMessages.ERROR.CONFIG_VALIDATION_FAILED.resolveIdentifierString();
+        return SheriffDebugCapture.capturedRecords().stream()
+                .map(LogRecord::getMessage)
+                .filter(message -> message != null && message.startsWith(identifier)).toList();
     }
 
     @Test

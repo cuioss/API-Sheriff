@@ -218,10 +218,43 @@ class SourceGateTest {
                 () -> assertEquals(0, beforeTrip, "control: no observation below the threshold"),
                 () -> assertEquals(1, observedTrips.size(), "the episode's further rejections trip nothing"),
                 () -> assertEquals(loopbackKey(), observedTrips.getFirst().key()),
+                () -> assertEquals(loopbackKey(), observedTrips.getFirst().requestKey(),
+                        "an unaggregated source trips under its own key"),
                 () -> assertEquals(1L, eventCounter.getCount(EventType.SOURCE_TRIPPED),
                         "the trip was counted as before"));
         LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
                 ApiSheriffLogMessages.WARN.SOURCE_TRIPPED.resolveIdentifierString());
+    }
+
+    /**
+     * SEC2-03-C: under pressure the ledger counts a new {@code /64} on its {@code /48}. The trip handed to
+     * the threat feed must still name the request's own {@code /64}, so the threat score can be kept on
+     * the source its other rejections are counted on.
+     */
+    @Test
+    @DisplayName("the trip handed to the threat feed carries the request's own source beside the tracked /48")
+    void reconTripCarriesTheRequestsOwnSourceUnderAggregation() {
+        SourceKey slash64 = new SourceKey("2001:db8:5:7::/64", SourceKey.UNDECLARED_HOST);
+        SourceKey slash48 = new SourceKey("2001:db8:5::/48", SourceKey.UNDECLARED_HOST);
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(2).build());
+        SourceLedger ledger = sourceGate.ledger();
+        int mark = SourceLedger.MAX_TRACKED_SOURCES * SourceLedger.HIGH_WATER_PERCENT / 100;
+        for (int index = 0; ledger.trackedSources() < mark; index++) {
+            ledger.admit(new SourceKey("10.%d.%d.%d".formatted((index >> 16) & 0xff, (index >> 8) & 0xff, index & 0xff),
+                    SourceKey.UNDECLARED_HOST), 1, EventType.NO_ROUTE_MATCHED);
+        }
+        Map<String, Object> data = new HashMap<>(Map.of(SourceKeys.SOURCE_KEY, slash64));
+
+        // The gate's ledger drains on the real clock, so the second rejection lands a hair below the
+        // threshold; further rejections of the same episode trip nothing more.
+        for (int count = 0; count < 5; count++) {
+            sourceGate.admit(feedContext(data), null, EventType.NO_ROUTE_MATCHED);
+        }
+
+        assertAll("the observed trip names both keys",
+                () -> assertEquals(1, observedTrips.size()),
+                () -> assertEquals(slash48, observedTrips.getFirst().key(), "counted on the /48 under pressure"),
+                () -> assertEquals(slash64, observedTrips.getFirst().requestKey(), "the request's own source"));
     }
 
     @Test

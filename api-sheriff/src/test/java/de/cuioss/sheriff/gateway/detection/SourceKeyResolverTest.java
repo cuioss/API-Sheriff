@@ -123,6 +123,65 @@ class SourceKeyResolverTest {
     }
 
     @Nested
+    @DisplayName("the unresolvable forwarding chain")
+    class UnresolvedForwarding {
+
+        @Test
+        @DisplayName("a trusted proxy's unresolvable chain is keyed on the proxy's own unresolved source")
+        void unresolvableChainIsKeyedOnTheProxysUnresolvedSource() {
+            SourceKey key = resolver.resolveUnresolvedForwarding("192.0.2.10", "API.EXAMPLE.COM");
+
+            assertAll("a key of its own, never the shared unknown",
+                    () -> assertEquals("unresolved-via-192.0.2.10", key.source()),
+                    () -> assertNotEquals(SourceKey.UNKNOWN_SOURCE, key.source()),
+                    () -> assertEquals(DECLARED_HOST, key.host(), "the host is folded as for any key"));
+        }
+
+        @Test
+        @DisplayName("each proxy gets an unresolved source of its own, distinct from its own address")
+        void unresolvedSourceIsPerProxy() {
+            String first = SourceKeyResolver.unresolvedForwardingSource("192.0.2.10");
+            String second = SourceKeyResolver.unresolvedForwardingSource("192.0.2.20");
+
+            assertAll("one key per proxy",
+                    () -> assertNotEquals(first, second),
+                    () -> assertNotEquals("192.0.2.10", first, "never the proxy's own address"),
+                    () -> assertEquals(SourceKey.UNKNOWN_SOURCE,
+                            SourceKeyResolver.canonicalSource(first), "no address text starts with the prefix"));
+        }
+
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource({
+                "2001:db8:a:b:1:2:3:4, unresolved-via-2001:db8:a:b::/64",
+                "[2001:DB8:A:B::1], unresolved-via-2001:db8:a:b::/64",
+                "::ffff:192.0.2.10, unresolved-via-192.0.2.10"
+        })
+        @DisplayName("the proxy's address is canonicalized as any source is")
+        void proxyAddressIsCanonicalized(String proxy, String expected) {
+            assertEquals(expected, SourceKeyResolver.unresolvedForwardingSource(proxy));
+        }
+
+        @Test
+        @DisplayName("an unresolved source is never widened to a /48 aggregate")
+        void unresolvedSourceIsNeverAggregated() {
+            String source = SourceKeyResolver.unresolvedForwardingSource("2001:db8:a:b::1");
+
+            assertEquals(source, SourceKeyResolver.aggregateSource(source));
+        }
+
+        @Test
+        @DisplayName("the handed-over forwarded address alone decides a resolved key: no family is read here")
+        void resolvedKeyIsTheHandedOverAddressOnly() {
+            SourceKey resolved = resolver.resolve("192.0.2.10", "198.51.100.7", DECLARED_HOST);
+            SourceKey unresolved = resolver.resolveUnresolvedForwarding("192.0.2.10", DECLARED_HOST);
+
+            assertAll("the caller's judgement decides which key is written",
+                    () -> assertEquals("198.51.100.7", resolved.source()),
+                    () -> assertNotEquals(resolved, unresolved));
+        }
+    }
+
+    @Nested
     @DisplayName("the /48 aggregate")
     class Aggregate {
 

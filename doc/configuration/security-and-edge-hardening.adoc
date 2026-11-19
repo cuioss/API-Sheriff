@@ -257,6 +257,19 @@ link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults
   Sizing: link:../user/protocol-routes.adoc[Protocol routes].
 |===
 
+*The connection cap is one shared counter.* `quarkus.http.limits.max-connections` is one counter
+shared by the plain-HTTP redirect listener and the HTTPS listener of the Quarkus-terminated side; the
+SNI front listener of `passthrough_sni` and the management interface are not counted. A connection
+the cap has counted holds its slot until it closes, whether or not it ever carries a request.
+
+*A front proxy with its own request-head timeout is a deployment requirement.* No key here, and none
+in the shipped `application.properties`, sets a deadline on the arrival of a request head. Until a
+head is complete, the only bounds on its connection are the idle-connection reap, which any byte
+restarts, and the connection cap above; `admission_cap` counts requests, so it does not see such a
+connection. Put a front proxy or load balancer in front of the gateway that times out the request
+head itself (see
+link:../user/edge-security.adoc#_request_head_deadline[Edge security -- A front proxy times out the request head]).
+
 *The held-answer sub-budget has no key.* An answer held on a timer -- the uniform `404` waiting for its
 timing floor (<<_uniform_not_found>>), or a rejection held by the `delay` action of
 <<_enumeration_detection,`enumeration_detection`>> -- returns its general permit while it waits and
@@ -346,26 +359,34 @@ every client behind a NAT, egress proxy or load balancer; enforcement is the ope
   xref:routing-and-forwarding.adoc#_forwarded_headers[`forwarded.trusted_proxies`]; otherwise the TCP
   peer, whose `X-Forwarded-For` is never read. IPv6 is reduced to its `/64` (or, once the ledger is
   under pressure, a new source to its `/48` -- see *Scope* below). When a trusted forwarder's
-  `Forwarded` and `X-Forwarded-For` headers together yield no client -- a contested chain, where the
-  two disagree, or an unresolvable one -- the client the `X-Forwarded-For` chain alone yields under the
-  same trusted proxies is used. Only a request that yields no client even then, and an absent or
-  unparseable TCP peer address, is the one source `unknown`.
+  `Forwarded` or `X-Forwarded-For` carries a value yet the two together yield no client -- a contested
+  chain, where the two disagree, a malformed one, or one that names its client by something other than
+  an address -- the source is that forwarder's own unresolved
+  source, `unresolved-via-<proxy address>`, which detection acts on like any source; neither family is
+  resolved on its own
+  (xref:routing-and-forwarding.adoc#_unresolvable_chain[A chain that resolves no client]). Only a
+  trusted forwarder's request carrying neither header, or only blank ones, and an absent or unparseable TCP peer address,
+  is the one source `unknown`.
 * *Host* -- the request host when a route declares it as `match.host`, otherwise `*`, so changing
   `Host` gives no fresh count.
 
 [[_enumeration_detection_unknown]]
-*The `unknown` source is counted, never acted on.* `unknown` stands for every client whose address did
-not resolve at once, so acting on it would act on all of them for the probing of one. It is counted,
+*The `unknown` source is counted, never acted on.* `unknown` stands at once for every trusted proxy's
+request that carries no client-address header, or only blank ones, and every request without a usable
+peer address, so acting on it would act on all of them for the probing of one. It is counted,
 it trips, its trip is logged as `ApiSheriff-141` and fed to
 <<_threat_classification,`threat_classification`>>, but under every `action` it is never answered
-`429`, never delayed and never refused. The pending-login quota of the BFF uses the same address with
-the same `X-Forwarded-For` fallback and counts every `unknown` request as one source (see
+`429`, never delayed and never refused. The pending-login quota of the BFF uses the same address,
+keys an unresolvable chain on the same unresolved source and counts every `unknown` request as one
+source (see
 link:../user/bff-session.adoc#pending-logins[Server-Session BFF -- When too many logins are
-unfinished]). Because a trusted proxy that forwards no usable client address therefore lets its
+unfinished]). Because a trusted proxy that forwards no client-address header therefore lets its
 requests escape `block` and `delay`, the gateway logs WARN
-link:../LogMessages.adoc#apisheriff-149[`ApiSheriff-149`] once at startup when `enumeration_detection` is
-enabled with `action` `block` or `delay` while `forwarded.trusted_proxies` is non-empty. It names the
-action only. Make sure every trusted proxy sends its clients' addresses in `X-Forwarded-For`.
+link:../LogMessages.adoc#apisheriff-149[`ApiSheriff-149`] when `enumeration_detection` is enabled with
+`action` `block` or `delay` while `forwarded.trusted_proxies` is non-empty. The record is emitted by
+the configuration validation rule that judges `forwarded.trusted_proxies`, so it appears each time the
+configuration is validated: at startup, and in a `--validate-config` run as well. It names the action
+only. Make sure every trusted proxy sends its clients' addresses in `X-Forwarded-For`.
 
 *Shared addresses.* Behind a load balancer not listed in `forwarded.trusted_proxies`, every client is
 one source: one scanning client trips it, and under `block` every client is answered `429`; under

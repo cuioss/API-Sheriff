@@ -203,7 +203,8 @@ public final class RouteTableBuilder {
                     "enabled endpoint '%s' declares proxy route(s) but no base_url".formatted(endpoint.id()));
         }
         return topology.lookup(baseUrl).orElseThrow(() -> new RouteTableException(
-                "unresolved topology alias for enabled endpoint '%s': %s".formatted(endpoint.id(), baseUrl)));
+                "unresolved topology alias for enabled endpoint '%s': %s".formatted(endpoint.id(),
+                        RuleSupport.renderForMessage(baseUrl))));
     }
 
     /**
@@ -495,7 +496,7 @@ public final class RouteTableBuilder {
                 }
                 ResolvedUpstream resolvedUpstream = topology.lookup(alias).orElseThrow(() -> new RouteTableException(
                         "asset route '%s' upstream alias '%s' does not resolve in the topology"
-                                .formatted(route.id(), alias)));
+                                .formatted(route.id(), RuleSupport.renderForMessage(alias))));
                 yield ResolvedAsset.upstream(resolvedUpstream, access);
             }
         };

@@ -22,6 +22,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -60,6 +61,9 @@ public final class ReservedPathHandler {
     private static final String COOKIE_HEADER = "Cookie";
     private static final String ORIGIN_HEADER = "Origin";
     private static final String SEC_FETCH_SITE_HEADER = "Sec-Fetch-Site";
+    private static final String SEC_FETCH_MODE_HEADER = "Sec-Fetch-Mode";
+    private static final String SEC_FETCH_DEST_HEADER = "Sec-Fetch-Dest";
+    private static final String SEC_PURPOSE_HEADER = "Sec-Purpose";
     private static final String LOCATION_HEADER = "Location";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final int NOT_FOUND = 404;
@@ -164,11 +168,16 @@ public final class ReservedPathHandler {
         // the genuinely raw, never map-collapsed query string the BFF-13 duplicate-parameter defence
         // re-parses.
         String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? ReservedBodyReader.readFormBody(ctx) : null;
-        // Origin and Sec-Fetch-Site are the same-origin provenance the logout leg demands before it ends a
+        // Origin and the Fetch Metadata headers are the provenance the logout leg demands before it ends a
         // session; every other handler ignores them.
+        CsrfDefence.FetchMetadata fetchMetadata = new CsrfDefence.FetchMetadata(
+                request.firstHeader(SEC_FETCH_SITE_HEADER).orElse(null),
+                request.firstHeader(SEC_FETCH_MODE_HEADER).orElse(null),
+                request.firstHeader(SEC_FETCH_DEST_HEADER).orElse(null),
+                request.firstHeader(SEC_PURPOSE_HEADER).orElse(null));
         BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
                 ctx.request().query(), cookieHeader, request.firstHeader(ORIGIN_HEADER).orElse(null),
-                request.firstHeader(SEC_FETCH_SITE_HEADER).orElse(null), firstQueryParam(ctx, CLAIMS_PARAM),
+                fetchMetadata, firstQueryParam(ctx, CLAIMS_PARAM),
                 firstQueryParam(ctx, RETURN_URL_PARAM), firstQueryParam(ctx, STATE_PARAM), rawFormBody, method,
                 bffRuntime.pendingQuotaKey(request));
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());

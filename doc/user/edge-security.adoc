@@ -355,12 +355,17 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 *Reading a trip.*
 
 * WARN `ApiSheriff-141` names the source, the host, the threshold, the window and the action. The
-  source is an IPv4 address, an IPv6 `/64` prefix, an IPv6 `/48` prefix, or `unknown`. A `/48`
+  source is an IPv4 address, an IPv6 `/64` prefix, an IPv6 `/48` prefix, a trusted forwarder's
+  unresolved source `unresolved-via-<proxy address>`, or `unknown`. A `/48`
   appears when the gateway began tracking the source while it already tracked 75% of its maximum of
   65,536 sources: from that mark on a new IPv6 source is counted by its `/48`, so one site cannot fill
   the gateway's memory by rotating through its `/64` prefixes. For a request through a trusted
-  forwarder the source is the client address the forwarder reported -- when its `Forwarded` and
-  `X-Forwarded-For` headers disagree, the address `X-Forwarded-For` alone names. The host is a host a
+  forwarder the source is the client address the forwarder reported; when its `Forwarded` or
+  `X-Forwarded-For` carries a value that names no client -- the two disagree, one is malformed, or the client is named
+  by something other than an address --
+  it is the forwarder's unresolved source, and only a request carrying neither header, or only blank
+  ones, is `unknown`.
+  The host is a host a
   route declares in `match.host`, or `*`. The line never carries the requested path or a header. A
   source trips once and is not reported again until it has stopped long enough for its count to drain.
 * `sheriff_source_trips_total{action}` on the management port counts the trips.
@@ -369,15 +374,29 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   65,536 live sources; WARN `ApiSheriff-142` reports the first of
   them. Under `observe` such a source passes and cannot trip. Under `block` or `delay` it is refused
   with the `block` answer, `Retry-After: 1`, until the gateway has room for it again -- so while a
-  scan keeps the gateway full, every *new* source is refused, a legitimate one included, and sources
-  already tracked are answered as before. A steady count means more distinct sources are being
-  rejected than the gateway tracks -- a scan spread over many addresses, or a deployment whose sources
-  are not per client.
-* A source of `unknown` -- a request whose client address did not resolve, for example through a
-  trusted proxy that sends no usable `X-Forwarded-For` -- is counted and can trip, but is never
-  blocked, delayed or refused, because it stands for every such client at once. WARN `ApiSheriff-149`
-  at startup reminds you of this when `block` or `delay` is configured together with
-  `forwarded.trusted_proxies`.
+  scan keeps the gateway full, every *new* source is refused, and sources already tracked are answered
+  as before. Read "new" literally: a well-behaved client is rejected for nothing, so the gateway does
+  not track it, and while the gateway is full *practically all legitimate traffic* is refused, while
+  the scanning sources it already tracks keep being served. The gateway frees room once a second, by
+  dropping the sources whose count has drained to zero and that are not blocked; a source still
+  holding a count is never dropped to make room, so a scan cannot push a source that is building up
+  toward the threshold out of detection. Keeping 65,536 sources live therefore takes a sustained
+  stream of rejections from that many distinct addresses. Under `delay` a source never blocks, so it
+  keeps its place only while its count drains: about 65,536 × `threshold` / `window_seconds`
+  rejections per second. Under `block` the block holds a tripped source as well: about 65,536 ×
+  `threshold` / max(`window_seconds`, `block_seconds`) rejections per second. At the defaults
+  (`threshold` 100, `window_seconds` 60, `block_seconds` 60) both come to roughly 109,000 per second;
+  a lower `threshold` makes either cheaper, and under `block` so does a longer `block_seconds`. A
+  steady count means more distinct sources
+  are being rejected than the gateway tracks -- a scan spread over many addresses, or a deployment
+  whose sources are not per client. If that refusal is a risk you cannot accept, keep `observe`, or
+  place the per-address limit in front of the gateway.
+* A source of `unknown` -- a request through a trusted proxy that carries no client-address header
+  (`Forwarded` or `X-Forwarded-For`), or only blank ones -- is counted and can trip, but is never
+  blocked, delayed or refused,
+  because it stands for every such client at once. Its trip is therefore logged and counted with the
+  action `observe`, whatever `action` is configured. WARN `ApiSheriff-149` at startup reminds you of
+  this when `block` or `delay` is configured together with `forwarded.trusted_proxies`.
 * `sheriff_errors_total{event}` keeps naming the true cause of every rejection the scanner received
   (see <<_uniform_not_found_operator_note>>).
 
@@ -411,8 +430,11 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   (see link:../configuration/routing-and-forwarding.adoc#_forwarded_headers[Configuration -- `forwarded`]).
   Otherwise every client arrives from the balancer's address, one scanning client trips that address,
   and `block` answers `429` to all of them. Make sure that proxy sends each client's address in
-  `X-Forwarded-For`: a request it forwards without a usable one is keyed `unknown`, which `block` and
-  `delay` never act on.
+  `Forwarded` or `X-Forwarded-For`. A request it forwards with neither header, or with only blank
+  ones, is keyed `unknown`, which `block` and `delay` never act on. A request whose header carries a
+  value that names no client that is an address literal -- malformed, the two headers disagreeing, or
+  an RFC 7239 obfuscated identifier such as `for=_hidden` -- is keyed on the proxy's own unresolved
+  source, `unresolved-via-<proxy address>`, which `block` and `delay` do act on.
 . If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
   proxy -- they are one source whatever the gateway is told. Keep `observe`, or raise `threshold` well
   above what those clients cause together.
@@ -661,9 +683,11 @@ deployment that never writes it keeps the behaviour shown here.
   however steadily the body arrives: answered `408` when the upstream has not answered yet, and
   otherwise its relayed response is ended -- on HTTP/2 the stream is then reset, on HTTP/1.x the
   connection is closed. When nothing of the upstream's answer had been relayed yet, the client gets the
-  upstream's status with no body, marked `Cache-Control: no-store` and without the upstream's
-  `Expires`, `Age`, `ETag`, `Last-Modified`, `CDN-Cache-Control` and `Surrogate-Control`, so no cache
-  keeps it -- a CDN or other cache those last two target obeys them in place of `Cache-Control`. The
+  upstream's status with no body, marked `Cache-Control: no-store` and without any upstream field a
+  cache could store it by: the freshness fields `Expires`, `Age` and `X-Accel-Expires`, the
+  validators `ETag` and `Last-Modified`, and every cache-targeted directive -- any field whose name
+  ends in `-Cache-Control` (such as `CDN-Cache-Control`), `Surrogate-Control` and `Edge-Control`, which
+  a CDN or other cache they target obeys in place of `Cache-Control`. No cache keeps it. The
   time spent waiting for a
   pooled upstream connection counts towards the 25 s, but that wait is bounded at 10 s (Upstream
   connection wait, below), so a body always has at least 15 s left when the gateway obtains its
@@ -702,6 +726,19 @@ deployment that never writes it keeps the behaviour shown here.
   connection, which no shorter timeout bounds. Either way it is the upstream's timeout, the breaker
   counts it, and it is never retried. More requests than a slow upstream serves within 10 s therefore end as `504` and can open
   its breaker, after which the open circuit answers `503` with `Retry-After`.
+
+  *Expired wait behind a body still arriving: `503`.* A connection held by a client still sending its
+  request body cannot be answered before that body ends. So when, at the moment the wait expires, some
+  request body to that upstream is still arriving -- handed over and not yet ended -- and forwarded a
+  chunk within the last 10 s, the expired wait is answered `503` (`UPSTREAM_POOL_SATURATED`) and is
+  neutral to the breaker: a client trickling a body cannot open the breaker for everyone else. A body
+  that has ended, however recently, never counts, so a load of complete uploads leaves every expired
+  wait the upstream's `504`. Nor does a body whose upstream request has failed, whatever its client
+  sends afterwards. The
+  limits: an upstream that answers nothing while some client trickles a body to it does not open its
+  breaker through expired waits, and its held requests still end on the 30 s guard timeout; callers
+  that all leave before the 10 s end as neutral, so against an upstream that never answers they never
+  open it.
 
   A connection the upstream refuses, and a TCP connect or TLS handshake that does not complete in time,
   stay the upstream's failure as well. A client that leaves while its request waits here ends its
@@ -771,6 +808,32 @@ deployment that never writes it keeps the behaviour shown here.
 | The bounded wait for in-flight requests to complete on `SIGTERM`; kept below the Quarkus default
   shutdown timeout so the drain completes within the shutdown window rather than being cut short.
 |===
+
+[[_request_head_deadline]]
+=== A front proxy times out the request head
+
+The gateway sets no deadline on the arrival of a request head -- the HTTP/1.1 request line and
+header block, or an HTTP/2 header block with its `CONTINUATION` frames. Until a head is complete the
+connection carries no request: the admission cap, per-source enumeration detection and threat
+classification do not see it, and the request-body bounds have not started. Two bounds in the table
+above act on such a connection:
+
+* the *idle-connection reap*, which any byte restarts, so a client that sends something within every
+  60 s keeps its connection open;
+* the *connection cap*, one counter shared by the plain-HTTP redirect listener and the HTTPS listener
+  of the Quarkus-terminated side. A connection the cap has counted holds its slot until it closes,
+  whether or not a request head ever completes on it, and a connection beyond the cap is closed
+  without being served.
+
+Under `tls.passthrough_sni` the SNI front listener ends a connection whose TLS ClientHello is not
+complete within 10 s (link:tls-edge.adoc[TLS edge]); it sets no deadline on the request head that
+follows the handshake.
+
+*Deployment requirement.* Run the gateway behind a front proxy or load balancer that enforces its
+own timeout on the request head and closes a connection that does not deliver a complete head in
+time -- for example nginx `client_header_timeout`, HAProxy `timeout http-request` or Envoy
+`request_headers_timeout`. The gateway itself cannot be set to do this: neither `gateway.yaml` nor
+the shipped `application.properties` carries a key for it.
 
 == Asset Content Types (`asset_defaults.content_types`)
 

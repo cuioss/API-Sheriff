@@ -154,7 +154,8 @@ class GatewayCookieContractTest {
             SessionRecord resolved = cookieBinding.resolve(pair(sealedCookie), LOGIN).orElseThrow();
             lines.addAll(cookieBinding.recordAccess(resolved, pair(sealedCookie), LOGIN.plusSeconds(600)));
             lines.add(bindingCodec.toSetCookieHeader(Generators.letterStrings(16, 32).next()));
-            lines.addAll(logoutEndpoint(serverBinding).logout(pair(serverCookie), ORIGIN, null, LOGIN).setCookieHeaders().stream()
+            lines.addAll(logoutEndpoint(serverBinding).logout(pair(serverCookie), ORIGIN, CsrfDefence.FetchMetadata.ABSENT,
+                    LOGIN).setCookieHeaders().stream()
                     .filter(line -> !valueOf(line).isEmpty()).toList());
             return lines;
         }

@@ -45,9 +45,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * The source-key stage: the key a request is tracked under follows the {@code forwarded} trust
  * decision, never reads an untrusted peer's header, never keys a trusted proxy's request on the proxy,
- * falls back to the {@code X-Forwarded-For} client of a contested chain,
- * folds a malformed or undeclared {@code Host} to {@code *} and an IPv6 source to its {@code /64}, and
- * is stashed on the context under {@link SourceKeys#SOURCE_KEY} for both per-source consumers.
+ * keys a trusted proxy's present but unresolvable forwarding chain on that proxy's unresolved source
+ * rather than on the exempt {@code unknown}, never lets a client choose its key through a family the
+ * proxy does not manage, folds a malformed or undeclared {@code Host} to {@code *} and an IPv6 source
+ * to its {@code /64}, and is stashed on the context under {@link SourceKeys#SOURCE_KEY} for both
+ * per-source consumers.
  */
 @DisplayName("SourceKeys — the one source key both per-source consumers read")
 class SourceKeysTest {
@@ -55,7 +57,12 @@ class SourceKeysTest {
     private static final String FORWARDED_FOR = "X-Forwarded-For";
     private static final String FORWARDED = "Forwarded";
     private static final String OTHER_CLIENT = "203.0.113.9";
+    private static final String CLIENT_CHOSEN = "198.18.7.9";
+    private static final String CLIENT_ROTATED = "198.18.7.10";
     private static final String PROXY = "192.0.2.10";
+    private static final String SECOND_PROXY = "192.0.2.20";
+    /** The source a request through {@link #PROXY} is keyed on when its chain resolves no client. */
+    private static final String UNRESOLVED_VIA_PROXY = "unresolved-via-192.0.2.10";
     private static final String PEER = "198.51.100.23";
     private static final String FORWARDED_CLIENT = "203.0.113.7";
     private static final String DECLARED_HOST = "api.example.com";
@@ -83,9 +90,21 @@ class SourceKeysTest {
     }
 
     @ParameterizedTest(name = "[{0}]")
-    @ValueSource(strings = {"", "not-an-address", "999.0.0.1", "unknown"})
-    @DisplayName("a trusted proxy's request whose forwarding header names no client is keyed on the unknown source")
-    void trustedProxyRequestWithoutAClientIsKeyedOnTheUnknownSource(String forwardedFor) {
+    @ValueSource(strings = {"not-an-address", "999.0.0.1", "unknown", "garbage"})
+    @DisplayName("a trusted proxy's request whose forwarding header names no client is keyed on the proxy's unresolved source")
+    void trustedProxyRequestWithAnUnresolvableHeaderIsKeyedOnTheProxysUnresolvedSource(String forwardedFor) {
+        SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
+
+        SourceKey key = sourceKeys.resolve(request(PROXY, Map.of(FORWARDED_FOR, forwardedFor), null));
+
+        assertEquals(new SourceKey(UNRESOLVED_VIA_PROXY, SourceKey.UNDECLARED_HOST), key,
+                "a key the per-source consumers act on: never unknown, never the proxy's own address");
+    }
+
+    @ParameterizedTest(name = "[{0}]")
+    @ValueSource(strings = {"", "   "})
+    @DisplayName("a trusted proxy's request whose forwarding header is blank is keyed on the unknown source")
+    void trustedProxyRequestWithABlankHeaderIsKeyedOnTheUnknownSource(String forwardedFor) {
         SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
 
         SourceKey key = sourceKeys.resolve(request(PROXY, Map.of(FORWARDED_FOR, forwardedFor), null));
@@ -95,31 +114,92 @@ class SourceKeysTest {
     }
 
     @Test
-    @DisplayName("a trusted proxy's request whose Forwarded disagrees with X-Forwarded-For is keyed on the X-Forwarded-For client")
-    void contestedChainIsKeyedOnTheXForwardedForClient() {
+    @DisplayName("a client behind a Forwarded-only proxy cannot choose its key through X-Forwarded-For")
+    void clientCannotChooseItsKeyThroughAnUnmanagedXForwardedFor() {
         SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
 
+        SourceKey chosen = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED, "for=" + FORWARDED_CLIENT, FORWARDED_FOR, CLIENT_CHOSEN), null));
+        SourceKey rotated = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED, "for=" + FORWARDED_CLIENT, FORWARDED_FOR, CLIENT_ROTATED), null));
+
+        assertAll("no X-Forwarded-For fallback for a family not shown proxy-managed",
+                () -> assertEquals(new SourceKey(UNRESOLVED_VIA_PROXY, SourceKey.UNDECLARED_HOST), chosen,
+                        "the client-chosen address is never the key"),
+                () -> assertEquals(chosen, rotated, "rotating the chosen address does not rotate the key"));
+    }
+
+    @Test
+    @DisplayName("matched control: behind a proxy that appends to X-Forwarded-For the key is the real client, as before")
+    void appendingProxyKeysTheRealClientWhateverTheClientPrefixes() {
+        SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
+
+        SourceKey chosenPrefix = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED_FOR, CLIENT_CHOSEN + ", " + FORWARDED_CLIENT), null));
+        SourceKey rotatedPrefix = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED_FOR, CLIENT_ROTATED + ", " + FORWARDED_CLIENT), null));
+        SourceKey malformedPrefix = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED_FOR, "garbage, " + FORWARDED_CLIENT), null));
+        SourceKey separateLines = sourceKeys.resolve(requestWithInstances(PROXY,
+                Map.of(FORWARDED_FOR, List.of(CLIENT_CHOSEN, FORWARDED_CLIENT))));
+
+        SourceKey realClient = new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST);
+        assertAll("the appending proxy",
+                () -> assertEquals(realClient, chosenPrefix),
+                () -> assertEquals(realClient, rotatedPrefix),
+                () -> assertEquals(realClient, malformedPrefix),
+                () -> assertEquals(realClient, separateLines, "the client's line and the proxy's own line"));
+    }
+
+    @Test
+    @DisplayName("a client-sent X-Forwarded-For beside a Forwarded-only proxy's chain is keyed on the proxy's unresolved source")
+    void clientSentMalformedXForwardedForIsKeyedOnTheProxysUnresolvedSource() {
+        SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
+
+        SourceKey malformed = sourceKeys.resolve(request(PROXY,
+                Map.of(FORWARDED, "for=" + FORWARDED_CLIENT, FORWARDED_FOR, "garbage"), null));
         SourceKey contested = sourceKeys.resolve(request(PROXY,
                 Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT), null));
         SourceKey agreeing = sourceKeys.resolve(request(PROXY,
                 Map.of(FORWARDED, "for=" + FORWARDED_CLIENT, FORWARDED_FOR, FORWARDED_CLIENT), null));
 
-        assertAll("the X-Forwarded-For fallback",
-                () -> assertEquals(new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST), contested,
-                        "a contested chain falls back to the X-Forwarded-For client, never unknown"),
+        assertAll("a present but unresolvable chain is not exempt from the configured action",
+                () -> assertEquals(new SourceKey(UNRESOLVED_VIA_PROXY, SourceKey.UNDECLARED_HOST), malformed),
+                () -> assertEquals(new SourceKey(UNRESOLVED_VIA_PROXY, SourceKey.UNDECLARED_HOST), contested),
                 () -> assertEquals(new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST), agreeing,
-                        "control: an agreeing chain keys on its client as before"));
+                        "matched control: an agreeing chain keys on its client as before"));
     }
 
     @Test
-    @DisplayName("a trusted proxy's contested chain without a usable X-Forwarded-For is still keyed on the unknown source")
-    void contestedChainWithoutAUsableXForwardedForIsUnknown() {
+    @DisplayName("a client line that pushes the joined X-Forwarded-For over the cap is keyed on the proxy's unresolved source")
+    void joinedChainOverTheCapIsKeyedOnTheProxysUnresolvedSource() {
         SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32"));
+        String clientLine = chainOfAtLeast(SecurityConfiguration.defaults().maxHeaderValueLength() - FORWARDED_CLIENT.length());
 
-        SourceKey key = sourceKeys.resolve(request(PROXY,
-                Map.of(FORWARDED, "for=" + OTHER_CLIENT, FORWARDED_FOR, "not-an-address"), null));
+        SourceKey overCap = sourceKeys.resolve(requestWithInstances(PROXY,
+                Map.of(FORWARDED_FOR, List.of(clientLine, FORWARDED_CLIENT))));
+        SourceKey shortLine = sourceKeys.resolve(requestWithInstances(PROXY,
+                Map.of(FORWARDED_FOR, List.of(CLIENT_CHOSEN, FORWARDED_CLIENT))));
 
-        assertEquals(new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST), key);
+        assertAll("the resolver drops the joined chain; the request is still acted on",
+                () -> assertTrue(clientLine.length() <= SecurityConfiguration.defaults().maxHeaderValueLength(),
+                        "precondition: the client line alone is within the cap"),
+                () -> assertEquals(new SourceKey(UNRESOLVED_VIA_PROXY, SourceKey.UNDECLARED_HOST), overCap),
+                () -> assertEquals(new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST), shortLine,
+                        "matched control: a short client line keeps the real client"));
+    }
+
+    @Test
+    @DisplayName("each trusted proxy's unresolvable requests get a key of their own")
+    void unresolvedSourceIsPerProxy() {
+        SourceKeys sourceKeys = sourceKeys(List.of(PROXY + "/32", SECOND_PROXY + "/32"));
+
+        SourceKey first = sourceKeys.resolve(request(PROXY, Map.of(FORWARDED_FOR, "garbage"), null));
+        SourceKey second = sourceKeys.resolve(request(SECOND_PROXY, Map.of(FORWARDED_FOR, "garbage"), null));
+
+        assertAll("one unresolved source per proxy",
+                () -> assertEquals(new SourceKey(UNRESOLVED_VIA_PROXY, SourceKey.UNDECLARED_HOST), first),
+                () -> assertEquals(new SourceKey("unresolved-via-" + SECOND_PROXY, SourceKey.UNDECLARED_HOST), second));
     }
 
     @Test
@@ -212,6 +292,26 @@ class SourceKeysTest {
             @Nullable HostAndPort authority) {
         MultiMap multiMap = MultiMap.caseInsensitiveMultiMap();
         headers.forEach(multiMap::add);
+        return request(peer, multiMap, authority);
+    }
+
+    /** A request carrying each header as the given separate instances, in order, and no authority. */
+    private static HttpServerRequest requestWithInstances(String peer, Map<String, List<String>> headers) {
+        MultiMap multiMap = MultiMap.caseInsensitiveMultiMap();
+        headers.forEach(multiMap::add);
+        return request(peer, multiMap, null);
+    }
+
+    /** A well-formed chain of IPv4 addresses joined with {@code ", "}, at least {@code length} characters long. */
+    private static String chainOfAtLeast(int length) {
+        StringBuilder chain = new StringBuilder("1.1.1.1");
+        while (chain.length() < length) {
+            chain.append(", 1.1.1.1");
+        }
+        return chain.toString();
+    }
+
+    private static HttpServerRequest request(String peer, MultiMap multiMap, @Nullable HostAndPort authority) {
         SocketAddress remote = SocketAddress.inetSocketAddress(50_000, peer);
         return (HttpServerRequest) Proxy.newProxyInstance(HttpServerRequest.class.getClassLoader(),
                 new Class<?>[]{HttpServerRequest.class}, (proxy, method, args) -> switch (method.getName()) {

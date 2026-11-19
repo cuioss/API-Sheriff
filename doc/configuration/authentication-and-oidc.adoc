@@ -604,16 +604,20 @@ link:#_oidc_client_authentication[Client authentication].
 
 | `logout.path`
 | Gateway-served logout endpoint (default `/logout`), answered whatever the method. It acts only on
-  same-origin proof, checked before any session is looked up: an `Origin` in
-  `session.csrf.trusted_origins` (a present `Origin` decides alone), or, with no `Origin`,
-  `Sec-Fetch-Site: same-origin` or `none`. Any other request is answered `200` with a fixed HTML
+  a trusted top-level document navigation, checked before any session is looked up. The origin: an
+  `Origin` in `session.csrf.trusted_origins` or the gateway's own origin (the origin of
+  `redirect_uri`, trusted here implicitly, so the list need not name it) -- a present `Origin`
+  decides alone -- or, with no `Origin`, `Sec-Fetch-Site: same-origin`; `none` is not a proof. The
+  navigation, judged on each Fetch Metadata header the request carries: no `Sec-Purpose` (a prefetch
+  or prerender), `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document` (a subresource, a
+  `fetch()` call or a frame carries another). Any other request is answered `200` with a fixed HTML
   confirmation page -- `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none';
   frame-ancestors 'none'`, `X-Frame-Options: DENY` -- whose one form `POST`s to this path; the session
   and its cookies are left untouched and the IdP is not contacted. The policy carries no
   `form-action`, because a browser enforces that directive on every redirect of the form's `POST`
   and would block the `302` to the IdP's cross-origin `end_session_endpoint`. A logout
   link on a trusted origin other than the gateway's own therefore lands on that page (see
-  link:../user/bff-session.adoc#logout-same-origin[Logout -- same-origin proof]).
+  link:../user/bff-session.adoc#logout-same-origin[Logout -- the navigation proof]).
 
   With the proof, it destroys the local session and every session-binding cookie *first*, then
   redirects to the IdP `end_session_endpoint` with
@@ -666,8 +670,8 @@ link:#_oidc_client_authentication[Client authentication].
   `allow_credentials: true`, and works only *same-site* (the session cookie is `SameSite=Lax`). A
   refused call is `CSRF_REJECTED` (`403`) before authentication, answered as the unrouted `404` while
   `uniform_not_found` is on (see xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]).
-  The same list is the trusted `Origin` set of the `logout.path` same-origin proof, so a declared list
-  should name the gateway's own origin too: the confirmation page's `POST` carries it.
+  The `logout.path` navigation proof trusts the same list plus the gateway's own origin, so a declared
+  list need not name the gateway's origin for the confirmation page's `POST`, which carries it.
   See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
 
 | `session.mode`

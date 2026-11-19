@@ -39,21 +39,27 @@ import org.jspecify.annotations.Nullable;
  * engine end-session redirect, and the return-leg {@code state} verification — lives in
  * {@link RpInitiatedLogout}.
  * <p>
- * <strong>Same-origin provenance comes first.</strong> The logout path is matched whatever the method,
- * so a cross-site page could otherwise end a user's session with a plain link or an image. Before any
- * session is resolved, {@link #logout(String, String, String, Instant)} asks the session
- * {@link CsrfDefence} whether the request proves same-origin provenance
- * ({@link CsrfDefence#provesSameOriginNavigation(String, String)}: a trusted {@code Origin}, or with
- * {@code Origin} absent a {@code Sec-Fetch-Site} of {@code same-origin} or {@code none}). Without that
- * proof the answer is a {@code 200} confirmation page: a fixed HTML body that reflects nothing of the
+ * <strong>Provenance comes first.</strong> The logout path is matched whatever the method, so a page
+ * could otherwise end a user's session with a plain link or an image — a cross-site page, and equally a
+ * same-origin one carrying markup an attacker placed in content the gateway serves. Before any session
+ * is resolved, {@link #logout(String, String, CsrfDefence.FetchMetadata, Instant)} asks the logout
+ * leg's {@link CsrfDefence} whether the request is a top-level document navigation from a trusted
+ * origin ({@link CsrfDefence#provesTrustedDocumentNavigation(String, CsrfDefence.FetchMetadata)}: no
+ * {@code Sec-Purpose}, {@code Sec-Fetch-Mode: navigate} and {@code Sec-Fetch-Dest: document} when
+ * present, and a trusted {@code Origin} or, with {@code Origin} absent,
+ * {@code Sec-Fetch-Site: same-origin}). A same-origin image, script, {@code fetch()}, frame, prefetch or
+ * prerender, a typed URL or a link opened from another application ({@code Sec-Fetch-Site: none}), and
+ * a request from a browser without Fetch Metadata and without {@code Origin} therefore lack the proof.
+ * Without it the answer is a {@code 200} confirmation page: a fixed HTML body that reflects nothing of the
  * request, with one form whose button {@code POST}s to the configured logout path. The browser marks
- * that {@code POST} with the gateway's own {@code Origin}, so it re-enters this leg with the proof. The
+ * that {@code POST} with the gateway's own {@code Origin}, which the logout leg's defence trusts
+ * whatever {@code session.csrf.trusted_origins} lists, so it re-enters this leg with the proof. The
  * page is {@code no-store}, forbids framing ({@code Content-Security-Policy} {@code frame-ancestors
  * 'none'}, {@code X-Frame-Options: DENY}), carries no {@code form-action} so the {@code POST} can follow
  * the identity provider's end-session redirect, and leaves the session and its cookies untouched;
  * {@link RpInitiatedLogout} is not reached, so no identity-provider call is made.
  * <p>
- * <strong>Logout leg.</strong> With the proof, {@link #logout(String, String, String, Instant)}
+ * <strong>Logout leg.</strong> With the proof, {@link #logout(String, String, CsrfDefence.FetchMetadata, Instant)}
  * resolves the request's live {@link SessionRecord} through the mode-neutral {@link SessionBinding}
  * seam and
  * <strong>destroys it first</strong> ({@link SessionBinding#destroy}): the local session
@@ -96,8 +102,8 @@ import org.jspecify.annotations.Nullable;
  * redirected to {@code final_redirect}; a missing/mismatched {@code state} is rejected {@code 400}, so
  * a forged logout-return cannot land the browser anywhere.
  * <p>
- * The endpoint is framework-agnostic (raw {@code Cookie}, {@code Origin} and {@code Sec-Fetch-Site}
- * header values in, a {@link LogoutOutcome} the edge renders out — no JAX-RS/Vert.x coupling), so it is
+ * The endpoint is framework-agnostic (raw {@code Cookie}, {@code Origin} and Fetch Metadata header
+ * values in, a {@link LogoutOutcome} the edge renders out — no JAX-RS/Vert.x coupling), so it is
  * unit-testable without a container; the session runtime wires it to the request/response edge.
  *
  * @author API Sheriff Team
@@ -145,8 +151,10 @@ public final class LogoutEndpoint {
      * @param rpInitiatedLogout the transport-free RP-initiated logout orchestration
      * @param sessionBinding    the mode-neutral session binding the session is resolved, destroyed,
      *                          and cleared through
-     * @param csrfDefence       the session CSRF defence — the one instance the edge enforces on
-     *                          unsafe-method session requests — whose trusted origins prove a logout
+     * @param csrfDefence       the logout leg's defence — the session CSRF defence the edge enforces on
+     *                          unsafe-method session requests,
+     *                          {@linkplain CsrfDefence#withGatewayOrigin(String) also trusting the
+     *                          gateway's own origin} — whose trusted origins prove a logout
      * @param logoutPath        the reserved {@code oidc.logout.path} the confirmation form posts to;
      *                          {@code null} when no logout path is reserved, in which case only the
      *                          return leg can be dispatched here
@@ -160,19 +168,19 @@ public final class LogoutEndpoint {
     }
 
     /**
-     * Handles the RP-initiated logout leg. Without same-origin provenance it answers the confirmation
-     * page and touches nothing else. With it, it resolves the live session, destroys it, revokes the
+     * Handles the RP-initiated logout leg. Without the proof of a top-level document navigation from a
+     * trusted origin it answers the confirmation page and touches nothing else. With it, it resolves the live session, destroys it, revokes the
      * refresh token the destroyed session held — or the resolved session's, when another path had
      * already ended it — drives the engine end-session redirect, and clears the session cookie.
      * <p>
      * Thread-safe: the endpoint holds no mutable state and its collaborators are safe for concurrent
      * use.
      *
-     * @param cookieHeader the raw request {@code Cookie} header value, may be absent
-     * @param origin       the request's first {@code Origin} header value, may be absent
-     * @param secFetchSite the request's first {@code Sec-Fetch-Site} header value, may be absent
-     * @param now          the reference instant (the session-resolution TTL anchor)
-     * @return without same-origin provenance, a {@code 200} confirmation page that sets no cookie;
+     * @param cookieHeader  the raw request {@code Cookie} header value, may be absent
+     * @param origin        the request's first {@code Origin} header value, may be absent
+     * @param fetchMetadata the request's Fetch Metadata headers, each may be absent
+     * @param now           the reference instant (the session-resolution TTL anchor)
+     * @return without the proof, a {@code 200} confirmation page that sets no cookie;
      *         otherwise a {@code 302} redirect to the IdP {@code end_session_endpoint}
      *         (session-clearing and logout-state {@code Set-Cookie} headers) when an end-session
      *         redirect was built, or a {@code 302} straight to {@code final_redirect} clearing the
@@ -180,17 +188,18 @@ public final class LogoutEndpoint {
      * @throws IllegalStateException when the request lacks the proof and no logout path is reserved —
      *                               the logout leg is dispatched only for a reserved logout path
      */
-    public LogoutOutcome logout(@Nullable String cookieHeader, @Nullable String origin, @Nullable String secFetchSite,
-            Instant now) {
+    public LogoutOutcome logout(@Nullable String cookieHeader, @Nullable String origin,
+            CsrfDefence.FetchMetadata fetchMetadata, Instant now) {
+        Objects.requireNonNull(fetchMetadata, "fetchMetadata");
         Objects.requireNonNull(now, "now");
 
         // Judged before any session is resolved: a request without the proof learns nothing about the
         // session, and no identity-provider call is made for it.
-        if (!csrfDefence.provesSameOriginNavigation(origin, secFetchSite)) {
+        if (!csrfDefence.provesTrustedDocumentNavigation(origin, fetchMetadata)) {
             if (confirmationPage == null) {
                 throw new IllegalStateException("logout leg dispatched without a reserved logout path");
             }
-            LOGGER.debug("RP-initiated logout without same-origin provenance — answering the confirmation page, session untouched");
+            LOGGER.debug("RP-initiated logout without a trusted document navigation — answering the confirmation page, session untouched");
             return LogoutOutcome.confirmation(confirmationPage);
         }
 

@@ -51,8 +51,8 @@ import org.jspecify.annotations.Nullable;
  * individually very broad range. It also emits
  * {@link ConfigLogMessages.WARN#DETECTION_ACTION_BEHIND_TRUSTED_PROXIES} when an acting
  * {@code enumeration_detection} action ({@code block} or {@code delay}) meets a non-empty
- * {@code trusted_proxies}, since a proxied request without a usable client address is keyed on the
- * shared {@code unknown} source detection never acts on.
+ * {@code trusted_proxies}, since a proxied request without a {@code Forwarded} or
+ * {@code X-Forwarded-For} value is keyed on the shared {@code unknown} source detection never acts on.
  * <p>
  * The passthrough host-collision rule ({@link #validatePassthroughHostCollision}) refuses a route whose
  * {@code match.host} is a {@code tls.passthrough_sni} host, since such a host is relayed at L4 and the
@@ -150,9 +150,10 @@ public class EdgeRules {
     /**
      * Emits {@link ConfigLogMessages.WARN#DETECTION_ACTION_BEHIND_TRUSTED_PROXIES} when
      * {@code enumeration_detection} is enabled with an effective action other than {@code observe} and
-     * {@code forwarded.trusted_proxies} is non-empty: a trusted proxy's request without a usable client
-     * address is keyed on the shared {@code unknown} source, which detection never acts on, so such
-     * requests escape the configured action. An omitted {@code enumeration_detection} block resolves to
+     * {@code forwarded.trusted_proxies} is non-empty: a trusted proxy's request that carries no
+     * {@code Forwarded} or {@code X-Forwarded-For} value is keyed on the shared {@code unknown} source,
+     * which detection never acts on, so such requests escape the configured action. A header that is
+     * present but names no client is keyed on the proxy's own unresolved source, which is acted on. An omitted {@code enumeration_detection} block resolves to
      * {@code observe} and stays silent. The record names the action only, never a proxy range.
      */
     private static void warnOnActingDetectionBehindTrustedProxies(GatewayConfig gateway, ForwardedConfig forwarded) {

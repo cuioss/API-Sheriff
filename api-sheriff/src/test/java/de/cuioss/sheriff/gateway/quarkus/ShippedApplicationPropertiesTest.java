@@ -94,6 +94,8 @@ class ShippedApplicationPropertiesTest {
 
     private static final String MAX_CONNECTIONS = "quarkus.http.limits.max-connections";
 
+    private static final String MANAGEMENT_MAX_HEADER_SIZE = "quarkus.management.limits.max-header-size";
+
     /** The shipped connection cap as a multiple of the default admission cap (the documented headroom). */
     private static final int CONNECTION_CAP_HEADROOM_FACTOR = 2;
 
@@ -182,6 +184,25 @@ class ShippedApplicationPropertiesTest {
                 () -> assertEquals("4096", declared,
                         "the literal value the Connection cap row of doc/user/edge-security.adoc and the "
                                 + "nofile advice derived from it document"));
+    }
+
+    /**
+     * The management interface's header-block bound. No {@code HttpServerOptionsCustomizer} reaches the
+     * management listener, so {@code quarkus.management.limits.max-header-size} is the one way to bound it,
+     * and without the key the listener keeps the Quarkus default of 20 KiB. It is held at the main
+     * listener's 16 KiB; {@code ManagementListenerTransportTest} proves the key acts on the listener.
+     */
+    @Test
+    @DisplayName("The packaged file bounds the management interface's header block at the main listener's 16 KiB")
+    void packagedFileDeclaresTheManagementHeaderBlockBound() throws Exception {
+        Properties shipped = new Properties();
+        try (Reader reader = Files.newBufferedReader(PACKAGED_APPLICATION_PROPERTIES, StandardCharsets.UTF_8)) {
+            shipped.load(reader);
+        }
+
+        assertEquals("16K", shipped.getProperty(MANAGEMENT_MAX_HEADER_SIZE),
+                () -> MANAGEMENT_MAX_HEADER_SIZE + " must stay declared at 16K in the shipped application.properties, "
+                        + "or the management listener keeps the 20 KiB Quarkus default above the main listener's bound");
     }
 
     @Test

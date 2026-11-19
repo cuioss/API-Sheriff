@@ -716,10 +716,11 @@ client address the forwarding headers name when the request arrives through a pr
 `forwarded.trusted_proxies`, otherwise the address of the TCP connection. Behind the gateway's own
 SNI front listener (`tls.passthrough_sni` set), that connection is the client's connection to the
 front listener, not the internal hop the gateway relays it over. An IPv6 address counts by
-its `/64`. When a trusted proxy's `Forwarded` and `X-Forwarded-For` headers together name no client
--- for example because the two chains disagree -- the client the `X-Forwarded-For` chain alone names
-is used. Requests through a trusted proxy whose forwarding headers name no client even then, and
-requests without a usable address, are all counted as one source, `unknown`. When a source starts its 257th
+its `/64`. When a trusted proxy's `Forwarded` or `X-Forwarded-For` carries a value yet the two
+together name no client -- for example because the two chains disagree -- the login is counted under
+that proxy's own source, `unresolved-via-<proxy address>`; neither chain is read on its own.
+Requests through a trusted proxy that carry neither header, or only blank ones, and requests without a usable address,
+are all counted as one source, `unknown`. When a source starts its 257th
 pending login, its oldest one is dropped; that user's callback is refused `403` and the login has to
 be started again. Other sources are not touched.
 
@@ -758,31 +759,54 @@ Each replica counts its own pending logins (see <<multi-replica>>).
 == Logout
 
 [[logout-same-origin]]
-*A logout acts only on a request from the gateway's own pages.* The logout path is answered whatever
-the method, so without a check a link or an image on another site could end a user's session. Before
-it looks at the session, the gateway asks the request for same-origin proof by the rules of the CSRF
-defence (see <<csrf>>):
+*A logout acts only on a top-level navigation from a trusted origin.* The logout path is answered
+whatever the method, so without a check a link or an image on another site -- or an image, a script
+or a frame placed in content the gateway itself serves -- could end a user's session. Before it looks
+at the session, the gateway asks the request for two things.
+
+*It must be a top-level document navigation the user asked for.* The browser's Fetch Metadata
+headers decide this, and each is judged only when the request carries it:
+
+* no `Sec-Purpose` header -- a browser sends one on a prefetch or a prerender, which no user asked
+  for;
+* `Sec-Fetch-Mode: navigate` -- an image, a script, a `fetch()` call or a link prefetch carries a
+  different mode;
+* `Sec-Fetch-Dest: document` -- a frame or an iframe carries a different destination.
+
+*It must come from a trusted origin*, by the rules of the CSRF defence (see <<csrf>>):
 
 * an `Origin` header naming a trusted origin -- one listed in `oidc.session.csrf.trusted_origins`,
-  which defaults to the origin of `oidc.redirect_uri`. A present `Origin` decides alone; or
-* with no `Origin`, `Sec-Fetch-Site: same-origin`, or `Sec-Fetch-Site: none` -- the value a browser
-  sends for a navigation the user started by typing the URL or opening a bookmark.
+  which defaults to the origin of `oidc.redirect_uri`, or the gateway's own origin. A present
+  `Origin` decides alone; or
+* with no `Origin`, `Sec-Fetch-Site: same-origin`.
 
-*A request without that proof gets a confirmation page.* It is answered `200` with a fixed HTML page
-holding one *Sign out* button, and nothing else happens: the session and its cookies stay as they
-were and the IdP is not contacted. The page reflects nothing of the request, is sent with
-`Cache-Control: no-store`, and forbids framing (`Content-Security-Policy` with
-`frame-ancestors 'none'`, and `X-Frame-Options: DENY`). Its button `POST`s to `oidc.logout.path`. The
-browser sends that `POST` with the gateway's own origin as `Origin`, so it carries the proof and the
-logout below runs. If you set `oidc.session.csrf.trusted_origins`, list the gateway's own origin in it
-as well; otherwise that `POST` is answered with the confirmation page again.
+`Sec-Fetch-Site: none` is not a proof. A browser sends it for a typed URL or a bookmark, but also for
+a link opened from another application -- a mail client or a chat -- so it cannot tell a navigation
+the user started from a link someone delivered.
+
+*A request without that proof gets a confirmation page.* That includes a typed URL, a bookmark, a link
+opened from another application, a prefetch or prerender, and a request from a browser that sends
+neither Fetch Metadata nor `Origin`. It is answered `200` with a fixed HTML page holding one *Sign
+out* button, and nothing else happens: the session and its cookies stay as they were and the IdP is
+not contacted. The page reflects nothing of the request, is sent with `Cache-Control: no-store`, and
+forbids framing (`Content-Security-Policy` with `frame-ancestors 'none'`, and
+`X-Frame-Options: DENY`). Its button `POST`s to `oidc.logout.path`. The browser sends that `POST` as
+a top-level navigation with the gateway's own origin as `Origin`, so it carries the proof and the
+logout below runs. That holds as long as the confirmation response gives the page no referrer
+policy under which a browser sends `Origin: null` on a form `POST`, such as
+`Referrer-Policy: no-referrer`. The gateway sets no `Referrer-Policy` on the confirmation page -- only
+on the end-session redirect that carries the ID token -- so a front proxy must not add such a policy
+to the confirmation response: the `POST` would then lack the proof, and the user would get the
+confirmation page again. The logout path trusts the gateway's own origin implicitly, so
+`oidc.session.csrf.trusted_origins` need not list it.
 
 *The cost: a logout link on another trusted origin lands on the confirmation page.* A navigation
 from a page on a different origin -- an application or portal on another host, even one in
 `trusted_origins` -- is cross-origin to the gateway and sends no `Origin` on a plain link, so the
 user sees the confirmation page and has to press its button. A link or a script navigation
-(`window.location`) on a page the gateway serves, and a logout `POST` from a trusted origin, end the
-session at once.
+(`window.location`) on a page the gateway serves, and a logout form `POST` from a trusted origin, end
+the session at once. A `fetch()` or `XMLHttpRequest` call to the logout path is not a navigation and
+gets the confirmation page as its answer; navigate the window to the logout path instead.
 
 With the proof, a logout through `oidc.logout.path` *always ends the gateway session first*: the
 session is destroyed and its cookie cleared before anything is asked of the IdP. What follows depends
@@ -873,7 +897,9 @@ the logout token has already ended its own session.
 The receiver destroys the matching sessions in its own local store and answers `200` even when it
 destroyed none, so the IdP cannot tell from the answer whether a session ended. Behind several
 replicas, a session held by a replica that did not receive the token stays alive. Where back-channel
-revocation matters, run a single replica (see <<multi-replica>>). Cookie mode is no substitute: it
+revocation matters, run a single replica (see <<multi-replica>>). Every boot that declares
+`backchannel_path` in server mode logs `WARN` `ApiSheriff-150` stating this scope (see
+link:../LogMessages.adoc#apisheriff-150[Log Messages]). Cookie mode is no substitute: it
 holds no server-side session, so `backchannel_path` answers `404` there. An IdP-side termination
 reaches a cookie session only through a transparent refresh, and only when the IdP then refuses the
 session's refresh token; a session that holds no refresh token, or that is never refreshed, stays
@@ -935,7 +961,10 @@ replica that holds its session.
   whichever replica the balancer picks, and that replica destroys the matching sessions in its own
   store only and answers `200` even when it destroyed none. A session held by another replica stays
   alive. Where back-channel revocation matters, run a single replica (see
-  <<backchannel-logout>>); cookie mode offers no back-channel path at all.
+  <<backchannel-logout>>); cookie mode offers no back-channel path at all. The gateway says so at
+  boot: with `mode: server` and `oidc.logout.backchannel_path` declared it logs `WARN`
+  `ApiSheriff-150`, naming the per-replica scope. No key tells the gateway how many replicas run, so
+  the warning appears on a single replica too; it is not a refusal.
 * *Give every replica the same two signing key files* (see
   link:bff-oidc-common.adoc#key-material[Shared Setup -- Key material]).
 

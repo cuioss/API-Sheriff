@@ -52,8 +52,10 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The recon trip.</strong> {@link #admitReconTrip} admits a trip of the recon ledger as one more
  * input, with the weight {@code weights.recon_trip} under the tag {@link EventType#SOURCE_TRIPPED}, for
- * the tripped source. A recon trip is never an ALERT of its own: it raises the score, and only the
- * threat ledger's own trip alerts.
+ * the request's own source the trip carries ({@link SourceTrip#requestKey()}) — not the recon ledger's
+ * tracked key, which is the {@code /48} aggregate when that ledger counts an IPv6 {@code /64} under it —
+ * so the trip lands on the entry the threat ledger counts that source's own rejections on. A recon trip
+ * is never an ALERT of its own: it raises the score, and only the threat ledger's own trip alerts.
  * <p>
  * <strong>The overflow.</strong> A rejection the ledger could not score — the source was new and the
  * ledger was at its bound on tracked sources — is handed to {@link ThreatAlerts#reportUntracked()}.
@@ -125,14 +127,17 @@ public final class ThreatClassifier implements ErrorResponseWriter.ThreatFeed {
 
     /**
      * Admits a trip of the recon ledger to the threat ledger: the weight {@code weights.recon_trip} under
-     * the tag {@link EventType#SOURCE_TRIPPED}, for the tripped source. The recon trip is an input to the
-     * score, never an ALERT of its own.
+     * the tag {@link EventType#SOURCE_TRIPPED}, for the request's own source
+     * ({@link SourceTrip#requestKey()}), not for the entry the recon ledger tripped. The threat ledger
+     * then decides where that source is counted by its own tracked keys and pressure, so a {@code /64} it
+     * already tracks receives the trip although the recon ledger counted that {@code /64} on its
+     * {@code /48}. The recon trip is an input to the score, never an ALERT of its own.
      *
      * @param reconTrip the trip the recon ledger handed its listener
      */
     public void admitReconTrip(SourceTrip reconTrip) {
         Objects.requireNonNull(reconTrip, "reconTrip");
-        score(reconTrip.key(), weights.reconTrip(), EventType.SOURCE_TRIPPED);
+        score(reconTrip.requestKey(), weights.reconTrip(), EventType.SOURCE_TRIPPED);
     }
 
     /**

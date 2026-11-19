@@ -15,11 +15,14 @@
  */
 package de.cuioss.sheriff.gateway.edge.admission;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Proxy;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -74,8 +77,10 @@ import org.junit.jupiter.params.provider.EnumSource;
  * server whose one handler stashes the source through {@link SourceKeys} and asks the gate: under
  * {@code block} and {@code delay} a new source the ledger cannot track is refused with the block-style
  * {@code 429} and the overflow is reported, while under {@code observe}, for the shared {@code unknown}
- * source, and for a ledger with room, nothing is refused. How the ledger decides that it has no room is
- * {@code SourceLedgerPressureTest}'s subject.
+ * source, and for a ledger with room, nothing is refused. A ledger full of drained sources frees room
+ * through the sweep the refused requests hand off the event loop, with no admission at all. The
+ * {@code unknown} source's trip is logged with the action the gate takes on it, {@code observe}. How the
+ * ledger decides that it has no room is {@code SourceLedgerPressureTest}'s subject.
  * <p>
  * Past the ledger's high-water mark a new IPv6 {@code /64} is tracked under its {@code /48} aggregate;
  * under {@code delay} the held-answer share of such a source is judged and counted under that tracked
@@ -188,6 +193,74 @@ class SourceGateFullLedgerTest {
         assertAll("the shared unknown source is exempt",
                 () -> assertFalse(answered),
                 () -> assertEquals(0L, eventCounter.getCount(EventType.SOURCE_BLOCKED)));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = EnumerationDetectionConfig.Action.class, mode = EnumSource.Mode.EXCLUDE, names = {"OBSERVE"})
+    @DisplayName("the unknown source's trip is logged with the action taken, observe, since the gate never acts on it")
+    void unknownSourceTripIsLoggedAsObserve(EnumerationDetectionConfig.Action action) {
+        SourceGate sourceGate = gate(action);
+        SourceKey unknown = new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST);
+
+        SourceState state = sourceGate.ledger().admit(unknown, EnumerationDetectionConfig.DEFAULT_THRESHOLD,
+                EventType.NO_ROUTE_MATCHED);
+        boolean answered = sourceGate.answersBlocked(stashedOnly(unknown));
+
+        assertAll("the trip of a source the gate never acts on",
+                () -> assertTrue(state.hasTripped(), "precondition: the unknown source tripped"),
+                () -> assertFalse(answered, "precondition: the gate does not answer it"));
+        LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                "Source '" + SourceKey.UNKNOWN_SOURCE + "'");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, "action: observe");
+        LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, "action: " + configured(action));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = EnumerationDetectionConfig.Action.class, mode = EnumSource.Mode.EXCLUDE, names = {"OBSERVE"})
+    @DisplayName("control: a resolved source's trip is logged with the configured action")
+    void resolvedSourceTripIsLoggedWithTheConfiguredAction(EnumerationDetectionConfig.Action action) {
+        SourceGate sourceGate = gate(action);
+
+        SourceState state = sourceGate.ledger().admit(filler(0), EnumerationDetectionConfig.DEFAULT_THRESHOLD,
+                EventType.NO_ROUTE_MATCHED);
+
+        assertTrue(state.hasTripped(), "precondition: the source tripped");
+        LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, "action: " + configured(action));
+    }
+
+    /**
+     * The room query hands its sweep to a virtual thread instead of running it on the event loop, so a
+     * ledger full of drained sources must still free room when nothing but refused requests arrives —
+     * no rejection is admitted here, so no admission ever sweeps. The fillers carry weight {@code 1},
+     * which drains in {@code window / threshold} — 0.6 s at the defaults — so the wait is real time.
+     */
+    @Test
+    @DisplayName("under block a ledger full of drained sources frees room through the sweep the refused requests hand off")
+    void drainedFullLedgerFreesRoomWithoutAnAdmission() throws Exception {
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.Action.BLOCK);
+        for (int index = 0; index < SourceLedger.MAX_TRACKED_SOURCES; index++) {
+            sourceGate.ledger().admit(filler(index), 1, EventType.NO_ROUTE_MATCHED);
+        }
+        SourceKey lastFiller = filler(SourceLedger.MAX_TRACKED_SOURCES - 1);
+        await("the fillers to drain").atMost(Duration.ofSeconds(10))
+                .until(() -> sourceGate.ledger().state(lastFiller).map(SourceState::level).orElse(0.0) <= 0.0);
+
+        await("the handed-off sweep to free the drained sources").atMost(Duration.ofSeconds(10))
+                .pollInterval(Duration.ofMillis(100))
+                .until(() -> {
+                    send();
+                    return sourceGate.ledger().trackedSources() == 0;
+                });
+        Response response = send();
+
+        assertAll("the ledger recovered with no admission",
+                () -> assertEquals(200, response.status(), "a new source passes once room is free"),
+                () -> assertTrue(sourceGate.ledger().state(loopbackKey()).isEmpty(),
+                        "asking for room tracked nothing"));
+    }
+
+    private static String configured(EnumerationDetectionConfig.Action action) {
+        return action.name().toLowerCase(Locale.ROOT);
     }
 
     @Test

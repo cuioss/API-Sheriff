@@ -258,6 +258,79 @@ class RouteTableBuilderTest {
         }
     }
 
+    /**
+     * The refusal side of the same contract: a topology alias is a configured free-form scalar, and the
+     * {@link RouteTableBuilder.RouteTableException} naming an alias that does not resolve reaches the
+     * boot ERROR log, so both alias refusals — the endpoint {@code base_url} and the asset route's
+     * {@code upstream} — render the alias through {@code RuleSupport.renderForMessage}. The aliases are
+     * written straight into the bound model: assembly must not rely on an earlier stage to keep a
+     * control character out of them.
+     */
+    @Nested
+    @DisplayName("Unresolved topology alias refusals — rendered escaped")
+    class AliasRefusalEscaping {
+
+        private static final String FORGED_ALIAS = "ORDERS\nX-Forged: 1";
+        private static final String ESCAPED_ALIAS = "ORDERS\\u000AX-Forged: 1";
+
+        private static void assertEscapedRefusal(RouteTableBuilder.RouteTableException refusal) {
+            String message = refusal.getMessage();
+            assertAll("refusal message",
+                    () -> assertTrue(message.contains(ESCAPED_ALIAS),
+                            () -> "the refusal must echo the alias escaped: " + message),
+                    () -> assertTrue(message.chars().noneMatch(Character::isISOControl),
+                            () -> "the refusal must carry no raw control character: " + message));
+        }
+
+        @Test
+        @DisplayName("Should render a control character in an unresolved base_url alias escaped")
+        void shouldRenderAnUnresolvedBaseUrlAliasEscaped() {
+            GatewayConfig gateway = validGateway().build();
+            List<EndpointConfig> endpoints = List.of(openEndpointSeed("orders", FORGED_ALIAS)
+                    .routes(List.of(RouteConfig.builder().id("orders-read").match(match("/orders")).build()))
+                    .build());
+            ResolvedTopology topology = topologyWith("OTHER");
+
+            RouteTableBuilder.RouteTableException refusal = assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(gateway, endpoints, topology));
+
+            assertEscapedRefusal(refusal);
+        }
+
+        @Test
+        @DisplayName("Should render a control character in an unresolved asset upstream alias escaped")
+        void shouldRenderAnUnresolvedAssetUpstreamAliasEscaped() {
+            GatewayConfig gateway = validGateway().build();
+            AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM).upstream(FORGED_ALIAS).build();
+            List<EndpointConfig> endpoints = List.of(openEndpointSeed("assets", null)
+                    .routes(List.of(RouteConfig.builder().id("assets-read").match(match("/assets")).asset(asset)
+                            .build()))
+                    .build());
+            ResolvedTopology topology = topologyWith("OTHER");
+
+            RouteTableBuilder.RouteTableException refusal = assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(gateway, endpoints, topology));
+
+            assertEscapedRefusal(refusal);
+        }
+
+        @Test
+        @DisplayName("Should echo a printable unresolved alias verbatim")
+        void shouldEchoAPrintableUnresolvedAliasVerbatim() {
+            GatewayConfig gateway = validGateway().build();
+            List<EndpointConfig> endpoints = List.of(openEndpointSeed("orders", "ORDERS")
+                    .routes(List.of(RouteConfig.builder().id("orders-read").match(match("/orders")).build()))
+                    .build());
+            ResolvedTopology topology = topologyWith("OTHER");
+
+            RouteTableBuilder.RouteTableException refusal = assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(gateway, endpoints, topology));
+
+            assertTrue(refusal.getMessage().endsWith(": ORDERS"),
+                    () -> "a printable alias is echoed as written: " + refusal.getMessage());
+        }
+    }
+
     @Nested
     @DisplayName("Route-level upstream.path materialization")
     class UpstreamPathMaterialization {

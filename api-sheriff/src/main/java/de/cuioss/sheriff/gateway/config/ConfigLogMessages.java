@@ -471,6 +471,39 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
+         * Warns that the gateway runs the server-mode session store with back-channel logout enabled, so a
+         * back-channel logout ends sessions on the receiving replica only. It is emitted by the configuration
+         * validation rule that judges the {@code oidc} session settings, so it is emitted each time the
+         * configuration is validated: once at startup, and in a {@code --validate-config} run.
+         * <p>
+         * In server mode the session store lives in the memory of one gateway process. The identity
+         * provider posts a logout token to whichever replica its request reaches; that replica destroys
+         * the matching sessions in its own store and answers {@code 200} even when it destroyed none,
+         * so neither the identity provider nor the operator learns from the answer that a session held
+         * by another replica stayed alive. On a single replica the revocation is complete; behind
+         * several it is not, and nothing reports the difference at request time.
+         * <p>
+         * <strong>Emitted on every such validation, because the replica count is not configuration.</strong>
+         * No {@code gateway.yaml} key declares how many replicas run, so the gateway cannot tell a
+         * single-replica deployment from a scaled one and cannot narrow the warning to the dangerous
+         * case. It therefore names the per-replica scope unconditionally whenever the two conditions
+         * hold, and stays silent in cookie mode (which serves no back-channel path) and whenever
+         * {@code oidc.logout.backchannel_path} is not declared.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: a single-replica server-mode BFF, or a scaled
+         * one whose operator accepts per-replica revocation, is a legitimate posture. What must not
+         * happen is an operator scaling out while believing a back-channel logout still ends every
+         * session of the user.
+         * <p>
+         * The template takes no parameter by design: it names no path, issuer, session or subject.
+         */
+        public static final LogRecord BACKCHANNEL_LOGOUT_PER_REPLICA = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(150)
+                .template("oidc.session.mode is server and oidc.logout.backchannel_path is declared — a back-channel logout ends sessions only in the in-memory session store of the replica that receives it, and that replica answers 200 even when it ended none. Behind several replicas, a session held by another replica stays alive after the identity provider ended it, and nothing reports it. No gateway.yaml key declares the replica count, so this is reported on every such boot: where back-channel revocation must reach every session, run a single replica")
+                .build();
+
+        /**
          * A {@code redirect} route opted into {@code allow_external: true} at boot, so its
          * {@code Location} may send clients to another origin.
          * <p>
@@ -633,22 +666,24 @@ public final class ConfigLogMessages {
          * {@code enumeration_detection} is enabled with the acting action {@code block} or
          * {@code delay} while {@code forwarded.trusted_proxies} is non-empty.
          * <p>
-         * A trusted proxy's request whose forwarding headers yield no client — neither the combined
-         * {@code Forwarded} / {@code X-Forwarded-For} chain nor the {@code X-Forwarded-For} fallback —
+         * A trusted proxy's request that carries no {@code Forwarded} or {@code X-Forwarded-For} value
          * is keyed on the one shared source {@code unknown}. Detection counts, trips and reports that
          * source like any other, but never blocks, delays or refuses it, because it stands for every
-         * such client at once. Requests a proxy forwards without a usable client address therefore
-         * escape the configured action, and this record is the boot-time statement of that gap.
+         * such client at once. Requests a proxy forwards without a client-address header therefore
+         * escape the configured action, and this record is the boot-time statement of that gap. A
+         * request whose header carries a value that resolves no client is not in that gap: it is keyed
+         * on the proxy's own unresolved source, which detection acts on.
          * <p>
          * It is a {@code WARN} and never a boot refusal: the combination is the recommended posture
-         * behind a proxy that does send its clients' addresses. Emitted once per boot by
-         * {@code EdgeRules.validateForwardedTrust}. The template argument is the effective action —
+         * behind a proxy that does send its clients' addresses. Emitted by the validation rule
+         * {@code EdgeRules.validateForwardedTrust}, so once per validation of the configuration: at boot,
+         * and in a {@code --validate-config} run. The template argument is the effective action —
          * never a proxy range or any other address.
          */
         public static final LogRecord DETECTION_ACTION_BEHIND_TRUSTED_PROXIES = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(149)
-                .template("enumeration_detection.action is %s while forwarded.trusted_proxies is non-empty — a request a trusted proxy forwards without a usable client address is keyed on the shared source 'unknown', which detection counts and reports but never blocks, delays or refuses, so such requests escape the configured action. Make sure every trusted proxy sends its clients' addresses in X-Forwarded-For")
+                .template("enumeration_detection.action is %s while forwarded.trusted_proxies is non-empty — a request a trusted proxy forwards without a Forwarded or X-Forwarded-For value is keyed on the shared source 'unknown', which detection counts and reports but never blocks, delays or refuses, so such requests escape the configured action. Make sure every trusted proxy sends its clients' addresses in X-Forwarded-For")
                 .build();
     }
 
@@ -658,7 +693,13 @@ public final class ConfigLogMessages {
     @UtilityClass
     public static final class ERROR {
 
-        /** A single collected configuration violation, one per problem found. */
+        /**
+         * A single collected configuration violation, one per problem found. The file, the pointer and
+         * the message are each rendered through {@code RuleSupport.renderForLog} before they reach the
+         * template: control characters, the line and paragraph separators, format characters such as a
+         * bidi override and unpaired surrogates are escaped as {@code \\uXXXX}, while printable text,
+         * non-ASCII included, is logged as written.
+         */
         public static final LogRecord CONFIG_VALIDATION_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(200)

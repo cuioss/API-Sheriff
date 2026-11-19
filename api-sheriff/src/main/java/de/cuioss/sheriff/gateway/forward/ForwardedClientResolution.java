@@ -16,40 +16,65 @@
 package de.cuioss.sheriff.gateway.forward;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
-import lombok.experimental.UtilityClass;
+import de.cuioss.sheriff.gateway.detection.SourceKey;
+import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
 
 /**
  * The one derivation of a trusted forwarder's client address for the per-source consumers — the
  * edge's source key ({@code SourceKeys}) and the pending-authorization quota key
- * ({@code PendingQuotaKeys}) — with a single {@code X-Forwarded-For} fallback.
+ * ({@code PendingQuotaKeys}) — and the one definition of the value a client-address header is judged
+ * as.
  * <p>
- * <strong>Why a fallback.</strong> cui-http's {@link ForwardedHeaderResolver} resolves no client when
- * a trusted peer sends an RFC 7239 {@code Forwarded} chain that disagrees with its
- * {@code X-Forwarded-For} chain (pinned by {@code ForwardedClientResolutionTest}). Both consumers key
- * such a request on the shared {@code unknown} source, so every contested request through that proxy
- * would collapse onto one key. {@link #clientOf} therefore resolves the combined headers first and,
- * only when that yields no client, resolves again through the <em>same</em> resolver with the
- * {@code Forwarded} header masked out of the lookup — the {@code X-Forwarded-For}-family result under
- * the same trusted-proxy set and the same baseline. When that is empty too, the client stays absent.
+ * <strong>Three outcomes.</strong> {@link #clientOf} resolves the request's headers once, through
+ * cui-http's {@link ForwardedHeaderResolver}, and answers one of three {@link ForwardedClient}s:
+ * <ul>
+ *   <li>{@link Resolved} — the resolver named a client that is an address literal;</li>
+ *   <li>{@link Unresolvable} — the request carries a client-address header ({@link #CLIENT_ADDRESS_HEADERS})
+ *       with a non-blank value, yet the resolver named no client, or one that is no address literal
+ *       ({@link SourceKeyResolver#canonicalSource} folds it to {@link SourceKey#UNKNOWN_SOURCE}, for
+ *       example an RFC 7239 obfuscated identifier): a malformed chain, a chain whose
+ *       joined value fails the resolver's validation, or a {@code Forwarded} chain that disagrees with
+ *       the {@code X-Forwarded-For} chain (cui-http resolves no client for such a pair, pinned by
+ *       {@code ForwardedClientResolutionTest});</li>
+ *   <li>{@link Absent} — the request carries no client-address header with a non-blank value.</li>
+ * </ul>
+ * The two unresolved outcomes are kept apart because a client can produce the first and never the
+ * second: a client can always add or break a client-address header, but it cannot take away the one
+ * its trusted proxy appends. A consumer that gave both the same shared key would let any client move
+ * itself onto the key a header-less proxy's requests share.
  * <p>
- * <strong>Precondition: a trusted peer.</strong> Call it only for a peer the {@link TcpPeerGate}
- * already trusts. It applies no trust judgement of its own, so handing it an untrusted peer's headers
- * would let that peer choose its own key.
+ * <strong>No second pass.</strong> When the two families disagree, the request gives no evidence which
+ * of them the trusted proxy manages: a proxy that appends to {@code X-Forwarded-For} and a client that
+ * adds {@code Forwarded} produce the same shape as a proxy that appends to {@code Forwarded} and a
+ * client that adds {@code X-Forwarded-For}. Resolving either family alone would therefore let the
+ * client choose the address in one of the two topologies, so a disagreeing pair stays
+ * {@link Unresolvable}.
  * <p>
- * <strong>Counting.</strong> A malformed forwarding header seen by both passes may be recorded twice
- * on the resolver's security-event counter. Each consumer owns a counter of its own for exactly this
- * resolver, so the double count stays on that consumer's counter and never reaches the forward
- * stage's.
+ * <strong>The judged value.</strong> The resolver reads every instance of a client-address header as
+ * one value: it joins the instances with {@value #INSTANCE_SEPARATOR} and validates the joined value as
+ * a whole. {@link #judgedValue} is that joined value, so the edge's header check can judge the same
+ * text the resolver reads rather than each instance alone.
+ * <p>
+ * <strong>Precondition: a trusted peer.</strong> Call {@link #clientOf} only for a peer the
+ * {@link TcpPeerGate} already trusts. It applies no trust judgement of its own, so handing it an
+ * untrusted peer's headers would let that peer choose its own key.
  * <p>
  * Usage:
  * <pre>{@code
- * Optional<String> client = ForwardedClientResolution.clientOf(resolver, name -> raw.headers().getAll(name));
+ * ForwardedClient client = ForwardedClientResolution.clientOf(resolver, name -> raw.headers().getAll(name));
+ * String key = switch (client) {
+ *     case ForwardedClientResolution.Resolved(String address) -> address;
+ *     case ForwardedClientResolution.Unresolvable _ -> keyOfTheProxy;
+ *     case ForwardedClientResolution.Absent _ -> sharedUnknownKey;
+ * };
  * }</pre>
  * <p>
  * Stateless and thread-safe.
@@ -57,30 +82,102 @@ import lombok.experimental.UtilityClass;
  * @author API Sheriff Team
  * @since 1.0
  */
-@UtilityClass
-public class ForwardedClientResolution {
-
-    /** The RFC 7239 header masked out of the lookup on the fallback pass. */
-    private static final String FORWARDED_HEADER = "Forwarded";
+public final class ForwardedClientResolution {
 
     /**
-     * The client address a trusted forwarder reported: the combined {@code Forwarded} /
-     * {@code X-Forwarded-For} result, else the {@code X-Forwarded-For} result with {@code Forwarded}
-     * masked, else empty.
+     * The headers the resolver reads a client address from, lower-cased: RFC 7239 {@code Forwarded}
+     * and {@code X-Forwarded-For}. cui-http does not expose that set, so it is stated here and kept in
+     * step with the resolver by {@code ForwardedClientResolutionTest}, which fails when the resolver
+     * names a client from one of the candidate headers that test hands it outside this set, or no
+     * longer from one inside it. A header outside that candidate list is not covered.
+     */
+    public static final Set<String> CLIENT_ADDRESS_HEADERS = Set.of("forwarded", "x-forwarded-for");
+
+    /** The separator the resolver joins the instances of one header with before it validates them. */
+    public static final String INSTANCE_SEPARATOR = ", ";
+
+    /**
+     * What {@link #clientOf} found in a trusted forwarder's client-address headers.
+     */
+    public sealed interface ForwardedClient permits Resolved, Unresolvable, Absent {
+    }
+
+    /**
+     * The resolver named a client that is an address literal — one {@link SourceKeyResolver#canonicalSource}
+     * does not fold to {@link SourceKey#UNKNOWN_SOURCE}.
+     *
+     * @param address the client address as the resolver returned it, not yet canonicalized
+     */
+    public record Resolved(String address) implements ForwardedClient {
+
+        /**
+         * @throws NullPointerException when {@code address} is {@code null}
+         */
+        public Resolved {
+            Objects.requireNonNull(address, "address");
+        }
+    }
+
+    /**
+     * A client-address header carries a non-blank value, yet the resolver named no client, or named one
+     * that is no address literal — such as an RFC 7239 obfuscated identifier like {@code _hidden}.
+     */
+    public record Unresolvable() implements ForwardedClient {
+    }
+
+    /**
+     * No client-address header carries a non-blank value: none is present, or every one present is
+     * blank.
+     */
+    public record Absent() implements ForwardedClient {
+    }
+
+    private ForwardedClientResolution() {
+        // static derivation only
+    }
+
+    /**
+     * The client a trusted forwarder reported; see the class documentation for the three outcomes.
      *
      * @param resolver the consumer's forwarded-header resolver, configured as the forward stage's
      * @param lookup   the request's header lookup, answering every value of a header and the empty list
      *                 for an absent one
-     * @return the client address, empty when neither pass resolves one
+     * @return the outcome, never {@code null}
      */
-    public static Optional<String> clientOf(ForwardedHeaderResolver resolver, Function<String, List<String>> lookup) {
+    public static ForwardedClient clientOf(ForwardedHeaderResolver resolver, Function<String, List<String>> lookup) {
         Objects.requireNonNull(resolver, "resolver");
         Objects.requireNonNull(lookup, "lookup");
-        Optional<String> combined = resolver.resolve(lookup).clientIp();
-        if (combined.isPresent()) {
-            return combined;
+        Optional<String> client = resolver.resolve(lookup).clientIp();
+        if (client.isPresent() && !SourceKey.UNKNOWN_SOURCE.equals(SourceKeyResolver.canonicalSource(client.get()))) {
+            return new Resolved(client.get());
         }
-        return resolver.resolve(name -> FORWARDED_HEADER.equalsIgnoreCase(name) ? List.of() : lookup.apply(name))
-                .clientIp();
+        return carriesClientAddressHeader(lookup) ? new Unresolvable() : new Absent();
+    }
+
+    /**
+     * Whether {@code headerName} is one of the {@link #CLIENT_ADDRESS_HEADERS}.
+     *
+     * @param headerName a header name, in any letter case
+     * @return {@code true} for {@code Forwarded} and {@code X-Forwarded-For}
+     */
+    public static boolean isClientAddressHeader(String headerName) {
+        return CLIENT_ADDRESS_HEADERS.contains(Objects.requireNonNull(headerName, "headerName").toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * The value the resolver validates for a header sent as {@code instances}: the instances joined
+     * with {@value #INSTANCE_SEPARATOR}, in their inbound order.
+     *
+     * @param instances every value of one header, in inbound order
+     * @return the joined value; the one instance itself when there is exactly one
+     */
+    public static String judgedValue(List<String> instances) {
+        return String.join(INSTANCE_SEPARATOR, Objects.requireNonNull(instances, "instances"));
+    }
+
+    private static boolean carriesClientAddressHeader(Function<String, List<String>> lookup) {
+        return CLIENT_ADDRESS_HEADERS.stream()
+                .map(lookup)
+                .anyMatch(values -> values.stream().anyMatch(value -> !value.isBlank()));
     }
 }

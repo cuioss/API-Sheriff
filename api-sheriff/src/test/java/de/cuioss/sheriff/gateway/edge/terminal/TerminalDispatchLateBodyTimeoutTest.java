@@ -131,8 +131,10 @@ class TerminalDispatchLateBodyTimeoutTest {
     private static final String CACHE_CONTROL = "Cache-Control";
     private static final String RELAYED_CACHE_CONTROL = "public, max-age=3600";
     /**
-     * The caching metadata a failed relay's unwritten head must not carry, beside its Cache-Control: the
-     * production removal policy itself, so a header added to it is seeded and checked here too.
+     * The fields the production removal rule names, which a failed relay's unwritten head must not carry
+     * beside its Cache-Control: seeded from the rule itself, so a field added to it is seeded and checked
+     * here too. The rule's other half — every RFC 9213 field by its suffix — and any field the rule
+     * should name but does not are what {@link #STORABILITY_FIELDS} checks, by literal name.
      */
     private static final List<String> CACHING_METADATA = TerminalDispatch.UNSTORABLE_ANSWER_REMOVES;
     /**
@@ -140,6 +142,22 @@ class TerminalDispatchLateBodyTimeoutTest {
      * literally: the names are the contract, so a removal policy that loses one of them turns a case red.
      */
     private static final List<String> CACHE_TARGETED_FIELDS = List.of("CDN-Cache-Control", "Surrogate-Control");
+    /**
+     * Every field a cache could still act on to store the empty answer, named literally rather than read
+     * from the production list, so a field the list loses — or never had — turns a case red: the freshness
+     * fields (the standard ones and nginx's {@code X-Accel-Expires}), the validators, and the cache-targeted
+     * directives (RFC 9213 fields, a vendor-specific one among them, {@code Surrogate-Control} and Akamai's
+     * {@code Edge-Control}), in mixed letter case as an upstream may send them.
+     */
+    private static final List<String> STORABILITY_FIELDS = List.of("Expires", "Age", "x-accel-expires", "ETag",
+            "Last-Modified", "CDN-Cache-Control", "Cloudflare-CDN-Cache-Control", "Surrogate-Control", "Edge-Control");
+    /**
+     * The fields a failed relay's unwritten head must keep: the session cookie a pipeline stage set, the
+     * gateway's own security headers, the cache-key announcement, and the fields that belong to the upstream
+     * status a late request-body timeout keeps ({@code Location} of a redirect, {@code Retry-After}).
+     */
+    private static final List<String> KEPT_FIELDS = List.of("Set-Cookie", "Strict-Transport-Security",
+            "X-Content-Type-Options", "Content-Security-Policy", "Vary", "Location", "Retry-After");
     /** A status other than the {@code 200} the relay of a fresh response starts from. */
     private static final int UPSTREAM_STATUS = 201;
     private static final int BAD_GATEWAY = 502;
@@ -225,6 +243,33 @@ class TerminalDispatchLateBodyTimeoutTest {
                         "the 502 keeps no cache-targeted field"),
                 () -> assertEquals(List.of("no-store"), lateTimeout.headers.getAll(CACHE_CONTROL),
                         "Cache-Control is the only cache directive left on the answer"));
+    }
+
+    @Test
+    @DisplayName("a failed relay's unwritten head drops every field that could still make it storable, named literally")
+    void failedRelayHeadDropsEveryStorabilityField() {
+        FailedRelayResponse response = new FailedRelayResponse(false);
+        STORABILITY_FIELDS.forEach(name -> response.headers.set(name, "relayed"));
+
+        TerminalDispatch.prepareFailedRelayHead(response.fake(), true, UPSTREAM_STATUS);
+
+        assertEquals(List.of(), STORABILITY_FIELDS.stream().filter(response.headers::contains).toList(),
+                "a freshness lifetime, a validator or a cache-targeted directive a cache could act on is gone");
+    }
+
+    @Test
+    @DisplayName("a failed relay's unwritten head keeps the fields it must keep (matched control)")
+    void failedRelayHeadKeepsTheFieldsItMustKeep() {
+        FailedRelayResponse response = new FailedRelayResponse(false);
+        KEPT_FIELDS.forEach(name -> response.headers.set(name, RELAYED_VALUE));
+
+        TerminalDispatch.prepareFailedRelayHead(response.fake(), true, UPSTREAM_STATUS);
+
+        assertAll("the fields an empty answer still needs",
+                () -> assertEquals(List.of(), KEPT_FIELDS.stream().filter(name -> !response.headers.contains(name)).toList(),
+                        "the session cookie, the gateway's security headers and the upstream status's own fields stay"),
+                () -> assertEquals(RELAYED_VALUE, response.headers.get(RELAYED_HEADER),
+                        "a field the removal rule does not name is kept"));
     }
 
     @Test

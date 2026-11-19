@@ -191,6 +191,19 @@ public final class ApiSheriffLogMessages {
                 .build();
 
         /**
+         * Reporting a circuit-breaker state transition failed: the state-change consumer threw. The breaker
+         * has already entered the state, and the call that caused the transition keeps its own outcome — a
+         * failed report never replaces an answer or a failure, and never strands a half-open trial permit —
+         * so what is lost is the report itself: the transition's own record ({@code ApiSheriff-103} /
+         * {@code ApiSheriff-104}) and, on an open, its metric. Records the breaker name and the state entered.
+         */
+        public static final LogRecord CIRCUIT_BREAKER_REPORT_FAILED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(151)
+                .template("Reporting circuit breaker for upstream '%s' entering %s failed — the breaker state changed, its transition record or metric may be missing")
+                .build();
+
+        /**
          * A WebSocket upgrade was rejected by the Origin allowlist (GW-09 / CSWSH). Records the
          * route id and the rejection disposition ({@code absent} or {@code foreign}) only — the raw
          * offending {@code Origin} value is never logged.
@@ -267,8 +280,9 @@ public final class ApiSheriffLogMessages {
          * detection contract fixes (an IPv4 address whole, an IPv6 address as its {@code /64} prefix, or
          * as its {@code /48} aggregate when the ledger began tracking it above its high-water mark),
          * the host folded to the declared {@code match.host} set ({@code *} for any other), the
-         * threshold, the window in seconds and the configured action — never the raw {@code Host}, the
-         * request path or any header.
+         * threshold, the window in seconds and the action taken — the configured one, except
+         * {@code observe} for the {@code unknown} source, which the gate never acts on — never the raw
+         * {@code Host}, the request path or any header.
          */
         public static final LogRecord SOURCE_TRIPPED = LogRecordModel.builder()
                 .prefix(PREFIX)

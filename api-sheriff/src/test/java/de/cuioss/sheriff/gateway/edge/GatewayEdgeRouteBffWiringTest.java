@@ -621,6 +621,132 @@ public class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * The edge hand-over of the Fetch Metadata headers to the logout leg's proof, driven over a live
+     * Vert.x server against a live server-mode session. {@code CsrfDefenceTest} and
+     * {@code LogoutEndpointTest} build {@link CsrfDefence.FetchMetadata} by hand and the
+     * {@link ReservedDispatch} cases call {@link BffRuntime#dispatch} directly, so only a request through
+     * the edge shows that {@code Sec-Fetch-Mode}, {@code Sec-Fetch-Dest}, {@code Sec-Purpose} and
+     * {@code Sec-Fetch-Site} reach the proof under the names a browser sends.
+     * <p>
+     * Every refused request comes from the trusted {@code Origin}. Apart from the same-origin image, each
+     * differs from a top-level document navigation in exactly one header, and every other header it
+     * carries is either absent or a value the proof admits — so each of those refusals rests on that one
+     * header reaching the proof: were the edge to drop it, the request would end the session. The
+     * matched control is a top-level document navigation, which does end the session, from the trusted
+     * {@code Origin} and, with {@code Origin} absent, on {@code Sec-Fetch-Site: same-origin} alone.
+     */
+    @Nested
+    @DisplayName("logout over the edge: the Fetch Metadata headers reach the logout proof")
+    class LogoutFetchMetadataOverEdge {
+
+        /** The end-session endpoint the fixture's logout leg redirects a proven logout to. */
+        private static final String END_SESSION_ENDPOINT = "https://idp.example.com/logout";
+        private static final String SAME_ORIGIN = "same-origin";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private SessionStore store;
+        private HttpServer front;
+        private HttpClient client;
+        private String cookieHandle;
+
+        /** What the edge answered to the logout request, read off the wire in one step. */
+        private record EdgeAnswer(int status, @Nullable String location, List<String> setCookies, String body) {
+        }
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            store = newStore();
+            cookieHandle = newCookieHandle();
+            store.create(SessionRecord.builder().sessionId(SessionRecord.newSessionId()).accessToken("a")
+                            .idToken("i").sub("sub").expiresAt(Instant.now().plus(Duration.ofHours(1))).build(),
+                    cookieHandle, Instant.now());
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(activeRuntime(serverBinding(store))).serve();
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @CsvSource(nullValues = "-", value = {
+                "a same-origin image,no-cors,image,-",
+                "a subresource from a browser that sends Sec-Fetch-Mode without Sec-Fetch-Dest,no-cors,-,-",
+                "a same-origin frame,navigate,iframe,-",
+                "a prefetched top-level navigation,navigate,document,prefetch"})
+        @DisplayName("a trusted same-origin request that is no top-level document navigation leaves the session and is answered the confirmation page")
+        void shouldKeepTheSessionWithoutADocumentNavigation(String request, @Nullable String mode,
+                @Nullable String dest, @Nullable String purpose) throws Exception {
+            EdgeAnswer answer = logout(ORIGIN, mode, dest, purpose);
+
+            assertAll(request + " is no logout",
+                    () -> assertEquals(200, answer.status(), "the confirmation page is answered"),
+                    () -> assertTrue(answer.body().contains("method=\"POST\""), "the body is the confirmation form"),
+                    () -> assertEquals(List.of(), answer.setCookies(), "no cookie is set or cleared"),
+                    () -> assertTrue(sessionLives(), "the session survives"));
+        }
+
+        @ParameterizedTest(name = "Origin {0}")
+        @CsvSource(nullValues = "-", value = {ORIGIN, "-"})
+        @DisplayName("control: a top-level document navigation from the trusted origin ends the session and redirects to the end-session endpoint")
+        void shouldEndTheSessionOnATopLevelDocumentNavigation(@Nullable String origin) throws Exception {
+            EdgeAnswer answer = logout(origin, "navigate", "document", null);
+
+            assertAll("a proven logout",
+                    () -> assertEquals(302, answer.status(), "a proven logout is a redirect"),
+                    () -> assertTrue(String.valueOf(answer.location()).startsWith(END_SESSION_ENDPOINT + "?"),
+                            "to the identity provider's end-session endpoint, not the confirmation page: "
+                                    + answer.location()),
+                    () -> assertFalse(sessionLives(), "the session is ended"));
+        }
+
+        /** Whether the fixture's session still resolves from its cookie handle. */
+        private boolean sessionLives() {
+            return store.resolve(cookieHandle, Instant.now()).isPresent();
+        }
+
+        /**
+         * Sends {@code GET} on the logout path with the session cookie, {@code Sec-Fetch-Site: same-origin}
+         * and each given header that is not {@code null}.
+         */
+        private EdgeAnswer logout(@Nullable String origin, @Nullable String mode, @Nullable String dest,
+                @Nullable String purpose) throws Exception {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Cookie", SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle);
+            headers.put("Sec-Fetch-Site", SAME_ORIGIN);
+            putIfPresent(headers, "Origin", origin);
+            putIfPresent(headers, "Sec-Fetch-Mode", mode);
+            putIfPresent(headers, "Sec-Fetch-Dest", dest);
+            putIfPresent(headers, "Sec-Purpose", purpose);
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGOUT_PATH);
+            return Awaits.connect(client.request(options).compose(request -> {
+                        headers.forEach(request::putHeader);
+                        return request.send();
+                    }).compose(response -> response.body().map(body -> new EdgeAnswer(response.statusCode(),
+                            response.getHeader("Location"), response.headers().getAll("Set-Cookie"), body.toString()))),
+                    "the edge response to GET " + LOGOUT_PATH);
+        }
+
+        private static void putIfPresent(Map<String, String> headers, String name, @Nullable String value) {
+            if (value != null) {
+                headers.put(name, value);
+            }
+        }
+    }
+
     @Nested
     @DisplayName("BffRuntime.dispatch routes each reserved path to its handler (not NO_ROUTE_MATCHED)")
     class ReservedDispatch {
@@ -650,8 +776,9 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("LOGOUT with same-origin proof and without a live session redirects (302) to final_redirect")
         void shouldDispatchLogout() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "same-origin", null, null, null, null, "GET",
-                            QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null,
+                            new CsrfDefence.FetchMetadata("same-origin", "navigate", "document", null), null, null,
+                            null, null, "GET", QUOTA_KEY), now);
             assertEquals(302, response.status());
         }
 
@@ -659,8 +786,9 @@ public class GatewayEdgeRouteBffWiringTest {
         @DisplayName("LOGOUT without same-origin proof answers the 200 HTML confirmation page through the dispatch")
         void shouldDispatchLogoutConfirmation() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, "cross-site", null, null, null, null, "GET",
-                            QUOTA_KEY), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null,
+                            new CsrfDefence.FetchMetadata("cross-site", "navigate", "document", null), null, null,
+                            null, null, "GET", QUOTA_KEY), now);
 
             assertAll("the confirmation page through the dispatch",
                     () -> assertEquals(200, response.status()),

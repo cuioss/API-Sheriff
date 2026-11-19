@@ -32,11 +32,15 @@
  * that event counter and a {@code DEBUG} diagnostic only; no {@code INFO} / {@code WARN} log record
  * is written for it.
  * <p>
- * The session instance also answers, without throwing, whether the RP-initiated logout leg carries
- * same-origin provenance whatever its method
- * ({@link de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence#provesSameOriginNavigation(String, String)}):
- * the same two signals under the same rules, with {@code Sec-Fetch-Site: none} — a navigation the user
- * started — admitted beside {@code same-origin}.
+ * A derivation of the session instance that also trusts the gateway's own origin answers, without
+ * throwing, whether a request to the RP-initiated logout leg is a top-level document navigation from a
+ * trusted origin, whatever its method
+ * ({@link de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence#provesTrustedDocumentNavigation(String,
+ * de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence.FetchMetadata)}): no {@code Sec-Purpose} (no prefetch
+ * or prerender), {@code Sec-Fetch-Mode: navigate} and {@code Sec-Fetch-Dest: document} when present,
+ * and a trusted {@code Origin} or, with {@code Origin} absent, {@code Sec-Fetch-Site: same-origin}.
+ * With {@code Origin} absent, {@code Sec-Fetch-Site: none} is not admitted: a link opened from another
+ * application carries it.
  * <p>
  * The class is framework-agnostic and immutable; the session runtime wires the session instance into
  * the request edge, and route-table assembly builds one cookie-forwarding instance per qualifying

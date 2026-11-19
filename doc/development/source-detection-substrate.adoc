@@ -51,13 +51,17 @@ address. The resolver does not judge trust: the edge's source-key stage, `Source
 forwarded address only for a peer `forwarded.trusted_proxies` trusts, resolved by the same resolver
 the forward stage regenerates `X-Forwarded-For` from. The client is derived by
 `forward.ForwardedClientResolution`, the one derivation the BFF pending-authorization quota key
-(`PendingQuotaKeys`) shares: the combined `Forwarded` / `X-Forwarded-For` headers first, and when
-they yield no client -- the two chains disagree, or the combined chain is malformed -- the same
-resolver again with `Forwarded` masked, so the `X-Forwarded-For` result under the same trusted proxies
-(`ForwardedClientResolutionTest` pins cui-http's empty result for a disagreeing pair). A trusted
-peer's request that yields no client even then is keyed on the `unknown` source, never on the trusted
-peer's own address (`SourceKeysTest`). The edge never answers, refuses or holds a request keyed
-`unknown` (<<_unknown_source>>). `SourceKeys` resolves the key once per
+(`PendingQuotaKeys`) shares: the combined `Forwarded` / `X-Forwarded-For` headers, resolved once. When
+they yield no client -- the two chains disagree (`ForwardedClientResolutionTest` pins cui-http's empty
+result for a disagreeing pair), a chain is malformed, or it names its client by something other than an
+address literal -- neither family is resolved on its own, since
+the request cannot show which family the proxy manages. Such a request, whose `Forwarded` or
+`X-Forwarded-For` carries a value, is keyed on the proxy's own unresolved source,
+`unresolved-via-<proxy address>` (`SourceKeyResolver.resolveUnresolvedForwarding`), which the edge
+acts on like any source. Only a trusted peer's request carrying neither header, or only blank ones, is keyed on the
+`unknown` source; neither key is ever the trusted peer's own address (`SourceKeysTest`). The edge
+never answers, refuses or holds a request keyed `unknown` (<<_unknown_source>>). `SourceKeys`
+resolves the key once per
 request, on the event loop before admission, and stashes it on the request context for every
 consumer, so both consumers key a request's events on the same source. The chosen address is canonicalized:
 
@@ -84,9 +88,12 @@ turn every admission into a full scan. When the map is still full the key is not
 admission returns the state `UNTRACKED`, the event is not counted and the overflow is counted in
 `untrackedCount()` for the consumer to report. A tripped or blocked key is never evicted, and neither
 is a key still holding weight, so a source accruing toward the threshold stays tracked however full
-the map gets. No slice of the bound is reserved for such keys: none is needed, because the sweep never
-removes them (`SourceLedgerPressureTest` fills the bound with live keys while one source accrues, and
-that source keeps being admitted and trips).
+the map gets. No slice of the bound is reserved, neither for such keys nor for new ones. Accruing keys
+need none, because the sweep never removes them; that is a rule of the sweep, pinned by
+`SourceLedgerPressureTest.accruingSourceStaysTrackedInAFullLedger`, which fills the bound with live
+keys while one source accrues, lets a sweep run, and shows the source keep its count and trip -- the
+test goes red if the sweep removed a key still holding weight. New keys get none either: a full map
+refuses them rather than evicting a live entry (<<_full_ledger>>).
 
 The bound is *soft*. The size check and the insert are not one atomic step, so the map can exceed the
 bound by at most the number of threads inserting new keys at the same moment.
@@ -104,8 +111,8 @@ and neither consumer carries an aggregation rule of its own.
   tracked under its `/48` aggregate (`SourceKeyResolver.aggregateSource`, `a:b:c:d::/64` ->
   `a:b:c::/48`, on the same host). Below the mark a new key keeps its `/64`. One site therefore cannot
   fill a pressured ledger by rotating through the `/64`s of its allocation.
-* *What is never aggregated.* A key already tracked keeps its key at any fill; an IPv4 source and
-  `unknown` pass `aggregateSource` unchanged.
+* *What is never aggregated.* A key already tracked keeps its key at any fill; an IPv4 source,
+  `unknown` and an unresolved source (`unresolved-via-...`) pass `aggregateSource` unchanged.
 * *Lookup.* `admit`, `state` and `hasRoomFor` answer a `/64` that is not tracked itself from its
   tracked `/48`, so a consumer keeps asking with the `/64` the edge resolved and finds the aggregated
   entry. The key the state and the trip report is then the `/48`, which is the source text the trip
@@ -115,10 +122,14 @@ and neither consumer carries an aggregation rule of its own.
 === The Room Query
 
 `hasRoomFor(key)` answers whether an admission would track a key now: `true` when the key -- or the
-`/48` aggregate of a `/64` -- is tracked, or when a new key fits after the rate-limited sweep `admit`
-would run at the bound. It admits, counts and reserves nothing, so it is a decision about this instant
-only; `admit` decides again when it runs. It is the one query the recon consumer refuses on
-(<<_full_ledger>>).
+`/48` aggregate of a `/64` -- is tracked, or when a new key fits the map as it stands. The recon
+consumer asks it on the event loop, so the query never sweeps on its calling thread: at the bound, a
+sweep that is due is handed to the ledger's sweep executor -- one short-lived virtual thread in
+production -- and the answer is taken from the map as it stands, so a new key is answered `false`
+until that sweep has freed room. Only `admit`, which the consumers call on a virtual thread, sweeps on
+its own thread. At most one sweep starts per `SWEEP_INTERVAL` either way. The query admits, counts and
+reserves nothing, so it is a decision about this instant only; `admit` decides again when it runs. It
+is the one query the recon consumer refuses on (<<_full_ledger>>).
 
 == Weighted Admission and Tags
 
@@ -220,7 +231,11 @@ the wire. Two of its rules rest on the substrate's terms:
 * *`unknown` is never acted on.* A key whose source is `SourceKey.UNKNOWN_SOURCE` is admitted like any
   key -- counted, able to trip, its trip logged and handed to the threat consumer -- but it is never
   answered `429`, never refused for a used-up held-answer share and never held, under any action. It
-  stands for every client whose address did not resolve, so acting on it would act on all of them.
+  stands for every trusted proxy's request that carries no client-address header, or only blank ones,
+  and every request without a usable peer address, so acting on it would act on all of them.
+  Its trip is therefore logged (`ApiSheriff-141`) and metered (`sheriff_source_trips_total`) with the
+  action the gate takes, `observe`, whatever action is configured, although under `block` the ledger
+  still marks the key `BLOCKED`.
   The boot WARN `ApiSheriff-149` (`EdgeRules`) names the combination that lets a trusted proxy's
   requests reach that key while `block` or `delay` is configured.
 * [[_full_ledger]]*The full ledger fails closed under `block` and `delay`.* Before admission the gate
@@ -230,9 +245,14 @@ the wire. Two of its rules rest on the substrate's terms:
   (`sheriff_source_untracked_total`, `ApiSheriff-142`). A source the ledger cannot count could never
   trip, so letting it through would hand an unbounded number of fresh sources free probing. The
   consequence is accepted: while a flood keeps the ledger full of live keys, every new source is
-  refused, a legitimate one included, until the sweep frees room. Under `observe` nothing is refused.
-  The check claims no slot -- room a concurrent admission takes after it falls back to the
-  `UNTRACKED` count, and room that appears after it costs one refused request.
+  refused until the sweep frees room. A well-behaved client is rejected for nothing and so is never
+  tracked, which makes "every new source" practically all legitimate traffic, while the flooding keys
+  already tracked keep being served. Evicting the lowest-level live entry instead of refusing was
+  rejected (ADR-0076, amendment "A full ledger fails closed"): it would let a flood push a source
+  accruing toward the threshold out of the ledger, and picking the entry costs a scan per admission at
+  the bound. Under `observe` nothing is refused. The check claims no slot -- room a concurrent
+  admission takes after it falls back to the `UNTRACKED` count, and room that appears after it costs
+  one refused request.
 
 The threat ledger never refuses: `ThreatClassifier` is `observe`-only and reports an `UNTRACKED`
 admission to the ALERT tier without changing any answer.
@@ -243,10 +263,12 @@ contributions.
 
 == The Emit Shape and the Trip Listener
 
-A trip hands one `SourceTrip` to the listener registered at construction: the key, the level right
-after the admission that tripped, the threshold, the window, the per-tag contributions, the configured
-action and the monotonic trip instant. It is a *raw* record: no log template, no ECS or OCSF field
-names, no wire format. Every rendering is the consumer's.
+A trip hands one `SourceTrip` to the listener registered at construction: the key that tripped, the
+request key -- the key the tripping admission was made for, which differs from the tripped key only
+when the ledger counted a `/64` on its `/48` (<<_aggregation>>) -- the level right after the admission
+that tripped, the threshold, the window, the per-tag contributions, the configured action and the
+monotonic trip instant. It is a *raw* record: no log template, no ECS or OCSF field names, no wire
+format. Every rendering is the consumer's.
 
 The listener is called on the admitting thread, after the key's lock is released, and only by the
 admission that performed the transition. It must not block.
@@ -291,8 +313,11 @@ What the substrate serves it:
   that are answered without reaching the feed.
 
 * *The recon trip as an input.* The recon ledger's `SourceTrip` is admitted to the threat ledger
-  with the weight `weights.recon_trip` under the tag `SOURCE_TRIPPED`, for the tripped key. A recon
-  trip raises the score; it is never an ALERT of its own.
+  with the weight `weights.recon_trip` under the tag `SOURCE_TRIPPED`, for the trip's request key --
+  the source of the request whose rejection tripped it, not the recon ledger's tracked key. The threat
+  ledger's own lookup then places it, so a `/64` the threat ledger already tracks receives the trip
+  although the recon ledger counted that `/64` on its `/48`. A recon trip raises the score; it is
+  never an ALERT of its own.
 
 * *Dedup.* A trip is emitted once per `CLEAR` period, so the ALERT tier, `ThreatAlerts`, raises one
   ALERT per episode, not per event.
@@ -343,9 +368,10 @@ namespace:
 | `event.risk_score` | The source's score right after the admission that tripped it.
 | `source.address` | The canonical source text, always: an IPv4 address, an IPv6 `/64` prefix
   (`a:b:c:d::/64`), an IPv6 `/48` prefix (`a:b:c::/48`) when the threat ledger began tracking the
-  source above its high-water mark (<<_aggregation>>), or `unknown`.
-| `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 prefix or `unknown`
-  is not a valid ECS `ip` value).
+  source above its high-water mark (<<_aggregation>>), a proxy's unresolved source
+  (`unresolved-via-<proxy address>`), or `unknown`.
+| `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 prefix, an unresolved
+  source or `unknown` is not a valid ECS `ip` value).
 | `url.domain` | The folded host, *only* when it is a declared `match.host`; absent for `*`.
 | `threat.framework` | `MITRE ATT&CK`.
 | `threat.tactic.id` / `threat.tactic.name` | `["TA0043"]` / `["Reconnaissance"]`.

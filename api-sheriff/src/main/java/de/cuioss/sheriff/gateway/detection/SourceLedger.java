@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -66,7 +67,8 @@ import org.jspecify.annotations.Nullable;
  * {@link #admit} returns an {@link SourceState.Status#UNTRACKED} state and the overflow is counted
  * ({@link #untrackedCount()}) for the caller to report. A tripped or blocked key is never evicted, and
  * neither is a key still holding weight, so a source accruing toward the threshold stays tracked however
- * full the map gets. The bound is soft: the size check and the insert are not one atomic step, so the
+ * full the map gets: a flood of new keys can make the ledger refuse new sources, never forget a source
+ * it already counts. The bound is soft: the size check and the insert are not one atomic step, so the
  * map can exceed the bound by at most the number of threads inserting new keys at the same moment.
  * <p>
  * <strong>Aggregation under pressure.</strong> From a fixed high-water mark of
@@ -77,19 +79,26 @@ import org.jspecify.annotations.Nullable;
  * aggregated. Every lookup — {@link #admit}, {@link #state} and {@link #hasRoomFor} — answers a
  * {@code /64} that is not tracked itself from its tracked {@code /48}, so a caller keeps asking with the
  * {@code /64} it resolved and finds the aggregated entry; the reported key ({@link SourceState#key()},
- * {@link SourceTrip#key()}) is then the {@code /48}. The mark is a constant, not configuration, and it
+ * {@link SourceTrip#key()}) is then the {@code /48}, while {@link SourceTrip#requestKey()} keeps the
+ * {@code /64} the tripping admission was made for. The mark is a constant, not configuration, and it
  * scales with the bound. The rule is the substrate's: every ledger built on this class follows it.
  * <p>
  * <strong>The room query.</strong> {@link #hasRoomFor} answers whether an admission would track a key
- * now, by the same lookup, sweep and size check {@link #admit} uses, without admitting anything. It
- * claims no slot: a caller that refuses on its answer decides on a moment that admissions on other
- * threads move on from, and {@link #admit} decides again when it runs.
+ * now, by the same lookup and size check {@link #admit} uses, without admitting anything. It never
+ * sweeps on the calling thread, which is the edge's event loop: when the map is at the bound and a
+ * sweep is due, the query hands that sweep to the sweep executor — a virtual thread in production —
+ * and answers from the map as it stands, so a new key is answered {@code false} until the handed-off
+ * sweep has freed room. It claims no slot: a caller that refuses on its answer decides on a moment that
+ * admissions on other threads move on from, and {@link #admit} decides again when it runs.
  * <p>
  * <strong>Threading.</strong> Thread-safe. Every read-modify-write of one key — drain, add, trip,
  * block — runs inside one {@link ConcurrentHashMap#compute} call, so two concurrent admissions for the
  * same source cannot both perform the {@code CLEAR -> TRIPPED} transition, and exactly one trip is
  * emitted per {@code CLEAR} period. The trip listener is called by the admitting thread, after the
  * key's lock is released, and only by the admission that performed the transition; it must not block.
+ * A sweep runs on the admitting thread when {@link #admit} needs room, and on the sweep executor when
+ * {@link #hasRoomFor} found one due; either way at most one sweep is started per
+ * {@link #SWEEP_INTERVAL}.
  * <p>
  * Single node and in memory: the state is not shared across gateway instances and does not survive a
  * restart.
@@ -172,6 +181,8 @@ public final class SourceLedger {
     private final ConcurrentHashMap<SourceKey, Entry> entries = new ConcurrentHashMap<>();
     private final AtomicLong untracked = new AtomicLong();
     private final AtomicLong nextSweepAtNanos;
+    /** Runs a sweep {@link #hasRoomFor} found due, off the querying thread. */
+    private final Executor sweepExecutor;
 
     /**
      * @param settings     the ledger's tuning
@@ -185,9 +196,15 @@ public final class SourceLedger {
 
     SourceLedger(Settings settings, LongSupplier nanoClock, Consumer<SourceTrip> tripListener,
             int maxTrackedSources) {
+        this(settings, nanoClock, tripListener, maxTrackedSources, SourceLedger::sweepOnVirtualThread);
+    }
+
+    SourceLedger(Settings settings, LongSupplier nanoClock, Consumer<SourceTrip> tripListener,
+            int maxTrackedSources, Executor sweepExecutor) {
         this.settings = Objects.requireNonNull(settings, "settings");
         this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
         this.tripListener = Objects.requireNonNull(tripListener, "tripListener");
+        this.sweepExecutor = Objects.requireNonNull(sweepExecutor, "sweepExecutor");
         if (maxTrackedSources < 1) {
             throw new IllegalArgumentException("maxTrackedSources must be at least 1 (was " + maxTrackedSources + ")");
         }
@@ -211,7 +228,8 @@ public final class SourceLedger {
      * The event is counted on the key the source is tracked under: the key itself, the tracked
      * {@code /48} aggregate of an IPv6 {@code /64} that is not tracked itself, or — for a new key — the
      * key as given, or its {@code /48} from the high-water mark on. When the admission trips the source,
-     * the trip listener is called on this thread before the method returns.
+     * the trip listener is called on this thread before the method returns, with a {@link SourceTrip}
+     * carrying both the key the event was counted on and {@code key} itself.
      *
      * @param key    the source the event is attributed to
      * @param weight the event's weight, at least {@code 1}
@@ -242,8 +260,8 @@ public final class SourceLedger {
             boolean atThreshold = entry.level >= settings.threshold();
             if (atThreshold && !entry.tripped) {
                 entry.tripped = true;
-                outcome.trip = new SourceTrip(sourceKey, entry.level, settings.threshold(), settings.window(),
-                        entry.contributions, settings.action(), now);
+                outcome.trip = new SourceTrip(sourceKey, key, entry.level, settings.threshold(),
+                        settings.window(), entry.contributions, settings.action(), now);
             }
             if (atThreshold && settings.action() == Action.BLOCK && !entry.blocked) {
                 entry.blocked = true;
@@ -286,17 +304,27 @@ public final class SourceLedger {
 
     /**
      * Answers whether an admission for {@code key} would track it now: {@code true} when the key — or
-     * the {@code /48} aggregate of an IPv6 {@code /64} — is tracked, or when a new key fits, after the
-     * rate-limited sweep {@link #admit} would run at the bound. Nothing is admitted, counted or
-     * reserved, so the answer is a decision about this instant only; {@link #admit} decides again.
+     * the {@code /48} aggregate of an IPv6 {@code /64} — is tracked, or when a new key fits the map as
+     * it stands. The query never sweeps on the calling thread: at the bound, a sweep that is due is
+     * handed to the sweep executor and the answer is taken from the map as it stands, so a new key is
+     * answered {@code false} until that sweep has freed room. Nothing is admitted, counted or reserved,
+     * so the answer is a decision about this instant only; {@link #admit} decides again.
      *
      * @param key the source to query
-     * @return {@code false} exactly when an admission now would return
-     *         {@link SourceState.Status#UNTRACKED}
+     * @return {@code false} when the key is not tracked and the map is at the bound, which is when an
+     *         admission now would return {@link SourceState.Status#UNTRACKED} unless its own sweep freed
+     *         room
      */
     public boolean hasRoomFor(SourceKey key) {
         Objects.requireNonNull(key, "key");
-        return slotFor(key, nanoClock.getAsLong()) != null;
+        if (trackedKeyOf(key, aggregateOf(key)) != null || entries.size() < maxTrackedSources) {
+            return true;
+        }
+        long now = nanoClock.getAsLong();
+        if (claimSweep(now)) {
+            sweepExecutor.execute(() -> sweep(nanoClock.getAsLong()));
+        }
+        return entries.size() < maxTrackedSources;
     }
 
     /**
@@ -353,19 +381,38 @@ public final class SourceLedger {
     }
 
     /**
-     * Sweeps the map when the sweep interval allows it, and reports whether a new key fits afterwards.
+     * Sweeps the map on the calling thread when the sweep interval allows it, and reports whether a new
+     * key fits afterwards. Called by {@link #admit} only.
      */
     private boolean makeRoom(long now) {
-        long sweepAt = nextSweepAtNanos.get();
-        if (now - sweepAt >= 0 && nextSweepAtNanos.compareAndSet(sweepAt, now + SWEEP_INTERVAL.toNanos())) {
-            for (SourceKey key : entries.keySet()) {
-                entries.computeIfPresent(key, (sourceKey, entry) -> {
-                    drain(entry, now);
-                    return entry.level <= 0.0 && !entry.blocked ? null : entry;
-                });
-            }
+        if (claimSweep(now)) {
+            sweep(now);
         }
         return entries.size() < maxTrackedSources;
+    }
+
+    /**
+     * Claims the next sweep when the sweep interval allows one at {@code now}; at most one caller per
+     * interval wins the claim and must then run or hand off the sweep.
+     */
+    private boolean claimSweep(long now) {
+        long sweepAt = nextSweepAtNanos.get();
+        return now - sweepAt >= 0 && nextSweepAtNanos.compareAndSet(sweepAt, now + SWEEP_INTERVAL.toNanos());
+    }
+
+    /** Removes every entry whose level drained to zero at {@code now} and that is not blocked. */
+    private void sweep(long now) {
+        for (SourceKey key : entries.keySet()) {
+            entries.computeIfPresent(key, (sourceKey, entry) -> {
+                drain(entry, now);
+                return entry.level <= 0.0 && !entry.blocked ? null : entry;
+            });
+        }
+    }
+
+    /** The production sweep executor: one short-lived virtual thread per handed-off sweep. */
+    private static void sweepOnVirtualThread(Runnable sweep) {
+        Thread.ofVirtual().name("source-ledger-sweep").start(sweep);
     }
 
     /**

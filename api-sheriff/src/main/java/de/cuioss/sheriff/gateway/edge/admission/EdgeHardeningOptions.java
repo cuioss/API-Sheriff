@@ -29,8 +29,21 @@ import io.vertx.core.http.HttpServerOptions;
  * applies them to the listeners that customizer reaches: the main plain-HTTP listener, the main
  * HTTPS listener and the main domain-socket listener, through the three callbacks Quarkus invokes for
  * them. The management interface is built without consulting any {@link HttpServerOptionsCustomizer},
- * so it keeps the transport defaults — the 8 KiB HTTP/2 header list among them — and none of the
- * bounds below reaches it.
+ * so none of the bounds below reaches it. It is bounded through the
+ * {@code quarkus.management.limits.*} family in the shipped {@code application.properties} instead, as
+ * far as Quarkus applies that family there: its HTTP/1.x header block at the same 16 KiB, its request
+ * line (4 KiB) and chunk (8 KiB) at their transport defaults, which are tighter than the bounds below,
+ * its three form limits (256 fields, 2048 bytes per attribute, 1024 undecoded bytes) and its body
+ * (10 MiB, enforced by the body handler on every management route) at their Quarkus defaults.
+ * Quarkus applies no HTTP/2 setting to it, so it announces the transport's 8 KiB HTTP/2 header list,
+ * and its idle reap, which is not part of that family ({@code quarkus.management.idle-timeout}), stays
+ * at the Quarkus default. {@code ManagementListenerTransportTest} pins, on a live management listener,
+ * the header block (refused {@code 431} past 16 KiB, the one bound the shipped file sets), the request
+ * line (refused {@code 414} past the 4 KiB transport default), each form limit (refused {@code 400}
+ * one unit past it), the body (refused {@code 413} past 10 MiB) and the 8 KiB HTTP/2 header list it
+ * announces, each refusal against a served control at or under the bound. The chunk bound refuses
+ * nothing: the codec delivers a larger chunk in pieces of at most 8 KiB, which no client can observe, so
+ * the test asserts what is observable — a chunk twice that size is served.
  * <p>
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
@@ -85,8 +98,15 @@ import io.vertx.core.http.HttpServerOptions;
  * Every listener this customizer reaches (main HTTP, main HTTPS, main domain socket) announces a
  * {@code SETTINGS_MAX_HEADER_LIST_SIZE} of exactly 16 KiB — the same bound the HTTP/1.1 header block
  * has. The value is set whatever the listener announced before, so the transport default of 8 KiB
- * never stays in effect on those listeners; the management interface, which no customizer reaches,
- * keeps it. The bound covers the whole decoded header list,
+ * never stays in effect on those listeners; the management interface, which no customizer reaches and
+ * to which Quarkus applies no HTTP/2 setting, keeps it. The announce was raised from that 8 KiB to
+ * 16 KiB so the two protocols admit the same requests: with the header list bounded tighter than the
+ * header block, a request whose headers fall between 8 and 16 KiB — a large cookie or bearer token — was
+ * served over HTTP/1.1 and answered {@code 431} over HTTP/2, so the protocol a client negotiated decided
+ * whether it was served. One 16 KiB inbound-unit bound now applies to both. The raise keeps the
+ * {@code CONTINUATION}-flood defence in place: the bound still caps the whole decoded list of one
+ * request, and the codec still ends a connection whose compressed block runs past the factor below.
+ * The bound covers the whole decoded header list,
  * {@code CONTINUATION} frames included: a request whose decoded list passes it is answered {@code 431}
  * and its stream reset, while the connection stays open; only a compressed header block larger than
  * 1.25 times the bound (20 KiB) makes the codec end the connection with a {@code GOAWAY} naming an
@@ -194,7 +214,9 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * {@code SETTINGS_MAX_HEADER_LIST_SIZE} of every listener this customizer reaches, in place of the
      * transport default of 8 KiB. Defined as
      * {@link #MAX_HEADER_SIZE_BYTES} so the HTTP/2 header list, {@code CONTINUATION} frames included,
-     * has the same 16 KiB bound as the HTTP/1.1 header block. A decoded list over it is answered
+     * has the same 16 KiB bound as the HTTP/1.1 header block. It replaces the transport's 8 KiB so a
+     * request is not refused over HTTP/2 that HTTP/1.1 serves: one bound for both protocols, instead of
+     * a protocol-dependent answer for headers between 8 and 16 KiB. A decoded list over it is answered
      * {@code 431} and its stream reset; a compressed header block over 1.25 times it ends the
      * connection.
      */

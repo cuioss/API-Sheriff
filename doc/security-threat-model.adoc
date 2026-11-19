@@ -1345,6 +1345,14 @@ and streamed responses (never materialized). The gateway is an *opaque* passthro
 not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must
 still cap body bytes. Explicit YAML `StreamReadConstraints` are applied at config load.
 
+*No request-head deadline.* The gateway sets no deadline on the arrival of a request head -- the
+HTTP/1.1 request line and header block, or an HTTP/2 header block with its `CONTINUATION` frames.
+Until a head is complete, the idle timeout, which any byte restarts, and the connection cap are the
+only bounds on its connection, and a connection the cap has counted holds its slot until it closes,
+whether or not a request head ever completes on it. A front proxy that enforces its own request-head
+timeout is therefore a deployment requirement
+(link:user/edge-security.adoc#_request_head_deadline[Edge security -- A front proxy times out the request head]).
+
 *Status:* PARTIAL. Streaming + the `max_body_bytes` counter is ADR-0006 + pipeline
 stage 6; edge limits, idle timeout, connection cap, admission cap and graceful drain are delivered
 as the edge-hardening bounds; YAML limits are applied at config load. The individual controls are
@@ -1582,10 +1590,12 @@ stream-idle bound]):
   neither a failure nor a success, and the retry predicate refuses it. After the head the upstream request is reset and the
   relayed response is ended through the one end rule with the status the upstream sent, also when no
   body byte of the upstream had been relayed yet; such an answer, whose head was not yet written, is
-  made unstorable -- `Cache-Control: no-store`, with the upstream's `Expires`, `Age`, `ETag`,
-  `Last-Modified`, `CDN-Cache-Control` and `Surrogate-Control` removed, the last two because a cache
-  they target obeys them in place of `Cache-Control` (RFC 9213) -- so no cache keeps the empty answer
-  as the upstream's response. Once passed, the deadline stays in force: the
+  made unstorable -- `Cache-Control: no-store`, with every field a cache could store it by removed:
+  the freshness fields `Expires`, `Age` and `X-Accel-Expires`, the validators `ETag` and
+  `Last-Modified`, and every cache-targeted directive -- each field whose name ends in
+  `-Cache-Control` (RFC 9213), `Surrogate-Control` and `Edge-Control`, because a cache they target
+  obeys them in place of `Cache-Control` -- so no cache keeps the empty answer as the upstream's
+  response. Once passed, the deadline stays in force: the
   wait for a pooled connection counts towards the 25 s, and a body whose attempt obtains its
   connection only after the deadline, or that the upstream is not taking data for when it passes, is
   ended the same way as soon as it is read again. An attempt that ends without handing its response
@@ -1693,6 +1703,13 @@ stream-idle bound]):
   window behind an upstream that accepts and never answers each end as `UPSTREAM_TIMEOUT`, open the
   breaker and leave the next dispatch refused unsent (`expiredWaitsOpenTheBreaker`), and the same load
   against an upstream that answers is served with the breaker closed (`answeredLoadLeavesTheBreakerClosed`).
+  A connection can also be held by a client still sending its body, which no upstream can answer before
+  it ends: an expired wait while a request body on that upstream client is still arriving -- handed over, not yet ended -- and forwarded a chunk within the 10 s (a body that has ended, however recently, never counts) is the
+  gateway's neutral `UPSTREAM_POOL_SATURATED`, so a client trickling a body cannot open the breaker for
+  everyone (`waitsBehindABodyStillArrivingLeaveTheBreakerClosed`). Two limits follow. An upstream that
+  answers nothing while some client trickles a body to it does not open the breaker through expired
+  waits; its held requests still end on the guard's timeout. And callers that all leave before the 10 s
+  bound end as neutral, so against an upstream that never answers they never open it.
   `InboundBodyDepartureTest` (`departureEndsTheConnectionWaitAtOnce`) ends a dispatch on its client's
   departure while its connection is still pending and asserts that the connection handed out afterwards
   is reset unsent and the breaker makes no transition. `EgressClientsTest`
@@ -2099,7 +2116,11 @@ inherit this requirement.
 API Sheriff holds these bounds on the inbound HTTP/2 transport. `EdgeHardeningOptions` sets the first
 three as fixed gateway constants that no configuration key reaches, on every data-plane listener it
 customizes: the main HTTP, main HTTPS and main domain-socket listeners. The management interface is
-built without the customizer and keeps the transport defaults. The last two follow from the
+built without the customizer, so none of these bounds reaches it: Quarkus applies no HTTP/2 setting to
+it, and it announces the transport's 8 KiB header list and keeps the transport's stream and reset
+defaults. Its HTTP/1.x header block is held at the main listeners' 16 KiB through
+`quarkus.management.limits.max-header-size`, and its request line and chunk keep transport defaults
+tighter than the main listeners' (`ManagementListenerTransportTest`). The last two follow from the
 never-forward set and from dispatch:
 
 * *Concurrent streams.* A connection announces at most 100 concurrent streams; a listener announcing
@@ -2127,6 +2148,11 @@ never-forward set and from dispatch:
   `Content-Length`, an undeclared one keeps the framing the upstream client chooses
   (link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060],
   <<gw-02>>).
+
+The per-source detection substrate counts rejected requests, so it does not see a connection whose
+request head has not completed: that connection carries no request to reject. No gateway bound
+limits how long a head may take to arrive (<<gw-07>>); a front proxy with its own request-head
+timeout is a deployment requirement.
 
 The per-source detection substrate does not key these bounds. Its key is a source address, while
 stream and reset state belong to one connection, so each bound is a property of the connection
@@ -3305,22 +3331,42 @@ acted on unremembered. Every refusal is the `400` of a rejected logout token, se
 `ApiSheriff-112` naming the reason. Each component that can refuse a token records each reason at
 `WARN` once and at `DEBUG` afterwards, because a refused token can be presented again at will.
 
-*An RP-initiated logout acts only on same-origin provenance.* The logout path is matched whatever the
-method, so a plain link or an image on another site could otherwise end a user's session. Before it
-resolves any session, the logout endpoint asks the session CSRF defence for the same proof its
-unsafe-method check reads (<<bff-11>>): a present `Origin` decides alone and must be a trusted origin;
-with `Origin` absent, `Sec-Fetch-Site` must be `same-origin` or `none` -- the value a browser sends
-for a navigation the user started, which no other site can trigger. `none` is admitted for this
-navigation only; the unsafe-method check still refuses it. One defence instance judges both, so the
-rule is not restated in the endpoint. A request without the proof is answered `200` with a fixed
+*An RP-initiated logout acts only on a top-level document navigation from a trusted origin.* The
+logout path is matched whatever the method, so a plain link or an image could otherwise end a user's
+session -- one on another site, and equally one in content served under the gateway's own origin,
+since a session variant serves its SPA and API upstreams there. Same-origin provenance alone
+therefore does not end a session. Before it resolves any session, the logout endpoint asks the
+`CsrfDefence` method `provesTrustedDocumentNavigation`, which requires all of the following:
+
+* no `Sec-Purpose` header -- a browser sends it on a prefetch or a prerender, which no user asked
+  for, even when the speculative load is a navigation;
+* `Sec-Fetch-Mode`, when present, is `navigate` and `Sec-Fetch-Dest`, when present, is `document` --
+  a same-origin image, script, `fetch()` call, link prefetch or frame carries a different mode or
+  destination;
+* a present `Origin` is a trusted origin and decides the provenance alone, as in the unsafe-method
+  check (<<bff-11>>); with `Origin` absent, `Sec-Fetch-Site` must be `same-origin`.
+
+Mode and destination are judged only when present: the threat is a request a browser sends on the
+victim's behalf, and a browser that sends `Sec-Fetch-Site` sends `Sec-Fetch-Mode` with it (and
+`Sec-Fetch-Dest` in every current version). `Sec-Fetch-Site: none` is not a proof. A browser sends
+it for a typed URL and a bookmark, but also for a link opened from another application, such as a
+mail client, so a link delivered to the user carries it as well. Such a request, and a request from
+a browser that sends neither Fetch Metadata nor `Origin`, is answered the confirmation page.
+
+A request without the proof is answered `200` with a fixed
 confirmation page that reflects nothing of the request, is served `no-store`, forbids framing
 (`Content-Security-Policy` `frame-ancestors 'none'` and `X-Frame-Options: DENY`) and carries one form
 that `POST`s to the configured logout path; the session and its cookies stay untouched and no
-identity-provider call is made. The browser sends that `POST` with the gateway's own `Origin`, so it
-returns with the proof. Because the proof is checked before the session is looked up, the answer
+identity-provider call is made. The browser sends that `POST` as a top-level document navigation with
+the gateway's own `Origin`. The logout leg's defence trusts that origin -- the origin of
+`redirect_uri`, the one host a session cookie is set on -- in addition to
+`session.csrf.trusted_origins`, so the confirming `POST` returns with the proof even when the
+configured list names only other origins; the unsafe-method check of session routes keeps trusting
+the configured list alone. Because the proof is checked before the session is looked up, the answer
 without it is the same whether or not a session exists. *Accepted cost:* a logout link on a trusted
-origin other than the gateway's own sends no `Origin` on a top-level navigation and lands on the
-confirmation page, which the user confirms with one click.
+origin other than the gateway's own sends no `Origin` on a top-level navigation, and a typed or
+bookmarked logout URL carries `Sec-Fetch-Site: none`; both land on the confirmation page, which the
+user confirms with one click.
 
 *A proven RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
 endpoint destroys the session and clears its cookies first and builds the redirect to the provider's
@@ -3417,11 +3463,15 @@ memory refuses and remembers nothing (`LogoutTokenReplayGuardTest`; `Backchannel
 `SingleUse`). A logout with `Sec-Fetch-Site: cross-site` and no `Origin` is answered the `200`
 confirmation page carrying `no-store`, `frame-ancestors 'none'`, `X-Frame-Options: DENY` and a form
 posting to the logout path, the session still resolves afterwards and the identity provider is not
-called, while `same-origin`, and a confirmation `POST` with a trusted `Origin`, log out
-(`LogoutEndpointTest`); the predicate admits a trusted `Origin`, and with `Origin` absent
-`same-origin` or `none`, refuses an untrusted `Origin` even beside `same-origin`, and leaves the
-unsafe-method check refusing `none` (`CsrfDefenceTest`); the edge hands `Sec-Fetch-Site` through to
-the logout leg (`GatewayEdgeGatewayCookieTest`), and against the native image a `cross-site` logout
+called, while a same-origin top-level document navigation, and a confirmation `POST` with a trusted
+`Origin`, log out (`LogoutEndpointTest`); the predicate admits only a top-level document navigation
+-- no `Sec-Purpose`, and `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document` when present --
+carrying a trusted `Origin` or, with `Origin` absent, `Sec-Fetch-Site: same-origin`; it refuses a
+same-origin subresource, `fetch()`, frame, prefetch or prerender even beside a trusted `Origin`,
+refuses `none` with `Origin` absent, so such a request gets the confirmation page, refuses an
+untrusted or opaque `Origin` whatever `Sec-Fetch-Site` says, and leaves the unsafe-method check
+refusing `none` (`CsrfDefenceTest`, `TrustedDocumentNavigation`); the edge hands `Sec-Fetch-Site`
+through to the logout leg (`GatewayEdgeGatewayCookieTest`), and against the native image a `cross-site` logout
 keeps the session serving while the confirmation `POST`, which carries only `Origin`, ends it
 (`BffLogoutIT`). The session is destroyed before the redirect to the provider is built; a logout
 against a provider without a usable `end_session_endpoint`, with failing discovery, or for a session
@@ -4245,10 +4295,11 @@ by these rules, in this order:
   in, and an expired record stored behind a younger live one is removed too.
 * *Each source holds at most 256 live records.* Every record is counted under its requester's
   source (`PendingQuotaKeys`): for a peer listed in `forwarded.trusted_proxies`, the client address
-  its forwarding headers resolve to -- when the `Forwarded` and `X-Forwarded-For` chains together
-  resolve none, the address the `X-Forwarded-For` chain alone resolves under the same trusted
-  proxies, the one derivation the detection source key shares (`ForwardedClientResolution`) -- and
-  `unknown` when even that resolves none; for any other peer, the
+  its forwarding headers resolve to -- when a `Forwarded` or `X-Forwarded-For` value is present yet
+  the two chains together resolve none, that proxy's own unresolved source
+  (`unresolved-via-<proxy address>`), never one chain read on its own, the one derivation the
+  detection source key shares (`ForwardedClientResolution`) -- and `unknown` when the request carries
+  neither header, or only blank ones; for any other peer, the
   TCP peer address, whose forwarding headers are never read. Behind the gateway's own SNI front
   listener (`tls.passthrough_sni` set) every terminated connection reaches the edge from the relay's
   loopback leg, so there the client address the relay hands over in process, never in a header,
@@ -4299,8 +4350,9 @@ An operator who needs a tighter bound places it in front of the gateway.
 
 *Residual risk (accepted) -- a shared source shares one quota.* Every user behind one source key
 shares its 256 records: users behind one NAT or shared egress address, users behind one IPv6 `/64`,
-and every request whose source resolves to `unknown` -- a trusted proxy whose forwarding headers
-name no client even through the `X-Forwarded-For` fallback, or a peer with no parseable address. When more than 256 logins from one such source
+every request through one trusted proxy whose forwarding chain names no client (that proxy's
+unresolved source), and every request whose source resolves to `unknown` -- a trusted proxy's
+request carrying no forwarding header or only blank ones, or a peer with no parseable address. When more than 256 logins from one such source
 are pending at once, each new one removes that source's own oldest, and that user's callback is
 refused `403`. Other sources are not affected.
 
@@ -4844,7 +4896,7 @@ outstanding hardening work (next section).
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
-| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); RP-initiated logout acts only on same-origin provenance (a trusted `Origin`, else `Sec-Fetch-Site` `same-origin` or `none`) judged by the session CSRF defence before any session lookup, otherwise a `no-store`, framing-forbidden confirmation page whose form `POST`s back; the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-147`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `CsrfDefence.provesSameOriginNavigation`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`; a logout link on another trusted origin lands on the confirmation page, accepted) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); RP-initiated logout acts only on a top-level document navigation from a trusted origin (no `Sec-Purpose`, `Sec-Fetch-Mode` `navigate` and `Sec-Fetch-Dest` `document` when present, and a trusted `Origin`, else `Sec-Fetch-Site` `same-origin`) judged by the session CSRF defence before any session lookup, otherwise a `no-store`, framing-forbidden confirmation page whose form `POST`s back; the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-147`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `CsrfDefence.provesTrustedDocumentNavigation`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`; a logout link on another trusted origin lands on the confirmation page, accepted) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED
@@ -4855,7 +4907,7 @@ outstanding hardening work (next section).
 | <<bff-17>> | Widening bound to the browser and to one subject; scopes from boot configuration; step-up path live-session-only with a same-origin return URL; refusal terminal, no loop, no under-scoped relay; granted set kept truthful so a scope the provider stopped granting reaches the refusal; merged session indexed under the grant's `sid`; in server mode a session terminated before the merge is written is not brought back | Gateway (`SessionWidening`, `CallbackEndpoint`, `StepUpEndpoint`, `SessionAuthenticationStage`, `TokenRefreshCoordinator`, `ReservedPathRegistry`) -- ADR-0057 | COVERED (cross-site start and merge/refresh race accepted)
 | <<bff-18>> | `private_key_jwt` by default, algorithm derived from the key; key files read by the gateway and refused at boot on any defect, generated keys in process memory only; `oidc.client_secret` an operator choice announced at every boot and refused together with a client-authentication key file | Engine `PrivateKeyJwtAuth` + gateway `ClientSigningKey` / `BffRuntimeProducer` + configuration validator -- ADR-0058 | COVERED (key mode) / accepted residual (client-secret mode: the profile's client-authentication requirement is not met)
 | <<bff-19>> | Client key set published without a credential on every host: one public key, no input read, `GET` only; `404` and still reserved in client-secret mode; a colliding `jwks_path` refused at boot | Gateway (`ClientJwksEndpoint`, `ReservedPathRegistry`) + configuration validator -- ADR-0058 | COVERED (TLS on the path, the registered URL and a generated key behind several replicas are deployment residuals, accepted)
-| <<bff-20>> | Every authorization request pushed -- login, session widening and RFC 9470 step-up re-drive; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login or the widening `502` before any state is stored, recorded once per reason; the pending-login store removes expired records first, caps each source -- a trusted proxy's contested chain keyed by its `X-Forwarded-For` client -- at 256 live records with its own oldest removed, and refuses a new login `503` with `Retry-After: 30` when full of live records, never removing another source's | Engine `ParClient` + gateway `PushedAuthorizationRequests`, `InMemoryPendingAuthorizationStore`, `PendingQuotaKeys` -- ADR-0058 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap; a shared source shares one quota; enough sources fill the store and new logins are refused `503`; accepted)
+| <<bff-20>> | Every authorization request pushed -- login, session widening and RFC 9470 step-up re-drive; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login or the widening `502` before any state is stored, recorded once per reason; the pending-login store removes expired records first, caps each source -- a trusted proxy's chain that resolves no client keyed on that proxy's unresolved source -- at 256 live records with its own oldest removed, and refuses a new login `503` with `Retry-After: 30` when full of live records, never removing another source's | Engine `ParClient` + gateway `PushedAuthorizationRequests`, `InMemoryPendingAuthorizationStore`, `PendingQuotaKeys` -- ADR-0058 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap; a shared source shares one quota; enough sources fill the store and new logins are refused `503`; accepted)
 | <<bff-21>> | Cookie value is a random handle, never the session id; a login adopts no presented value; server-mode handle re-issued on a widening; absolute and idle deadline enforced at resolution in both modes, extended only by a request let through to a session route; cookie-mode last access in a separately keyed authenticated cookie bound to its session; expired sessions swept; cookies cleared with the attributes they were set with; no gateway cookie reaches an upstream; bounded work per presented cookie; a login ends the presented session; a bound of sessions per subject; `no-store` on every response the gateway sets a cookie on; no upstream `Set-Cookie` for a gateway cookie; a WebSocket relay closed with its session | Gateway (`ServerSessionBinding`, `InMemorySessionStore`, `SessionCookieCodec`, `CookieSessionBinding`, `SessionActivityCookieCodec`, `CookieKeyMaterial`, `SessionAuthenticationStage`, `CallbackEndpoint`, `LogoutEndpoint`, `BffRuntimeProducer`, `ConnectionHeaders`, `PipelineRequest`, `UpstreamSetCookieFilter`, `ResponseStage`, `SessionRelayRegistry`, `WebSocketRelayStage`) + configuration validator -- ADR-0018 | COVERED (not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie, which no page does today; cookie mode: a cookie sealed before a step-up or a widening stays usable at its earlier level, accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)

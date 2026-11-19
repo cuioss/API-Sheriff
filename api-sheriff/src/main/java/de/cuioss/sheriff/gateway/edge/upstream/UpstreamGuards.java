@@ -37,9 +37,10 @@ import org.jspecify.annotations.Nullable;
  * Each guard joins SmallRye Fault-Tolerance's retry (on a route that enables it) and timeout with the
  * gateway's own {@link UpstreamCircuitBreaker}, in the order retry, breaker, timeout. The breaker is the
  * gateway's because SmallRye's records every call as a success or a failure, while a gateway rejection
- * ({@link GatewayException}) — a call the client ended, or one refused because the wait queue for an
- * upstream connection was full — says nothing about the upstream and is neutral: neither counted as a
- * failure nor recorded as a success.
+ * ({@link GatewayException}) — a call the client ended, one refused because the wait queue for an
+ * upstream connection was full, or one whose connection wait expired while a request body on that upstream
+ * client was still arriving, not yet ended ({@link DispatchStage#expiredWaitOf}) — says nothing about the upstream
+ * and is neutral: neither counted as a failure nor recorded as a success.
  * <p>
  * Handed to the {@link de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler} as its
  * {@link de.cuioss.sheriff.gateway.edge.assembly.ResilienceGuardFactory}, which builds one guard per
@@ -95,7 +96,9 @@ public final class UpstreamGuards {
      * ({@link DispatchStage#UPSTREAM_CONNECTION_WAIT_MILLIS}): an attempt whose wait reaches it is ended, without
      * its request being sent or its body read, as the upstream's timeout
      * ({@link DispatchStage.UpstreamConnectionWaitExpired}), which the breaker counts and the retry predicate
-     * refuses, so no connection wait runs into this timeout. On a gRPC call this timeout is therefore reached in
+     * refuses — or, when a request body on that upstream client was still arriving at the expiry, not yet ended,
+     * and had forwarded a chunk within the bound, as the gateway's neutral pool saturation — so no connection wait
+     * runs into this timeout. On a gRPC call this timeout is therefore reached in
      * two ways, both the upstream's: by an upstream holding a complete, half-closed request it does not answer;
      * and by an upstream that stops taking data mid-request and does not take any more before this timeout.
      * While that backpressure pauses the request stream the message bound is not counted, and the
@@ -176,6 +179,22 @@ public final class UpstreamGuards {
                 BREAKER_FAILURE_RATIO, Duration.ofSeconds(BREAKER_RESET_SECONDS), BREAKER_SUCCESS_THRESHOLD,
                 System::nanoTime, name, state -> upstreamFailureMapper.recordBreakerTransition(name, state));
         return new UpstreamGuard(retry, breaker, timeout);
+    }
+
+    /**
+     * A guard of the production composition — {@code retry}, when given, around the gateway's {@code breaker},
+     * around {@code timeout} — over parts of the caller's policy. The seam a test uses to run a dispatch under a
+     * breaker that opens sooner, or a timeout that ends sooner, than the production ones, with the same neutral
+     * accounting of a gateway rejection.
+     *
+     * @param retry   the retry around the breaker, or {@code null} for none
+     * @param breaker the breaker the guard records each attempt with
+     * @param timeout the timeout bounding each attempt
+     * @return the new guard
+     */
+    static Guard guardOver(@Nullable Guard retry, UpstreamCircuitBreaker breaker, Guard timeout) {
+        return new UpstreamGuard(retry, Objects.requireNonNull(breaker, "breaker"),
+                Objects.requireNonNull(timeout, "timeout"));
     }
 
     /**

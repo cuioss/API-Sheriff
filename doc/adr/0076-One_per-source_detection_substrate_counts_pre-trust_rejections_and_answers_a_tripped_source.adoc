@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event (a pre-trust internal failure carries no weight: it is not caller behaviour), and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer. An amendment records that a trusted forwarder's contested Forwarded / X-Forwarded-For chain falls back to the X-Forwarded-For client before keying unknown; that the unknown source is counted, trips and is reported but is never blocked, delayed or refused, with boot WARN ApiSheriff-149 for block or delay combined with trusted proxies; that from a fixed high-water mark of 75% of the bound a new IPv6 key is tracked as its /48, one substrate rule every ledger built on SourceLedger follows; that under block or delay a full ledger answers a new untrackable source the block-style 429; and that no reserved slice for accruing sources exists, because such a source is never evicted.
+// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event (a pre-trust internal failure carries no weight: it is not caller behaviour), and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer. An amendment records that a trusted forwarder's request whose Forwarded / X-Forwarded-For chain resolves no client -- contested, malformed or naming its client by something other than an address -- is keyed on that proxy's own unresolved source and acted on, with neither family resolved on its own, while only a request carrying neither header, or only blank ones, is keyed unknown; that the unknown source is counted, trips and is reported but is never blocked, delayed or refused, with boot WARN ApiSheriff-149 for block or delay combined with trusted proxies; that from a fixed high-water mark of 75% of the bound a new IPv6 key is tracked as its /48, one substrate rule every ledger built on SourceLedger follows; that under block or delay a full ledger answers a new untrackable source the block-style 429; and that no reserved slice for accruing sources exists, because such a source is never evicted.
 // tags: edge, enumeration, detection, rate-limiting, secure-defaults, http2, hand-rolled, availability, forwarded-headers, fail-closed
 // affects: api-sheriff, documentation
 // supersedes:
@@ -34,10 +34,11 @@ link:../development/source-detection-substrate.adoc[Per-Source Detection Substra
 short:
 
 * *Keying.* `SourceKeyResolver` keys a request by `(source, host)`. The source is the client address
-  a trusted forwarder reported, and otherwise the TCP peer; a trusted forwarder's request whose
-  headers name no client is the `unknown` source, never the forwarder's own address. An IPv6 source
-  is reduced to its `/64`.
-  An absent or unparseable address folds to one `unknown` source. The host is kept only when it
+  a trusted forwarder reported, and otherwise the TCP peer; a trusted forwarder's request that
+  carries no forwarding header, or only blank ones, is the `unknown` source, never the forwarder's own
+  address (one whose non-blank header resolves no client: <<amendment-unresolved-chain>>). An IPv6
+  source is reduced to its `/64`. An absent or unparseable TCP peer address folds to one `unknown`
+  source. The host is kept only when it
   equals a `match.host` some route declares; every other host folds to `*`.
 * *Counting.* `SourceLedger` keeps one leaky bucket per key. An admitted event adds its weight. The
   level drains linearly at `threshold / window` per second, computed from a monotonic clock whenever
@@ -191,7 +192,12 @@ transport defaults:
 * The listener announces a header-list size of exactly 16 KiB, the HTTP/1.1 header-block bound, in
   place of the transport default of 8 KiB. The bound covers the whole decoded header list,
   `CONTINUATION` frames included. A decoded list over it is answered `431` and its stream reset; only
-  a compressed header block over 1.25 times the bound ends the connection.
+  a compressed header block over 1.25 times the bound ends the connection. The announce was raised from
+  8 KiB to 16 KiB so that both protocols admit the same requests. At 8 KiB, a request whose headers
+  fell between 8 and 16 KiB, such as one with a large cookie or bearer token, was served over HTTP/1.1
+  and answered `431` over HTTP/2, so the protocol a client negotiated decided whether it was served. The
+  raise keeps the `CONTINUATION`-flood defence: the bound still caps the whole decoded list of one
+  request, and the 1.25 factor still ends a connection whose compressed block runs past it.
 * The Rapid-Reset guard is pinned at the transport's own default of 200 client-sent `RST_STREAM`
   frames per 30-second window. It is set explicitly so that a change of the transport default cannot
   move it, and it is never raised
@@ -215,22 +221,30 @@ could be blocked for many clients at once, and a source past the bound could pro
 amendment changes the keying, the treatment of `unknown` and the bound; the rest of the decision
 stands.
 
-[[amendment-forwarded-fallback]]
-*A contested forwarded chain falls back to `X-Forwarded-For`.* The forwarded-header resolver yields
-no client when a trusted forwarder's RFC 7239 `Forwarded` chain disagrees with its `X-Forwarded-For`
-chain, so every such request through that forwarder was keyed `unknown`. `ForwardedClientResolution`
-now resolves the combined headers first and, only when they yield no client, the `X-Forwarded-For`
-chain alone under the same trusted proxies. It is the one derivation the source key and the BFF's
-pending-login quota key share; a request that yields no client even then is still `unknown`.
+[[amendment-unresolved-chain]]
+*An unresolvable forwarded chain is keyed on its proxy, not on `unknown`.* The forwarded-header
+resolver yields no client when a trusted forwarder's RFC 7239 `Forwarded` chain disagrees with its
+`X-Forwarded-For` chain, when a chain is malformed, or when it names its client by something other
+than an address. A client can always produce either, so keying
+such a request `unknown` -- a key the edge never acts on -- would let any client escape `block` and
+`delay`. Resolving one family on its own is no way out either: the request cannot show which family
+the proxy manages, so the client could then choose its key (ADR-0003). `ForwardedClientResolution`,
+the one derivation the source key and the BFF's pending-login quota key share, therefore resolves the
+combined headers once and tells a chain that resolves no client apart from no chain at all. A request
+whose `Forwarded` or `X-Forwarded-For` carries a value yet resolves no client is keyed on its proxy's
+own source, `unresolved-via-<proxy address>`, which is acted on like any source; only a request that
+carries neither header, or only blank ones, is `unknown`.
 
 [[amendment-unknown]]
-*The `unknown` source is counted, never acted on.* `unknown` is one key for every client whose
-address did not resolve. Blocking, delaying or refusing it would act on all of them for the probing of
-one -- the outcome <<default-observe>> exists to prevent, reached through a key the operator cannot
+*The `unknown` source is counted, never acted on.* `unknown` is one key for
+every trusted proxy's request that carries no client-address header, or only blank ones, and for
+every request without a usable peer address. Blocking, delaying or refusing it would act on all of
+them for the probing of one -- the outcome <<default-observe>> exists to prevent, reached through a key the operator cannot
 see. `SourceGate` therefore admits `unknown` like any source -- it is counted, trips, its trip is
 logged as `ApiSheriff-141` and fed to the threat ledger -- but never answers it `429`, never refuses it
-for a used-up held-answer share and never holds it, under every action. Because a trusted proxy that
-forwards no usable client address lets its requests escape `block` and `delay` this way, the boot logs
+for a used-up held-answer share and never holds it, under every action. Its trip is logged and metered
+with the action actually taken, `observe`, whatever action is configured. Because a trusted proxy that
+forwards no client-address header lets its requests escape `block` and `delay` this way, the boot logs
 WARN `ApiSheriff-149` when `enumeration_detection` is enabled with `block` or `delay` and
 `forwarded.trusted_proxies` is non-empty.
 
@@ -250,22 +264,41 @@ let the ledgers drift apart in what one source is. The mark is a constant, not c
 *A full ledger fails closed under `block` and `delay`.* A source the full ledger cannot track can
 never trip, so under `block` or `delay` an unbounded number of fresh sources would get free probing
 once the ledger is full. `SourceLedger.hasRoomFor` answers whether an admission would track a key now,
-by the lookup, sweep and size check `admit` uses, without admitting anything. Before admission,
+by the lookup and size check `admit` uses, without admitting anything. Before admission,
 `SourceGate.answersBlocked` answers an untracked, non-`unknown` source for which the ledger has no
 room with the same block-style `429`, its `Retry-After` the sweep interval (`1` second), counted as
 `SOURCE_BLOCKED` and on `sheriff_source_untracked_total`. The consequence is accepted on purpose:
-while a flood keeps the ledger full of live sources, every new source is refused, a legitimate one
-included, until the sweep frees room; tracked sources are answered as before. Under `observe` nothing
-is refused, and the threat ledger, which only observes, refuses nothing either. The check claims no
-slot, because the bound is soft by design: room that a concurrent admission takes after the check
-falls back to the untracked count, and room that appears after it costs one refused request.
+while a flood keeps the ledger full of live sources, every new source is refused until the sweep
+frees room, and tracked sources are answered as before. A well-behaved client is rejected for nothing
+and is therefore not tracked, so "every new source" is practically all legitimate traffic, while the
+flooding sources already tracked keep being served. Under `observe` nothing is refused, and the
+threat ledger, which only observes, refuses nothing either. The check claims no slot, because the
+bound is soft by design: room that a concurrent admission takes after the check falls back to the
+untracked count, and room that appears after it costs one refused request.
+
+The room query runs on the event loop, so it never sweeps there: at the bound, a sweep that is due is
+handed to a virtual thread and the query answers from the map as it stands, so the request that found
+the ledger full is refused while that sweep runs. Only `admit`, which runs on a virtual thread, sweeps
+on its own thread. Either way at most one sweep starts per sweep interval.
+
+The refusal is not bounded by evicting the lowest-level live entry instead of refusing. Eviction keeps
+legitimate traffic flowing, but it lets a flood push a source that is accruing toward the threshold
+out of the ledger -- the denial becomes an evasion of detection, which is the outcome this rule exists
+to prevent -- and choosing the lowest entry costs a scan or an ordered index on every admission at the
+bound, the cost the rate-limited sweep exists to avoid. A reserved slice for new sources only delays
+the fill by the size of the slice. Keeping the ledger full takes a sustained stream of rejections from
+as many distinct sources as the bound, each holding its slot for at least `window / threshold`
+seconds per unit of weight it added -- the level drains at `threshold / window` per second; the
+documented consequence and the operator's choice of `observe` stand in for a bound.
 
 [[amendment-no-reserve]]
 *No slice of the bound is reserved for sources that are accruing.* A reserve was considered so that a
 source counting toward the threshold could not be crowded out by a flood of new keys. It is not
 needed: the sweep never evicts a key still holding weight, so such a source stays tracked however full
-the ledger gets. `SourceLedgerPressureTest` fills the bound with live keys while one source accrues and
-shows it keep being admitted and trip. No reserve exists.
+the ledger gets. `SourceLedgerPressureTest.accruingSourceStaysTrackedInAFullLedger` pins that sweep
+rule, not a change of it: it fills the bound with live keys while one source accrues, lets a sweep run,
+and shows the source keep its count and trip -- it goes red if the sweep removed a key still holding
+weight. No reserve exists.
 
 == Alternatives rejected
 
@@ -342,9 +375,14 @@ admission.
    the ledger full refuses every new source (<<amendment-fail-closed>>). The overflow is counted on
    `sheriff_source_untracked_total`, and the first one per process is logged once as WARN
    `ApiSheriff-142`.
-** Requests keyed `unknown` are never blocked, delayed or refused, so a trusted proxy that forwards
-   no usable client address escapes `block` and `delay`; `ApiSheriff-149` names the configuration at
-   boot (<<amendment-unknown>>).
+** Requests keyed `unknown` are never blocked, delayed or refused. Through a trusted proxy only a
+   request that carries no client-address header (`Forwarded` or `X-Forwarded-For`), or only blank ones, is keyed
+   `unknown`, so a trusted proxy that forwards no such header escapes `block` and `delay`;
+   `ApiSheriff-149` names the configuration at boot (<<amendment-unknown>>). A header that is present
+   but resolves no client -- a malformed chain, one over a cap, the two families disagreeing, or a
+   client named by something other than an address -- is
+   keyed on that proxy's own unresolved source, `unresolved-via-<proxy address>`, which `block` and
+   `delay` act on (<<amendment-unresolved-chain>>).
 ** Above the high-water mark a new IPv6 source is one key per `/48`, so the clients of one `/48`
    share that key from then on (<<amendment-aggregation>>).
 ** A restart clears every bucket and every block. `Retry-After` describes the block on this node

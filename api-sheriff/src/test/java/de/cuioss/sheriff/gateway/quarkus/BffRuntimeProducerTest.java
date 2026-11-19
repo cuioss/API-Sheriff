@@ -94,6 +94,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
@@ -4141,8 +4142,9 @@ class BffRuntimeProducerTest {
          */
         private static BffRuntime.ReservedHttpResponse logout(BffRuntime runtime, String sessionCookie) {
             return runtime.dispatch(ReservedEndpoint.LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null, "same-origin", null, null, null, null,
-                            "POST", QUOTA_KEY),
+                    new BffRuntime.ReservedHttpRequest("", sessionCookie, null,
+                            new CsrfDefence.FetchMetadata("same-origin", "navigate", "document", null), null, null,
+                            null, null, "POST", QUOTA_KEY),
                     NOW);
         }
 

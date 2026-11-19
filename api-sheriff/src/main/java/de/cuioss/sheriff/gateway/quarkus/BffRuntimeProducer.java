@@ -775,10 +775,13 @@ public class BffRuntimeProducer {
         // synchronously and before the end-session redirect is built. The local destruction stays the
         // authoritative logout; a failed revocation never turns the logout into an error.
         // The one session CSRF defence: the edge enforces it on unsafe-method session requests, and the
-        // logout leg judges its same-origin provenance by the same instance, never a second derivation.
+        // logout leg judges its provenance by a derivation of the same trusted origins that also trusts
+        // the gateway's own origin — the origin its confirmation page posts back from — whatever
+        // session.csrf.trusted_origins lists.
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
+        CsrfDefence logoutDefence = csrfDefence.withGatewayOrigin(gatewayOrigin);
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata, sessionBinding, revocationClient, clientAuthentication, csrfDefence));
+                metadata, sessionBinding, revocationClient, clientAuthentication, logoutDefence));
 
         // build(...) is reached for BOTH modes, so the diagnostic must name the mode that was actually
         // resolved — this is the line an operator greps to confirm which binding came up.
@@ -1460,10 +1463,14 @@ public class BffRuntimeProducer {
      * synchronously. The provider metadata that revocation needs is likewise read per request. The
      * access token is not revoked.
      * <p>
-     * <strong>The logout acts only on same-origin provenance.</strong> The endpoint judges it by the
-     * runtime's one session {@link CsrfDefence}, and answers a request without it with a confirmation
-     * page whose form posts to the logout path the {@link ReservedPathRegistry} reserves — resolved
-     * through the registry's own derivation, so the form posts exactly to the path the edge dispatches.
+     * <strong>The logout acts only on a top-level document navigation from a trusted origin.</strong> The
+     * endpoint judges it by the
+     * logout leg's own {@link CsrfDefence}: the runtime's session defence with the gateway's origin added
+     * ({@link CsrfDefence#withGatewayOrigin(String)}), so the confirmation page the leg answers — served
+     * under that origin — can post back even when {@code session.csrf.trusted_origins} names only other
+     * origins. A request without the proof is answered with that confirmation page, whose form posts to
+     * the logout path the {@link ReservedPathRegistry} reserves — resolved through the registry's own
+     * derivation, so the form posts exactly to the path the edge dispatches.
      *
      * @param oidc                 the global {@code oidc} block
      * @param gatewayOrigin        the gateway's own origin, the base of the default return leg
@@ -1471,10 +1478,17 @@ public class BffRuntimeProducer {
      * @param sessionBinding       the session binding the logout resolves, destroys and clears through
      * @param revocationClient     the runtime's one engine revocation client
      * @param clientAuthentication the runtime's one confidential-client authentication
-     * @param csrfDefence          the runtime's one session CSRF defence
+     * @param csrfDefence          the logout leg's CSRF defence: the runtime's one session defence with the
+     *                             gateway's own origin trusted for the logout navigation
+     *                             ({@link CsrfDefence#withGatewayOrigin(String)}), derived by the caller
      * @return the logout endpoint
      */
-    // Each parameter is one runtime-wide collaborator the logout endpoint is assembled from.
+    // java:S107 suppressed deliberately: every parameter is a runtime-wide collaborator build(...) creates
+    // once — the session binding and the one revocation client and client authentication, shared with the
+    // other legs as those very instances, never second copies — or, for the CSRF defence, the logout leg's
+    // own derivation of the one session defence, which adds only the gateway's origin for the logout
+    // navigation. A parameter object would exist only for this single private call and would hide which of
+    // the runtime's collaborators the logout leg depends on.
     @SuppressWarnings("java:S107")
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin,
             Supplier<ProviderMetadata> metadata, SessionBinding sessionBinding, RevocationClient revocationClient,

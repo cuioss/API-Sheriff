@@ -312,8 +312,8 @@ class ThreatAlertDocumentTest {
                 EventType.NO_ROUTE_MATCHED, 4L,
                 EventType.TOKEN_MISSING, 2L,
                 EventType.SOURCE_TRIPPED, 50L);
-        return new SourceTrip(key, LEVEL_AT_TRIP, THRESHOLD, WINDOW, contributions, SourceLedger.Action.OBSERVE,
-                0L);
+        return new SourceTrip(key, key, LEVEL_AT_TRIP, THRESHOLD, WINDOW, contributions,
+                SourceLedger.Action.OBSERVE, 0L);
     }
 
     private static List<String> texts(JsonNode array) {

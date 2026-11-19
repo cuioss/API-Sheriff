@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge.assembly;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -23,25 +24,48 @@ import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.http.HttpClient;
 
 /**
- * The immutable lookup of the shared upstream clients and resilience guards the proxy dispatch
- * serves a route with, keyed by the route's {@link UpstreamTarget} and {@link ResilienceShape}.
+ * The lookup of the shared upstream clients and resilience guards the proxy dispatch serves a route
+ * with, keyed by the route's {@link UpstreamTarget} and {@link ResilienceShape}, together with the
+ * request-body traffic of each client ({@link UpstreamBodyTraffic}).
  * <p>
- * <strong>Thread safety.</strong> Both maps are copied into unmodifiable form, so the lookup is
- * safe to share across threads.
+ * The body traffic is derived here, one per client, never supplied: it belongs to the client it is
+ * built with, so every dispatch on that client — the HTTP and the gRPC dispatch alike — shares it,
+ * and a lookup built for another route table, or for another test, shares nothing with this one.
+ * <p>
+ * <strong>Thread safety.</strong> The three maps are unmodifiable, and every body traffic is
+ * thread-safe, so the lookup is safe to share across threads.
  *
- * @param clients one Vert.x client per upstream target tuple
- * @param guards  one Fault-Tolerance guard per resilience shape
  * @author API Sheriff Team
  * @since 1.0
  */
-public record UpstreamClients(Map<UpstreamTarget, HttpClient> clients, Map<ResilienceShape, Guard> guards) {
+public final class UpstreamClients {
+
+    private final Map<UpstreamTarget, HttpClient> clients;
+    private final Map<ResilienceShape, Guard> guards;
+    private final Map<UpstreamTarget, UpstreamBodyTraffic> bodyTraffic;
 
     /**
-     * Canonical constructor copying both maps into unmodifiable form, an absent one becoming empty.
+     * Copies both maps into unmodifiable form and builds one body traffic per client.
+     *
+     * @param clients one Vert.x client per upstream target tuple
+     * @param guards  one Fault-Tolerance guard per resilience shape
      */
-    public UpstreamClients {
-        clients = clients == null ? Map.of() : Map.copyOf(clients);
-        guards = guards == null ? Map.of() : Map.copyOf(guards);
+    public UpstreamClients(Map<UpstreamTarget, HttpClient> clients, Map<ResilienceShape, Guard> guards) {
+        this.clients = Map.copyOf(clients);
+        this.guards = Map.copyOf(guards);
+        Map<UpstreamTarget, UpstreamBodyTraffic> traffic = HashMap.newHashMap(this.clients.size());
+        this.clients.keySet().forEach(target -> traffic.put(target, new UpstreamBodyTraffic()));
+        this.bodyTraffic = Map.copyOf(traffic);
+    }
+
+    /** @return one Vert.x client per upstream target tuple, unmodifiable */
+    public Map<UpstreamTarget, HttpClient> clients() {
+        return clients;
+    }
+
+    /** @return one Fault-Tolerance guard per resilience shape, unmodifiable */
+    public Map<ResilienceShape, Guard> guards() {
+        return guards;
     }
 
     /**
@@ -58,5 +82,14 @@ public record UpstreamClients(Map<UpstreamTarget, HttpClient> clients, Map<Resil
      */
     public Optional<Guard> guard(ResilienceShape shape) {
         return Optional.ofNullable(guards.get(shape));
+    }
+
+    /**
+     * @param target the upstream target tuple
+     * @return the request-body traffic of {@code target}'s shared client, or empty exactly when there is no
+     *         such client
+     */
+    public Optional<UpstreamBodyTraffic> bodyTraffic(UpstreamTarget target) {
+        return Optional.ofNullable(bodyTraffic.get(target));
     }
 }

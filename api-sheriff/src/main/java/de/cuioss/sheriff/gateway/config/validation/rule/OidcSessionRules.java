@@ -54,8 +54,11 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The cookie-size rule ({@link #validateSessionMaxCookieSize}) range-checks {@code max_cookie_size} and,
  * in cookie mode, emits {@link ConfigLogMessages.WARN#COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE} when the
- * {@code Set-Cookie} header the effective budget produces outgrows the browser guarantee — the only
- * warning, never a refusal, this class issues. The cookie-name rule ({@link #validateSessionCookieName})
+ * {@code Set-Cookie} header the effective budget produces outgrows the browser guarantee, a warning and
+ * never a refusal. The back-channel rule ({@link #validateBackchannelLogoutPerReplica}) refuses nothing
+ * either: in server mode with a declared {@code oidc.logout.backchannel_path} it emits
+ * {@link ConfigLogMessages.WARN#BACKCHANNEL_LOGOUT_PER_REPLICA}, naming that a back-channel logout ends
+ * sessions on the receiving replica only. These are the two warnings this class issues. The cookie-name rule ({@link #validateSessionCookieName})
  * holds a declared {@code cookie_name} to the {@code __Host-} guarantee, to an RFC 9110 token, and to a
  * name distinct from the gateway-owned cookies. The server-mode cookie-cap rule
  * ({@link #validateSessionMaxCookieHeaderValueLength}) holds {@code max_cookie_header_value_length} to
@@ -358,6 +361,33 @@ public class OidcSessionRules {
             LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, effectiveBudget,
                     headerBytes,
                     SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE - overhead);
+        }
+    }
+
+    /**
+     * Rule: the per-replica scope of back-channel logout is announced at boot. When the session store
+     * runs in {@code server} mode and {@code oidc.logout.backchannel_path} is declared, this rule emits
+     * {@link ConfigLogMessages.WARN#BACKCHANNEL_LOGOUT_PER_REPLICA}; it refuses nothing and appends no
+     * {@link ConfigError}.
+     * <p>
+     * The server-mode store is per process, so a logout token ends the matching sessions on the replica
+     * that receives it only, and the receiver answers {@code 200} whether or not it found any. No
+     * configuration key declares the replica count, so the rule cannot distinguish a single replica
+     * from several and warns whenever both conditions hold. It stays silent in cookie mode, which
+     * serves no back-channel path, and whenever no {@code backchannel_path} is declared.
+     *
+     * @param gateway the bound gateway document, whose {@code oidc.session} and {@code oidc.logout}
+     *                blocks are read
+     */
+    public static void validateBackchannelLogoutPerReplica(GatewayConfig gateway) {
+        OidcConfig oidc = gateway.oidc();
+        OidcConfig.Session session = oidcSession(gateway);
+        if (oidc == null || session == null || !session.isServerMode()) {
+            return;
+        }
+        OidcConfig.Logout logout = oidc.logout();
+        if (logout != null && logout.backchannelPath() != null) {
+            LOGGER.warn(ConfigLogMessages.WARN.BACKCHANNEL_LOGOUT_PER_REPLICA);
         }
     }
 

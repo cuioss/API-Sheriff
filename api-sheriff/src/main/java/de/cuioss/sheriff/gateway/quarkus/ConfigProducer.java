@@ -28,6 +28,7 @@ import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
+import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -223,14 +224,25 @@ public class ConfigProducer {
     /**
      * Logs every violation as one {@code CONFIG_VALIDATION_FAILED} record followed by the
      * {@code CONFIG_STARTUP_ABORTED} summary, and returns the exception that refuses the boot.
+     * <p>
+     * The file, the pointer and the message are each rendered through
+     * {@link RuleSupport#renderForLog} before they reach the record. Every stage of the pipeline
+     * contributes violations, not only the validation rules that escape what they echo: a schema
+     * pointer carries a configured map key verbatim, and a topology refusal names the alias it could
+     * not resolve. Escaping at this one sink keeps a control character, a line or paragraph
+     * separator, a format character such as a bidi override, or an unpaired surrogate in any of them
+     * from forging or disguising a boot log line (CWE-117). Printable text, non-ASCII included, is
+     * logged as written — the gateway's own messages and a schema message in a non-English JVM locale
+     * read as the offline report prints them — and a value a rule already escaped passes through
+     * unchanged.
      *
      * @param violations the non-empty violations of the boot pipeline
      * @return the exception the caller throws to refuse the boot
      */
     private static IllegalStateException abort(List<ConfigError> violations) {
         for (ConfigError violation : violations) {
-            LOGGER.error(ConfigLogMessages.ERROR.CONFIG_VALIDATION_FAILED, violation.file(), violation.pointer(),
-                    violation.message());
+            LOGGER.error(ConfigLogMessages.ERROR.CONFIG_VALIDATION_FAILED, RuleSupport.renderForLog(violation.file()),
+                    RuleSupport.renderForLog(violation.pointer()), RuleSupport.renderForLog(violation.message()));
         }
         String summary = "%d configuration violation(s)".formatted(violations.size());
         LOGGER.error(ConfigLogMessages.ERROR.CONFIG_STARTUP_ABORTED, summary);

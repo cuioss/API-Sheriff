@@ -92,8 +92,8 @@ import org.junit.jupiter.api.Test;
  * timeout and be ended as an upstream timeout the breaker counts; an upstream that answers at once and
  * keeps reading has already returned the guarded call, so nothing would end the body at all. The
  * request-body deadline ends both as {@link #REQUEST_BODY_TIMEOUT}: before the response head as a
- * {@code 408} the breaker skips and the retry predicate refuses, after it by ending the relayed answer
- * through the one end rule.
+ * {@code 408} the breaker records as neutral — neither an upstream failure nor a success — and the retry
+ * predicate refuses, after it by ending the relayed answer through the one end rule.
  * <p>
  * <strong>How the answer ends.</strong> The body behind the {@code 408} was not read, so it cannot frame
  * a following request: on HTTP/2 the answer ends that one stream, which is then reset with
@@ -373,8 +373,8 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
      * Shape (a): the upstream reads the whole body before it answers, so the guarded call is still
      * waiting for the response head while the body trickles. The request-body deadline ends the
      * dispatch before the guard's timeout would: it is answered {@code 408} as
-     * {@value #REQUEST_BODY_TIMEOUT} — a gateway rejection, which the breaker skips — and never as the
-     * {@value #UPSTREAM_TIMEOUT} the breaker counts. The route enables retry, and the upstream still sees
+     * {@value #REQUEST_BODY_TIMEOUT} — a gateway rejection, which the breaker records as neutral — and
+     * never as the {@value #UPSTREAM_TIMEOUT} the breaker counts. The route enables retry, and the upstream still sees
      * the upload once: the retry predicate refuses it.
      */
     @Test
@@ -410,7 +410,7 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                 () -> assertEquals(List.of("POST " + WHOLE_BODY), upstreamAborted,
                         "the upstream request still reading the body was reset"),
                 () -> assertEquals(1.0, errorCount(TRICKLE_ROUTE, REQUEST_BODY_TIMEOUT),
-                        "a request-body timeout, which the breaker skips"),
+                        "a request-body timeout, which the breaker records as neutral"),
                 () -> assertEquals(0.0, errorCount(TRICKLE_ROUTE, UPSTREAM_TIMEOUT),
                         "never the upstream timeout the breaker counts"),
                 () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
@@ -664,8 +664,8 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
     /**
      * Shape (a) on HTTP/1.1: the deadline ends the dispatch before the response head, so the {@code 408}
      * carries {@code Connection: close} and the connection is closed once it has been written — the body
-     * behind it was not read. Like on HTTP/2 it is a {@value #REQUEST_BODY_TIMEOUT} the breaker skips,
-     * never the {@value #UPSTREAM_TIMEOUT} it counts, and the upstream sees the upload once.
+     * behind it was not read. Like on HTTP/2 it is a {@value #REQUEST_BODY_TIMEOUT} the breaker records as
+     * neutral, never the {@value #UPSTREAM_TIMEOUT} it counts, and the upstream sees the upload once.
      */
     @Test
     @DisplayName("HTTP/1.1 — a body trickling to an upstream that reads it whole: 408 with Connection: close at the deadline")
@@ -698,7 +698,7 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                 () -> assertEquals(List.of("POST " + WHOLE_BODY), upstreamAborted,
                         "the upstream request still reading the body was reset"),
                 () -> assertEquals(1.0, errorCount(TRICKLE_ROUTE, REQUEST_BODY_TIMEOUT),
-                        "a request-body timeout, which the breaker skips"),
+                        "a request-body timeout, which the breaker records as neutral"),
                 () -> assertEquals(0.0, errorCount(TRICKLE_ROUTE, UPSTREAM_TIMEOUT),
                         "never the upstream timeout the breaker counts"),
                 () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
@@ -800,7 +800,8 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                         () -> "the upload waited past its deadline for its connection: " + answeredMillis + " ms"),
                 () -> assertFalse(upstreamCompleted.contains("POST " + QUEUED), "its body never reached the upstream"),
                 () -> assertEquals(Collections.nCopies(pooled, 200), heldStatuses, "every holding GET is served"),
-                () -> assertEquals(1.0, errorCount(REQUEST_BODY_TIMEOUT), "a request-body timeout, which the breaker skips"),
+                () -> assertEquals(1.0, errorCount(REQUEST_BODY_TIMEOUT),
+                        "a request-body timeout, which the breaker records as neutral"),
                 () -> assertEquals(0.0, errorCount(UPSTREAM_TIMEOUT), "never the upstream timeout the breaker counts"),
                 () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
                         REQUEST_BODY_DEADLINE_RECORD));
