@@ -662,7 +662,7 @@ public class GatewayEdgeRouteBffWiringTest {
             store = newStore();
             cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(SessionRecord.newSessionId()).accessToken("a")
-                    .idToken("i").sub("sub").expiresAt(Instant.now().plus(Duration.ofHours(1))).build(),
+                            .idToken("i").sub("sub").expiresAt(Instant.now().plus(Duration.ofHours(1))).build(),
                     cookieHandle, Instant.now());
             front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
                     .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
@@ -733,10 +733,10 @@ public class GatewayEdgeRouteBffWiringTest {
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGOUT_PATH);
             return Awaits.connect(client.request(options).compose(request -> {
-                headers.forEach(request::putHeader);
-                return request.send();
-            }).compose(response -> response.body().map(body -> new EdgeAnswer(response.statusCode(),
-                    response.getHeader("Location"), response.headers().getAll("Set-Cookie"), body.toString()))),
+                        headers.forEach(request::putHeader);
+                        return request.send();
+                    }).compose(response -> response.body().map(body -> new EdgeAnswer(response.statusCode(),
+                            response.getHeader("Location"), response.headers().getAll("Set-Cookie"), body.toString()))),
                     "the edge response to GET " + LOGOUT_PATH);
         }
 
