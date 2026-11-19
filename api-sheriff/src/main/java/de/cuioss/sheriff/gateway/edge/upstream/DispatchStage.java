@@ -957,18 +957,12 @@ public final class DispatchStage {
         // below sets it and it stays null until the attempt settles. Read by departureEndedWait.
         AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
         // Whether a body on this client was still arriving when the wait for the connection expired: taken by the
-        // acquisition's first listener, the moment the expiry is reported — before the chain below, registered
-        // after it, settles pending — and read by this thread only after pending settled (see expiredWaitOf). A
-        // listener of its own rather than a step of the chain, so a connection obtained still reaches the compose
-        // callback below exactly as before, on the request's event loop and before the request is written.
+        // failure mapper of the compose below, the moment the expiry is reported, and read by this thread only after
+        // pending settled (see expiredWaitOf). The acquisition carries that one compose and nothing else: a
+        // connection obtained reaches its success mapper on the request's event loop, before the request is
+        // written, with no listener ahead of it.
         AtomicBoolean bodyArrivingAtExpiry = new AtomicBoolean();
-        Future<HttpClientRequest> acquisition = httpClient.request(options);
-        acquisition.onFailure(failure -> {
-            if (failure instanceof TimeoutException) {
-                bodyArrivingAtExpiry.set(bodyArrivingAt(bodyTraffic, System.nanoTime()));
-            }
-        });
-        Future<HttpClientResponse> response = acquisition
+        Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
                     connectionObtained.set(true);
                     // Registered before the request is published, so every reset of it the gateway
@@ -1008,6 +1002,11 @@ public final class DispatchStage {
                         received.pause();
                         return received;
                     });
+                }, failure -> {
+                    if (failure instanceof TimeoutException) {
+                        bodyArrivingAtExpiry.set(bodyArrivingAt(bodyTraffic, System.nanoTime()));
+                    }
+                    return Future.failedFuture(failure);
                 })
                 // The one point the order of settlement and departure is decided: whatever settles the attempt —
                 // a response, a refused dial, the connection wait bound — reaches the dispatch through this step,
