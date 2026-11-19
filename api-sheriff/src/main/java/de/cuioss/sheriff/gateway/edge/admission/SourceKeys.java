@@ -131,7 +131,8 @@ public final class SourceKeys {
      * The key a request is tracked under, with the authority host folded to the declared set: for a
      * trusted peer the forwarded client address, the proxy's unresolved source when a client-address
      * header resolves no client, and {@link SourceKey#UNKNOWN_SOURCE} when the request carries no
-     * client-address header, never the trusted peer's own address; for any other peer the TCP peer.
+     * client-address header, or only blank ones, never the trusted peer's own address; for any other peer
+     * the TCP peer.
      *
      * @param raw the incoming request
      * @return the canonical source key

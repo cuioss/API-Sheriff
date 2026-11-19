@@ -93,7 +93,10 @@ class ConfigValidationParityTest {
      */
     private static final String NON_ASCII_UNKNOWN_KEY = "version: 1\nbogus_ünknown_key: x\n";
 
-    /** The escape the boot sink rendered {@code U+00FC} as while it escaped everything outside ASCII. */
+    /**
+     * The escaped form of {@code U+00FC}: printable text is logged as written, so no boot violation record may
+     * carry it.
+     */
     private static final String ESCAPED_NON_ASCII = "\\u00FC";
 
     private static final String BFF_ANCHOR_DECLARED_PUBLIC = """

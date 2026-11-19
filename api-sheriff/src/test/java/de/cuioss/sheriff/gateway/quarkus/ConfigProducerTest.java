@@ -354,7 +354,7 @@ class ConfigProducerTest {
         List<String> printableRecords = violationRecords();
 
         ConfigProducer bidi = producerForGateway(GATEWAY_WITH_MATRIX_VIOLATION.replace("portal:",
-                "\"port‮l\":"));
+                "\"port" + (char) 0x202E + "l\":"));
         assertThrows(IllegalStateException.class, () -> bidi.onStartup(null),
                 "the schema refusal of the anchor name must refuse the boot");
         List<String> bidiRecords = violationRecords();
@@ -366,7 +366,7 @@ class ConfigProducerTest {
                         () -> "a printable non-ASCII letter must not be escaped: " + printableRecords),
                 () -> assertTrue(bidiRecords.stream().anyMatch(message -> message.contains("port\\u202El")),
                         () -> "a bidi override must reach the record escaped: " + bidiRecords),
-                () -> assertTrue(bidiRecords.stream().noneMatch(message -> message.indexOf('‮') >= 0),
+                () -> assertTrue(bidiRecords.stream().noneMatch(message -> message.indexOf(0x202E) >= 0),
                         () -> "no record may carry the raw bidi override: " + bidiRecords));
     }
 
@@ -411,12 +411,12 @@ class ConfigProducerTest {
                 Arguments.of("escape", String.valueOf((char) 0x1B), "\\u001B"),
                 Arguments.of("delete", String.valueOf((char) 0x7F), "\\u007F"),
                 Arguments.of("next line (C1)", String.valueOf((char) 0x85), "\\u0085"),
-                Arguments.of("line separator", " ", "\\u2028"),
-                Arguments.of("paragraph separator", " ", "\\u2029"),
-                Arguments.of("right-to-left override", "‮", "\\u202E"),
-                Arguments.of("left-to-right isolate", "⁦", "\\u2066"),
-                Arguments.of("zero-width space", "​", "\\u200B"),
-                Arguments.of("byte order mark", "﻿", "\\uFEFF"),
+                Arguments.of("line separator", String.valueOf((char) 0x2028), "\\u2028"),
+                Arguments.of("paragraph separator", String.valueOf((char) 0x2029), "\\u2029"),
+                Arguments.of("right-to-left override", String.valueOf((char) 0x202E), "\\u202E"),
+                Arguments.of("left-to-right isolate", String.valueOf((char) 0x2066), "\\u2066"),
+                Arguments.of("zero-width space", String.valueOf((char) 0x200B), "\\u200B"),
+                Arguments.of("byte order mark", String.valueOf((char) 0xFEFF), "\\uFEFF"),
                 Arguments.of("tag character (supplementary format)", new String(Character.toChars(0xE0041)),
                         "\\uDB40\\uDC41"),
                 Arguments.of("lone high surrogate", String.valueOf((char) 0xD83D), "\\uD83D"),
