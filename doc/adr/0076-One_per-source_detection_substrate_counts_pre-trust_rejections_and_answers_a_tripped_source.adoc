@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event (a pre-trust internal failure carries no weight: it is not caller behaviour), and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer. An amendment records that a trusted forwarder's request whose Forwarded / X-Forwarded-For chain resolves no client -- contested or malformed -- is keyed on that proxy's own unresolved source and acted on, with neither family resolved on its own, while only a request carrying neither header, or only blank ones, is keyed unknown; that the unknown source is counted, trips and is reported but is never blocked, delayed or refused, with boot WARN ApiSheriff-149 for block or delay combined with trusted proxies; that from a fixed high-water mark of 75% of the bound a new IPv6 key is tracked as its /48, one substrate rule every ledger built on SourceLedger follows; that under block or delay a full ledger answers a new untrackable source the block-style 429; and that no reserved slice for accruing sources exists, because such a source is never evicted.
+// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event (a pre-trust internal failure carries no weight: it is not caller behaviour), and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer. An amendment records that a trusted forwarder's request whose Forwarded / X-Forwarded-For chain resolves no client -- contested, malformed or naming its client by something other than an address -- is keyed on that proxy's own unresolved source and acted on, with neither family resolved on its own, while only a request carrying neither header, or only blank ones, is keyed unknown; that the unknown source is counted, trips and is reported but is never blocked, delayed or refused, with boot WARN ApiSheriff-149 for block or delay combined with trusted proxies; that from a fixed high-water mark of 75% of the bound a new IPv6 key is tracked as its /48, one substrate rule every ledger built on SourceLedger follows; that under block or delay a full ledger answers a new untrackable source the block-style 429; and that no reserved slice for accruing sources exists, because such a source is never evicted.
 // tags: edge, enumeration, detection, rate-limiting, secure-defaults, http2, hand-rolled, availability, forwarded-headers, fail-closed
 // affects: api-sheriff, documentation
 // supersedes:
@@ -36,8 +36,9 @@ short:
 * *Keying.* `SourceKeyResolver` keys a request by `(source, host)`. The source is the client address
   a trusted forwarder reported, and otherwise the TCP peer; a trusted forwarder's request that
   carries no forwarding header, or only blank ones, is the `unknown` source, never the forwarder's own
-  address (one whose non-blank header resolves no client: <<amendment-unresolved-chain>>). An IPv6 source is reduced to its `/64`.
-  An absent or unparseable address folds to one `unknown` source. The host is kept only when it
+  address (one whose non-blank header resolves no client: <<amendment-unresolved-chain>>). An IPv6
+  source is reduced to its `/64`. An absent or unparseable TCP peer address folds to one `unknown`
+  source. The host is kept only when it
   equals a `match.host` some route declares; every other host folds to `*`.
 * *Counting.* `SourceLedger` keeps one leaky bucket per key. An admitted event adds its weight. The
   level drains linearly at `threshold / window` per second, computed from a monotonic clock whenever
@@ -223,7 +224,8 @@ stands.
 [[amendment-unresolved-chain]]
 *An unresolvable forwarded chain is keyed on its proxy, not on `unknown`.* The forwarded-header
 resolver yields no client when a trusted forwarder's RFC 7239 `Forwarded` chain disagrees with its
-`X-Forwarded-For` chain, or when a chain is malformed. A client can always produce either, so keying
+`X-Forwarded-For` chain, when a chain is malformed, or when it names its client by something other
+than an address. A client can always produce either, so keying
 such a request `unknown` -- a key the edge never acts on -- would let any client escape `block` and
 `delay`. Resolving one family on its own is no way out either: the request cannot show which family
 the proxy manages, so the client could then choose its key (ADR-0003). `ForwardedClientResolution`,
@@ -234,9 +236,10 @@ own source, `unresolved-via-<proxy address>`, which is acted on like any source;
 carries neither header, or only blank ones, is `unknown`.
 
 [[amendment-unknown]]
-*The `unknown` source is counted, never acted on.* `unknown` is one key for every client a trusted
-proxy reported no address for, and for every request without a usable peer address. Blocking, delaying or refusing it would act on all of them for the probing of
-one -- the outcome <<default-observe>> exists to prevent, reached through a key the operator cannot
+*The `unknown` source is counted, never acted on.* `unknown` is one key for
+every trusted proxy's request that carries no client-address header, or only blank ones, and for
+every request without a usable peer address. Blocking, delaying or refusing it would act on all of
+them for the probing of one -- the outcome <<default-observe>> exists to prevent, reached through a key the operator cannot
 see. `SourceGate` therefore admits `unknown` like any source -- it is counted, trips, its trip is
 logged as `ApiSheriff-141` and fed to the threat ledger -- but never answers it `429`, never refuses it
 for a used-up held-answer share and never holds it, under every action. Its trip is logged and metered
@@ -376,7 +379,8 @@ admission.
    request that carries no client-address header (`Forwarded` or `X-Forwarded-For`), or only blank ones, is keyed
    `unknown`, so a trusted proxy that forwards no such header escapes `block` and `delay`;
    `ApiSheriff-149` names the configuration at boot (<<amendment-unknown>>). A header that is present
-   but resolves no client -- a malformed chain, one over a cap, or the two families disagreeing -- is
+   but resolves no client -- a malformed chain, one over a cap, the two families disagreeing, or a
+   client named by something other than an address -- is
    keyed on that proxy's own unresolved source, `unresolved-via-<proxy address>`, which `block` and
    `delay` act on (<<amendment-unresolved-chain>>).
 ** Above the high-water mark a new IPv6 source is one key per `/48`, so the clients of one `/48`

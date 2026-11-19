@@ -371,9 +371,9 @@ every client behind a NAT, egress proxy or load balancer; enforcement is the ope
   `Host` gives no fresh count.
 
 [[_enumeration_detection_unknown]]
-*The `unknown` source is counted, never acted on.* `unknown` stands at once for every client a trusted
-proxy reported no address for and every request without a usable peer address, so acting on it would
-act on all of them for the probing of one. It is counted,
+*The `unknown` source is counted, never acted on.* `unknown` stands at once for every trusted proxy's
+request that carries no client-address header, or only blank ones, and every request without a usable
+peer address, so acting on it would act on all of them for the probing of one. It is counted,
 it trips, its trip is logged as `ApiSheriff-141` and fed to
 <<_threat_classification,`threat_classification`>>, but under every `action` it is never answered
 `429`, never delayed and never refused. The pending-login quota of the BFF uses the same address,

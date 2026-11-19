@@ -231,8 +231,8 @@ the wire. Two of its rules rest on the substrate's terms:
 * *`unknown` is never acted on.* A key whose source is `SourceKey.UNKNOWN_SOURCE` is admitted like any
   key -- counted, able to trip, its trip logged and handed to the threat consumer -- but it is never
   answered `429`, never refused for a used-up held-answer share and never held, under any action. It
-  stands for every client a trusted proxy reported no address for, and every request without a usable
-  peer address, so acting on it would act on all of them.
+  stands for every trusted proxy's request that carries no client-address header, or only blank ones,
+  and every request without a usable peer address, so acting on it would act on all of them.
   Its trip is therefore logged (`ApiSheriff-141`) and metered (`sheriff_source_trips_total`) with the
   action the gate takes, `observe`, whatever action is configured, although under `block` the ledger
   still marks the key `BLOCKED`.

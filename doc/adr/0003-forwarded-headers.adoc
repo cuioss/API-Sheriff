@@ -92,10 +92,10 @@ declares a proxy's managed family (see <<_a_family_accept_setting>>), so no requ
 
 *The per-source keys of an unresolved chain.* A trusted proxy's request whose `X-Forwarded-For` or
 `Forwarded` carries a value from which no client resolves -- a disagreeing pair, a malformed chain, a
-value sanitization drops -- is keyed by per-source detection and by the BFF pending-login quota on that
+value sanitization drops, a client named by something other than an address -- is keyed by per-source detection and by the BFF pending-login quota on that
 proxy's own source, `unresolved-via-` followed by the proxy's canonical address. Detection acts on it
 like on any source, because a client can always produce such a header. Only a request carrying no such
-value at all is keyed on the shared `unknown` source, which detection counts but never acts on.
+value at all, or only blank ones, is keyed on the shared `unknown` source, which detection counts but never acts on.
 
 *The judged value.* The resolver joins every instance of a header with `", "` and sanitizes the joined
 value. The pre-route header check (`BasicChecksStage`) validates the joined `X-Forwarded-For` and the
