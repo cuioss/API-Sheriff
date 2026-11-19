@@ -693,7 +693,13 @@ public final class ConfigLogMessages {
     @UtilityClass
     public static final class ERROR {
 
-        /** A single collected configuration violation, one per problem found. */
+        /**
+         * A single collected configuration violation, one per problem found. The file, the pointer and
+         * the message are each rendered through {@code RuleSupport.renderForLog} before they reach the
+         * template: control characters, the line and paragraph separators, format characters such as a
+         * bidi override and unpaired surrogates are escaped as {@code \\uXXXX}, while printable text,
+         * non-ASCII included, is logged as written.
+         */
         public static final LogRecord CONFIG_VALIDATION_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(200)

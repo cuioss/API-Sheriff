@@ -56,14 +56,14 @@ import org.junit.jupiter.params.provider.MethodSource;
  * per violation — and the offline path through {@link ConfigValidationCommand} — parsing its
  * {@code INVALID} lines. The two ordered {@code (file, pointer, message)} lists must be equal once the
  * offline triple is rendered the way the boot sink logs it — each part through
- * {@link RuleSupport#renderForLog} — because the offline report prints the raw text while the boot
- * record escapes every character outside printable ASCII (CWE-117). The corpus spans the shipped
+ * {@link RuleSupport#renderForLog}, which escapes only what can forge or disguise a log line
+ * (CWE-117) and keeps printable text, non-ASCII included, as written. The corpus spans the shipped
  * compose-sample sets — the base set and the {@code /auth}-fronted variant's own — and the
  * integration-test set (all valid, read from their sibling module directories), the shared classpath
  * fixtures, and temporary sets failing at the loader-schema, placeholder, topology and validator
- * stages. One schema-stage set carries a non-ASCII configured key, so the escaping side of the parity
- * is exercised in every JVM locale rather than only in one whose schema messages are themselves
- * non-ASCII.
+ * stages. One schema-stage set carries a printable non-ASCII configured key, which both reports carry
+ * as written. The parity needs no allowance for the JVM locale: a schema message worded in another
+ * language is printable text, which the boot record logs exactly as the offline report prints it.
  * <p>
  * The one intended difference — the framework request-body ceiling, a runtime framework key the
  * offline check reports as not checked — is pinned by its own test as exactly that difference.
@@ -86,14 +86,14 @@ class ConfigValidationParityTest {
             """;
 
     /**
-     * An unknown top-level key carrying a non-ASCII character ({@code U+00FC}), refused at the schema
-     * stage. The configured key is echoed into the violation in every locale, so the set carries a
-     * character the boot sink escapes and the offline report prints raw, whatever language the
-     * schema library words its message in.
+     * An unknown top-level key carrying a printable non-ASCII character ({@code U+00FC}), refused at
+     * the schema stage. The configured key is echoed into the violation in every locale, so the set
+     * carries a non-ASCII character into both reports whatever language the schema library words its
+     * message in.
      */
     private static final String NON_ASCII_UNKNOWN_KEY = "version: 1\nbogus_ünknown_key: x\n";
 
-    /** The escape the boot sink renders {@code U+00FC} as. */
+    /** The escape the boot sink rendered {@code U+00FC} as while it escaped everything outside ASCII. */
     private static final String ESCAPED_NON_ASCII = "\\u00FC";
 
     private static final String BFF_ANCHOR_DECLARED_PUBLIC = """
@@ -314,8 +314,8 @@ class ConfigValidationParityTest {
     }
 
     @Test
-    @DisplayName("A non-ASCII configured key is printed raw offline and escaped in the boot record")
-    void nonAsciiKeyIsEscapedOnlyInTheBootRecord() throws Exception {
+    @DisplayName("A printable non-ASCII configured key is carried as written by the offline report and the boot record alike")
+    void printableNonAsciiKeyReadsTheSameInBothReports() throws Exception {
         writeSet(tempDir, NON_ASCII_UNKNOWN_KEY);
         EnvSecretResolver resolver = new EnvSecretResolver(Map.<String, String>of()::get);
 
@@ -323,13 +323,13 @@ class ConfigValidationParityTest {
         BootRun boot = boot(tempDir, resolver, FRAMEWORK_LIMIT_BYTES);
 
         List<String> invalidLines = offline.lines().stream().filter(line -> line.startsWith(INVALID_PREFIX)).toList();
-        assertAll("non-ASCII escaping",
+        assertAll("printable non-ASCII text",
                 () -> assertTrue(invalidLines.stream().anyMatch(line -> line.contains("ü")),
-                        () -> "the offline report must echo the configured key raw: " + offline.lines()),
-                () -> assertTrue(boot.violationRecords().stream().anyMatch(line -> line.contains(ESCAPED_NON_ASCII)),
-                        () -> "the boot record must carry the escaped key: " + boot.violationRecords()),
-                () -> assertTrue(boot.violationRecords().stream().noneMatch(line -> line.contains("ü")),
-                        () -> "no boot record may carry the raw character: " + boot.violationRecords()));
+                        () -> "the offline report must echo the configured key as written: " + offline.lines()),
+                () -> assertTrue(boot.violationRecords().stream().anyMatch(line -> line.contains("ü")),
+                        () -> "the boot record must echo the configured key as written: " + boot.violationRecords()),
+                () -> assertTrue(boot.violationRecords().stream().noneMatch(line -> line.contains(ESCAPED_NON_ASCII)),
+                        () -> "no boot record may escape a printable character: " + boot.violationRecords()));
     }
 
     @Test

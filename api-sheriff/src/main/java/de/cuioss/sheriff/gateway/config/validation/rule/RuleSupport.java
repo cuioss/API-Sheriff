@@ -103,6 +103,12 @@ public class RuleSupport {
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
 
+    /** {@code U+2028 LINE SEPARATOR}: a line break to a reader that honours it, though no control character. */
+    private static final int LINE_SEPARATOR = 0x2028;
+
+    /** {@code U+2029 PARAGRAPH SEPARATOR}: a paragraph break to a reader that honours it, though no control character. */
+    private static final int PARAGRAPH_SEPARATOR = 0x2029;
+
     /**
      * The file name every refusal of an endpoint-file key is reported against.
      * <p>
@@ -119,51 +125,83 @@ public class RuleSupport {
     }
 
     /**
-     * Renders an offending configuration value for a refusal message: every character outside
-     * printable ASCII — CR and LF above all — becomes a {@code \\uXXXX} escape, and at most
+     * Renders an offending configuration value for a refusal message: every character that can forge
+     * or disguise a log line becomes a {@code \\uXXXX} escape, and at most
      * {@code ECHOED_VALUE_MAX_LENGTH} (60) characters of the input are rendered, followed by
-     * {@code ...} when the input is longer. Because each escape expands one input character to six,
-     * the rendering itself can be longer than 60 characters. The operator still sees what they
-     * typed; the boot ERROR log cannot be line-forged by it.
+     * {@code ...} when the input is longer. Escaped are the ISO control characters — CR and LF above
+     * all, every other C0 control, {@code DEL} and the C1 controls such as {@code NEL} — the line and
+     * paragraph separators {@code U+2028} and {@code U+2029}, every format character (the bidi
+     * overrides and isolates, the zero-width characters, the byte order mark, the tag characters) and
+     * every unpaired surrogate. Printable text passes unchanged whatever its script: a letter with a
+     * diacritic, an em dash, CJK, an emoji written as a valid surrogate pair. A cap that falls between
+     * the two halves of a surrogate pair leaves the high half unpaired in the rendering, so it is
+     * escaped. Because each escape expands one input character to six, the rendering itself can be
+     * longer than 60 characters. The operator still sees what they typed; the boot ERROR log cannot be
+     * line-forged or visually disguised by it.
      *
      * @param value the configured value to echo
      * @return the escaped and capped rendering, safe to embed in a refusal message
      */
     public static String renderForMessage(String value) {
         int limit = Math.min(value.length(), ECHOED_VALUE_MAX_LENGTH);
-        String rendered = escapeNonPrintable(value, limit);
+        String rendered = escapeForgingCharacters(value, limit);
         return value.length() > limit ? rendered + "..." : rendered;
     }
 
     /**
      * Renders a whole value for a log line with the same escaping as {@link #renderForMessage} but
-     * without its length cap: every character outside printable ASCII becomes a {@code \\uXXXX}
-     * escape, and nothing is cut. For the boot sink that logs a {@link ConfigError}'s file, pointer and
-     * message, where a cut would hide which location failed. A value that is already escaped passes
-     * through unchanged, because an escape consists of printable characters only.
+     * without its length cap: every control, line or paragraph separator, format character and
+     * unpaired surrogate becomes a {@code \\uXXXX} escape, printable text — non-ASCII included — is
+     * kept as written, and nothing is cut. For the boot sink that logs a {@link ConfigError}'s file,
+     * pointer and message, where a cut would hide which location failed. A value that is already
+     * escaped passes through unchanged, because an escape consists of printable characters only.
      *
      * @param value the value to log
      * @return the escaped rendering, safe to embed in a log line
      */
     public static String renderForLog(String value) {
-        return escapeNonPrintable(value, value.length());
+        return escapeForgingCharacters(value, value.length());
     }
 
     /**
      * The single copy of the CWE-117 escaping: the first {@code limit} characters of {@code value},
-     * each one outside printable ASCII replaced by its {@code \\uXXXX} escape.
+     * each one that can forge or disguise a log line replaced by its {@code \\uXXXX} escape. A valid
+     * surrogate pair inside the limit is judged as the one code point it encodes, and is escaped as its
+     * two halves when that code point is a format character; a surrogate without its partner inside the
+     * limit is escaped on its own.
      */
-    private static String escapeNonPrintable(String value, int limit) {
-        StringBuilder rendered = new StringBuilder();
-        for (int index = 0; index < limit; index++) {
+    private static String escapeForgingCharacters(String value, int limit) {
+        StringBuilder rendered = new StringBuilder(limit);
+        int index = 0;
+        while (index < limit) {
             char current = value.charAt(index);
-            if (current >= 0x20 && current < 0x7F) {
-                rendered.append(current);
+            boolean pairInsideLimit = Character.isHighSurrogate(current) && index + 1 < limit
+                    && Character.isLowSurrogate(value.charAt(index + 1));
+            int width = pairInsideLimit ? 2 : 1;
+            int codePoint = pairInsideLimit ? Character.toCodePoint(current, value.charAt(index + 1)) : current;
+            if (forgesOrDisguises(codePoint)) {
+                for (int offset = 0; offset < width; offset++) {
+                    rendered.append("\\u%04X".formatted((int) value.charAt(index + offset)));
+                }
             } else {
-                rendered.append("\\u%04X".formatted((int) current));
+                rendered.append(value, index, index + width);
             }
+            index += width;
         }
         return rendered.toString();
+    }
+
+    /**
+     * Whether a code point can forge a log line or disguise its text: an ISO control character, the
+     * line or paragraph separator, a format character, or a surrogate code unit — which reaches this
+     * check only when it is unpaired.
+     */
+    private static boolean forgesOrDisguises(int codePoint) {
+        return Character.isISOControl(codePoint)
+                || codePoint == LINE_SEPARATOR
+                || codePoint == PARAGRAPH_SEPARATOR
+                || Character.getType(codePoint) == Character.FORMAT
+                || Character.getType(codePoint) == Character.SURROGATE;
     }
 
     /**

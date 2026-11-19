@@ -229,8 +229,12 @@ public class ConfigProducer {
      * {@link RuleSupport#renderForLog} before they reach the record. Every stage of the pipeline
      * contributes violations, not only the validation rules that escape what they echo: a schema
      * pointer carries a configured map key verbatim, and a topology refusal names the alias it could
-     * not resolve. Escaping at this one sink keeps a control character in any of them from forging a
-     * boot log line (CWE-117); a value a rule already escaped passes through unchanged.
+     * not resolve. Escaping at this one sink keeps a control character, a line or paragraph
+     * separator, a format character such as a bidi override, or an unpaired surrogate in any of them
+     * from forging or disguising a boot log line (CWE-117). Printable text, non-ASCII included, is
+     * logged as written — the gateway's own messages and a schema message in a non-English JVM locale
+     * read as the offline report prints them — and a value a rule already escaped passes through
+     * unchanged.
      *
      * @param violations the non-empty violations of the boot pipeline
      * @return the exception the caller throws to refuse the boot
