@@ -373,7 +373,7 @@ admission.
    `sheriff_source_untracked_total`, and the first one per process is logged once as WARN
    `ApiSheriff-142`.
 ** Requests keyed `unknown` are never blocked, delayed or refused. Through a trusted proxy only a
-   request that carries no client-address header (`Forwarded` or `X-Forwarded-For`) is keyed
+   request that carries no client-address header (`Forwarded` or `X-Forwarded-For`), or only blank ones, is keyed
    `unknown`, so a trusted proxy that forwards no such header escapes `block` and `delay`;
    `ApiSheriff-149` names the configuration at boot (<<amendment-unknown>>). A header that is present
    but resolves no client -- a malformed chain, one over a cap, or the two families disagreeing -- is

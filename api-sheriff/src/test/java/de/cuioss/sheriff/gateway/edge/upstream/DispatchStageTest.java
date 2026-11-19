@@ -1278,8 +1278,14 @@ class DispatchStageTest {
                     DispatchStage.bodyArrivingAt(traffic, nowNanos), failureMapper);
         }
 
+        /**
+         * Pins the classification rule only: {@link DispatchStage#expiredWaitOf} classifies from the verdict it is
+         * handed, so a body that ends afterwards changes nothing. That the dispatch takes that verdict at the
+         * expiry, rather than when the dispatching thread resumes, is pinned by
+         * {@code UpstreamPoolSaturationTest.VerdictAtTheExpiry}, not here.
+         */
         @Test
-        @DisplayName("the verdict taken at the expiry decides: a body that ends after it changes nothing")
+        @DisplayName("the verdict handed to the classification decides: a body that ends after it changes nothing")
         void verdictTakenAtTheExpiryDecides() {
             long now = System.nanoTime();
             UpstreamBodyTraffic.OpenBody body = traffic.open();

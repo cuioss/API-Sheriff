@@ -266,8 +266,9 @@ class ForwardedClientResolutionTest {
      * in step: every header a client address is commonly carried in, and every other header of the forwarded
      * family, is handed to the real resolver alone, carrying an address it would resolve, from a trusted proxy.
      * The headers it resolves a client from must be exactly the constant — so a resolver release that reads one
-     * more header, or one fewer, turns this red instead of leaving the edge's header check and the
-     * unresolved-chain keying judging a set the resolver no longer reads.
+     * more of these candidate headers, or one fewer, turns this red instead of leaving the edge's header check
+     * and the unresolved-chain keying judging a set the resolver no longer reads. A header that is not among the
+     * candidates is not covered.
      */
     @Nested
     @DisplayName("the client-address headers are the headers the resolver reads a client from")

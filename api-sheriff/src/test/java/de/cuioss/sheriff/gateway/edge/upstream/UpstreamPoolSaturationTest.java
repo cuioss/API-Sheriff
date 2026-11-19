@@ -753,9 +753,10 @@ class UpstreamPoolSaturationTest {
 
     /**
      * A real upstream that answers a POST at once, before its body has ended, and then drops the connection the
-     * body was still arriving on — reached on a route with no request-body deadline, so nothing but the body's own
-     * end can release it. The client keeps sending after the drop and then ends its body cleanly, as an HTTP/1.1
-     * client whose answer has already arrived does.
+     * body was still arriving on — reached on a route with no request-body deadline, so no clock releases it. The
+     * client keeps sending after the drop and then ends its body, as an HTTP/1.1 client whose answer has already
+     * arrived does; that end no longer reaches the body, so the release must come from the dispatch letting go of
+     * the body when its upstream request failed.
      */
     @Nested
     @DisplayName("a body whose upstream request failed after the answer was handed over")
@@ -806,7 +807,7 @@ class UpstreamPoolSaturationTest {
         }
 
         @Test
-        @DisplayName("the client's clean end after the upstream dropped the request leaves no body open or arriving on the client")
+        @DisplayName("once the upstream dropped the request, no body stays open or arriving on the client, whatever the client sends after")
         void bodyIsReleasedOnceItsUpstreamRequestFailed() throws Exception {
             DispatchStage stage = stageOver(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""),
                     client);
@@ -841,7 +842,7 @@ class UpstreamPoolSaturationTest {
             int answeredStatus = status;
             int inFlight = bodyTraffic.openBodies();
             boolean arriving = bodyTraffic.arrivingWithin(System.nanoTime(), WAIT_BOUND_NANOS);
-            assertAll("a body whose upstream request failed after the hand-over, ended cleanly by its client",
+            assertAll("a body whose upstream request failed after the hand-over, its client still sending and then ending",
                     () -> assertEquals(200, answeredStatus, "the upstream answered before the body ended"),
                     () -> assertEquals(0, inFlight,
                             "a body its upstream request no longer takes stays open on the client"),

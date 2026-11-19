@@ -88,7 +88,8 @@ public final class ForwardedClientResolution {
      * The headers the resolver reads a client address from, lower-cased: RFC 7239 {@code Forwarded}
      * and {@code X-Forwarded-For}. cui-http does not expose that set, so it is stated here and kept in
      * step with the resolver by {@code ForwardedClientResolutionTest}, which fails when the resolver
-     * names a client from a header outside this set, or no longer from one inside it.
+     * names a client from one of the candidate headers that test hands it outside this set, or no
+     * longer from one inside it. A header outside that candidate list is not covered.
      */
     public static final Set<String> CLIENT_ADDRESS_HEADERS = Set.of("forwarded", "x-forwarded-for");
 
