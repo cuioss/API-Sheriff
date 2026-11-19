@@ -357,7 +357,8 @@ public final class DispatchStage {
      * upstream's, unless, at the moment of expiry, some request body on the same client is still arriving — handed
      * to its upstream request and not yet ended — and forwarded a chunk within this bound: the expiry is then the
      * gateway's own pool pressure (see {@link #expiredWaitOf}). A body that has ended, however recently, does not
-     * count.
+     * count. "At the moment of expiry" is exact: the verdict is taken in the callback that reports the expired
+     * wait, from that callback's clock reading, never later when the dispatching thread resumes.
      */
     static final long UPSTREAM_CONNECTION_WAIT_MILLIS = 10_000L;
 
@@ -806,20 +807,39 @@ public final class DispatchStage {
      * the upstream's answer, so under load a stream of complete request bodies leaves every expired wait the
      * upstream's. Its limit: while some client keeps trickling a body
      * to an upstream that answers nothing, the expired waits on that upstream do not open the breaker.
+     * <p>
+     * <strong>When the verdict is taken.</strong> Whether a body was still arriving is decided once, by
+     * {@link #bodyArrivingAt}, in the callback that reports the failed connection acquisition — on the thread
+     * reporting it, the upstream client's event loop, from the {@link System#nanoTime()} reading taken in that
+     * callback — and handed to the dispatching thread with the failure. That thread classifies the expiry here when it resumes, from that verdict alone: a body that
+     * ends, or forwards a chunk, between the expiry and the moment the thread resumes changes nothing.
      *
-     * @param expiry        the expired wait
-     * @param bodyTraffic   the request-body traffic of the attempt's upstream client
-     * @param nowNanos      the {@link System#nanoTime()} reading of the expiry
-     * @param failureMapper meters the saturation and builds its rejection
+     * @param expiry               the expired wait
+     * @param bodyArrivingAtExpiry the verdict {@link #bodyArrivingAt} returned when the expiry was reported
+     * @param failureMapper        meters the saturation and builds its rejection
      * @return the saturation rejection the attempt ends with, or {@code null} when the expiry is the upstream's
      *         timeout
      */
-    static @Nullable GatewayException expiredWaitOf(TimeoutException expiry, UpstreamBodyTraffic bodyTraffic,
-            long nowNanos, UpstreamFailureMapper failureMapper) {
-        if (bodyTraffic.arrivingWithin(nowNanos, TimeUnit.MILLISECONDS.toNanos(UPSTREAM_CONNECTION_WAIT_MILLIS))) {
+    static @Nullable GatewayException expiredWaitOf(TimeoutException expiry, boolean bodyArrivingAtExpiry,
+            UpstreamFailureMapper failureMapper) {
+        if (bodyArrivingAtExpiry) {
             return failureMapper.toPoolSaturation(expiry);
         }
         return null;
+    }
+
+    /**
+     * The verdict an expired wait for a pooled connection is classified by ({@link #expiredWaitOf}): whether, at
+     * {@code expiryNanos}, some request body on the attempt's upstream client is still arriving and forwarded a
+     * chunk within {@link #UPSTREAM_CONNECTION_WAIT_MILLIS} ({@link UpstreamBodyTraffic#arrivingWithin}). Taken
+     * in the callback that reports the failed connection acquisition, from the clock reading of that callback.
+     *
+     * @param bodyTraffic the request-body traffic of the attempt's upstream client
+     * @param expiryNanos the {@link System#nanoTime()} reading taken when the expiry was reported
+     * @return {@code true} when a body was still arriving at the expiry
+     */
+    static boolean bodyArrivingAt(UpstreamBodyTraffic bodyTraffic, long expiryNanos) {
+        return bodyTraffic.arrivingWithin(expiryNanos, TimeUnit.MILLISECONDS.toNanos(UPSTREAM_CONNECTION_WAIT_MILLIS));
     }
 
     /**
@@ -936,7 +956,19 @@ public final class DispatchStage {
         // Records whether the client had departed when this attempt settled. The last step of the chain
         // below sets it and it stays null until the attempt settles. Read by departureEndedWait.
         AtomicReference<@Nullable Boolean> departedAtSettlement = new AtomicReference<>();
-        Future<HttpClientResponse> response = httpClient.request(options)
+        // Whether a body on this client was still arriving when the wait for the connection expired: taken by the
+        // acquisition's first listener, the moment the expiry is reported — before the chain below, registered
+        // after it, settles pending — and read by this thread only after pending settled (see expiredWaitOf). A
+        // listener of its own rather than a step of the chain, so a connection obtained still reaches the compose
+        // callback below exactly as before, on the request's event loop and before the request is written.
+        AtomicBoolean bodyArrivingAtExpiry = new AtomicBoolean();
+        Future<HttpClientRequest> acquisition = httpClient.request(options);
+        acquisition.onFailure(failure -> {
+            if (failure instanceof TimeoutException) {
+                bodyArrivingAtExpiry.set(bodyArrivingAt(bodyTraffic, System.nanoTime()));
+            }
+        });
+        Future<HttpClientResponse> response = acquisition
                 .compose(request -> {
                     connectionObtained.set(true);
                     // Registered before the request is published, so every reset of it the gateway
@@ -1011,9 +1043,10 @@ public final class DispatchStage {
                 }
                 // One whose wait outlasted its bound usually queued behind connections the upstream holds (the
                 // bound also covers resolving its host name): it is the upstream's timeout, which the guard
-                // counts and the retry predicate refuses — unless a body still arriving held the connections.
+                // counts and the retry predicate refuses — unless a body still arriving held the connections. That
+                // was judged at the expiry, not now: what a body did since then changes nothing.
                 if (dispatchFailure.getCause() instanceof TimeoutException expiry) {
-                    GatewayException behindBody = expiredWaitOf(expiry, bodyTraffic, System.nanoTime(), failureMapper);
+                    GatewayException behindBody = expiredWaitOf(expiry, bodyArrivingAtExpiry.get(), failureMapper);
                     if (behindBody != null) {
                         throw behindBody;
                     }

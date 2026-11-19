@@ -61,6 +61,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerRequest;
@@ -363,6 +364,97 @@ class UpstreamPoolSaturationTest {
                     () -> assertEquals(EventType.UPSTREAM_ERROR, ended.getEventType(), () -> "answered " + ended),
                     () -> assertEquals(ATTEMPTS_OF_A_RETRIED_DISPATCH, asked.get(),
                             "the refused connection was retried: the route's retry is live for this dispatch"));
+        }
+    }
+
+    /**
+     * An upstream client faked at {@link HttpClient#request(RequestOptions)} whose wait for a connection the case
+     * expires by hand, once the dispatching thread is parked waiting for it. Whether a body on the same client is
+     * still arriving is arranged directly on the client's {@link UpstreamBodyTraffic}, and the case changes it the
+     * moment the expiry has been reported — before the dispatching thread has resumed — so the outcome shows at
+     * which moment the expiry was judged.
+     */
+    @Nested
+    @DisplayName("the moment an expired wait is judged")
+    class VerdictAtTheExpiry {
+
+        private final Promise<HttpClientRequest> acquisition = Promise.promise();
+        private final AtomicReference<@Nullable Thread> dispatching = new AtomicReference<>();
+
+        private HttpClient expiringByHand() {
+            return HttpClient.class.cast(Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                    new Class<?>[]{HttpClient.class}, (proxy, method, args) -> {
+                        if ("request".equals(method.getName()) && args != null && args.length == 1
+                                && args[0] instanceof RequestOptions) {
+                            dispatching.set(Thread.currentThread());
+                            return acquisition.future();
+                        }
+                        throw new AssertionError("the dispatch asked its upstream client for " + method.getName());
+                    }));
+        }
+
+        /**
+         * Dispatches one bodyless GET, waits until its thread is parked on the wait for a connection, then reports
+         * the expiry and, right after, runs {@code afterTheExpiry}, which changes the client's body traffic.
+         *
+         * @param stage          the dispatch under test
+         * @param afterTheExpiry the change made to the body traffic once the expiry has been reported
+         * @return what the dispatch ended with
+         */
+        private GatewayException expireWhileParked(DispatchStage stage, Runnable afterTheExpiry) throws Exception {
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                CompletableFuture<@Nullable GatewayException> dispatched = dispatch(executor, stage, HELD_PATH);
+                Awaits.until(() -> {
+                    Thread thread = dispatching.get();
+                    return thread != null && thread.getState() == Thread.State.WAITING;
+                }, "the dispatching thread to wait for its connection", Awaits.CONNECT_CEILING_SECONDS);
+                acquisition.fail(new TimeoutException("the wait for a pooled connection timed out"));
+                afterTheExpiry.run();
+                GatewayException ended = Awaits.connect(dispatched, "the dispatch to end");
+                assertNotNull(ended, "the dispatch whose wait expired must not be answered");
+                return ended;
+            }
+        }
+
+        private DispatchStage stage() {
+            return stageOver(new ResolvedUpstream("http", "upstream.example", 8080, ""), expiringByHand());
+        }
+
+        @Test
+        @DisplayName("a body still arriving at the expiry that ends right after it leaves the expiry the gateway's neutral saturation: the verdict is the one true at the expiry")
+        void bodyEndingRightAfterTheExpiryKeepsTheVerdictOfTheExpiry() throws Exception {
+            DispatchStage stage = stage();
+            UpstreamBodyTraffic.OpenBody arriving = bodyTraffic.open();
+            arriving.forwarded(System.nanoTime());
+
+            GatewayException ended = expireWhileParked(stage, arriving::end);
+
+            assertAll("an expiry while a body was still arriving, judged after that body ended",
+                    () -> assertEquals(0, bodyTraffic.openBodies(), "precondition: the body ended after the expiry"),
+                    () -> assertEquals(EventType.UPSTREAM_POOL_SATURATED, ended.getEventType(),
+                            () -> "the verdict was taken after the expiry, when the body had already ended: " + ended),
+                    () -> assertTrue(transitions.isEmpty(),
+                            () -> "the breaker counted the gateway's own saturation: " + transitions),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_TIMEOUT),
+                            "the expiry is not metered as the upstream's timeout"));
+        }
+
+        @Test
+        @DisplayName("control — an expiry with no body arriving stays the upstream's timeout, counted by the breaker, whatever arrives right after it")
+        void expiryWithNoBodyArrivingIsTheUpstreamsTimeout() throws Exception {
+            DispatchStage stage = stage();
+
+            GatewayException ended = expireWhileParked(stage,
+                    () -> bodyTraffic.open().forwarded(System.nanoTime()));
+
+            assertAll("an expiry while no body was arriving, judged after a body started arriving",
+                    () -> assertEquals(1, bodyTraffic.openBodies(), "precondition: a body began after the expiry"),
+                    () -> assertEquals(EventType.UPSTREAM_TIMEOUT, ended.getEventType(),
+                            () -> "the expiry is the upstream's timeout: " + ended),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), transitions,
+                            "the breaker counts the expired wait and opens on it"),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.UPSTREAM_POOL_SATURATED),
+                            "the expiry is not metered as the gateway's own saturation"));
         }
     }
 

@@ -1272,9 +1272,31 @@ class DispatchStageTest {
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(eventCounter);
         private final UpstreamBodyTraffic traffic = new UpstreamBodyTraffic();
 
+        /** The expiry judged as the dispatch judges it: the verdict taken at {@code nowNanos}, then classified. */
         private @Nullable GatewayException expiryAt(long nowNanos) {
             return DispatchStage.expiredWaitOf(new TimeoutException("the wait for a pooled connection timed out"),
-                    traffic, nowNanos, failureMapper);
+                    DispatchStage.bodyArrivingAt(traffic, nowNanos), failureMapper);
+        }
+
+        @Test
+        @DisplayName("the verdict taken at the expiry decides: a body that ends after it changes nothing")
+        void verdictTakenAtTheExpiryDecides() {
+            long now = System.nanoTime();
+            UpstreamBodyTraffic.OpenBody body = traffic.open();
+            body.forwarded(now);
+            boolean arrivingAtTheExpiry = DispatchStage.bodyArrivingAt(traffic, now + 1);
+            body.end();
+
+            GatewayException expired = DispatchStage.expiredWaitOf(
+                    new TimeoutException("the wait for a pooled connection timed out"), arrivingAtTheExpiry,
+                    failureMapper);
+
+            assertAll("an expiry judged while a body was arriving, classified after that body ended",
+                    () -> assertTrue(arrivingAtTheExpiry, "the body was still arriving at the expiry"),
+                    () -> assertFalse(DispatchStage.bodyArrivingAt(traffic, now + 2),
+                            "precondition: the body no longer counts once it ended"),
+                    () -> assertNotNull(expired, "the verdict of the expiry made it the gateway's saturation"),
+                    () -> assertEquals(EventType.UPSTREAM_POOL_SATURATED, expired.getEventType()));
         }
 
         @Test
