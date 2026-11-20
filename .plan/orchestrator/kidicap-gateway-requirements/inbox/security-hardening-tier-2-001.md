@@ -4,13 +4,13 @@ sender_id=security-hardening-tier-2
 epic=kidicap-gateway-requirements
 kind=finding
 created=2026-11-20T06:37:18Z
+revision=1
+amended=2026-11-20T06:42:31Z
 
-# Transferred Watch: pre-commit formatter churn
+# Pre-commit formatter churn: closed, no Watch needed (amended)
 
-Transferred from epic `security-hardening-tier-2` (being closed after PLAN-SEC2-06) on the operator's word of 2026-11-20. Please absorb it as a Watch in this epic.
+Transferred from epic `security-hardening-tier-2` on the operator's word of 2026-11-20, and **corrected by the operator the same day**: the first version of this message presented a Watch. There is none to absorb.
 
-**Watch.** Pre-commit formatter churn, carried over from the closed epic `security-hardening-tier-1`: PR #618 aligned `main` with the local formatter. A plan that reports churn again re-opens it, and the recurrence goes to its own skip-bot-review PR off `main` (see the repository's `doc/development/build-gate-discipline.adoc`).
+**State.** The pre-commit formatter churn classes are closed on `main`: PR #242, PR #415 and the 380-file churn of PR #559 (class closed by the operator on 2026-11-05), and PR #618 aligned `main` with the local formatter. None of the originating epic's landings (PLAN-SEC2-01 to PLAN-SEC2-05) reported churn again. The rule that stays binding is operational, not a Watch: a wide churn on `main` goes in its own PR off `main` labelled `skip-bot-review`, never into a plan PR, and it is then a new item in whichever epic meets it (mechanics in `doc/development/build-gate-discipline.adoc`).
 
-**State at transfer.** No plan of the originating epic reported churn again: PLAN-SEC2-01 to PLAN-SEC2-05 shipped (#623, #627, #626, #635, #633) without a re-opening. PLAN-SEC2-06 is running and has not reported one.
-
-**Retire when** a further epic has shipped without reporting churn, or on the operator's word.
+**Disposition suggested.** Discard; no Watch, no defect, no spec.

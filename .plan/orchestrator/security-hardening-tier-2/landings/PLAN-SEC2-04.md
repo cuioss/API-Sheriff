@@ -152,3 +152,11 @@ The orchestrator re-read these points at `00ebea64`: `CsrfDefence.java:205-253`,
 - L2-1 to L2-3, L3-1 to L3-3, the planned wording items the landing lists, and the five minor leftovers of PLAN-SEC2-05 are collected in PLAN-SEC2-06 (staged), together with the operator-only reads as mechanism-level hypotheses to settle by test.
 - The review-body findings of #635 are a Watch in `epic.md`.
 - Candidate lessons: the single-sweep lesson and the timing-test attribution lesson are folded into PLAN-SEC2-06 as a constraint and a verify-first item; the owed architecture hint duplicates the second and is discarded (see the decision log).
+
+## Addendum 2026-11-20 — review figures re-verified
+
+The Routing section above recorded `review_body_findings_total` and `review_body_findings_handled` as **not re-verified**. They were re-verified afterwards, on the operator's request, by reading the CodeRabbit review bodies and the plan's triage replies and checking each finding against `main` at `00ebea64` (the review text is third-party; a read-only agent extracted it and every conclusion below was read in the merged code or docs by the orchestrator):
+
+- **Review-body findings: 6, handled 5, deferred 1.** Fixed in the merged tree: the BFF-09 release-gate entry and matrix row (`doc/security-threat-model.adoc:3351,4899`), the proxy-setup text and ADR-0076 (`doc/user/edge-security.adoc:437`, `ADR-0076:235-236`), the ADR-0078 unresolved-source description (`:153-154`), and the expiry-sequencing test harness (`UpstreamPoolSaturationTest.java:385`, `VerdictAtTheExpiry`). Declined with a stated reason: deriving `CLIENT_ADDRESS_HEADERS` from cui-http (it publishes no header set; `ForwardedClientResolutionTest.HeaderSetInStepWithTheResolver` pins the constant at `:275`). Deferred to PLAN-SEC2-06's wording sweep: the threat-model sentence on who refuses `Sec-Fetch-Site: none`, which the review itself called correct as stated.
+- **Inline-only threads: 6, all resolved**, each answered with a fix commit in `2f9c2fee`; not re-checked one by one.
+- **The landing's `unknown` figures are therefore settled:** no false claim is recorded for them (the landing reported none), and the Watch and the Open Defect that tracked them are retired.
