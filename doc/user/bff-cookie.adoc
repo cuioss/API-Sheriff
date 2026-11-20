@@ -497,8 +497,10 @@ RP-initiated logout (the user logging themselves out) works normally: the browse
 cleared, and an expired cookie the browser keeps anyway is still refused server-side by the absolute
 TTL check. It acts only on a trusted top-level navigation, exactly as in the server-session
 variant: a trusted `Origin` -- the gateway's own origin is always trusted here -- or with no `Origin`
-`Sec-Fetch-Site: same-origin`; and, where the browser sends Fetch Metadata, no `Sec-Purpose`,
-`Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`. `Sec-Fetch-Site: none` is not a proof.
+`Sec-Fetch-Site: same-origin`; no prefetch marker -- no `Sec-Purpose` of any value and, when it is
+absent, no `Purpose` or `X-Moz` value of `prefetch` in any case; and, where the browser sends them,
+`Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`. With no `Origin`, `Sec-Fetch-Site: none`
+is not a proof.
 Any other request -- a link from another site, a logout link on a trusted origin other than the
 gateway's own, a typed URL or a link opened from another application, a same-origin image, script,
 `fetch()` or frame, a prefetch or prerender -- gets a `no-store` confirmation page that forbids

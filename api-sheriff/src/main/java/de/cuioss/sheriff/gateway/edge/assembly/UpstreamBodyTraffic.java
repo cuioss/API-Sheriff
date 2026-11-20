@@ -22,7 +22,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * The request bodies one upstream target's shared client is sending: each one {@linkplain #open() opened} the
  * moment a dispatch hands it to an upstream request, and {@linkplain OpenBody#end() ended} exactly once, the
  * moment it stops arriving there — its end arrived, it was refused, aborted or reset, the upstream request it fed
- * failed and its consumer stopped forwarding it, or its attempt is no longer waited for. Each open body records
+ * failed and its consumer stopped forwarding it, its attempt is no longer waited for, or the stream that was to
+ * forward it could not be built. Each open body records
  * when it last forwarded a chunk; a chunk that arrives after the body ended is not recorded.
  * <p>
  * It answers one question: whether, at a given moment, some body on this client is still arriving and forwarded
@@ -56,6 +57,9 @@ public final class UpstreamBodyTraffic {
     }
 
     /**
+     * Whether a request body is still arriving on this client: some body opened here and not yet ended
+     * forwarded a chunk within {@code boundNanos} before {@code nowNanos}.
+     *
      * @param nowNanos   a {@link System#nanoTime()} reading
      * @param boundNanos the bound, in nanoseconds
      * @return {@code true} when some body still in flight on this client forwarded a chunk less than

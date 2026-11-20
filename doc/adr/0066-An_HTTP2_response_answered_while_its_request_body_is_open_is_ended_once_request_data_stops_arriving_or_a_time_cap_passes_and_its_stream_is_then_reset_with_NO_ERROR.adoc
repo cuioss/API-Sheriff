@@ -132,10 +132,12 @@ it keeps on the connection's channel is the count of its own unacknowledged `PIN
 (`HttpConnection#ping`) on the request's own connection, not through the Netty view.
 
 Vert.x keeps the future of a written `PING` until the client acknowledges it, also while the
-connection stays open without an acknowledgement. The unacknowledged `PING` frames on one connection
-are therefore bounded at 100, the most concurrent streams the edge admits on a connection: each
-early answer waits on at most one `PING` at a time, so a client that acknowledges them never reaches
-the bound, while a client that never acknowledges leaves at most that many pending. A `PING` past the
+connection stays open without an acknowledgement. The `PING` frames counted on one connection are
+therefore bounded at 100, the most concurrent streams the edge admits on a connection, so a client
+that never acknowledges leaves at most that many pending. The count holds the `PING` frames whose
+future has not completed: a `PING` is added when it is sent and taken away when its acknowledgement
+arrives or its write fails. It follows the `PING`, not the wait that sent it, so the `PING` of an
+early answer that has already ended stays counted until the client acknowledges it. A `PING` past the
 bound is not sent; the wait asks again after its next quiet period, as for any failed `PING`.
 
 When the Netty view cannot be attached, the seam ends the response at once and resets the stream after
@@ -271,6 +273,14 @@ the same limit. The trip moves from the client's resets to the server's own.
 exhausted, the stream's window says nothing. When a sibling refills it, the client can send on a
 stream already judged quiet.
 
+*Compare the stream's own receive window in the quiet check.* The connection window also rises when
+the gateway returns credit for the body of another stream, so the stream's own window looks like a
+value only this stream's DATA can move. Rejected because it is not that value either: the transport
+returns the padding of this stream's DATA frames at once, which raises the stream window, so it too
+can read the same while DATA arrives. And the check would then watch a different value from the one
+the first condition reads, the smaller of the two windows -- what the client can actually send -- so
+the two exits would no longer judge one quantity.
+
 *Make the wait parameters configurable.* Rejected because they encode a protocol timing property, not
 a deployment choice. No operator decision makes a longer hold-back correct, and a configurable cap
 invites trading the property for latency per deployment.
@@ -380,7 +390,7 @@ about the data in flight, and it closes the upstream connection the one way that
   `PING` -- which brings back the `STREAM_CLOSED` resets for data in flight across a link with latency;
 * taking the acknowledgement as quiet when the value reads its `PING`-time value but a look saw it move
   while the `PING` was outstanding, which ends the wait on data that arrived in between;
-* bounding the unacknowledged `PING` frames of a connection below the concurrent streams the edge
+* bounding the counted `PING` frames of a connection below the concurrent streams the edge
   admits on it, or leaving a wait without a new `PING` after one failed, either of which holds an
   acknowledging client's early answers to the cap;
 * moving the relay or the end of the response into the guarded call, which makes every early answer a

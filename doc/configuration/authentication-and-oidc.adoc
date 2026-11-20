@@ -608,9 +608,11 @@ link:#_oidc_client_authentication[Client authentication].
   `Origin` in `session.csrf.trusted_origins` or the gateway's own origin (the origin of
   `redirect_uri`, trusted here implicitly, so the list need not name it) -- a present `Origin`
   decides alone -- or, with no `Origin`, `Sec-Fetch-Site: same-origin`; `none` is not a proof. The
-  navigation, judged on each Fetch Metadata header the request carries: no `Sec-Purpose` (a prefetch
-  or prerender), `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document` (a subresource, a
-  `fetch()` call or a frame carries another). Any other request is answered `200` with a fixed HTML
+  navigation: no prefetch marker -- no `Sec-Purpose` of any value and, when it is absent, no
+  `Purpose` or `X-Moz` value of `prefetch` in any case (a prefetch or prerender) -- and, judged on
+  each Fetch Metadata header the request carries, `Sec-Fetch-Mode: navigate` and
+  `Sec-Fetch-Dest: document` (a subresource, a `fetch()` call or a frame carries another). Any other
+  request is answered `200` with a fixed HTML
   confirmation page -- `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none';
   frame-ancestors 'none'`, `X-Frame-Options: DENY` -- whose one form `POST`s to this path; the session
   and its cookies are left untouched and the IdP is not contacted. The policy carries no

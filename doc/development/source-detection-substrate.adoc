@@ -56,8 +56,9 @@ they yield no client -- the two chains disagree (`ForwardedClientResolutionTest`
 result for a disagreeing pair), a chain is malformed, or it names its client by something other than an
 address literal -- neither family is resolved on its own, since
 the request cannot show which family the proxy manages. Such a request, whose `Forwarded` or
-`X-Forwarded-For` carries a value, is keyed on the proxy's own unresolved source,
-`unresolved-via-<proxy address>` (`SourceKeyResolver.resolveUnresolvedForwarding`), which the edge
+`X-Forwarded-For` carries a non-blank value, is keyed on that proxy's own unresolved source,
+`unresolved-via-` followed by the proxy's canonical address
+(`SourceKeyResolver.resolveUnresolvedForwarding`), which the edge
 acts on like any source. Only a trusted peer's request carrying neither header, or only blank ones, is keyed on the
 `unknown` source; neither key is ever the trusted peer's own address (`SourceKeysTest`). The edge
 never answers, refuses or holds a request keyed `unknown` (<<_unknown_source>>). `SourceKeys`
@@ -237,7 +238,8 @@ the wire. Two of its rules rest on the substrate's terms:
   action the gate takes, `observe`, whatever action is configured, although under `block` the ledger
   still marks the key `BLOCKED`.
   The boot WARN `ApiSheriff-149` (`EdgeRules`) names the combination that lets a trusted proxy's
-  requests reach that key while `block` or `delay` is configured.
+  requests -- those without a client-address header, or with only blank ones -- reach that key while
+  `block` or `delay` is configured.
 * [[_full_ledger]]*The full ledger fails closed under `block` and `delay`.* Before admission the gate
   asks `state(key)`; when the key is untracked, not `unknown`, and `hasRoomFor(key)` is `false`, the
   request is answered the block-style `429` with `Retry-After` the `SWEEP_INTERVAL` in whole seconds
@@ -369,7 +371,7 @@ namespace:
 | `source.address` | The canonical source text, always: an IPv4 address, an IPv6 `/64` prefix
   (`a:b:c:d::/64`), an IPv6 `/48` prefix (`a:b:c::/48`) when the threat ledger began tracking the
   source above its high-water mark (<<_aggregation>>), a proxy's unresolved source
-  (`unresolved-via-<proxy address>`), or `unknown`.
+  (`unresolved-via-` followed by the proxy's canonical address), or `unknown`.
 | `source.ip` | The same text, *only* when it is a whole IPv4 address (an IPv6 prefix, an unresolved
   source or `unknown` is not a valid ECS `ip` value).
 | `url.domain` | The folded host, *only* when it is a declared `match.host`; absent for `*`.

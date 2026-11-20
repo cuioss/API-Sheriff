@@ -278,8 +278,11 @@ public final class ApiSheriffLogMessages {
          * {@code enumeration_detection} threshold. Emitted once per trip, which the ledger raises at most
          * once per {@code CLEAR} period of a source. Records the source in the canonical form the
          * detection contract fixes (an IPv4 address whole, an IPv6 address as its {@code /64} prefix, or
-         * as its {@code /48} aggregate when the ledger began tracking it above its high-water mark),
-         * the host folded to the declared {@code match.host} set ({@code *} for any other), the
+         * as its {@code /48} aggregate when the ledger began tracking it above its high-water mark;
+         * {@code unknown} for an absent or unparseable address and for a trusted proxy's request without a
+         * client-address header or with only blank ones; {@code unresolved-via-} followed by that proxy's
+         * canonical address when its client-address header carries a non-blank value from which no client
+         * resolves), the host folded to the declared {@code match.host} set ({@code *} for any other), the
          * threshold, the window in seconds and the action taken — the configured one, except
          * {@code observe} for the {@code unknown} source, which the gate never acts on — never the raw
          * {@code Host}, the request path or any header.
@@ -309,8 +312,12 @@ public final class ApiSheriffLogMessages {
          * A source reached the {@code threat_classification} threshold: its threat ledger tripped. This
          * is the ALERT of the threat tier. Emitted once per trip, which the ledger raises at most once
          * per episode — a source raises its next ALERT only after its score has drained to zero.
-         * Records the source in the canonical form the detection contract fixes — an IPv6 source as its
-         * {@code /48} aggregate when the threat ledger began tracking it above its high-water mark — the
+         * Records the source in the canonical form the detection contract fixes — an IPv4 address whole, an
+         * IPv6 address as its {@code /64} prefix, or as its {@code /48} aggregate when the threat ledger
+         * began tracking it above its high-water mark; {@code unknown} for an absent or unparseable address
+         * and for a trusted proxy's request without a client-address header or with only blank ones;
+         * {@code unresolved-via-} followed by that proxy's canonical address when its client-address header
+         * carries a non-blank value from which no client resolves — the
          * host folded to the declared {@code match.host} set ({@code *} for any other), and the
          * ECS-shaped JSON document of
          * the alert, or a fixed marker when that document could not be rendered — never the raw

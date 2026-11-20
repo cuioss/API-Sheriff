@@ -36,9 +36,11 @@
  * throwing, whether a request to the RP-initiated logout leg is a top-level document navigation from a
  * trusted origin, whatever its method
  * ({@link de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence#provesTrustedDocumentNavigation(String,
- * de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence.FetchMetadata)}): no {@code Sec-Purpose} (no prefetch
- * or prerender), {@code Sec-Fetch-Mode: navigate} and {@code Sec-Fetch-Dest: document} when present,
- * and a trusted {@code Origin} or, with {@code Origin} absent, {@code Sec-Fetch-Site: same-origin}.
+ * de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence.FetchMetadata)}): no speculative-load marker — no
+ * {@code Sec-Purpose} of any value and, when that header is absent, no {@code Purpose} or {@code X-Moz}
+ * value of {@code prefetch} in any case (no prefetch or prerender) — {@code Sec-Fetch-Mode: navigate} and
+ * {@code Sec-Fetch-Dest: document} when present, and a trusted {@code Origin} or, with {@code Origin}
+ * absent, {@code Sec-Fetch-Site: same-origin}.
  * With {@code Origin} absent, {@code Sec-Fetch-Site: none} is not admitted: a link opened from another
  * application carries it.
  * <p>

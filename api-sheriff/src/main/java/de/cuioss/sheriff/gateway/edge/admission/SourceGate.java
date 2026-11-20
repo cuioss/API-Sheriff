@@ -66,7 +66,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>The unknown source is never acted on.</strong> A trusted proxy's request that carries no
  * client-address header, or only blank ones, is keyed on the shared {@link SourceKey#UNKNOWN_SOURCE}, as
  * is a request without a usable peer address; that one key stands for all of those clients at once. A
- * non-blank header that names no client is keyed on its proxy's own unresolved source instead. The
+ * trusted proxy's request whose client-address header carries a non-blank value from which no client
+ * resolves is keyed on that proxy's own unresolved source instead, never on the unknown source. The
  * unknown source is admitted to the ledger like any source, so it is counted, can trip, and its trip is
  * logged and handed to the recon-trip observer; but whatever the action, it is never answered
  * {@code 429}, never refused for a used-up held-answer share and never held, because acting on it would

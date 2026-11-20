@@ -42,13 +42,26 @@ import org.jspecify.annotations.Nullable;
  * the gateway lacks a configured token issuer ({@link #lacksConfiguredIssuer}).
  * <p>
  * Each helper exists exactly once. {@link #renderForMessage} and its uncapped sibling
- * {@link #renderForLog} above all must stay the single copy of the CWE-117 escaping; the route-table
- * and WebSocket-relay log records and the boot sink that logs every violation reuse them rather than
- * carrying a second escaper. The rule for every refusal message and every log record a rule emits: a
- * configured free-form scalar it echoes — an endpoint or route id, an anchor name, a path, a host, an
- * alias, a list entry — is passed through {@link #renderForMessage} first, so that a hostile value
- * cannot forge a boot log line. Only a value drawn from a closed vocabulary (an enum constant, a
- * gateway-owned key name or built-in entry) or fixed text is echoed as it is.
+ * {@link #renderForLog} are the CWE-117 escaping of the boot log: the route-table and WebSocket-relay
+ * log records and the boot sink that logs every violation reuse them rather than carrying an escaper of
+ * their own. The offline {@code --validate-config} report is escaped by a second escaper,
+ * {@code ConfigValidationCommand.asSingleReportLine}, which renders a whole report line rather than one
+ * value: a line feed becomes the two characters {@code \n}, and every other control character and
+ * every format, line-separator and paragraph-separator character becomes {@code ?}. The two are kept
+ * apart because merging them would change the report the command prints. The rule for every refusal
+ * message and every log record a rule emits: a configured free-form scalar it echoes — an endpoint or
+ * route id, an anchor name, a path, a host, an alias, a list entry — is passed through
+ * {@link #renderForMessage} first, so that a hostile value cannot forge a boot log line. Only a value
+ * drawn from a closed vocabulary (an enum constant, a gateway-owned key name or built-in entry) or fixed
+ * text is echoed as it is.
+ * <p>
+ * {@code RouteTableBuilder} follows that rule in its log records — the route posture, the anchor
+ * override and the disabled same-origin check render each id through {@link #renderForMessage} — while
+ * its {@code RouteTableException} refusal messages format the endpoint id and the route id as they are.
+ * An id reaching it has passed the {@code endpoint.schema.json} id pattern {@code ^[a-z][a-z0-9-]*$}:
+ * lower-case letters, digits and hyphens only, and no trailing line terminator, which the schema
+ * validation refuses as well ({@code ConfigLoaderTest.IdsEndingInALineTerminator}). Such an id carries
+ * no character either escaper would change.
  * <p>
  * Stateless, and therefore safe for concurrent use. Free of framework dependencies as the pre-boot
  * rule requires of this package (ADR-0061, ADR-0062).
@@ -164,7 +177,9 @@ public class RuleSupport {
     }
 
     /**
-     * The single copy of the CWE-117 escaping: the first {@code limit} characters of {@code value},
+     * The CWE-117 escaping behind {@link #renderForMessage} and {@link #renderForLog} — the boot log's
+     * one copy; the {@code --validate-config} report has its own (see the class documentation): the first
+     * {@code limit} characters of {@code value},
      * each one that can forge or disguise a log line replaced by its {@code \\uXXXX} escape. A valid
      * surrogate pair inside the limit is judged as the one code point it encodes, and is escaped as its
      * two halves when that code point is a format character; a surrogate without its partner inside the

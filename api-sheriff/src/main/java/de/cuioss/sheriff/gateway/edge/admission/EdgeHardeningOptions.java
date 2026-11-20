@@ -35,9 +35,11 @@ import io.vertx.core.http.HttpServerOptions;
  * line (4 KiB) and chunk (8 KiB) at their transport defaults, which are tighter than the bounds below,
  * its three form limits (256 fields, 2048 bytes per attribute, 1024 undecoded bytes) and its body
  * (10 MiB, enforced by the body handler on every management route) at their Quarkus defaults.
- * Quarkus applies no HTTP/2 setting to it, so it announces the transport's 8 KiB HTTP/2 header list,
- * and its idle reap, which is not part of that family ({@code quarkus.management.idle-timeout}), stays
- * at the Quarkus default. {@code ManagementListenerTransportTest} pins, on a live management listener,
+ * Quarkus applies no HTTP/2 setting to it, so it announces the transport's 8 KiB HTTP/2 header list.
+ * Its idle reap is not part of that family: the shipped {@code application.properties} sets no
+ * {@code quarkus.management.idle-timeout}, so the Quarkus default applies unless the deployment sets the
+ * key, and {@code ShippedApplicationPropertiesTest} asserts that the shipped file sets none.
+ * {@code ManagementListenerTransportTest} pins, on a live management listener,
  * the header block (refused {@code 431} past 16 KiB, the one bound the shipped file sets), the request
  * line (refused {@code 414} past the 4 KiB transport default), each form limit (refused {@code 400}
  * one unit past it), the body (refused {@code 413} past 10 MiB) and the 8 KiB HTTP/2 header list it

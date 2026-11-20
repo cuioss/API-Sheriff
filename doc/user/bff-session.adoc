@@ -716,9 +716,10 @@ client address the forwarding headers name when the request arrives through a pr
 `forwarded.trusted_proxies`, otherwise the address of the TCP connection. Behind the gateway's own
 SNI front listener (`tls.passthrough_sni` set), that connection is the client's connection to the
 front listener, not the internal hop the gateway relays it over. An IPv6 address counts by
-its `/64`. When a trusted proxy's `Forwarded` or `X-Forwarded-For` carries a value yet the two
-together name no client -- for example because the two chains disagree -- the login is counted under
-that proxy's own source, `unresolved-via-<proxy address>`; neither chain is read on its own.
+its `/64`. When a trusted proxy's `Forwarded` or `X-Forwarded-For` carries a non-blank value yet the
+two together name no client -- for example because the two chains disagree -- the login is counted
+under that proxy's own source, `unresolved-via-` followed by the proxy's canonical address; neither
+chain is read on its own.
 Requests through a trusted proxy that carry neither header, or only blank ones, and requests without a usable address,
 are all counted as one source, `unknown`. When a source starts its 257th
 pending login, its oldest one is dropped; that user's callback is refused `403` and the login has to
@@ -767,8 +768,10 @@ at the session, the gateway asks the request for two things.
 *It must be a top-level document navigation the user asked for.* The browser's Fetch Metadata
 headers decide this, and each is judged only when the request carries it:
 
-* no `Sec-Purpose` header -- a browser sends one on a prefetch or a prerender, which no user asked
-  for;
+* no prefetch marker -- no `Sec-Purpose` header of any value and, when it is absent, no `Purpose` or
+  `X-Moz` header whose value is `prefetch` in any case. A browser sends one of them on a prefetch or a
+  prerender, which no user asked for: `Sec-Purpose`, or, in a browser that predates it, the legacy
+  `Purpose: prefetch` or `X-Moz: prefetch`;
 * `Sec-Fetch-Mode: navigate` -- an image, a script, a `fetch()` call or a link prefetch carries a
   different mode;
 * `Sec-Fetch-Dest: document` -- a frame or an iframe carries a different destination.
@@ -780,7 +783,7 @@ headers decide this, and each is judged only when the request carries it:
   `Origin` decides alone; or
 * with no `Origin`, `Sec-Fetch-Site: same-origin`.
 
-`Sec-Fetch-Site: none` is not a proof. A browser sends it for a typed URL or a bookmark, but also for
+With no `Origin`, `Sec-Fetch-Site: none` is not a proof. A browser sends it for a typed URL or a bookmark, but also for
 a link opened from another application -- a mail client or a chat -- so it cannot tell a navigation
 the user started from a link someone delivered.
 

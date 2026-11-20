@@ -179,8 +179,10 @@ transport defaults, which are tighter than the main listener's, and its three fo
 2048 bytes per attribute, 1024 undecoded bytes) and body (10 MiB, enforced by the body handler on every
 management route) at their Quarkus defaults. Quarkus applies no HTTP/2 setting to
 the management listener, so it announces the transport's 8 KiB header list, keeps the transport's
-stream and reset defaults and gets no connection-window sizing; its idle reap is not part of that
-family and stays at the Quarkus default. `ManagementListenerTransportTest` pins, on a live management
+stream and reset defaults and gets no connection-window sizing. Its idle reap is not part of that
+family: the shipped `application.properties` sets no `quarkus.management.idle-timeout`, so the
+Quarkus default applies unless the deployment sets the key, and `ShippedApplicationPropertiesTest`
+asserts that the shipped file sets none. `ManagementListenerTransportTest` pins, on a live management
 listener, the header block (`431`), the request line (`414`), each form limit (`400`), the body
 (`413`) and the announced header list, each refusal against a served control at or under the bound.
 The chunk bound splits a larger chunk rather than refusing it, which no client can observe, so the
@@ -457,9 +459,10 @@ link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_
 image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key and rejection feed into the enumeration-detection tier and the threat-classification tier, align=center]
 
 * *Keying and bounds.* Requests are keyed by `(source, host)`: client IPv4, IPv6 `/64` prefix, a
-  trusted proxy's unresolved source `unresolved-via-<proxy address>`, or `unknown` (honouring
-  `forwarded.trusted_proxies`; a trusted proxy's `Forwarded` / `X-Forwarded-For` chain that resolves
-  no client -- contested, malformed or naming its client by something other than an address -- is keyed on that proxy's unresolved source, and only a request
+  trusted proxy's unresolved source -- `unresolved-via-` followed by the proxy's canonical address --
+  or `unknown` (honouring `forwarded.trusted_proxies`; a trusted proxy's `Forwarded` /
+  `X-Forwarded-For` chain with a non-blank value that resolves no client -- contested, malformed or
+  naming its client by something other than an address -- is keyed on that proxy's unresolved source, and only a request
   carrying neither header, or only blank ones, on `unknown`), paired with a declared
   `match.host` or `*`. The ledger tracks at most 65,536 keys, draining linearly at
   `threshold / window` per second and transitioning `CLEAR -> TRIPPED` (and `-> BLOCKED` when
@@ -468,7 +471,8 @@ image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key 
 
 * *Two keys are treated apart.* `unknown` is counted and can trip but is never answered `429`,
   delayed or refused under any action (boot WARN `ApiSheriff-149` names `block` or `delay` combined
-  with trusted proxies). Under `block` or `delay` a new source the full ledger cannot track is
+  with trusted proxies, whose requests without a client-address header, or with only blank ones, are
+  keyed `unknown`). Under `block` or `delay` a new source the full ledger cannot track is
   answered the `block` `429` with `Retry-After: 1` until the sweep frees room; under `observe` it
   passes untracked (link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#amendment-unknown-and-pressure[ADR-0076 amendment]).
 
@@ -482,7 +486,8 @@ image::../resources/diagrams/per-source-detection-and-threat.svg[Per-source key 
 | Action | Effect on the wire
 
 | `observe` (default)
-| Records `SOURCE_TRIPPED`, increments `sheriff_source_trips_total{action}`, and logs a warning;
+| Records `SOURCE_TRIPPED`, increments `sheriff_source_trips_total{action}`, and logs WARN
+  `ApiSheriff-141` naming the source in any of the key forms above and the folded host;
   responses are unchanged. `observe` is the default so shared NAT or untrusted-proxy addresses are
   not blocked without operator opt-in.
 

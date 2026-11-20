@@ -1788,6 +1788,11 @@ asserts the same over a live upstream that fails the attempt. Each of these was 
 deadline stayed in force. `DispatchStageTest.BodyDeadlineBehindASlowConnection` asserts that a body still
 arriving behind a slow upstream connection is ended at the deadline counted from the start of the attempt,
 not from the hand-over (`bodyStillArrivingIsEndedAtTheDeadlineCountedFromTheStartOfTheAttempt`).
+`DispatchStageTest.ChunkAgainstTheDeadlineReset` asserts that a chunk the deadline's reset of the
+upstream request overtakes between the stream's abort check and its forward is dropped without an
+exception, the abort reason staying the deadline's and the body settling once
+(`chunkOvertakenByTheDeadlineResetIsDropped`), beside a chunk forwarded before the reset and a forward
+refused while no abort was claimed, which still fails the delivery.
 `GrpcDispatchStageTest.StreamBounds` asserts that a client sending complete messages within the
 message bound and then ending its stream is answered (`steadySenderIsAnsweredAfterItHalfCloses`), that
 the guard no longer bounds a call once its headers arrived
@@ -2177,10 +2182,11 @@ and was not seen to change while that `PING` was outstanding, or 1 s has passed.
 before the acknowledgement -- even one back at its earlier value by then -- restarts the 50 ms check,
 and a `PING` that is never acknowledged ends nothing. At
 most 100 of these `PING`s -- the most concurrent streams the edge admits on one connection -- are
-unacknowledged on one connection at a time, so a client that never acknowledges cannot make the
-transport hold one more pending `PING` for every early answer on a long-lived connection, while a
-client that acknowledges them never reaches the bound, because each early answer waits on at most one
-`PING` at a time. A `PING` that fails, or is not sent because the bound is reached, ends nothing
+counted on one connection at a time, so a client that never acknowledges cannot make the transport
+hold one more pending `PING` for every early answer on a long-lived connection. The count holds the
+`PING`s whose future has not completed: a `PING` is added when it is sent and taken away when its
+acknowledgement arrives or its write fails, so the `PING` of an early answer that has already ended
+stays counted until the client acknowledges it. A `PING` that fails, or is not sent because the bound is reached, ends nothing
 either: the 50 ms check restarts and the wait sends a new `PING` once it passes again, and otherwise
 ends at the cap or once nothing more is sendable. Only the first exit shows that no more of the body can arrive. The `PING` exit makes
 every frame the client sent before receiving the `PING` arrive ahead of the acknowledgement, however
@@ -3338,20 +3344,31 @@ since a session variant serves its SPA and API upstreams there. Same-origin prov
 therefore does not end a session. Before it resolves any session, the logout endpoint asks the
 `CsrfDefence` method `provesTrustedDocumentNavigation`, which requires all of the following:
 
-* no `Sec-Purpose` header -- a browser sends it on a prefetch or a prerender, which no user asked
-  for, even when the speculative load is a navigation;
+* no speculative-load marker -- no `Sec-Purpose` header of any value and, when that header is
+  absent, no `Purpose` or `X-Moz` header whose value is `prefetch` in any case. A browser marks a
+  prefetch or a prerender, which no user asked for, even when the speculative load is a navigation:
+  with `Sec-Purpose`, or, in a browser that predates it, with the legacy `Purpose: prefetch` or
+  `X-Moz: prefetch`. The edge reads the marker from `Sec-Purpose` first and from `Purpose` and then
+  `X-Moz` only when `Sec-Purpose` is absent;
 * `Sec-Fetch-Mode`, when present, is `navigate` and `Sec-Fetch-Dest`, when present, is `document` --
   a same-origin image, script, `fetch()` call, link prefetch or frame carries a different mode or
   destination;
 * a present `Origin` is a trusted origin and decides the provenance alone, as in the unsafe-method
   check (<<bff-11>>); with `Origin` absent, `Sec-Fetch-Site` must be `same-origin`.
 
+The proof is therefore refused to a request carrying a marker, a present mode other than `navigate`,
+a present destination other than `document`, or an untrusted `Origin`, and, with `Origin` absent, to
+one whose `Sec-Fetch-Site` is absent or anything but `same-origin`. It is given to a request without
+a marker whose mode and destination are absent or `navigate` and `document`, and that carries a
+trusted `Origin` or, with `Origin` absent, `Sec-Fetch-Site: same-origin`.
+
 Mode and destination are judged only when present: the threat is a request a browser sends on the
 victim's behalf, and a browser that sends `Sec-Fetch-Site` sends `Sec-Fetch-Mode` with it (and
-`Sec-Fetch-Dest` in every current version). `Sec-Fetch-Site: none` is not a proof. A browser sends
-it for a typed URL and a bookmark, but also for a link opened from another application, such as a
-mail client, so a link delivered to the user carries it as well. Such a request, and a request from
-a browser that sends neither Fetch Metadata nor `Origin`, is answered the confirmation page.
+`Sec-Fetch-Dest` in every current version). With `Origin` absent, `Sec-Fetch-Site: none` is not a
+proof. A browser sends it for a typed URL and a bookmark, but also for a link opened from another
+application, such as a mail client, so a link delivered to the user carries it as well. Such a
+request, and a request from a browser that sends neither Fetch Metadata nor `Origin`, is answered the
+confirmation page.
 
 A request without the proof is answered `200` with a fixed
 confirmation page that reflects nothing of the request, is served `no-store`, forbids framing
@@ -3465,13 +3482,16 @@ confirmation page carrying `no-store`, `frame-ancestors 'none'`, `X-Frame-Option
 posting to the logout path, the session still resolves afterwards and the identity provider is not
 called, while a same-origin top-level document navigation, and a confirmation `POST` with a trusted
 `Origin`, log out (`LogoutEndpointTest`); the predicate admits only a top-level document navigation
--- no `Sec-Purpose`, and `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document` when present --
+-- no speculative-load marker, and `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document` when present --
 carrying a trusted `Origin` or, with `Origin` absent, `Sec-Fetch-Site: same-origin`; it refuses a
 same-origin subresource, `fetch()`, frame, prefetch or prerender even beside a trusted `Origin`,
 refuses `none` with `Origin` absent, so such a request gets the confirmation page, refuses an
 untrusted or opaque `Origin` whatever `Sec-Fetch-Site` says, and leaves the unsafe-method check
 refusing `none` (`CsrfDefenceTest`, `TrustedDocumentNavigation`); the edge hands `Sec-Fetch-Site`
-through to the logout leg (`GatewayEdgeGatewayCookieTest`), and against the native image a `cross-site` logout
+through to the logout leg (`GatewayEdgeGatewayCookieTest`), and a trusted top-level document navigation
+carrying `Purpose: prefetch` or `X-Moz: prefetch` and no `Sec-Purpose` is answered the confirmation
+page with the session kept, while the same navigation without a marker logs out
+(`GatewayEdgeRouteBffWiringTest`); against the native image a `cross-site` logout
 keeps the session serving while the confirmation `POST`, which carries only `Origin`, ends it
 (`BffLogoutIT`). The session is destroyed before the redirect to the provider is built; a logout
 against a provider without a usable `end_session_endpoint`, with failing discovery, or for a session
