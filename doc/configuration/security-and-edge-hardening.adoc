@@ -388,6 +388,20 @@ the configuration validation rule that judges `forwarded.trusted_proxies`, so it
 configuration is validated: at startup, and in a `--validate-config` run as well. It names the action
 only. Make sure every trusted proxy sends its clients' addresses in `X-Forwarded-For`.
 
+[[_enumeration_detection_passthrough]]
+*Behind the SNI front every terminated client is the loopback relay leg.* Under a non-empty
+`tls.passthrough_sni`, every terminated connection reaches the edge from the front's loopback relay
+leg, so source detection and the trusted-proxy judgement see every terminated client as that one
+loopback peer. With `action` `block` or `delay`, all of them are therefore one source: one client's
+rejections trip it, and the block or delay it earns acts on every terminated client at once. A
+`forwarded.trusted_proxies` range that holds a loopback address -- overlapping `127.0.0.0/8`, or
+containing `::1` -- makes that leg a trusted proxy, so the gateway trusts every terminated client's own
+`Forwarded` and `X-Forwarded-For` headers. The gateway logs WARN
+link:../LogMessages.adoc#apisheriff-152[`ApiSheriff-152`] once for each of the two combinations it
+finds, emitted by the same configuration validation as `ApiSheriff-149`; it names the combination by a
+fixed token, never a range or an address. In a passthrough topology keep `action` at `observe` and keep
+loopback out of `forwarded.trusted_proxies`.
+
 *Shared addresses.* Behind a load balancer not listed in `forwarded.trusted_proxies`, every client is
 one source: one scanning client trips it, and under `block` every client is answered `429`; under
 `delay` all their rejections slow down and, once the held-answer share is used up, every further

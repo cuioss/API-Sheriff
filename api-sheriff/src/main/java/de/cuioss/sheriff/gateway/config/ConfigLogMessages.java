@@ -686,6 +686,31 @@ public final class ConfigLogMessages {
                 .identifier(149)
                 .template("enumeration_detection.action is %s while forwarded.trusted_proxies is non-empty — a request a trusted proxy forwards without a Forwarded or X-Forwarded-For header, or with only blank ones, is keyed on the shared source 'unknown', which detection counts and reports but never blocks, delays or refuses, so such requests escape the configured action. Make sure every trusted proxy sends its clients' addresses in X-Forwarded-For")
                 .build();
+
+        /**
+         * {@code tls.passthrough_sni} is non-empty while the configuration treats the loopback relay leg
+         * as a client: {@code enumeration_detection} is enabled with the acting action {@code block} or
+         * {@code delay}, or a {@code forwarded.trusted_proxies} range holds a loopback address.
+         * <p>
+         * Behind the SNI front every terminated connection reaches the edge from the loopback relay leg,
+         * so source detection and the trusted-proxy judgement see every terminated client as that one
+         * loopback peer. An acting detection action therefore keys all of them on one source, and the
+         * block or delay that source earns acts on every terminated client at once; a loopback trusted
+         * proxy trusts every terminated client's own {@code Forwarded} and {@code X-Forwarded-For}
+         * headers.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: each combination is a legal configuration whose
+         * consequence the operator must know. Emitted by the validation rule
+         * {@code EdgeRules.validatePassthroughSourceCollapse}, once per present combination and per
+         * validation of the configuration: at boot, and in a {@code --validate-config} run. The template
+         * argument is a fixed token naming the combination — the action, or a loopback trusted proxy —
+         * never a configured range or any other address.
+         */
+        public static final LogRecord PASSTHROUGH_SOURCE_COLLAPSE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(152)
+                .template("tls.passthrough_sni is non-empty while %s — behind the SNI front every terminated connection reaches the edge from the loopback relay leg, so source detection and the trusted-proxy judgement see every terminated client as that one loopback peer: an acting detection action blocks or delays all of them at once, and a loopback trusted proxy trusts every client's own forwarded headers. For the combination named here, set enumeration_detection.action to observe, or remove the loopback range from forwarded.trusted_proxies")
+                .build();
     }
 
     /**
