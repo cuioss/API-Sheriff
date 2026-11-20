@@ -352,8 +352,8 @@ public class EdgeRules {
         EnumerationDetectionConfig detection = gateway.enumerationDetection();
         if (detection != null && detection.effectiveEnabled()
                 && detection.effectiveAction() != EnumerationDetectionConfig.Action.OBSERVE) {
-            LOGGER.warn(ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE,
-                    "enumeration_detection.action is " + detection.effectiveAction());
+            String actingAction = "enumeration_detection.action is " + detection.effectiveAction();
+            LOGGER.warn(ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE, actingAction);
         }
         ForwardedConfig forwarded = gateway.forwarded();
         if (forwarded != null && forwarded.trustedProxies().stream().anyMatch(EdgeRules::holdsLoopback)) {

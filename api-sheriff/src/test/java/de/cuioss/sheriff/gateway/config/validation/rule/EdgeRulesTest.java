@@ -359,7 +359,7 @@ class EdgeRulesTest {
                     .map(LogRecord::getMessage).toList();
             assertEquals(2, warnings.size(), () -> "one warning per combination, got: " + warnings);
             assertTrue(warnings.stream().anyMatch(message -> message.contains("enumeration_detection.action is block"))
-                            && warnings.stream().anyMatch(message -> message.contains("holds a loopback range")),
+                    && warnings.stream().anyMatch(message -> message.contains("holds a loopback range")),
                     () -> "each combination is named by its own token: " + warnings);
         }
 

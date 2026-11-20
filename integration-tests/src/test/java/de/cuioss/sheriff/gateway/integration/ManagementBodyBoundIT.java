@@ -141,7 +141,7 @@ class ManagementBodyBoundIT extends BaseIntegrationTest {
     private static int statusOf(String request) throws IOException, GeneralSecurityException {
         URI origin = managementOrigin();
         try (SSLSocket socket = (SSLSocket) LocalStackTls.trustAllContext().getSocketFactory()
-                .createSocket(origin.getHost(), origin.getPort())) {
+                     .createSocket(origin.getHost(), origin.getPort())) {
             socket.setSoTimeout(EXCHANGE_TIMEOUT_MILLIS);
             // Pin HTTP/1.1: the request is hand-framed HTTP/1.1, which an ALPN-negotiated HTTP/2
             // connection would not parse.
