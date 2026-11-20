@@ -46,10 +46,10 @@ import org.jspecify.annotations.Nullable;
  * log records and the boot sink that logs every violation reuse them rather than carrying an escaper of
  * their own. The offline {@code --validate-config} report is escaped by a second escaper,
  * {@code ConfigValidationCommand.asSingleReportLine}, which renders a whole report line rather than one
- * value: a line feed becomes the two characters {@code \n}, and every other control character and
- * every format, line-separator and paragraph-separator character becomes {@code ?}. The two are kept
- * apart because merging them would change the report the command prints. The rule for every refusal
- * message and every log record a rule emits: a configured free-form scalar it echoes — an endpoint or
+ * value: a line feed becomes the two characters {@code \n}, a tab is kept, and every other control
+ * character and every format, line-separator and paragraph-separator character becomes {@code ?}.
+ * The two are kept apart because merging them would change the report the command prints. The rule for
+ * every refusal message and every log record a rule emits: a configured free-form scalar it echoes — an endpoint or
  * route id, an anchor name, a path, a host, an alias, a list entry — is passed through
  * {@link #renderForMessage} first, so that a hostile value cannot forge a boot log line. Only a value
  * drawn from a closed vocabulary (an enum constant, a gateway-owned key name or built-in entry) or fixed
