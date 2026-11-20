@@ -1450,10 +1450,13 @@ public final class DispatchStage {
          * ended there exactly once, the moment it stops arriving — its end arrived, it was refused, aborted or
          * reset, the forwarding pipe let go of it because the upstream request had failed
          * ({@link ByteCappedBodyStream#onSettled}), or its attempt is no longer waited for
-         * ({@link UpstreamAttempt#abandon()}). A chunk arriving after that is not recorded.
+         * ({@link UpstreamAttempt#abandon()}). A body whose stream could not be built is ended there before the
+         * refusal propagates. A chunk arriving after that is not recorded.
          *
          * @throws IllegalStateException when the idle clock or the message clock is to be armed and no
-         *                               Vert.x context is current — the send callback always runs on one
+         *                               Vert.x context is current — the send callback always runs on one — or
+         *                               when the inbound stream refuses the body stream's subscription, as an
+         *                               inbound request whose body was already read does
          */
         Future<HttpClientResponse> send(UpstreamAttempt attempt, HttpClientRequest request,
                 AtomicReference<@Nullable ByteCappedBodyStream> cappedBody, UpstreamBodyTraffic bodyTraffic) {
@@ -1481,11 +1484,19 @@ public final class DispatchStage {
             IdleClock idleClock = idleClock();
             IdleClock messageClock = messageClock();
             UpstreamBodyTraffic.OpenBody inFlight = bodyTraffic.open();
-            ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
-                    request::reset, forwarded -> {
-                        inFlight.forwarded(System.nanoTime());
-                        bytesSent.addAndGet(forwarded);
-                    }, idleClock, deadline, messageClock, upstreamStallMillis);
+            ByteCappedBodyStream body;
+            try {
+                body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
+                        request::reset, forwarded -> {
+                            inFlight.forwarded(System.nanoTime());
+                            bytesSent.addAndGet(forwarded);
+                        }, idleClock, deadline, messageClock, upstreamStallMillis);
+            } catch (RuntimeException refused) {
+                // The stream subscribes the inbound body as it is built, which an inbound request whose body was
+                // already read refuses; a stream never built settles nothing, so its body is ended here.
+                inFlight.end();
+                throw refused;
+            }
             body.onSettled(inFlight::end);
             cappedBody.set(body);
             attempt.attachBody(body);

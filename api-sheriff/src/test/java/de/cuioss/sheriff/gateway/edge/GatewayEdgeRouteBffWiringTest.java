@@ -696,6 +696,25 @@ public class GatewayEdgeRouteBffWiringTest {
                     () -> assertTrue(sessionLives(), "the session survives"));
         }
 
+        /**
+         * A browser that predates {@code Sec-Purpose} marks a prefetch with a legacy header instead:
+         * {@code Purpose: prefetch} or {@code X-Moz: prefetch}. Each case is the top-level document navigation
+         * from the trusted {@code Origin} that the control below answers by ending the session, plus that one
+         * legacy header and no {@code Sec-Purpose}, so the refusal rests on the legacy marker reaching the proof.
+         */
+        @ParameterizedTest(name = "{0}: {1}")
+        @CsvSource({"Purpose,prefetch", "X-Moz,prefetch"})
+        @DisplayName("a trusted top-level document navigation marked as a prefetch by a legacy header alone leaves the session and is answered the confirmation page")
+        void shouldKeepTheSessionOnALegacyPrefetchMarker(String header, String value) throws Exception {
+            EdgeAnswer answer = logout(ORIGIN, "navigate", "document", null, Map.of(header, value));
+
+            assertAll(header + ": " + value + " marks a speculative load, which is no logout",
+                    () -> assertEquals(200, answer.status(), "the confirmation page is answered"),
+                    () -> assertTrue(answer.body().contains("method=\"POST\""), "the body is the confirmation form"),
+                    () -> assertEquals(List.of(), answer.setCookies(), "no cookie is set or cleared"),
+                    () -> assertTrue(sessionLives(), "the session survives"));
+        }
+
         @ParameterizedTest(name = "Origin {0}")
         @CsvSource(nullValues = "-", value = {ORIGIN, "-"})
         @DisplayName("control: a top-level document navigation from the trusted origin ends the session and redirects to the end-session endpoint")
@@ -721,7 +740,13 @@ public class GatewayEdgeRouteBffWiringTest {
          */
         private EdgeAnswer logout(@Nullable String origin, @Nullable String mode, @Nullable String dest,
                 @Nullable String purpose) throws Exception {
-            Map<String, String> headers = new HashMap<>();
+            return logout(origin, mode, dest, purpose, Map.of());
+        }
+
+        /** As {@link #logout(String, String, String, String)}, with {@code further} headers added. */
+        private EdgeAnswer logout(@Nullable String origin, @Nullable String mode, @Nullable String dest,
+                @Nullable String purpose, Map<String, String> further) throws Exception {
+            Map<String, String> headers = new HashMap<>(further);
             headers.put("Cookie", SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle);
             headers.put("Sec-Fetch-Site", SAME_ORIGIN);
             putIfPresent(headers, "Origin", origin);

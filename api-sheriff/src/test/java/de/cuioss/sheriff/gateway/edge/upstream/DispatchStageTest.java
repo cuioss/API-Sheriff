@@ -4296,6 +4296,42 @@ class DispatchStageTest {
                     () -> assertEquals(1, upstreamStarted.get()));
         }
 
+        /**
+         * The body stream is built only once its body is opened in the client's body traffic, and building it
+         * subscribes the inbound stream, which an inbound request whose body has already been read refuses. The
+         * refused case fails the stream's constructor that way; the matched control is a dispatch whose body
+         * stream is built and whose body ends, through the same route and the same traffic.
+         */
+        @Test
+        @DisplayName("a body stream the dispatch fails to build leaves no body open in the client's body traffic")
+        void bodyStreamRefusedAtConstructionLeavesNoBodyOpen() throws Exception {
+            int openBefore = bodyTraffic.openBodies();
+
+            Future<HttpClientResponse> refused = dispatch(ACCEPTING_PATH, new AlreadyReadStream());
+            Throwable failure = assertThrows(ExecutionException.class,
+                    () -> refused.get(Awaits.CONNECT_CEILING_SECONDS, TimeUnit.SECONDS),
+                    "a body stream that cannot be built ends the dispatch").getCause();
+            int openAfterTheRefusal = bodyTraffic.openBodies();
+            int startedBeforeTheControl = upstreamStarted.get();
+
+            TestReadStream healthy = new TestReadStream();
+            Future<HttpClientResponse> answered = dispatch(ACCEPTING_PATH, healthy);
+            sendFirstChunk(healthy, startedBeforeTheControl + 1);
+            int openWhileTheControlArrives = bodyTraffic.openBodies();
+            healthy.end();
+            HttpClientResponse response = Awaits.connect(answered, "the control dispatch to be answered");
+
+            assertAll("a body stream refused at construction, then a control body that ends",
+                    () -> assertNotNull(failure, "the refused dispatch failed"),
+                    () -> assertEquals(openBefore, openAfterTheRefusal,
+                            "the body whose stream could not be built left the client's body traffic"),
+                    () -> assertEquals(openBefore + 1, openWhileTheControlArrives,
+                            "control: a body still arriving is open in the traffic"),
+                    () -> assertEquals(200, response.statusCode(), "control: the upstream answered the body"),
+                    () -> assertEquals(openBefore, bodyTraffic.openBodies(),
+                            "control: the body that ended left the traffic"));
+        }
+
         /** Runs one dispatch on a virtual thread, as the edge does, so the test thread can drive its body. */
         private Future<HttpClientResponse> dispatch(String path, ReadStream<Buffer> inbound) {
             return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.POST, path, Map.of(), inbound,
@@ -5420,6 +5456,48 @@ class DispatchStageTest {
         @Override
         public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
             this.endHandler = endHandler;
+            return this;
+        }
+    }
+
+    /**
+     * An inbound request body that has already been read: it refuses a data handler with the
+     * {@link IllegalStateException} Vert.x throws for such a request, and accepts every other call.
+     */
+    private static final class AlreadyReadStream implements ReadStream<Buffer> {
+
+        static final String ALREADY_READ = "Request has already been read";
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
+            if (handler != null) {
+                throw new IllegalStateException(ALREADY_READ);
+            }
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> exceptionHandler) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
             return this;
         }
     }
