@@ -29,13 +29,13 @@ slug: security-hardening-tier-2
 
 ## Open Defects and Watches transferred to kidicap-gateway-requirements (2026-11-20)
 
-On the operator's word of 2026-11-20 each lead below was transferred to the `kidicap-gateway-requirements` epic as an inbox message from the sender `security-hardening-tier-2` (messages `-001` to `-005`, `kind: finding`; `-002` and `-003` were withdrawn the same day, `-001` was amended to say no Watch is owed); that epic's orchestrator drains and owns what remains. The entries are kept here verbatim as the originating record.
+On the operator's word of 2026-11-20 each lead below was transferred to the `kidicap-gateway-requirements` epic as an inbox message from the sender `security-hardening-tier-2` (messages `-001` to `-005`, `kind: finding`; `-002` and `-003` were withdrawn the same day, `-001` was amended to say no Watch is owed); that epic's orchestrator drains what remains (only the content-less `-001` and `-005`; `-004` was later moved to `api-sheriff-0-3-0`). The entries are kept here verbatim as the originating record.
 
 ### Open Defect — incomplete landing of PLAN-SEC2-04 (transferred as message `-003`; **retired 2026-11-20 and `-003` withdrawn from the kidicap inbox**: the review figures the landing left `unknown` were re-verified against `main`, see the addendum of `landings/PLAN-SEC2-04.md`)
 
 - Incomplete landing `sec2-04-leftover-hardening-004.md` (PLAN-SEC2-04, `landing-check`: `complete: false`): `missing_keys` are `unresolved_review_threads`, `review_body_findings_total` and `review_body_findings_handled`, all `unknown` because the plan's manifest had no review-gate step. The landing was reconciled as far as it goes; the orchestrator re-read the thread figure from the provider (7 review threads, all resolved; the 6 open rows are review-body and issue-comment rows). The provider's `review-gate` read is `undecidable_read` on a CodeRabbit "Minor comments" section, so the two review-body numbers are not re-verified. Same cause as the two incomplete landings routed to the plan-marshall `lessons-routing` inbox on 2026-11-17; not routed again. Retire on the operator's word.
 
-### Watches (transferred as messages `-001`, `-002` and `-004`; only `-004` stays live in the kidicap inbox)
+### Watches (transferred as messages `-001`, `-002` and `-004`; nothing stays live in the kidicap inbox; the upstream-request action moved to `api-sheriff-0-3-0`)
 
 - CodeRabbit review-body findings of #633: the landing claimed 2 total / 2 handled, the provider shows 3 (two inline, one nitpick) with no disposition (`review-gate`: `body_findings_undisposed`); the count is recorded as a false claim in `landings/PLAN-SEC2-05.md` and the handling is not re-verified. Retire on the operator's confirmation, as for #623, #626 and #627. (message `-002`; **retired 2026-11-20 and `-002` withdrawn from the kidicap inbox**: all 3 findings are handled in `main`, see the addendum of `landings/PLAN-SEC2-05.md`)
 
@@ -43,4 +43,4 @@ On the operator's word of 2026-11-20 each lead below was transferred to the `kid
 
 - Pre-commit formatter churn (carried from tier 1): #618 aligned `main` with the local formatter; a plan that reports churn again re-opens it. (message `-001`; **corrected 2026-11-20 on the operator's word**: the class is closed on `main` (#242, #415, #559, #618), none of PLAN-SEC2-01 to 05 reported churn again, so no Watch is owed and `-001` was amended to say so)
 
-- Operator action carried in the resume anchor, not an `epic.md` entry: the upstream Quarkus request-head-timeout request drafted by PLAN-SEC2-04 deliverable 10 is not yet filed (draft: decision-log entry `33ad2c` of the archived plan). (message `-004`)
+- Operator action carried in the resume anchor, not an `epic.md` entry: the upstream Quarkus request-head-timeout request drafted by PLAN-SEC2-04 deliverable 10 is not yet filed (draft: decision-log entry `33ad2c` of the archived plan). (message `-004`; **moved 2026-11-20 on the operator's word** from the kidicap inbox to the `api-sheriff-0-3-0` inbox as `security-hardening-tier-2-001`, with the draft restored verbatim in the message; `-004` removed from the kidicap inbox)
