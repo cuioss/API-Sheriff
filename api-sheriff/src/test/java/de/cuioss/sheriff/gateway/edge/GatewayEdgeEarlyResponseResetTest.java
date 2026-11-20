@@ -642,7 +642,7 @@ class GatewayEdgeEarlyResponseResetTest {
 
         long firstWriteNanos = System.nanoTime();
         Awaits.connect(request.setChunked(true).write(part), "the first part of the body to be sent");
-        trickleThenStop(request, part, streamEnd, TRICKLE_FRAMES, trickled);
+        trickleThenStop(request, part, streamEnd, TRICKLE_FRAMES, 0, trickled);
         int framesTrickled = Awaits.connect(trickled, "the trickled frames to be written or the stream to end");
         Answer answer = Awaits.connect(answered, "the early answer to arrive whole");
         Throwable reset = Awaits.connect(streamEnd, "the edge to reset the upload that stopped trickling");
@@ -1341,14 +1341,9 @@ class GatewayEdgeEarlyResponseResetTest {
     /**
      * Writes {@code part} to {@code request} {@value #TRICKLE_GAP_MILLIS} ms from now and again after each
      * gap, {@code remaining} times in all, and then stops without ending the body. Completes
-     * {@code trickled} with the frames written, which falls short of {@code remaining} only when the
-     * stream ended first.
+     * {@code trickled} with {@code written} plus the frames written here, which falls short of
+     * {@code remaining} only when the stream ended first.
      */
-    private void trickleThenStop(HttpClientRequest request, Buffer part, CompletableFuture<Throwable> streamEnd,
-            int remaining, CompletableFuture<Integer> trickled) {
-        trickleThenStop(request, part, streamEnd, remaining, 0, trickled);
-    }
-
     private void trickleThenStop(HttpClientRequest request, Buffer part, CompletableFuture<Throwable> streamEnd,
             int remaining, int written, CompletableFuture<Integer> trickled) {
         vertx.setTimer(TRICKLE_GAP_MILLIS, fired -> {
