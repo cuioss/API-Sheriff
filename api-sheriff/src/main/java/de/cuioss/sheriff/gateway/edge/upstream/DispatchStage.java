@@ -1494,7 +1494,7 @@ public final class DispatchStage {
                         }, idleClock, deadline, messageClock, upstreamStallMillis);
                 built = true;
             } finally {
-                if (!built) {
+                if (!built) { // NOSONAR java:S2583 - false positive: built is false when the constructor above throws
                     // The stream subscribes the inbound body as it is built, which an inbound request whose body was
                     // already read refuses; a stream never built settles nothing, so its body is ended here.
                     inFlight.end();
