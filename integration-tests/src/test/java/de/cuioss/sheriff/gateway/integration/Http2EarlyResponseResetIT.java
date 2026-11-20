@@ -112,7 +112,7 @@ class Http2EarlyResponseResetIT {
     /** The gateway's cap on how long it holds back the end of an early response, whatever the stream does. */
     private static final Duration GATEWAY_WAIT_CAP = Duration.ofSeconds(1);
     /**
-     * The latest a stopped upload may be reset after its body write and still count as a quiet exit:
+     * The latest a stopped upload may be reset after its body write is issued and still count as a quiet exit:
      * half {@link #GATEWAY_WAIT_CAP}. The quiet exit takes the 50 ms quiet period plus one PING round trip;
      * a wait that only the cap ends lands at the cap or later, a full 500 ms margin above this bound.
      */
@@ -183,9 +183,10 @@ class Http2EarlyResponseResetIT {
      * stands still, so it confirms the quiet exit with exactly one HTTP/2 {@code PING} on the upload's
      * connection — the client acknowledges it, the window is still unmoved — and only then ends the
      * whole {@code 200} and resets the stream with {@code NO_ERROR}. The connection stays open and serves
-     * a further request. The reset arrives within {@link #QUIET_EXIT_BOUND} of the completed body write,
-     * well below {@link #GATEWAY_WAIT_CAP}, so it is the acknowledged PING that ended the wait and not
-     * the cap. This proves the PING route runs in the native executable.
+     * a further request. The reset arrives within {@link #QUIET_EXIT_BOUND} of the moment the body write
+     * was issued — taken before the write, which also sends the stream's HEADERS, so the gateway cannot
+     * have started its wait earlier — well below {@link #GATEWAY_WAIT_CAP}, so it is the acknowledged PING
+     * that ended the wait and not the cap. This proves the PING route runs in the native executable.
      */
     @Test
     @DisplayName("an upload that stops sending gets one PING, then the whole 200 and the NO_ERROR reset, on an open connection")
@@ -213,11 +214,15 @@ class Http2EarlyResponseResetIT {
                     }))
                     .toCompletionStage().toCompletableFuture();
 
-            long bodyWrittenNanos = request.setChunked(true).write(CHUNK).map(written -> System.nanoTime())
+            // The HEADERS frame leaves with this first write, so the gateway cannot have seen the stream, let
+            // alone started its wait, before this instant: an origin taken in the write's completion callback
+            // could run after the wait began and shrink the measured interval.
+            long bodyWriteIssuedNanos = System.nanoTime();
+            request.setChunked(true).write(CHUNK)
                     .toCompletionStage().toCompletableFuture().get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             int answered = status.get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             Throwable reset = streamEnd.get(BATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            Duration bodyWriteToReset = Duration.ofNanos(streamEndNanos.get() - bodyWrittenNanos);
+            Duration bodyWriteToReset = Duration.ofNanos(streamEndNanos.get() - bodyWriteIssuedNanos);
             HttpConnection furtherConnection = client.request(uploadOptions())
                     .compose(further -> further.send().compose(response -> response.body())
                             .map(body -> further.connection()))
@@ -231,7 +236,8 @@ class Http2EarlyResponseResetIT {
                             && streamReset.getCode() == HTTP2_NO_ERROR,
                             () -> "the stream must be reset by the gateway with NO_ERROR: " + reset),
                     () -> assertTrue(bodyWriteToReset.compareTo(QUIET_EXIT_BOUND) < 0, () -> "the stream was"
-                            + " reset " + bodyWriteToReset.toMillis() + " ms after the body write, not below "
+                            + " reset " + bodyWriteToReset.toMillis() + " ms after the body write was issued,"
+                            + " not below "
                             + QUIET_EXIT_BOUND.toMillis() + " ms: the wait ended at or near its "
                             + GATEWAY_WAIT_CAP.toMillis() + " ms cap, not on the acknowledged PING"),
                     () -> assertTrue(goAwayCodes.isEmpty(), () -> "the gateway sent GOAWAY " + goAwayCodes),
