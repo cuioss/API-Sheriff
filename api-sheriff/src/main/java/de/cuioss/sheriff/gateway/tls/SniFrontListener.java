@@ -710,16 +710,22 @@ public final class SniFrontListener {
          * passthrough match first claims one dial slot of its target; when the target's budget is full the
          * connection is refused instead — its slots of the cap and of its source's share are returned at
          * once and it is never dialled. The terminated hand-off claims no dial slot.
+         * <p>
+         * The SNI is normalized once ({@link SniFrontListener#normalizeSni}) and that key both selects the target and is
+         * the label the relay audits a passthrough match under — the {@code passthrough_sni} host as
+         * configured, lower-cased — never the raw ClientHello value, whose letter case and trailing dot
+         * are the client's choice.
          */
         private void route(@Nullable String serverName, Buffer replay) {
-            RelayTarget target = serverName == null ? null : passthroughTargets.get(normalizeSni(serverName));
-            if (serverName != null && target != null) {
+            String sniKey = serverName == null ? null : normalizeSni(serverName);
+            RelayTarget target = sniKey == null ? null : passthroughTargets.get(sniKey);
+            if (sniKey != null && target != null) {
                 if (!claimDial(target)) {
                     releaseSlot();
                     refuse(socket, Refusal.DIAL_BUDGET);
                     return;
                 }
-                dial(() -> relay.relay(socket, replay, target, RelayKind.PASSTHROUGH, serverName), target);
+                dial(() -> relay.relay(socket, replay, target, RelayKind.PASSTHROUGH, sniKey), target);
                 return;
             }
             if (serverName == null) {

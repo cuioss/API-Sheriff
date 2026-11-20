@@ -107,8 +107,10 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 | extracted
 
 | `EdgeRules`
-| `validateForwardedTrust`, `validatePassthroughHostCollision`, `validatePassthroughAliasResolvable`
-| `forwarded.trusted_proxies`, `tls.passthrough_sni`
+| `validateForwardedTrust`, `validatePassthroughHostCollision`, `validatePassthroughAliasResolvable`,
+  `validatePassthroughSourceCollapse`
+| `forwarded.trusted_proxies`, `tls.passthrough_sni`, `enumeration_detection` (the passthrough
+  source-collapse rule is a boot WARN only, never a refusal)
 | extracted
 
 | `HeaderRules`

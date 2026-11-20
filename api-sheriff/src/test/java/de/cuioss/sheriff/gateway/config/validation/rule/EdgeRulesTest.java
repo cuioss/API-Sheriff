@@ -57,8 +57,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Tests for the edge rules the {@link ConfigValidator} runs through {@link EdgeRules}: the D5
  * boot-time hardening of {@code forwarded.trusted_proxies} (real-CIDR parsing with full-space
  * rejection and the broad-prefix boot WARN, ADR-0044), the boot WARN for an acting
- * {@code enumeration_detection} action behind trusted proxies, and the {@code tls.passthrough_sni} host
- * collision and alias-resolvability rules.
+ * {@code enumeration_detection} action behind trusted proxies, the {@code tls.passthrough_sni} host
+ * collision and alias-resolvability rules, and the boot WARN for a passthrough topology meeting an
+ * acting detection action or a loopback trusted proxy.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed.
@@ -70,6 +71,9 @@ class EdgeRulesTest {
 
     private static final String DETECTION_BEHIND_TRUSTED_PROXIES_ID =
             ConfigLogMessages.WARN.DETECTION_ACTION_BEHIND_TRUSTED_PROXIES.resolveIdentifierString();
+
+    private static final String PASSTHROUGH_SOURCE_COLLAPSE_ID =
+            ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE.resolveIdentifierString();
 
     private final ConfigValidator validator = new ConfigValidator();
 
@@ -271,6 +275,92 @@ class EdgeRulesTest {
             } else {
                 assertTrue(warnings.isEmpty(), () -> label + " must stay silent, got: " + warnings);
             }
+        }
+
+        /**
+         * The boot WARN that a passthrough topology meets a configuration acting on the loopback relay
+         * leg as if it were a client. It fires once for {@code block} and once for {@code delay} under a
+         * non-empty {@code passthrough_sni}, and once for a {@code trusted_proxies} range holding a
+         * loopback address — overlapping {@code 127.0.0.0/8}, or containing {@code ::1}. Its matched
+         * controls stay silent: passthrough alone, each combination without passthrough, {@code observe}
+         * or disabled detection under passthrough, and a non-loopback proxy list under passthrough.
+         */
+        static Stream<Arguments> passthroughSourceCollapseControls() {
+            EnumerationDetectionConfig block = detection(true, EnumerationDetectionConfig.Action.BLOCK);
+            List<String> nonLoopback = List.of("192.0.2.0/24", "2001:db8::/48");
+            return Stream.of(
+                    Arguments.of("passthrough with block", true, block, null, "enumeration_detection.action is block"),
+                    Arguments.of("passthrough with delay", true,
+                            detection(true, EnumerationDetectionConfig.Action.DELAY), null,
+                            "enumeration_detection.action is delay"),
+                    Arguments.of("passthrough with an IPv4 range overlapping 127.0.0.0/8", true, null,
+                            List.of("192.0.2.0/24", "127.0.0.1/32"), "forwarded.trusted_proxies holds a loopback range"),
+                    Arguments.of("passthrough with an IPv6 range containing ::1", true, null, List.of("::1/128"),
+                            "forwarded.trusted_proxies holds a loopback range"),
+                    Arguments.of("passthrough alone", true, null, null, null),
+                    Arguments.of("block without passthrough", false, block, null, null),
+                    Arguments.of("a loopback proxy without passthrough", false, null, List.of("127.0.0.0/8"), null),
+                    Arguments.of("passthrough with observe", true,
+                            detection(true, EnumerationDetectionConfig.Action.OBSERVE), null, null),
+                    Arguments.of("passthrough with detection disabled and block", true,
+                            detection(false, EnumerationDetectionConfig.Action.BLOCK), null, null),
+                    Arguments.of("passthrough with a non-loopback proxy list", true, null, nonLoopback, null));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("passthroughSourceCollapseControls")
+        @DisplayName("Should warn only when passthrough_sni meets an acting detection action or a loopback trusted proxy")
+        void shouldWarnOnPassthroughSourceCollapse(String label, boolean passthrough,
+                @Nullable EnumerationDetectionConfig detection, @Nullable List<String> trustedProxies,
+                @Nullable String expectedToken) {
+            GatewayConfig.GatewayConfigBuilder builder = validGateway().enumerationDetection(detection);
+            if (passthrough) {
+                builder.tls(TlsConfig.builder().passthroughSni(Map.of("secure.example.com", "SECURE")).build());
+            }
+            if (trustedProxies != null) {
+                builder.forwarded(ForwardedConfig.builder().trustedProxies(trustedProxies).build());
+            }
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(builder.build(), List.of(endpoint),
+                    topologyWith("ORDERS", "SECURE"));
+
+            assertTrue(errors.isEmpty(), () -> "the combination boots, got: " + errors);
+            List<String> warnings = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, PASSTHROUGH_SOURCE_COLLAPSE_ID).stream()
+                    .map(LogRecord::getMessage).toList();
+            if (expectedToken != null) {
+                assertEquals(1, warnings.size(), () -> label + " must warn once, got: " + warnings);
+                assertTrue(warnings.getFirst().contains(expectedToken),
+                        () -> "the warning names the combination by its fixed token: " + warnings);
+                assertTrue(warnings.stream().noneMatch(message -> message.contains("127.0.0.")
+                                || message.contains("::1/") || message.contains("192.0.2.")),
+                        () -> "the warning never names a configured range: " + warnings);
+            } else {
+                assertTrue(warnings.isEmpty(), () -> label + " must stay silent, got: " + warnings);
+            }
+        }
+
+        @Test
+        @DisplayName("Should warn once per combination when passthrough_sni meets both an acting action and a loopback proxy")
+        void shouldWarnOncePerPassthroughSourceCollapseCombination() {
+            GatewayConfig gateway = validGateway()
+                    .enumerationDetection(detection(true, EnumerationDetectionConfig.Action.BLOCK))
+                    .tls(TlsConfig.builder().passthroughSni(Map.of("secure.example.com", "SECURE")).build())
+                    .forwarded(ForwardedConfig.builder().trustedProxies(List.of("127.0.0.0/8")).build())
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS", "SECURE"));
+
+            assertTrue(errors.isEmpty(), () -> "the combination boots, got: " + errors);
+            List<String> warnings = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, PASSTHROUGH_SOURCE_COLLAPSE_ID).stream()
+                    .map(LogRecord::getMessage).toList();
+            assertEquals(2, warnings.size(), () -> "one warning per combination, got: " + warnings);
+            assertTrue(warnings.stream().anyMatch(message -> message.contains("enumeration_detection.action is block"))
+                    && warnings.stream().anyMatch(message -> message.contains("holds a loopback range")),
+                    () -> "each combination is named by its own token: " + warnings);
         }
 
         @Test

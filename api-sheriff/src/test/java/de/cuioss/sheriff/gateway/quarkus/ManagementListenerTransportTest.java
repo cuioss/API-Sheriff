@@ -45,6 +45,8 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The transport bounds that act on the management interface, observed on a live management listener.
@@ -55,13 +57,17 @@ import org.junit.jupiter.api.Test;
  * listener options ({@code HttpServerOptionsUtils.applyCommonOptionsForManagementInterface}) — the
  * header block, the request line, the chunk and three form limits — and the body size, which the body
  * handler Quarkus installs on every management route enforces. The shipped
- * {@code application.properties} sets the header block to the main listener's 16 KiB and keeps every
- * other bound at its default. Quarkus applies no HTTP/2 setting to the management listener at all.
+ * {@code application.properties} sets the header block to the main listener's 16 KiB and the body to
+ * 32 KiB, and keeps every other bound at its default. Quarkus applies no HTTP/2 setting to the
+ * management listener at all.
  * <p>
  * Every bound but the chunk is shown by a request past it, which is refused, and a matched request
  * under or at it, which the liveness probe serves; for HTTP/2 the announced setting is read instead.
- * The header-block case is the one the shipped key changes: under the 20 KiB Quarkus default it would
- * serve the request that is refused here. The request-line case pins a transport default the shipped
+ * The header-block and body cases are the two the shipped keys change: under the 20 KiB header and
+ * 10 MiB body Quarkus defaults each would serve the request that is refused here. Every probe route
+ * the management router serves still answers a body-less {@code GET} at the body bound, and the form
+ * and chunk cases below stay green under it, which is what shows the body bound pre-empts none of
+ * them. The request-line case pins a transport default the shipped
  * file relies on. The HTTP/2 case reads the header-list size the listener announces to a
  * prior-knowledge client: the transport's 8 KiB, not the main listener's 16 KiB.
  * <p>
@@ -76,7 +82,7 @@ import org.junit.jupiter.api.Test;
  * its {@code =}; the refused form is such a name, while a name followed by its {@code =} is decoded at
  * once and never held. The body size is refused with a {@code 413} on the declared
  * {@code Content-Length} alone, before any body byte is read, and the control carries a body of exactly
- * the 10 MiB Quarkus default.
+ * the shipped 32 KiB.
  * <p>
  * The chunk bound refuses nothing, and that is what is asserted: a chunk twice its 8 KiB is served. The
  * codec delivers a larger chunk to the server in pieces of at most that size; the pieces are reassembled
@@ -116,8 +122,8 @@ class ManagementListenerTransportTest {
     /** The chunk bound of the management listener: the transport default, kept by the shipped file. */
     private static final int CHUNK_BOUND = 8 * 1024;
 
-    /** The body bound of the management routes: the Quarkus default of 10240 KiB, kept by the shipped file. */
-    private static final int BODY_BOUND = 10 * 1024 * 1024;
+    /** The body bound of the management routes: the 32 KiB the shipped file sets, below the 10 MiB Quarkus default. */
+    private static final int BODY_BOUND = 32 * 1024;
 
     /** How far past, or short of, a bound the refused and the served request lie. */
     private static final int MARGIN = 512;
@@ -240,15 +246,31 @@ class ManagementListenerTransportTest {
     }
 
     @Test
-    @DisplayName("refuses a declared body past the 10 MiB default with 413, and serves a body of exactly 10 MiB")
-    void boundsTheBodyAtTheQuarkusDefault() throws Exception {
+    @DisplayName("refuses a declared body past the shipped 32 KiB with 413, and serves a body of exactly 32 KiB")
+    void boundsTheBodyAtTheShippedBound() throws Exception {
         int refused = statusOf(requestDeclaringBodyOf(BODY_BOUND + 1));
         int served = statusOf(requestWithBodyOf(BODY_BOUND));
 
         assertAll("the management router's body size",
                 () -> assertEquals(PAYLOAD_TOO_LARGE, refused,
-                        "a declared body past 10 MiB is refused before a body byte is read"),
-                () -> assertEquals(OK, served, "control: a body of exactly 10 MiB is served"));
+                        "a declared body one byte past 32 KiB is refused before a body byte is read"),
+                () -> assertEquals(OK, served, "control: a body of exactly 32 KiB is served"));
+    }
+
+    @ParameterizedTest(name = "GET {0}")
+    @ValueSource(strings = {"health", "health/live", "health/ready", "health/started", "metrics"})
+    @DisplayName("answers a body-less GET on every probe route with 200 under the body bound")
+    void servesEveryProbeRouteABodylessGet(String route) throws Exception {
+        assertEquals(OK, statusOf(bodylessGetOf(route)),
+                "the probe route " + route + " is served: no probe needs a body the bound could refuse");
+    }
+
+    /**
+     * @param route the probe route, relative to the management root path
+     * @return a body-less GET of that route
+     */
+    private String bodylessGetOf(String route) {
+        return "GET " + managementPath(route) + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     }
 
     /**
@@ -329,8 +351,16 @@ class ManagementListenerTransportTest {
 
     /** @return the liveness probe beneath the management root path */
     private String livenessPath() {
+        return managementPath(LIVENESS_PATH);
+    }
+
+    /**
+     * @param route a route relative to the management root path
+     * @return that route beneath the management root path
+     */
+    private String managementPath(String route) {
         String root = managementUrl.getPath();
-        return (root.endsWith("/") ? root : root + "/") + LIVENESS_PATH;
+        return (root.endsWith("/") ? root : root + "/") + route;
     }
 
     /**

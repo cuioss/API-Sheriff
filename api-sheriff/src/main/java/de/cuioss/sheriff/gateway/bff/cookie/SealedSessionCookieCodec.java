@@ -58,14 +58,17 @@ import org.jspecify.annotations.Nullable;
  * or widen it, and the step-up path is a {@code GET} that carries no CSRF check — but the conditions a
  * compression oracle needs are absent:
  * <ul>
- *   <li>the only attacker influence on the plaintext is which operator-declared, identity-provider-granted
- *       scope names enter it; no byte of any field comes from a request;</li>
- *   <li>every re-seal carries the freshly issued tokens of the refresh or widening that caused it, so
- *       no two seals compress the same token;</li>
- *   <li>the material that stays the same across re-seals has no attacker-varied byte next to it, so it
- *       cannot be probed;</li>
- *   <li>the distinct plaintexts an attacker can cause are bounded by monotone scope growth — a
- *       widening only adds declared names — not by the number of requests it sends;</li>
+ *   <li>the only attacker influence on the plaintext is which scope names the identity provider returns
+ *       to a refresh or widening the attacker drives; no byte of any field comes from a request;</li>
+ *   <li>every re-seal carries the freshly issued access token of the refresh or widening that caused it,
+ *       so each seal compresses an access token no earlier seal carried;</li>
+ *   <li>the material that stays the same across re-seals — the session nonce, and the ID token, which a
+ *       refresh response without one leaves as it was, so two seals can compress the same ID token — has
+ *       no attacker-varied byte next to it, so it cannot be probed;</li>
+ *   <li>the distinct plaintexts an attacker can cause are bounded by the scope names the identity
+ *       provider returns — a refresh replaces the active scope set with the response's scope, so the set
+ *       can shrink as well as grow, and a widening adds the names the identity provider grants — not by
+ *       the number of requests it sends;</li>
  *   <li>reading the sealed length needs an on-path observer of the cookie size; the cross-site page
  *       that drives a re-seal cannot read the gateway's {@code Set-Cookie} header.</li>
  * </ul>

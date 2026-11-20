@@ -196,7 +196,8 @@ link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide])
 
 * *RP-initiated* (`oidc.logout.path`). Works as in the
   link:02-bff-session.adoc#_logout[session-based variant]: it acts only on a trusted top-level
-  document navigation -- `Sec-Fetch-Site: none`, a subresource, a frame or a prefetch is no proof --
+  document navigation -- with no `Origin`, `Sec-Fetch-Site: none` is no proof, and a subresource, a
+  frame or a prefetch never is one --
   and answers any other request with a `no-store`, framing-forbidden confirmation page that leaves both
   cookies in place; with the proof, the session cookie and the activity cookie are
   expired first, then the browser is redirected to the IdP's end-session endpoint with a
