@@ -130,3 +130,10 @@ from the leaf and are recorded as read by it, not re-read.
 - L3-1, L3-2, the ADR-0066 alternatives entry, and the three test blind spots (L2-1 to L2-3) are small and PLAN-SEC2-04 is running, so they cannot be folded into it; whether to stage a small follow-up plan is the operator's call, recorded in `epic.md` Decisions.
 - The two lessons the plan sent for plan-marshall (the finalize re-stamp and the unverified-upstream replies) are routed to the sibling lessons inbox.
 - The two Vert.x and Netty facts the plan sent as lessons (`ping()` on the event loop; the stream's own receive window cannot prove quiescence) are carried by the merged code and docs: `InboundStreamWindow.java:178-181` with its test, and the documented limit of the compared value.
+
+## Addendum 2026-11-20 — review figures re-verified
+
+The Routing section above recorded `review_body_findings_handled` as **not re-verified** and the total as a **false claim** (landing 2, provider 3). Re-verified afterwards, on the operator's request, against `main` at `00ebea64` (the review text is third-party; a read-only agent extracted it and the orchestrator read each conclusion in the merged code):
+
+- **The provider's 3 review-body findings are all handled:** the window-moved-while-the-PING-was-outstanding finding is fixed (`EarlyResponseEnd.java:175,203,229,260`, `movedSincePing`); the overclaim that the quiet check proves no data is in flight is fixed by documenting the limit (`doc/architecture/tls-and-inbound-security.adoc:126-150`); the two-instance PING-capacity nitpick is fixed (`InboundStreamWindowTest.java:277`, `pingBoundIsSharedByEveryViewOfTheConnection`).
+- **The false claim stands as recorded** (the landing said 2 total; the provider shows 3), but its consequence is nil: every finding was handled. The Watch that tracked it is retired.
