@@ -137,8 +137,10 @@ public final class PassthroughRelay {
      * @param target      the resolved backend endpoint to relay to
      * @param kind        whether the connection is a passthrough match or a terminated hand-off,
      *                    controlling the lifecycle log level
-     * @param sniLabel    the matched SNI hostname for a passthrough relay's audit log ({@code kind ==
-     *                    PASSTHROUGH}); ignored for a terminated relay
+     * @param sniLabel    the key the passthrough route matched, written to a passthrough relay's
+     *                    audit log ({@code kind == PASSTHROUGH}): the normalized {@code passthrough_sni}
+     *                    host as configured, lower-cased — never the raw ClientHello value, whose letter
+     *                    case and trailing dot the client chooses; ignored for a terminated relay
      * @return a future that completes once the backend dial has settled; it never fails
      */
     public Future<Void> relay(NetSocket client, Buffer clientHello, RelayTarget target, RelayKind kind,

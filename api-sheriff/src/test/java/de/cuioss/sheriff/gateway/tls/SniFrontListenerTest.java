@@ -141,6 +141,75 @@ class SniFrontListenerTest {
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
+        /**
+         * The relay's INFO audit record names the key the passthrough route matched, never the raw
+         * ClientHello value: a server name padded with whitespace — CR and LF included — still selects
+         * the configured host, and the record carries that host without the padding, so a client cannot
+         * write a line break of its own into the audit log.
+         */
+        @ParameterizedTest(name = "padded server name #{index}")
+        @ValueSource(strings = {" " + MAPPED_SNI + "\r\n", "\r\n" + MAPPED_SNI + "\r\n", "\t" + MAPPED_SNI + " \n"})
+        @DisplayName("audits a padded server name under the configured host it matched, without the padding")
+        void auditsAPaddedServerNameUnderTheMatchedKey(String paddedServerName) throws Exception {
+            byte[] hello = ClientHelloFixture.withSni(paddedServerName);
+            Backend passthrough = startBackend(hello.length);
+            Backend terminated = startBackend(hello.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), terminated.target());
+
+            sendToFront(front, hello);
+
+            Buffer received = Awaits.connect(passthrough.firstBytes(),
+                    "the passthrough backend to receive the relayed bytes");
+            List<LogRecord> audited = awaitRelayAudit();
+            assertAll("the padded server name is routed and audited under the matched key",
+                    () -> assertEquals(Buffer.buffer(hello), received,
+                            "the padded server name still selects the passthrough backend"),
+                    () -> assertEquals(1, audited.size(), "one passthrough relay was audited"),
+                    () -> assertEquals(relayAudit(MAPPED_SNI, passthrough.target()), audited.getFirst().getMessage(),
+                            "the audit record carries the configured host, not the client's padded value"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /** Matched control: an exact configured host is audited exactly as it was sent. */
+        @Test
+        @DisplayName("audits an exact configured host unchanged")
+        void auditsAnExactServerNameUnchanged() throws Exception {
+            byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
+            Backend passthrough = startBackend(hello.length);
+            Backend terminated = startBackend(hello.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), terminated.target());
+
+            sendToFront(front, hello);
+
+            Awaits.connect(passthrough.firstBytes(), "the passthrough backend to receive the relayed bytes");
+            List<LogRecord> audited = awaitRelayAudit();
+            assertAll("the exact host is audited unchanged",
+                    () -> assertEquals(1, audited.size(), "one passthrough relay was audited"),
+                    () -> assertEquals(relayAudit(MAPPED_SNI, passthrough.target()), audited.getFirst().getMessage(),
+                            "the audit record carries the host exactly as configured and sent"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * Waits until the relay has written its INFO audit record — the relay logs it once the session
+         * started, which a backend that already read the ClientHello can observe before the line is
+         * written — and returns every such record.
+         */
+        private static List<LogRecord> awaitRelayAudit() throws Exception {
+            Awaits.until(() -> !relayAuditLines().isEmpty(), "the relay to write its INFO audit record",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            return relayAuditLines();
+        }
+
+        private static List<LogRecord> relayAuditLines() {
+            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.INFO,
+                    "Passthrough relay established for SNI");
+        }
+
+        private static String relayAudit(String sniKey, RelayTarget target) {
+            return ApiSheriffLogMessages.INFO.PASSTHROUGH_RELAY_ESTABLISHED.format(sniKey, target.toString());
+        }
+
         @Test
         @DisplayName("routes a non-matching SNI to the terminated-strict path")
         void nonMatchingSniRelaysToTerminatedBackend() throws Exception {
