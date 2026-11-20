@@ -454,7 +454,9 @@ public final class BffRuntime {
      * @param origin         the request's first {@code Origin} header value, may be absent — part of
      *                       the provenance the logout leg demands before it ends a session
      * @param fetchMetadata  the request's Fetch Metadata headers ({@code Sec-Fetch-Site},
-     *                       {@code Sec-Fetch-Mode}, {@code Sec-Fetch-Dest}, {@code Sec-Purpose}) — the
+     *                       {@code Sec-Fetch-Mode}, {@code Sec-Fetch-Dest}) and its speculative-load
+     *                       marker ({@code Sec-Purpose}, or, when that header is absent, a {@code prefetch}
+     *                       among all values of the legacy {@code Purpose} or {@code X-Moz} header) — the
      *                       rest of that provenance; {@code null} normalizes to
      *                       {@link CsrfDefence.FetchMetadata#ABSENT}
      * @param claimsParam    the raw {@code claims} selector for the user-info fold, may be absent

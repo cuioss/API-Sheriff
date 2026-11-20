@@ -75,6 +75,10 @@ import org.junit.jupiter.api.Test;
  * at all when the key is absent.
  * Deleting the key turns this class red; {@code MainListenerConnectionCapTest} proves the key acts on
  * the listener.
+ * <p>
+ * For the management interface it guards the header-block key the shipped file sets and the idle-reap
+ * key it leaves unset, {@code quarkus.management.idle-timeout}, so that listener keeps the Quarkus
+ * default idle reap.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -95,6 +99,8 @@ class ShippedApplicationPropertiesTest {
     private static final String MAX_CONNECTIONS = "quarkus.http.limits.max-connections";
 
     private static final String MANAGEMENT_MAX_HEADER_SIZE = "quarkus.management.limits.max-header-size";
+
+    private static final String MANAGEMENT_IDLE_TIMEOUT = "quarkus.management.idle-timeout";
 
     /** The shipped connection cap as a multiple of the default admission cap (the documented headroom). */
     private static final int CONNECTION_CAP_HEADROOM_FACTOR = 2;
@@ -203,6 +209,31 @@ class ShippedApplicationPropertiesTest {
         assertEquals("16K", shipped.getProperty(MANAGEMENT_MAX_HEADER_SIZE),
                 () -> MANAGEMENT_MAX_HEADER_SIZE + " must stay declared at 16K in the shipped application.properties, "
                         + "or the management listener keeps the 20 KiB Quarkus default above the main listener's bound");
+    }
+
+    /**
+     * The management interface's idle reap. {@code quarkus.management.idle-timeout} is not part of the
+     * {@code quarkus.management.limits.*} family the shipped file bounds the management listener through,
+     * and the shipped file leaves it unset, so the listener runs with the Quarkus default unless the
+     * deployment sets the key. The control reads the header-block key the file does set from the same
+     * loaded properties, so an empty or unread file cannot pass the absence assertion.
+     */
+    @Test
+    @DisplayName("The packaged file leaves the management interface's idle reap at the Quarkus default")
+    void packagedFileSetsNoManagementIdleTimeout() throws Exception {
+        Properties shipped = new Properties();
+        try (Reader reader = Files.newBufferedReader(PACKAGED_APPLICATION_PROPERTIES, StandardCharsets.UTF_8)) {
+            shipped.load(reader);
+        }
+
+        assertAll("the management interface's idle reap",
+                () -> assertNotNull(shipped.getProperty(MANAGEMENT_MAX_HEADER_SIZE),
+                        () -> "control: the loaded file must carry " + MANAGEMENT_MAX_HEADER_SIZE
+                                + ", or the absence below is read from a file that was not loaded"),
+                () -> assertNull(shipped.getProperty(MANAGEMENT_IDLE_TIMEOUT),
+                        () -> MANAGEMENT_IDLE_TIMEOUT + " is declared in the shipped application.properties, so"
+                                + " the management interface no longer reaps idle connections at the Quarkus"
+                                + " default the EdgeHardeningOptions documentation states"));
     }
 
     @Test

@@ -356,12 +356,13 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 
 * WARN `ApiSheriff-141` names the source, the host, the threshold, the window and the action. The
   source is an IPv4 address, an IPv6 `/64` prefix, an IPv6 `/48` prefix, a trusted forwarder's
-  unresolved source `unresolved-via-<proxy address>`, or `unknown`. A `/48`
+  unresolved source -- `unresolved-via-` followed by the forwarder's canonical address -- or
+  `unknown`. A `/48`
   appears when the gateway began tracking the source while it already tracked 75% of its maximum of
   65,536 sources: from that mark on a new IPv6 source is counted by its `/48`, so one site cannot fill
   the gateway's memory by rotating through its `/64` prefixes. For a request through a trusted
   forwarder the source is the client address the forwarder reported; when its `Forwarded` or
-  `X-Forwarded-For` carries a value that names no client -- the two disagree, one is malformed, or the client is named
+  `X-Forwarded-For` carries a non-blank value that names no client -- the two disagree, one is malformed, or the client is named
   by something other than an address --
   it is the forwarder's unresolved source, and only a request carrying neither header, or only blank
   ones, is `unknown`.
@@ -432,9 +433,10 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
   and `block` answers `429` to all of them. Make sure that proxy sends each client's address in
   `Forwarded` or `X-Forwarded-For`. A request it forwards with neither header, or with only blank
   ones, is keyed `unknown`, which `block` and `delay` never act on. A request whose header carries a
-  value that names no client that is an address literal -- malformed, the two headers disagreeing, or
-  an RFC 7239 obfuscated identifier such as `for=_hidden` -- is keyed on the proxy's own unresolved
-  source, `unresolved-via-<proxy address>`, which `block` and `delay` do act on.
+  non-blank value that names no client that is an address literal -- malformed, the two headers
+  disagreeing, or an RFC 7239 obfuscated identifier such as `for=_hidden` -- is keyed on the proxy's
+  own unresolved source, `unresolved-via-` followed by the proxy's canonical address, which `block`
+  and `delay` do act on.
 . If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
   proxy -- they are one source whatever the gateway is told. Keep `observe`, or raise `threshold` well
   above what those clients cause together.

@@ -33,8 +33,10 @@ import java.util.function.Supplier;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -61,15 +63,24 @@ import org.junit.jupiter.api.Test;
  * sends goes out on the request's own connection and completes once the client acknowledges it, and the
  * PINGs a connection's client holds unacknowledged are bounded: past the bound a PING is refused at once,
  * until an acknowledgement frees a place. A PING is sent only on the connection's event loop, so every
- * case that pings does so there, and a PING asked for anywhere else is refused at once.
+ * case that pings does so there, and a PING asked for anywhere else is refused at once. An
+ * {@link EarlyResponseEnd} whose PING is refused at the bound sends a new one once a place is free.
  * <p>
  * This is the test that pins the one Vert.x internal the class reaches through: should a Vert.x upgrade
  * change it, the attach fails here rather than silently in production.
  */
 @EnableGeneratorController
+@EnableTestLogger(debug = EarlyResponseEnd.class)
 @DisplayName("InboundStreamWindow — the transport's view of an inbound HTTP/2 stream")
 @Tag("isolated-fork")
 class InboundStreamWindowTest {
+
+    /** The failure {@link InboundStreamWindow#ping()} answers with once the per-connection bound is full. */
+    private static final String PINGS_OUTSTANDING = "Too many unacknowledged PINGs on the connection";
+    /** How {@link EarlyResponseEnd} logs the end of a wait, followed by its outcome. */
+    private static final String END_LOGGED = "Ending the early response of an open HTTP/2 stream: ";
+    /** The end of a wait the acknowledgement of its PING ended as quiet. */
+    private static final String QUIET_END = END_LOGGED + EarlyResponseEnd.Outcome.QUIET;
 
     private Vertx vertx;
     private HttpServer server;
@@ -331,6 +342,49 @@ class InboundStreamWindowTest {
                         "the client received the PINGs within the bound and not the refused one"));
     }
 
+    /**
+     * The refused-then-retried path of {@link EarlyResponseEnd}, end to end on a connection whose client
+     * holds every PING it receives. With the per-connection bound already full, the PING the wait asks
+     * for once the stream's window has stood still is refused: it is sent nowhere and ends nothing. Once
+     * an acknowledgement frees a place, the wait sends a new PING after the window has stood still for the
+     * quiet period again, and the acknowledgement of that PING on the still unmoved window ends the wait
+     * as quiet — not at the cap. Without the restart a refused PING would leave the wait to the cap.
+     */
+    @Test
+    @DisplayName("HTTP/2 — an early-response end whose PING is refused at the bound sends a new one once a place is free, and ends quiet on its acknowledgement")
+    void refusedPingOfAnEarlyResponseEndIsRetriedOnceAPlaceIsFree() throws Exception {
+        PingHoldingClient holding = PingHoldingClient.open(vertx, server.actualPort());
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the request");
+        InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
+        onTheLoop(window, () -> pings(window, InboundStreamWindow.MAX_OUTSTANDING_PINGS));
+        Awaits.until(() -> holding.pingsReceived() == InboundStreamWindow.MAX_OUTSTANDING_PINGS,
+                "every PING within the bound to reach the client", Awaits.CONNECT_CEILING_SECONDS);
+        AtomicInteger endings = new AtomicInteger();
+        AtomicInteger resets = new AtomicInteger();
+
+        Future<Void> ended = EarlyResponseEnd.endWhenQuiet(request, () -> {
+            endings.incrementAndGet();
+            return request.response().end();
+        }, resets::incrementAndGet);
+        Awaits.until(InboundStreamWindowTest::refusedPingLogged, "the PING of the wait to be refused at the bound",
+                Awaits.CONNECT_CEILING_SECONDS);
+        int receivedAtRefusal = holding.pingsReceived();
+        Awaits.connect(holding.acknowledgeOne(), "the client to acknowledge one held PING");
+        Awaits.until(() -> holding.pingsReceived() == InboundStreamWindow.MAX_OUTSTANDING_PINGS + 1,
+                "the wait to send a new PING once a place is free", Awaits.CONNECT_CEILING_SECONDS);
+        Awaits.connect(holding.acknowledgeAll(), "the client to acknowledge every PING it holds");
+        Awaits.connect(ended, "the response to be ended");
+        List<String> endsLogged = endsLogged();
+
+        assertAll("an early-response end whose PING was refused at the bound",
+                () -> assertEquals(InboundStreamWindow.MAX_OUTSTANDING_PINGS, receivedAtRefusal,
+                        "the refused PING was sent nowhere"),
+                () -> assertEquals(List.of(QUIET_END), endsLogged,
+                        "the acknowledgement of the new PING ends the wait as quiet, and only once"),
+                () -> assertEquals(1, endings.get(), "the response is ended once"),
+                () -> assertEquals(1, resets.get(), "the stream, still open to the client, is reset once after the end"));
+    }
+
     @Test
     @DisplayName("HTTP/1.1 — no stream to attach to")
     void doesNotAttachToAnHttp1Request() throws Exception {
@@ -385,6 +439,23 @@ class InboundStreamWindowTest {
     private static <T> T onTheLoop(InboundStreamWindow window, Supplier<T> action) throws Exception {
         return Awaits.connect(CompletableFuture.supplyAsync(action, window::execute),
                 "the turn on the stream's event loop to run");
+    }
+
+    /** @return whether {@link EarlyResponseEnd} has logged a PING of its wait refused at the per-connection bound */
+    private static boolean refusedPingLogged() {
+        return SheriffDebugCapture.capturedRecords().stream()
+                .anyMatch(captured -> EarlyResponseEnd.class.getName().equals(captured.getLoggerName())
+                        && captured.getThrown() != null
+                        && PINGS_OUTSTANDING.equals(captured.getThrown().getMessage()));
+    }
+
+    /** @return every end of a wait {@link EarlyResponseEnd} has logged, in order */
+    private static List<String> endsLogged() {
+        return SheriffDebugCapture.capturedRecords().stream()
+                .filter(captured -> EarlyResponseEnd.class.getName().equals(captured.getLoggerName()))
+                .map(SheriffDebugCapture::rendered)
+                .filter(rendered -> rendered.startsWith(END_LOGGED))
+                .toList();
     }
 
     /** Sends {@code count} PINGs; to be run on the stream's event loop. */
@@ -453,6 +524,15 @@ class InboundStreamWindowTest {
         Future<Void> acknowledgeOne() {
             byte[] payload = unacknowledged.remove();
             return socket.write(frame(PING, FLAG_ACK, 0, payload));
+        }
+
+        /** Acknowledges every PING the client holds, oldest first, in one write. */
+        Future<Void> acknowledgeAll() {
+            Buffer acknowledgements = Buffer.buffer();
+            for (byte[] payload = unacknowledged.poll(); payload != null; payload = unacknowledged.poll()) {
+                acknowledgements.appendBuffer(frame(PING, FLAG_ACK, 0, payload));
+            }
+            return socket.write(acknowledgements);
         }
 
         private void received(Buffer chunk) {

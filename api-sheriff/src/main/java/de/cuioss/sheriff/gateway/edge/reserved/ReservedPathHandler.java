@@ -64,6 +64,11 @@ public final class ReservedPathHandler {
     private static final String SEC_FETCH_MODE_HEADER = "Sec-Fetch-Mode";
     private static final String SEC_FETCH_DEST_HEADER = "Sec-Fetch-Dest";
     private static final String SEC_PURPOSE_HEADER = "Sec-Purpose";
+    /** The legacy prefetch marker of a browser that predates {@code Sec-Purpose}. */
+    private static final String PURPOSE_HEADER = "Purpose";
+    /** The legacy prefetch marker some Firefox versions send instead of {@code Purpose}. */
+    private static final String X_MOZ_HEADER = "X-Moz";
+    private static final String PREFETCH = "prefetch";
     private static final String LOCATION_HEADER = "Location";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final int NOT_FOUND = 404;
@@ -174,7 +179,7 @@ public final class ReservedPathHandler {
                 request.firstHeader(SEC_FETCH_SITE_HEADER).orElse(null),
                 request.firstHeader(SEC_FETCH_MODE_HEADER).orElse(null),
                 request.firstHeader(SEC_FETCH_DEST_HEADER).orElse(null),
-                request.firstHeader(SEC_PURPOSE_HEADER).orElse(null));
+                speculativeMarker(request));
         BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
                 ctx.request().query(), cookieHeader, request.firstHeader(ORIGIN_HEADER).orElse(null),
                 fetchMetadata, firstQueryParam(ctx, CLAIMS_PARAM),
@@ -182,6 +187,27 @@ public final class ReservedPathHandler {
                 bffRuntime.pendingQuotaKey(request));
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
         renderReserved(ctx, request, kind, response);
+    }
+
+    /**
+     * The speculative-load marker the logout proof reads as {@link CsrfDefence.FetchMetadata#purpose()}: the
+     * first {@code Sec-Purpose} value, or — when there is none — a {@code prefetch} value, compared
+     * case-insensitively, among all values of the legacy {@code Purpose} header, then of {@code X-Moz}, which a
+     * browser that predates {@code Sec-Purpose} sends on a prefetch instead. Every value of a repeated legacy
+     * header is read, so a {@code prefetch} after another value still marks the request.
+     *
+     * @param request the pipeline request whose headers are read
+     * @return the marker, {@code null} when the request carries none
+     */
+    private static @Nullable String speculativeMarker(PipelineRequest request) {
+        return request.firstHeader(SEC_PURPOSE_HEADER)
+                .or(() -> prefetchValue(request, PURPOSE_HEADER))
+                .or(() -> prefetchValue(request, X_MOZ_HEADER))
+                .orElse(null);
+    }
+
+    private static Optional<String> prefetchValue(PipelineRequest request, String header) {
+        return request.headerValues(header).stream().filter(PREFETCH::equalsIgnoreCase).findFirst();
     }
 
     /**

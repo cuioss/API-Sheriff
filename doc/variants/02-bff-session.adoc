@@ -161,10 +161,12 @@ attached. Same-origin deployments need neither.
 
 * *Only on a trusted top-level navigation.* The logout path is answered whatever the method, so it
   asks every request, before the session is resolved, for the origin proof of <<_csrf_defence>> --
-  with the gateway's own origin trusted as well, so `trusted_origins` need not list it -- and, where
-  the browser sends Fetch Metadata, for a top-level document navigation: no `Sec-Purpose`,
-  `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`. `Sec-Fetch-Site: none` is not a proof: a
-  link opened from another application carries it as well as a typed URL. Any other request -- a
+  with the gateway's own origin trusted as well, so `trusted_origins` need not list it -- and for a
+  top-level document navigation: no prefetch marker (no `Sec-Purpose` of any value and, when it is
+  absent, no `Purpose` or `X-Moz` value of `prefetch` in any case) and, where the browser sends them,
+  `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`. With no `Origin`,
+  `Sec-Fetch-Site: none` is not a proof: a link opened from another application carries it as well
+  as a typed URL. Any other request -- a
   link or an image on another site, a same-origin image, script, `fetch()` or frame, a prefetch or
   prerender -- gets a `200` confirmation page (`no-store`, framing forbidden) whose button `POST`s
   back as a same-origin navigation; nothing else happens. A logout link on another trusted origin

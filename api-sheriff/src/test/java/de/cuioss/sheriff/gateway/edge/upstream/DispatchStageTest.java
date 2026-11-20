@@ -4296,6 +4296,42 @@ class DispatchStageTest {
                     () -> assertEquals(1, upstreamStarted.get()));
         }
 
+        /**
+         * The body stream is built only once its body is opened in the client's body traffic, and building it
+         * subscribes the inbound stream, which an inbound request whose body has already been read refuses. The
+         * refused case fails the stream's constructor that way; the matched control is a dispatch whose body
+         * stream is built and whose body ends, through the same route and the same traffic.
+         */
+        @Test
+        @DisplayName("a body stream the dispatch fails to build leaves no body open in the client's body traffic")
+        void bodyStreamRefusedAtConstructionLeavesNoBodyOpen() throws Exception {
+            int openBefore = bodyTraffic.openBodies();
+
+            Future<HttpClientResponse> refused = dispatch(ACCEPTING_PATH, new AlreadyReadStream());
+            Throwable failure = assertThrows(ExecutionException.class,
+                    () -> refused.get(Awaits.CONNECT_CEILING_SECONDS, TimeUnit.SECONDS),
+                    "a body stream that cannot be built ends the dispatch").getCause();
+            int openAfterTheRefusal = bodyTraffic.openBodies();
+            int startedBeforeTheControl = upstreamStarted.get();
+
+            TestReadStream healthy = new TestReadStream();
+            Future<HttpClientResponse> answered = dispatch(ACCEPTING_PATH, healthy);
+            sendFirstChunk(healthy, startedBeforeTheControl + 1);
+            int openWhileTheControlArrives = bodyTraffic.openBodies();
+            healthy.end();
+            HttpClientResponse response = Awaits.connect(answered, "the control dispatch to be answered");
+
+            assertAll("a body stream refused at construction, then a control body that ends",
+                    () -> assertNotNull(failure, "the refused dispatch failed"),
+                    () -> assertEquals(openBefore, openAfterTheRefusal,
+                            "the body whose stream could not be built left the client's body traffic"),
+                    () -> assertEquals(openBefore + 1, openWhileTheControlArrives,
+                            "control: a body still arriving is open in the traffic"),
+                    () -> assertEquals(200, response.statusCode(), "control: the upstream answered the body"),
+                    () -> assertEquals(openBefore, bodyTraffic.openBodies(),
+                            "control: the body that ended left the traffic"));
+        }
+
         /** Runs one dispatch on a virtual thread, as the edge does, so the test thread can drive its body. */
         private Future<HttpClientResponse> dispatch(String path, ReadStream<Buffer> inbound) {
             return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.POST, path, Map.of(), inbound,
@@ -4950,6 +4986,140 @@ class DispatchStageTest {
     }
 
     /**
+     * The order of a chunk's forward and the request-body deadline's reset of the upstream request. A chunk
+     * arrives on the inbound connection's event loop while the deadline fires on the upstream request's own
+     * context, so the deadline can reset the upstream request after a chunk has passed the stream's abort check
+     * and before the chunk reaches that request. Each case drives that order directly: the forwarded-bytes record
+     * runs between the check and the forward, so a case places the deadline there. The forwarding pipe is stood
+     * in for by an upstream request that takes chunks until it is reset and then refuses each one, as Vert.x
+     * refuses a write to a request that has ended.
+     */
+    @Nested
+    @DisplayName("a chunk against the request-body deadline's reset of the upstream request")
+    class ChunkAgainstTheDeadlineReset {
+
+        /** The request-body idle timeout: far past the deadline, so only the deadline ends the body. */
+        private static final long IDLE_TIMEOUT_MILLIS = 10_000L;
+        /** The whole-body deadline, counted from the moment the stream is built. */
+        private static final long DEADLINE_MILLIS = 1_000L;
+
+        private final TestReadStream source = new TestReadStream();
+        private final ManualTime time = new ManualTime();
+        private final UpstreamRequestStandIn upstream = new UpstreamRequestStandIn();
+        private final AtomicLong forwardedBytes = new AtomicLong();
+        private final AtomicInteger settlements = new AtomicInteger();
+        private final AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
+        /** Runs between the stream's abort check and its forward of the chunk being delivered. */
+        private Runnable inTheForwardWindow = () -> {
+            // Nothing runs in the window unless a case places something there.
+        };
+        private DispatchStage.ByteCappedBodyStream capped;
+
+        @BeforeEach
+        void setUp() {
+            capped = new DispatchStage.ByteCappedBodyStream(source, BODY_CAP, DispatchStage.NO_DECLARED_LENGTH,
+                    upstream::reset, forwarded -> {
+                        forwardedBytes.addAndGet(forwarded);
+                        inTheForwardWindow.run();
+                    }, new DispatchStage.IdleClock(IDLE_TIMEOUT_MILLIS, time, time::nanoTime),
+                    OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DEADLINE_MILLIS)));
+            capped.onSettled(settlements::incrementAndGet);
+            capped.handler(upstream::write);
+            capped.exceptionHandler(failure::set);
+            capped.startIdleClock();
+        }
+
+        @Test
+        @DisplayName("a chunk the deadline's reset overtakes on its way to the upstream request is dropped, without an exception")
+        void chunkOvertakenByTheDeadlineResetIsDropped() {
+            Buffer chunk = Buffer.buffer(Generators.letterStrings(2, 6).next());
+            inTheForwardWindow = () -> time.advanceMillis(DEADLINE_MILLIS);
+
+            assertDoesNotThrow(() -> source.emit(chunk),
+                    "a chunk that reaches an upstream request the deadline has already reset is dropped, not thrown"
+                            + " back into the inbound stream");
+
+            GatewayException reason = capped.clientAbort();
+            assertAll("a chunk whose forward comes after the deadline's reset of the upstream request",
+                    () -> assertEquals(1, upstream.resets(), "the deadline reset the upstream request, once"),
+                    () -> assertEquals(List.of(), upstream.written(),
+                            "the chunk never reached the upstream request the deadline had reset"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, reason,
+                            "the abort reason stays the deadline's"),
+                    () -> assertSame(reason, failure.get(), "the deadline's refusal is the failure propagated"),
+                    () -> assertEquals(chunk.length(), forwardedBytes.get(),
+                            "the byte accounting is unchanged: the chunk was recorded once, as it cleared every bound"),
+                    () -> assertEquals(1, settlements.get(), "the body settled once, at the deadline"));
+        }
+
+        @Test
+        @DisplayName("control — a chunk delivered before the deadline's reset is forwarded and recorded once")
+        void chunkBeforeTheResetIsForwardedAndRecordedOnce() {
+            Buffer chunk = Buffer.buffer(Generators.letterStrings(2, 6).next());
+
+            source.emit(chunk);
+            time.advanceMillis(DEADLINE_MILLIS);
+
+            assertAll("a chunk forwarded before the deadline reset the upstream request",
+                    () -> assertEquals(List.of(chunk), upstream.written(),
+                            "the chunk reached the upstream request before the reset"),
+                    () -> assertEquals(chunk.length(), forwardedBytes.get(), "the chunk was recorded once"),
+                    () -> assertEquals(1, upstream.resets(), "the deadline then reset the upstream request, once"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, capped.clientAbort(),
+                            "the deadline ended the body"),
+                    () -> assertEquals(1, settlements.get(), "the body settled once, at the deadline"));
+        }
+
+        @Test
+        @DisplayName("control — a forward refused while no abort was claimed still fails the delivery")
+        void forwardRefusedWithoutAnAbortStillFails() {
+            Buffer chunk = Buffer.buffer(Generators.letterStrings(2, 6).next());
+            // The upstream request has ended, but not through an abort of this stream.
+            upstream.reset();
+
+            IllegalStateException refused = assertThrows(IllegalStateException.class, () -> source.emit(chunk),
+                    "only a forward that an abort of this stream overtook is dropped");
+
+            assertAll("a forward refused with no abort claimed",
+                    () -> assertEquals(UpstreamRequestStandIn.ALREADY_COMPLETE, refused.getMessage()),
+                    () -> assertNull(capped.clientAbort(), "no abort was claimed"),
+                    () -> assertEquals(0, settlements.get(), "the body has not settled"));
+        }
+
+        /**
+         * Stands in for the upstream request behind the forwarding pipe: it takes chunks until it is reset, and
+         * then refuses each one with the {@link IllegalStateException} Vert.x throws for a write to a request
+         * that has ended.
+         */
+        private static final class UpstreamRequestStandIn {
+
+            static final String ALREADY_COMPLETE = "Request already complete";
+
+            private final List<Buffer> written = new CopyOnWriteArrayList<>();
+            private final AtomicInteger resets = new AtomicInteger();
+
+            void write(Buffer chunk) {
+                if (resets.get() > 0) {
+                    throw new IllegalStateException(ALREADY_COMPLETE);
+                }
+                written.add(chunk);
+            }
+
+            void reset() {
+                resets.incrementAndGet();
+            }
+
+            List<Buffer> written() {
+                return List.copyOf(written);
+            }
+
+            int resets() {
+                return resets.get();
+            }
+        }
+    }
+
+    /**
      * The whole-body deadline of an HTTP dispatch is counted from the start of the attempt, not from the moment
      * the attempt hands its body over, so the wait for the upstream connection is charged to it. That is a
      * decision, not an accident: the guard's timeout is counted from the start of the attempt as well, and a
@@ -5286,6 +5456,48 @@ class DispatchStageTest {
         @Override
         public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
             this.endHandler = endHandler;
+            return this;
+        }
+    }
+
+    /**
+     * An inbound request body that has already been read: it refuses a data handler with the
+     * {@link IllegalStateException} Vert.x throws for such a request, and accepts every other call.
+     */
+    private static final class AlreadyReadStream implements ReadStream<Buffer> {
+
+        static final String ALREADY_READ = "Request has already been read";
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
+            if (handler != null) {
+                throw new IllegalStateException(ALREADY_READ);
+            }
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> exceptionHandler) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
             return this;
         }
     }

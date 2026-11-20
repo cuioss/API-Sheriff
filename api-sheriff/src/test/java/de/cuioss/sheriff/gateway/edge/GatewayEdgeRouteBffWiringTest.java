@@ -696,6 +696,45 @@ public class GatewayEdgeRouteBffWiringTest {
                     () -> assertTrue(sessionLives(), "the session survives"));
         }
 
+        /**
+         * A browser that predates {@code Sec-Purpose} marks a prefetch with a legacy header instead:
+         * {@code Purpose: prefetch} or {@code X-Moz: prefetch}. Each case is the top-level document navigation
+         * from the trusted {@code Origin} that the control below answers by ending the session, plus that one
+         * legacy header and no {@code Sec-Purpose}, so the refusal rests on the legacy marker reaching the proof.
+         */
+        @ParameterizedTest(name = "{0}: {1}")
+        @CsvSource({"Purpose,prefetch", "X-Moz,prefetch"})
+        @DisplayName("a trusted top-level document navigation marked as a prefetch by a legacy header alone leaves the session and is answered the confirmation page")
+        void shouldKeepTheSessionOnALegacyPrefetchMarker(String header, String value) throws Exception {
+            EdgeAnswer answer = logout(ORIGIN, "navigate", "document", null, Map.of(header, List.of(value)));
+
+            assertAll(header + ": " + value + " marks a speculative load, which is no logout",
+                    () -> assertEquals(200, answer.status(), "the confirmation page is answered"),
+                    () -> assertTrue(answer.body().contains("method=\"POST\""), "the body is the confirmation form"),
+                    () -> assertEquals(List.of(), answer.setCookies(), "no cookie is set or cleared"),
+                    () -> assertTrue(sessionLives(), "the session survives"));
+        }
+
+        /**
+         * A legacy marker header sent twice marks a prefetch when any of its values is {@code prefetch}, not
+         * only its first: each case is the top-level document navigation of the control below with the
+         * legacy header carrying a non-prefetch value first and {@code prefetch} second, on two header lines,
+         * and no {@code Sec-Purpose}. Were only the first value read, the request would end the session.
+         */
+        @ParameterizedTest(name = "{0}: {1}, {2}")
+        @CsvSource({"Purpose,other,prefetch", "X-Moz,other,PREFETCH"})
+        @DisplayName("a trusted top-level document navigation whose repeated legacy header carries prefetch after another value leaves the session")
+        void shouldKeepTheSessionOnALaterRepeatedLegacyPrefetchValue(String header, String first, String second)
+                throws Exception {
+            EdgeAnswer answer = logout(ORIGIN, "navigate", "document", null, Map.of(header, List.of(first, second)));
+
+            assertAll(header + ": " + first + " then " + second + " marks a speculative load, which is no logout",
+                    () -> assertEquals(200, answer.status(), "the confirmation page is answered"),
+                    () -> assertTrue(answer.body().contains("method=\"POST\""), "the body is the confirmation form"),
+                    () -> assertEquals(List.of(), answer.setCookies(), "no cookie is set or cleared"),
+                    () -> assertTrue(sessionLives(), "the session survives"));
+        }
+
         @ParameterizedTest(name = "Origin {0}")
         @CsvSource(nullValues = "-", value = {ORIGIN, "-"})
         @DisplayName("control: a top-level document navigation from the trusted origin ends the session and redirects to the end-session endpoint")
@@ -721,6 +760,15 @@ public class GatewayEdgeRouteBffWiringTest {
          */
         private EdgeAnswer logout(@Nullable String origin, @Nullable String mode, @Nullable String dest,
                 @Nullable String purpose) throws Exception {
+            return logout(origin, mode, dest, purpose, Map.of());
+        }
+
+        /**
+         * As {@link #logout(String, String, String, String)}, with {@code further} headers added — each value
+         * of a {@code further} header is sent on a header line of its own.
+         */
+        private EdgeAnswer logout(@Nullable String origin, @Nullable String mode, @Nullable String dest,
+                @Nullable String purpose, Map<String, List<String>> further) throws Exception {
             Map<String, String> headers = new HashMap<>();
             headers.put("Cookie", SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle);
             headers.put("Sec-Fetch-Site", SAME_ORIGIN);
@@ -734,6 +782,7 @@ public class GatewayEdgeRouteBffWiringTest {
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGOUT_PATH);
             return Awaits.connect(client.request(options).compose(request -> {
                         headers.forEach(request::putHeader);
+                        further.forEach((name, values) -> values.forEach(value -> request.headers().add(name, value)));
                         return request.send();
                     }).compose(response -> response.body().map(body -> new EdgeAnswer(response.statusCode(),
                             response.getHeader("Location"), response.headers().getAll("Set-Cookie"), body.toString()))),

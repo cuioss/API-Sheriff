@@ -44,12 +44,19 @@ import org.jspecify.annotations.Nullable;
  * same-origin one carrying markup an attacker placed in content the gateway serves. Before any session
  * is resolved, {@link #logout(String, String, CsrfDefence.FetchMetadata, Instant)} asks the logout
  * leg's {@link CsrfDefence} whether the request is a top-level document navigation from a trusted
- * origin ({@link CsrfDefence#provesTrustedDocumentNavigation(String, CsrfDefence.FetchMetadata)}: no
- * {@code Sec-Purpose}, {@code Sec-Fetch-Mode: navigate} and {@code Sec-Fetch-Dest: document} when
- * present, and a trusted {@code Origin} or, with {@code Origin} absent,
- * {@code Sec-Fetch-Site: same-origin}). A same-origin image, script, {@code fetch()}, frame, prefetch or
- * prerender, a typed URL or a link opened from another application ({@code Sec-Fetch-Site: none}), and
- * a request from a browser without Fetch Metadata and without {@code Origin} therefore lack the proof.
+ * origin ({@link CsrfDefence#provesTrustedDocumentNavigation(String, CsrfDefence.FetchMetadata)}). The
+ * proof is refused to a request that carries a speculative-load marker — a {@code Sec-Purpose} header of
+ * any value or, when that header is absent, a {@code Purpose} or {@code X-Moz} header any of whose values
+ * is {@code prefetch} in any case, which the edge reads into {@link CsrfDefence.FetchMetadata#purpose()} —
+ * to one whose {@code Sec-Fetch-Mode} is present and not {@code navigate} or whose
+ * {@code Sec-Fetch-Dest} is present and not {@code document}, to one whose {@code Origin} is present and
+ * untrusted, and, with {@code Origin} absent, to one whose {@code Sec-Fetch-Site} is anything but
+ * {@code same-origin} or is absent. It is given to a request without a marker whose mode and destination
+ * are absent or {@code navigate} and {@code document}, and that carries a trusted {@code Origin} or, with
+ * {@code Origin} absent, {@code Sec-Fetch-Site: same-origin}. A same-origin image, script,
+ * {@code fetch()}, frame, prefetch or prerender, a typed URL or a link opened from another application
+ * ({@code Sec-Fetch-Site: none} without {@code Origin}), and a request from a browser without Fetch
+ * Metadata and without {@code Origin} therefore lack the proof.
  * Without it the answer is a {@code 200} confirmation page: a fixed HTML body that reflects nothing of the
  * request, with one form whose button {@code POST}s to the configured logout path. The browser marks
  * that {@code POST} with the gateway's own {@code Origin}, which the logout leg's defence trusts

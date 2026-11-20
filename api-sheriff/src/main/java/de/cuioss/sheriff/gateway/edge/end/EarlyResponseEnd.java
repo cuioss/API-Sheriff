@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge.end;
 
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 
@@ -276,7 +277,7 @@ final class EarlyResponseEnd {
         private final Quiescence quiescence = new Quiescence(System.nanoTime());
         private boolean ended;
         /** Hands PING acknowledgements to this wait; released when the wait ends. */
-        private final AcknowledgementRelay relay = new AcknowledgementRelay(this);
+        private final AcknowledgementRelay relay = new AcknowledgementRelay(this::acknowledged);
 
         private Wait(InboundStreamWindow window, Supplier<Future<Void>> ending, Runnable reset,
                 Promise<Void> written) {
@@ -375,24 +376,25 @@ final class EarlyResponseEnd {
      * holds nothing, so no response, request or ending call outlives its wait through it. Confined to
      * the stream's event loop.
      */
-    private static final class AcknowledgementRelay {
+    static final class AcknowledgementRelay {
 
-        private @Nullable Wait wait;
+        private @Nullable Consumer<AsyncResult<Void>> wait;
 
-        private AcknowledgementRelay(Wait wait) {
+        /** @param wait receives each acknowledgement delivered before {@link #release()} */
+        AcknowledgementRelay(Consumer<AsyncResult<Void>> wait) {
             this.wait = wait;
         }
 
         /** Hands {@code acknowledgement} to the wait, unless it has ended. */
-        private void deliver(AsyncResult<Void> acknowledgement) {
-            Wait running = wait;
+        void deliver(AsyncResult<Void> acknowledgement) {
+            Consumer<AsyncResult<Void>> running = wait;
             if (running != null) {
-                running.acknowledged(acknowledgement);
+                running.accept(acknowledgement);
             }
         }
 
         /** Lets go of the wait once it has ended. */
-        private void release() {
+        void release() {
             wait = null;
         }
     }

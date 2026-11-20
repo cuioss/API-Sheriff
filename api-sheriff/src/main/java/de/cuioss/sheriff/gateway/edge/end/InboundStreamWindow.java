@@ -70,13 +70,15 @@ import io.vertx.core.net.impl.ConnectionBase;
  * <strong>Unacknowledged PINGs are bounded per connection.</strong> Vert.x keeps the future of every
  * PING it has written until the client acknowledges it, and does not release it when the connection
  * stays open without an acknowledgement. A client that never acknowledges would otherwise make every
- * early answer on a long-lived connection leave one more pending future behind. At most
- * {@value #MAX_OUTSTANDING_PINGS} PINGs sent through this class are unacknowledged on one connection at a
- * time — the most concurrent streams the edge admits on one connection. Each early answer waits on at
- * most one PING at a time, so a client that acknowledges its PINGs never reaches the bound. Past it,
- * {@link #ping()} sends nothing and fails at once; the caller takes that like any failed PING: the PING
- * ends nothing, the quiet period restarts, and the caller sends a new PING once the window has stood
- * still for it again. An acknowledgement frees a place.
+ * early answer on a long-lived connection leave one more pending future behind. The connection's count
+ * holds the PINGs sent through this class whose future has not completed: {@link #ping()} adds one when
+ * it sends a PING and takes it away when that PING's future completes — on the client's
+ * acknowledgement, or on a failed write. The count follows the PING, not the wait that sent it, so the
+ * PING of a wait that has already ended stays counted until its acknowledgement arrives. At most
+ * {@value #MAX_OUTSTANDING_PINGS} PINGs are counted on one connection at a time — the most concurrent
+ * streams the edge admits on one connection. Past it, {@link #ping()} sends nothing and fails at once;
+ * the caller takes that like any failed PING: the PING ends nothing, the quiet period restarts, and the
+ * caller sends a new PING once the window has stood still for it again. An acknowledgement frees a place.
  * <p>
  * <strong>Thread confinement.</strong> Netty's HTTP/2 state belongs to the connection's event loop.
  * {@link #remoteOpen()}, {@link #sendableBytes()}, {@link #localEnded()} and {@link #ping()} must be
@@ -94,12 +96,13 @@ final class InboundStreamWindow {
     private static final int PING_PAYLOAD_BYTES = 8;
 
     /**
-     * The most PINGs sent through this class that may be unacknowledged on one connection at once: the
-     * most concurrent streams the edge admits on one connection, 100 (the listener bound
-     * {@code EdgeHardeningOptions} applies). Each early answer waits on at most one PING at a time and a
-     * connection carries at most that many early answers at once, so a client that acknowledges its
-     * PINGs never reaches the bound, while a client that never acknowledges leaves at most this many
-     * pending. {@code InboundStreamWindowTest} holds it to the edge's stream bound.
+     * The most PINGs sent through this class whose future has not completed that may be counted on one
+     * connection at once: the most concurrent streams the edge admits on one connection, 100 (the
+     * listener bound {@code EdgeHardeningOptions} applies). A PING is counted from the moment
+     * {@link #ping()} sends it until its future completes — on the acknowledgement or on a failed write —
+     * so the PING of an early answer that has already ended stays counted until it is acknowledged, and a
+     * client that never acknowledges leaves at most this many pending. {@code InboundStreamWindowTest}
+     * holds it to the edge's stream bound.
      */
     static final int MAX_OUTSTANDING_PINGS = 100;
 

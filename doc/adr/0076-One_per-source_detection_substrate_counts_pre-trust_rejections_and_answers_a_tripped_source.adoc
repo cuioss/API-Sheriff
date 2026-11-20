@@ -35,8 +35,9 @@ short:
 
 * *Keying.* `SourceKeyResolver` keys a request by `(source, host)`. The source is the client address
   a trusted forwarder reported, and otherwise the TCP peer; a trusted forwarder's request that
-  carries no forwarding header, or only blank ones, is the `unknown` source, never the forwarder's own
-  address (one whose non-blank header resolves no client: <<amendment-unresolved-chain>>). An IPv6
+  carries no client-address header (`Forwarded` or `X-Forwarded-For`), or only blank ones, is the
+  `unknown` source, never the forwarder's own address (one whose client-address header carries a
+  non-blank value from which no client resolves: <<amendment-unresolved-chain>>). An IPv6
   source is reduced to its `/64`. An absent or unparseable TCP peer address folds to one `unknown`
   source. The host is kept only when it
   equals a `match.host` some route declares; every other host folds to `*`.
@@ -225,14 +226,15 @@ stands.
 *An unresolvable forwarded chain is keyed on its proxy, not on `unknown`.* The forwarded-header
 resolver yields no client when a trusted forwarder's RFC 7239 `Forwarded` chain disagrees with its
 `X-Forwarded-For` chain, when a chain is malformed, or when it names its client by something other
-than an address. A client can always produce either, so keying
+than an address. A client can always produce any of these, so keying
 such a request `unknown` -- a key the edge never acts on -- would let any client escape `block` and
 `delay`. Resolving one family on its own is no way out either: the request cannot show which family
 the proxy manages, so the client could then choose its key (ADR-0003). `ForwardedClientResolution`,
 the one derivation the source key and the BFF's pending-login quota key share, therefore resolves the
 combined headers once and tells a chain that resolves no client apart from no chain at all. A request
-whose `Forwarded` or `X-Forwarded-For` carries a value yet resolves no client is keyed on its proxy's
-own source, `unresolved-via-<proxy address>`, which is acted on like any source; only a request that
+whose `Forwarded` or `X-Forwarded-For` carries a non-blank value yet resolves no client is keyed on
+that proxy's own source, `unresolved-via-` followed by the proxy's canonical address, which is acted
+on like any source; only a request that
 carries neither header, or only blank ones, is `unknown`.
 
 [[amendment-unknown]]
@@ -244,7 +246,8 @@ see. `SourceGate` therefore admits `unknown` like any source -- it is counted, t
 logged as `ApiSheriff-141` and fed to the threat ledger -- but never answers it `429`, never refuses it
 for a used-up held-answer share and never holds it, under every action. Its trip is logged and metered
 with the action actually taken, `observe`, whatever action is configured. Because a trusted proxy that
-forwards no client-address header lets its requests escape `block` and `delay` this way, the boot logs
+forwards no client-address header, or only blank ones, lets its requests escape `block` and `delay`
+this way, the boot logs
 WARN `ApiSheriff-149` when `enumeration_detection` is enabled with `block` or `delay` and
 `forwarded.trusted_proxies` is non-empty.
 
@@ -377,12 +380,12 @@ admission.
    `ApiSheriff-142`.
 ** Requests keyed `unknown` are never blocked, delayed or refused. Through a trusted proxy only a
    request that carries no client-address header (`Forwarded` or `X-Forwarded-For`), or only blank ones, is keyed
-   `unknown`, so a trusted proxy that forwards no such header escapes `block` and `delay`;
-   `ApiSheriff-149` names the configuration at boot (<<amendment-unknown>>). A header that is present
-   but resolves no client -- a malformed chain, one over a cap, the two families disagreeing, or a
-   client named by something other than an address -- is
-   keyed on that proxy's own unresolved source, `unresolved-via-<proxy address>`, which `block` and
-   `delay` act on (<<amendment-unresolved-chain>>).
+   `unknown`, so a trusted proxy that forwards no such header, or only blank ones, escapes `block`
+   and `delay`; `ApiSheriff-149` names the configuration at boot (<<amendment-unknown>>). A header
+   with a non-blank value that resolves no client -- a malformed chain, one over a cap, the two
+   families disagreeing, or a client named by something other than an address -- is
+   keyed on that proxy's own unresolved source, `unresolved-via-` followed by the proxy's canonical
+   address, which `block` and `delay` act on (<<amendment-unresolved-chain>>).
 ** Above the high-water mark a new IPv6 source is one key per `/48`, so the clients of one `/48`
    share that key from then on (<<amendment-aggregation>>).
 ** A restart clears every bucket and every block. `Retry-After` describes the block on this node
