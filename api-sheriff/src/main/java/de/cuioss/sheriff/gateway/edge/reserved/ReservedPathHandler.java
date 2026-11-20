@@ -192,17 +192,27 @@ public final class ReservedPathHandler {
     /**
      * The speculative-load marker the logout proof reads as {@link CsrfDefence.FetchMetadata#purpose()}: the
      * first {@code Sec-Purpose} value, or — when there is none — a {@code prefetch} value, compared
-     * case-insensitively, of the legacy {@code Purpose} header and then of {@code X-Moz}, which a browser that
-     * predates {@code Sec-Purpose} sends on a prefetch instead.
+     * case-insensitively, among all values of the legacy {@code Purpose} header, then of {@code X-Moz}, which a
+     * browser that predates {@code Sec-Purpose} sends on a prefetch instead. Every value of a repeated legacy
+     * header is read, so a {@code prefetch} after another value still marks the request.
      *
      * @param request the pipeline request whose headers are read
      * @return the marker, {@code null} when the request carries none
      */
     private static @Nullable String speculativeMarker(PipelineRequest request) {
         return request.firstHeader(SEC_PURPOSE_HEADER)
-                .or(() -> request.firstHeader(PURPOSE_HEADER).filter(PREFETCH::equalsIgnoreCase))
-                .or(() -> request.firstHeader(X_MOZ_HEADER).filter(PREFETCH::equalsIgnoreCase))
+                .or(() -> prefetchValue(request, PURPOSE_HEADER))
+                .or(() -> prefetchValue(request, X_MOZ_HEADER))
                 .orElse(null);
+    }
+
+    /**
+     * @param request the pipeline request whose headers are read
+     * @param header  the legacy marker header
+     * @return the first value of {@code header} that is {@code prefetch}, compared case-insensitively
+     */
+    private static Optional<String> prefetchValue(PipelineRequest request, String header) {
+        return request.headerValues(header).stream().filter(PREFETCH::equalsIgnoreCase).findFirst();
     }
 
     /**

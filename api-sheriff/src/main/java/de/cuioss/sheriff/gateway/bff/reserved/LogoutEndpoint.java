@@ -46,8 +46,8 @@ import org.jspecify.annotations.Nullable;
  * leg's {@link CsrfDefence} whether the request is a top-level document navigation from a trusted
  * origin ({@link CsrfDefence#provesTrustedDocumentNavigation(String, CsrfDefence.FetchMetadata)}). The
  * proof is refused to a request that carries a speculative-load marker — a {@code Sec-Purpose} header of
- * any value or, when that header is absent, a {@code Purpose} or {@code X-Moz} header whose value is
- * {@code prefetch} in any case, which the edge reads into {@link CsrfDefence.FetchMetadata#purpose()} —
+ * any value or, when that header is absent, a {@code Purpose} or {@code X-Moz} header any of whose values
+ * is {@code prefetch} in any case, which the edge reads into {@link CsrfDefence.FetchMetadata#purpose()} —
  * to one whose {@code Sec-Fetch-Mode} is present and not {@code navigate} or whose
  * {@code Sec-Fetch-Dest} is present and not {@code document}, to one whose {@code Origin} is present and
  * untrusted, and, with {@code Origin} absent, to one whose {@code Sec-Fetch-Site} is anything but

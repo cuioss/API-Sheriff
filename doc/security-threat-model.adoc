@@ -3345,11 +3345,12 @@ therefore does not end a session. Before it resolves any session, the logout end
 `CsrfDefence` method `provesTrustedDocumentNavigation`, which requires all of the following:
 
 * no speculative-load marker -- no `Sec-Purpose` header of any value and, when that header is
-  absent, no `Purpose` or `X-Moz` header whose value is `prefetch` in any case. A browser marks a
-  prefetch or a prerender, which no user asked for, even when the speculative load is a navigation:
-  with `Sec-Purpose`, or, in a browser that predates it, with the legacy `Purpose: prefetch` or
-  `X-Moz: prefetch`. The edge reads the marker from `Sec-Purpose` first and from `Purpose` and then
-  `X-Moz` only when `Sec-Purpose` is absent;
+  absent, no `Purpose` or `X-Moz` header any of whose values is `prefetch` in any case. A browser
+  marks a prefetch or a prerender, which no user asked for, even when the speculative load is a
+  navigation: with `Sec-Purpose`, or, in a browser that predates it, with the legacy
+  `Purpose: prefetch` or `X-Moz: prefetch`. The edge reads the marker from `Sec-Purpose` first and
+  from every value of `Purpose` and then of `X-Moz` only when `Sec-Purpose` is absent, so a repeated
+  legacy header is marked by a `prefetch` that follows another value;
 * `Sec-Fetch-Mode`, when present, is `navigate` and `Sec-Fetch-Dest`, when present, is `document` --
   a same-origin image, script, `fetch()` call, link prefetch or frame carries a different mode or
   destination;
@@ -3490,7 +3491,8 @@ untrusted or opaque `Origin` whatever `Sec-Fetch-Site` says, and leaves the unsa
 refusing `none` (`CsrfDefenceTest`, `TrustedDocumentNavigation`); the edge hands `Sec-Fetch-Site`
 through to the logout leg (`GatewayEdgeGatewayCookieTest`), and a trusted top-level document navigation
 carrying `Purpose: prefetch` or `X-Moz: prefetch` and no `Sec-Purpose` is answered the confirmation
-page with the session kept, while the same navigation without a marker logs out
+page with the session kept, also when the legacy header is sent twice with `prefetch` after another
+value, while the same navigation without a marker logs out
 (`GatewayEdgeRouteBffWiringTest`); against the native image a `cross-site` logout
 keeps the session serving while the confirmation `POST`, which carries only `Origin`, ends it
 (`BffLogoutIT`). The session is destroyed before the redirect to the provider is built; a logout

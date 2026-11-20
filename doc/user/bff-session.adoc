@@ -769,7 +769,7 @@ at the session, the gateway asks the request for two things.
 headers decide this, and each is judged only when the request carries it:
 
 * no prefetch marker -- no `Sec-Purpose` header of any value and, when it is absent, no `Purpose` or
-  `X-Moz` header whose value is `prefetch` in any case. A browser sends one of them on a prefetch or a
+  `X-Moz` header any of whose values is `prefetch` in any case. A browser sends one of them on a prefetch or a
   prerender, which no user asked for: `Sec-Purpose`, or, in a browser that predates it, the legacy
   `Purpose: prefetch` or `X-Moz: prefetch`;
 * `Sec-Fetch-Mode: navigate` -- an image, a script, a `fetch()` call or a link prefetch carries a

@@ -214,9 +214,10 @@ public final class CsrfDefence {
      *       load (a prefetch or a prerender), which no user asked for, even when that load is a
      *       navigation: with a {@code Sec-Purpose} header, or, in a browser that predates it, with the
      *       legacy {@code Purpose: prefetch} or {@code X-Moz: prefetch}. The edge fills the marker from
-     *       the first {@code Sec-Purpose} value of any content, or, when there is none, from a
-     *       {@code Purpose} and then an {@code X-Moz} value equal to {@code prefetch} ignoring case; any
-     *       marker refuses the proof.</li>
+     *       the first {@code Sec-Purpose} value of any content, or, when there is none, from a value equal
+     *       to {@code prefetch} ignoring case among all values of {@code Purpose} and then of
+     *       {@code X-Moz}, so a repeated legacy header is marked by a {@code prefetch} in any position;
+     *       any marker refuses the proof.</li>
      *   <li>{@code Sec-Fetch-Mode}, when present, is {@code navigate}, and {@code Sec-Fetch-Dest}, when
      *       present, is {@code document}. A same-origin image, script, {@code fetch()}, link prefetch or
      *       frame carries a different mode or destination and is refused.</li>
@@ -333,13 +334,15 @@ public final class CsrfDefence {
 
     /**
      * The Fetch Metadata request headers the logout navigation proof reads, each the request's first
-     * value as received, {@code null} when the header is absent.
+     * value as received, {@code null} when the header is absent; the speculative-load marker is the one
+     * component that may come from a later value of a repeated legacy header.
      *
      * @param site    {@code Sec-Fetch-Site}
      * @param mode    {@code Sec-Fetch-Mode}
      * @param dest    {@code Sec-Fetch-Dest}
-     * @param purpose the speculative-load marker: {@code Sec-Purpose}, or, when the request carries none, a
-     *                {@code prefetch} value of the legacy {@code Purpose} or {@code X-Moz} header
+     * @param purpose the speculative-load marker: the first {@code Sec-Purpose} value, or, when the request
+     *                carries none, a {@code prefetch} value among all values of the legacy {@code Purpose}
+     *                header, then of {@code X-Moz}
      * @author API Sheriff Team
      * @since 1.0
      */
