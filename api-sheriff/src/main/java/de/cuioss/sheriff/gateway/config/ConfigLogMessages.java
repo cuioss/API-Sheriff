@@ -640,9 +640,10 @@ public final class ConfigLogMessages {
          * terminated listener ({@code quarkus.http.limits.max-connections}), so the connection cap no longer
          * leaves the headroom the shipped values keep.
          * <p>
-         * On HTTP/1.1 one request needs one connection, and the connection cap also counts every connection
-         * that carries no admitted request — an idle keep-alive connection, one whose request head has not
-         * arrived, one being answered {@code 503}. The shipped connection cap is twice the default admission
+         * On HTTP/1.1 one request needs one connection, and the connection cap also counts every established
+         * connection that carries no admitted request — an idle keep-alive connection, one that completed its
+         * TLS handshake but whose request head has not arrived, one being answered {@code 503}; a connection
+         * still in its TLS handshake is not counted yet. The shipped connection cap is twice the default admission
          * cap, so admission refuses a request with a {@code 503} long before the cap closes connections,
          * unserved and without a {@code 503}. An admission cap above half the connection cap gives that
          * headroom up, and at or above the connection cap the cap rather than the admission budget bounds the

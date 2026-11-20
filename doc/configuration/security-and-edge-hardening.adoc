@@ -259,14 +259,17 @@ link:../user/edge-security.adoc#_edge_hardening_defaults[Edge hardening defaults
 
 *The connection cap is one shared counter.* `quarkus.http.limits.max-connections` is one counter
 shared by the plain-HTTP redirect listener and the HTTPS listener of the Quarkus-terminated side; the
-SNI front listener of `passthrough_sni` and the management interface are not counted. A connection
-the cap has counted holds its slot until it closes, whether or not it ever carries a request.
+SNI front listener of `passthrough_sni` and the management interface are not counted. It counts a
+connection on the HTTPS listener only once its TLS handshake has completed, and a connection the cap
+has counted holds its slot until it closes, whether or not it ever carries a request.
 
 *A front proxy with its own request-head timeout is a deployment requirement.* No key here, and none
 in the shipped `application.properties`, sets a deadline on the arrival of a request head. Until a
 head is complete, the only bounds on its connection are the idle-connection reap, which any byte
 restarts, and the connection cap above; `admission_cap` counts requests, so it does not see such a
-connection. Put a front proxy or load balancer in front of the gateway that times out the request
+connection. The connection cap has no per-source share, so one source can hold the whole counter,
+and routing through the SNI front of `passthrough_sni` does not bound it: the front's per-source share
+counts only the connections it has not yet handed over. Put a front proxy or load balancer in front of the gateway that times out the request
 head itself (see
 link:../user/edge-security.adoc#_request_head_deadline[Edge security -- A front proxy times out the request head]).
 

@@ -594,12 +594,16 @@ deployment that never writes it keeps the behaviour shown here.
   [`quarkus.http.limits.max-connections`]
 | 4096
 | How many connections the Quarkus-terminated side holds open at once. A connection beyond the cap
-  is closed without being served, while the connections already open are served on. It bounds open
-  connections whatever they carry; the admission cap below bounds the requests in flight on them.
-  The cap is one counter shared by the plain-HTTP redirect listener and the HTTPS listener of the
-  Quarkus-terminated side, so a connection to the redirect listener counts toward it too. The SNI
-  front listener of `passthrough_sni` and the management interface are not counted. The value is set
-  in the shipped `application.properties`, not in `gateway.yaml`, and is not configurable there.
+  is closed without being served, while the connections already open are served on. It counts a
+  connection once the connection is established -- on the HTTPS listener only after its TLS handshake
+  has completed, so a connection still in its handshake holds no slot -- and a counted connection holds
+  its slot until it closes, whether or not it carries a request; the admission cap below bounds the
+  requests in flight on them. The cap is one counter shared by the plain-HTTP redirect listener and
+  the HTTPS listener of the Quarkus-terminated side, so a connection to the redirect listener counts
+  toward it too. It has no per-source share: one source can hold the whole counter, and routing
+  through the SNI front of `passthrough_sni` does not bound it (see <<_request_head_deadline>>). The
+  SNI front listener itself and the management interface are not counted. The value is set in the
+  shipped `application.properties`, not in `gateway.yaml`, and is not configurable there.
 
   *Derivation.* `Dockerfile.native` declares no file-descriptor limit, so the process runs under
   whatever limit the container runtime grants, and the image cannot derive a value from it. The cap
@@ -823,13 +827,17 @@ above act on such a connection:
 * the *idle-connection reap*, which any byte restarts, so a client that sends something within every
   60 s keeps its connection open;
 * the *connection cap*, one counter shared by the plain-HTTP redirect listener and the HTTPS listener
-  of the Quarkus-terminated side. A connection the cap has counted holds its slot until it closes,
-  whether or not a request head ever completes on it, and a connection beyond the cap is closed
-  without being served.
+  of the Quarkus-terminated side. It counts a connection on the HTTPS listener only once its TLS
+  handshake has completed. A connection the cap has counted holds its slot until it closes, whether or
+  not a request head ever completes on it, and a connection beyond the cap is closed without being
+  served.
 
-Under `tls.passthrough_sni` the SNI front listener ends a connection whose TLS ClientHello is not
-complete within 10 s (link:tls-edge.adoc[TLS edge]); it sets no deadline on the request head that
-follows the handshake.
+The connection cap has no per-source share: one source that completes its handshakes and then sends
+no request head can hold the whole counter, and every other client's connection is then closed
+unserved. Under `tls.passthrough_sni` the SNI front listener ends a connection whose TLS ClientHello is
+not complete within 10 s (link:tls-edge.adoc[TLS edge]), and its per-source share bounds only the
+connections it has not yet handed over; it sets no deadline on the request head that follows the
+handshake, so routing through the front does not bound how much of the counter one source holds.
 
 *Deployment requirement.* Run the gateway behind a front proxy or load balancer that enforces its
 own timeout on the request head and closes a connection that does not deliver a complete head in

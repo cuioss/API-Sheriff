@@ -20,7 +20,13 @@
 # travel the back channel (oidc.back_channel_origin in gateway.yaml) and the JWKS URL names the
 # internal keycloak:8443 address, so neither needs a front-side route, and the sample's browser
 # client performs no OIDC or RFC 8414 discovery of its own. That holds by construction: no rule has
-# to recognise a dangerous path, because a path nobody listed has no way in.
+# to recognise a dangerous path, because a path outside the four listed prefixes has no way in.
+#
+# Each route is a segment-prefix route, so the allowlist is four namespaces, not four addresses: every
+# sub-path of a listed prefix passes to Keycloak — /auth/realms/sample/login-actions/<anything>,
+# /auth/resources/<anything> — and what Keycloak serves under such a sub-path is reachable through the
+# gateway. A path that is neither a listed prefix nor below one, segment by segment, is answered the
+# unrouted 404 (/auth/realms/sample/login-actionsX is not below /auth/realms/sample/login-actions).
 #
 # Every request is canonicalised BEFORE route selection. A dot-segment, an encoded separator, a
 # doubled slash or a backslash — /auth/realms/sample/login-actions/../../../admin/,

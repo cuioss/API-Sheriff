@@ -201,7 +201,10 @@ test asserts that a chunk twice its size is served.
 [[_connection_cap]]
 *Connection cap.* The Quarkus-terminated side bounds its open connections with one counter,
 `quarkus.http.limits.max-connections`, shared by the plain-HTTP redirect listener and the HTTPS
-listener (the SNI front listener and the management interface are not counted). The cap is set at
+listener (the SNI front listener and the management interface are not counted). It counts a
+connection on the HTTPS listener only once its TLS handshake has completed, and it has no per-source
+share: one source can hold the whole counter, and routing through the SNI front does not bound it,
+because the front's per-source share counts only the connections it has not yet handed over. The cap is set at
 twice the default admission cap, so on HTTP/1.1, where a request needs a connection of its own,
 admission has room to answer its `503` while a connection slot remains; idle keep-alive connections
 can still fill the cap, and a connection beyond it is closed unserved. An `edge_hardening.admission_cap` above

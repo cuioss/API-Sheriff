@@ -362,9 +362,20 @@ There are two ports, wired by `TlsEdgeProducer`:
 
 | Internal HTTPS port
 | `sheriff.tls.internal-https-port` (`8444`)
-| The terminated Quarkus HTTPS listener, bound to `localhost` only. Every non-passthrough connection
-  is relayed here for termination.
+| The terminated Quarkus HTTPS listener. Every non-passthrough connection is relayed here for
+  termination. The listener binds `quarkus.http.host`, which the image sets to `0.0.0.0`
+  (`Dockerfile.native` starts the executable with `-Dquarkus.http.host=0.0.0.0`), so it listens on
+  every interface of the container, not on loopback alone.
 |===
+
+*The internal HTTPS port is reachable wherever the deployment lets traffic reach it.* The front
+relays to `localhost:8444`, but nothing confines the listener to that address. Any peer on the
+container's network -- another container on the same Compose or pod network, or a client of a host
+port the deployment publishes for `8444` -- can connect to it directly and bypass the front: the SNI
+split, the front's ClientHello deadline and its per-source share do not apply to such a connection,
+and the relay registers no client for it, so the pending-login quota keys it on its own TCP peer.
+Publish only the public TLS port, keep `8444` unpublished, and restrict the container network to the
+peers that must reach the gateway.
 
 The internal handoff is a *loopback relay*, not an in-process call: terminated connections are
 spliced from the front listener to `localhost:8444`, where the ordinary Quarkus HTTPS listener does

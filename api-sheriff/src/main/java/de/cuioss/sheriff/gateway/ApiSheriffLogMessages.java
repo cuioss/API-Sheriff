@@ -358,12 +358,15 @@ public final class ApiSheriffLogMessages {
          * most once per fixed window per reason; every further refusal for that reason inside the window is a
          * {@code DEBUG} diagnostic, and every refusal is counted on
          * {@code sheriff_front_connections_refused_total}. Records the reason token, the bound that was
-         * full and the window in seconds only — never the peer address or any byte received.
+         * full and the window in seconds only — never the peer address or any byte received. The template
+         * places the refusal where it happens for each reason, at accept for {@code cap} and
+         * {@code source_share} and at the route decision for {@code dial_budget}, so it reads true for all
+         * three.
          */
         public static final LogRecord FRONT_CONNECTION_REFUSED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(146)
-                .template("Front connection refused at accept (%s): the bound of %s undecided connections is full — further refusals for this reason within %s seconds stay at DEBUG and are counted on sheriff_front_connections_refused_total")
+                .template("Front connection refused (%s): a bound of %s connections is full — a cap or source_share refusal closes the connection at accept, a dial_budget refusal at its route decision, before its backend is dialled — further refusals for this reason within %s seconds stay at DEBUG and are counted on sheriff_front_connections_refused_total")
                 .build();
     }
 }

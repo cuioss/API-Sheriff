@@ -1337,7 +1337,8 @@ inbound idle timeout that closes a connection carrying no bytes (any byte the co
 starts it again, so it does not end a connection that keeps trickling), a connection cap
 (`quarkus.http.limits.max-connections`) that bounds how many connections the Quarkus-terminated
 side holds open at once (one counter shared by the plain-HTTP redirect listener and the HTTPS
-listener; the SNI front listener of `passthrough_sni` and the management interface are not
+listener, counting a connection on the HTTPS listener only once its TLS handshake has completed;
+the SNI front listener of `passthrough_sni` and the management interface are not
 counted; set at twice the default admission cap, so on HTTP/1.1 admission can answer while a
 connection slot remains -- idle keep-alive connections can still fill the cap), a max-in-flight admission cap, `max_body_bytes` as a
 *streaming* counter (never buffer the body -- link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]),
@@ -1349,7 +1350,10 @@ still cap body bytes. Explicit YAML `StreamReadConstraints` are applied at confi
 HTTP/1.1 request line and header block, or an HTTP/2 header block with its `CONTINUATION` frames.
 Until a head is complete, the idle timeout, which any byte restarts, and the connection cap are the
 only bounds on its connection, and a connection the cap has counted holds its slot until it closes,
-whether or not a request head ever completes on it. A front proxy that enforces its own request-head
+whether or not a request head ever completes on it. The cap has no per-source share, so one source
+that completes its handshakes and sends no request head can hold the whole counter; routing through
+the SNI front does not bound that, because the front's per-source share counts only the connections it
+has not yet handed over (<<gw-07-sni-front,GW-07>>). A front proxy that enforces its own request-head
 timeout is therefore a deployment requirement
 (link:user/edge-security.adoc#_request_head_deadline[Edge security -- A front proxy times out the request head]).
 
@@ -3000,17 +3004,21 @@ browser* with a short-lived `HttpOnly` `__Host-` binding cookie (a record retrie
 matching binding cookie, not just a valid `state`). PKCE does not replace login-CSRF
 protection -- keep both.
 
-*Status (mode-split -- the single-use guarantee differs):*
+*Status:* COVERED, in both session modes. The single-use guarantee is the same in each, because the
+login step is not stateless in either:
 
-* *Server mode:* COVERED. The record is server-side; the gateway *discards it on first
-  callback* (true single-use) and the binding cookie ties it to the browser.
-* *Cookie mode:* PARTIAL (accepted risk). The record travels only in the sealed short-lived
-  `__Host-` login cookie -- there is no server store to mark it consumed -- so within the
-  cookie's short TTL a captured login cookie *could* be replayed. Mitigation and accepted risk:
-  the TTL is minutes, the cookie is `HttpOnly`+`Secure`+`__Host-` (not JS-readable, HTTPS-only,
-  origin-locked), the browser binding still holds, and the exposure window is the login round
-  trip only. This is an explicit risk acceptance of the stateless variant -- choose server mode
-  if strict single-use of the login step is required.
+* *Server mode and cookie mode alike:* the pending-authorization record -- `state`, `nonce`, PKCE
+  verifier and return URL -- is held server-side in the one in-memory pending-authorization store
+  of the gateway process (`InMemoryPendingAuthorizationStore`, built for both modes), and the
+  short-lived `HttpOnly` `__Host-` binding cookie carries only the record's unguessable id. The
+  callback consumes the record as it reads it (`PendingAuthorizationStore.consume`), so the record
+  is single-use: a replayed callback, or the same binding cookie presented again, resolves nothing.
+* *What the session mode changes is after the callback, not before it.* Cookie mode seals the
+  *session* the callback creates into the session cookie and keeps no server-side session; server
+  mode stores it. Neither seals the pending-authorization record into a cookie. Because the record
+  lives in one process, the callback has to reach the instance that started the login in both modes
+  (see link:variants/03-bff-cookie.adoc#_stateless_after_login_not_during_it[Variant 3 -- Stateless
+  after login, not during it]).
 
 *The return URL is bound to the gateway origin, and only the query is carried along.* A
 session-route navigation records its return URL as the canonical request path plus the raw
@@ -3384,7 +3392,7 @@ configured list names only other origins; the unsafe-method check of session rou
 the configured list alone. Because the proof is checked before the session is looked up, the answer
 without it is the same whether or not a session exists. *Accepted cost:* a logout link on a trusted
 origin other than the gateway's own sends no `Origin` on a top-level navigation, and a typed or
-bookmarked logout URL carries `Sec-Fetch-Site: none`; both land on the confirmation page, which the
+bookmarked logout URL carries `Sec-Fetch-Site: none` and no `Origin`; both land on the confirmation page, which the
 user confirms with one click.
 
 *A proven RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
@@ -4320,7 +4328,7 @@ by these rules, in this order:
   source (`PendingQuotaKeys`): for a peer listed in `forwarded.trusted_proxies`, the client address
   its forwarding headers resolve to -- when a `Forwarded` or `X-Forwarded-For` value is present yet
   the two chains together resolve none, that proxy's own unresolved source
-  (`unresolved-via-<proxy address>`), never one chain read on its own, the one derivation the
+  (`unresolved-via-` followed by the proxy's canonical address), never one chain read on its own, the one derivation the
   detection source key shares (`ForwardedClientResolution`) -- and `unknown` when the request carries
   neither header, or only blank ones; for any other peer, the
   TCP peer address, whose forwarding headers are never read. Behind the gateway's own SNI front
@@ -4912,14 +4920,14 @@ outstanding hardening work (next section).
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
 | <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` on the floor's release time when it is full, one tripped source held to its share; the floor measured against twelve caller-drivable pre-trust paths, each answered as the unrouted `404` -- the bearer-token paths, the declared-length fast-reject, a route-scoped filter violation, a cookie-forwarding same-origin refusal and a `protocol: grpc` route among them -- and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
-| <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL whose path passes the shared <<gw-13>> review, with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie, `PendingAuthorizationRecord.sameOrigin` over `LocationPathReview`) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
+| <<bff-02>> | Browser-bound `state`; single-use in both session modes (the record held in the server-side pending-authorization store, consumed on its first callback); same-origin return URL whose path passes the shared <<gw-13>> review, with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie, `InMemoryPendingAuthorizationStore`, `PendingAuthorizationRecord.sameOrigin` over `LocationPathReview`) | COVERED
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED
 | <<bff-04>> | `nonce` validated + single-use | Engine `IdTokenValidationBridge` + gateway pending-authorization record | COVERED
 | <<bff-05>> | Single-IdP; `iss` verification | Design + engine `IssValidator` | ELIMINATED
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
-| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); RP-initiated logout acts only on a top-level document navigation from a trusted origin (no `Sec-Purpose`, `Sec-Fetch-Mode` `navigate` and `Sec-Fetch-Dest` `document` when present, and a trusted `Origin`, else `Sec-Fetch-Site` `same-origin`) judged by the session CSRF defence before any session lookup, otherwise a `no-store`, framing-forbidden confirmation page whose form `POST`s back; the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-147`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `CsrfDefence.provesTrustedDocumentNavigation`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`; a logout link on another trusted origin lands on the confirmation page, accepted) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); RP-initiated logout acts only on a top-level document navigation from a trusted origin (no speculative-load marker, which is a `Sec-Purpose` of any value or, with `Sec-Purpose` absent, a `prefetch` value, in any case, of the legacy `Purpose` or `X-Moz` header; `Sec-Fetch-Mode` `navigate` and `Sec-Fetch-Dest` `document` when present; and a trusted `Origin`, else `Sec-Fetch-Site` `same-origin`) judged by the session CSRF defence before any session lookup, otherwise a `no-store`, framing-forbidden confirmation page whose form `POST`s back; the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-147`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `CsrfDefence.provesTrustedDocumentNavigation`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`; a logout link on another trusted origin lands on the confirmation page, accepted) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED

@@ -638,21 +638,6 @@ class SniFrontListenerTest {
                     () -> assertFalse(held.closedNanos().isDone(), "the connection holding the cap stays open"));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
-
-        private static List<LogRecord> refusalWarnings() {
-            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
-                    ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.resolveIdentifierString());
-        }
-
-        /**
-         * A source key that assigns the accepted connections, in accept order, to the given sources,
-         * and every connection beyond them to the last one. One front server handles its connections
-         * on one event loop, so accept order is the order this test connects in.
-         */
-        private static Function<NetSocket, String> sourcesInOrder(String... sources) {
-            AtomicInteger accepted = new AtomicInteger();
-            return socket -> sources[Math.min(accepted.getAndIncrement(), sources.length - 1)];
-        }
     }
 
     /**
@@ -1007,7 +992,7 @@ class SniFrontListenerTest {
             Offer secondHandshake = offer(front, terminatedHello);
             awaitRefusals(2);
 
-            List<LogRecord> warnings = RefusalsAtAccept.refusalWarnings();
+            List<LogRecord> warnings = refusalWarnings();
             assertAll("the dark target took its budget of the cap and no more",
                     () -> assertEquals(List.of(true, true, false, false), admitted(darkDials),
                             "the target's first two dials are admitted, the two beyond its budget refused"),
@@ -1022,6 +1007,9 @@ class SniFrontListenerTest {
                             "the WARN names the reason token: " + warnings.getFirst().getMessage()),
                     () -> assertTrue(warnings.getFirst().getMessage().contains("bound of " + BUDGET + " "),
                             "the WARN names the budget as the bound that was full: "
+                                    + warnings.getFirst().getMessage()),
+                    () -> assertTrue(warnings.getFirst().getMessage().contains("a dial_budget refusal at its route decision"),
+                            "the WARN places a dial_budget refusal at the route decision, not at accept: "
                                     + warnings.getFirst().getMessage()),
                     () -> assertFalse(darkDials.getFirst().leg().closedNanos().isDone(),
                             "an admitted dial is still pending, its connection open"));
@@ -1198,7 +1186,7 @@ class SniFrontListenerTest {
             Arrays.fill(sources, 0, CAP, DARK_SOURCE);
             sources[CAP] = HANDSHAKE_SOURCE;
             return startFront(relay, Map.of(MAPPED_SNI, darkTarget), terminatedTarget, DEADLINE, CAP, dialBudget,
-                    RefusalsAtAccept.sourcesInOrder(sources));
+                    sourcesInOrder(sources));
         }
 
         /** A front of {@link #CAP} whose one passthrough target has a dial budget of one. */
@@ -1732,7 +1720,7 @@ class SniFrontListenerTest {
         void emptiesAfterADialBudgetRefusal() throws Exception {
             Backend passthrough = startBackend(hello.length);
             SniFrontListener front = startHeldDialFront(vertx.createNetClient(), passthrough.target(), 4, 1,
-                    RefusalsAtAccept.sourcesInOrder("holder", "refused"));
+                    sourcesInOrder("holder", "refused"));
             routeWithAHeldDial(front);
             int whileHeld = front.sourcesHoldingSlots();
 
@@ -1756,7 +1744,7 @@ class SniFrontListenerTest {
         void emptiesAfterACapRefusal() throws Exception {
             Backend terminated = startBackend(1);
             SniFrontListener front = startFront(Map.of(), terminated.target(), LONG_DEADLINE, 1, 1, LONG_IDLE,
-                    LONG_IDLE, System::nanoTime, RefusalsAtAccept.sourcesInOrder("holder", "refused"));
+                    LONG_IDLE, System::nanoTime, sourcesInOrder("holder", "refused"));
             ClientLeg holder = connectClient(front);
             int whileHeld = awaitSourcesHolding(front, 1);
 
@@ -1834,6 +1822,26 @@ class SniFrontListenerTest {
 
     private static List<LogRecord> debugLines(String text) {
         return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, text);
+    }
+
+    /**
+     * Every {@code WARN} {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} record logged so far,
+     * whatever its reason: a {@code cap} or {@code source_share} refusal at accept, or a
+     * {@code dial_budget} refusal at the route decision.
+     */
+    private static List<LogRecord> refusalWarnings() {
+        return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
+                ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.resolveIdentifierString());
+    }
+
+    /**
+     * A source key that assigns the accepted connections, in accept order, to the given sources,
+     * and every connection beyond them to the last one. One front server handles its connections
+     * on one event loop, so accept order is the order a case connects in.
+     */
+    private static Function<NetSocket, String> sourcesInOrder(String... sources) {
+        AtomicInteger accepted = new AtomicInteger();
+        return socket -> sources[Math.min(accepted.getAndIncrement(), sources.length - 1)];
     }
 
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget)

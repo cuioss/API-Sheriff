@@ -34,8 +34,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * <strong>What the audit protects against.</strong> The connection cap
  * ({@code quarkus.http.limits.max-connections}) is a fixed deployment value, not a {@code gateway.yaml}
  * key, while the admission cap is configurable and has no schema maximum. On HTTP/1.1 one request needs
- * one connection, and the cap also counts every connection that carries no admitted request — an idle
- * keep-alive connection, one whose request head has not arrived, one being answered {@code 503}. The
+ * one connection, and the cap also counts every established connection that carries no admitted request —
+ * an idle keep-alive connection, one that completed its TLS handshake but whose request head has not
+ * arrived, one being answered {@code 503}; a connection still in its TLS handshake is not counted yet. The
  * shipped connection cap is twice the default admission cap for that reason. An admission cap that gives
  * that headroom up lets the cap close connections, unserved and without a {@code 503}, before admission
  * refuses a request; at or above the connection cap the admission cap is never reached at all. Without

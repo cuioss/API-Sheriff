@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The cookie-based BFF deflates its session payload before it seals it, because the two conditions that make compress-then-encrypt dangerous — repeated samples of one secret and attacker-chosen plaintext adjacent to it — do not hold for this construction (cross-site re-seals carry fresh tokens, and the only attacker influence is which declared scope names enter), and both are named here so a future change that reintroduces either knows it has reversed the decision.
+// summary: The cookie-based BFF deflates its session payload before it seals it, because the two conditions that make compress-then-encrypt dangerous — repeated samples of one secret and attacker-chosen plaintext adjacent to it — do not hold for this construction (cross-site re-seals carry a freshly issued access token, a repeated ID token sits next to no attacker-varied byte, and the only attacker influence is which scope names the identity provider returns), and both are named here so a future change that reintroduces either knows it has reversed the decision.
 // tags: compression, side-channels, cookie-session, sealed-wire-format, bff, crime, breach
 // affects: api-sheriff
 // supersedes:
@@ -71,20 +71,25 @@ the material, and the merge of a widening.
 A compression oracle needs many seals of the same secret, each next to bytes the attacker varies, and an observer of
 their lengths. The seals a cross-site request drives meet none of these conditions:
 
-* *Every re-seal carries freshly issued tokens.* A refresh and a widening both store the token response the identity
-  provider just issued, so no two seals compress the same access token.
-* *The stable secret cannot be probed.* The session nonce stays the same across re-seals, but no attacker-varied byte
-  sits next to it in the compression context. The only attacker influence on the plaintext is which scope names enter
-  it (half two).
-* *Samples are bounded by monotone scope growth.* A widening only adds scope names, and only names the operator
-  declared on a route and the identity provider grants. A name once in the session stays there, so the distinct
-  plaintexts an attacker can cause are bounded by the declared scope set, not by the number of requests it sends.
+* *Every re-seal carries a freshly issued access token.* A refresh and a widening both store the access token of the
+  token response the identity provider just issued, so each seal compresses an access token no earlier seal carried.
+* *The stable secrets cannot be probed.* The session nonce stays the same across re-seals, and so can the ID token: a
+  refresh response that carries no ID token keeps the previous one (`TokenRefreshCoordinator.rotate`), so two seals can
+  compress the same ID token. No attacker-varied byte sits next to either in the compression context. The only attacker
+  influence on the plaintext is which scope names enter it (half two).
+* *Samples are bounded by the scope names the identity provider returns.* A refresh replaces the active scope set with
+  the scope its token response names, or with the scopes the gateway asked for when the response names none, so the set
+  can shrink as well as grow; a widening adds the names the identity provider grants. The names come from the identity
+  provider's answer or the gateway's own request, never from the attacker's, so the distinct plaintexts an attacker can
+  cause are bounded by the scope names the identity provider returns for the session, not by the number of requests it
+  sends.
 * *Reading a length needs an on-path observer of the cookie size.* The cross-site page that drives the re-seal cannot
   read the `Set-Cookie` header of the gateway's origin.
 
 === Half two: chosen-plaintext influence
 
-*Can an attacker vary the plaintext next to the secret? Only by choosing which declared scope names enter it.* The
+*Can an attacker vary the plaintext next to the secret? Only by steering which scope names the identity provider returns
+enter it.* The
 identity provider issues or the gateway mints each of the eleven components. None is echoed from the request that
 produced it.
 
@@ -142,12 +147,13 @@ produced it.
 | `grantedScopes`
 | The identity provider, or the gateway's own request when the token names no scope
 | Only in which names it holds, as for `activeScopes`. The set holds the scopes the identity provider is known to grant
-  the session, and a widening only adds to it
+  the session: a widening adds to it, and a scope-driven refresh whose response leaves out a requested scope removes
+  that scope from it
   (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 |===
 
 No request supplies a byte of any field, so a probe string has no place to go. The most a request selects is which
-operator-declared, identity-provider-granted scope names a widening adds. That choice is drawn from a fixed, finite
+scope names the identity provider returns to a refresh or a widening it drives. That choice is drawn from a finite
 vocabulary the attacker does not write, so attacker-varied bytes sharing a compression context with the secret are
 absent structurally, not by a validation a later change could relax.
 
@@ -219,8 +225,8 @@ or relocate the payload. Only compression addresses the size without giving up a
 * *The compressed length is visible.* Anyone who can see the cookie can observe the sealed size: the browser, an intermediary
   that logs header sizes, and the client. After compression that size depends on the payload's content. A markedly smaller seal
   carries less material, most legibly no refresh token. The signal is not actionable. It distinguishes classes of session, not
-  a bit of a secret. The series of re-seals a cross-site request can drive is bounded by scope growth and carries fresh tokens
-  each time, and observing it needs a position on the path. A client that can read the cookie's length already holds the
+  a bit of a secret. The series of re-seals a cross-site request can drive is bounded by the scope names the identity provider
+  returns and carries a freshly issued access token each time, and observing it needs a position on the path. A client that can read the cookie's length already holds the
   cookie. This record keeps the residual, and it is no path to token material.
 * *The wire format has no migration path.* An explicit version gate refuses a value sealed under an earlier format before it
   constructs a cipher. Earlier cookie sessions end at the change, and the browser re-authenticates.
@@ -234,14 +240,15 @@ Either of these restores an enabling condition and makes compress-then-encrypt u
 
 . *A payload component an attacker can influence.* A field populated from the request puts chosen plaintext into the compression
   context next to three credentials. Examples are a returned URL, a client-supplied correlation id, a header echo, an IdP claim
-  a downstream party can set, or a scope name that is not drawn from the operator's declared set. The deflate step must go in the
-  same change.
+  a downstream party can set, or a scope name that neither the identity provider returned nor the gateway requested. The deflate
+  step must go in the same change.
 . *A re-seal that keeps the same secret.* A path that produces a fresh seal without fresh token material hands the attacker
   repeated samples of one secret. Examples are a "refresh my cookie" endpoint, a re-seal on every request, or a re-seal a client
   parameter triggers. The other half may still hold, which is the case a reader most likely waves through.
 
 Both reduce to one question: can a party who does not hold this session obtain repeated seals of the same secret, or choose bytes
-inside one beyond selecting declared scope names? While the answer stays no on both, the decision stands.
+inside one beyond selecting which scope names the identity provider returns? While the answer stays no on both, the decision
+stands.
 
 === Other risks
 
