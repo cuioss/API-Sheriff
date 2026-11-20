@@ -206,11 +206,6 @@ public final class ReservedPathHandler {
                 .orElse(null);
     }
 
-    /**
-     * @param request the pipeline request whose headers are read
-     * @param header  the legacy marker header
-     * @return the first value of {@code header} that is {@code prefetch}, compared case-insensitively
-     */
     private static Optional<String> prefetchValue(PipelineRequest request, String header) {
         return request.headerValues(header).stream().filter(PREFETCH::equalsIgnoreCase).findFirst();
     }
