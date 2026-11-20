@@ -82,7 +82,13 @@ the documentation-fault list in `.plan/local/security_notes_verified.adoc` (loca
    - `doc/user/tls-edge.adoc` (revocation by "removing every root a certificate chains to"): a trust anchor left in the bundle that is an
      intermediate stays an anchor; say "every certificate of the chain";
    - the header comment of the `/auth` sample `endpoints/idp.yaml` ("a path nobody listed has no way in"): the routes are segment-prefix
-     routes, so sub-paths of a listed prefix pass.
+     routes, so sub-paths of a listed prefix pass;
+   - four sites PLAN-SEC2-06's own sweep left (its landing, L2-1 to L2-3), each read against `main` after that plan: the BFF-09 row of the
+     coverage table in `doc/security-threat-model.adoc` gives "no `Sec-Purpose`" as the whole marker rule while the logout leg also refuses
+     the legacy `Purpose` and `X-Moz` markers (`ReservedPathHandler.speculativeMarker`); the `CsrfDefence.provesTrustedDocumentNavigation`
+     Javadoc says "`Sec-Fetch-Site: none` is not a proof" without the "no `Origin`" qualifier the code applies (a trusted `Origin` is admitted
+     whatever the site says); and the placeholder form `unresolved-via-<proxy address>` in the threat model's source-key passage and in
+     ADR-0078, where every other occurrence now reads "`unresolved-via-` followed by the proxy's canonical address".
    - Done when: each site is corrected where it is stated and a final read of each restatement against its code finds no
      disagreement (`order: none`); the sweep is one commit.
    - Skills: pm-documents:ref-asciidoc, pm-documents:ref-documentation, pm-dev-java:javadoc
@@ -151,7 +157,9 @@ message. A verified result of this plan's own deliverables is reported the same 
 - OBSERVED: `doc/user/tls-edge.adoc`
 - OBSERVED: `doc/user/edge-security.adoc`
 - OBSERVED: `doc/architecture/tls-and-inbound-security.adoc`
-- OBSERVED: `doc/security-threat-model.adoc` — BFF-02, GW-07 and the transport-bounds passages only
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/csrf/CsrfDefence.java` — the `provesTrustedDocumentNavigation` Javadoc only
+- OBSERVED: `doc/adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc` — the `unresolved-via-` placeholder only
+- OBSERVED: `doc/security-threat-model.adoc` — BFF-02, GW-07, the transport-bounds passages, the BFF-09 coverage-table row and the source-key passage naming `unresolved-via-` only
 - OBSERVED: `doc/LogMessages.adoc`
 - OBSERVED: `deployment/compose-sample/docker/sheriff-config-auth-fronted/endpoints/idp.yaml`
 
