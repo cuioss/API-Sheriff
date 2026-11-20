@@ -25,9 +25,9 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 /**
- * Builds JDK {@link HttpClient}s that accept the self-signed {@code localhost} certificate the
- * integration stack serves — the JDK-client counterpart of the relaxed HTTPS validation
- * {@link BaseIntegrationTest} switches on for REST Assured.
+ * Builds JDK {@link HttpClient}s, and the TLS context behind them, that accept the self-signed
+ * {@code localhost} certificate the integration stack serves — the JDK-client counterpart of the
+ * relaxed HTTPS validation {@link BaseIntegrationTest} switches on for REST Assured.
  * <p>
  * The JDK client is what a suite reaches for when REST Assured cannot express the request: a
  * WebSocket handshake, or an HTTP/2 request whose header fields must reach the wire one by one. It
@@ -59,9 +59,20 @@ final class LocalStackTls {
      * @throws GeneralSecurityException when the JDK cannot provide a TLS context
      */
     static HttpClient.Builder clientBuilder() throws GeneralSecurityException {
+        return HttpClient.newBuilder().sslContext(trustAllContext()).connectTimeout(CONNECT_TIMEOUT);
+    }
+
+    /**
+     * A TLS context that accepts the stack's self-signed certificate, for a suite that must put
+     * hand-framed bytes on the wire through a raw {@link javax.net.ssl.SSLSocket} rather than a client.
+     *
+     * @return a freshly initialised context
+     * @throws GeneralSecurityException when the JDK cannot provide a TLS context
+     */
+    static SSLContext trustAllContext() throws GeneralSecurityException {
         SSLContext sslContext = SSLContext.getInstance("TLS");
         sslContext.init(null, new TrustManager[]{new TrustAllManager()}, new SecureRandom());
-        return HttpClient.newBuilder().sslContext(sslContext).connectTimeout(CONNECT_TIMEOUT);
+        return sslContext;
     }
 
     /** Accepts every certificate chain; see the class documentation for the scope. */
