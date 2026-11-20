@@ -3160,6 +3160,80 @@ class ConfigLoaderTest {
         assertEquals(List.of("redirects"), loaded.endpoints().stream().map(EndpointConfig::id).toList());
     }
 
+    /**
+     * The endpoint id and the route id each pass one schema pattern before any code formats them, and
+     * the route-table refusal messages and the route-id log lines format them without escaping. Under
+     * {@code java.util.regex}, {@code $} also matches before a final line terminator, so a pattern
+     * ending in {@code $} admits a letter followed by one terminator whenever the validator applies it
+     * with find semantics. Each case below is that shortest candidate — one letter, one line terminator
+     * {@code java.util.regex} recognises — fed through the real loader and schema validation.
+     */
+    @Nested
+    class IdsEndingInALineTerminator {
+
+        private static final String REDIRECTS_ENDPOINT = """
+                endpoint:
+                  id: "%s"
+                  auth:
+                    require: none
+                  routes:
+                    - id: "%s"
+                      match:
+                        path: /
+                      redirect:
+                        location: /home
+                        status: 307
+                """;
+
+        /** @return the YAML double-quoted escape of one code point */
+        private static String yamlEscape(int codePoint) {
+            return "\\u%04X".formatted(codePoint);
+        }
+
+        private static void assertIdPatternRefusalAt(List<ConfigError> errors, String file, String pointer) {
+            assertTrue(errors.stream().anyMatch(error -> file.equals(error.file())
+                            && pointer.equals(error.pointer())
+                            && error.message().contains("a-z0-9-")),
+                    () -> "expected the id pattern to refuse " + file + " at " + pointer + ", got: " + errors);
+        }
+
+        @ParameterizedTest(name = "route id: a letter followed by code point {0}")
+        @ValueSource(ints = {0x0A, 0x0D, 0x85, 0x2028, 0x2029})
+        void refusesARouteIdEndingInALineTerminator(int terminator) throws Exception {
+            writeConfig("gateway.yaml", "version: 1\n");
+            writeConfig("endpoints/redirects.yaml",
+                    REDIRECTS_ENDPOINT.formatted("redirects", "a" + yamlEscape(terminator)));
+
+            List<ConfigError> errors = loadErrors();
+
+            assertIdPatternRefusalAt(errors, "endpoints/redirects.yaml", "/endpoint/routes/0/id");
+        }
+
+        @ParameterizedTest(name = "endpoint id: a letter followed by code point {0}")
+        @ValueSource(ints = {0x0A, 0x0D, 0x85, 0x2028, 0x2029})
+        void refusesAnEndpointIdEndingInALineTerminator(int terminator) throws Exception {
+            // The file is named after the id, terminator included, so the name-equals-id refusal cannot be
+            // what stops it: only the id pattern can.
+            String fileName = "endpoints/a" + Character.toString(terminator) + ".yaml";
+            writeConfig("gateway.yaml", "version: 1\n");
+            writeConfig(fileName, REDIRECTS_ENDPOINT.formatted("a" + yamlEscape(terminator), "home"));
+
+            List<ConfigError> errors = loadErrors();
+
+            assertIdPatternRefusalAt(errors, fileName, "/endpoint/id");
+        }
+
+        @Test
+        void refusesARouteIdCarryingATab() throws Exception {
+            // Control: a control character the id character class itself refuses, so the assertion above
+            // is shown to see a pattern refusal at the route-id pointer.
+            writeConfig("gateway.yaml", "version: 1\n");
+            writeConfig("endpoints/redirects.yaml", REDIRECTS_ENDPOINT.formatted("redirects", "a\\tb"));
+
+            assertIdPatternRefusalAt(loadErrors(), "endpoints/redirects.yaml", "/endpoint/routes/0/id");
+        }
+    }
+
     @Test
     void bindingOrSchemaErrorNeverEchoesResolvedSecret() throws Exception {
         writeConfig("gateway.yaml", """

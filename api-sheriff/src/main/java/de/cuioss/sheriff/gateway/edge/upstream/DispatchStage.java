@@ -2458,6 +2458,15 @@ public final class DispatchStage {
      * the brief flow-control waits of a client sending faster than a healthy upstream reads. A resume ends the
      * pause, so the next pause measures its stall from its own start.
      * <p>
+     * <strong>A chunk an abort overtakes is dropped.</strong> A chunk is checked against the abort claim before
+     * it is forwarded, but an abort can be claimed on another loop after that check — the request-body deadline
+     * fires on the upstream request's own context — and reset the upstream request before the chunk reaches it.
+     * The forward then finds the request ended and refuses the chunk. Every abort is claimed before its reset, so
+     * that refusal always finds the claim: the chunk is dropped, not forwarded, and nothing is thrown into the
+     * inbound stream. The chunk keeps the count and the forwarded-bytes record it was given when it cleared the
+     * bounds, and the abort reason and the settlement stay those the abort left. A forward refused while no abort
+     * was claimed still fails the delivery.
+     * <p>
      * Thread-safe: chunks arrive on the inbound connection's event loop, the consumer pauses and
      * resumes from either loop, and the timers fire on the loop they were scheduled from. The last
      * progress time is a volatile field; the rest of the clocks' state is held under one monitor, and
@@ -2849,7 +2858,18 @@ public final class DispatchStage {
                 lastProgressNanos = idleClock.nanoTime().getAsLong();
             }
             if (dataHandler != null) {
-                dataHandler.handle(chunk);
+                try {
+                    dataHandler.handle(chunk);
+                } catch (IllegalStateException requestEnded) {
+                    if (abortReason.get() == null) {
+                        throw requestEnded;
+                    }
+                    // An abort claimed on another loop since the check above — the request-body deadline fires on
+                    // the upstream request's own context — reset the upstream request before this chunk reached
+                    // it. Every abort is claimed before its reset, so the claim is visible here; the chunk is dropped.
+                    LOGGER.debug("A chunk reached an upstream request an abort had already reset and was dropped: %s",
+                            requestEnded.getMessage());
+                }
             }
         }
 

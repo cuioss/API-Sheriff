@@ -20,11 +20,16 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.token.quarkus.config.IssuerConfigResolver;
+import de.cuioss.sheriff.token.quarkus.metrics.JwtMetricsCollector;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
+import de.cuioss.sheriff.token.quarkus.producer.TokenValidatorProducer;
 import de.cuioss.sheriff.token.quarkus.producer.TokenValidatorStartupInitializer;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -35,7 +40,13 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.PropertiesConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
+import jakarta.annotation.Priority;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.event.Event;
+import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.inject.Any;
+import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.spi.BeanManager;
 import jakarta.enterprise.inject.spi.ObserverMethod;
 import jakarta.inject.Inject;
@@ -59,9 +70,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  * that. The real-startup-event case proves the observer is registered and reached through the
  * container's own event bus on that effective configuration, and the ordering case pins the observer
  * ahead of the extension's startup initializer and of the scheduler that drives the extension's metrics
- * collector, read from the container's resolved observer set rather than from the annotation alone. No
+ * collector, read from the container's resolved observer set rather than from the annotation alone. The
+ * boot-order case observes the real boot instead of the declared priorities: a probe notified in the slot
+ * just ahead of the gate finds no instance of the metrics collector, of the resolver it asks or of the
+ * extension's producer, so the collector cannot have resolved a validator before the gate refuses. No
  * in-process start-failure harness is on the test classpath: that a refused start of the real binary
- * never becomes ready is proven on the native image by {@code ExtensionIssuerNamespaceRefusalIT}.
+ * never becomes ready is proven on the native image by {@code ExtensionIssuerNamespaceRefusalIT}, and for
+ * the same reason the boot-order case runs on the effective configuration rather than with a
+ * {@code sheriff.token.issuers.*} key, which would refuse the boot before any test runs.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -87,6 +103,12 @@ class ExtensionIssuerNamespaceGateTest {
 
     @Inject
     BeanManager beanManager;
+
+    @Inject
+    GateSlotProbe gateSlotProbe;
+
+    @Inject
+    Instance<JwtMetricsCollector> extensionMetricsCollector;
 
     private static Config configOf(Map<String, String> properties) {
         return new SmallRyeConfigBuilder()
@@ -240,6 +262,35 @@ class ExtensionIssuerNamespaceGateTest {
                         + ", scheduler=" + schedulerPriorities);
     }
 
+    @Test
+    @DisplayName("On the real boot the metrics collector has resolved no validator when the gate is notified")
+    void metricsCollectorResolvesNoValidatorBeforeTheGate() {
+        // Arrange — the probe's slot sits directly ahead of the gate's, so what it saw is what existed
+        // when the gate was notified.
+        Set<ObserverMethod<? super StartupEvent>> observers = beanManager.resolveObserverMethods(new StartupEvent());
+        int probePriority = priorityOf(observers, GateSlotProbe.class.getName());
+        int gatePriority = priorityOf(observers, ExtensionIssuerNamespaceGate.class.getName());
+
+        // Act — read what the boot left at the gate's slot, then run the collector the way its first
+        // tick does and look again with the same probe.
+        List<String> atGateSlot = gateSlotProbe.instancesAtGateSlot()
+                .orElseThrow(() -> new AssertionError("the probe was not notified of the boot StartupEvent"));
+        extensionMetricsCollector.get().updateCounters();
+        List<String> afterCollectorRan = existingValidatorChainInstances(beanManager);
+
+        // Assert — the controls first: the probe ran in the slot just ahead of the gate, and it can see
+        // the collector and its resolver once they exist, so the empty snapshot below cannot be vacuous.
+        assertEquals(gatePriority - 1, probePriority,
+                "control: the probe is notified immediately ahead of the gate");
+        assertTrue(afterCollectorRan.containsAll(
+                        List.of(JwtMetricsCollector.class.getName(), ObservedValidatorResolver.class.getName())),
+                "control: the probe sees the collector and its resolver once the collector ran; seen: "
+                        + afterCollectorRan);
+        assertEquals(List.of(), atGateSlot,
+                "no bean that resolves a validator for the metrics collector may exist when the gate is "
+                        + "notified — the collector would otherwise have read its validator before the refusal");
+    }
+
     /**
      * Profile-prefixed and default-value keys: the gate must refuse exactly the configurations the
      * extension acts on, including a key the enumeration could only miss through its profile spelling or
@@ -387,5 +438,52 @@ class ExtensionIssuerNamespaceGateTest {
                 .map(observer -> observer.getBeanClass().getName() + "@" + observer.getPriority())
                 .sorted()
                 .toList();
+    }
+
+    /**
+     * The bean classes through which the extension's metrics collector reaches a validator: the
+     * collector itself, the resolver it asks, and the extension's own producer, which builds the
+     * extension's validator when the resolver selects it.
+     */
+    private static final Set<String> VALIDATOR_CHAIN = Set.of(JwtMetricsCollector.class.getName(),
+            ObservedValidatorResolver.class.getName(), TokenValidatorProducer.class.getName());
+
+    /**
+     * Reads which beans of {@link #VALIDATOR_CHAIN} hold a contextual instance, without creating one:
+     * {@code Context#get(Contextual)} returns the existing instance or {@code null}. Every bean of the
+     * chain is normal-scoped; a dependent one would hold no instance to read and is skipped.
+     *
+     * @return the sorted bean class names that have a contextual instance
+     */
+    private static List<String> existingValidatorChainInstances(BeanManager beanManager) {
+        return beanManager.getBeans(Object.class, Any.Literal.INSTANCE).stream()
+                .filter(bean -> VALIDATOR_CHAIN.contains(bean.getBeanClass().getName()))
+                .filter(bean -> !Dependent.class.equals(bean.getScope()))
+                .filter(bean -> beanManager.getContext(bean.getScope()).get(bean) != null)
+                .map(bean -> bean.getBeanClass().getName())
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Observes the boot {@code StartupEvent} in the slot immediately ahead of the gate and records,
+     * once, which beans of {@link #VALIDATOR_CHAIN} already exist there. Only the first notification
+     * counts, so a later re-fired event cannot overwrite what the boot left.
+     */
+    @ApplicationScoped
+    static class GateSlotProbe {
+
+        private final AtomicReference<List<String>> atGateSlot = new AtomicReference<>();
+
+        void onStartup(@Observes @Priority(ExtensionIssuerNamespaceGate.OBSERVER_PRIORITY - 1) StartupEvent event,
+                BeanManager beanManager) {
+            atGateSlot.compareAndSet(null, existingValidatorChainInstances(beanManager));
+        }
+
+        /** @return what existed at the gate's slot on the first notification, empty before it */
+        Optional<List<String>> instancesAtGateSlot() {
+            return Optional.ofNullable(atGateSlot.get());
+        }
     }
 }
