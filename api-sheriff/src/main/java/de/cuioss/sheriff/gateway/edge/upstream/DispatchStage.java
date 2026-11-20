@@ -1485,17 +1485,20 @@ public final class DispatchStage {
             IdleClock messageClock = messageClock();
             UpstreamBodyTraffic.OpenBody inFlight = bodyTraffic.open();
             ByteCappedBodyStream body;
+            boolean built = false;
             try {
                 body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
                         request::reset, forwarded -> {
                             inFlight.forwarded(System.nanoTime());
                             bytesSent.addAndGet(forwarded);
                         }, idleClock, deadline, messageClock, upstreamStallMillis);
-            } catch (RuntimeException refused) {
-                // The stream subscribes the inbound body as it is built, which an inbound request whose body was
-                // already read refuses; a stream never built settles nothing, so its body is ended here.
-                inFlight.end();
-                throw refused;
+                built = true;
+            } finally {
+                if (!built) {
+                    // The stream subscribes the inbound body as it is built, which an inbound request whose body was
+                    // already read refuses; a stream never built settles nothing, so its body is ended here.
+                    inFlight.end();
+                }
             }
             body.onSettled(inFlight::end);
             cappedBody.set(body);
