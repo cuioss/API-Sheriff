@@ -17,12 +17,14 @@ package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
@@ -42,11 +44,12 @@ import io.smallrye.config.PropertiesConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.context.Dependent;
+import jakarta.enterprise.context.ContextNotActiveException;
 import jakarta.enterprise.event.Event;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Any;
 import jakarta.enterprise.inject.Instance;
+import jakarta.enterprise.inject.spi.Bean;
 import jakarta.enterprise.inject.spi.BeanManager;
 import jakarta.enterprise.inject.spi.ObserverMethod;
 import jakarta.inject.Inject;
@@ -72,8 +75,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * ahead of the extension's startup initializer and of the scheduler that drives the extension's metrics
  * collector, read from the container's resolved observer set rather than from the annotation alone. The
  * boot-order case observes the real boot instead of the declared priorities: a probe notified in the slot
- * just ahead of the gate finds no instance of the metrics collector, of the resolver it asks or of the
- * extension's producer, so the collector cannot have resolved a validator before the gate refuses. No
+ * just ahead of the gate finds no instance of any bean of the validator chain — every normal-scoped bean
+ * of the extension's package, derived from the container and shown to hold the collector, the resolver it
+ * asks and the extension's producer — so the collector cannot have resolved a validator before the gate
+ * refuses. No
  * in-process start-failure harness is on the test classpath: that a refused start of the real binary
  * never becomes ready is proven on the native image by {@code ExtensionIssuerNamespaceRefusalIT}, and for
  * the same reason the boot-order case runs on the effective configuration rather than with a
@@ -241,7 +246,7 @@ class ExtensionIssuerNamespaceGateTest {
         // Arrange — the container's resolved StartupEvent observers, with the priority each is notified at.
         Set<ObserverMethod<? super StartupEvent>> observers = beanManager.resolveObserverMethods(new StartupEvent());
         int gatePriority = priorityOf(observers, ExtensionIssuerNamespaceGate.class.getName());
-        List<Integer> extensionPriorities = prioritiesOfPackage(observers, "de.cuioss.sheriff.token.quarkus.");
+        List<Integer> extensionPriorities = prioritiesOfPackage(observers, EXTENSION_PACKAGE_PREFIX);
         List<Integer> schedulerPriorities = prioritiesOfPackage(observers, "io.quarkus.scheduler.");
 
         // Assert — the controls first: both populations the ordering is measured against exist, the
@@ -277,9 +282,16 @@ class ExtensionIssuerNamespaceGateTest {
                 .orElseThrow(() -> new AssertionError("the probe was not notified of the boot StartupEvent"));
         extensionMetricsCollector.get().updateCounters();
         List<String> afterCollectorRan = existingValidatorChainInstances(beanManager);
+        List<String> derivedChain = validatorChain(beanManager).stream()
+                .map(bean -> bean.getBeanClass().getName()).distinct().sorted().toList();
 
-        // Assert — the controls first: the probe ran in the slot just ahead of the gate, and it can see
-        // the collector and its resolver once they exist, so the empty snapshot below cannot be vacuous.
+        // Assert — the controls first: the derived population holds the collector, its resolver and the
+        // extension's producer, the probe ran in the slot just ahead of the gate, and it can see the
+        // collector and its resolver once they exist, so the empty snapshot below cannot be vacuous.
+        assertTrue(derivedChain.containsAll(List.of(JwtMetricsCollector.class.getName(),
+                        ObservedValidatorResolver.class.getName(), TokenValidatorProducer.class.getName())),
+                "control: the validator chain derived from the container reaches the collector, its resolver "
+                        + "and the extension's producer; derived: " + derivedChain);
         assertEquals(gatePriority - 1, probePriority,
                 "control: the probe is notified immediately ahead of the gate");
         assertTrue(afterCollectorRan.containsAll(
@@ -440,36 +452,60 @@ class ExtensionIssuerNamespaceGateTest {
                 .toList();
     }
 
-    /**
-     * The bean classes through which the extension's metrics collector reaches a validator: the
-     * collector itself, the resolver it asks, and the extension's own producer, which builds the
-     * extension's validator when the resolver selects it.
-     */
-    private static final Set<String> VALIDATOR_CHAIN = Set.of(JwtMetricsCollector.class.getName(),
-            ObservedValidatorResolver.class.getName(), TokenValidatorProducer.class.getName());
+    /** The package prefix of the token-validation extension's own beans. */
+    private static final String EXTENSION_PACKAGE_PREFIX = "de.cuioss.sheriff.token.quarkus.";
 
     /**
-     * Reads which beans of {@link #VALIDATOR_CHAIN} hold a contextual instance, without creating one:
-     * {@code Context#get(Contextual)} returns the existing instance or {@code null}. Every bean of the
-     * chain is normal-scoped; a dependent one would hold no instance to read and is skipped.
+     * The population that can hold the extension's metrics collector's path to a validator, derived from
+     * the container rather than listed by hand: every bean the {@link BeanManager} knows whose class lies
+     * in the extension's own package and whose scope is a normal scope — the beans that hold a contextual
+     * instance a later lookup reuses. Nothing outside that package is recorded, and any intermediate bean
+     * a later extension version adds to the chain is part of the population without an edit here.
+     * <p>
+     * <strong>Why the whole package and not the collector's injection points.</strong> Walking the
+     * collector's injection points transitively reaches the collector alone: it asks its resolver, and
+     * through it the extension's producer, by a programmatic lookup that no injection point declares, so
+     * the walk cannot see the chain at all. Every normal-scoped bean of the package is a superset of that
+     * chain, which can only make the empty-snapshot assertion stricter, never vacuous; the caller's
+     * control proves the superset still holds the collector, its resolver and the producer.
+     *
+     * @return the normal-scoped beans of the extension's package
+     */
+    private static Set<Bean<?>> validatorChain(BeanManager beanManager) {
+        return beanManager.getBeans(Object.class, Any.Literal.INSTANCE).stream()
+                .filter(bean -> bean.getBeanClass().getName().startsWith(EXTENSION_PACKAGE_PREFIX))
+                .filter(bean -> beanManager.isNormalScope(bean.getScope()))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * Reads which beans of the {@linkplain #validatorChain derived validator chain} hold a contextual
+     * instance, without creating one: {@code Context#get(Contextual)} returns the existing instance or
+     * {@code null}. A bean whose context is not active holds no instance the collector could reach.
      *
      * @return the sorted bean class names that have a contextual instance
      */
     private static List<String> existingValidatorChainInstances(BeanManager beanManager) {
-        return beanManager.getBeans(Object.class, Any.Literal.INSTANCE).stream()
-                .filter(bean -> VALIDATOR_CHAIN.contains(bean.getBeanClass().getName()))
-                .filter(bean -> !Dependent.class.equals(bean.getScope()))
-                .filter(bean -> beanManager.getContext(bean.getScope()).get(bean) != null)
+        return validatorChain(beanManager).stream()
+                .filter(bean -> hasContextualInstance(beanManager, bean))
                 .map(bean -> bean.getBeanClass().getName())
                 .distinct()
                 .sorted()
                 .toList();
     }
 
+    private static boolean hasContextualInstance(BeanManager beanManager, Bean<?> bean) {
+        try {
+            return beanManager.getContext(bean.getScope()).get(bean) != null;
+        } catch (ContextNotActiveException _) {
+            return false;
+        }
+    }
+
     /**
      * Observes the boot {@code StartupEvent} in the slot immediately ahead of the gate and records,
-     * once, which beans of {@link #VALIDATOR_CHAIN} already exist there. Only the first notification
-     * counts, so a later re-fired event cannot overwrite what the boot left.
+     * once, which beans of the {@linkplain #validatorChain derived validator chain} already exist there.
+     * Only the first notification counts, so a later re-fired event cannot overwrite what the boot left.
      */
     @ApplicationScoped
     static class GateSlotProbe {
