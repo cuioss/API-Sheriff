@@ -2124,7 +2124,8 @@ customizes: the main HTTP, main HTTPS and main domain-socket listeners. The mana
 built without the customizer, so none of these bounds reaches it: Quarkus applies no HTTP/2 setting to
 it, and it announces the transport's 8 KiB header list and keeps the transport's stream and reset
 defaults. Its HTTP/1.x header block is held at the main listeners' 16 KiB through
-`quarkus.management.limits.max-header-size`, and its request line and chunk keep transport defaults
+`quarkus.management.limits.max-header-size`, its request body at the shipped 32 KiB through
+`quarkus.management.limits.max-body-size`, and its request line and chunk keep transport defaults
 tighter than the main listeners' (`ManagementListenerTransportTest`). The last two follow from the
 never-forward set and from dispatch:
 

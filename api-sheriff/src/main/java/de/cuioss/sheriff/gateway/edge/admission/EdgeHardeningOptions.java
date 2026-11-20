@@ -33,16 +33,18 @@ import io.vertx.core.http.HttpServerOptions;
  * {@code quarkus.management.limits.*} family in the shipped {@code application.properties} instead, as
  * far as Quarkus applies that family there: its HTTP/1.x header block at the same 16 KiB, its request
  * line (4 KiB) and chunk (8 KiB) at their transport defaults, which are tighter than the bounds below,
- * its three form limits (256 fields, 2048 bytes per attribute, 1024 undecoded bytes) and its body
- * (10 MiB, enforced by the body handler on every management route) at their Quarkus defaults.
- * Quarkus applies no HTTP/2 setting to it, so it announces the transport's 8 KiB HTTP/2 header list.
+ * its three form limits (256 fields, 2048 bytes per attribute, 1024 undecoded bytes) at their Quarkus
+ * defaults, and its body at the 32 KiB the shipped file sets, enforced by the body handler on every
+ * management route — no management route reads a body, and 32 KiB stays above every body the form and
+ * chunk bounds must see to answer on their own terms. Quarkus applies no HTTP/2 setting to it, so it
+ * announces the transport's 8 KiB HTTP/2 header list.
  * Its idle reap is not part of that family: the shipped {@code application.properties} sets no
  * {@code quarkus.management.idle-timeout}, so the Quarkus default applies unless the deployment sets the
  * key, and {@code ShippedApplicationPropertiesTest} asserts that the shipped file sets none.
  * {@code ManagementListenerTransportTest} pins, on a live management listener,
- * the header block (refused {@code 431} past 16 KiB, the one bound the shipped file sets), the request
- * line (refused {@code 414} past the 4 KiB transport default), each form limit (refused {@code 400}
- * one unit past it), the body (refused {@code 413} past 10 MiB) and the 8 KiB HTTP/2 header list it
+ * the header block (refused {@code 431} past 16 KiB) and the body (refused {@code 413} past 32 KiB) —
+ * the two bounds the shipped file sets — the request line (refused {@code 414} past the 4 KiB transport
+ * default), each form limit (refused {@code 400} one unit past it) and the 8 KiB HTTP/2 header list it
  * announces, each refusal against a served control at or under the bound. The chunk bound refuses
  * nothing: the codec delivers a larger chunk in pieces of at most 8 KiB, which no client can observe, so
  * the test asserts what is observable — a chunk twice that size is served.
