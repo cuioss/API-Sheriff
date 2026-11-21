@@ -102,11 +102,13 @@ public class EdgeRules {
 
     /**
      * The consequence and remedy {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} states for a
-     * {@code forwarded.trusted_proxies} range holding a loopback address under passthrough.
+     * {@code forwarded.trusted_proxies} range holding a loopback address under passthrough. The
+     * consequence is conditional on the range holding the relay leg's own loopback address, because a
+     * range can overlap loopback without holding that address.
      */
-    private static final String LOOPBACK_PROXY_CONSEQUENCE = "the loopback relay leg is a trusted proxy, so every"
-            + " terminated client's own Forwarded and X-Forwarded-For headers are trusted. Remove the loopback"
-            + " range from forwarded.trusted_proxies";
+    private static final String LOOPBACK_PROXY_CONSEQUENCE = "when that range holds the relay leg's loopback"
+            + " address, the relay leg is a trusted proxy, so every terminated client's own Forwarded and"
+            + " X-Forwarded-For headers are trusted. Remove the loopback range from forwarded.trusted_proxies";
 
     /**
      * Rule: every {@code trusted_proxies} entry is a well-formed CIDR; the union of
@@ -340,7 +342,7 @@ public class EdgeRules {
 
     /**
      * Rule: under a non-empty {@code tls.passthrough_sni}, emits the boot WARN
-     * {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} once for each configuration that acts
+     * {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} once for each configuration that may act
      * on the loopback relay leg as if it were a client. Behind the SNI front every terminated connection
      * reaches the edge from that one loopback leg, so the edge sees every terminated client as one
      * loopback peer:
@@ -348,9 +350,13 @@ public class EdgeRules {
      * <li>{@code enumeration_detection} enabled with the acting action {@code block} or {@code delay}
      * keys every terminated client on that one source, so the action a source earns acts on all of them
      * at once;</li>
-     * <li>a {@code forwarded.trusted_proxies} range holding a loopback address ({@code 127.0.0.0/8} or
-     * {@code ::1}) makes that leg a trusted proxy, so every client's own forwarded headers are
-     * trusted.</li>
+     * <li>a {@code forwarded.trusted_proxies} range holding a loopback address (overlapping
+     * {@code 127.0.0.0/8}, or containing {@code ::1}) makes that leg a trusted proxy when it holds the
+     * relay leg's own address, so every client's own forwarded headers are trusted. The terminated relay
+     * dials {@code localhost}, so its leg is {@code 127.0.0.1} or {@code ::1}; a narrower loopback range
+     * such as {@code 127.0.0.2/32}, or {@code ::1/128} alone while the leg is IPv4, overlaps loopback
+     * without holding it. The record still fires for every such range, and states the consequence as
+     * conditional on the range holding the relay leg's address.</li>
      * </ul>
      * Without passthrough the rule returns at once. A malformed {@code trusted_proxies} entry is skipped
      * here, because {@link #validateForwardedTrust} already refuses it. Each record names its combination
@@ -383,6 +389,11 @@ public class EdgeRules {
     /**
      * Whether a {@code trusted_proxies} entry holds a loopback address: an IPv4 range overlapping
      * {@code 127.0.0.0/8}, or an IPv6 range containing {@code ::1}. A malformed entry holds none.
+     * <p>
+     * The test is deliberately wider than the relay leg's own address: a range such as
+     * {@code 127.0.0.2/32} holds a loopback address yet not the {@code 127.0.0.1} or {@code ::1} the
+     * relay leg dials from. It still answers {@code true}, so the record is never silenced for it, and
+     * the record's consequence is conditional on the range holding the relay leg's address.
      */
     private static boolean holdsLoopback(String cidr) {
         return parseCidr(cidr).map(range -> overlaps(range, range.bits() == IPV4_BITS ? IPV4_LOOPBACK : IPV6_LOOPBACK))

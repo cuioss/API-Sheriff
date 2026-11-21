@@ -87,9 +87,12 @@ class EdgeRulesTest {
             "while no loopback address is a trusted proxy",
             "the block or delay that source earns acts on all of them at once");
 
-    /** The consequence a loopback trusted proxy has under passthrough. */
+    /**
+     * The consequence a loopback trusted proxy has under passthrough, bound to its condition: the relay
+     * leg is a trusted proxy only when the range holds the relay leg's loopback address.
+     */
     private static final List<String> LOOPBACK_PROXY_CONSEQUENCE = List.of(
-            "the loopback relay leg is a trusted proxy",
+            "when that range holds the relay leg's loopback address, the relay leg is a trusted proxy",
             "every terminated client's own Forwarded and X-Forwarded-For headers are trusted");
 
     private final ConfigValidator validator = new ConfigValidator();
@@ -315,8 +318,10 @@ class EdgeRulesTest {
          * non-empty {@code passthrough_sni}, and once for a {@code trusted_proxies} range holding a
          * loopback address — overlapping {@code 127.0.0.0/8}, or containing {@code ::1}. A covering range
          * counts as well: {@code 0.0.0.0/1} holds {@code 127.0.0.0/8} and {@code ::/1} holds {@code ::1},
-         * and both boot, since only a set covering the whole address space is refused (ADR-0044). Each
-         * record states the consequence of its own combination and not the other's. Its matched controls
+         * and both boot, since only a set covering the whole address space is refused (ADR-0044). A narrow
+         * loopback range that does not hold the relay leg's address, such as {@code 127.0.0.2/32}, still
+         * emits the record, whose loopback consequence is conditional on the range holding that address.
+         * Each record states the consequence of its own combination and not the other's. Its matched controls
          * stay silent: passthrough alone, each combination without passthrough, {@code observe} or
          * disabled detection under passthrough, and a non-loopback proxy list under passthrough.
          */
@@ -332,6 +337,8 @@ class EdgeRulesTest {
                             List.of("192.0.2.0/24", "127.0.0.1/32"), LOOPBACK_PROXY_TOKEN),
                     Arguments.of("passthrough with an IPv6 range containing ::1", true, null, List.of("::1/128"),
                             LOOPBACK_PROXY_TOKEN),
+                    Arguments.of("passthrough with the narrow non-relay loopback range 127.0.0.2/32", true, null,
+                            List.of("127.0.0.2/32"), LOOPBACK_PROXY_TOKEN),
                     Arguments.of("passthrough with the covering IPv4 range 0.0.0.0/1", true, null,
                             List.of("0.0.0.0/1"), LOOPBACK_PROXY_TOKEN),
                     Arguments.of("passthrough with the covering IPv6 range ::/1", true, null, List.of("::/1"),

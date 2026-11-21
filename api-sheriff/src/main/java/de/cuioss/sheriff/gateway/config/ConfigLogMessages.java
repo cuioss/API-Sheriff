@@ -689,7 +689,7 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
-         * {@code tls.passthrough_sni} is non-empty while the configuration treats the loopback relay leg
+         * {@code tls.passthrough_sni} is non-empty while the configuration may treat the loopback relay leg
          * as a client: {@code enumeration_detection} is enabled with the acting action {@code block} or
          * {@code delay}, or a {@code forwarded.trusted_proxies} range holds a loopback address.
          * <p>
@@ -700,9 +700,12 @@ public final class ConfigLogMessages {
          * <li>an acting detection action keys every terminated client on one source while no loopback
          * address is a trusted proxy, so the block or delay that source earns acts on all of them at
          * once — remedied by setting {@code enumeration_detection.action} to {@code observe};</li>
-         * <li>a loopback trusted proxy makes the relay leg a trusted proxy, so every terminated client's
-         * own {@code Forwarded} and {@code X-Forwarded-For} headers are trusted — remedied by removing
-         * the loopback range from {@code forwarded.trusted_proxies}.</li>
+         * <li>a loopback trusted proxy makes the relay leg a trusted proxy when the range holds the relay
+         * leg's own loopback address, so every terminated client's own {@code Forwarded} and
+         * {@code X-Forwarded-For} headers are trusted — remedied by removing the loopback range from
+         * {@code forwarded.trusted_proxies}. The record fires for every loopback range, including one
+         * that overlaps loopback without holding the relay leg's address, so it states this
+         * consequence as conditional.</li>
          * </ul>
          * <p>
          * It is a {@code WARN} and never a boot refusal: each combination is a legal configuration whose
