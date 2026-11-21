@@ -17,9 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
 import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.Map;
