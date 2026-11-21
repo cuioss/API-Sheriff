@@ -22,6 +22,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -46,8 +47,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * passing on a listener that refuses every body. Under the 10 MiB Quarkus default the refused request
  * would be served, so the first assertion fails on an image without the key.
  * <p>
- * Every probe route the management router serves answers a body-less {@code GET} with {@code 200} on
- * the same container, which shows the bound costs none of the probes a deployment relies on.
+ * Each listed default SmallRye Health route ({@code /health}, {@code /health/live},
+ * {@code /health/ready}, {@code /health/started}, {@code /health/group}, {@code /health/well}) and the
+ * {@code /metrics} route answers a body-less {@code GET} with {@code 200} on the same container, which
+ * shows the bound costs none of the listed probes a deployment relies on.
  * <p>
  * The exchange runs over a raw TLS socket pinned to HTTP/1.1, so the declared {@code Content-Length}
  * is under the test's control rather than a client's: an HTTP client would refuse to declare a length
@@ -66,7 +69,10 @@ class ManagementBodyBoundIT extends BaseIntegrationTest {
     private static final int OK = 200;
     private static final int PAYLOAD_TOO_LARGE = 413;
 
-    /** How long one exchange with the management listener may take. */
+    /**
+     * How long each step of one exchange with the management listener may wait: the TCP connect, and
+     * every read of the handshake and of the answer.
+     */
     private static final int EXCHANGE_TIMEOUT_MILLIS = 10_000;
 
     /** The liveness probe, relative to the management root path. */
@@ -85,8 +91,9 @@ class ManagementBodyBoundIT extends BaseIntegrationTest {
     }
 
     @ParameterizedTest(name = "GET {0}")
-    @ValueSource(strings = {"/health", "/health/live", "/health/ready", "/health/started", "/metrics"})
-    @DisplayName("answers a body-less GET on every probe route with 200 under the body bound")
+    @ValueSource(strings = {"/health", "/health/live", "/health/ready", "/health/started", "/health/group",
+        "/health/well", "/metrics"})
+    @DisplayName("answers a body-less GET on each listed default SmallRye Health and metrics route with 200 under the body bound")
     void servesEveryProbeRouteABodylessGet(String route) throws Exception {
         assertEquals(OK, statusOf(bodylessGetOf(route)),
                 "the probe route " + route + " is served: no probe needs a body the bound could refuse");
@@ -131,17 +138,21 @@ class ManagementBodyBoundIT extends BaseIntegrationTest {
 
     /**
      * Sends one raw HTTP/1.1 request over TLS to the management listener and reads the status of its
-     * answer.
+     * answer. The socket is created unconnected and connected with {@link #EXCHANGE_TIMEOUT_MILLIS} as
+     * its connect timeout, so a listener that drops the connect attempt fails the exchange within that
+     * time; the same value, as the socket's read timeout, then bounds every read of the handshake and of
+     * the answer.
      *
      * @param request the complete request, head, blank line and any body
      * @return the status code of the answer
-     * @throws IOException              when the exchange fails or the listener closes without answering
+     * @throws IOException              when the exchange fails, a connect or read times out, or the
+     *                                  listener closes without answering
      * @throws GeneralSecurityException when the TLS context cannot be built
      */
     private static int statusOf(String request) throws IOException, GeneralSecurityException {
         URI origin = managementOrigin();
-        try (SSLSocket socket = (SSLSocket) LocalStackTls.trustAllContext().getSocketFactory()
-                     .createSocket(origin.getHost(), origin.getPort())) {
+        try (SSLSocket socket = (SSLSocket) LocalStackTls.trustAllContext().getSocketFactory().createSocket()) {
+            socket.connect(new InetSocketAddress(origin.getHost(), origin.getPort()), EXCHANGE_TIMEOUT_MILLIS);
             socket.setSoTimeout(EXCHANGE_TIMEOUT_MILLIS);
             // Pin HTTP/1.1: the request is hand-framed HTTP/1.1, which an ALPN-negotiated HTTP/2
             // connection would not parse.

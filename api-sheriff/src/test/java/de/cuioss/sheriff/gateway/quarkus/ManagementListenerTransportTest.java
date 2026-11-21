@@ -64,8 +64,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Every bound but the chunk is shown by a request past it, which is refused, and a matched request
  * under or at it, which the liveness probe serves; for HTTP/2 the announced setting is read instead.
  * The header-block and body cases are the two the shipped keys change: under the 20 KiB header and
- * 10 MiB body Quarkus defaults each would serve the request that is refused here. Every probe route
- * the management router serves still answers a body-less {@code GET} at the body bound, and the form
+ * 10 MiB body Quarkus defaults each would serve the request that is refused here. Each listed default
+ * SmallRye Health route ({@code health}, {@code health/live}, {@code health/ready},
+ * {@code health/started}, {@code health/group}, {@code health/well}) and the {@code metrics} route
+ * still answers a body-less {@code GET} at the body bound, and the form
  * and chunk cases below stay green under it, which is what shows the body bound pre-empts none of
  * them. The request-line case pins a transport default the shipped
  * file relies on. The HTTP/2 case reads the header-list size the listener announces to a
@@ -258,8 +260,9 @@ class ManagementListenerTransportTest {
     }
 
     @ParameterizedTest(name = "GET {0}")
-    @ValueSource(strings = {"health", "health/live", "health/ready", "health/started", "metrics"})
-    @DisplayName("answers a body-less GET on every probe route with 200 under the body bound")
+    @ValueSource(strings = {"health", "health/live", "health/ready", "health/started", "health/group",
+        "health/well", "metrics"})
+    @DisplayName("answers a body-less GET on each listed default SmallRye Health and metrics route with 200 under the body bound")
     void servesEveryProbeRouteABodylessGet(String route) throws Exception {
         assertEquals(OK, statusOf(bodylessGetOf(route)),
                 "the probe route " + route + " is served: no probe needs a body the bound could refuse");
