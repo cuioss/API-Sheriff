@@ -311,9 +311,12 @@ share -- or at its route decision beyond its passthrough target's dial budget is
 * *logged* as `WARN ApiSheriff-146` (`ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED`), at most once
   per `SniFrontListener.SATURATION_WARN_INTERVAL` (60 s, measured on the monotonic `System.nanoTime()`
   clock) per reason, with the reason token (`cap` / `source_share` / `dial_budget` -- the same spelling
-  as the metric label), the bound that was full and the
-  window. Every further refusal of that reason inside the window is logged at `DEBUG`. Neither line
-  ever names the peer address or a received byte.
+  as the metric label), the stage that reason refuses at, the bound that was full and the window. The
+  stage is a field of `SniFrontListener.Refusal` beside its token -- `at accept, without reading from
+  the connection` for `cap` and `source_share`, `at its route decision, before its backend is dialled`
+  for `dial_budget` -- and reaches the record as a parameter, so the template lists no reason of its own
+  and a reason added to the enum is logged with its own stage. Every further refusal of that reason
+  inside the window is logged at `DEBUG`. Neither line ever names the peer address or a received byte.
 
 The package-private constructor of `SniFrontListener` takes the share, the warn window, the clock, the
 source key and the recorder explicitly. A test drives a second warn window by advancing its own clock

@@ -465,6 +465,11 @@ class SniFrontListenerTest {
                     () -> assertEquals(1, warnings.size(), "only the first refusal of the window is a WARN"),
                     () -> assertTrue(warnings.getFirst().getMessage().contains("(cap)"),
                             "the WARN names the reason token: " + warnings.getFirst().getMessage()),
+                    () -> assertTrue(warnings.getFirst().getMessage().contains(
+                                    "(cap) at accept, without reading from the connection:"),
+                            "the WARN places a cap refusal at accept: " + warnings.getFirst().getMessage()),
+                    () -> assertFalse(warnings.getFirst().getMessage().contains("route decision"),
+                            "a cap refusal's WARN names no other stage: " + warnings.getFirst().getMessage()),
                     () -> assertFalse(warnings.getFirst().getMessage().contains(HOST),
                             "the WARN never names the peer address: " + warnings.getFirst().getMessage()),
                     () -> assertEquals(2, debugLines("Front connection refused (cap)").size(),
@@ -538,8 +543,16 @@ class SniFrontListenerTest {
                     () -> assertEquals(2, warnings.size(), "each reason opens its own warn window"),
                     () -> assertTrue(warnings.get(0).getMessage().contains("(source_share)"),
                             "the share refusal names its reason: " + warnings.get(0).getMessage()),
+                    () -> assertTrue(warnings.get(0).getMessage().contains(
+                                    "(source_share) at accept, without reading from the connection:"),
+                            "the share refusal is placed at accept: " + warnings.get(0).getMessage()),
+                    () -> assertFalse(warnings.get(0).getMessage().contains("route decision"),
+                            "the share refusal names no other stage: " + warnings.get(0).getMessage()),
                     () -> assertTrue(warnings.get(1).getMessage().contains("(cap)"),
-                            "the cap refusal names its reason: " + warnings.get(1).getMessage()));
+                            "the cap refusal names its reason: " + warnings.get(1).getMessage()),
+                    () -> assertTrue(warnings.get(1).getMessage().contains(
+                                    "(cap) at accept, without reading from the connection:"),
+                            "the cap refusal is placed at accept: " + warnings.get(1).getMessage()));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
@@ -613,6 +626,27 @@ class SniFrontListenerTest {
                     () -> assertFalse(ofA.closedNanos().isDone(), "source-a's admitted connection stays open"),
                     () -> assertFalse(ofB.closedNanos().isDone(), "source-b's admitted connection stays open"));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * The record takes the reason and its stage from the refusal being logged, so the template itself
+         * names neither: formatted with neutral arguments, it carries no reason token and no stage of any
+         * {@link Refusal}. A reason added to the enum is covered without touching this case.
+         */
+        @Test
+        @DisplayName("the refusal WARN template names no reason and no stage of its own")
+        void theTemplateEnumeratesNoReason() {
+            String formatted = ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.format("reason", "stage", "1", "60");
+
+            assertAll("every reason and stage reaches the line through a parameter",
+                    () -> assertTrue(formatted.contains("(reason) stage: a bound of 1 connections is full"),
+                            "the token and the stage are the first two parameters: " + formatted),
+                    () -> assertTrue(Arrays.stream(Refusal.values()).noneMatch(r -> formatted.contains(r.token())),
+                            "the template names no reason token: " + formatted),
+                    () -> assertTrue(Arrays.stream(Refusal.values()).noneMatch(r -> formatted.contains(r.stage())),
+                            "the template names no stage: " + formatted),
+                    () -> assertTrue(Arrays.stream(Refusal.values()).noneMatch(r -> r.stage().isBlank()),
+                            "every reason carries a stage to log"));
         }
 
         @Test
@@ -1008,8 +1042,12 @@ class SniFrontListenerTest {
                     () -> assertTrue(warnings.getFirst().getMessage().contains("bound of " + BUDGET + " "),
                             "the WARN names the budget as the bound that was full: "
                                     + warnings.getFirst().getMessage()),
-                    () -> assertTrue(warnings.getFirst().getMessage().contains("a dial_budget refusal at its route decision"),
-                            "the WARN places a dial_budget refusal at the route decision, not at accept: "
+                    () -> assertTrue(warnings.getFirst().getMessage().contains(
+                                    "(dial_budget) at its route decision, before its backend is dialled:"),
+                            "the WARN places a dial_budget refusal at the route decision: "
+                                    + warnings.getFirst().getMessage()),
+                    () -> assertFalse(warnings.getFirst().getMessage().contains("at accept"),
+                            "the WARN does not place a dial_budget refusal at accept: "
                                     + warnings.getFirst().getMessage()),
                     () -> assertFalse(darkDials.getFirst().leg().closedNanos().isDone(),
                             "an admitted dial is still pending, its connection open"));

@@ -93,11 +93,14 @@ declares a proxy's managed family (see <<_a_family_accept_setting>>), so no requ
 *The per-source keys of an unresolved chain.* A trusted proxy's request whose `X-Forwarded-For` or
 `Forwarded` carries a value from which no client resolves -- a disagreeing pair, a malformed chain, a
 value sanitization drops, a client named by something other than an address -- is keyed by per-source detection and by the BFF pending-login quota on that
-proxy's own source, `unresolved-via-` followed by the proxy's canonical address. There is one such
-source per proxy: every request through that proxy whose chain resolves no client shares it, whichever
-client sent it. Detection acts on it like on any source, because a client can always produce such a
-header, so a block or a delay it earns acts on every client whose request through that proxy is keyed
-there. Only a request carrying no such
+proxy's own source, `unresolved-via-` followed by the proxy's canonical address. The canonical address
+of an IPv4 proxy is its address, so each IPv4 trusted proxy has a source of its own; that of an IPv6
+proxy is its /64 prefix, so every IPv6 trusted proxy in one /64 shares one such source. Every request
+whose chain resolves no client and that arrives through a proxy with that canonical address shares
+the source, whichever client sent it. Detection tracks and acts on the pair of that source and the
+request's folded host, like on any source, because a client can always produce such a header: a
+block or a delay the pair earns acts on every request keyed on both that unresolved source and that
+folded host. Only a request carrying no such
 value at all, or only blank ones, is keyed on the shared `unknown` source, which detection counts but never acts on.
 
 *The judged value.* The resolver joins every instance of a header with `", "` and sanitizes the joined
@@ -159,7 +162,7 @@ RFC 7239 section 6.3 suggests obfuscated identifiers to avoid leaking internal t
 
 === Accepted costs
 
-* A trusted proxy that does not manage `X-Forwarded-*` is unsupported, and no setting covers that deployment. Passing a client's `X-Forwarded-For` through unchanged hands the spoofed chain the win. Appending only to `Forwarded` makes a client-sent `X-Forwarded-For` contest the chain: no client resolves, and every such request through that proxy shares the proxy's unresolved source.
+* A trusted proxy that does not manage `X-Forwarded-*` is unsupported, and no setting covers that deployment. Passing a client's `X-Forwarded-For` through unchanged hands the spoofed chain the win. Appending only to `Forwarded` makes a client-sent `X-Forwarded-For` contest the chain: no client resolves, and every such request shares the proxy's unresolved source -- its own for an IPv4 proxy, the one of its /64 for an IPv6 proxy, shared with every trusted proxy in that /64.
 
 == Links
 

@@ -317,7 +317,9 @@ places:
 
 | `WARN ApiSheriff-146`
 | The first refusal of each reason in a 60 s window, naming the reason (`cap` / `source_share` /
-  `dial_budget`), the bound and the window. Further refusals of that reason inside the window are
+  `dial_budget`), where that reason refused -- `at accept, without reading from the connection` for
+  `cap` and `source_share`, `at its route decision, before its backend is dialled` for `dial_budget`
+  -- the bound and the window. Further refusals of that reason inside the window are
   logged at `DEBUG`, so a flood leaves one line per minute and reason, not one per connection.
 |===
 
@@ -391,8 +393,12 @@ every change to it -- adding a root or removing one -- takes effect only when th
   because every certificate in the bundle is an anchor. A cross-certificate is another: if a remaining
   root has cross-signed the removed root or one of its intermediates, a client that presents that
   cross-certificate can still complete the handshake. Before relying on the cut-off, make sure no
-  certificate left in the file certifies the removed one or belongs to its chain, and confirm the
-  cut-off with a client certificate issued under the removed root.
+  certificate left in the file certifies the removed one or belongs to its chain. The file cannot show
+  a cross-certificate a client presents, so establish with the issuers of the remaining roots whether
+  any of them cross-signed the removed root or one of its intermediates: while such a root stays in
+  the file, the cut-off does not reach a client that presents that cross-certificate. Confirm the
+  cut-off with a client certificate issued under each intermediate of the removed root, not only with
+  one issued directly under the root.
 * *There is no per-certificate revocation.* Neither CRL nor OCSP is checked, so the only revocation
   lever is removing from the file every certificate of the chain a client certificate builds to it.
   Removing the root is not enough on its own: every certificate in the bundle is a trust anchor, so an
