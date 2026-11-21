@@ -1984,8 +1984,8 @@ for good (CWE-400). The front bounds each with a fixed value that no configurati
   backend. A backend is the host and port a passthrough alias resolves to, not an SNI hostname: every
   hostname that resolves to it shares its budget, and its host name is compared without regard to
   letter case, so two aliases that spell one backend's name differently cannot hold a budget each. The
-  terminated hand-off target is exempt: its dial goes to the gateway's own loopback listener and settles
-  at once.
+  terminated hand-off target is exempt: its dial goes to the gateway's own internal listener through
+  `localhost` and settles at once.
 * *A visible refusal.* Every connection closed at accept, beyond the cap or beyond its source's share,
   and every connection closed at its route decision beyond its backend's dial budget, is counted on
   `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged

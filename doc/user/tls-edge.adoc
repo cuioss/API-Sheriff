@@ -242,7 +242,8 @@ passthrough backend from holding the others off:
   belongs to the backend -- the host and port a passthrough alias resolves to -- not to the SNI
   hostname: hostnames whose aliases resolve to the same host and port share its 128, and a backend
   host name is the same backend however its letters are cased. Connections to the terminated listener
-  are not budgeted: that dial goes to the gateway's own loopback port and completes at once.
+  are not budgeted: that dial goes to the gateway's own internal listener through `localhost` and
+  completes at once.
 
 | Relay idle timeout
 | derived
