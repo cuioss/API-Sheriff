@@ -261,7 +261,7 @@ class ManagementListenerTransportTest {
 
     @ParameterizedTest(name = "GET {0}")
     @ValueSource(strings = {"health", "health/live", "health/ready", "health/started", "health/group",
-        "health/well", "metrics"})
+            "health/well", "metrics"})
     @DisplayName("answers a body-less GET on each listed default SmallRye Health and metrics route with 200 under the body bound")
     void servesEveryProbeRouteABodylessGet(String route) throws Exception {
         assertEquals(OK, statusOf(bodylessGetOf(route)),
