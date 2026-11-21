@@ -2,10 +2,10 @@
   "id": "PLAN-SEC2-07",
   "slug": "hardening-quick-wins",
   "workstream": "WS-04",
-  "status": "staged",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "sec2-07-hardening-quick-wins",
+  "pr": "647",
+  "landing": "landings/PLAN-SEC2-07.md",
   "seq": 7
 }
