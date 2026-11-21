@@ -175,9 +175,9 @@ listener and the main domain-socket listener. The management interface is built 
 customizer, so none of them reaches it. It is bounded through the `quarkus.management.limits.*` family
 in the shipped `application.properties` instead, as far as Quarkus applies that family there: its
 HTTP/1.x header block at the main listener's 16 KiB, its request line (4 KiB) and chunk (8 KiB) at their
-transport defaults, which are tighter than the main listener's, and its three form limits (256 fields,
-2048 bytes per attribute, 1024 undecoded bytes) and body (10 MiB, enforced by the body handler on every
-management route) at their Quarkus defaults. Quarkus applies no HTTP/2 setting to
+transport defaults, which are tighter than the main listener's, its three form limits (256 fields,
+2048 bytes per attribute, 1024 undecoded bytes) at their Quarkus defaults, and its body at the shipped
+32 KiB, still enforced by the body handler on every management route. Quarkus applies no HTTP/2 setting to
 the management listener, so it announces the transport's 8 KiB header list, keeps the transport's
 stream and reset defaults and gets no connection-window sizing. Its idle reap is not part of that
 family: the shipped `application.properties` sets no `quarkus.management.idle-timeout`, so the
@@ -201,7 +201,10 @@ test asserts that a chunk twice its size is served.
 [[_connection_cap]]
 *Connection cap.* The Quarkus-terminated side bounds its open connections with one counter,
 `quarkus.http.limits.max-connections`, shared by the plain-HTTP redirect listener and the HTTPS
-listener (the SNI front listener and the management interface are not counted). The cap is set at
+listener (the SNI front listener and the management interface are not counted). It counts a
+connection on the HTTPS listener only once its TLS handshake has completed, and it has no per-source
+share: one source can hold the whole counter, and routing through the SNI front does not bound it,
+because the front's per-source share counts only the connections it has not yet handed over. The cap is set at
 twice the default admission cap, so on HTTP/1.1, where a request needs a connection of its own,
 admission has room to answer its `503` while a connection slot remains; idle keep-alive connections
 can still fill the cap, and a connection beyond it is closed unserved. An `edge_hardening.admission_cap` above

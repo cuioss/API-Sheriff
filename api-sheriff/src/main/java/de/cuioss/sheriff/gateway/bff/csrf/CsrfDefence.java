@@ -230,10 +230,11 @@ public final class CsrfDefence {
      * {@code Sec-Fetch-Mode} with it (and {@code Sec-Fetch-Dest} in every current version); a client
      * that omits them is not a browser forged into the request and holds no victim's cookie.
      * <p>
-     * {@code Sec-Fetch-Site: none} is not a proof. A browser sends it for a typed URL and a bookmark, but
-     * also for a link opened from another application — a mail client or a chat — so a delivered link
-     * carries it too. Such a request is answered the confirmation page by the caller, as is a request
-     * from a browser without Fetch Metadata and without {@code Origin}. A cookie-forwarding instance
+     * With {@code Origin} absent, {@code Sec-Fetch-Site: none} is not a proof; a trusted {@code Origin} is
+     * admitted whatever {@code Sec-Fetch-Site} says. A browser sends {@code none} for a typed URL and a
+     * bookmark, but also for a link opened from another application — a mail client or a chat — so a
+     * delivered link carries it too. Such a request is answered the confirmation page by the caller, as
+     * is a request from a browser without Fetch Metadata and without {@code Origin}. A cookie-forwarding instance
      * has no received origin to compare against here, so only its additional origins are trusted.
      * <p>
      * Thread-safe: the defence is immutable.

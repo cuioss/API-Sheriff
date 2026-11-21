@@ -344,26 +344,28 @@ public final class ApiSheriffLogMessages {
                 .build();
 
         /**
-         * The accept-time SNI front closed a connection at once, for one of exactly three reasons. At
-         * accept, without reading from it: the undecided-connection cap was full ({@code cap}), or the
-         * connection's source already held its full share of that cap ({@code source_share}). At the
-         * route decision of a passthrough match, without dialling its backend: the connection's target
-         * already had its full dial budget in flight ({@code dial_budget}), so the bound logged is that
-         * budget — the dialling connections of one target, which count against the cap. The cap and the
-         * share count connections waiting for their ClientHello or for their relay's backend dial to
-         * settle, so they fill under a flood of slow or silent handshakes and equally behind passthrough
-         * backends that do not answer the dial, whose connections each hold a slot for any host-name
-         * lookup of the backend plus the full connect timeout; the dial budget keeps one such backend
-         * from holding more than its eighth of the cap. Rate-limited: emitted at
-         * most once per fixed window per reason; every further refusal for that reason inside the window is a
-         * {@code DEBUG} diagnostic, and every refusal is counted on
-         * {@code sheriff_front_connections_refused_total}. Records the reason token, the bound that was
-         * full and the window in seconds only — never the peer address or any byte received.
+         * The accept-time SNI front closed a connection at once, for the
+         * {@link de.cuioss.sheriff.gateway.tls.SniFrontListener.Refusal reason} the record names, at the
+         * stage that reason refuses at. The parameters are the reason's
+         * {@link de.cuioss.sheriff.gateway.tls.SniFrontListener.Refusal#token() token}, its
+         * {@link de.cuioss.sheriff.gateway.tls.SniFrontListener.Refusal#stage() stage}, the bound that was
+         * full and the window in seconds. The template names no reason and no stage of its own: both
+         * come from the refusal being logged, so a reason added to the enum is logged truthfully without
+         * the template changing. The reasons, their stages and the bound each one reports are documented
+         * on the enum. The bounds count connections waiting for their ClientHello or for their relay's
+         * backend dial to settle, so they fill under a flood of slow or silent handshakes and equally
+         * behind passthrough backends that do not answer the dial, whose connections each hold a slot for
+         * any host-name lookup of the backend plus the full connect timeout. Rate-limited: emitted at most
+         * once per fixed window per reason; every further
+         * refusal for that reason inside the window is a {@code DEBUG} diagnostic, and every refusal is
+         * counted on {@code sheriff_front_connections_refused_total}. Records the reason token, its stage,
+         * the bound that was full and the window in seconds only — never the peer address or any byte
+         * received.
          */
         public static final LogRecord FRONT_CONNECTION_REFUSED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(146)
-                .template("Front connection refused at accept (%s): the bound of %s undecided connections is full — further refusals for this reason within %s seconds stay at DEBUG and are counted on sheriff_front_connections_refused_total")
+                .template("Front connection refused (%s) %s: a bound of %s connections is full — further refusals for this reason within %s seconds stay at DEBUG and are counted on sheriff_front_connections_refused_total")
                 .build();
     }
 }

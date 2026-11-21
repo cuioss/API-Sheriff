@@ -98,7 +98,7 @@ class SingleSourceTlsContractTest {
      */
     private static final Set<String> SANCTIONED_EXCEPTIONS = Set.of(
             // Deployment-bound port. Promoting it would break the ADR-0017 SNI split, where a
-            // deployment moves the terminated listener to the internal loopback port through
+            // deployment moves the terminated listener to the internal port through
             // QUARKUS_HTTP_SSL_PORT — a topology a gateway.yaml-owned port could not express.
             "quarkus.http.ssl-port",
             // Deployment-bound exposure knob of the same class: a port/exposure decision the

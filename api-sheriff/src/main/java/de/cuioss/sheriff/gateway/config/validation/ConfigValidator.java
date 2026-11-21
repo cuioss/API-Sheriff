@@ -59,7 +59,8 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * {@link AnchorRules} (the anchors), {@link AuthRules} (the {@code auth} blocks and endpoint scopes),
  * {@link LimitRules} (the security-filter profile, the edge limits, the enumeration detection, the
  * threat classification and the unenforced {@code rate_limit}), {@link TerminalActionRules}
- * (upstream, asset or redirect), {@link EdgeRules} (forwarded trust and TLS passthrough),
+ * (upstream, asset or redirect), {@link EdgeRules} (forwarded trust and TLS passthrough, including the
+ * boot WARN for a passthrough topology meeting an acting detection action or a loopback trusted proxy),
  * {@link HeaderRules} (CORS, Content-Security-Policy and the security-header modes),
  * {@link OidcSessionRules} (the BFF session), {@link OidcClientRules} (the OIDC client),
  * {@link ReservedPathRules} (the reserved OIDC endpoint paths), {@link ProtocolRules} (WebSocket and
@@ -274,6 +275,7 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughAliasResolvable(gateway, topology,
                     errors),
+            (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughSourceCollapse(gateway),
             (gateway, endpoints, topology, errors) -> ProtocolRules.validateWebSocketConfig(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> ProtocolRules.validateRewriteLocationProtocol(endpoints, errors),
             (gateway, endpoints, topology, errors) -> TerminalActionRules.validateAssetIndexAndFallback(endpoints,

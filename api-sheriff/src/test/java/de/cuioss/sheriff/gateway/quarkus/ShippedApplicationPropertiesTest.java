@@ -76,8 +76,8 @@ import org.junit.jupiter.api.Test;
  * Deleting the key turns this class red; {@code MainListenerConnectionCapTest} proves the key acts on
  * the listener.
  * <p>
- * For the management interface it guards the header-block key the shipped file sets and the idle-reap
- * key it leaves unset, {@code quarkus.management.idle-timeout}, so that listener keeps the Quarkus
+ * For the management interface it guards the header-block and body keys the shipped file sets and the
+ * idle-reap key it leaves unset, {@code quarkus.management.idle-timeout}, so that listener keeps the Quarkus
  * default idle reap.
  *
  * @author API Sheriff Team
@@ -99,6 +99,8 @@ class ShippedApplicationPropertiesTest {
     private static final String MAX_CONNECTIONS = "quarkus.http.limits.max-connections";
 
     private static final String MANAGEMENT_MAX_HEADER_SIZE = "quarkus.management.limits.max-header-size";
+
+    private static final String MANAGEMENT_MAX_BODY_SIZE = "quarkus.management.limits.max-body-size";
 
     private static final String MANAGEMENT_IDLE_TIMEOUT = "quarkus.management.idle-timeout";
 
@@ -209,6 +211,26 @@ class ShippedApplicationPropertiesTest {
         assertEquals("16K", shipped.getProperty(MANAGEMENT_MAX_HEADER_SIZE),
                 () -> MANAGEMENT_MAX_HEADER_SIZE + " must stay declared at 16K in the shipped application.properties, "
                         + "or the management listener keeps the 20 KiB Quarkus default above the main listener's bound");
+    }
+
+    /**
+     * The management interface's body bound. No management route reads a request body, so without
+     * {@code quarkus.management.limits.max-body-size} the body handler on every management route would
+     * buffer up to the 10 MiB Quarkus default for nothing. It is held at 32 KiB, the smallest power of two
+     * above every body the form and chunk bounds must see to answer on their own terms;
+     * {@code ManagementListenerTransportTest} proves the key acts on the listener.
+     */
+    @Test
+    @DisplayName("The packaged file bounds the management interface's request body at 32 KiB")
+    void packagedFileDeclaresTheManagementBodyBound() throws Exception {
+        Properties shipped = new Properties();
+        try (Reader reader = Files.newBufferedReader(PACKAGED_APPLICATION_PROPERTIES, StandardCharsets.UTF_8)) {
+            shipped.load(reader);
+        }
+
+        assertEquals("32K", shipped.getProperty(MANAGEMENT_MAX_BODY_SIZE),
+                () -> MANAGEMENT_MAX_BODY_SIZE + " must stay declared at 32K in the shipped application.properties, "
+                        + "or every management route buffers a request body up to the 10 MiB Quarkus default");
     }
 
     /**

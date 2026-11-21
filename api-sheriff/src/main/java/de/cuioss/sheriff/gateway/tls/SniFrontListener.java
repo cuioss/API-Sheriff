@@ -224,24 +224,36 @@ public final class SniFrontListener {
     public static final Duration SATURATION_WARN_INTERVAL = Duration.ofSeconds(60);
 
     /**
-     * Why the front closed a connection at once: at accept, without reading from it, or at the route
-     * decision of a passthrough match, without dialling its backend.
+     * Why the front closed a connection at once, and where: each reason carries its token and the stage
+     * it refuses at, and {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} logs both as
+     * parameters, so the record never restates the set of reasons. {@link #CAP} and
+     * {@link #SOURCE_SHARE} refuse at accept, without reading from the connection; {@link #DIAL_BUDGET}
+     * refuses at the route decision of a passthrough match, before its backend is dialled.
      */
     public enum Refusal {
 
-        /** The undecided-connection cap was full. */
-        CAP("cap"),
+        /** The undecided-connection cap was full; the bound logged is the cap. */
+        CAP("cap", "at accept, without reading from the connection"),
 
-        /** The connection's source already held its full share of the cap. */
-        SOURCE_SHARE("source_share"),
+        /**
+         * The connection's source already held its full share of the cap; the bound logged is that
+         * share.
+         */
+        SOURCE_SHARE("source_share", "at accept, without reading from the connection"),
 
-        /** The connection's passthrough target already had its full dial budget in flight. */
-        DIAL_BUDGET("dial_budget");
+        /**
+         * The connection's passthrough target already had its full dial budget in flight; the bound
+         * logged is that budget — the dialling connections of one target, which count against the cap,
+         * so one backend that does not answer the dial holds at most its eighth of the cap.
+         */
+        DIAL_BUDGET("dial_budget", "at its route decision, before its backend is dialled");
 
         private final String token;
+        private final String stage;
 
-        Refusal(String token) {
+        Refusal(String token, String stage) {
             this.token = token;
+            this.stage = stage;
         }
 
         /**
@@ -249,6 +261,13 @@ public final class SniFrontListener {
          */
         public String token() {
             return token;
+        }
+
+        /**
+         * @return the fixed phrase naming where the front refuses for this reason, logged after the token
+         */
+        public String stage() {
+            return stage;
         }
     }
 
@@ -547,8 +566,8 @@ public final class SniFrontListener {
                 case DIAL_BUDGET -> maxDialsPerTarget;
             });
             if (warnDue(refusal)) {
-                LOGGER.warn(ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED, refusal.token(), bound,
-                        Long.toString(warnInterval.toSeconds()));
+                LOGGER.warn(ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED, refusal.token(), refusal.stage(),
+                        bound, Long.toString(warnInterval.toSeconds()));
             } else {
                 LOGGER.debug("Front connection refused (%s): the bound of %s connections for this reason is full",
                         refusal.token(), bound);
@@ -710,16 +729,22 @@ public final class SniFrontListener {
          * passthrough match first claims one dial slot of its target; when the target's budget is full the
          * connection is refused instead — its slots of the cap and of its source's share are returned at
          * once and it is never dialled. The terminated hand-off claims no dial slot.
+         * <p>
+         * The SNI is normalized once ({@link SniFrontListener#normalizeSni}) and that key both selects the target and is
+         * the label the relay audits a passthrough match under — the {@code passthrough_sni} host as
+         * configured, lower-cased — never the raw ClientHello value, whose letter case and trailing dot
+         * are the client's choice.
          */
         private void route(@Nullable String serverName, Buffer replay) {
-            RelayTarget target = serverName == null ? null : passthroughTargets.get(normalizeSni(serverName));
-            if (serverName != null && target != null) {
+            String sniKey = serverName == null ? null : normalizeSni(serverName);
+            RelayTarget target = sniKey == null ? null : passthroughTargets.get(sniKey);
+            if (sniKey != null && target != null) {
                 if (!claimDial(target)) {
                     releaseSlot();
                     refuse(socket, Refusal.DIAL_BUDGET);
                     return;
                 }
-                dial(() -> relay.relay(socket, replay, target, RelayKind.PASSTHROUGH, serverName), target);
+                dial(() -> relay.relay(socket, replay, target, RelayKind.PASSTHROUGH, sniKey), target);
                 return;
             }
             if (serverName == null) {

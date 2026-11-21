@@ -141,6 +141,75 @@ class SniFrontListenerTest {
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
+        /**
+         * The relay's INFO audit record names the key the passthrough route matched, never the raw
+         * ClientHello value: a server name padded with whitespace — CR and LF included — still selects
+         * the configured host, and the record carries that host without the padding, so a client cannot
+         * write a line break of its own into the audit log.
+         */
+        @ParameterizedTest(name = "padded server name #{index}")
+        @ValueSource(strings = {" " + MAPPED_SNI + "\r\n", "\r\n" + MAPPED_SNI + "\r\n", "\t" + MAPPED_SNI + " \n"})
+        @DisplayName("audits a padded server name under the configured host it matched, without the padding")
+        void auditsAPaddedServerNameUnderTheMatchedKey(String paddedServerName) throws Exception {
+            byte[] hello = ClientHelloFixture.withSni(paddedServerName);
+            Backend passthrough = startBackend(hello.length);
+            Backend terminated = startBackend(hello.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), terminated.target());
+
+            sendToFront(front, hello);
+
+            Buffer received = Awaits.connect(passthrough.firstBytes(),
+                    "the passthrough backend to receive the relayed bytes");
+            List<LogRecord> audited = awaitRelayAudit();
+            assertAll("the padded server name is routed and audited under the matched key",
+                    () -> assertEquals(Buffer.buffer(hello), received,
+                            "the padded server name still selects the passthrough backend"),
+                    () -> assertEquals(1, audited.size(), "one passthrough relay was audited"),
+                    () -> assertEquals(relayAudit(MAPPED_SNI, passthrough.target()), audited.getFirst().getMessage(),
+                            "the audit record carries the configured host, not the client's padded value"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /** Matched control: an exact configured host is audited exactly as it was sent. */
+        @Test
+        @DisplayName("audits an exact configured host unchanged")
+        void auditsAnExactServerNameUnchanged() throws Exception {
+            byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
+            Backend passthrough = startBackend(hello.length);
+            Backend terminated = startBackend(hello.length);
+            SniFrontListener front = startFront(Map.of(MAPPED_SNI, passthrough.target()), terminated.target());
+
+            sendToFront(front, hello);
+
+            Awaits.connect(passthrough.firstBytes(), "the passthrough backend to receive the relayed bytes");
+            List<LogRecord> audited = awaitRelayAudit();
+            assertAll("the exact host is audited unchanged",
+                    () -> assertEquals(1, audited.size(), "one passthrough relay was audited"),
+                    () -> assertEquals(relayAudit(MAPPED_SNI, passthrough.target()), audited.getFirst().getMessage(),
+                            "the audit record carries the host exactly as configured and sent"));
+            Awaits.teardown(front.stop(), "the SNI front listener to stop");
+        }
+
+        /**
+         * Waits until the relay has written its INFO audit record — the relay logs it once the session
+         * started, which a backend that already read the ClientHello can observe before the line is
+         * written — and returns every such record.
+         */
+        private static List<LogRecord> awaitRelayAudit() throws Exception {
+            Awaits.until(() -> !relayAuditLines().isEmpty(), "the relay to write its INFO audit record",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            return relayAuditLines();
+        }
+
+        private static List<LogRecord> relayAuditLines() {
+            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.INFO,
+                    "Passthrough relay established for SNI");
+        }
+
+        private static String relayAudit(String sniKey, RelayTarget target) {
+            return ApiSheriffLogMessages.INFO.PASSTHROUGH_RELAY_ESTABLISHED.format(sniKey, target.toString());
+        }
+
         @Test
         @DisplayName("routes a non-matching SNI to the terminated-strict path")
         void nonMatchingSniRelaysToTerminatedBackend() throws Exception {
@@ -396,6 +465,11 @@ class SniFrontListenerTest {
                     () -> assertEquals(1, warnings.size(), "only the first refusal of the window is a WARN"),
                     () -> assertTrue(warnings.getFirst().getMessage().contains("(cap)"),
                             "the WARN names the reason token: " + warnings.getFirst().getMessage()),
+                    () -> assertTrue(warnings.getFirst().getMessage().contains(
+                                    "(cap) at accept, without reading from the connection:"),
+                            "the WARN places a cap refusal at accept: " + warnings.getFirst().getMessage()),
+                    () -> assertFalse(warnings.getFirst().getMessage().contains("route decision"),
+                            "a cap refusal's WARN names no other stage: " + warnings.getFirst().getMessage()),
                     () -> assertFalse(warnings.getFirst().getMessage().contains(HOST),
                             "the WARN never names the peer address: " + warnings.getFirst().getMessage()),
                     () -> assertEquals(2, debugLines("Front connection refused (cap)").size(),
@@ -469,8 +543,16 @@ class SniFrontListenerTest {
                     () -> assertEquals(2, warnings.size(), "each reason opens its own warn window"),
                     () -> assertTrue(warnings.get(0).getMessage().contains("(source_share)"),
                             "the share refusal names its reason: " + warnings.get(0).getMessage()),
+                    () -> assertTrue(warnings.get(0).getMessage().contains(
+                                    "(source_share) at accept, without reading from the connection:"),
+                            "the share refusal is placed at accept: " + warnings.get(0).getMessage()),
+                    () -> assertFalse(warnings.get(0).getMessage().contains("route decision"),
+                            "the share refusal names no other stage: " + warnings.get(0).getMessage()),
                     () -> assertTrue(warnings.get(1).getMessage().contains("(cap)"),
-                            "the cap refusal names its reason: " + warnings.get(1).getMessage()));
+                            "the cap refusal names its reason: " + warnings.get(1).getMessage()),
+                    () -> assertTrue(warnings.get(1).getMessage().contains(
+                                    "(cap) at accept, without reading from the connection:"),
+                            "the cap refusal is placed at accept: " + warnings.get(1).getMessage()));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
@@ -546,6 +628,27 @@ class SniFrontListenerTest {
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
         }
 
+        /**
+         * The record takes the reason and its stage from the refusal being logged, so the template itself
+         * names neither: formatted with neutral arguments, it carries no reason token and no stage of any
+         * {@link Refusal}. A reason added to the enum is covered without touching this case.
+         */
+        @Test
+        @DisplayName("the refusal WARN template names no reason and no stage of its own")
+        void theTemplateEnumeratesNoReason() {
+            String formatted = ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.format("reason", "stage", "1", "60");
+
+            assertAll("every reason and stage reaches the line through a parameter",
+                    () -> assertTrue(formatted.contains("(reason) stage: a bound of 1 connections is full"),
+                            "the token and the stage are the first two parameters: " + formatted),
+                    () -> assertTrue(Arrays.stream(Refusal.values()).noneMatch(r -> formatted.contains(r.token())),
+                            "the template names no reason token: " + formatted),
+                    () -> assertTrue(Arrays.stream(Refusal.values()).noneMatch(r -> formatted.contains(r.stage())),
+                            "the template names no stage: " + formatted),
+                    () -> assertTrue(Arrays.stream(Refusal.values()).noneMatch(r -> r.stage().isBlank()),
+                            "every reason carries a stage to log"));
+        }
+
         @Test
         @DisplayName("closes a refused connection even when recording the refusal throws")
         void closesTheRefusedConnectionWhenTheRecorderThrows() throws Exception {
@@ -568,21 +671,6 @@ class SniFrontListenerTest {
                     () -> assertEquals(List.of(Refusal.CAP), refusals, "the refusal reached the recorder once"),
                     () -> assertFalse(held.closedNanos().isDone(), "the connection holding the cap stays open"));
             Awaits.teardown(front.stop(), "the SNI front listener to stop");
-        }
-
-        private static List<LogRecord> refusalWarnings() {
-            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
-                    ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.resolveIdentifierString());
-        }
-
-        /**
-         * A source key that assigns the accepted connections, in accept order, to the given sources,
-         * and every connection beyond them to the last one. One front server handles its connections
-         * on one event loop, so accept order is the order this test connects in.
-         */
-        private static Function<NetSocket, String> sourcesInOrder(String... sources) {
-            AtomicInteger accepted = new AtomicInteger();
-            return socket -> sources[Math.min(accepted.getAndIncrement(), sources.length - 1)];
         }
     }
 
@@ -938,7 +1026,7 @@ class SniFrontListenerTest {
             Offer secondHandshake = offer(front, terminatedHello);
             awaitRefusals(2);
 
-            List<LogRecord> warnings = RefusalsAtAccept.refusalWarnings();
+            List<LogRecord> warnings = refusalWarnings();
             assertAll("the dark target took its budget of the cap and no more",
                     () -> assertEquals(List.of(true, true, false, false), admitted(darkDials),
                             "the target's first two dials are admitted, the two beyond its budget refused"),
@@ -953,6 +1041,13 @@ class SniFrontListenerTest {
                             "the WARN names the reason token: " + warnings.getFirst().getMessage()),
                     () -> assertTrue(warnings.getFirst().getMessage().contains("bound of " + BUDGET + " "),
                             "the WARN names the budget as the bound that was full: "
+                                    + warnings.getFirst().getMessage()),
+                    () -> assertTrue(warnings.getFirst().getMessage().contains(
+                                    "(dial_budget) at its route decision, before its backend is dialled:"),
+                            "the WARN places a dial_budget refusal at the route decision: "
+                                    + warnings.getFirst().getMessage()),
+                    () -> assertFalse(warnings.getFirst().getMessage().contains("at accept"),
+                            "the WARN does not place a dial_budget refusal at accept: "
                                     + warnings.getFirst().getMessage()),
                     () -> assertFalse(darkDials.getFirst().leg().closedNanos().isDone(),
                             "an admitted dial is still pending, its connection open"));
@@ -1129,7 +1224,7 @@ class SniFrontListenerTest {
             Arrays.fill(sources, 0, CAP, DARK_SOURCE);
             sources[CAP] = HANDSHAKE_SOURCE;
             return startFront(relay, Map.of(MAPPED_SNI, darkTarget), terminatedTarget, DEADLINE, CAP, dialBudget,
-                    RefusalsAtAccept.sourcesInOrder(sources));
+                    sourcesInOrder(sources));
         }
 
         /** A front of {@link #CAP} whose one passthrough target has a dial budget of one. */
@@ -1663,7 +1758,7 @@ class SniFrontListenerTest {
         void emptiesAfterADialBudgetRefusal() throws Exception {
             Backend passthrough = startBackend(hello.length);
             SniFrontListener front = startHeldDialFront(vertx.createNetClient(), passthrough.target(), 4, 1,
-                    RefusalsAtAccept.sourcesInOrder("holder", "refused"));
+                    sourcesInOrder("holder", "refused"));
             routeWithAHeldDial(front);
             int whileHeld = front.sourcesHoldingSlots();
 
@@ -1687,7 +1782,7 @@ class SniFrontListenerTest {
         void emptiesAfterACapRefusal() throws Exception {
             Backend terminated = startBackend(1);
             SniFrontListener front = startFront(Map.of(), terminated.target(), LONG_DEADLINE, 1, 1, LONG_IDLE,
-                    LONG_IDLE, System::nanoTime, RefusalsAtAccept.sourcesInOrder("holder", "refused"));
+                    LONG_IDLE, System::nanoTime, sourcesInOrder("holder", "refused"));
             ClientLeg holder = connectClient(front);
             int whileHeld = awaitSourcesHolding(front, 1);
 
@@ -1765,6 +1860,26 @@ class SniFrontListenerTest {
 
     private static List<LogRecord> debugLines(String text) {
         return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.DEBUG, text);
+    }
+
+    /**
+     * Every {@code WARN} {@link ApiSheriffLogMessages.WARN#FRONT_CONNECTION_REFUSED} record logged so far,
+     * whatever its reason: a {@code cap} or {@code source_share} refusal at accept, or a
+     * {@code dial_budget} refusal at the route decision.
+     */
+    private static List<LogRecord> refusalWarnings() {
+        return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
+                ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED.resolveIdentifierString());
+    }
+
+    /**
+     * A source key that assigns the accepted connections, in accept order, to the given sources,
+     * and every connection beyond them to the last one. One front server handles its connections
+     * on one event loop, so accept order is the order a case connects in.
+     */
+    private static Function<NetSocket, String> sourcesInOrder(String... sources) {
+        AtomicInteger accepted = new AtomicInteger();
+        return socket -> sources[Math.min(accepted.getAndIncrement(), sources.length - 1)];
     }
 
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget)

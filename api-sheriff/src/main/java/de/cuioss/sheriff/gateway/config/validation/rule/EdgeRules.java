@@ -59,7 +59,11 @@ import org.jspecify.annotations.Nullable;
  * {@code match.host} is a {@code tls.passthrough_sni} host, since such a host is relayed at L4 and the
  * route would never be selected. The passthrough alias rule
  * ({@link #validatePassthroughAliasResolvable}) requires every {@code passthrough_sni} alias to resolve
- * in the topology to an origin carrying no base path.
+ * in the topology to an origin carrying no base path. The passthrough source-collapse rule
+ * ({@link #validatePassthroughSourceCollapse}) refuses nothing: it emits
+ * {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} when a non-empty {@code passthrough_sni}
+ * meets an acting {@code enumeration_detection} action or a loopback {@code trusted_proxies} range,
+ * since behind the SNI front every terminated client reaches the edge from the loopback relay leg.
  * <p>
  * Every rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and never
  * fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of this
@@ -79,6 +83,14 @@ public class EdgeRules {
     private static final int IPV6_BITS = 128;
     private static final int BROAD_PREFIX_IPV4 = 16;
     private static final int BROAD_PREFIX_IPV6 = 48;
+
+    /** The IPv4 loopback block, {@code 127.0.0.0/8}. */
+    private static final CidrRange IPV4_LOOPBACK = new CidrRange("127.0.0.0/8", IPV4_BITS, 8,
+            BigInteger.valueOf(0x7F00_0000L), BigInteger.valueOf(0x7FFF_FFFFL));
+
+    /** The IPv6 loopback address, {@code ::1/128}. */
+    private static final CidrRange IPV6_LOOPBACK = new CidrRange("::1/128", IPV6_BITS, IPV6_BITS,
+            BigInteger.ONE, BigInteger.ONE);
 
     /**
      * Rule: every {@code trusted_proxies} entry is a well-formed CIDR; the union of
@@ -308,6 +320,59 @@ public class EdgeRules {
                                 .formatted(renderForMessage(alias), renderForMessage(basePath))));
             }
         }
+    }
+
+    /**
+     * Rule: under a non-empty {@code tls.passthrough_sni}, emits the boot WARN
+     * {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} once for each configuration that acts
+     * on the loopback relay leg as if it were a client. Behind the SNI front every terminated connection
+     * reaches the edge from that one loopback leg, so the edge sees every terminated client as one
+     * loopback peer:
+     * <ul>
+     * <li>{@code enumeration_detection} enabled with the acting action {@code block} or {@code delay}
+     * keys every terminated client on that one source, so the action a source earns acts on all of them
+     * at once;</li>
+     * <li>a {@code forwarded.trusted_proxies} range holding a loopback address ({@code 127.0.0.0/8} or
+     * {@code ::1}) makes that leg a trusted proxy, so every client's own forwarded headers are
+     * trusted.</li>
+     * </ul>
+     * Without passthrough the rule returns at once. A malformed {@code trusted_proxies} entry is skipped
+     * here, because {@link #validateForwardedTrust} already refuses it. The record names the combination
+     * by a fixed token only — the action, or a loopback trusted proxy — never a configured range or
+     * address. It never refuses: each combination is a legal configuration whose consequence the
+     * operator must know.
+     *
+     * @param gateway the bound gateway document, whose {@code tls.passthrough_sni},
+     *                {@code enumeration_detection} and {@code forwarded.trusted_proxies} are judged
+     */
+    public static void validatePassthroughSourceCollapse(GatewayConfig gateway) {
+        if (passthroughSni(gateway).isEmpty()) {
+            return;
+        }
+        EnumerationDetectionConfig detection = gateway.enumerationDetection();
+        if (detection != null && detection.effectiveEnabled()
+                && detection.effectiveAction() != EnumerationDetectionConfig.Action.OBSERVE) {
+            String actingAction = "enumeration_detection.action is " + detection.effectiveAction();
+            LOGGER.warn(ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE, actingAction);
+        }
+        ForwardedConfig forwarded = gateway.forwarded();
+        if (forwarded != null && forwarded.trustedProxies().stream().anyMatch(EdgeRules::holdsLoopback)) {
+            LOGGER.warn(ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE,
+                    "forwarded.trusted_proxies holds a loopback range");
+        }
+    }
+
+    /**
+     * Whether a {@code trusted_proxies} entry holds a loopback address: an IPv4 range overlapping
+     * {@code 127.0.0.0/8}, or an IPv6 range containing {@code ::1}. A malformed entry holds none.
+     */
+    private static boolean holdsLoopback(String cidr) {
+        return parseCidr(cidr).map(range -> overlaps(range, range.bits() == IPV4_BITS ? IPV4_LOOPBACK : IPV6_LOOPBACK))
+                .orElse(false);
+    }
+
+    private static boolean overlaps(CidrRange range, CidrRange other) {
+        return range.start().compareTo(other.end()) <= 0 && range.end().compareTo(other.start()) >= 0;
     }
 
     private static Map<String, String> passthroughSni(GatewayConfig gateway) {

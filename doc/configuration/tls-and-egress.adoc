@@ -212,7 +212,7 @@ named explicitly.
   `QUARKUS_HTTP_SSL_PORT`. Promoting it would break the
   link:../adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
   SNI split, where a deployment that enables `tls.passthrough_sni` moves the terminated listener to
-  the internal loopback port through exactly this variable -- a topology a `gateway.yaml`-owned port
+  the internal port through exactly this variable -- a topology a `gateway.yaml`-owned port
   could not express.
 
 | `quarkus.http.insecure-requests`

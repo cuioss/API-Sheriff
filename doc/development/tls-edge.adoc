@@ -311,9 +311,12 @@ share -- or at its route decision beyond its passthrough target's dial budget is
 * *logged* as `WARN ApiSheriff-146` (`ApiSheriffLogMessages.WARN.FRONT_CONNECTION_REFUSED`), at most once
   per `SniFrontListener.SATURATION_WARN_INTERVAL` (60 s, measured on the monotonic `System.nanoTime()`
   clock) per reason, with the reason token (`cap` / `source_share` / `dial_budget` -- the same spelling
-  as the metric label), the bound that was full and the
-  window. Every further refusal of that reason inside the window is logged at `DEBUG`. Neither line
-  ever names the peer address or a received byte.
+  as the metric label), the stage that reason refuses at, the bound that was full and the window. The
+  stage is a field of `SniFrontListener.Refusal` beside its token -- `at accept, without reading from
+  the connection` for `cap` and `source_share`, `at its route decision, before its backend is dialled`
+  for `dial_budget` -- and reaches the record as a parameter, so the template lists no reason of its own
+  and a reason added to the enum is logged with its own stage. Every further refusal of that reason
+  inside the window is logged at `DEBUG`. Neither line ever names the peer address or a received byte.
 
 The package-private constructor of `SniFrontListener` takes the share, the warn window, the clock, the
 source key and the recorder explicitly. A test drives a second warn window by advancing its own clock
@@ -362,9 +365,20 @@ There are two ports, wired by `TlsEdgeProducer`:
 
 | Internal HTTPS port
 | `sheriff.tls.internal-https-port` (`8444`)
-| The terminated Quarkus HTTPS listener, bound to `localhost` only. Every non-passthrough connection
-  is relayed here for termination.
+| The terminated Quarkus HTTPS listener. Every non-passthrough connection is relayed here for
+  termination. The listener binds `quarkus.http.host`, which the image sets to `0.0.0.0`
+  (`Dockerfile.native` starts the executable with `-Dquarkus.http.host=0.0.0.0`), so it listens on
+  every interface of the container, not on loopback alone.
 |===
+
+*The internal HTTPS port is reachable wherever the deployment lets traffic reach it.* The front
+relays to `localhost:8444`, but nothing confines the listener to that address. Any peer on the
+container's network -- another container on the same Compose or pod network, or a client of a host
+port the deployment publishes for `8444` -- can connect to it directly and bypass the front: the SNI
+split, the front's ClientHello deadline and its per-source share do not apply to such a connection,
+and the relay registers no client for it, so the pending-login quota keys it on its own TCP peer.
+Publish only the public TLS port, keep `8444` unpublished, and restrict the container network to the
+peers that must reach the gateway.
 
 The internal handoff is a *loopback relay*, not an in-process call: terminated connections are
 spliced from the front listener to `localhost:8444`, where the ordinary Quarkus HTTPS listener does

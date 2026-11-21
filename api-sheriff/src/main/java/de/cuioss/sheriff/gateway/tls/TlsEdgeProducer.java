@@ -151,7 +151,7 @@ public class TlsEdgeProducer {
      *                          ({@code quarkus.http.idle-timeout}), which the relay idle timeout must
      *                          not undercut
      * @param publicPort        the public TLS port the front listener binds when passthrough is active
-     * @param internalHttpsPort the internal loopback port the terminated Quarkus HTTPS listener owns
+     * @param internalHttpsPort the internal port the terminated Quarkus HTTPS listener owns
      */
     @Inject
     @SuppressWarnings("java:S107") // CDI constructor injection: each parameter is one injected collaborator or key

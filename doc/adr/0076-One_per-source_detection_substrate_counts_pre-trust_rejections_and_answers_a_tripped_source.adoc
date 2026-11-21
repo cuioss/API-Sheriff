@@ -234,8 +234,13 @@ the one derivation the source key and the BFF's pending-login quota key share, t
 combined headers once and tells a chain that resolves no client apart from no chain at all. A request
 whose `Forwarded` or `X-Forwarded-For` carries a non-blank value yet resolves no client is keyed on
 that proxy's own source, `unresolved-via-` followed by the proxy's canonical address, which is acted
-on like any source; only a request that
-carries neither header, or only blank ones, is `unknown`.
+on like any source. The canonical address of an IPv4 proxy is its address, so each IPv4 trusted
+proxy has a source of its own; that of an IPv6 proxy is its `/64`, so every IPv6 trusted proxy in one
+`/64` shares one such source. Every request whose chain resolves no client and that arrives through a
+proxy with that canonical address shares the source, whichever client sent it. Like every source it
+is tracked together with the request's folded host, so a block or a delay the pair earns acts on
+every request keyed on both that unresolved source and that folded host.
+Only a request that carries neither header, or only blank ones, is `unknown`.
 
 [[amendment-unknown]]
 *The `unknown` source is counted, never acted on.* `unknown` is one key for
@@ -385,7 +390,9 @@ admission.
    with a non-blank value that resolves no client -- a malformed chain, one over a cap, the two
    families disagreeing, or a client named by something other than an address -- is
    keyed on that proxy's own unresolved source, `unresolved-via-` followed by the proxy's canonical
-   address, which `block` and `delay` act on (<<amendment-unresolved-chain>>).
+   address -- its own for an IPv4 proxy, shared by every IPv6 trusted proxy in one `/64` -- and
+   `block` and `delay` act on the requests sharing both that source and the folded host
+   (<<amendment-unresolved-chain>>).
 ** Above the high-water mark a new IPv6 source is one key per `/48`, so the clients of one `/48`
    share that key from then on (<<amendment-aggregation>>).
 ** A restart clears every bucket and every block. `Retry-After` describes the block on this node

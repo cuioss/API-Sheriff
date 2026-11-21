@@ -88,7 +88,7 @@ own it, so the omission is discoverable rather than silent.
 | `8443`
 | The *terminated* HTTPS listener. This is the variable the SNI passthrough topology moves: a
   deployment that enables `tls.passthrough_sni` gives the public TLS port to the front listener and
-  sets this to the internal loopback port (`8444`).
+  sets this to the internal port (`8444`).
 
 | `QUARKUS_MANAGEMENT_PORT`
 | `9000`
@@ -110,7 +110,9 @@ for what that health state means and how to read it.
 
 | `SHERIFF_TLS_INTERNAL_HTTPS_PORT`
 | `8444`
-| The internal loopback port the terminated listener moves to under the passthrough topology.
+| The internal port the terminated listener moves to under the passthrough topology. The listener
+  binds `quarkus.http.host`, which the image sets to `0.0.0.0`, so it listens on every interface of
+  the container, not on loopback alone; keep this port unpublished.
 |===
 
 === Certificate, key and trust material
