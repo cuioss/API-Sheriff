@@ -25,8 +25,10 @@
  *       redirect_uri}) and adds the gateway-only fields the engine leaves open: a short fixed
  *       TTL, single-use semantics, and a same-origin-validated return URL.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore} is the pluggable
- *       storage seam — a bounded, single-use, TTL-expiring in-memory map for server mode, with
- *       room for the PLAN-08 cookie-sealed variant.</li>
+ *       storage seam — a bounded, single-use, TTL-expiring in-memory map. One store backs both
+ *       session modes: {@code BffRuntimeProducer} builds a single
+ *       {@link de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore} for server
+ *       and cookie mode alike, so the record is held server-side and consumed once in each.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec} sets and reads the
  *       short-lived {@code __Host-} browser-binding cookie carrying the record id, so a callback
  *       replayed in a different browser is rejected even with a valid {@code state}.</li>

@@ -77,9 +77,9 @@ tls:
   alpn: ["h2", "http/1.1"]
   # Accept-time SNI passthrough split (GW-06 / D1). Declaring a non-empty passthrough_sni
   # is what STARTS the Vert.x SNI front listener (tls/SniFrontListener via tls/TlsEdgeProducer)
-  # on the public TLS port; the terminated Quarkus HTTPS listener is moved to the internal
-  # loopback port (QUARKUS_HTTP_SSL_PORT=8444, set on the api-sheriff service in
-  # docker-compose.yml) so the front owns 8443 without a bind conflict. Each SNI maps to a
+  # on the public TLS port; the terminated Quarkus HTTPS listener moves to the internal port 8444
+  # (QUARKUS_HTTP_SSL_PORT, set in docker-compose.yml), bound on every interface and published nowhere;
+  # the front owns 8443 and hands every other connection to localhost:8444. Each SNI maps to a
   # topology alias resolved (base-path-free) through topology.properties:
   #   - passthrough.test.example -> the TLS passthrough-backend (CN=passthrough-backend), so
   #     TlsPassthroughIT observes the BACKEND's certificate through the opaque L4 relay, and

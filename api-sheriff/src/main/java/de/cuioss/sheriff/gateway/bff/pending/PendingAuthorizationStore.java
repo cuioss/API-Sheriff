@@ -25,11 +25,16 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 /**
  * The storage seam for {@link PendingAuthorizationRecord}s (D2b).
  * <p>
- * The seam is deliberately pluggable: server mode stores the record here and carries only the
- * record id in the browser-binding cookie ({@link InMemoryPendingAuthorizationStore}), whereas the cookie variant
- * (PLAN-08) can supply an implementation where the sealed record travels in the cookie itself
- * and no server map exists. The two operations are the whole contract — persist a record, and
- * consume it exactly once.
+ * One implementation backs both session modes: {@code BffRuntimeProducer} builds a single
+ * {@link InMemoryPendingAuthorizationStore} whether {@code session.mode} is {@code server} or
+ * {@code cookie}. In both modes the record — {@code state}, {@code nonce}, PKCE verifier and return
+ * URL — is held server-side in that one in-memory store of the gateway process, and the short-lived
+ * {@code HttpOnly} {@code __Host-} browser-binding cookie carries only the record's unguessable id.
+ * The callback consumes the record as it reads it, so the record is single-use in both modes: a
+ * replayed callback, or the same binding cookie presented again, resolves nothing. What the session
+ * mode changes is after the callback, not before it: cookie mode seals the session the callback
+ * creates into the session cookie and server mode stores it, and neither seals the record into a
+ * cookie. The two operations are the whole contract — persist a record, and consume it exactly once.
  * <p>
  * <strong>Single-use is a store invariant, not a caller contract.</strong> {@link #consume}
  * removes the record as it returns it, so a second consumption of the same id resolves to
