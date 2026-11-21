@@ -93,6 +93,22 @@ public class EdgeRules {
             BigInteger.ONE, BigInteger.ONE);
 
     /**
+     * The consequence and remedy {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} states for an
+     * acting {@code enumeration_detection} action under passthrough.
+     */
+    private static final String ACTING_ACTION_CONSEQUENCE = "every terminated client is keyed on that one source"
+            + " while no loopback address is a trusted proxy, so the block or delay that source earns acts on all"
+            + " of them at once. Set enumeration_detection.action to observe";
+
+    /**
+     * The consequence and remedy {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} states for a
+     * {@code forwarded.trusted_proxies} range holding a loopback address under passthrough.
+     */
+    private static final String LOOPBACK_PROXY_CONSEQUENCE = "the loopback relay leg is a trusted proxy, so every"
+            + " terminated client's own Forwarded and X-Forwarded-For headers are trusted. Remove the loopback"
+            + " range from forwarded.trusted_proxies";
+
+    /**
      * Rule: every {@code trusted_proxies} entry is a well-formed CIDR; the union of
      * the parsed ranges per address family must not cover the entire IPv4 or IPv6
      * space — catching a single full-space CIDR <em>and</em> complementary
@@ -337,8 +353,9 @@ public class EdgeRules {
      * trusted.</li>
      * </ul>
      * Without passthrough the rule returns at once. A malformed {@code trusted_proxies} entry is skipped
-     * here, because {@link #validateForwardedTrust} already refuses it. The record names the combination
-     * by a fixed token only — the action, or a loopback trusted proxy — never a configured range or
+     * here, because {@link #validateForwardedTrust} already refuses it. Each record names its combination
+     * by a fixed token — the action, or a loopback trusted proxy — and states that combination's own
+     * fixed consequence and remedy, never the other combination's, and never a configured range or
      * address. It never refuses: each combination is a legal configuration whose consequence the
      * operator must know.
      *
@@ -353,12 +370,13 @@ public class EdgeRules {
         if (detection != null && detection.effectiveEnabled()
                 && detection.effectiveAction() != EnumerationDetectionConfig.Action.OBSERVE) {
             String actingAction = "enumeration_detection.action is " + detection.effectiveAction();
-            LOGGER.warn(ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE, actingAction);
+            LOGGER.warn(ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE, actingAction,
+                    ACTING_ACTION_CONSEQUENCE);
         }
         ForwardedConfig forwarded = gateway.forwarded();
         if (forwarded != null && forwarded.trustedProxies().stream().anyMatch(EdgeRules::holdsLoopback)) {
             LOGGER.warn(ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE,
-                    "forwarded.trusted_proxies holds a loopback range");
+                    "forwarded.trusted_proxies holds a loopback range", LOOPBACK_PROXY_CONSEQUENCE);
         }
     }
 
