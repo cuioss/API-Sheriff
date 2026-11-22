@@ -106,18 +106,24 @@ not the container, because a bearer-only gateway must not have one.
   that consumes capacity and the only one that applies the two bounds.
 
 | `persist`
-| `replaceIfPresent`
-| `TokenRefreshCoordinator`, on both refresh legs. Replaces the record and keeps the handle.
+| `replaceIfCurrent`
+| `TokenRefreshCoordinator`, on both refresh legs. Replaces the record only while it is still the
+  record the refresh resolved (the _basis_), and keeps the handle.
 
 | `persistReissuingCookie`
 | `replaceAndReissueHandle`
 | `CallbackEndpoint.completeWidening`. Replaces the record and swaps the handle.
 |===
 
-Neither updating write stores anything when the session identity is no longer held. Both return an
-empty result then, and the caller must treat the session as ended and must not hand out the new
-tokens. A new caller that updates a session picks one of the two by one question: does the
-privilege of the session change? If it does, re-issue.
+Neither updating write stores anything when the session identity is no longer held: `persist`
+answers `Gone` and `persistReissuingCookie` an empty result, and the caller must treat the session
+as ended and must not hand out the new tokens. `persist` has a third answer, `Superseded`: the
+session is still held, but its record is no longer the basis the caller passed -- a widening or a
+step-up replaced it after the refresh resolved it. Nothing is written then either, and the caller
+must not end the session; `TokenRefreshCoordinator` answers the request `NO_SESSION` and revokes the
+refresh token its own exchange returned. Only `persist` compares against a basis: when a refresh and
+a widening overlap, the refresh gives way. A new caller that updates a session picks one of the two
+by one question: does the privilege of the session change? If it does, re-issue.
 
 === The handle beside the record
 
@@ -126,7 +132,9 @@ per session -- the record, its current handle and its last-access instant -- and
 handle to session identity. The handle is store-side state and not a component of the record. That
 matters for one interleaving: a refresh that resolved the session before a re-issue and replaces
 the record after it writes the record only, so it leaves the re-issued handle in place and cannot
-put the previous one back.
+put the previous one back. Because the handle is not a component, a re-issue that left the record
+as it was does not supersede the refresh's basis; a re-issue that carried a widened record does, and
+the refresh then writes nothing.
 
 Three rules follow for code that touches sessions:
 
@@ -143,10 +151,11 @@ Three rules follow for code that touches sessions:
 === Why every operation is one monitor-guarded method
 
 Every public method of `InMemorySessionStore` runs under the instance monitor, and no operation is
-split across two calls. The updating writes are the reason: "is the session still there" and "write
-it" must be one step under the lock `destroyById`, `destroyBySid` and `destroyBySub` take, or a
-logout between the two would be undone. Keep it that way when you add an operation: a
-check-then-act across two store calls reopens that window. Three consequences:
+split across two calls. The updating writes are the reason: "is the session still there" -- and, for
+`replaceIfCurrent`, "is it still the record I read" -- and "write it" must be one step under the lock
+`destroyById`, `destroyBySid`, `destroyBySub` and the other updating write take, or a logout between
+the two would be undone and a widening between them overwritten. Keep it that way when you add an
+operation: a check-then-act across two store calls reopens that window. Three consequences:
 
 * `recordAccess` writes the last-access instant alone, never the record, so it cannot overwrite
   token material a concurrent refresh has just stored.

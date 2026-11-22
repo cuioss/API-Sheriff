@@ -42,6 +42,7 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
 import org.jspecify.annotations.Nullable;
@@ -647,12 +648,13 @@ class LogoutEndpointTest {
     @DisplayName("Should revoke the refresh token the store held at destruction, not the one the logout resolved")
     void shouldRevokeTheRefreshTokenTheStoreHeldAtDestruction() {
         SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
-        assertTrue(store.replaceIfPresent(withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),
+        assertEquals(SessionStore.ReplaceOutcome.REPLACED,
+                store.replaceIfCurrent(stored, withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),
                 "precondition: the stored session holds a refresh token");
         List<String> resolvedTokens = new CopyOnWriteArrayList<>();
         SessionBinding refreshedAfterResolve = new InterleavingBinding(binding, resolved -> {
             resolvedTokens.add(resolved.refreshToken());
-            store.replaceIfPresent(withRefreshToken(resolved, ROTATED_REFRESH_TOKEN));
+            store.replaceIfCurrent(resolved, withRefreshToken(resolved, ROTATED_REFRESH_TOKEN));
         });
         List<String> revokedTokens = new CopyOnWriteArrayList<>();
         LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
@@ -681,7 +683,8 @@ class LogoutEndpointTest {
     @DisplayName("Should revoke the resolved refresh token and still send the browser to the provider when the session was gone at destruction")
     void shouldRevokeNothingWhenTheSessionWasGoneAtDestruction() {
         SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
-        assertTrue(store.replaceIfPresent(withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),
+        assertEquals(SessionStore.ReplaceOutcome.REPLACED,
+                store.replaceIfCurrent(stored, withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),
                 "precondition: the resolve-time snapshot holds a refresh token the logout could revoke");
         List<Boolean> endedByAnotherPath = new CopyOnWriteArrayList<>();
         SessionBinding endedAfterResolve = new InterleavingBinding(binding,
@@ -747,7 +750,9 @@ class LogoutEndpointTest {
                 .setCookieHeaders().getFirst();
         String presentedCookie = setCookie.substring(0, setCookie.indexOf(';'));
         SessionRecord presented = cookieBinding.resolve(presentedCookie, NOW).orElseThrow();
-        cookieBinding.persist(withRefreshToken(presented, ROTATED_REFRESH_TOKEN), NOW).orElseThrow();
+        assertInstanceOf(SessionBinding.PersistResult.Written.class,
+                cookieBinding.persist(presented, withRefreshToken(presented, ROTATED_REFRESH_TOKEN), NOW),
+                "precondition: a refresh re-sealed the rotated token into a cookie the browser has not stored");
         List<String> revokedTokens = new CopyOnWriteArrayList<>();
         LogoutEndpoint endpoint = endpoint(ended -> revokedTokens.add(ended.refreshToken()),
                 () -> Optional.of(END_SESSION), REGISTERED_RETURN, cookieBinding);
@@ -807,8 +812,8 @@ class LogoutEndpointTest {
         }
 
         @Override
-        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
-            return delegate.persist(updated, now);
+        public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
+            return delegate.persist(basis, updated, now);
         }
 
         @Override

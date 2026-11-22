@@ -296,8 +296,8 @@ class CallbackEndpointTest {
         }
 
         @Override
-        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
-            return delegate.persist(updated, now);
+        public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
+            return delegate.persist(basis, updated, now);
         }
 
         @Override

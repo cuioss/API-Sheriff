@@ -51,7 +51,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>through the engine</strong> ({@code token-sheriff-client}'s {@code RefreshFlow}, reached
  * via the {@link RefreshExchange} seam) and persists the rotated token material through the
  * mode-neutral {@link SessionBinding} seam — a store write in server mode, made only while the store
- * still holds the session, and a re-sealed cookie in a stateless mode — so the browser never sees a
+ * still holds the session exactly as the refresh resolved it, and a re-sealed cookie in a stateless
+ * mode — so the browser never sees a
  * token and never drives a leg. The gateway re-implements
  * <strong>no</strong> OAuth leg: the engine owns the refresh grant and refresh-token rotation.
  * <p>
@@ -124,9 +125,22 @@ import org.jspecify.annotations.Nullable;
  *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code session-terminated}. Only a binding
  *       that holds server-side state can report a session gone, so this disposition occurs in server
  *       mode only: a stateless binding cannot observe a logout and re-seals the rotated session.</li>
+ *   <li><strong>Superseded at the persist</strong> — the exchange succeeded, but the binding reported
+ *       that the session's record was no longer the one the leader resolved: a widening or a step-up
+ *       replaced it while the refresh was in flight. The leader passes the record it resolved as the
+ *       basis of the persist, and a server-state binding compares and writes in one atomic step, so the
+ *       rotated session is <em>not</em> written and the widening's scopes, refresh token, {@code acr} and
+ *       {@code auth_time} stay as it left them. The session lives on: nothing is destroyed, nothing is
+ *       marked ended, the back-off entry is dropped and the record is a {@code DEBUG} line carrying
+ *       neither token nor session id. The outcome is {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION},
+ *       and the refresh token the exchange returned is revoked after publication — the presented one
+ *       is already redeemed. Like a terminated session this occurs in server mode only: a stateless
+ *       binding holds no record to compare against and re-seals the rotated session, so whichever
+ *       cookie the browser stores last wins — the stated residual of that mode.</li>
  * </ul>
  * Both legs share these dispositions, and so does every request that coalesced with the refresh.
- * Every session-ending disposition records {@code ApiSheriff-111}. The session-ended outcome is published
+ * Every session-ending disposition records {@code ApiSheriff-111}; the superseded disposition ends no
+ * session and records none. The session-ended outcome is published
  * to the failing request and every coalesced waiter <em>first</em>; the revocation is dispatched only
  * afterwards, off the request path, so a slow or hanging revocation endpoint delays the revocation and
  * nothing else. At most {@link #MAX_CONCURRENT_REVOCATIONS} revocations are in flight at once; beyond
@@ -165,8 +179,10 @@ import org.jspecify.annotations.Nullable;
  * mode the header can name a cookie handle a step-up has just re-issued while the session lives on.
  * It is reported as {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION} — nothing is destroyed, marked
  * or revoked, and the caller answers without a clearing cookie. The rotated session of a refresh that
- * was in flight across such a re-issue is persisted under the stable session id, so it still finds the
- * session and leaves the re-issued handle in place. The scope-driven leg leads through the same map: a
+ * was in flight across a re-issue that left the record as the leader resolved it is persisted under the
+ * stable session id, so it still finds the session and leaves the re-issued handle in place; a re-issue
+ * that carried a widened record supersedes the refresh instead (see the dispositions above). The
+ * scope-driven leg leads through the same map: a
  * request that coalesces with a refresh of the other leg shares that refresh's result, and a scope
  * request whose shared current or refreshed session does not carry its requested set receives
  * {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED} with the shared session and cookies rather
@@ -328,8 +344,10 @@ public final class TokenRefreshCoordinator {
      *         {@link RefreshOutcome#refreshed(SessionRecord, List) refreshed} carrying the rotated
      *         session, {@link RefreshOutcome#deferred(SessionRecord) deferred} or
      *         {@link RefreshOutcome#unavailable() unavailable} when the session was kept after a
-     *         pre-redemption failure, or {@link RefreshOutcome#failed() failed} when the session was
-     *         destroyed; a request that coalesced with a concurrent {@link #refreshForScopes scope refresh}
+     *         pre-redemption failure, {@link RefreshOutcome#failed() failed} when the session was
+     *         destroyed, or {@link RefreshOutcome#noSession() no session} when the leader resolved none or
+     *         its persist was superseded by a concurrent widening; a request that coalesced with a
+     *         concurrent {@link #refreshForScopes scope refresh}
      *         shares its result, which may be {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED}
      *         carrying the kept session
      */
@@ -357,7 +375,9 @@ public final class TokenRefreshCoordinator {
      * every requested scope the response's {@code scope} did not return, so it is unchanged whenever the
      * set was obtained or the response omitted {@code scope}. When the binding reports the session gone
      * at that persist — a logout overtook the refresh, server mode — nothing is written and the outcome is
-     * {@link RefreshOutcome#failed() failed}, never {@code SCOPE_REFUSED}. A refused
+     * {@link RefreshOutcome#failed() failed}, never {@code SCOPE_REFUSED}; when it reports the session's
+     * record superseded — a widening landed meanwhile, server mode — nothing is written and the outcome
+     * is {@link RefreshOutcome#noSession() no session}. A refused
      * exchange takes exactly the near-expiry leg's disposition (see the class documentation); an
      * {@code invalid_scope} answer is reported by {@code RefreshFlow.classify} as {@code SCOPE_REFUSED}, and
      * the gateway deliberately gives it the pre-redemption disposition — the session is kept and backs off
@@ -378,7 +398,9 @@ public final class TokenRefreshCoordinator {
      *         refresh token; or a shared refresh that did not request it),
      *         {@link RefreshOutcome#deferred(SessionRecord) deferred} or
      *         {@link RefreshOutcome#unavailable() unavailable} after a pre-redemption failure, or
-     *         {@link RefreshOutcome#failed() failed} when the session was destroyed
+     *         {@link RefreshOutcome#failed() failed} when the session was destroyed, or
+     *         {@link RefreshOutcome#noSession() no session} when the leader resolved none or its persist
+     *         was superseded by a concurrent widening
      */
     public RefreshOutcome refreshForScopes(SessionRecord session, @Nullable String cookieHeader,
             Set<String> requestedScopes, Instant now) {
@@ -544,30 +566,54 @@ public final class TokenRefreshCoordinator {
         // The identity provider processed the grant: whatever follows, the outage the probe tested is over.
         releaseProbe(admission);
         // The presented token is already redeemed here, so a persist failure cannot keep the session.
-        Optional<SessionBinding.BoundSession> persisted;
+        SessionBinding.PersistResult persisted;
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             SessionRecord rotated = rotate(latest, rotation, scopes, scopeDriven);
-            // persist() updates in place and never creates (a replace-if-present in server mode, a
-            // re-seal in a stateless mode), so no pre-persist destroy is needed on the success path.
-            // Destroying first would open a window where a concurrent resolve() misses the rotating
-            // session.
-            persisted = sessionBinding.persist(rotated, now);
+            // persist() updates in place and never creates (a replace-if-current against latest in
+            // server mode, a re-seal in a stateless mode), so no pre-persist destroy is needed on the
+            // success path. Destroying first would open a window where a concurrent resolve() misses the
+            // rotating session.
+            persisted = sessionBinding.persist(latest, rotated, now);
         } catch (RuntimeException persistFailure) {
             return endSession(sessionId, latest, now, persistFailure, REASON_PERSIST_FAILURE,
                     rotation.refreshToken());
         }
-        if (persisted.isEmpty()) {
+        return switch (persisted) {
+            case SessionBinding.PersistResult.Written(SessionBinding.BoundSession bound) -> {
+                retryNotBefore.remove(sessionId);
+                LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
+                yield Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
+            }
             // The binding found the session gone: a logout or a back-channel logout destroyed it after
             // the leader resolved it (server mode). Nothing was written, so it stays terminated. The
             // rotated refresh token is live at the identity provider and held nowhere, so it is revoked
             // exactly as on the persist-failure path.
-            return endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, rotation.refreshToken());
-        }
-        SessionBinding.BoundSession bound = persisted.get();
+            case SessionBinding.PersistResult.Gone _ ->
+                    endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, rotation.refreshToken());
+            case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId, rotation.refreshToken());
+        };
+    }
+
+    /**
+     * The disposition of a refresh whose persist found the session's record superseded: a widening or a
+     * step-up replaced it after the leader resolved it (server mode), so the rotated session was computed
+     * from a record that is no longer the session's.
+     * <p>
+     * Nothing is written, so the later grant's scopes, refresh token, {@code acr} and {@code auth_time}
+     * stay as that write left them. The session lives on under the cookie value the widening re-issued,
+     * so nothing is destroyed, nothing is marked ended and nothing is logged at {@code WARN}; the
+     * session's back-off entry is dropped, because the identity provider has just processed a grant
+     * for it. The request is answered {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION} — it is
+     * unauthenticated, and the caller must not clear the browser's cookie — and the rotated refresh
+     * token, live at the identity provider and held nowhere, is handed back for the leader to revoke
+     * after the outcome has been published, exactly as on the session-ending paths.
+     */
+    private Disposition superseded(String sessionId, @Nullable String rotatedRefreshToken) {
         retryNotBefore.remove(sessionId);
-        LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
-        return Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
+        // Neither the token nor the session id: the line says only which disposition was taken.
+        LOGGER.debug("Refresh persist superseded by a concurrent widening — nothing written, rotated token revoked");
+        return new Disposition(RefreshOutcome.noSession(), rotatedRefreshToken);
     }
 
     private Disposition disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
@@ -1016,10 +1062,13 @@ public final class TokenRefreshCoordinator {
             /** The session was destroyed; the caller treats the request as unauthenticated. */
             FAILED,
             /**
-             * The leader resolved no session from this request's {@code Cookie} header when it resolved
-             * it again under the single-flight exclusion. Nothing was destroyed, marked or revoked: the
-             * session may be alive under a cookie value re-issued meanwhile (server mode), or may have
-             * reached a deadline. The caller treats the request as unauthenticated and must
+             * This request holds no session to mediate from, and nothing was destroyed or marked. Either
+             * the leader resolved no session from this request's {@code Cookie} header when it resolved
+             * it again under the single-flight exclusion — the session may be alive under a cookie value
+             * re-issued meanwhile (server mode), or may have reached a deadline — or the leader's persist
+             * was superseded: a widening replaced the session's record while the refresh was in flight
+             * (server mode), the rotated session was not written, and the refresh token the exchange
+             * returned is revoked. The caller treats the request as unauthenticated and must
              * <strong>not</strong> clear the browser's cookie.
              */
             NO_SESSION,
@@ -1113,8 +1162,8 @@ public final class TokenRefreshCoordinator {
 
         /**
          * The outcome of a refresh whose leader resolved no session from the request's own
-         * {@code Cookie} header. It carries no session and no cookie, and — unlike
-         * {@link #failed()} — says that nothing was destroyed.
+         * {@code Cookie} header, or whose persist was superseded by a concurrent widening. It carries no
+         * session and no cookie, and — unlike {@link #failed()} — says that nothing was destroyed.
          *
          * @return the no-session outcome
          */

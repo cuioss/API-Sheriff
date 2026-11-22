@@ -40,9 +40,11 @@ import org.jspecify.annotations.Nullable;
  * destroyed since the caller resolved it reports that instead of writing, so a refresh or a widening
  * that was in flight during a logout cannot bring the session back. Whether an implementation can
  * observe it is a property of the mode — a server-mode binding can, a stateless one holds nothing to
- * observe it with — and is stated on {@link #persist}. The two updating writes differ in one point
- * only: {@link #persistReissuingCookie} additionally replaces the cookie value the browser holds, and
- * is the write a step-up or a scope widening makes; {@link #persist} is the refresh's write.
+ * observe it with — and is stated on {@link #persist}. {@link #persistReissuingCookie} additionally
+ * replaces the cookie value the browser holds, and is the write a step-up or a scope widening makes;
+ * {@link #persist} is the refresh's write, and additionally names the record it was computed from, so
+ * an implementation that can observe it reports a widening that landed in between as
+ * {@link PersistResult.Superseded} instead of overwriting it.
  * <p>
  * <strong>Session identity.</strong> Every implementation populates {@link SessionRecord#sessionId()}
  * with a stable per-session identity, so callers that need to key per-session work — notably the
@@ -101,38 +103,57 @@ public interface SessionBinding {
     Optional<SessionRecord> resolve(@Nullable String cookieHeader, Instant now);
 
     /**
-     * Updates a session that already exists with new token material — after a refresh or a widening
-     * merge — without extending its absolute lifetime, and <strong>without ever creating a
-     * session</strong>.
+     * Updates a session that already exists with the new token material a refresh rotated in, without
+     * extending its absolute lifetime, and <strong>without ever creating a session</strong> — the
+     * refresh's write.
      * <p>
-     * <strong>The session may be gone.</strong> The caller resolved the session earlier; a logout or a
-     * back-channel logout may have destroyed it since. An implementation that holds server-side state
-     * checks for the session and writes in one atomic step, and returns an empty result when the
-     * session is no longer there: nothing was written, and the caller must treat the session as ended
-     * rather than hand out the new token material. A stateless implementation holds nothing a
-     * destruction could have removed, cannot observe one, and therefore always writes and never
-     * returns empty.
+     * The caller resolved {@code basis} earlier and computed {@code updated} from it. Two things may
+     * have happened to the session since, and the result says which:
+     * <ul>
+     *   <li><strong>The session may be gone</strong> — a logout or a back-channel logout destroyed it.
+     *       The result is {@link PersistResult.Gone}: nothing was written, and the caller must treat the
+     *       session as ended rather than hand out the new token material.</li>
+     *   <li><strong>The session may have moved on</strong> — a widening or a step-up replaced its record
+     *       through {@link #persistReissuingCookie}. The result is {@link PersistResult.Superseded}:
+     *       nothing was written, so the later grant's scopes, refresh token, {@code acr} and
+     *       {@code auth_time} stay as that write left them. The session lives on, and the caller must
+     *       not end it.</li>
+     * </ul>
+     * Otherwise the result is {@link PersistResult.Written}.
+     * <p>
+     * <strong>Which of these an implementation can observe is a property of the mode.</strong> An
+     * implementation that holds server-side state compares the stored record against {@code basis} and
+     * writes in one atomic step. A stateless implementation holds nothing to compare against: it cannot
+     * observe a destruction or a concurrent widening, ignores {@code basis}, always writes and always
+     * reports {@link PersistResult.Written}. In that mode a refresh that re-seals after a concurrent
+     * widening re-sealed hands the browser two cookies, and whichever the browser keeps last wins — the
+     * stated residual of the stateless variant.
      * <p>
      * Thread-safe, like every operation of this seam.
      *
+     * @param basis   the session as the caller resolved it and computed {@code updated} from
      * @param updated the session carrying the new token material; it keeps the identity and the
      *                absolute expiry of the session it updates
      * @param now     the reference instant
-     * @return the updated session and the {@code Set-Cookie} header value(s) the caller emits (an
-     *         empty list for an implementation whose update is invisible to the browser); empty when
-     *         the implementation observed that the session no longer exists
+     * @return {@link PersistResult.Written} carrying the updated session and the {@code Set-Cookie}
+     *         header value(s) the caller emits (an empty list for an implementation whose update is
+     *         invisible to the browser); {@link PersistResult.Gone} when the implementation observed that
+     *         the session no longer exists; {@link PersistResult.Superseded} when it observed that the
+     *         session's record is no longer {@code basis}
      * @throws IllegalStateException when the binding cannot hold the updated session — for example a
      *         stateless implementation whose sealed representation exceeds the cookie size budget
      */
-    Optional<BoundSession> persist(SessionRecord updated, Instant now);
+    PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now);
 
     /**
-     * Updates a session that already exists exactly as {@link #persist} does and additionally
-     * <strong>re-issues the cookie value the browser holds</strong> — the write a step-up or a scope
-     * widening makes.
+     * Updates a session that already exists with the token material of a widening merge and
+     * additionally <strong>re-issues the cookie value the browser holds</strong> — the write a step-up
+     * or a scope widening makes.
      * <p>
      * Like {@link #persist} it never creates a session, never extends the absolute lifetime and reports
      * the session gone instead of writing when the implementation can observe that it was destroyed.
+     * Unlike {@link #persist} it checks presence only and is never superseded: when a refresh and a
+     * widening of one session overlap, the refresh is the side that gives way.
      * The session keeps its identity ({@link SessionRecord#sessionId()}): only the browser-facing value
      * changes.
      * <p>
@@ -256,6 +277,80 @@ public interface SessionBinding {
         public BoundSession {
             Objects.requireNonNull(session, "session");
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
+        }
+    }
+
+    /**
+     * The answer of {@link #persist}: the rotated session was written, the session was gone, or its
+     * record had been superseded by another updating write. Only {@link Written} wrote anything.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    sealed interface PersistResult permits PersistResult.Written, PersistResult.Gone, PersistResult.Superseded {
+
+        /**
+         * @param bound the updated session and the {@code Set-Cookie} header value(s) the caller emits
+         * @return the result of a write that landed
+         */
+        static PersistResult written(BoundSession bound) {
+            return new Written(bound);
+        }
+
+        /**
+         * @return the result of a write that found the session destroyed and wrote nothing
+         */
+        static PersistResult gone() {
+            return Gone.INSTANCE;
+        }
+
+        /**
+         * @return the result of a write that found the session's record replaced since the caller read
+         *         it and wrote nothing
+         */
+        static PersistResult superseded() {
+            return Superseded.INSTANCE;
+        }
+
+        /**
+         * The rotated session was written.
+         *
+         * @param bound the updated session and the {@code Set-Cookie} header value(s) the caller emits
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        record Written(BoundSession bound) implements PersistResult {
+
+            /**
+             * Canonical constructor rejecting an absent bound session.
+             */
+            public Written {
+                Objects.requireNonNull(bound, "bound");
+            }
+        }
+
+        /**
+         * The session no longer exists — a logout or a back-channel logout destroyed it after the caller
+         * resolved it. Nothing was written.
+         *
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        enum Gone implements PersistResult {
+            /** The one instance. */
+            INSTANCE
+        }
+
+        /**
+         * The session lives on, but its record is no longer the one the caller computed its update from —
+         * a widening or a step-up replaced it meanwhile. Nothing was written.
+         *
+         * @author API Sheriff Team
+         * @since 1.0
+         */
+        enum Superseded implements PersistResult {
+            /** The one instance. */
+            INSTANCE
         }
     }
 }

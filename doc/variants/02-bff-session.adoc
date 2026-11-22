@@ -211,6 +211,15 @@ the grant, and ends it when the IdP rejected the refresh token or the gateway re
 How a request left without a token is answered is set by `oidc.session.refresh.on_failure` (see
 link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the per-kind table]).
 
+*A widening wins over an in-flight refresh.* The refresh writes the rotated session only while the
+stored record is still the one it read, compared and replaced in one atomic step in the store
+(`replaceIfCurrent`). When a scope widening or a step-up replaced the record in between, the refresh
+is _superseded_: it writes nothing, so the widened scopes, the widening grant's refresh token, its
+`acr` and its `auth_time` stay; the session is kept; the request is answered as *no session*, without
+a clearing cookie; and the refresh token the refresh just obtained is revoked. Nothing is logged
+above `DEBUG`
+(link:../adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+
 *Refresh-token reuse detection is the IdP's job.* The gateway keeps no token family; in this variant
 the refresh token never leaves the store. A token stolen elsewhere is caught only by *strict rotation
 at the IdP*, and only once it is reused (ADR-0046).

@@ -40,9 +40,10 @@ import org.jspecify.annotations.Nullable;
  *       returns the {@code Set-Cookie} carrying the handle;</li>
  *   <li>{@link #resolve} reads the handle from the cookie and looks the session up by it — the
  *       store's lazy eviction applies, for the absolute lifetime and for the idle timeout;</li>
- *   <li>{@link #persist} is the store's conditional {@code replaceIfPresent} (no pre-destroy, so a
- *       concurrent resolve never misses a session being updated); the handle stays, so it returns no
- *       cookie;</li>
+ *   <li>{@link #persist} is the store's conditional {@code replaceIfCurrent} against the caller's basis
+ *       (no pre-destroy, so a concurrent resolve never misses a session being updated) and maps its
+ *       three outcomes onto the seam's: replaced is written, absent is gone, superseded is superseded;
+ *       the handle stays, so a written result carries no cookie;</li>
  *   <li>{@link #persistReissuingCookie} mints a new handle and makes the store replace the record and
  *       swap the handle in one atomic step; it returns the cookie for the new handle, whose
  *       {@code Max-Age} is the session's remaining absolute lifetime, and the previous cookie value
@@ -60,6 +61,12 @@ import org.jspecify.annotations.Nullable;
  * {@link #destroyBySub} removed it after the caller resolved it — the update writes nothing and
  * reports the session gone. The store performs the check and the write as one atomic step, so a
  * logout cannot fall between them. {@link #bind} is the only creating write.
+ * <p>
+ * <strong>A refresh does not overwrite a widening.</strong> {@link #persist} compares the stored record
+ * against the record the refresh was computed from in that same atomic step: when a widening or a
+ * step-up replaced it meanwhile, nothing is written and the refresh is told it was superseded, so the
+ * widened scopes, the widening grant's refresh token, its {@code acr} and its {@code auth_time} stay
+ * as the widening left them.
  * <p>
  * The adapter adds no policy of its own and holds no state beyond its two collaborators; it is
  * thread-safe because both of them are.
@@ -112,19 +119,22 @@ public final class ServerSessionBinding implements SessionBinding {
     }
 
     @Override
-    public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+    public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
+        Objects.requireNonNull(basis, "basis");
         Objects.requireNonNull(updated, "updated");
         Objects.requireNonNull(now, "now");
-        // The store replaces the record only if it still holds the session, as one atomic step, so a
+        // The store replaces the record only if it still holds exactly basis, as one atomic step, so a
         // session a logout or a back-channel logout destroyed since the caller resolved it is not
-        // written back. No pre-destroy is needed either way: destroying first would open a window
-        // where a concurrent resolve() misses the session being updated. A replacement consumes no
-        // capacity, so it is admitted even at the max-session bound.
-        if (!sessionStore.replaceIfPresent(updated)) {
-            return Optional.empty();
-        }
-        // The cookie handle is unchanged, so the browser needs no new Set-Cookie.
-        return Optional.of(new BoundSession(updated, List.of()));
+        // written back, and a widening that replaced the record meanwhile is not overwritten. No
+        // pre-destroy is needed either way: destroying first would open a window where a concurrent
+        // resolve() misses the session being updated. A replacement consumes no capacity, so it is
+        // admitted even at the max-session bound.
+        return switch (sessionStore.replaceIfCurrent(basis, updated)) {
+            // The cookie handle is unchanged, so the browser needs no new Set-Cookie.
+            case REPLACED -> PersistResult.written(new BoundSession(updated, List.of()));
+            case ABSENT -> PersistResult.gone();
+            case SUPERSEDED -> PersistResult.superseded();
+        };
     }
 
     @Override

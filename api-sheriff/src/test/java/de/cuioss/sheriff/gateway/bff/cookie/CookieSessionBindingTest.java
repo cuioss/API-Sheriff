@@ -30,6 +30,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding.PersistResult;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.juli.LogAsserts;
@@ -211,12 +212,13 @@ class CookieSessionBindingTest {
 
     /**
      * Re-seals {@code updated} through {@code persist} and unwraps the result. The stateless binding
-     * never reports a session gone, so an empty result is a defect of the binding and fails the test
-     * that asked for the re-seal.
+     * never reports a session gone or superseded, so any result but a written one is a defect of the
+     * binding and fails the test that asked for the re-seal. The binding holds no record to compare a
+     * basis against and ignores it, so {@code updated} stands in for it here.
      */
     private BoundSession reseal(SessionRecord updated, Instant now) {
-        return binding.persist(updated, now)
-                .orElseThrow(() -> new AssertionError("the stateless binding must never report a session gone"));
+        return assertInstanceOf(PersistResult.Written.class, binding.persist(updated, updated, now),
+                "the stateless binding must always report the update written").bound();
     }
 
     @Nested
@@ -449,10 +451,45 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should always return the re-sealed session — the update never reports the session gone")
         void shouldNeverReportTheSessionGone() {
-            Optional<BoundSession> persisted = binding.persist(resealable("rotated-access-token"),
-                    LOGIN.plusSeconds(60));
+            SessionRecord updated = resealable("rotated-access-token");
 
-            assertTrue(persisted.isPresent(), "a stateless binding has nothing to find the session gone in");
+            PersistResult persisted = binding.persist(updated, updated, LOGIN.plusSeconds(60));
+
+            assertInstanceOf(PersistResult.Written.class, persisted,
+                    "a stateless binding has nothing to find the session gone in");
+        }
+
+        /**
+         * The stateless residual, pinned rather than hidden: the binding holds no record to compare the
+         * basis against, so a refresh computed from the record before a widening still re-seals, and the
+         * browser keeps whichever of the two cookies it stores last. In server mode the same sequence
+         * reports the update superseded.
+         */
+        @Test
+        @DisplayName("Should re-seal and never report the update superseded, because a stateless binding cannot observe a widening")
+        void shouldNeverReportTheUpdateSuperseded() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord resolvedByRefresh = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+            binding.persistReissuingCookie(withRotatedAccessToken(resolvedByRefresh, "widened-access-token"),
+                    LOGIN.plusSeconds(30)).orElseThrow();
+            SessionRecord rotatedFromStale = withRotatedAccessToken(resolvedByRefresh, "rotated-access-token");
+
+            PersistResult persisted = binding.persist(resolvedByRefresh, rotatedFromStale, LOGIN.plusSeconds(60));
+
+            BoundSession reBound = assertInstanceOf(PersistResult.Written.class, persisted,
+                    "the basis is ignored, so a widening that landed meanwhile is not observed").bound();
+            assertEquals("rotated-access-token",
+                    binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow().accessToken(),
+                    "the refresh's cookie resolves to the rotated material, as the stated residual of the mode");
+        }
+
+        @Test
+        @DisplayName("Should reject a null basis although it does not read it")
+        void shouldRejectNullBasis() {
+            SessionRecord updated = resealable("rotated-access-token");
+            Instant now = LOGIN.plusSeconds(60);
+
+            assertThrows(NullPointerException.class, () -> binding.persist(null, updated, now));
         }
 
         /**
@@ -471,10 +508,10 @@ class CookieSessionBindingTest {
                 default -> binding.destroyBySub(SUB);
             }
 
-            Optional<BoundSession> persisted = binding.persist(updated, LOGIN.plusSeconds(60));
+            PersistResult persisted = binding.persist(updated, updated, LOGIN.plusSeconds(60));
 
-            BoundSession reBound = persisted
-                    .orElseThrow(() -> new AssertionError("persist after " + destruction + " must still re-seal"));
+            BoundSession reBound = assertInstanceOf(PersistResult.Written.class, persisted,
+                    () -> "persist after " + destruction + " must still re-seal").bound();
             assertEquals(1, reBound.setCookieHeaders().size(), "the re-seal still emits its one Set-Cookie");
             assertEquals("rotated-access-token",
                     binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow().accessToken(),
@@ -758,7 +795,7 @@ class CookieSessionBindingTest {
             // A record reconstructed without the nonce would otherwise silently acquire a new identity.
             SessionRecord nonceless = session(ACCESS_TOKEN, LOGIN.plus(TTL));
 
-            assertThrows(IllegalStateException.class, () -> binding.persist(nonceless, LOGIN),
+            assertThrows(IllegalStateException.class, () -> binding.persist(nonceless, nonceless, LOGIN),
                     "re-minting here would change the derived identity mid-session");
         }
 

@@ -504,7 +504,7 @@ class BackchannelLogoutReceiverTest {
         }
 
         @Override
-        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+        public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
             throw new UnsupportedOperationException("the back-channel path never persists a session");
         }
 

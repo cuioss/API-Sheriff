@@ -94,7 +94,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * The engine refresh is driven through the {@link RefreshExchange} seam, the near-expiry decision
  * through the {@link AccessTokenExpiry} seam and revocation through a recording
  * {@link RefreshTokenRevocation}, so every path — not-needed, refreshed, each failure kind, the
- * post-exchange persist failure, a session terminated while its refresh is in flight, the pre-redemption
+ * post-exchange persist failure, a session terminated while its refresh is in flight, a refresh superseded
+ * by a widening that landed while it was in flight, the pre-redemption
  * back-off and the concurrent single-flight coalesce
  * — is exercised with the engine's own exception types and no test-double framework. The engine's
  * {@code RefreshFlow.classify} is NOT stubbed: each test throws the exception the engine actually raises
@@ -163,6 +164,7 @@ class TokenRefreshCoordinatorTest {
     private static final String REFRESH_FAILED_ID = BffLogMessages.WARN.SESSION_REFRESH_FAILED.resolveIdentifierString();
     private static final String REFRESH_DEFERRED_ID =
             BffLogMessages.WARN.SESSION_REFRESH_DEFERRED.resolveIdentifierString();
+    private static final String REFRESHED_ID = BffLogMessages.INFO.TOKEN_REFRESHED.resolveIdentifierString();
 
     private InMemorySessionStore store;
     private SessionBinding binding;
@@ -218,6 +220,18 @@ class TokenRefreshCoordinatorTest {
             // Previously the boolean return was discarded, so an expiry let the test continue
             // silently. The ceiling reaching zero now fails the test instead.
             throw new AssertionError("the release latch never reached zero", e);
+        }
+    }
+
+    /** Holds the calling thread until the thread in {@code parked} is parked, bounded by the teardown tier. */
+    private static void awaitParked(AtomicReference<Thread> parked) {
+        try {
+            Awaits.until(() -> {
+                Thread candidate = parked.get();
+                return candidate != null && candidate.getState() == Thread.State.WAITING;
+            }, "the coalesced waiter to park in the single-flight join", Awaits.TEARDOWN_CEILING_SECONDS);
+        } catch (TimeoutException e) {
+            throw new AssertionError("the waiter never coalesced with the in-flight refresh", e);
         }
     }
 
@@ -1333,7 +1347,7 @@ class TokenRefreshCoordinatorTest {
             SessionBinding holdingLeader = new ResolveHookBinding(binding, cookieHeader -> {
                 if (COOKIE_HEADER.equals(cookieHeader)) {
                     leaderResolving.countDown();
-                    TerminatedDuringRefresh.awaitParked(waiterThread);
+                    awaitParked(waiterThread);
                 }
             });
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, (rt, _) -> {
@@ -1395,7 +1409,6 @@ class TokenRefreshCoordinatorTest {
         private static final String MISSING = "orders:write";
         private static final Set<String> REQUESTED = Set.of("openid", "profile", "email", "orders:read", MISSING);
         private static final String REQUESTED_SCOPE = "openid profile email orders:read orders:write";
-        private static final String REFRESHED_ID = BffLogMessages.INFO.TOKEN_REFRESHED.resolveIdentifierString();
 
         /** The matched control's termination: it destroys nothing, so the session is there at the persist. */
         private static final BiConsumer<SessionBinding, SessionRecord> NO_TERMINATION = (target, session) -> {
@@ -1600,17 +1613,277 @@ class TokenRefreshCoordinatorTest {
                 waiting.interrupt();
             }
         }
+    }
 
-        /** Holds the calling thread until the thread in {@code parked} is parked, bounded by the teardown tier. */
-        private static void awaitParked(AtomicReference<Thread> parked) {
+    /**
+     * A widening that lands while a refresh of the same session is in flight. The refresh leader resolves
+     * the session, runs the engine exchange holding no lock, and then persists the record it rotated from
+     * what it resolved; the widening writes through {@link SessionBinding#persistReissuingCookie} and does
+     * not pass through the coordinator's single-flight map, so the two writes meet only at the store.
+     * <p>
+     * The interleaving runs over the real {@link ServerSessionBinding} and {@link InMemorySessionStore},
+     * not a test fake: the leader's exchange blocks on a gate, the widening lands with a widened
+     * {@code S}/{@code A}, a new refresh token, a new {@code acr} and a new {@code auth_time}, the gate
+     * opens and the refresh persists. Nothing depends on timing — the gate is a latch the test opens only
+     * after the widening's write has returned.
+     * <p>
+     * The guard that serialises the two writes is the refresh-side persist: the leader passes the record
+     * it resolved as the basis, and the store's {@code replaceIfCurrent} compares the stored record
+     * against it and replaces in one step under the store's monitor. A widening that landed in between
+     * makes the comparison fail, so the refresh writes nothing. A presence-only replacement would let the
+     * refresh overwrite the widening with the record it rotated from the earlier one.
+     * <p>
+     * The superseded refresh's own disposition is pinned on both legs by cases whose exchange stub makes
+     * the widening's write itself, on the leader's thread between the resolve and the persist: the outcome
+     * is {@code NO_SESSION}, nothing is written, the rotated refresh token is revoked exactly once and no
+     * {@code ApiSheriff-111} is recorded, because no session ended. A matched control runs the same stub
+     * with a concurrent write that does nothing, so the refusal is caused by the widening and not by the
+     * stub. The single-flight cases show that a coalesced waiter shares the superseded outcome over one
+     * exchange, and that the in-flight entry is released so the widened session refreshes next.
+     */
+    @Nested
+    @DisplayName("Refresh versus a widening that lands while it is in flight (server mode)")
+    class RefreshVersusWidening {
+
+        /** The scope-driven leg's requested set: A plus a scope S holds and A lacks. */
+        private static final Set<String> REQUESTED = GRANTED_SCOPES;
+        private static final String REQUESTED_SCOPE = "openid profile email orders:read orders:write";
+
+        /** The matched control's concurrent write: none, so the persist meets the record the leader resolved. */
+        private static final Consumer<SessionRecord> NO_CONCURRENT_WRITE = live -> {
+            // Deliberately empty: the control runs the same stub and leaves the stored record in place.
+        };
+
+        private static final Set<String> WIDENED_SCOPES = Set.of("openid", "profile", "email", "orders:read",
+                "orders:write", "billing:read");
+        private static final String WIDENED_ACCESS = "widened-access-token";
+        private static final String WIDENED_REFRESH = "widened-refresh-token";
+        private static final String WIDENED_ID = "widened-id-token";
+        private static final String WIDENED_ACR = "urn:example:acr:mfa";
+        private static final Instant WIDENED_AUTH_TIME = NOW.minusSeconds(5);
+
+        /** The {@code Cookie} header value the widening's re-issued {@code Set-Cookie} carries. */
+        private final AtomicReference<@Nullable String> widenedCookie = new AtomicReference<>();
+
+        /** The live session after the widening: same identity, the widening grant's material and scopes. */
+        private static SessionRecord widened(SessionRecord live) {
+            return SessionRecord.builder()
+                    .sessionId(live.sessionId())
+                    .accessToken(WIDENED_ACCESS)
+                    .refreshToken(WIDENED_REFRESH)
+                    .idToken(WIDENED_ID)
+                    .sub(live.sub())
+                    .sid(live.sid())
+                    .expiresAt(live.expiresAt())
+                    .acr(WIDENED_ACR)
+                    .authTime(WIDENED_AUTH_TIME)
+                    .sessionNonce(live.sessionNonce())
+                    .activeScopes(WIDENED_SCOPES)
+                    .grantedScopes(WIDENED_SCOPES)
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should keep the widened scopes, refresh token, acr and auth time when the refresh persists after the widening landed")
+        void shouldNotOverwriteWideningThatLandedDuringRefresh() throws Exception {
+            SessionRecord live = storedSession();
+            CountDownLatch exchangeEntered = new CountDownLatch(1);
+            CountDownLatch gate = new CountDownLatch(1);
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
+                exchangeEntered.countDown();
+                awaitRelease(gate);
+                return rotation();
+            });
+            FutureTask<RefreshOutcome> leader = new FutureTask<>(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
+            Thread leading = new Thread(leader, "refresh-leader");
+            leading.start();
+            String widenedCookie;
             try {
-                Awaits.until(() -> {
-                    Thread candidate = parked.get();
-                    return candidate != null && candidate.getState() == Thread.State.WAITING;
-                }, "the coalesced waiter to park in the single-flight join", Awaits.TEARDOWN_CEILING_SECONDS);
-            } catch (TimeoutException e) {
-                throw new AssertionError("the waiter never coalesced with the in-flight refresh", e);
+                Awaits.connect(exchangeEntered, "the leader to enter the engine exchange");
+                String setCookie = binding.persistReissuingCookie(widened(live), NOW).orElseThrow()
+                        .setCookieHeaders().getFirst();
+                widenedCookie = setCookie.substring(0, setCookie.indexOf(';'));
+                gate.countDown();
+                Awaits.connect(leader, "the leader refresh to persist and complete");
+            } finally {
+                gate.countDown();
+                leading.interrupt();
             }
+
+            SessionRecord stored = binding.resolve(widenedCookie, NOW).orElseThrow();
+            assertAll("the refresh's persist does not overwrite the widening that landed while it was in flight",
+                    () -> assertEquals(WIDENED_SCOPES, stored.grantedScopes(), "the widened S is kept"),
+                    () -> assertEquals(WIDENED_SCOPES, stored.activeScopes(), "the widened A is kept"),
+                    () -> assertEquals(WIDENED_REFRESH, stored.refreshToken(),
+                            "the widening grant's refresh token is kept"),
+                    () -> assertEquals(WIDENED_ACR, stored.acr(), "the widening's acr is kept"),
+                    () -> assertEquals(WIDENED_AUTH_TIME, stored.authTime(), "the widening's auth time is kept"));
+        }
+
+        /**
+         * The widening's write: re-issues the cookie value and stores {@link #widened(SessionRecord)}
+         * through the real binding, and records the re-issued {@code Cookie} header value.
+         */
+        private void widen(SessionRecord live) {
+            String setCookie = binding.persistReissuingCookie(widened(live), NOW).orElseThrow()
+                    .setCookieHeaders().getFirst();
+            widenedCookie.set(setCookie.substring(0, setCookie.indexOf(';')));
+        }
+
+        /** The stored record, resolved through the cookie value the widening re-issued. */
+        private SessionRecord storedUnderWidenedCookie() {
+            return binding.resolve(widenedCookie.get(), NOW).orElseThrow();
+        }
+
+        /**
+         * An exchange that runs {@code concurrentWrite} against the live session and then returns
+         * {@code rotation} — the identity provider redeemed the grant while the other write landed.
+         */
+        private static RefreshExchange exchangeWith(SessionRecord live, Consumer<SessionRecord> concurrentWrite,
+                RotationResult rotation, AtomicInteger calls) {
+            return (presented, _) -> {
+                calls.incrementAndGet();
+                concurrentWrite.accept(live);
+                return rotation;
+            };
+        }
+
+        @Test
+        @DisplayName("Should answer NO_SESSION, write nothing and revoke the rotated token once when a widening supersedes the near-expiry refresh")
+        void shouldSupersedeNearExpiryRefresh() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    exchangeWith(live, this::widen, rotation(), calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertSuperseded("near-expiry leg", outcome, calls.get(), live);
+        }
+
+        @Test
+        @DisplayName("Should answer NO_SESSION rather than REFRESHED or SCOPE_REFUSED when a widening supersedes the scope-driven refresh")
+        void shouldSupersedeScopeDrivenRefresh() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, exchangeWith(live, this::widen,
+                    rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL), calls));
+
+            RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
+
+            assertSuperseded("scope-driven leg", outcome, calls.get(), live);
+        }
+
+        private void assertSuperseded(String label, RefreshOutcome outcome, int engineCalls, SessionRecord live) {
+            assertAll(label,
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, outcome.kind(),
+                            "the request is unauthenticated, and the browser's cookie must not be cleared"),
+                    () -> assertFalse(outcome.isFailure(), "no session was destroyed"),
+                    () -> assertNull(outcome.session(), "no session is handed on"),
+                    () -> assertTrue(outcome.setCookieHeaders().isEmpty(), "nothing was re-bound"),
+                    () -> assertEquals(1, engineCalls, "the exchange ran, so the widening landed in flight"),
+                    () -> assertEquals(widened(live), storedUnderWidenedCookie(),
+                            "nothing was written: the stored record is exactly the one the widening left"),
+                    () -> assertEquals(1, store.size(), "the session lives on and nothing else was stored"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "the rotated refresh token is live at the identity provider and held nowhere, so it is revoked exactly once"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, REFRESHED_ID);
+        }
+
+        @Test
+        @DisplayName("Should store the rotated record and return REFRESHED when nothing writes concurrently (matched control)")
+        void shouldRefreshWithoutConcurrentWrite() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    exchangeWith(live, NO_CONCURRENT_WRITE, rotation(), calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            SessionRecord stored = resolveById(store, SESSION_ID, NOW).orElseThrow();
+            assertAll("the same stub refreshes when the record at the persist is the one the leader resolved",
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
+                    () -> assertEquals(1, calls.get()),
+                    () -> assertEquals(outcome.session(), stored, "the rotated record is the stored one"),
+                    () -> assertEquals(ROTATED_ACCESS, stored.accessToken()),
+                    () -> assertEquals(ROTATED_REFRESH, stored.refreshToken()),
+                    () -> assertEquals(GRANTED_SCOPES, stored.grantedScopes(), "S is unchanged by the refresh"),
+                    () -> assertTrue(revoked.isEmpty(), "a persisted rotation revokes nothing"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, REFRESHED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should hand a coalesced waiter the superseded NO_SESSION outcome over one exchange and revoke once")
+        void shouldShareSupersededOutcomeWithCoalescedWaiter() throws Exception {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            CountDownLatch exchangeEntered = new CountDownLatch(1);
+            AtomicReference<Thread> waiterThread = new AtomicReference<>();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
+                calls.incrementAndGet();
+                exchangeEntered.countDown();
+                awaitParked(waiterThread);
+                widen(live);
+                return rotation();
+            });
+            FutureTask<RefreshOutcome> leader = new FutureTask<>(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
+            FutureTask<RefreshOutcome> waiter = new FutureTask<>(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
+            Thread leading = new Thread(leader, "refresh-leader");
+            Thread waiting = new Thread(waiter, "refresh-waiter");
+            RefreshOutcome leaderOutcome;
+            RefreshOutcome waiterOutcome;
+            leading.start();
+            try {
+                Awaits.connect(exchangeEntered, "the leader to enter the engine exchange");
+                waiterThread.set(waiting);
+                waiting.start();
+                leaderOutcome = Awaits.connect(leader, "the leader refresh to complete");
+                waiterOutcome = Awaits.connect(waiter, "the coalesced waiter to complete");
+            } finally {
+                leading.interrupt();
+                waiting.interrupt();
+            }
+
+            assertAll("the waiter shares the leader's superseded outcome",
+                    () -> assertEquals(1, calls.get(), "one exchange served both requests on the session"),
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, leaderOutcome.kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, waiterOutcome.kind(),
+                            "the coalesced waiter is answered as unauthenticated too"),
+                    () -> assertEquals(widened(live), storedUnderWidenedCookie(), "nothing was written"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked, "the rotated token is revoked exactly once"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+        }
+
+        @Test
+        @DisplayName("Should release the single-flight entry so the widened session refreshes from its own refresh token next")
+        void shouldRefreshWidenedSessionAfterSupersededRefresh() {
+            SessionRecord live = storedSession();
+            List<String> presentedTokens = new CopyOnWriteArrayList<>();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
+                presentedTokens.add(presented);
+                if (presentedTokens.size() == 1) {
+                    widen(live);
+                }
+                return rotation();
+            });
+
+            RefreshOutcome superseded = coordinator.refresh(live, COOKIE_HEADER, NOW);
+            RefreshOutcome next = coordinator.refresh(storedUnderWidenedCookie(), widenedCookie.get(), NOW);
+
+            SessionRecord stored = storedUnderWidenedCookie();
+            assertAll("the superseded refresh leaves no in-flight entry and no back-off behind",
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, superseded.kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, next.kind(),
+                            "the next request on the widened session starts a refresh of its own"),
+                    () -> assertEquals(List.of(CURRENT_REFRESH, WIDENED_REFRESH), presentedTokens,
+                            "one exchange per refresh, the second presenting the widening grant's refresh token"),
+                    () -> assertEquals(ROTATED_REFRESH, stored.refreshToken(), "the second rotation is stored"),
+                    () -> assertEquals(WIDENED_SCOPES, stored.grantedScopes(),
+                            "and it was computed from the widened record, so the widened S survives it"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "only the superseded refresh's rotated token is revoked"));
         }
     }
 
@@ -2667,7 +2940,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Override
-        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+        public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
             throw new IllegalStateException("sealed session cookie exceeds the size budget");
         }
 
@@ -2734,8 +3007,8 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Override
-        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
-            return delegate.persist(updated, now);
+        public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
+            return delegate.persist(basis, updated, now);
         }
 
         @Override

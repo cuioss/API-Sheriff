@@ -4065,11 +4065,16 @@ authorization request at all.
 
 * *A cross-site navigation can start a widening.* The link makes the browser ask for more scopes for
   the user's session. It cannot choose them or the landing origin, as above.
-* *A widening merge and a concurrent refresh race.* Both resolve the session and then persist it,
-  and the last writer wins. Either result is an identity-provider-fresh token set of the same
-  identity; the loss is one abandoned refresh token. This race between the two writers is unchanged
-  by the updating write above: that write settles a writer against a *termination*, in server mode,
-  and says nothing about two writers.
+* *A widening merge and a concurrent refresh race.* Both resolve the session and then persist it.
+  In server mode the refresh's write names the record it resolved as its basis, and the store
+  compares and replaces in one atomic step: a refresh that persists after a widening landed is
+  *superseded* and writes nothing, so the widened scopes, the widening grant's refresh token, its
+  `acr` and its `auth_time` stay, and the refresh token the refresh obtained is revoked best-effort.
+  A widening that persists after the refresh replaces the refreshed record with its own grant; the
+  loss is the refresh's rotated refresh token, abandoned and not revoked. In cookie mode neither
+  write can observe the other, and whichever cookie the browser stores last wins: a refresh that
+  lands last hands back the session as it stood before the widening, which the next request widens
+  again. Either result is an identity-provider-fresh token set of the same identity.
 * *The interactive re-drive is asserted at unit level only.* In the integration suite the browser
   that just logged in holds a live SSO session, so the silent attempt always succeeds there.
 

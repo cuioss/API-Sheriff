@@ -281,11 +281,12 @@ class GatewayCookieContractTest {
                     .setCookieHeaders().getFirst());
             String refreshedToken = Generators.letterStrings(16, 32).next();
 
-            Optional<SessionBinding.BoundSession> refreshed = serverBinding.persist(
+            SessionBinding.PersistResult refreshed = serverBinding.persist(session,
                     session(session.sessionId(), refreshedToken), LOGIN);
 
             assertAll("the refresh wrote under the re-issued value",
-                    () -> assertTrue(refreshed.isPresent(), "precondition: the session was there to update"),
+                    () -> assertInstanceOf(SessionBinding.PersistResult.Written.class, refreshed,
+                            "precondition: the session was there to update, as the refresh resolved it"),
                     () -> assertEquals(Optional.empty(), serverBinding.resolve(before, LOGIN),
                             "the value from before the re-issue resolves nothing"),
                     () -> assertEquals(Optional.of(refreshedToken),

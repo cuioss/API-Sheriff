@@ -35,6 +35,8 @@ import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding.PersistResult;
+import de.cuioss.sheriff.gateway.bff.session.SessionStore.ReplaceOutcome;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import lombok.experimental.Delegate;
 import org.jspecify.annotations.Nullable;
@@ -55,6 +57,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * It also pins the rule that keeps a terminated session terminated: persist updates a session the
  * store still holds and never creates one, so after a destroy by identity, by {@code sid} or by
  * {@code sub} it reports the session gone and nothing resolves. Bind stays the creating write.
+ * <p>
+ * And it pins the rule that keeps a widening a widening: persist writes only over the record the
+ * caller names as its basis, so after a re-issuing write replaced that record it reports the update
+ * superseded and the widened record stays. A re-issue that changed the handle alone does not
+ * supersede, because the handle is store-side state, not a component of the record.
  * <p>
  * The cookie value is an opaque handle the binding mints, never the session id. The
  * {@code ReissuingWrite} cases cover the write of a step-up or a widening — a new cookie value, the
@@ -123,6 +130,12 @@ class ServerSessionBindingTest {
     /** The cookie handle carried by the single cookie a write returned. */
     private String handleOf(BoundSession bound) {
         return cookieCodec.readCookieHandle(requestCookieOf(bound)).orElseThrow();
+    }
+
+    /** The bound session a persist reported written, failing the test on any other result. */
+    private static BoundSession writtenOf(PersistResult result) {
+        return assertInstanceOf(PersistResult.Written.class, result, "the persist reports the update written")
+                .bound();
     }
 
     @Test
@@ -216,9 +229,9 @@ class ServerSessionBindingTest {
         BoundSession created = binding.bind(session, NOW);
         SessionRecord rotated = session(session.sessionId(), "access-token-2");
 
-        Optional<BoundSession> persisted = binding.persist(rotated, NOW);
+        PersistResult persisted = binding.persist(session, rotated, NOW);
 
-        BoundSession bound = persisted.orElseThrow(() -> new AssertionError("a live session is updated"));
+        BoundSession bound = writtenOf(persisted);
         assertSame(rotated, bound.session());
         assertTrue(bound.setCookieHeaders().isEmpty(),
                 "the opaque handle is unchanged, so the browser needs no new Set-Cookie");
@@ -233,7 +246,7 @@ class ServerSessionBindingTest {
         SessionRecord resolvedSnapshot = session(SessionRecord.newSessionId(), "access-token-1");
         BoundSession created = binding.bind(resolvedSnapshot, NOW);
         SessionRecord rotated = session(resolvedSnapshot.sessionId(), "access-token-2");
-        assertTrue(binding.persist(rotated, NOW).isPresent(),
+        assertInstanceOf(PersistResult.Written.class, binding.persist(resolvedSnapshot, rotated, NOW),
                 "precondition: a refresh replaced the record after the caller resolved it");
 
         Optional<SessionRecord> destroyed = binding.destroy(resolvedSnapshot);
@@ -291,9 +304,10 @@ class ServerSessionBindingTest {
         BoundSession created = binding.bind(session, NOW);
         termination.accept(binding, session);
 
-        Optional<BoundSession> persisted = binding.persist(session(session.sessionId(), "access-token-2"), NOW);
+        PersistResult persisted = binding.persist(session, session(session.sessionId(), "access-token-2"), NOW);
 
-        assertTrue(persisted.isEmpty(), () -> "after " + label + " the update must report the session gone");
+        assertSame(PersistResult.gone(), persisted,
+                () -> "after " + label + " the update must report the session gone");
         assertTrue(binding.resolve(requestCookieOf(created), NOW).isEmpty(),
                 () -> "the session terminated by " + label + " stays unresolvable");
         assertEquals(0, store.size(), "nothing was written back into the store");
@@ -304,9 +318,10 @@ class ServerSessionBindingTest {
     void shouldReportUnboundSessionGoneOnPersist() {
         SessionRecord neverBound = session(SessionRecord.newSessionId(), "access-token-1");
 
-        Optional<BoundSession> persisted = binding.persist(neverBound, NOW);
+        PersistResult persisted = binding.persist(neverBound, session(neverBound.sessionId(), "access-token-2"),
+                NOW);
 
-        assertTrue(persisted.isEmpty(), "persist is the updating write and never creates a session");
+        assertSame(PersistResult.gone(), persisted, "persist is the updating write and never creates a session");
         assertEquals(0, store.size());
     }
 
@@ -314,11 +329,11 @@ class ServerSessionBindingTest {
     @DisplayName("Should still create a session through bind after a persist was refused")
     void shouldStillCreateThroughBind() {
         SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
-        Optional<BoundSession> refused = binding.persist(session, NOW);
+        PersistResult refused = binding.persist(session, session, NOW);
 
         BoundSession bound = binding.bind(session, NOW);
 
-        assertTrue(refused.isEmpty(), "the persist before the bind created nothing");
+        assertSame(PersistResult.gone(), refused, "the persist before the bind created nothing");
         assertEquals(1, bound.setCookieHeaders().size(), "bind is the creating write and emits the session cookie");
         assertEquals(Optional.of(session), binding.resolve(requestCookieOf(bound), NOW));
     }
@@ -334,9 +349,9 @@ class ServerSessionBindingTest {
             String requestCookie = requestCookieOf(observedBinding.bind(session, NOW));
             observingStore.resolveAroundEveryWrite(() -> observedBinding.resolve(requestCookie, NOW));
 
-            Optional<BoundSession> persisted = observedBinding.persist(rotated, NOW);
+            PersistResult persisted = observedBinding.persist(session, rotated, NOW);
 
-            assertTrue(persisted.isPresent(), "the live session is updated");
+            assertInstanceOf(PersistResult.Written.class, persisted, "the live session is updated");
             assertEquals(List.of(Optional.of(session), Optional.of(rotated)), observingStore.resolved(),
                     "a concurrent resolve must never miss a rotating session: the persist makes one store "
                             + "write, and a request resolving on another thread sees the previous record "
@@ -389,8 +404,8 @@ class ServerSessionBindingTest {
         }
 
         @Override
-        public boolean replaceIfPresent(SessionRecord session) {
-            return aroundWrite(() -> delegate.replaceIfPresent(session));
+        public ReplaceOutcome replaceIfCurrent(SessionRecord basis, SessionRecord replacement) {
+            return aroundWrite(() -> delegate.replaceIfCurrent(basis, replacement));
         }
 
         @Override
@@ -440,7 +455,7 @@ class ServerSessionBindingTest {
 
             void create(SessionRecord session, String cookieHandle, Instant now);
 
-            boolean replaceIfPresent(SessionRecord session);
+            ReplaceOutcome replaceIfCurrent(SessionRecord basis, SessionRecord replacement);
 
             boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle);
 
@@ -474,10 +489,10 @@ class ServerSessionBindingTest {
         SessionRecord refreshed = scopedSession(session.sessionId(), "access-token-2", Set.of("openid"),
                 GRANTED_SCOPES);
 
-        Optional<BoundSession> persisted = binding.persist(refreshed, NOW);
+        PersistResult persisted = binding.persist(session, refreshed, NOW);
         SessionRecord resolved = binding.resolve(requestCookieOf(created), NOW).orElseThrow();
 
-        assertTrue(persisted.isPresent(), "the live session is updated");
+        assertInstanceOf(PersistResult.Written.class, persisted, "the live session is updated");
         assertEquals(Set.of("openid"), resolved.activeScopes(), "the persisted A reaches the next request");
         assertEquals(GRANTED_SCOPES, resolved.grantedScopes(), "the persisted S reaches the next request");
     }
@@ -642,20 +657,59 @@ class ServerSessionBindingTest {
         }
 
         @Test
-        @DisplayName("Should leave the re-issued cookie in force when a refresh persists afterwards")
+        @DisplayName("Should leave the re-issued cookie in force when a refresh of the re-issued record persists afterwards")
         void shouldKeepReissuedCookieAcrossLaterPersist() {
             SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
             BoundSession created = binding.bind(session, NOW);
-            BoundSession reissued = binding
-                    .persistReissuingCookie(session(session.sessionId(), "access-token-2"), NOW).orElseThrow();
+            SessionRecord widened = session(session.sessionId(), "access-token-2");
+            BoundSession reissued = binding.persistReissuingCookie(widened, NOW).orElseThrow();
             SessionRecord rotated = session(session.sessionId(), "access-token-3");
 
-            Optional<BoundSession> persisted = binding.persist(rotated, NOW);
+            PersistResult persisted = binding.persist(widened, rotated, NOW);
 
-            assertTrue(persisted.isPresent(), "the refresh finds the session by its stable id");
+            assertInstanceOf(PersistResult.Written.class, persisted, "the refresh finds the session by its stable id");
             assertEquals(Optional.of(rotated), binding.resolve(requestCookieOf(reissued), NOW));
             assertTrue(binding.resolve(requestCookieOf(created), NOW).isEmpty(),
                     "the refresh did not put the previous cookie value back");
+        }
+
+        @Test
+        @DisplayName("Should report a refresh superseded and keep the widened record when the re-issue landed after the refresh resolved")
+        void shouldReportRefreshSupersededByReissue() {
+            SessionRecord resolvedByRefresh = scopedSession(SessionRecord.newSessionId(), "access-token-1",
+                    Set.of("openid"), Set.of("openid"));
+            BoundSession created = binding.bind(resolvedByRefresh, NOW);
+            SessionRecord widened = scopedSession(resolvedByRefresh.sessionId(), "access-token-2", GRANTED_SCOPES,
+                    GRANTED_SCOPES);
+            BoundSession reissued = binding.persistReissuingCookie(widened, NOW).orElseThrow();
+            SessionRecord rotatedFromStale = scopedSession(resolvedByRefresh.sessionId(), "access-token-3",
+                    Set.of("openid"), Set.of("openid"));
+
+            PersistResult persisted = binding.persist(resolvedByRefresh, rotatedFromStale, NOW);
+
+            assertAll("a refresh computed from the record before the widening",
+                    () -> assertSame(PersistResult.superseded(), persisted,
+                            "the binding reports the record replaced since the refresh resolved it"),
+                    () -> assertEquals(Optional.of(widened), binding.resolve(requestCookieOf(reissued), NOW),
+                            "nothing was written: the widened record and its scopes stay"),
+                    () -> assertTrue(binding.resolve(requestCookieOf(created), NOW).isEmpty(),
+                            "and the previous cookie value is not put back"),
+                    () -> assertEquals(1, store.size(), "the session lives on as one entry"));
+        }
+
+        @Test
+        @DisplayName("Should not supersede a refresh when the re-issue changed the cookie handle and not the record")
+        void shouldNotSupersedeOnHandleOnlyReissue() {
+            SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
+            binding.bind(session, NOW);
+            BoundSession reissued = binding.persistReissuingCookie(session, NOW).orElseThrow();
+            SessionRecord rotated = session(session.sessionId(), "access-token-2");
+
+            PersistResult persisted = binding.persist(session, rotated, NOW);
+
+            assertInstanceOf(PersistResult.Written.class, persisted,
+                    "the handle is store-side state, so a re-issue of it alone leaves the caller's basis current");
+            assertEquals(Optional.of(rotated), binding.resolve(requestCookieOf(reissued), NOW));
         }
     }
 
@@ -715,7 +769,7 @@ class ServerSessionBindingTest {
             binding.bind(session, NOW);
             Instant later = NOW.plus(Duration.ofMinutes(20));
 
-            binding.persist(session(session.sessionId(), "access-token-2"), later);
+            writtenOf(binding.persist(session, session(session.sessionId(), "access-token-2"), later));
             BoundSession reissued = binding
                     .persistReissuingCookie(session(session.sessionId(), "access-token-3"), later).orElseThrow();
 
