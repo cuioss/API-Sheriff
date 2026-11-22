@@ -590,7 +590,7 @@ public final class TokenRefreshCoordinator {
             // rotated refresh token is live at the identity provider and held nowhere, so it is revoked
             // exactly as on the persist-failure path.
             case SessionBinding.PersistResult.Gone _ ->
-                    endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, rotation.refreshToken());
+                endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, rotation.refreshToken());
             case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId, rotation.refreshToken());
         };
     }

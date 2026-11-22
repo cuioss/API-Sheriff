@@ -32,7 +32,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.session.SessionStore.ReplaceOutcome;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
