@@ -422,9 +422,11 @@ services:
       - LOG_FILE_PATH=/logs/quarkus.log
       # Accept-time SNI passthrough split: gateway.yaml declares tls.passthrough_sni, so the Vert.x
       # SNI front listener owns the public TLS port (sheriff.tls.public-port=8443) and the terminated
-      # Quarkus HTTPS listener must move to the internal loopback port to avoid a bind conflict. This
-      # override moves it to sheriff.tls.internal-https-port (8444); the front L4-relays a matched
-      # passthrough SNI to the resolved backend and hands every other connection to localhost:8444.
+      # Quarkus HTTPS listener must move to the internal port to avoid a bind conflict. This override
+      # moves it to sheriff.tls.internal-https-port (8444), which the image binds on every interface
+      # (-Dquarkus.http.host=0.0.0.0 in Dockerfile.native) and which is published nowhere; the front
+      # L4-relays a matched passthrough SNI to the resolved backend and hands every other connection
+      # to it on localhost:8444, as doc/development/tls-edge.adoc says.
       - QUARKUS_HTTP_SSL_PORT=8444
       # Raise the framework body-size floor ABOVE the upload anchor's declared 64 MiB
       # max_body_bytes for this instance only. application.properties ships the floor at exactly
@@ -1013,7 +1015,7 @@ services:
   #
   # It sets NO QUARKUS_HTTP_SSL_PORT, and that absence is load-bearing rather than an omission: with
   # no passthrough_sni there is no front listener to claim 8443, so the terminated Quarkus HTTPS
-  # listener keeps the public port directly. Setting the loopback relocation here would move the
+  # listener keeps the public port directly. Setting the internal-port relocation here would move the
   # terminated listener off 8443 with nothing left listening on it.
   api-sheriff-passthrough-empty:
     image: "api-sheriff:distroless"
@@ -1430,8 +1432,8 @@ services:
   #
   # It sets NO QUARKUS_HTTP_SSL_PORT, and that absence is load-bearing rather than an omission: the
   # overlay declares no passthrough_sni, so no SNI front listener is created and the terminated
-  # Quarkus HTTPS listener keeps the public port 8443 directly. Setting the loopback relocation here
-  # would move the terminated listener off 8443 with nothing left listening on it.
+  # Quarkus HTTPS listener keeps the public port 8443 directly. Setting the internal-port relocation
+  # here would move the terminated listener off 8443 with nothing left listening on it.
   api-sheriff-refresh:
     image: "api-sheriff:distroless"
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).

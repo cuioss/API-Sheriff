@@ -689,28 +689,37 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
-         * {@code tls.passthrough_sni} is non-empty while the configuration treats the loopback relay leg
+         * {@code tls.passthrough_sni} is non-empty while the configuration may treat the loopback relay leg
          * as a client: {@code enumeration_detection} is enabled with the acting action {@code block} or
          * {@code delay}, or a {@code forwarded.trusted_proxies} range holds a loopback address.
          * <p>
          * Behind the SNI front every terminated connection reaches the edge from the loopback relay leg,
          * so source detection and the trusted-proxy judgement see every terminated client as that one
-         * loopback peer. An acting detection action therefore keys all of them on one source, and the
-         * block or delay that source earns acts on every terminated client at once; a loopback trusted
-         * proxy trusts every terminated client's own {@code Forwarded} and {@code X-Forwarded-For}
-         * headers.
+         * loopback peer. Each record states the consequence of its own combination only:
+         * <ul>
+         * <li>an acting detection action keys every terminated client on one source while the relay leg
+         * is no trusted proxy, so the block or delay that source earns acts on all of them at once —
+         * remedied by setting {@code enumeration_detection.action} to {@code observe};</li>
+         * <li>a loopback trusted proxy makes the relay leg a trusted proxy when the range holds the relay
+         * leg's own loopback address, so every terminated client's own {@code Forwarded} and
+         * {@code X-Forwarded-For} headers are trusted — remedied by removing the loopback range from
+         * {@code forwarded.trusted_proxies}. The record fires for every loopback range, including one
+         * that overlaps loopback without holding the relay leg's address, so it states this
+         * consequence as conditional.</li>
+         * </ul>
          * <p>
          * It is a {@code WARN} and never a boot refusal: each combination is a legal configuration whose
          * consequence the operator must know. Emitted by the validation rule
          * {@code EdgeRules.validatePassthroughSourceCollapse}, once per present combination and per
          * validation of the configuration: at boot, and in a {@code --validate-config} run. The template
-         * argument is a fixed token naming the combination — the action, or a loopback trusted proxy —
-         * never a configured range or any other address.
+         * arguments are, in order: a fixed token naming the combination — the action, or a loopback
+         * trusted proxy — and that combination's fixed consequence with its remedy. Neither ever carries
+         * a configured range or any other address.
          */
         public static final LogRecord PASSTHROUGH_SOURCE_COLLAPSE = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(152)
-                .template("tls.passthrough_sni is non-empty while %s — behind the SNI front every terminated connection reaches the edge from the loopback relay leg, so source detection and the trusted-proxy judgement see every terminated client as that one loopback peer: an acting detection action blocks or delays all of them at once, and a loopback trusted proxy trusts every client's own forwarded headers. For the combination named here, set enumeration_detection.action to observe, or remove the loopback range from forwarded.trusted_proxies")
+                .template("tls.passthrough_sni is non-empty while %s — behind the SNI front every terminated connection reaches the edge from the loopback relay leg, so source detection and the trusted-proxy judgement see every terminated client as that one loopback peer: %s")
                 .build();
     }
 

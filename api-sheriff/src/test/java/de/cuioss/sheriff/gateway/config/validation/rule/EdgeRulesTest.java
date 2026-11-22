@@ -17,8 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.*;
 import static de.cuioss.sheriff.gateway.testsupport.ValidationAsserts.assertHasError;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.Map;
@@ -75,6 +74,27 @@ class EdgeRulesTest {
     private static final String PASSTHROUGH_SOURCE_COLLAPSE_ID =
             ConfigLogMessages.WARN.PASSTHROUGH_SOURCE_COLLAPSE.resolveIdentifierString();
 
+    private static final String ACTION_TOKEN_PREFIX = "enumeration_detection.action is ";
+
+    private static final String LOOPBACK_PROXY_TOKEN = "forwarded.trusted_proxies holds a loopback range";
+
+    /**
+     * The consequence an acting detection action has under passthrough, together with its loopback
+     * qualifier: one source for every terminated client while the relay leg is no trusted proxy.
+     */
+    private static final List<String> ACTION_CONSEQUENCE = List.of(
+            "every terminated client is keyed on that one source",
+            "while the relay leg is no trusted proxy",
+            "the block or delay that source earns acts on all of them at once");
+
+    /**
+     * The consequence a loopback trusted proxy has under passthrough, bound to its condition: the relay
+     * leg is a trusted proxy only when the range holds the relay leg's loopback address.
+     */
+    private static final List<String> LOOPBACK_PROXY_CONSEQUENCE = List.of(
+            "when that range holds the relay leg's loopback address, the relay leg is a trusted proxy",
+            "every terminated client's own Forwarded and X-Forwarded-For headers are trusted");
+
     private final ConfigValidator validator = new ConfigValidator();
 
     // --- fixture helpers -------------------------------------------------
@@ -96,6 +116,21 @@ class EdgeRulesTest {
         return validGateway()
                 .tls(TlsConfig.builder().passthroughSni(passthroughSni).build())
                 .build();
+    }
+
+    /**
+     * Asserts that a source-collapse record states the consequence of its own combination and none of
+     * the other combination's: an action record carries the one-source consequence with its loopback
+     * qualifier, a loopback-proxy record the trusted-headers consequence.
+     */
+    private static void assertStatesOnlyItsOwnConsequence(String warning, boolean actionCombination) {
+        List<String> own = actionCombination ? ACTION_CONSEQUENCE : LOOPBACK_PROXY_CONSEQUENCE;
+        List<String> other = actionCombination ? LOOPBACK_PROXY_CONSEQUENCE : ACTION_CONSEQUENCE;
+        assertAll("the record states only its own combination's consequence",
+                () -> assertTrue(own.stream().allMatch(warning::contains),
+                        () -> "expected the consequence " + own + " in: " + warning),
+                () -> assertTrue(other.stream().noneMatch(warning::contains),
+                        () -> "expected none of the other consequence " + other + " in: " + warning));
     }
 
     @Nested
@@ -281,22 +316,33 @@ class EdgeRulesTest {
          * The boot WARN that a passthrough topology meets a configuration acting on the loopback relay
          * leg as if it were a client. It fires once for {@code block} and once for {@code delay} under a
          * non-empty {@code passthrough_sni}, and once for a {@code trusted_proxies} range holding a
-         * loopback address — overlapping {@code 127.0.0.0/8}, or containing {@code ::1}. Its matched
-         * controls stay silent: passthrough alone, each combination without passthrough, {@code observe}
-         * or disabled detection under passthrough, and a non-loopback proxy list under passthrough.
+         * loopback address — overlapping {@code 127.0.0.0/8}, or containing {@code ::1}. A covering range
+         * counts as well: {@code 0.0.0.0/1} holds {@code 127.0.0.0/8} and {@code ::/1} holds {@code ::1},
+         * and both boot, since only a set covering the whole address space is refused (ADR-0044). A narrow
+         * loopback range that does not hold the relay leg's address, such as {@code 127.0.0.2/32}, still
+         * emits the record, whose loopback consequence is conditional on the range holding that address.
+         * Each record states the consequence of its own combination and not the other's. Its matched controls
+         * stay silent: passthrough alone, each combination without passthrough, {@code observe} or
+         * disabled detection under passthrough, and a non-loopback proxy list under passthrough.
          */
         static Stream<Arguments> passthroughSourceCollapseControls() {
             EnumerationDetectionConfig block = detection(true, EnumerationDetectionConfig.Action.BLOCK);
             List<String> nonLoopback = List.of("192.0.2.0/24", "2001:db8::/48");
             return Stream.of(
-                    Arguments.of("passthrough with block", true, block, null, "enumeration_detection.action is block"),
+                    Arguments.of("passthrough with block", true, block, null, ACTION_TOKEN_PREFIX + "block"),
                     Arguments.of("passthrough with delay", true,
                             detection(true, EnumerationDetectionConfig.Action.DELAY), null,
-                            "enumeration_detection.action is delay"),
+                            ACTION_TOKEN_PREFIX + "delay"),
                     Arguments.of("passthrough with an IPv4 range overlapping 127.0.0.0/8", true, null,
-                            List.of("192.0.2.0/24", "127.0.0.1/32"), "forwarded.trusted_proxies holds a loopback range"),
+                            List.of("192.0.2.0/24", "127.0.0.1/32"), LOOPBACK_PROXY_TOKEN),
                     Arguments.of("passthrough with an IPv6 range containing ::1", true, null, List.of("::1/128"),
-                            "forwarded.trusted_proxies holds a loopback range"),
+                            LOOPBACK_PROXY_TOKEN),
+                    Arguments.of("passthrough with the narrow non-relay loopback range 127.0.0.2/32", true, null,
+                            List.of("127.0.0.2/32"), LOOPBACK_PROXY_TOKEN),
+                    Arguments.of("passthrough with the covering IPv4 range 0.0.0.0/1", true, null,
+                            List.of("0.0.0.0/1"), LOOPBACK_PROXY_TOKEN),
+                    Arguments.of("passthrough with the covering IPv6 range ::/1", true, null, List.of("::/1"),
+                            LOOPBACK_PROXY_TOKEN),
                     Arguments.of("passthrough alone", true, null, null, null),
                     Arguments.of("block without passthrough", false, block, null, null),
                     Arguments.of("a loopback proxy without passthrough", false, null, List.of("127.0.0.0/8"), null),
@@ -331,10 +377,13 @@ class EdgeRulesTest {
                     .map(LogRecord::getMessage).toList();
             if (expectedToken != null) {
                 assertEquals(1, warnings.size(), () -> label + " must warn once, got: " + warnings);
-                assertTrue(warnings.getFirst().contains(expectedToken),
+                String warning = warnings.getFirst();
+                assertTrue(warning.contains(expectedToken),
                         () -> "the warning names the combination by its fixed token: " + warnings);
+                assertStatesOnlyItsOwnConsequence(warning, expectedToken.startsWith(ACTION_TOKEN_PREFIX));
                 assertTrue(warnings.stream().noneMatch(message -> message.contains("127.0.0.")
-                                || message.contains("::1/") || message.contains("192.0.2.")),
+                                || message.contains("::1/") || message.contains("::/1")
+                                || message.contains("0.0.0.0/") || message.contains("192.0.2.")),
                         () -> "the warning never names a configured range: " + warnings);
             } else {
                 assertTrue(warnings.isEmpty(), () -> label + " must stay silent, got: " + warnings);
@@ -358,9 +407,71 @@ class EdgeRulesTest {
                     .resolveLogMessagesContaining(TestLogLevel.WARN, PASSTHROUGH_SOURCE_COLLAPSE_ID).stream()
                     .map(LogRecord::getMessage).toList();
             assertEquals(2, warnings.size(), () -> "one warning per combination, got: " + warnings);
-            assertTrue(warnings.stream().anyMatch(message -> message.contains("enumeration_detection.action is block"))
-                    && warnings.stream().anyMatch(message -> message.contains("holds a loopback range")),
-                    () -> "each combination is named by its own token: " + warnings);
+            List<String> actionWarnings = warnings.stream()
+                    .filter(message -> message.contains(ACTION_TOKEN_PREFIX + "block")).toList();
+            List<String> proxyWarnings = warnings.stream()
+                    .filter(message -> message.contains(LOOPBACK_PROXY_TOKEN)).toList();
+            assertEquals(1, actionWarnings.size(), () -> "one record names the action: " + warnings);
+            assertEquals(1, proxyWarnings.size(), () -> "one record names the loopback proxy: " + warnings);
+            assertStatesOnlyItsOwnConsequence(actionWarnings.getFirst(), true);
+            assertStatesOnlyItsOwnConsequence(proxyWarnings.getFirst(), false);
+        }
+
+        /**
+         * A covering range short of the whole address space holds the loopback address of its family
+         * and is not refused: {@code 0.0.0.0/1} holds {@code 127.0.0.0/8}, {@code ::/1} holds
+         * {@code ::1}. Under passthrough the configuration boots with both the ADR-0044 breadth WARN for
+         * the range and the {@code ApiSheriff-152} loopback-proxy record.
+         */
+        @ParameterizedTest(name = "covering trusted_proxies range \"{0}\" under passthrough")
+        @ValueSource(strings = {"0.0.0.0/1", "::/1"})
+        @DisplayName("Should boot a covering trusted_proxies range under passthrough with the breadth and source-collapse warnings")
+        void shouldWarnBreadthAndPassthroughSourceCollapseForCoveringRange(String coveringCidr) {
+            GatewayConfig gateway = validGateway()
+                    .tls(TlsConfig.builder().passthroughSni(Map.of("secure.example.com", "SECURE")).build())
+                    .forwarded(ForwardedConfig.builder().trustedProxies(List.of(coveringCidr)).build())
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS", "SECURE"));
+
+            assertTrue(errors.isEmpty(), () -> coveringCidr + " is short of the whole address space and boots, got: "
+                    + errors);
+            List<String> breadthWarnings = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN,
+                            ConfigLogMessages.WARN.BROAD_TRUSTED_PROXY.resolveIdentifierString())
+                    .stream().map(LogRecord::getMessage).toList();
+            assertTrue(breadthWarnings.stream().anyMatch(message -> message.contains(coveringCidr)),
+                    () -> "the ADR-0044 breadth WARN names " + coveringCidr + ", got: " + breadthWarnings);
+            List<String> collapseWarnings = TestLoggerFactory.getTestHandler()
+                    .resolveLogMessagesContaining(TestLogLevel.WARN, PASSTHROUGH_SOURCE_COLLAPSE_ID).stream()
+                    .map(LogRecord::getMessage).toList();
+            assertEquals(1, collapseWarnings.size(), () -> "one loopback-proxy record, got: " + collapseWarnings);
+            assertTrue(collapseWarnings.getFirst().contains(LOOPBACK_PROXY_TOKEN),
+                    () -> "the record names the loopback trusted proxy: " + collapseWarnings);
+        }
+
+        /**
+         * A malformed {@code trusted_proxies} entry is refused by the forwarded-trust rule and holds no
+         * loopback address for the source-collapse rule, even when it is spelled after a loopback
+         * address: the boot is refused and no {@code ApiSheriff-152} record is emitted for it.
+         */
+        @ParameterizedTest(name = "malformed trusted_proxies entry \"{0}\" under passthrough")
+        @ValueSource(strings = {"127.0.0.1/33", "::1/abc", "loopback/8"})
+        @DisplayName("Should refuse a malformed trusted_proxies entry under passthrough without a source-collapse warning")
+        void shouldNotWarnPassthroughSourceCollapseForMalformedEntry(String malformedCidr) {
+            GatewayConfig gateway = validGateway()
+                    .tls(TlsConfig.builder().passthroughSni(Map.of("secure.example.com", "SECURE")).build())
+                    .forwarded(ForwardedConfig.builder().trustedProxies(List.of(malformedCidr)).build())
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), routeConfig("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS", "SECURE"));
+
+            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: " + malformedCidr);
+            assertTrue(TestLoggerFactory.getTestHandler()
+                            .resolveLogMessagesContaining(TestLogLevel.WARN, PASSTHROUGH_SOURCE_COLLAPSE_ID).isEmpty(),
+                    () -> malformedCidr + " holds no loopback address and must not emit " + PASSTHROUGH_SOURCE_COLLAPSE_ID);
         }
 
         @Test

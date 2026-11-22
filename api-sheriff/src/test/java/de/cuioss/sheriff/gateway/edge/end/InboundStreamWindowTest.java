@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge.end;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,7 @@ import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -64,7 +66,9 @@ import org.junit.jupiter.api.Test;
  * PINGs a connection's client holds unacknowledged are bounded: past the bound a PING is refused at once,
  * until an acknowledgement frees a place. A PING is sent only on the connection's event loop, so every
  * case that pings does so there, and a PING asked for anywhere else is refused at once. An
- * {@link EarlyResponseEnd} whose PING is refused at the bound sends a new one once a place is free.
+ * {@link EarlyResponseEnd} whose PING is refused at the bound sends a new one once a place is free, and
+ * one whose PING the client never acknowledges ends at the time cap and lets go of its ending call while
+ * that PING is still pending in the transport.
  * <p>
  * This is the test that pins the one Vert.x internal the class reaches through: should a Vert.x upgrade
  * change it, the attach fails here rather than silently in production.
@@ -81,6 +85,8 @@ class InboundStreamWindowTest {
     private static final String END_LOGGED = "Ending the early response of an open HTTP/2 stream: ";
     /** The end of a wait the acknowledgement of its PING ended as quiet. */
     private static final String QUIET_END = END_LOGGED + EarlyResponseEnd.Outcome.QUIET;
+    /** The end of a wait its time cap ended. */
+    private static final String TIME_CAP_END = END_LOGGED + EarlyResponseEnd.Outcome.TIME_CAP;
 
     private Vertx vertx;
     private HttpServer server;
@@ -385,6 +391,41 @@ class InboundStreamWindowTest {
                 () -> assertEquals(1, resets.get(), "the stream, still open to the client, is reset once after the end"));
     }
 
+    /**
+     * The relay of {@link EarlyResponseEnd} lets go of the wait once it has ended (ADR-0066), pinned through
+     * the real wait on a connection whose client holds every PING it receives. The wait sends one PING once
+     * the window has stood still, the client never acknowledges it, and the wait ends at the time cap with
+     * that PING still pending in the transport — which keeps the PING's future, and the relay it completes
+     * into, until the connection closes. Without {@code relay.release()} in the end of the wait that future
+     * keeps relay, wait and ending call reachable for as long as the connection stays open; with it, nothing
+     * holds the ending call once the wait has ended, and it becomes collectable while the PING is still
+     * pending.
+     */
+    @Test
+    @DisplayName("HTTP/2 — an early-response end whose PING is never acknowledged ends at the cap and lets go of its ending call while the PING is still pending")
+    void endedWaitLetsGoOfItsEndingCallWhileItsPingIsStillPending() throws Exception {
+        PingHoldingClient holding = PingHoldingClient.open(vertx, server.actualPort());
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the request");
+        AtomicInteger endings = new AtomicInteger();
+        AtomicInteger resets = new AtomicInteger();
+
+        EndingWait wait = endWithAnEndingOnlyTheWaitHolds(request, endings, resets);
+        Awaits.connect(wait.ended(), "the response to be ended at the time cap");
+        List<String> endsLogged = endsLogged();
+        int pingsReceived = holding.pingsReceived();
+        awaitCollectable(wait.ending(), "the ending call to be let go while its PING is still pending");
+
+        assertAll("an early-response end whose PING the client never acknowledges",
+                () -> assertEquals(List.of(TIME_CAP_END), endsLogged,
+                        "the unacknowledged PING leaves the wait to its time cap, and it ends once"),
+                () -> assertEquals(1, endings.get(), "the response is ended once"),
+                () -> assertEquals(1, resets.get(), "the stream, still open to the client, is reset once after the end"),
+                () -> assertEquals(1, pingsReceived, "the wait sent one PING and no other while it was outstanding"),
+                () -> assertEquals(1, holding.pingsHeld(),
+                        "the PING is still unacknowledged, so its future is still pending in the transport"),
+                () -> assertNull(wait.ending().get(), "nothing holds the ending call once the wait has ended"));
+    }
+
     @Test
     @DisplayName("HTTP/1.1 — no stream to attach to")
     void doesNotAttachToAnHttp1Request() throws Exception {
@@ -458,6 +499,32 @@ class InboundStreamWindowTest {
                 .toList();
     }
 
+    /**
+     * Starts the wait of {@link EarlyResponseEnd} on {@code request} with an ending call created here, and
+     * hands back only a weak reference to that call: once this method returns, the wait is all that holds
+     * it strongly. The ending call counts itself and ends the response.
+     */
+    private static EndingWait endWithAnEndingOnlyTheWaitHolds(HttpServerRequest request, AtomicInteger endings,
+            AtomicInteger resets) {
+        Supplier<Future<Void>> ending = () -> {
+            endings.incrementAndGet();
+            return request.response().end();
+        };
+        Future<Void> ended = EarlyResponseEnd.endWhenQuiet(request, ending, resets::incrementAndGet);
+        return new EndingWait(ended, new WeakReference<>(ending));
+    }
+
+    /**
+     * Polls, under explicit collections, until nothing holds what {@code reference} points to any longer.
+     * The ceiling is a fixed one, not derived from the host's load.
+     */
+    private static void awaitCollectable(WeakReference<?> reference, String what) throws TimeoutException {
+        Awaits.until(() -> {
+            System.gc(); // NOSONAR java:S1215 reachability of the ending call is the property under test
+            return reference.get() == null;
+        }, what, Awaits.CONNECT_CEILING_SECONDS);
+    }
+
     /** Sends {@code count} PINGs; to be run on the stream's event loop. */
     private static List<Future<Void>> pings(InboundStreamWindow window, int count) {
         List<Future<Void>> sent = new ArrayList<>(count);
@@ -469,6 +536,13 @@ class InboundStreamWindowTest {
 
     /** What one look at the stream saw. */
     private record View(boolean remoteOpen, int sendable) {
+    }
+
+    /**
+     * A started early-response end: the future it completes once the reset has been decided, and a weak
+     * reference to the ending call it was given.
+     */
+    private record EndingWait(Future<Void> ended, WeakReference<Supplier<Future<Void>>> ending) {
     }
 
     /**
@@ -518,6 +592,11 @@ class InboundStreamWindowTest {
         /** How many PINGs the client has received in all, acknowledged or not. */
         int pingsReceived() {
             return pingsReceived.get();
+        }
+
+        /** How many PINGs the client holds unacknowledged right now. */
+        int pingsHeld() {
+            return unacknowledged.size();
         }
 
         /** Acknowledges the oldest PING the client holds. */

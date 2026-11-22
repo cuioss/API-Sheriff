@@ -25,7 +25,7 @@
 # the no-regression comparison silently stops being a controlled one. Do NOT add a
 # `passthrough_sni` key here to "fix" a passthrough test: this instance exists precisely to
 # have none. Because no front listener is created, this instance sets no QUARKUS_HTTP_SSL_PORT
-# either — the terminated listener keeps 8443 and needs no loopback relocation.
+# either — the terminated listener keeps 8443 and needs no internal-port relocation.
 #
 # Global gateway document mounted into the api-sheriff container at
 # /app/sheriff-config (SHERIFF_CONFIG_DIR). The proxy integration suite exercises

@@ -39,6 +39,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -77,12 +78,20 @@ import org.junit.jupiter.api.Test;
  * with its {@code threat_classification} block removed, which leaves the plain bearer-gated
  * asset-route document every bearer-only one-off gateway runs; it is written below {@code target/}.
  * <p>
- * <strong>What the test proves, on one gateway.</strong> It opens {@value #CAP} connections, has each
- * one served, and holds them open; the connection beyond the cap is then closed without being served.
- * The matched controls show the refusal is the cap and nothing else: the first {@value #CAP}
+ * <strong>What the cap case proves, on one gateway.</strong> It opens {@value #CAP} connections, has
+ * each one served, and holds them open; the connection beyond the cap is then closed without being
+ * served. The matched controls show the refusal is the cap and nothing else: the first {@value #CAP}
  * connections are served on the same listener, and once one of them closes a new connection is
  * served again. That served connection is re-asserted after the wait, and the cap is shown to hold
  * again: with the freed slot taken, the next connection is closed without being served.
+ * <p>
+ * <strong>What the handshake case proves, on a gateway of its own.</strong> A connection still in its
+ * TLS handshake is not counted yet. It opens {@value #CAP} plus one raw TCP connections that never send
+ * a {@code ClientHello} and holds them; a client that then completes a real handshake is still served,
+ * and every raw connection is shown to be still open at that moment. Were a connection counted at
+ * accept, the raw connections alone would exhaust the cap and the handshaking client would be closed
+ * without being served. It runs on its own gateway so that no connection of the cap case is still
+ * being released when it opens its own.
  * <p>
  * Each connection is a TLS socket to the published application port, trusting the stack certificate
  * the listener presents, and sends one HTTP/1.1 request for the bearer-gated asset with a token the
@@ -141,6 +150,12 @@ class MainListenerConnectionCapIT {
 
     private static final Duration POLL_INTERVAL = Duration.ofMillis(250);
 
+    /**
+     * How long a raw connection is read before it counts as still open: a listener that closed it is
+     * seen at once, while one still waiting for the {@code ClientHello} sends nothing.
+     */
+    private static final int STILL_OPEN_PROBE_MILLIS = 200;
+
     /** What happened to one request on one connection. */
     private enum Outcome {
         /** The listener answered {@code 200}. */
@@ -155,9 +170,12 @@ class MainListenerConnectionCapIT {
 
     private final List<SSLSocket> openSockets = new ArrayList<>();
 
+    /** The raw TCP connections of the handshake case, which never send a {@code ClientHello}. */
+    private final List<Socket> rawSockets = new ArrayList<>();
+
     /**
-     * One method rather than several: the listener releases a closed connection's slot
-     * asynchronously, so a second method opening connections right after the first closed its own
+     * One method rather than several on the same gateway: the listener releases a closed connection's
+     * slot asynchronously, so a second method opening connections right after the first closed its own
      * could find the cap still occupied by them.
      */
     @Test
@@ -208,6 +226,45 @@ class MainListenerConnectionCapIT {
     }
 
     /**
+     * A connection is counted against the cap only once its TLS handshake has completed: with more raw
+     * connections than the cap open and still waiting for their {@code ClientHello}, a client completing
+     * a real handshake is served.
+     */
+    @Test
+    @DisplayName("serves a handshaking client while more raw connections than the cap have not begun their TLS handshake")
+    void countsAConnectionOnlyOnceItsHandshakeCompletes() throws Exception {
+        String gateway = "connection-cap-handshake-gateway-" + UUID.randomUUID().toString().substring(0, 8);
+        try {
+            startGateway(gateway, composeNetwork(), deriveDescriptor(), APPLICATION_PORT,
+                    List.of(CAP_ENVIRONMENT + "=" + CAP));
+            awaitReadiness(gateway, "https://localhost:" + publishedPort(gateway, 9000),
+                    response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
+                    "the connection-cap handshake gateway's readiness to report UP");
+            Exchange exchange = new Exchange(trustingTheListener(), requestFor(mintIntegrationRealmToken()));
+            for (int index = 0; index <= CAP; index++) {
+                openRawConnection();
+            }
+
+            Outcome whileTheRawConnectionsAreOpen = exchangeOnNewConnection(exchange);
+            long rawConnectionsStillOpen = rawSockets.stream().filter(MainListenerConnectionCapIT::isStillOpen)
+                    .count();
+
+            assertAll("a native listener capped at " + CAP + " connections with " + (CAP + 1)
+                    + " raw connections in their TLS handshake",
+                    () -> assertEquals(Outcome.SERVED, whileTheRawConnectionsAreOpen, () -> "a client completing "
+                            + "its handshake is served while " + (CAP + 1) + " raw connections are open; a closed "
+                            + "connection means a connection still in its TLS handshake already counts against "
+                            + CAP_ENVIRONMENT + ". " + gatewayLog(gateway)),
+                    () -> assertEquals(CAP + 1L, rawConnectionsStillOpen, () -> "every raw connection is still "
+                            + "open when the handshaking client is served, so the cap was not freed by the listener "
+                            + "dropping them. " + gatewayLog(gateway)));
+        } finally {
+            closeSockets();
+            removeContainer(gateway);
+        }
+    }
+
+    /**
      * Opens new connections until one is served, and returns that connection's outcome, re-read after
      * the wait. Fails when none is served within {@link #RELEASE_BOUND}.
      */
@@ -251,6 +308,36 @@ class MainListenerConnectionCapIT {
             socket.close();
         }
         openSockets.clear();
+        for (Socket socket : rawSockets) {
+            socket.close();
+        }
+        rawSockets.clear();
+    }
+
+    /**
+     * Opens a plain TCP connection to the listener and holds it without writing a byte, so it never
+     * begins its TLS handshake.
+     */
+    private void openRawConnection() throws IOException {
+        Socket socket = new Socket();
+        rawSockets.add(socket);
+        socket.connect(new InetSocketAddress("localhost", APPLICATION_PORT), EXCHANGE_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * @return whether the listener still holds the raw connection open: a read that waits out
+     *         {@link #STILL_OPEN_PROBE_MILLIS} sees an open connection, an end of stream or a reset a
+     *         closed one
+     */
+    private static boolean isStillOpen(Socket socket) {
+        try {
+            socket.setSoTimeout(STILL_OPEN_PROBE_MILLIS);
+            return socket.getInputStream().read() != -1;
+        } catch (SocketTimeoutException stillWaiting) {
+            return true;
+        } catch (IOException closed) {
+            return false;
+        }
     }
 
     /**
