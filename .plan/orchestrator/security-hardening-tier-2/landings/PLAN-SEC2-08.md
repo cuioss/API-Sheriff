@@ -91,7 +91,7 @@ wrote nothing.
 - **Review numbers (re-read through `review-gate` and the PR comment listing, at 2026-11-22).** Unresolved threads: lane `0`, provider `0`: **agree**. Review-body findings: lane total `4`, handled `4`; provider total `2`, handled `0` (the two inline findings, each with a reply and resolved). Every record the provider returns predates the merge (`mergedAt` 2026-11-22T03:20:09Z); none was created after it, so the difference is **`undecidable`** under the classification rule (the gate-read time was not retained), not a false claim and not a post-merge change. `review_body_findings_handled` is not re-verified: the run's progress file was not read.
 - **Sonar:** the lane reports `sonar_open_new_issues=0`; the `SonarCloud` check is green. The count itself was not re-read from Sonar: **`undecidable`**, as for the earlier landings.
 - **Checks on #651 (25):** all green or skipped, `build / conclusion`, `integration-tests / conclusion`, `SonarCloud`, `CodeRabbit`, `Sourcery review`. The PR-attached post-merge `Run Integration Benchmarks` run (44980150829), still open when the lane wrote its message, finished **green** (1141 s).
-- **The main-branch Maven Build run for `a2ff139e` was not read** (the CI abstraction has no lookup by merge commit; `gh` directly only on the operator's word).
+- **The main-branch runs for `a2ff139e`** were not read at analysis (the CI abstraction has no lookup by merge commit). **Addendum 2026-11-22**, read on the operator's word through the check runs of the merge commit: `build / conclusion`, `build / deploy-snapshot` (the snapshot deployment) and `integration-tests / conclusion` are green.
 
 ## Reconciliation Actions
 
