@@ -22,7 +22,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -404,8 +403,8 @@ class SignatureOnlyTokenVerifierTest {
         private final LoaderStatus status;
 
         StatusReportingLoader(JwksLoader keys, LoaderStatus status) {
-            this.keys = Objects.requireNonNull(keys, "keys");
-            this.status = Objects.requireNonNull(status, "status");
+            this.keys = keys;
+            this.status = status;
         }
 
         @Override

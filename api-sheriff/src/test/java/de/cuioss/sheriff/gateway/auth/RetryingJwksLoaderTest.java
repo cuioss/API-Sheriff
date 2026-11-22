@@ -26,7 +26,6 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -636,12 +635,8 @@ class RetryingJwksLoaderTest {
         @DisplayName("the real library loader degraded past its staleness bound is reported as it is, and reads FAILED")
         void stalenessDegradedLibraryLoaderIsReportedTruthfully() throws Exception {
             // Arrange — serve the key set for the first load, then fail every later fetch
-            AtomicReference<@Nullable HttpJwksLoader> delegate = new AtomicReference<>();
-            RetryingJwksLoader loader = loader(() -> {
-                HttpJwksLoader built = new HttpJwksLoader(capturedRefreshConfig(MAX_STALENESS));
-                delegate.set(built);
-                return built;
-            });
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = recordingLoader(() -> capturedRefreshConfig(MAX_STALENESS), built);
             initialise(loader);
             assertEquals(KeySetState.LOADED, loader.keySetState(), "precondition: the key set is loaded");
             Instant loadedAt = Instant.now();
@@ -653,7 +648,7 @@ class RetryingJwksLoaderTest {
             refreshScheduler.runCapturedRefresh();
 
             // Assert
-            HttpJwksLoader library = Objects.requireNonNull(delegate.get());
+            HttpJwksLoader library = built.getLast();
             assertEquals(LoaderStatus.UNDEFINED, library.getLoaderStatus(),
                     "precondition: the library degraded its own status past the bound");
             assertEquals(LoaderStatus.UNDEFINED, loader.getLoaderStatus(),
