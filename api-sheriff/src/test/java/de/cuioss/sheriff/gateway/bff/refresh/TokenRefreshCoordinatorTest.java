@@ -2218,7 +2218,9 @@ class TokenRefreshCoordinatorTest {
      * granted set {@code S}.
      * An outright {@code invalid_scope} refusal reaches the coordinator as the typed
      * {@code InvalidScopeException} {@code token-sheriff-client} raises for it, which the engine classifies
-     * {@code SCOPE_REFUSED}, so it takes the pre-redemption back-off (TokenSheriff#763).
+     * {@code SCOPE_REFUSED}. The gateway tells it apart and deliberately gives it the pre-redemption
+     * disposition — session kept, bounded back-off, {@code ApiSheriff-127} — because the provider issued no
+     * grant and the same request would be refused again.
      */
     @Nested
     @DisplayName("Scope-driven refresh leg")
@@ -2372,7 +2374,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = coordinator(NEAR, (_, _) -> {
                 calls.incrementAndGet();
                 // What token-sheriff-client raises for an OAuth invalid_scope answer: the typed refusal the
-                // engine classifies SCOPE_REFUSED (TokenSheriff#763).
+                // engine classifies SCOPE_REFUSED, which the gateway deliberately disposes as pre-redemption.
                 throw new InvalidScopeException("Token endpoint refused the requested scope",
                         InvalidScopeException.ERROR_CODE, "scope not allowed");
             });

@@ -3863,11 +3863,12 @@ link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_t
   only requested scopes (endpoint scopes configured as *optional*, not *default*, client scopes), by
   a widening requesting only a route's boot-declared set united with what was already granted, and
   by `token_relay: false` for origins that need no token at all.
-* *An `invalid_scope` refresh answer is not told apart from an outage (accepted).* The engine
-  surfaces that answer without the OAuth error code, so the scope-driven refresh disposes it as a
-  pre-redemption failure: the session is kept and its next refresh waits out the back-off. The
-  request is still never relayed short of a scope, because the stage compares again and widens or
-  refuses.
+* *An `invalid_scope` refresh answer arms the back-off (accepted, deliberate).* The engine tells
+  that answer apart (`RefreshFlow.classify` reports it as `SCOPE_REFUSED`), and the scope-driven
+  refresh deliberately disposes it as a pre-redemption failure: the identity provider issued no
+  grant and would refuse the same request again, so the session is kept (`ApiSheriff-127`) and its
+  next refresh waits out the back-off instead of hammering the provider. The request is still never
+  relayed short of a scope, because the stage compares again and widens or refuses.
 * *RFC 9470 step-up leg.* An RFC 9470 step-up re-drive still requests the static `oidc.scopes`
   (recorded in ADR-0048); the session-side lookup that re-drive uses is currently unwired. This is
   the `acr` leg, not the `oidc.step_up.path` scope widening of <<bff-17>>.
@@ -4055,9 +4056,10 @@ authorization request at all.
   session holds no refresh token, transparent refresh is off, or the near-expiry refresh had just
   re-bound the cookie -- the widening is merged once, the merge sets `S` to what was granted, and
   the following round is the refused one. A navigation therefore ends in the `403` after at most two
-  rounds. An outright `invalid_scope` answer to the refresh is different: it is not told apart from
-  an outage (<<bff-15>>), proves nothing about the scope and leaves `S` unchanged, so the refresh is
-  retried once per back-off window rather than once per request.
+  rounds. An outright `invalid_scope` answer to the refresh is different: it is told apart, but the
+  gateway deliberately disposes it as it disposes an outage (<<bff-15>>). The identity provider
+  processed no grant, so the answer leaves `S` unchanged, and the refresh is retried once per
+  back-off window rather than once per request.
 
 *Status:* COVERED, with three accepted residuals.
 

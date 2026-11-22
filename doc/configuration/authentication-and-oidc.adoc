@@ -1254,8 +1254,9 @@ per-session single-flight, the back-off and this table. Its one extra, non-failu
 session is kept but still lacks the scope (narrower `scope` granted, no refresh token, or the request
 joined a concurrent refresh that did not ask for it); no back-off, no warning, and the request goes on
 to widening or `403`. Requested scopes the IdP did not return leave the granted set. An IdP answering
-`invalid_scope` is disposed as *pre-redemption* (session kept, `ApiSheriff-127`, back-off), because
-the engine reports it without the OAuth error code
+`invalid_scope` is told apart by the token engine, and the gateway deliberately disposes it as
+*pre-redemption* (session kept, `ApiSheriff-127`, back-off): the IdP issued no grant and would refuse
+the same request again, so an immediate retry would only repeat the refusal
 (link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 *Refresh-token reuse detection is the IdP's job.* The gateway cannot recognise a replayed refresh

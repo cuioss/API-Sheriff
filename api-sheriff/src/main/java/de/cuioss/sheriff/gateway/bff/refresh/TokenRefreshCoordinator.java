@@ -80,16 +80,19 @@ import org.jspecify.annotations.Nullable;
  * {@code scope} refuses nothing (RFC 6749 §5.1) and leaves {@code S} as it was, as does every outcome
  * in which the provider did not process the grant.
  * <p>
- * An identity provider that refuses the
- * requested scope outright ({@code invalid_scope}) is <em>not</em> told apart:
- * {@code token-sheriff-client} surfaces that answer as a bare transport failure, which
- * {@code RefreshFlow.classify} maps to {@code PRE_REDEMPTION}, so it takes the back-off disposition below
- * (upstream: <a href="https://github.com/cuioss/TokenSheriff/issues/763">TokenSheriff#763</a>). The
- * caller never relays a session short of its needed scopes, whichever outcome it receives.
+ * An identity provider that refuses the requested scope outright ({@code invalid_scope}) <em>is</em>
+ * told apart: {@code RefreshFlow.classify} reports that answer as its own {@code SCOPE_REFUSED} kind.
+ * The gateway deliberately gives it the pre-redemption disposition below — the session is kept, the
+ * next attempt waits out the bounded back-off, and {@code ApiSheriff-127} is recorded — because the
+ * provider issued no grant and rotated nothing, and the same request would be refused again, so an
+ * immediate retry would only hammer the provider. That engine kind is therefore <em>not</em> this
+ * coordinator's {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED} outcome: the caller receives
+ * {@link RefreshOutcome.Kind#DEFERRED DEFERRED} or {@link RefreshOutcome.Kind#UNAVAILABLE UNAVAILABLE}.
+ * The caller never relays a session short of its needed scopes, whichever outcome it receives.
  * <p>
  * <strong>A refused refresh is disposed by what the identity provider did to the presented refresh
  * token.</strong> Only the exchange itself is classified, through the engine's
- * {@code RefreshFlow.classify}, and every kind has its own disposition:
+ * {@code RefreshFlow.classify}, and every kind maps to one disposition:
  * <ul>
  *   <li><strong>{@code PRE_REDEMPTION}</strong> — the provider never processed the grant (a connection
  *       or DNS failure, a {@code 5xx}, a {@code 4xx} not attributed to the credential). The presented
@@ -97,6 +100,10 @@ import org.jspecify.annotations.Nullable;
  *       next attempt waits out a fixed five-second back-off. The outcome is
  *       {@link RefreshOutcome.Kind#DEFERRED DEFERRED} while the access token has not expired, otherwise
  *       {@link RefreshOutcome.Kind#UNAVAILABLE UNAVAILABLE}; the record is {@code ApiSheriff-127}.</li>
+ *   <li><strong>{@code SCOPE_REFUSED}</strong> — the provider answered {@code invalid_scope}. It issued
+ *       no grant, so the presented token is still valid, and the gateway deliberately disposes it exactly
+ *       as {@code PRE_REDEMPTION}: session kept, nothing revoked, the same back-off, the same outcomes and
+ *       {@code ApiSheriff-127}.</li>
  *   <li><strong>{@code CREDENTIAL_REJECTED}</strong> — the provider answered {@code invalid_grant},
  *       which is also how a provider enforcing strict rotation rejects a replayed refresh token. The
  *       session is destroyed, nothing is revoked (nothing was redeemed), and the outcome is
@@ -353,8 +360,10 @@ public final class TokenRefreshCoordinator {
      * at that persist — a logout overtook the refresh, server mode — nothing is written and the outcome is
      * {@link RefreshOutcome#failed() failed}, never {@code SCOPE_REFUSED}. A refused
      * exchange takes exactly the near-expiry leg's disposition (see the class documentation); an
-     * {@code invalid_scope} answer is among the refusals classified {@code PRE_REDEMPTION} and therefore
-     * backs off (<a href="https://github.com/cuioss/TokenSheriff/issues/763">TokenSheriff#763</a>).
+     * {@code invalid_scope} answer is reported by {@code RefreshFlow.classify} as {@code SCOPE_REFUSED}, and
+     * the gateway deliberately gives it the pre-redemption disposition — the session is kept and backs off
+     * ({@code ApiSheriff-127}), so the outcome is {@code DEFERRED} or {@code UNAVAILABLE} — because the
+     * provider issued no grant and the same request would be refused again.
      *
      * @param session         the resolved live session
      * @param cookieHeader    the raw request {@code Cookie} header value the session was resolved from —
@@ -1023,7 +1032,10 @@ public final class TokenRefreshCoordinator {
              * coalesced with did not obtain the set. The session is kept, no back-off is recorded and
              * nothing is logged at {@code WARN}; the caller never relays the carried
              * session short of its needed scopes. An outright {@code invalid_scope} refusal is not reported
-             * here — it arrives classified {@code PRE_REDEMPTION} (TokenSheriff#763). Produced by
+             * here: {@code RefreshFlow.classify} reports it as the engine's own {@code SCOPE_REFUSED} kind,
+             * and the gateway deliberately gives it the pre-redemption disposition — session kept, bounded
+             * back-off, {@code ApiSheriff-127}, outcome {@link #DEFERRED} or {@link #UNAVAILABLE} — because
+             * the provider issued no grant and the same request would be refused again. Produced by
              * {@link TokenRefreshCoordinator#refreshForScopes}, and received by a near-expiry
              * {@link TokenRefreshCoordinator#refresh} only when it coalesced with such a scope refresh.
              */

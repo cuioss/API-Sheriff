@@ -1191,10 +1191,14 @@ public class BffRuntimeProducer {
      * {@link SessionAuthenticationStage.ScopeRefresh} seam, with the same outcome mapping as
      * {@link #nearExpiryRefresh}. On this leg a mediated session does not always carry the requested
      * set: {@code SCOPE_REFUSED} (a narrower grant, no refresh token, or a shared refresh that did not
-     * request it) and {@code DEFERRED} (a refresh that is backing off — which is also how an identity
-     * provider's outright {@code invalid_scope} refusal arrives, TokenSheriff#763) both hand the kept
-     * session back. The stage compares the returned session against the route's needed scopes again,
-     * so neither is ever relayed under-scoped.
+     * request it) and {@code DEFERRED} (a refresh that is backing off) both hand the kept session back.
+     * An identity provider's outright {@code invalid_scope} refusal is one of the refreshes that back off:
+     * the engine's {@code RefreshFlow.classify} reports it as its own {@code SCOPE_REFUSED} kind, and the
+     * coordinator deliberately gives it the pre-redemption disposition — session kept, bounded back-off,
+     * {@code ApiSheriff-127} — because the provider issued no grant and the same request would be refused
+     * again, so it arrives here as {@code DEFERRED}, or as {@code UNAVAILABLE} once the access token has
+     * expired. The stage compares the returned session against the route's needed scopes again, so no
+     * mediated session is ever relayed under-scoped.
      *
      * @param coordinator the assembled refresh coordinator
      * @return the stage seam driving {@code coordinator}'s scope-driven leg
