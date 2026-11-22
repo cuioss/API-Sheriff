@@ -4,8 +4,8 @@
 
 ## START HERE
 
-**Resume anchor**: READY TO CLOSE (2026-11-22): PLAN-SEC2-01 to 08 all shipped and analyzed (08 = #651, a2ff139e; its ledger landed through #652, 40d67c6a); no plan row is running or staged, the inbox is empty and no Open Defect is open (the 07 incomplete-landing defect went to the kidicap-gateway-requirements inbox as security-hardening-tier-2-006 on the operator's word). Remaining: run cleanup and confirm restart verdict ready, then close (history.md carries the owed leads: the idle-host Watch of DispatchStageTest BodyDeadlineBehindASlowConnection, and the four 08 owed leads under Watches: per-Host wording of the ApiSheriff-152 record, the 'five other gateway instances' comment at integration-tests/docker-compose.yml:944, the old lambda test Javadoc in EarlyResponseEndTest, the unobserved cap IT case), file the sender stream-end marker in the kidicap inbox (security-hardening-tier-2-005 promised it; do it only on the operator's word), then archive. The kidicap-gateway-requirements ledger is written only on the operator's explicit word. The operator holds the layer-3 reads of the 06 and 07 landings outside the repository. The main-branch runs of the 04-08 merge commits were read on 2026-11-22 (all green; 00ebea64 failed only its report-publish push).
-**Phase**: orchestrating
+**Resume anchor**: epic closed — see history.md
+**Phase**: closed
 **Queue** (staged, in order):
 - (empty)
 - PLAN-SEC2-01 (WS-01) — plan=sec2-01-doc-honesty-and-config-guards — PR 623 — landing=landings/PLAN-SEC2-01.md — status: shipped

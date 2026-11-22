@@ -1,7 +1,7 @@
 {
   "kind": "orchestrator",
   "title": "Security hardening - tier 2 (follow-ups)",
-  "phase": "orchestrating",
+  "phase": "closed",
   "workstreams": [
     "WS-01",
     "WS-02",
