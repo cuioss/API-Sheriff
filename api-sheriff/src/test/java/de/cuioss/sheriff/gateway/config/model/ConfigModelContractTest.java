@@ -166,14 +166,21 @@ class ConfigModelContractTest {
                 .issuer("https://issuer.example.com")
                 .audience("api-sheriff")
                 .jwks(new IssuerConfig.Jwks("http", "https://issuer.example.com/jwks", null, List.of(), null, 900,
-                        120, 15))
+                        120, 15, 3600))
                 .build();
     }
 
     private static IssuerConfig.Jwks jwksWithRefresh(@Nullable Integer refreshIntervalSeconds,
             @Nullable Integer keyRotationGracePeriodSeconds, @Nullable Integer unknownKidRefreshWindowSeconds) {
+        return jwksWithRefresh(refreshIntervalSeconds, keyRotationGracePeriodSeconds, unknownKidRefreshWindowSeconds,
+                null);
+    }
+
+    private static IssuerConfig.Jwks jwksWithRefresh(@Nullable Integer refreshIntervalSeconds,
+            @Nullable Integer keyRotationGracePeriodSeconds, @Nullable Integer unknownKidRefreshWindowSeconds,
+            @Nullable Integer maxStalenessSeconds) {
         return new IssuerConfig.Jwks("http", "https://j", null, List.of(), null, refreshIntervalSeconds,
-                keyRotationGracePeriodSeconds, unknownKidRefreshWindowSeconds);
+                keyRotationGracePeriodSeconds, unknownKidRefreshWindowSeconds, maxStalenessSeconds);
     }
 
     private static OidcConfig oidcConfig() {
@@ -413,11 +420,12 @@ class ConfigModelContractTest {
                     voCase("IssuerConfig", issuerConfig(), issuerConfig(),
                             new IssuerConfig("other", "https://other", null, null)),
                     voCase("IssuerConfig.Jwks",
-                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null, null, null, null),
-                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null, null, null, null),
-                            new IssuerConfig.Jwks("file", null, "/jwks.json", List.of(), null, null, null, null)),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null, null, null, null, null),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null, null, null, null, null),
+                            new IssuerConfig.Jwks("file", null, "/jwks.json", List.of(), null, null, null, null,
+                                    null)),
                     // One case per refresh component: each unequal instance varies exactly one of the
-                    // three and holds the other two fixed, so a component dropped from equals() fails
+                    // four and holds the other three fixed, so a component dropped from equals() fails
                     // its own case alone.
                     voCase("IssuerConfig.Jwks.refreshIntervalSeconds", jwksWithRefresh(900, 120, 15),
                             jwksWithRefresh(900, 120, 15), jwksWithRefresh(901, 120, 15)),
@@ -425,14 +433,18 @@ class ConfigModelContractTest {
                             jwksWithRefresh(900, 120, 15), jwksWithRefresh(900, 121, 15)),
                     voCase("IssuerConfig.Jwks.unknownKidRefreshWindowSeconds", jwksWithRefresh(900, 120, 15),
                             jwksWithRefresh(900, 120, 15), jwksWithRefresh(900, 120, 16)),
+                    voCase("IssuerConfig.Jwks.maxStalenessSeconds", jwksWithRefresh(900, 120, 15, 3600),
+                            jwksWithRefresh(900, 120, 15, 3600), jwksWithRefresh(900, 120, 15, 3601)),
                     // The egress allowlist participates in identity: two otherwise-identical
                     // jwks blocks that differ only in allowed_egress_hosts are NOT equal, so an
                     // explicit, authoritative list can never be mistaken for one that derives its
                     // allowance from jwks.url.
                     voCase("IssuerConfig.Jwks.allowedEgressHosts",
-                            new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null, null, null, null),
-                            new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null, null, null, null),
-                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null, null, null, null)),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null, null, null, null,
+                                    null),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null, null, null, null,
+                                    null),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null, null, null, null, null)),
                     voCase("OidcConfig", oidcConfig(), oidcConfig(), OidcConfig.builder().build()),
                     voCase("OidcConfig.Logout",
                             new OidcConfig.Logout("/l", null, null, null),
@@ -1436,7 +1448,7 @@ class ConfigModelContractTest {
         @Test
         void jwksRequiresSource() {
             assertThrows(NullPointerException.class,
-                    () -> new IssuerConfig.Jwks(null, null, null, List.of(), null, null, null, null));
+                    () -> new IssuerConfig.Jwks(null, null, null, List.of(), null, null, null, null, null));
         }
 
         @Test

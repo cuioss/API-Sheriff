@@ -470,9 +470,14 @@ token_validation:                  # offline bearer validation (routes with auth
                                    #   the token library's default (300)
         unknown_kid_refresh_window_seconds: 30   # OPTIONAL, source: http only. A token naming an
                                    #   unknown key id triggers at most ONE key-set refresh per
-                                   #   issuer per window. 5..3600; omitted => 30. All three keys
-                                   #   are REFUSED AT BOOT on source: file. See "Key rotation and
-                                   #   the refresh cadence" below.
+                                   #   issuer per window. 5..3600; omitted => 30
+        # max_staleness_seconds: 1800   # OPTIONAL, source: http only; OMITTED => OFF. How long the
+                                   #   loaded key set stays usable while every refresh fails.
+                                   #   60..604800; choose at least three refresh intervals. Past
+                                   #   it the issuer's tokens are rejected and readiness counts it
+                                   #   not loaded until a refresh succeeds (availability cost).
+                                   #   All four keys are REFUSED AT BOOT on source: file. See "Key
+                                   #   rotation and the refresh cadence" below.
 
 oidc:                              # only used by the BFF variants (2 and 3)
                                    # Each listed OIDC endpoint path (callback, login, user_info,

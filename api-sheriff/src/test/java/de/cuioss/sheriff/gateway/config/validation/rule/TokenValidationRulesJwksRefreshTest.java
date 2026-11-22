@@ -41,14 +41,15 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Tests for the {@link TokenValidationRules} rule the {@link ConfigValidator} runs that bounds the three
+ * Tests for the {@link TokenValidationRules} rule the {@link ConfigValidator} runs that bounds the four
  * JWKS refresh keys of
  * {@code token_validation.issuers[].jwks} — {@code refresh_interval_seconds},
- * {@code key_rotation_grace_period_seconds} and {@code unknown_kid_refresh_window_seconds} — and
- * refuses each of them on a {@code file} source.
+ * {@code key_rotation_grace_period_seconds}, {@code unknown_kid_refresh_window_seconds} and
+ * {@code max_staleness_seconds} — and refuses each of them on a {@code file} source. For
+ * {@code max_staleness_seconds} the generated cases are 59 and 604801 refused, 60 and 604800 admitted.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
- * surely as a rule whose body is removed. Errors are filtered to the three keys' pointers, because the
+ * surely as a rule whose body is removed. Errors are filtered to the four keys' pointers, because the
  * fixtures are deliberately minimal and other rules may report unrelated gaps in them. The bounds are
  * literals on purpose: each is the exact number the rule admits or refuses, so the literal is the
  * contract under test. Every refusal has a matched admission that differs from it only in the value
@@ -62,7 +63,7 @@ class TokenValidationRulesJwksRefreshTest {
     private static final String POINTER_PREFIX = "/token_validation/issuers/";
     private static final String JWKS_URL = "https://idp.example/jwks";
 
-    /** One of the three keys under test: its spelling, its admitted range and its builder setter. */
+    /** One of the four keys under test: its spelling, its admitted range and its builder setter. */
     enum RefreshKey {
 
         REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400,
@@ -70,7 +71,9 @@ class TokenValidationRulesJwksRefreshTest {
         GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600,
                 IssuerConfig.Jwks.JwksBuilder::keyRotationGracePeriodSeconds),
         UNKNOWN_KID_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
-                IssuerConfig.Jwks.JwksBuilder::unknownKidRefreshWindowSeconds);
+                IssuerConfig.Jwks.JwksBuilder::unknownKidRefreshWindowSeconds),
+        MAX_STALENESS("max_staleness_seconds", 60, 604_800,
+                IssuerConfig.Jwks.JwksBuilder::maxStalenessSeconds);
 
         private final String key;
         private final int minimum;
@@ -175,7 +178,7 @@ class TokenValidationRulesJwksRefreshTest {
         }
 
         @Test
-        @DisplayName("an issuer omitting all three keys is admitted")
+        @DisplayName("an issuer omitting all four keys is admitted")
         void admitsOmittedKeys() {
             IssuerConfig omitted = issuer(issuerName(),
                     IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build());

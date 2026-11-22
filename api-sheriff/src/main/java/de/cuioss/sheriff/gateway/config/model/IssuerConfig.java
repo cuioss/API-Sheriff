@@ -90,6 +90,25 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
      *                           ({@code source: http} only), {@code null} when omitted. Omitted
      *                           resolves to 30 seconds. Admitted range: 5 to 3600. Declared on a
      *                           {@code source: file} issuer it is refused at boot.
+     * @param maxStalenessSeconds
+     *                           the opt-in bound, in seconds, on how long the issuer's loaded key
+     *                           set stays usable while every background refresh fails
+     *                           ({@code source: http} only), {@code null} when omitted. Omitted
+     *                           switches the bound off: the token library's default, which keeps
+     *                           serving the loaded keys indefinitely while refreshes fail. Admitted
+     *                           range: 60 to 604800 (one minute to seven days). Declared on a
+     *                           {@code source: file} issuer it is refused at boot. Staleness is
+     *                           checked once per refresh cycle, after a cycle that installed no keys,
+     *                           so the issuer degrades at the first failed cycle after the bound has
+     *                           passed; a bound below the effective refresh interval therefore behaves
+     *                           like one equal to it, and fails closed sooner without weakening
+     *                           validation. A bound of at least three refresh intervals is
+     *                           recommended, so a single failed refresh does not degrade the issuer.
+     *                           The trade-off is availability: a degraded issuer keeps its keys but is
+     *                           rejected fail-closed and counts as not loaded for readiness, which in
+     *                           a single-issuer deployment takes the gateway out of rotation exactly
+     *                           when no issuer can validate; the next refresh that installs usable
+     *                           keys re-admits it.
      * @author API Sheriff Team
      * @since 1.0
      */
@@ -103,7 +122,8 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
     @Nullable String tlsProfile,
     @Nullable Integer refreshIntervalSeconds,
     @Nullable Integer keyRotationGracePeriodSeconds,
-    @Nullable Integer unknownKidRefreshWindowSeconds) {
+    @Nullable Integer unknownKidRefreshWindowSeconds,
+    @Nullable Integer maxStalenessSeconds) {
 
         /**
          * Canonical constructor requiring {@code source} and defensively copying the

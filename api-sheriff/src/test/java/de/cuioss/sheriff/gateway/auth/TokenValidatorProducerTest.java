@@ -28,6 +28,10 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 
@@ -44,9 +48,15 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.commons.error.TransportException;
+import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.commons.transport.EgressPolicy;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
+import de.cuioss.sheriff.token.commons.transport.JwksType;
+import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.jwks.JwksLoader;
+import de.cuioss.sheriff.token.validation.jwks.JwksLoaderFactory;
+import de.cuioss.sheriff.token.validation.jwks.key.KeyInfo;
 import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
@@ -1210,6 +1220,138 @@ class TokenValidatorProducerTest {
 
             // Act + Assert
             assertThrows(NullPointerException.class, () -> producer.issuerKeySetStatus(foreign));
+        }
+    }
+
+    /**
+     * {@code jwks.max_staleness_seconds}, traced in two links whose join is the library's own staleness
+     * check.
+     * <p>
+     * The first link is the gateway's: the key, declared on the model, reaches the library's loader
+     * configuration through {@code toHttpJwksLoaderConfig} as {@code getMaxStaleness()}, and an omitted
+     * key leaves the bound off. Deleting the key at any layer — the record component, the builder call
+     * — turns {@link #declaredBoundReachesTheLibraryLoaderConfig()} red, so the key is not one that
+     * parses without acting. The second link is the consequence: a library loader that no longer
+     * reports its key set usable makes the gateway's validator reject a validly signed token, while the
+     * same token is accepted by the matched control whose loader still reports it usable. The join —
+     * the library degrading a loader built with {@code maxStaleness} once the bound has passed — is
+     * driven against the real library loader in {@code RetryingJwksLoaderTest}; it cannot be driven
+     * from {@code gateway.yaml} here, because the smallest admitted bound is 60 seconds of wall clock.
+     */
+    @Nested
+    @DisplayName("jwks.max_staleness_seconds — passed to the library only when declared, and a degraded issuer rejects")
+    class MaxStaleness {
+
+        @TempDir
+        Path jwksDir;
+
+        @Test
+        @DisplayName("a declared bound reaches the library loader config as its maximum staleness")
+        void declaredBoundReachesTheLibraryLoaderConfig() {
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(JWKS_URL)
+                    .maxStalenessSeconds(1800)
+                    .build();
+            IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER).jwks(jwks).build();
+
+            HttpJwksLoaderConfig config = producerFor(issuer).toHttpJwksLoaderConfig(issuer, jwks);
+
+            assertEquals(Optional.of(Duration.ofSeconds(1800)), config.getMaxStaleness(),
+                    "the declared max_staleness_seconds is the library's staleness bound");
+        }
+
+        @Test
+        @DisplayName("an omitted bound leaves the library's staleness check off (matched control)")
+        void omittedBoundLeavesTheCheckOff() {
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build();
+            IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER).jwks(jwks).build();
+
+            HttpJwksLoaderConfig config = producerFor(issuer).toHttpJwksLoaderConfig(issuer, jwks);
+
+            assertTrue(config.getMaxStaleness().isEmpty(),
+                    "an omitted key passes nothing, so loaded keys stay usable while refreshes fail");
+        }
+
+        @Test
+        @DisplayName("a validator whose loader reports its key set no longer usable rejects a valid token; the undegraded control accepts it")
+        void degradedLoaderRejectsAValidTokenFailClosed() throws Exception {
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            Path jwks = Files.writeString(jwksDir.resolve("jwks.json"), InMemoryKeyMaterialHandler.createDefaultJwks());
+            AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
+            DegradableLoader undegraded = new DegradableLoader(jwks);
+            DegradableLoader degraded = new DegradableLoader(jwks);
+            TokenValidator control = validatorOver(holder, undegraded);
+            degraded.degraded = true;
+            TokenValidator degradedValidator = validatorOver(holder, degraded);
+
+            assertDoesNotThrow(() -> control.createAccessToken(request),
+                    "the control: the same token and key set validate while the loader reports them usable");
+            assertThrows(TokenValidationException.class, () -> degradedValidator.createAccessToken(request),
+                    "a stale-degraded issuer is rejected fail-closed by the library's issuer cache");
+            assertTrue(degraded.getKeyIds().contains(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID),
+                    "the degraded loader still holds the key the token is signed with");
+        }
+
+        /**
+         * A gateway-owned loader over {@code delegate}, already loaded, assembled into a validator the way
+         * the producer assembles one: through the library's public {@code jwksLoader(..)} seam.
+         */
+        private TokenValidator validatorOver(TestTokenHolder holder, DegradableLoader delegate) throws Exception {
+            RetryingJwksLoader loader = new RetryingJwksLoader("primary", () -> delegate, Duration.ZERO,
+                    Duration.ZERO, Duration.ZERO);
+            loader.initJWKSLoader(new SecurityEventCounter()).get(10, TimeUnit.SECONDS);
+            return TokenValidator.builder()
+                    .issuerConfig(de.cuioss.sheriff.token.validation.IssuerConfig.builder()
+                            .issuerIdentifier(holder.getIssuer())
+                            .audienceValidationDisabled(true)
+                            .jwksLoader(loader)
+                            .build())
+                    .build();
+        }
+    }
+
+    /**
+     * A file-backed library loader whose reported status a test can move off {@code OK} while it keeps
+     * its keys — what the library's HTTP loader does once its staleness bound has passed.
+     */
+    private static final class DegradableLoader implements JwksLoader {
+
+        private final JwksLoader keys;
+        private volatile boolean degraded;
+
+        DegradableLoader(Path jwks) {
+            this.keys = JwksLoaderFactory.createFileLoader(jwks.toString());
+        }
+
+        @Override
+        public Optional<KeyInfo> getKeyInfo(String kid) {
+            return keys.getKeyInfo(kid);
+        }
+
+        @Override
+        public Set<String> getKeyIds() {
+            return keys.getKeyIds();
+        }
+
+        @Override
+        public JwksType getJwksType() {
+            return keys.getJwksType();
+        }
+
+        @Override
+        public Optional<String> getIssuerIdentifier() {
+            return keys.getIssuerIdentifier();
+        }
+
+        @Override
+        public CompletableFuture<LoaderStatus> initJWKSLoader(SecurityEventCounter securityEventCounter) {
+            return keys.initJWKSLoader(securityEventCounter);
+        }
+
+        @Override
+        public LoaderStatus getLoaderStatus() {
+            return degraded ? LoaderStatus.UNDEFINED : keys.getLoaderStatus();
         }
     }
 

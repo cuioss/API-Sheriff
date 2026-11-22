@@ -32,6 +32,10 @@ import java.util.function.Supplier;
  * URL, hostname, key id or key material — so a readiness payload built from it cannot disclose
  * where the gateway fetches its keys.
  * <p>
+ * An issuer whose key set was loaded but is now past its {@code jwks.max_staleness_seconds} bound —
+ * the library keeps the keys but no longer reports them usable — reads {@link KeySetState#FAILED}: it
+ * counts as not loaded, so {@link #allLoaded()} is {@code false} while it is degraded.
+ * <p>
  * The set of issuers is fixed at construction; only the state behind each reader moves.
  * <p>
  * Thread-safety: immutable apart from the states it reads, each of which is published atomically by
@@ -53,7 +57,11 @@ public final class IssuerKeySetStatus {
         LOADED,
         /** No load attempt has completed yet. */
         NOT_LOADED,
-        /** The most recent load attempt completed without a key set. */
+        /**
+         * No usable key set is available although a load attempt has completed: the most recent load
+         * attempt completed without a key set, <em>or</em> the loaded key set is past the issuer's
+         * {@code jwks.max_staleness_seconds} bound and the library no longer reports it usable.
+         */
         FAILED
     }
 
@@ -100,7 +108,8 @@ public final class IssuerKeySetStatus {
     }
 
     /**
-     * @return the number of configured issuers whose most recent load attempt failed
+     * @return the number of configured issuers reading {@link KeySetState#FAILED}: their most recent
+     *         load attempt failed, or their loaded key set is past its staleness bound
      */
     public int failedCount() {
         return count(KeySetState.FAILED);

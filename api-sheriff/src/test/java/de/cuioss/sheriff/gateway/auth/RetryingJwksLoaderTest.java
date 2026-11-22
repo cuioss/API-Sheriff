@@ -26,11 +26,13 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -81,7 +83,8 @@ import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Tests for {@link RetryingJwksLoader}: the gateway-owned loader records whether a key set was
- * loaded, reports {@link LoaderStatus#OK} exactly then, answers every status read without a network
+ * loaded, reports the current delegate's own status in every state, reads a loaded key set the
+ * delegate no longer reports usable as failed, answers every status read without a network
  * request, retries a failed load on a bounded exponential backoff driven by its scheduler alone, and
  * schedules at most one refresh per window when a lookup names a key id it does not hold.
  * <p>
@@ -422,6 +425,274 @@ class RetryingJwksLoaderTest {
             String rendered = loader.toString();
             assertTrue(rendered.contains(ISSUER_NAME));
             assertFalse(rendered.contains(String.valueOf(server.getPort())), "the JWKS URL is never rendered");
+        }
+    }
+
+    /**
+     * The wrapper reports the current delegate's status rather than a status of its own: a delegate
+     * that loaded a key set and later stops reporting {@link LoaderStatus#OK} — what token-sheriff
+     * 0.9.9's {@code HttpJwksLoader} does once an opt-in {@code maxStaleness} bound is exceeded — is
+     * reported as it is, and its key-set state reads {@link KeySetState#FAILED}.
+     * <p>
+     * Two legs drive the degradation. The hand-written {@link SwitchableStatusLoader} flips its status
+     * directly. The real library loader is degraded through its own refresh cycle: it is built on a
+     * {@link CapturingRefreshScheduler} that records the periodic refresh task instead of running it, so
+     * the test runs exactly one cycle on its own thread against an endpoint that has started failing,
+     * after a {@code maxStaleness} of one millisecond has demonstrably passed on the wall clock the
+     * library reads. Neither leg depends on a refresh interval elapsing.
+     */
+    @Nested
+    @DisplayName("truthful status of a degraded delegate")
+    class TruthfulStatus {
+
+        /** The library's staleness bound for the real-loader leg: exceeded one millisecond after the load. */
+        private static final Duration MAX_STALENESS = Duration.ofMillis(1);
+
+        private final CapturingRefreshScheduler refreshScheduler = new CapturingRefreshScheduler();
+
+        @AfterEach
+        void stopRefreshScheduler() {
+            refreshScheduler.shutdownNow();
+        }
+
+        /** An HTTP loader config whose background refresh is captured and whose staleness bound is set. */
+        private HttpJwksLoaderConfig stalenessBoundConfig() {
+            return capturedRefreshConfig(MAX_STALENESS);
+        }
+
+        /**
+         * An HTTP loader config whose background refresh is captured by {@link #refreshScheduler}.
+         *
+         * @param maxStaleness the library's staleness bound, {@code null} for none
+         */
+        private HttpJwksLoaderConfig capturedRefreshConfig(@Nullable Duration maxStaleness) {
+            HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder builder = HttpJwksLoaderConfig.builder()
+                    .issuerIdentifier(ISSUER)
+                    .jwksUrl(server.url(JWKS_PATH).toString())
+                    .allowInsecureHttp(true)
+                    .allowLoopbackEgress(true)
+                    .refreshIntervalSeconds(3600)
+                    .retryConfig(RetryConfig.builder().maxAttempts(1).build())
+                    .scheduledExecutorService(refreshScheduler);
+            if (maxStaleness != null) {
+                builder.maxStaleness(maxStaleness);
+            }
+            return builder.build();
+        }
+
+        /** A wrapper over real library loaders built from {@code config}, each recorded in {@code built}. */
+        private RetryingJwksLoader recordingLoader(Supplier<HttpJwksLoaderConfig> config,
+                List<HttpJwksLoader> built) {
+            return loader(() -> {
+                HttpJwksLoader delegate = new HttpJwksLoader(config.get());
+                built.add(delegate);
+                return delegate;
+            });
+        }
+
+        @Test
+        @DisplayName("before the first load the wrapper reports the delegate's own status and reads NOT_LOADED")
+        void notYetLoadedReportsTheDelegateStatus() {
+            // Arrange
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = recordingLoader(RetryingJwksLoaderTest.this::httpConfig, built);
+
+            // Act
+            LoaderStatus status = loader.getLoaderStatus();
+
+            // Assert
+            assertEquals(built.getFirst().getLoaderStatus(), status, "the delegate's status, as it is");
+            assertEquals(LoaderStatus.UNDEFINED, status, "a library loader not yet initialised is UNDEFINED");
+            assertEquals(KeySetState.NOT_LOADED, loader.keySetState());
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("while the first fetch is in flight the wrapper reports LOADING and reads NOT_LOADED")
+        void loadingReportsTheDelegateStatus() throws Exception {
+            // Arrange — the endpoint holds the first fetch until the test opens it
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = recordingLoader(RetryingJwksLoaderTest.this::httpConfig, built);
+            CountDownLatch gate = new CountDownLatch(1);
+            responseGate.set(gate);
+            CompletableFuture<LoaderStatus> firstLoad;
+            LoaderStatus whileLoading;
+            KeySetState stateWhileLoading;
+            try {
+                // Act
+                firstLoad = loader.initJWKSLoader(new SecurityEventCounter());
+                Awaits.until(() -> built.getFirst().getLoaderStatus() == LoaderStatus.LOADING,
+                        "the library loader to start its first fetch", Awaits.CONNECT_CEILING_SECONDS);
+                whileLoading = loader.getLoaderStatus();
+                stateWhileLoading = loader.keySetState();
+            } finally {
+                gate.countDown();
+            }
+
+            // Assert
+            assertEquals(LoaderStatus.LOADING, whileLoading, "the delegate's LOADING, not a status of the wrapper's");
+            assertEquals(KeySetState.NOT_LOADED, stateWhileLoading, "no load attempt has completed yet");
+            assertEquals(LoaderStatus.OK, firstLoad.get(AWAIT_SECONDS, TimeUnit.SECONDS));
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            assertEquals(KeySetState.LOADED, loader.keySetState());
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a failed first load the library recovers by its own refresh reports OK, and reads FAILED until the wrapper's retry")
+        void firstLoadRecoveredByTheLibraryRefreshReportsOk() throws Exception {
+            // Arrange — the first fetch fails; the wrapper's retry is scheduled beyond the test
+            failuresBeforeSuccess.set(1);
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = recordingLoader(() -> capturedRefreshConfig(null), built);
+            assertNotEquals(LoaderStatus.OK, initialise(loader), "precondition: the first load failed");
+            assertEquals(KeySetState.FAILED, loader.keySetState(), "precondition: the attempt is recorded failed");
+
+            // Act — the library's own background refresh runs once and installs the keys
+            refreshScheduler.runCapturedRefresh();
+
+            // Assert — the issuer cache, which reads the status, re-admits the issuer at once; readiness,
+            // which reads the recorded attempt, waits for the wrapper's own retry, so it never reports
+            // UP for a delegate the retry is about to replace
+            assertEquals(LoaderStatus.OK, built.getFirst().getLoaderStatus(), "precondition: the library recovered");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus(), "the recovered delegate's OK is reported as it is");
+            assertEquals(KeySetState.FAILED, loader.keySetState(), "the recorded outcome is the last completed attempt");
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
+                    "the recovered delegate answers from the keys it installed");
+            assertTrue(loader.retryPending(), "the wrapper's retry sequence is still live");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("while a retry's fresh delegate loads the wrapper reports that delegate's status, not OK")
+        void retryDelegateLoadingReportsItsOwnStatus() throws Exception {
+            // Arrange — the first fetch fails, and the fast retry's fetch is held at the endpoint
+            failuresBeforeSuccess.set(1);
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = loader(() -> {
+                HttpJwksLoader delegate = new HttpJwksLoader(httpConfig());
+                built.add(delegate);
+                return delegate;
+            }, REFRESH_INTERVAL, FAST);
+            CountDownLatch gate = new CountDownLatch(1);
+            LoaderStatus whileRetrying;
+            KeySetState stateWhileRetrying;
+            try {
+                initialise(loader);
+                responseGate.set(gate);
+
+                // Act
+                Awaits.until(() -> built.size() == 2 && built.get(1).getLoaderStatus() == LoaderStatus.LOADING,
+                        "the retry's fresh delegate to start its fetch", Awaits.CONNECT_CEILING_SECONDS);
+                whileRetrying = loader.getLoaderStatus();
+                stateWhileRetrying = loader.keySetState();
+            } finally {
+                gate.countDown();
+            }
+            Awaits.until(() -> loader.keySetState() == KeySetState.LOADED, "the retry to load the key set",
+                    Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert
+            assertEquals(LoaderStatus.LOADING, whileRetrying, "the fresh delegate's own status");
+            assertEquals(KeySetState.FAILED, stateWhileRetrying, "the last completed attempt failed");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus(), "the retried delegate's OK once it loaded");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a closed wrapper reports the closed delegate's status, never a sticky OK")
+        void closedReportsTheDelegateStatus() throws Exception {
+            // Arrange
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = recordingLoader(RetryingJwksLoaderTest.this::httpConfig, built);
+            initialise(loader);
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus(), "precondition: the key set is loaded");
+
+            // Act
+            loader.close();
+
+            // Assert
+            assertEquals(built.getFirst().getLoaderStatus(), loader.getLoaderStatus(), "the delegate's status, as it is");
+            assertEquals(LoaderStatus.UNDEFINED, loader.getLoaderStatus(), "a closed library loader is UNDEFINED");
+            assertEquals(KeySetState.FAILED, loader.keySetState(),
+                    "a closed delegate holds no usable key set, so readiness counts it not loaded");
+        }
+
+        @Test
+        @DisplayName("a loaded delegate that stops reporting OK is reported as it is, and reads FAILED")
+        void degradedHandWrittenDelegateIsReportedTruthfully() throws Exception {
+            // Arrange
+            SwitchableStatusLoader delegate = new SwitchableStatusLoader();
+            RetryingJwksLoader loader = loader(() -> delegate);
+            initialise(loader);
+            assertEquals(KeySetState.LOADED, loader.keySetState(), "precondition: the key set is loaded");
+
+            // Act
+            delegate.status.set(LoaderStatus.UNDEFINED);
+
+            // Assert
+            assertEquals(LoaderStatus.UNDEFINED, loader.getLoaderStatus(),
+                    "the wrapper reports the delegate's current status, not a sticky OK");
+            assertEquals(KeySetState.FAILED, loader.keySetState(),
+                    "a loaded key set the delegate no longer reports usable reads as failed");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("the real library loader degraded past its staleness bound is reported as it is, and reads FAILED")
+        void stalenessDegradedLibraryLoaderIsReportedTruthfully() throws Exception {
+            // Arrange — serve the key set for the first load, then fail every later fetch
+            AtomicReference<@Nullable HttpJwksLoader> delegate = new AtomicReference<>();
+            RetryingJwksLoader loader = loader(() -> {
+                HttpJwksLoader built = new HttpJwksLoader(stalenessBoundConfig());
+                delegate.set(built);
+                return built;
+            });
+            initialise(loader);
+            assertEquals(KeySetState.LOADED, loader.keySetState(), "precondition: the key set is loaded");
+            Instant loadedAt = Instant.now();
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            Awaits.until(() -> Duration.between(loadedAt, Instant.now()).compareTo(MAX_STALENESS) > 0,
+                    "the staleness bound to pass on the wall clock", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Act — one refresh cycle of the library loader, run on this thread
+            refreshScheduler.runCapturedRefresh();
+
+            // Assert
+            HttpJwksLoader library = Objects.requireNonNull(delegate.get());
+            assertEquals(LoaderStatus.UNDEFINED, library.getLoaderStatus(),
+                    "precondition: the library degraded its own status past the bound");
+            assertEquals(LoaderStatus.UNDEFINED, loader.getLoaderStatus(),
+                    "the wrapper reports the library's degraded status, not a sticky OK");
+            assertEquals(KeySetState.FAILED, loader.keySetState(),
+                    "a stale-degraded issuer reads as failed, so readiness counts it not loaded");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a stale-degraded delegate still answers key lookups and key ids from the keys it holds")
+        void stalenessDegradedDelegateStillAnswersFromItsHeldKeys() throws Exception {
+            // Arrange — degrade the real library loader past its bound, as above
+            RetryingJwksLoader loader = loader(() -> new HttpJwksLoader(stalenessBoundConfig()));
+            initialise(loader);
+            Instant loadedAt = Instant.now();
+            failuresBeforeSuccess.set(Integer.MAX_VALUE);
+            Awaits.until(() -> Duration.between(loadedAt, Instant.now()).compareTo(MAX_STALENESS) > 0,
+                    "the staleness bound to pass on the wall clock", Awaits.CONNECT_CEILING_SECONDS);
+            refreshScheduler.runCapturedRefresh();
+            assertEquals(LoaderStatus.UNDEFINED, loader.getLoaderStatus(), "precondition: the delegate is degraded");
+            int requestsBefore = server.getRequestCount();
+
+            // Act
+            Optional<KeyInfo> key = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID);
+            Set<String> keyIds = loader.getKeyIds();
+
+            // Assert — the wrapper does not reject on its own: refusing a degraded issuer's tokens is the
+            // library issuer cache's job, which reads the status reported above
+            assertTrue(key.isPresent(), "the held key still resolves through the wrapper");
+            assertEquals(Set.of(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID), keyIds, "the held key ids are reported");
+            assertEquals(requestsBefore, server.getRequestCount(), "a lookup of a held key issues no fetch");
+            loader.close();
         }
     }
 
@@ -1027,6 +1298,50 @@ class RetryingJwksLoaderTest {
             assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
                     "the replaced key set still resolves its key id inside the grace period");
             assertTrue(loader.getKeyInfo("invented").isEmpty(), "the invented key id still resolves nothing");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a key set published by an unknown-key-id refresh is reported with the fresh delegate's OK and reads LOADED")
+        void publishedRefreshReportsTheFreshDelegateStatus() throws Exception {
+            // Arrange
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            rotateSigningKey();
+
+            // Act
+            loader.getKeyInfo("invented");
+            awaitRotatedKeyPublished(loader);
+
+            // Assert
+            assertEquals(built.get(1).getLoaderStatus(), loader.getLoaderStatus(),
+                    "the published delegate's status, as it is");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            assertEquals(KeySetState.LOADED, loader.keySetState());
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a degraded issuer can still claim a refresh, and a published key set re-admits it")
+        void degradedIssuerIsReadmittedByAPublishedRefresh() throws Exception {
+            // Arrange — a loaded delegate that has stopped reporting its key set usable
+            SwitchableStatusLoader degraded = new SwitchableStatusLoader();
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = loader(() -> builds.incrementAndGet() == 1 ? degraded : trackedDelegate());
+            initialise(loader);
+            degraded.status.set(LoaderStatus.UNDEFINED);
+            assertEquals(KeySetState.FAILED, loader.keySetState(), "precondition: the issuer reads degraded");
+            rotateSigningKey();
+
+            // Act
+            loader.getKeyInfo("invented");
+            Awaits.until(() -> loader.getKeyIds().contains(ROTATED_KEY_ID) && !loader.refreshInProgress(),
+                    "the refreshed key set to be published", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert — the published delegate is current, reports OK and the issuer reads loaded again
+            assertEquals(2, builds.get(), "the degraded delegate and exactly one refresh");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus(), "the issuer is re-admitted");
+            assertEquals(KeySetState.LOADED, loader.keySetState(), "readiness counts the issuer loaded again");
             loader.close();
         }
 
@@ -1844,6 +2159,77 @@ class RetryingJwksLoaderTest {
         @Override
         public LoaderStatus getLoaderStatus() {
             return LoaderStatus.OK;
+        }
+    }
+
+    /**
+     * A hand-written loader whose load succeeds with one key id and whose reported status a test sets,
+     * playing a library loader that later stops reporting its key set usable. It resolves no key, so a
+     * key id it reports never verifies a token.
+     */
+    private static final class SwitchableStatusLoader implements JwksLoader {
+
+        /** The status {@link #getLoaderStatus()} reports; a test moves it. */
+        private final AtomicReference<LoaderStatus> status = new AtomicReference<>(LoaderStatus.OK);
+
+        @Override
+        public Optional<KeyInfo> getKeyInfo(String kid) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Set<String> getKeyIds() {
+            return Set.of(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID);
+        }
+
+        @Override
+        public JwksType getJwksType() {
+            return JwksType.HTTP;
+        }
+
+        @Override
+        public Optional<String> getIssuerIdentifier() {
+            return Optional.empty();
+        }
+
+        @Override
+        public CompletableFuture<LoaderStatus> initJWKSLoader(SecurityEventCounter securityEventCounter) {
+            return CompletableFuture.completedFuture(LoaderStatus.OK);
+        }
+
+        @Override
+        public LoaderStatus getLoaderStatus() {
+            return status.get();
+        }
+    }
+
+    /**
+     * The refresh executor handed to a real library loader: it records the periodic refresh task the
+     * loader schedules instead of running it on the loader's interval, so a test runs one refresh cycle
+     * on its own thread exactly when it chooses. The task is still scheduled, an interval ahead no test
+     * reaches, so the loader's own cancellation of it on close works as in production.
+     */
+    private static final class CapturingRefreshScheduler extends ScheduledThreadPoolExecutor {
+
+        private final AtomicReference<@Nullable Runnable> refresh = new AtomicReference<>();
+
+        CapturingRefreshScheduler() {
+            super(1);
+            setRemoveOnCancelPolicy(true);
+        }
+
+        @Override
+        public ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period,
+                TimeUnit unit) {
+            refresh.set(command);
+            return super.scheduleAtFixedRate(command, initialDelay, period, unit);
+        }
+
+        /** Runs one cycle of the captured refresh task on the calling thread. */
+        void runCapturedRefresh() {
+            Runnable captured = refresh.get();
+            assertNotNull(captured, "precondition: the library loader scheduled its background refresh");
+            captured.run();
         }
     }
 

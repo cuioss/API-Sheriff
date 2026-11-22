@@ -49,16 +49,22 @@ import org.jspecify.annotations.Nullable;
 /**
  * The gateway-owned {@link JwksLoader} installed for every configured issuer through the token
  * library's public {@code IssuerConfigBuilder.jwksLoader(..)} seam. It wraps one library loader at a
- * time and owns the three things the library does not do reliably: it reports <em>whether a key set
- * has been loaded</em>, it <em>retries a failed load fast</em>, and it <em>refreshes the key set when a
- * token names a key id it does not know</em>.
+ * time and adds three things the library does not do: it keeps a <em>non-fetching record of whether a
+ * key set has been loaded</em> for readiness, it <em>retries a failed first load fast</em>, and it
+ * <em>refreshes the key set when a token names a key id it does not know</em>.
  * <p>
- * <strong>Why a wrapper.</strong> The library's loader status is a pure read, but it is not truthful
- * after a failure — an HTTP loader whose first fetch failed stays non-{@code OK} even once keys
- * arrive, and the library's issuer cache re-admits an issuer only when its loader reports
- * {@link LoaderStatus#OK}. This wrapper records the outcome of each load attempt itself and reports
- * {@link LoaderStatus#OK} exactly when a key set is loaded, which both gives readiness something true
- * to read ({@link #keySetState()}) and repairs the library's recovery path.
+ * <strong>Why a wrapper.</strong> Since token-sheriff 0.9.9 the library's loader status is truthful:
+ * an HTTP loader reports {@link LoaderStatus#OK} only while a usable key set is installed, a loader
+ * whose first fetch failed recovers by its own background refresh, and a loader built with an opt-in
+ * maximum staleness (the issuer's {@code jwks.max_staleness_seconds}) moves a loaded key set to
+ * {@link LoaderStatus#UNDEFINED} once its refreshes have failed past that bound, while keeping the
+ * keys. This wrapper therefore reports the current delegate's status as it is
+ * ({@link #getLoaderStatus()}), so the library's issuer cache — which admits an issuer only while its
+ * loader reports {@link LoaderStatus#OK} — rejects a stale-degraded issuer fail-closed until a refresh
+ * re-admits it. What the wrapper adds is the readiness view {@link #keySetState()}, which reads a
+ * loaded key set the delegate no longer reports usable as {@link KeySetState#FAILED}; the fast,
+ * bounded first-load retry, because the library's own recovery waits a whole refresh interval; and the
+ * bounded unknown-key-id refresh with the grace-period retirement of the key set it replaces.
  * <p>
  * <strong>Fast, bounded retry.</strong> The library retries a failed first fetch only after its whole
  * refresh interval, and its re-fetch hook is not public, so the only way to fetch again is a fresh
@@ -137,9 +143,9 @@ import org.jspecify.annotations.Nullable;
  * itself.
  * <p>
  * <strong>Every read is non-fetching.</strong> {@link #getLoaderStatus()}, {@link #keySetState()} and
- * {@link #getKeyInfo(String)} read one atomically published field; none ever performs a JWKS request
- * or waits for one, so neither request threads nor the readiness probe can cause network activity on
- * the calling thread. An unknown key id <em>schedules</em> a fetch, bounded as described above, and
+ * {@link #getKeyInfo(String)} read one atomically published field and, from it, the current delegate's
+ * own non-fetching answers; none ever performs a JWKS request or waits for one, so neither request
+ * threads nor the readiness probe can cause network activity on the calling thread. An unknown key id <em>schedules</em> a fetch, bounded as described above, and
  * never performs one: the lookup that triggers a refresh is itself answered from the key sets held at
  * that moment. Only the scheduler fetches.
  * <p>
@@ -181,8 +187,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * The delegates and the key-set state, published together.
      *
      * @param delegate     the library loader currently answering key lookups
-     * @param state        whether a key set is loaded; while a retry's delegate is still loading, the
-     *                     outcome of the last completed attempt
+     * @param state        whether the last completed load attempt yielded a key set; while a retry's
+     *                     delegate is still loading, the outcome of the last completed attempt. It is
+     *                     never rewritten when the delegate later stops reporting its key set usable:
+     *                     {@link #keySetState()} derives that from the delegate's status, and the
+     *                     unknown-key-id refresh stays claimable for as long as this reads
+     *                     {@link KeySetState#LOADED}
      * @param retired      the delegate an unknown-key-id refresh replaced, still answering lookups for
      *                     its own key ids; {@code null} when there is none
      * @param retiredUntil the monotonic-clock reading, in nanoseconds, from which {@code retired} no
@@ -425,12 +435,15 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     }
 
     /**
-     * Records one load attempt's outcome for {@code delegate}, provided it is still the current one. A
-     * loaded outcome also records the instant it was observed.
+     * Records one load attempt's outcome for {@code delegate}, provided it is still the current one: a
+     * {@link LoaderStatus#OK} attempt as {@link KeySetState#LOADED}, any other as
+     * {@link KeySetState#FAILED}. A loaded outcome also records the instant it was observed. The
+     * recorded outcome is the published state {@link #keySetState()} starts from; it is not what
+     * {@link #getLoaderStatus()} reports, which is always the delegate's own status.
      *
      * @param delegate the delegate the attempt ran against
      * @param status   the attempt's status, or {@code null} when it completed exceptionally
-     * @return {@link LoaderStatus#OK} for a loaded key set, the attempt's status otherwise
+     * @return the attempt's status, or {@link LoaderStatus#ERROR} when it completed exceptionally
      */
     LoaderStatus recordOutcome(JwksLoader delegate, @Nullable LoaderStatus status) {
         KeySetState outcome = status == LoaderStatus.OK ? KeySetState.LOADED : KeySetState.FAILED;
@@ -737,10 +750,22 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     }
 
     /**
-     * @return the current key-set state — a pure read that never fetches
+     * The current key-set state, as readiness reads it: the outcome of the last completed load attempt,
+     * except that a loaded key set whose delegate no longer reports {@link LoaderStatus#OK} — a library
+     * loader that degraded it past the issuer's {@code jwks.max_staleness_seconds} bound — reads
+     * {@link KeySetState#FAILED}. The degradation is read, not recorded: the published state stays
+     * {@link KeySetState#LOADED}, so an unknown key id can still claim a refresh that re-admits the
+     * issuer, and the next refresh of the delegate that installs usable keys ends the degradation by
+     * itself. A pure read that never fetches.
+     *
+     * @return the current key-set state
      */
     KeySetState keySetState() {
-        return snapshot.get().state();
+        Snapshot current = snapshot.get();
+        if (current.state() == KeySetState.LOADED && current.delegate().getLoaderStatus() != LoaderStatus.OK) {
+            return KeySetState.FAILED;
+        }
+        return current.state();
     }
 
     /**
@@ -778,20 +803,25 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     }
 
     /**
-     * {@link LoaderStatus#OK} once a key set has been loaded, the current delegate's status otherwise.
-     * A pure read: it never triggers a fetch.
+     * The current delegate's own status, unchanged: {@link LoaderStatus#OK} exactly while the library
+     * reports a usable key set, so a delegate degraded past its staleness bound is reported as
+     * {@link LoaderStatus#UNDEFINED}, a delegate that recovered a failed first load by its own refresh
+     * as {@link LoaderStatus#OK}, a retry's fresh delegate as whatever it reports while it loads, and a
+     * closed one as the library reports it after its close. A pure read: it never triggers a fetch.
      */
     @Override
     public LoaderStatus getLoaderStatus() {
-        Snapshot current = snapshot.get();
-        return current.state() == KeySetState.LOADED ? LoaderStatus.OK : current.delegate().getLoaderStatus();
+        return snapshot.get().delegate().getLoaderStatus();
     }
 
     /**
      * Answers from the key sets held at the moment of the call: the current delegate first, then a
      * retired delegate whose grace deadline has not passed. It never fetches and never waits. A key id
      * neither holds yields an empty answer for this call and, while a key set is loaded, may schedule
-     * one refresh for a later one.
+     * one refresh for a later one. A delegate degraded past its staleness bound still holds its keys and
+     * answers from them here; rejecting the degraded issuer fail-closed is the library issuer cache's
+     * job, which reads {@link #getLoaderStatus()}. Its published state stays loaded, so it can still
+     * claim the refresh that re-admits it.
      */
     @Override
     public Optional<KeyInfo> getKeyInfo(String kid) {

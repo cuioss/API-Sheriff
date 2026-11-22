@@ -98,8 +98,11 @@ changes that touch the gateway.
 | Startup initializer, JAX-RS mappers and further changes of the token-validation extension
 | Inert on this gateway; verdicts in ADR-0074.
 
-| JWKS loader failure handling, JWE size and decoding limits, the token lifecycle manager
-| The gateway builds its own JWKS loaders and does not use the lifecycle manager; no gateway change.
+| JWKS loader failure handling: `OK` only while usable keys are installed, a failed first load recovered by the loader's own refresh, the opt-in `maxStaleness` bound
+| Adopted. The gateway's own loader wrapper reports the library loader's status unchanged instead of a status of its own, and reads an issuer degraded past its staleness bound as not loaded for readiness; `maxStaleness` is exposed as `jwks.max_staleness_seconds` (ADR-0063, ADR-0011).
+
+| JWE size and decoding limits, the token lifecycle manager
+| The gateway does not use the lifecycle manager; no gateway change.
 |===
 
 == Links

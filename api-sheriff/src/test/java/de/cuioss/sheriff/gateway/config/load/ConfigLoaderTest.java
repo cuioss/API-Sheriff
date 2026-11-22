@@ -32,6 +32,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -2380,6 +2381,39 @@ class ConfigLoaderTest {
                 loaded.gateway().tls().passthroughSni(),
                 "only the FIRST '=' separates the pair — a later one belongs to the value and must "
                         + "survive the round trip rather than being silently dropped");
+    }
+
+    /**
+     * Round trip of {@code jwks.max_staleness_seconds}: the key passes the bundled schema and binds
+     * to the {@code IssuerConfig.Jwks.maxStalenessSeconds} component, and an issuer omitting it binds {@code null}
+     * (the bound off) rather than a default.
+     */
+    @Test
+    void bindsTheJwksMaxStalenessKeyAndLeavesAnOmittedOneNull() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: bounded
+                      issuer: https://idp.example/realms/bounded
+                      jwks:
+                        source: http
+                        url: https://idp.example/realms/bounded/certs
+                        max_staleness_seconds: 1800
+                    - name: unbounded
+                      issuer: https://idp.example/realms/unbounded
+                      jwks:
+                        source: http
+                        url: https://idp.example/realms/unbounded/certs
+                """);
+
+        var loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
+
+        List<IssuerConfig> issuers = Objects.requireNonNull(loaded.gateway().tokenValidation()).issuers();
+        assertEquals(Integer.valueOf(1800), Objects.requireNonNull(issuers.get(0).jwks()).maxStalenessSeconds(),
+                "the declared key binds to the record component");
+        assertNull(Objects.requireNonNull(issuers.get(1).jwks()).maxStalenessSeconds(),
+                "an omitted key binds null, the bound off");
     }
 
     @Test
