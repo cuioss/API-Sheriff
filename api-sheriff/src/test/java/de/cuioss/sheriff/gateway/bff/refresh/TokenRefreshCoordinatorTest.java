@@ -1697,12 +1697,9 @@ class TokenRefreshCoordinatorTest {
             FutureTask<RefreshOutcome> leader = new FutureTask<>(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
             Thread leading = new Thread(leader, "refresh-leader");
             leading.start();
-            String widenedCookie;
             try {
                 Awaits.connect(exchangeEntered, "the leader to enter the engine exchange");
-                String setCookie = binding.persistReissuingCookie(widened(live), NOW).orElseThrow()
-                        .setCookieHeaders().getFirst();
-                widenedCookie = setCookie.substring(0, setCookie.indexOf(';'));
+                widen(live);
                 gate.countDown();
                 Awaits.connect(leader, "the leader refresh to persist and complete");
             } finally {
@@ -1710,7 +1707,7 @@ class TokenRefreshCoordinatorTest {
                 leading.interrupt();
             }
 
-            SessionRecord stored = binding.resolve(widenedCookie, NOW).orElseThrow();
+            SessionRecord stored = storedUnderWidenedCookie();
             assertAll("the refresh's persist does not overwrite the widening that landed while it was in flight",
                     () -> assertEquals(WIDENED_SCOPES, stored.grantedScopes(), "the widened S is kept"),
                     () -> assertEquals(WIDENED_SCOPES, stored.activeScopes(), "the widened A is kept"),

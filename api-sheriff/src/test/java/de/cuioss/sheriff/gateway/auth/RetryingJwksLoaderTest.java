@@ -454,11 +454,6 @@ class RetryingJwksLoaderTest {
             refreshScheduler.shutdownNow();
         }
 
-        /** An HTTP loader config whose background refresh is captured and whose staleness bound is set. */
-        private HttpJwksLoaderConfig stalenessBoundConfig() {
-            return capturedRefreshConfig(MAX_STALENESS);
-        }
-
         /**
          * An HTTP loader config whose background refresh is captured by {@link #refreshScheduler}.
          *
@@ -643,7 +638,7 @@ class RetryingJwksLoaderTest {
             // Arrange — serve the key set for the first load, then fail every later fetch
             AtomicReference<@Nullable HttpJwksLoader> delegate = new AtomicReference<>();
             RetryingJwksLoader loader = loader(() -> {
-                HttpJwksLoader built = new HttpJwksLoader(stalenessBoundConfig());
+                HttpJwksLoader built = new HttpJwksLoader(capturedRefreshConfig(MAX_STALENESS));
                 delegate.set(built);
                 return built;
             });
@@ -672,7 +667,7 @@ class RetryingJwksLoaderTest {
         @DisplayName("a stale-degraded delegate still answers key lookups and key ids from the keys it holds")
         void stalenessDegradedDelegateStillAnswersFromItsHeldKeys() throws Exception {
             // Arrange — degrade the real library loader past its bound, as above
-            RetryingJwksLoader loader = loader(() -> new HttpJwksLoader(stalenessBoundConfig()));
+            RetryingJwksLoader loader = loader(() -> new HttpJwksLoader(capturedRefreshConfig(MAX_STALENESS)));
             initialise(loader);
             Instant loadedAt = Instant.now();
             failuresBeforeSuccess.set(Integer.MAX_VALUE);
