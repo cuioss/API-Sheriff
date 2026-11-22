@@ -535,3 +535,62 @@ stays in `epic.md`. These three bullets record the first cut and why it was made
   the machine-wide cap of 5 — every build logs a `[BUILD-QUEUE] WARNING` (about 35 times in the PLAN-16
   run), and the remedy is `manage-build-server config migrate`. On a WSL host running native-image builds
   the effective cap is the one that matters. — source: inbox `plan-16-application-portal-012.md`
+
+## Cleanups, landings and the PLAN-21 hold of 2026-11-09 and 2026-11-10 (PLAN-21, PLAN-26, PLAN-29)
+
+- 2026-11-10 — **Cleanup at `ad00807d` (after PLAN-26 landed as #592).** Re-ground of the two staged specs: 12 claims
+  re-stamped (PLAN-20 7, PLAN-31 5), 0 blocking; the 8 earlier verdicts on shipped or superseded specs are untouched.
+  Corpus 20 rows and 20 specs, all `declarative`, no indeterminate surface, no duplicate (0 source-origin matches, 0 live
+  plans). **Applied:** PLAN-20's banner re-grounded (anchors, the stale ordinals, the ADR-0081 and ADR-0018 constraints from
+  #592, including the open `step_up_url` query echo) and four surface entries added (`GatewayException.java`, ADR-0081,
+  ADR-0018, `SessionBinding.java`), verified by membership in `claimed[]` (53 to 57 entries). **Declined:** nothing
+  superseded, nothing merged (A4/A5 found no candidate). PLAN-31 needs no edit: its source, ADR-0063 and `pom.xml` are
+  unchanged since `2200ddb2`, only the threat-model residual moved (:1388-1394); the pin is 0.9.8 and TokenSheriff has no
+  0.9.9 tag. Settled-narrative relocation deferred again (no confirmation asked this pass). Compaction ok (20 rows, 20
+  specs, 21 pointers); archive drain refused; restart `not_ready` only on `registry_parity` (operator repin). PLAN-20 now
+  passes both admission tests: determinate comparison, 0 blocking candidates, no in-flight plan, no blocking verdict.
+- 2026-11-10 — **PLAN-26 landed and was reconciled** (analyze, inbox drain of 1 message, `origin/main` `ad00807d`). Shipped as
+  #592 through the merge queue after the operator confirmed it running. Corroborated
+  against the PR, the merge-group run, the review threads (none resolvable unresolved), the post-merge benchmark job
+  (green) and the merged code (one read-only leaf; the points the orchestrator re-read are listed in the landing report). No blocker.
+  D2 was implemented inside this plan as the operator decided on 2026-10-26; the failure semantics chosen are a latched WARN
+  `ApiSheriff-147` plus DEBUG with exception types only. Three Open Defects are retired (BFF-09 over-claim, cookie-mode
+  residual, two missing ADRs). Four layer-3 defects (all minor) and the layer-2 advisories are Watches and stage a fix plan
+  only on the operator's word. **Next free ADR ordinal is now 0082, next free WARN id 148** (the spec banners that say
+  0080 and 146 are stale; re-derive at write time). WS-04 now holds only PLAN-20. No operator decision was needed.
+  — source: `landings/PLAN-26.md`
+- 2026-11-09 — **PLAN-21 superseded by #581; PLAN-26 re-grounded and emitted; PLAN-20 and PLAN-31 re-grounded,
+  not emitted** (cleanup at `2200ddb2`, then next). The operator's earlier decision was "hold, decide after #581"
+  (the recommended option). #581 merged, so the decision came due. Positive account that closed PLAN-21's defect:
+  `InMemoryPendingAuthorizationStore` purges expired records first, caps each source at 256 live records, evicts only
+  that source's own oldest, and refuses at saturation with `503` + `Retry-After` (`ApiSheriff-145`);
+  `PendingQuotaKeys` supplies the source; `BffPendingLoginBoundIT` proves the acceptance criterion. Superseded
+  rather than kept-in-part because what #581 does not cover is not a buildable remainder of PLAN-21's design: the
+  live-eviction WARN is moot (it refuses instead of evicting), and the rate limiter was named as a non-goal. Four
+  gaps are recorded as a Watch for the operator to promote. Alternative not taken: keep PLAN-21 narrowed to the ADR
+  and the PAR-before-admission ordering.
+  PLAN-26 keeps its decided scope (bind logout revocation, 2026-10-26) and is emitted; PLAN-20 is sequenced after it
+  because they share `BffRuntimeProducer`, the threat model and `doc/adr`.
+
+- 2026-11-09 — **PLAN-29 landed and was reconciled** (analyze, inbox drain of 5 messages, origin/main `ab568dab`).
+  Shipped as #586; corroborated against `ci pr view 586`, `ci checks status` (24 checks, success), the merged
+  diff and the post-merge runs (Performance Benchmark `42620028579` and every push run for the merge commit
+  green). The lane's landing message was complete (`landing-check`). The landing was read on three layers by one
+  read-only leaf, and the orchestrator re-read the points it recorded: no blocker. The spec's "no edit needed"
+  list for `endpoint-routes.adoc`, ADR-0008 and the 504 row was wrong and the lane's code review caught it. The
+  four candidate-lesson messages (`-001`..`-004`) are plan-marshall tooling lessons and were routed to its
+  `lessons-routing` inbox as `-014`..`-017` under the 2026-10-15 standing rule, then dispositioned `discarded`
+  from this epic's corpus (no corpus entry, spec or queue row here). One minor layer-3 lead is a Watch.
+  PLAN-21 stays held (below); #581 has merged, so the supersede decision is now actionable after a re-ground.
+
+- 2026-11-09 — **PLAN-21 is HELD as a probable duplicate of `security-hardening-tier-1` PLAN-SEC-03**
+  (operator, cleanup at `c85817d9`). Both fix the pending-authorization store's global oldest-first eviction
+  (SEC-03: purge expired first, a per-source quota, refuse at capacity with `503`), over the same store, the
+  same producers and the same `BffPendingLoginBoundIT`; the cross-check shares 12 files and no source-origin
+  pointer, so the duplication is a reading of the two specs and PR #581's file list, not a tool verdict.
+  PLAN-21 stays `staged` with a DO NOT EMIT banner in its spec; once #581 merges, re-ground it and supersede it if
+  its acceptance criterion is covered. What #581 does not appear to cover: a WARN and metric on a live
+  eviction (it refuses instead) and a login-initiation rate limit. Alternative offered: supersede now,
+  declined because PLAN-SEC-03 is in another epic and #581 is unmerged, so the claim cannot be verified at HEAD.
+  The same pass relocated three settled sections to `settled.md` on operator confirmation (the cross-epic hold
+  watch, PLAN-32's landing with the 2026-10-15 holds, the config-housekeeping defect).

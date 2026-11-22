@@ -45,9 +45,15 @@ decision.
 
 <!-- ANNOTATION ZONE — hand-written, and deliberately OUTSIDE the generated table markers. -->
 
-- PLAN-33 — staged 2026-11-12, WS-05; the operator's next plan to run. Overlaps the RUNNING PLAN-31 on
-  `RetryingJwksLoader` and its test: start after PLAN-31 merges, or put the overlap to the operator at
-  the gate. Staged PLAN-SEC-06 (sibling epic) deliverable 3 also edits `RetryingJwksLoader.settleRefresh`.
+- PLAN-20 — staged, HELD 2026-11-22 on the operator's call behind PLAN-33: the two share 14 files (`TokenRefreshCoordinator`
+  and its test, `CallbackEndpoint`, ADR-0057/0063/0074, the threat model, `LogMessages`, two JWKS ITs). Re-ground it again against
+  PLAN-33's result before emitting; it still needs the operator decision at outline (replay against the streaming stance) and must
+  call the step-up result verifier.
+- PLAN-33 — staged 2026-11-12, **emitted and `launched` 2026-11-22** (operator chose it alone over PLAN-20; the cleanup
+  re-ground of the same day is in its `## Expected Surface` banner). WS-05; the operator's next plan to run. Its overlap with PLAN-31 on
+  `RetryingJwksLoader` and its test is gone: PLAN-31 merged as #605 (2026-11-15), so the spec's surface now
+  sits on the merged `RefreshBasis` rule. Staged PLAN-SEC-06 (sibling epic) deliverable 3 also edits
+  `RetryingJwksLoader.settleRefresh`: re-run the cross-check at the gate.
   Operator decisions at outline: expose `maxStaleness` as a gateway key (and its default), drop
   `token-sheriff-client-quarkus` (it interacts with PLAN-34 D1: TokenSheriff's native-image plan would put
   the registration into that extension), readiness for a stale-degraded issuer.
@@ -78,11 +84,14 @@ decision.
   #589 took 146 while it was open (two rebases, one real conflict in `doc/LogMessages.adoc`). Realized 31 files; the five
   session-binding files, `doc/LogMessages.adoc` and ADR-0081 were not in the declared surface. Landing record:
   `landings/PLAN-26.md`; the three-layer read found no blocker (1 layer-1, 5 layer-2 and 4 layer-3 findings, all minor).
-- **PLAN-31 (staged 2026-10-14 by the other orchestrator session, WS-01) — the exact JWKS publish rule**
-  via token-sheriff 0.9.7's `getKeyIds()`. **Re-grounded 2026-10-26 at `54f82f03`:** premise intact, `main` is
-  on 0.9.8 (#491; the jar was not readable locally, so the outline reads it first), the threat-model residual
-  moved and was already reworded by #492, and the operator hold's three named overlaps (V02-12, V02-23,
-  V02-44) have all shipped. Sequence before sibling `PLAN-V02-48`.
+- PLAN-31 — shipped #605 (`5aa17338`, 2026-11-15), the exact JWKS publish rule: a refreshed key set is published
+  only when it holds a key id that a basis captured at the claim lacks and the basis is still current at settle
+  time; the triggering key id plays no part. Ran beside the sibling's #607, which changed the same decision
+  while PLAN-31 was in finalize (operator-approved reconciliation, merge commit `7c0ee841` on the branch). The
+  gate could not predict that collision: #607's plan belongs to another epic. Realized 6 files, all inside the
+  declared surface. Landing record: `landings/PLAN-31.md`; the three-layer read found no blocker (3 layer-1, 3 layer-2
+  and 4 layer-3 findings, all minor but the spec-side D1 text). The shipped rule is narrower than the frozen
+  D1 criterion (Open Defects).
 - **PLAN-21 — SUPERSEDED 2026-11-09 by `security-hardening-tier-1` PLAN-SEC-03 (#581, `3eef748b`).** Its
   acceptance criterion is met by the per-source quota, the `503` at saturation and the rewritten
   `BffPendingLoginBoundIT`. The spec is kept as the audit record. Four gaps stay as Watches.
@@ -180,62 +189,32 @@ decision.
 
 ## Decisions
 
-- 2026-11-10 — **Cleanup at `ad00807d` (after PLAN-26 landed as #592).** Re-ground of the two staged specs: 12 claims
-  re-stamped (PLAN-20 7, PLAN-31 5), 0 blocking; the 8 earlier verdicts on shipped or superseded specs are untouched.
-  Corpus 20 rows and 20 specs, all `declarative`, no indeterminate surface, no duplicate (0 source-origin matches, 0 live
-  plans). **Applied:** PLAN-20's banner re-grounded (anchors, the stale ordinals, the ADR-0081 and ADR-0018 constraints from
-  #592, including the open `step_up_url` query echo) and four surface entries added (`GatewayException.java`, ADR-0081,
-  ADR-0018, `SessionBinding.java`), verified by membership in `claimed[]` (53 to 57 entries). **Declined:** nothing
-  superseded, nothing merged (A4/A5 found no candidate). PLAN-31 needs no edit: its source, ADR-0063 and `pom.xml` are
-  unchanged since `2200ddb2`, only the threat-model residual moved (:1388-1394); the pin is 0.9.8 and TokenSheriff has no
-  0.9.9 tag. Settled-narrative relocation deferred again (no confirmation asked this pass). Compaction ok (20 rows, 20
-  specs, 21 pointers); archive drain refused; restart `not_ready` only on `registry_parity` (operator repin). PLAN-20 now
-  passes both admission tests: determinate comparison, 0 blocking candidates, no in-flight plan, no blocking verdict.
-- 2026-11-10 — **PLAN-26 landed and was reconciled** (analyze, inbox drain of 1 message, `origin/main` `ad00807d`). Shipped as
-  #592 through the merge queue after the operator confirmed it running. Corroborated
-  against the PR, the merge-group run, the review threads (none resolvable unresolved), the post-merge benchmark job
-  (green) and the merged code (one read-only leaf; the points the orchestrator re-read are listed in the landing report). No blocker.
-  D2 was implemented inside this plan as the operator decided on 2026-10-26; the failure semantics chosen are a latched WARN
-  `ApiSheriff-147` plus DEBUG with exception types only. Three Open Defects are retired (BFF-09 over-claim, cookie-mode
-  residual, two missing ADRs). Four layer-3 defects (all minor) and the layer-2 advisories are Watches and stage a fix plan
-  only on the operator's word. **Next free ADR ordinal is now 0082, next free WARN id 148** (the spec banners that say
-  0080 and 146 are stale; re-derive at write time). WS-04 now holds only PLAN-20. No operator decision was needed.
-  — source: `landings/PLAN-26.md`
-- 2026-11-09 — **PLAN-21 superseded by #581; PLAN-26 re-grounded and emitted; PLAN-20 and PLAN-31 re-grounded,
-  not emitted** (cleanup at `2200ddb2`, then next). The operator's earlier decision was "hold, decide after #581"
-  (the recommended option). #581 merged, so the decision came due. Positive account that closed PLAN-21's defect:
-  `InMemoryPendingAuthorizationStore` purges expired records first, caps each source at 256 live records, evicts only
-  that source's own oldest, and refuses at saturation with `503` + `Retry-After` (`ApiSheriff-145`);
-  `PendingQuotaKeys` supplies the source; `BffPendingLoginBoundIT` proves the acceptance criterion. Superseded
-  rather than kept-in-part because what #581 does not cover is not a buildable remainder of PLAN-21's design: the
-  live-eviction WARN is moot (it refuses instead of evicting), and the rate limiter was named as a non-goal. Four
-  gaps are recorded as a Watch for the operator to promote. Alternative not taken: keep PLAN-21 narrowed to the ADR
-  and the PAR-before-admission ordering.
-  PLAN-26 keeps its decided scope (bind logout revocation, 2026-10-26) and is emitted; PLAN-20 is sequenced after it
-  because they share `BffRuntimeProducer`, the threat model and `doc/adr`.
+- 2026-11-22 — **Inbox drain of 3 messages, all from the closing epic `security-hardening-tier-2` (`-001`, `-005`, `-006`), all
+  discarded.** Each claim was read against `origin/main` first: the formatter-churn class is closed (#242, #415, #559, #618 are on
+  `main`), the sender's last plans shipped (#647 `2335c81d`, #651 `a2ff139e`), and the one open defect it handed over (PLAN-SEC2-07's
+  landing carried `effort=unknown`) is a plan-lifecycle runtime-stamp fact that nothing in this repository can close. No spec, no
+  defect, no watch. The sibling epics `security-hardening-tier-1` and `-tier-2` are archived, and PLAN-SEC-06 is `shipped` (#607), so
+  the 8-file overlap that held PLAN-33 back on 2026-11-15 is gone.
+- 2026-11-22 — **Cleanup at `226d9f3a` (worktree rebased onto `origin/main`, 48 commits after the last pass), then `next`.**
+  Re-ground of the three staged specs by three read-only leaves, one per spec: 58 claims (PLAN-20 7, PLAN-33 29, PLAN-34 22),
+  42 corroborated, 11 unverifiable (TokenSheriff-side or live-IdP), 5 contradicted and rescoped in the spec (PLAN-20 the replay
+  buffer, PLAN-33 two, PLAN-34 two), 0 blocking. **Applied:** a dated re-grounding banner under `## Expected Surface` of each of
+  the three specs (next free ADR **0083**, next free WARN id **153**; every line anchor stale, locate by symbol) and 7, 5 and 16
+  surface entries added, verified by membership in `claimed[]`; PLAN-34's two unresolved entries (bare file names) were fixed
+  by re-writing them as full paths (`indeterminate_count` 0 before and after, all 22 specs `declarative`). **Declined:**
+  nothing superseded or merged (no source-origin match, no live plan, gate population empty); `declaration: none named` on the three
+  staged specs is flagged, not applied: it has no gate effect (`emit_allowed: true`) and the lane's outline resolves skills.
+  Settled-narrative relocation done on the operator's confirmation: five Decisions entries (2026-11-09 and 2026-11-10: the cleanup,
+  PLAN-26 and PLAN-29 landings, the PLAN-21 hold and its supersede) moved verbatim to `settled.md`. Compaction ok (22 rows, 22
+  specs, 22 pointers); archive drain refused; restart `indeterminate` only on `registry_parity` (the executor is 0.1.2106, the
+  registry pins 0.1.2184: regenerate the executor).
+  **Emit.** `parallelization_scope` 2, nothing in flight, so two slots. PLAN-20 and PLAN-33 both pass the prep-ready, declared and
+  disjointness tests and the cross-check is determinate, but they share 14 files, so the overlap prompt was asked: the operator
+  chose **PLAN-33 only**, PLAN-20 held until PLAN-33 lands (recommended option; alternatives offered: both, or PLAN-20 only).
+  PLAN-33 is recorded `launched` (`auto_emit` is true); it is not recorded `running`. PLAN-34 stays staged and BLOCKED: no
+  TokenSheriff 0.9.10 tag exists (tags end at 0.9.9) and it depends on PLAN-33.
+> ↪ Relocated to `settled.md` § "Cleanups, landings and the PLAN-21 hold of 2026-11-09 and 2026-11-10 (PLAN-21, PLAN-26, PLAN-29)" — PLAN-26 and PLAN-29 shipped, PLAN-21 is superseded by #581, and the two cleanup passes are superseded by the 2026-11-22 pass; five dated Decisions entries, moved verbatim
 
-- 2026-11-09 — **PLAN-29 landed and was reconciled** (analyze, inbox drain of 5 messages, origin/main `ab568dab`).
-  Shipped as #586; corroborated against `ci pr view 586`, `ci checks status` (24 checks, success), the merged
-  diff and the post-merge runs (Performance Benchmark `42620028579` and every push run for the merge commit
-  green). The lane's landing message was complete (`landing-check`). The landing was read on three layers by one
-  read-only leaf, and the orchestrator re-read the points it recorded: no blocker. The spec's "no edit needed"
-  list for `endpoint-routes.adoc`, ADR-0008 and the 504 row was wrong and the lane's code review caught it. The
-  four candidate-lesson messages (`-001`..`-004`) are plan-marshall tooling lessons and were routed to its
-  `lessons-routing` inbox as `-014`..`-017` under the 2026-10-15 standing rule, then dispositioned `discarded`
-  from this epic's corpus (no corpus entry, spec or queue row here). One minor layer-3 lead is a Watch.
-  PLAN-21 stays held (below); #581 has merged, so the supersede decision is now actionable after a re-ground.
-
-- 2026-11-09 — **PLAN-21 is HELD as a probable duplicate of `security-hardening-tier-1` PLAN-SEC-03**
-  (operator, cleanup at `c85817d9`). Both fix the pending-authorization store's global oldest-first eviction
-  (SEC-03: purge expired first, a per-source quota, refuse at capacity with `503`), over the same store, the
-  same producers and the same `BffPendingLoginBoundIT`; the cross-check shares 12 files and no source-origin
-  pointer, so the duplication is a reading of the two specs and PR #581's file list, not a tool verdict.
-  PLAN-21 stays `staged` with a DO NOT EMIT banner in its spec; once #581 merges, re-ground it and supersede it if
-  its acceptance criterion is covered. What #581 does not appear to cover: a WARN and metric on a live
-  eviction (it refuses instead) and a login-initiation rate limit. Alternative offered: supersede now,
-  declined because PLAN-SEC-03 is in another epic and #581 is unmerged, so the claim cannot be verified at HEAD.
-  The same pass relocated three settled sections to `settled.md` on operator confirmation (the cross-epic hold
-  watch, PLAN-32's landing with the 2026-10-15 holds, the config-housekeeping defect).
 - 2026-10-26 — **Operator decisions on the four open questions the cleanup surfaced** (each recorded in the
   spec as a dated DECIDED block; the spec is the durable record):
   - **PLAN-26 D2: implement logout refresh-token revocation INSIDE PLAN-26.** Overrides the spec's former
@@ -319,6 +298,26 @@ decision.
 
 ## Open Defects
 
+- **PLAN-31's shipped publish rule is narrower than its frozen D1 criterion, and no `criteria-authorize` record covers it
+  (2026-11-15).** The code discards a refresh whose basis moved during the fetch and counts a retired delegate's key ids
+  as held; the spec's D1 says "publish when the key ids differ at settle time". The functional review carried it as the
+  non-blocking residual D1.R1, and ADR-0063 states the cost. Closes when the operator accepts the narrowing in writing or a
+  plan re-opens the criterion. — source: `landings/PLAN-31.md` L1-1, L2-1
+- **PLAN-31 layer-3 and layer-2 findings, all minor (2026-11-15), reported to the operator, nothing fixed inline.**
+  (L3-1) the claim's basis snapshot is read before the in-flight flag is taken, so a refresh that publishes in between
+  leaves the new claim a stale basis and it wastes its window (`RetryingJwksLoader.java` :553-557); (L3-3) an exception in
+  `settleRefresh` is swallowed by the `whenComplete` future, leaves the fresh delegate unclosed and logs no
+  `JWKS_REFRESH_FAILED` (:596-606, :668); (L3-4, not shown by reading) `RefreshBasis.of` runs on the request thread
+  outside the try that shields scheduling (:226-229); (L2) `refreshOutrunByADropIsDiscarded` (test :1133) may not fail if
+  `isCurrent` were deleted, two near-duplicate unit tests (:1010, :1035) and a redundant IT leg 5. One small pass
+  would close all of it. The operator decides. — source: `landings/PLAN-31.md`
+- **`verify -Ppre-commit` is not stable on `main` after #618 (2026-11-15).** The landing reports that the gate removes one
+  blank line from 457 existing files on every run (and earlier one from `MainListenerConnectionCapTest.java`, from
+  #607), cleared by hand after each run. Not re-measured by this analysis: treat as a lead. A formatter PR with the
+  `skip-bot-review` label, like #608, would close it; no plan owns it. — source: `landings/PLAN-31.md` residue
+- **`review_body_findings_total` of PLAN-31 disagrees with the provider (2026-11-15).** The landing claimed 5; `review-gate`
+  on the merged head reads 4 (and 0 dispositions, which only the run's progress file can settle). Recorded as a false
+  claim in the landing record; the thread count (0) matches. — source: `landings/PLAN-31.md`
 - **The circuit breaker's identity changed in #448 without an ADR.** `GatewayEdgeRoute.guardFor` no
   longer registers it under a SmallRye name (the JVM-global registry rejected a reused upstream port
   once the abortive close freed TIME_WAIT); the guard, keyed `scheme://host:port:h2=…:retry=…`, is the
@@ -447,6 +446,15 @@ decision.
 
 ## Watches
 
+- The push runs of **Maven Build and Integration Tests on PLAN-31's merge commit `5aa17338`** are NOT verified: the CI
+  abstraction reads PR-attached runs only. Verified green and PR-attached: merge-group run `43710119529`, every PR check
+  including SonarCloud, and the post-merge benchmark (`43711768997`). `main` has moved on since (#618 to #622), so a
+  later green run on a descendant does not stand in for it. — trigger: confirm Actions → Maven Build → `5aa17338`
+  before the next release; source: `landings/PLAN-31.md`
+- **PLAN-31's `surface_delta` is `unmeasured`** (the landing supplied no declared or realized paths), so the realized
+  footprint was not reconciled by the machine; this analysis read the diff's six files by hand (all declared). — trigger:
+  none; source: `landings/PLAN-31.md`
+
 > ↪ Relocated to `settled.md` § "Cross-epic hold on api-sheriff-0-2-0, resolved by its closure" — every sibling plan it names has shipped and the sibling epic is closed and archived
 
 - **Four minor defects in the merged logout revocation (2026-11-10).** (L3-1) one process-wide latch covers a discovery failure,
@@ -495,12 +503,6 @@ decision.
   readable in this repository. Settle it with one measuring test or soften the wording; it moves the "about 90 s"
   bound by a fraction of a second at most. Closes on whichever. The operator decides whether it earns a plan. —
   source: `landings/PLAN-29.md` L3-1
-- **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
-  FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`
-  (cuioss/TokenSheriff#801 → PR #803); `main` pins 0.9.7 since #449 (`5c2a8143`), which implemented
-  `RetryingJwksLoader.getKeyIds()` as a plain delegate and changed no publish behaviour. PLAN-31 switches
-  `settleRefresh` to the exact rule and removes the residual from ADR-0063 and threat-model GW-07. This
-  entry closes when PLAN-31 lands. — source: `landings/PLAN-24.md`, lesson `2026-10-12-16-013`
 - **A same-day re-grounding seems to tighten the declared surface.** PLAN-24 realized 1.4x its
   declaration; the earlier measurements ran roughly 3x to 5x. PLAN-27, also re-grounded on its emit day,
   realized 28 files against 12 entries (several of them directories); 8 of its 10 undeclared files follow
