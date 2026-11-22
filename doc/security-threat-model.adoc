@@ -4056,10 +4056,10 @@ authorization request at all.
   session holds no refresh token, transparent refresh is off, or the near-expiry refresh had just
   re-bound the cookie -- the widening is merged once, the merge sets `S` to what was granted, and
   the following round is the refused one. A navigation therefore ends in the `403` after at most two
-  rounds. An outright `invalid_scope` answer to the refresh is different: it is told apart, but the
-  gateway deliberately disposes it as it disposes an outage (<<bff-15>>). The identity provider
-  processed no grant, so the answer leaves `S` unchanged, and the refresh is retried once per
-  back-off window rather than once per request.
+  rounds. An outright `invalid_scope` answer to the refresh is different: the engine classifies it as its
+  own `SCOPE_REFUSED` kind, and the gateway deliberately disposes it as pre-redemption, the way it
+  disposes an outage (<<bff-15>>). The identity provider processed no grant, so the answer leaves
+  `S` unchanged, and the refresh is retried once per back-off window rather than once per request.
 
 *Status:* COVERED, with three accepted residuals.
 
