@@ -382,8 +382,9 @@ The refresh is skipped, and the request goes straight to widening, in two cases:
   so no second exchange is started from it. The next request carries the new cookie and is refreshed
   normally.
 
-*An `invalid_scope` answer to the refresh arms the refresh back-off.* The gateway tells that answer
-apart from an IdP that never processed the grant, and deliberately gives it the same disposition: the
+*An `invalid_scope` answer to the refresh arms the refresh back-off.* The token engine classifies that
+answer as its own `SCOPE_REFUSED` kind, apart from an IdP that never processed the grant, and the
+gateway deliberately gives it the same disposition: the
 IdP issued no grant and would refuse the same request again, so an immediate retry would only
 repeat the refusal. It is recorded as a pre-redemption failure (`ApiSheriff-127`): the session is
 kept, the request is widened or refused, and the session's next refresh -- a near-expiry one
@@ -504,9 +505,9 @@ Either way the session is kept and stays usable on every route it still satisfie
 in the `403` after at most two round trips to the IdP.
 
 One case is not corrected this way. An IdP that answers the refresh with an outright `invalid_scope`
-error processed no grant, so its answer is disposed like an IdP that never processed one (see the
-back-off note above): the granted set is left as it was and the refresh is tried again once per
-back-off window.
+error processed no grant. The token engine classifies it as `SCOPE_REFUSED`, and the gateway
+deliberately disposes it like an IdP that never processed one (see the back-off note above): the
+granted set is left as it was and the refresh is tried again once per back-off window.
 
 [[step-up-path]]
 === The step-up path

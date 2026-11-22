@@ -718,12 +718,19 @@ class InMemorySessionStoreTest {
         }
 
         @Test
-        @DisplayName("Should reject a null basis and a null replacement")
-        void shouldRejectNullArguments() {
+        @DisplayName("Should reject a null replacement")
+        void shouldRejectNullReplacement() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+
+            assertThrows(NullPointerException.class, () -> store.replaceIfCurrent(STORED, null));
+        }
+
+        @Test
+        @DisplayName("Should reject a null basis")
+        void shouldRejectNullBasis() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
 
             assertThrows(NullPointerException.class, () -> store.replaceIfCurrent(null, STORED));
-            assertThrows(NullPointerException.class, () -> store.replaceIfCurrent(STORED, null));
         }
 
         @Test

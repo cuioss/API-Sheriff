@@ -115,7 +115,7 @@ seam answered when the gateway wrote the rotated session:
   record carries no exception.
 * *Superseded at the persist* is the binding answering *superseded*. The refresh passes the record it resolved as the basis
   of its write, and the binding writes only while the stored record is still that basis, comparing and replacing in one
-  atomic step (ADR-0018). A widening overtook a refresh: the session lives on under the cookie value the widening re-issued, so
+  atomic step under the store's lock (`SessionStore.replaceIfCurrent`). A widening overtook a refresh: the session lives on under the cookie value the widening re-issued, so
   nothing is destroyed, nothing is marked ended and no `ApiSheriff-111` is recorded. The rotated refresh token is live at the
   identity provider and held nowhere, so it is revoked like the persist-failure one.
 
