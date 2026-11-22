@@ -395,8 +395,7 @@ only. Make sure every trusted proxy sends its clients' addresses in `X-Forwarded
 *Behind the SNI front every terminated client is the loopback relay leg.* Under a non-empty
 `tls.passthrough_sni`, every terminated connection reaches the edge from the front's loopback relay
 leg, so source detection and the trusted-proxy judgement see every terminated client as that one
-loopback peer. While no `forwarded.trusted_proxies` range holds a loopback address, all of them are
-therefore one source: with `action` `block` or `delay`, one client's rejections trip it, and the block
+loopback peer. While the relay leg is no trusted proxy, all of them are therefore one source: with `action` `block` or `delay`, one client's rejections trip it, and the block
 or delay it earns acts on every terminated client at once. A `forwarded.trusted_proxies` range that
 holds the relay leg's own address -- the front dials `localhost`, so the leg is `127.0.0.1` or `::1` --
 makes that leg a trusted proxy, so the gateway trusts every terminated client's own `Forwarded` and

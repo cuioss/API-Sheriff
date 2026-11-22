@@ -697,9 +697,9 @@ public final class ConfigLogMessages {
          * so source detection and the trusted-proxy judgement see every terminated client as that one
          * loopback peer. Each record states the consequence of its own combination only:
          * <ul>
-         * <li>an acting detection action keys every terminated client on one source while no loopback
-         * address is a trusted proxy, so the block or delay that source earns acts on all of them at
-         * once — remedied by setting {@code enumeration_detection.action} to {@code observe};</li>
+         * <li>an acting detection action keys every terminated client on one source while the relay leg
+         * is no trusted proxy, so the block or delay that source earns acts on all of them at once —
+         * remedied by setting {@code enumeration_detection.action} to {@code observe};</li>
          * <li>a loopback trusted proxy makes the relay leg a trusted proxy when the range holds the relay
          * leg's own loopback address, so every terminated client's own {@code Forwarded} and
          * {@code X-Forwarded-For} headers are trusted — remedied by removing the loopback range from
@@ -719,7 +719,7 @@ public final class ConfigLogMessages {
         public static final LogRecord PASSTHROUGH_SOURCE_COLLAPSE = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(152)
-                .template("tls.passthrough_sni is non-empty while %s — behind the SNI front every terminated connection reaches the edge from the loopback relay leg, so the edge sees every terminated client as that one loopback peer: %s")
+                .template("tls.passthrough_sni is non-empty while %s — behind the SNI front every terminated connection reaches the edge from the loopback relay leg, so source detection and the trusted-proxy judgement see every terminated client as that one loopback peer: %s")
                 .build();
     }
 

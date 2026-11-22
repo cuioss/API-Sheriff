@@ -97,7 +97,7 @@ public class EdgeRules {
      * acting {@code enumeration_detection} action under passthrough.
      */
     private static final String ACTING_ACTION_CONSEQUENCE = "every terminated client is keyed on that one source"
-            + " while no loopback address is a trusted proxy, so the block or delay that source earns acts on all"
+            + " while the relay leg is no trusted proxy, so the block or delay that source earns acts on all"
             + " of them at once. Set enumeration_detection.action to observe";
 
     /**
@@ -344,12 +344,12 @@ public class EdgeRules {
      * Rule: under a non-empty {@code tls.passthrough_sni}, emits the boot WARN
      * {@link ConfigLogMessages.WARN#PASSTHROUGH_SOURCE_COLLAPSE} once for each configuration that may act
      * on the loopback relay leg as if it were a client. Behind the SNI front every terminated connection
-     * reaches the edge from that one loopback leg, so the edge sees every terminated client as one
-     * loopback peer:
+     * reaches the edge from that one loopback leg, so source detection and the trusted-proxy judgement
+     * see every terminated client as one loopback peer:
      * <ul>
      * <li>{@code enumeration_detection} enabled with the acting action {@code block} or {@code delay}
-     * keys every terminated client on that one source, so the action a source earns acts on all of them
-     * at once;</li>
+     * keys every terminated client on that one source while the relay leg is no trusted proxy, so the
+     * action a source earns acts on all of them at once;</li>
      * <li>a {@code forwarded.trusted_proxies} range holding a loopback address (overlapping
      * {@code 127.0.0.0/8}, or containing {@code ::1}) makes that leg a trusted proxy when it holds the
      * relay leg's own address, so every client's own forwarded headers are trusted. The terminated relay

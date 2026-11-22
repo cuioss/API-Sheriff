@@ -84,7 +84,7 @@ class EdgeRulesTest {
      */
     private static final List<String> ACTION_CONSEQUENCE = List.of(
             "every terminated client is keyed on that one source",
-            "while no loopback address is a trusted proxy",
+            "while the relay leg is no trusted proxy",
             "the block or delay that source earns acts on all of them at once");
 
     /**
