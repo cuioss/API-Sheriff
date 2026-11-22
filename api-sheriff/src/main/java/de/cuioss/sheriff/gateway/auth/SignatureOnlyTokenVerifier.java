@@ -22,6 +22,7 @@ import java.util.Objects;
 
 import de.cuioss.sheriff.token.commons.error.ErrorTextSanitizer;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
+import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.domain.context.IdTokenRequest;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
@@ -57,7 +58,10 @@ import org.jspecify.annotations.Nullable;
  * <ol>
  *   <li>decode the token — size, structure and base64 bounds are enforced by the parser;</li>
  *   <li>resolve the configured {@link IssuerConfig} by the token's {@code iss} — an unknown or
- *       disabled issuer is refused;</li>
+ *       disabled issuer is refused, and so is one whose JWKS loader does not report
+ *       {@link LoaderStatus#OK}, exactly as the engine's issuer cache refuses that issuer's bearer
+ *       tokens: a loader past its staleness bound keeps answering key lookups from keys it no longer
+ *       reports usable, so the status is read before any key is;</li>
  *   <li>{@link TokenHeaderValidator} — algorithm posture and issuer agreement in the JWT header;</li>
  *   <li>{@link TokenSignatureValidator} — the cryptographic check against that issuer's JWKS;</li>
  *   <li>{@link TokenBuilder} — map the verified body into claims. The builder performs no validation;
@@ -69,8 +73,9 @@ import org.jspecify.annotations.Nullable;
  * caller is {@code LogoutTokenValidator}.
  * <p>
  * <strong>This is not a weakening of the trust boundary.</strong> A token that fails signature
- * verification, names an issuer this gateway does not configure, or carries an algorithm the issuer's
- * key does not support is refused here exactly as it would be on the ID-token path. The only checks
+ * verification, names an issuer this gateway does not configure or whose key set is not reported
+ * usable, or carries an algorithm the issuer's key does not support is refused here exactly as it
+ * would be on the ID-token path. The only checks
  * dropped are the ones that encode <em>ID-token</em> claim semantics.
  * <p>
  * Thread-safe and immutable: the per-issuer collaborators are resolved once at construction.
@@ -117,7 +122,9 @@ public final class SignatureOnlyTokenVerifier {
      * @return the signature-verified token: the mapped claims, carrying no claim verdict, and the
      *         {@code typ} value of the protected header, which the signature covers as well
      * @throws TokenValidationException when the token cannot be decoded, names no {@code iss}, names an
-     *                                  issuer this gateway does not configure or has disabled, carries
+     *                                  issuer this gateway does not configure or has disabled, names an
+     *                                  issuer whose JWKS loader does not report {@link LoaderStatus#OK}
+     *                                  (a stale-degraded, failed or still-loading key set), carries
      *                                  an unacceptable header, fails signature verification, or has an
      *                                  empty body
      */
@@ -138,6 +145,17 @@ public final class SignatureOnlyTokenVerifier {
             // operator while neutralising line breaks, U+2028/U+2029 and the bidi controls.
             throw reject(SecurityEventCounter.EventType.NO_ISSUER_CONFIG,
                     "No enabled issuer configuration for '" + ErrorTextSanitizer.sanitize(issuerIdentifier) + "'");
+        }
+        LoaderStatus keySetStatus = issuer.config().getJwksLoader().getLoaderStatus();
+        if (keySetStatus != LoaderStatus.OK) {
+            // Fail closed, as the library's issuer cache does for the same issuer's bearer tokens: a
+            // loader may keep answering key lookups from a key set it no longer reports usable — one
+            // past jwks.max_staleness_seconds whose keys may since have been revoked — and the
+            // signature check below never reads the status itself. Any status but OK refuses, before
+            // any key is looked up. The iss is sanitized for the reason the branch above gives.
+            throw reject(SecurityEventCounter.EventType.NO_ISSUER_CONFIG,
+                    "Issuer configuration for '" + ErrorTextSanitizer.sanitize(issuerIdentifier)
+                            + "' is not usable: its key set is reported " + keySetStatus + ", not OK");
         }
         issuer.headerValidator().validate(decoded, IdTokenRequest.of(rawToken));
         issuer.signatureValidator().validateSignature(decoded);

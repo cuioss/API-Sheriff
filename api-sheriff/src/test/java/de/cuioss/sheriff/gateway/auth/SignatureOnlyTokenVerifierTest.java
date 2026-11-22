@@ -22,6 +22,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -31,12 +35,16 @@ import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.commons.error.ErrorTextSanitizer;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
+import de.cuioss.sheriff.token.commons.transport.JwksType;
+import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.TokenType;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
+import de.cuioss.sheriff.token.validation.jwks.JwksLoader;
+import de.cuioss.sheriff.token.validation.jwks.key.KeyInfo;
 import de.cuioss.sheriff.token.validation.test.JwtTokenTamperingUtil;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.ClaimControlParameter;
@@ -45,6 +53,8 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Covers {@link SignatureOnlyTokenVerifier} — the seam the BFF back-channel logout receiver is bound
@@ -62,8 +72,8 @@ import org.junit.jupiter.api.Test;
  *       old seam had never been a problem, and the whole fix would read as unnecessary.</li>
  * </ul>
  * The security properties that must <em>not</em> have been relaxed are asserted alongside: a tampered
- * signature, an unknown issuer and a malformed token are all still refused, and the unknown issuer's
- * echoed {@code iss} cannot forge log lines.
+ * signature, an unknown issuer, an issuer whose key set is no longer reported usable and a malformed
+ * token are all still refused, and the unknown issuer's echoed {@code iss} cannot forge log lines.
  * <p>
  * Note on {@code events}: {@link TestTokenHolder} carries a claim as a JSON <em>string</em>, so the
  * token built here exercises the string form of that claim. The object form a real identity provider
@@ -243,6 +253,64 @@ class SignatureOnlyTokenVerifierTest {
     }
 
     /**
+     * A configured, enabled issuer whose loader still holds its keys but no longer reports its key set
+     * usable — what token-sheriff 0.9.9's {@code HttpJwksLoader} does once
+     * {@code jwks.max_staleness_seconds} is exceeded — must not verify a logout token from the keys it
+     * retained. The library's issuer cache refuses such an issuer's bearer tokens; the logout path
+     * refuses its logout tokens the same way.
+     * <p>
+     * Both arms verify the same signed token against the same, really loaded key set, read through
+     * {@link StatusReportingLoader}: only the status the loader reports differs, so the refusal can be
+     * attributed to that status alone.
+     */
+    @Nested
+    @DisplayName("An issuer whose key set is no longer reported usable")
+    class DegradedIssuer {
+
+        @ParameterizedTest(name = "loader status {0}")
+        @EnumSource(value = LoaderStatus.class, names = "OK", mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("Should refuse a logout token from an issuer whose loader holds keys but does not report OK")
+        void shouldRefuseTokenFromDegradedIssuer(LoaderStatus degradedStatus) {
+            StatusReportingLoader loader = new StatusReportingLoader(issuerConfig.getJwksLoader(), degradedStatus);
+            SignatureOnlyTokenVerifier seam = verifierOver(loader);
+            String raw = logoutToken.getRawToken();
+            assertFalse(loader.getKeyIds().isEmpty(), "precondition: the degraded loader still holds the issuer's keys");
+
+            TokenValidationException refusal = assertThrows(TokenValidationException.class, () -> seam.verify(raw),
+                    "a key set its loader no longer reports usable must not verify a logout token");
+
+            assertAll("degraded-issuer refusal",
+                    () -> assertEquals(SecurityEventCounter.EventType.NO_ISSUER_CONFIG, refusal.getEventType(),
+                            "refused as the library's issuer cache refuses the same issuer's bearer tokens"),
+                    () -> assertTrue(refusal.getMessage().contains(String.valueOf(degradedStatus)),
+                            "the refusal names the reported status, so it is the degraded-issuer branch "
+                                    + "and not the unconfigured-issuer one: " + refusal.getMessage()));
+        }
+
+        @Test
+        @DisplayName("Should verify the same token against the same keys when the loader reports OK (matched control)")
+        void shouldVerifyTokenFromHealthyIssuer() {
+            StatusReportingLoader loader = new StatusReportingLoader(issuerConfig.getJwksLoader(), LoaderStatus.OK);
+            SignatureOnlyTokenVerifier seam = verifierOver(loader);
+
+            TokenContent verified = seam.verify(logoutToken.getRawToken()).content();
+
+            assertEquals(SID, verified.getClaims().get("sid").getOriginalString(),
+                    "only the reported status differs from the refusal arm, and with OK the token verifies");
+        }
+
+        /** A verifier over one issuer that names the fixture token's {@code iss} and reads {@code loader}. */
+        private SignatureOnlyTokenVerifier verifierOver(JwksLoader loader) {
+            IssuerConfig issuer = IssuerConfig.builder()
+                    .issuerIdentifier(logoutToken.getIssuer())
+                    .audienceValidationDisabled(true)
+                    .jwksLoader(loader)
+                    .build();
+            return new SignatureOnlyTokenVerifier(List.of(issuer), tokenValidator.getSecurityEventCounter());
+        }
+    }
+
+    /**
      * The refusal of an unconfigured issuer echoes the attacker-controlled {@code iss} into a message
      * that reaches an unauthenticated-path DEBUG log, so the echo must not let a caller forge log lines
      * (CWE-117). The token is refused on its {@code iss} before any key is consulted, so an unsigned,
@@ -253,6 +321,14 @@ class SignatureOnlyTokenVerifierTest {
     class RefusalEcho {
 
         private static final String MESSAGE_PREFIX = "No enabled issuer configuration for '";
+        /*
+         * The three invisible characters are built from their code points rather than written into a
+         * literal, so a reader of this file sees which character each assertion names (Sonar
+         * text:S6389 flags a raw bidi control in source text).
+         */
+        private static final String LINE_SEPARATOR = Character.toString(0x2028);
+        private static final String PARAGRAPH_SEPARATOR = Character.toString(0x2029);
+        private static final String RIGHT_TO_LEFT_OVERRIDE = Character.toString(0x202E);
 
         @Test
         @DisplayName("Should escape CR, LF, U+2028, U+2029 and bidi controls and truncate an over-long iss")
@@ -260,7 +336,8 @@ class SignatureOnlyTokenVerifierTest {
             String filler = "a".repeat(300);
             // JSON escapes, decoded by the parser into the raw characters the attacker sent.
             String hostileIssJson = "evil\\r\\nforged\\u2028\\u2029\\u202E" + filler;
-            int rawPrefixLength = "evil\r\nforged  ‮".length();
+            int rawPrefixLength = ("evil\r\nforged" + LINE_SEPARATOR + PARAGRAPH_SEPARATOR + RIGHT_TO_LEFT_OVERRIDE)
+                    .length();
             String expectedEcho = "evil\\r\\nforged\\u2028\\u2029\\u202e"
                     + "a".repeat(ErrorTextSanitizer.MAX_LENGTH - rawPrefixLength)
                     + ErrorTextSanitizer.TRUNCATION_MARKER;
@@ -277,9 +354,9 @@ class SignatureOnlyTokenVerifierTest {
                             "each unsafe character escaped, the value cut at the library bound and marked"),
                     () -> assertFalse(message.contains("\r"), "no raw CR"),
                     () -> assertFalse(message.contains("\n"), "no raw LF"),
-                    () -> assertFalse(message.contains(" "), "no raw LINE SEPARATOR"),
-                    () -> assertFalse(message.contains(" "), "no raw PARAGRAPH SEPARATOR"),
-                    () -> assertFalse(message.contains("‮"), "no raw RIGHT-TO-LEFT OVERRIDE"));
+                    () -> assertFalse(message.contains(LINE_SEPARATOR), "no raw LINE SEPARATOR"),
+                    () -> assertFalse(message.contains(PARAGRAPH_SEPARATOR), "no raw PARAGRAPH SEPARATOR"),
+                    () -> assertFalse(message.contains(RIGHT_TO_LEFT_OVERRIDE), "no raw RIGHT-TO-LEFT OVERRIDE"));
         }
 
         @Test
@@ -311,6 +388,54 @@ class SignatureOnlyTokenVerifierTest {
                     .getBytes(StandardCharsets.UTF_8));
             String signature = encoder.encodeToString("placeholder".getBytes(StandardCharsets.UTF_8));
             return header + "." + body + "." + signature;
+        }
+    }
+
+    /**
+     * A hand-written loader that answers every key lookup from a real, loaded library loader and
+     * reports the status the test chose — the shape of a stale-degraded delegate, which keeps
+     * answering from its retained keys while it no longer reports them usable.
+     */
+    private static final class StatusReportingLoader implements JwksLoader {
+
+        /** The loaded library loader every key lookup is answered from. */
+        private final JwksLoader keys;
+        /** The status {@link #getLoaderStatus()} reports, whatever {@link #keys} holds. */
+        private final LoaderStatus status;
+
+        StatusReportingLoader(JwksLoader keys, LoaderStatus status) {
+            this.keys = Objects.requireNonNull(keys, "keys");
+            this.status = Objects.requireNonNull(status, "status");
+        }
+
+        @Override
+        public Optional<KeyInfo> getKeyInfo(String kid) {
+            return keys.getKeyInfo(kid);
+        }
+
+        @Override
+        public Set<String> getKeyIds() {
+            return keys.getKeyIds();
+        }
+
+        @Override
+        public JwksType getJwksType() {
+            return keys.getJwksType();
+        }
+
+        @Override
+        public Optional<String> getIssuerIdentifier() {
+            return keys.getIssuerIdentifier();
+        }
+
+        @Override
+        public CompletableFuture<LoaderStatus> initJWKSLoader(SecurityEventCounter securityEventCounter) {
+            return CompletableFuture.completedFuture(status);
+        }
+
+        @Override
+        public LoaderStatus getLoaderStatus() {
+            return status;
         }
     }
 }
