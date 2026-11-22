@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Objects;
 
 
+import de.cuioss.sheriff.token.commons.error.ErrorTextSanitizer;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.domain.context.IdTokenRequest;
@@ -132,10 +133,12 @@ public final class SignatureOnlyTokenVerifier {
             // The identifier is echoed because it is attacker-controlled but bounded to what the
             // caller already sent, and without it the operator cannot tell a typo'd issuer in the
             // gateway configuration from a token genuinely minted elsewhere. Sanitized before
-            // interpolation: this message reaches an unauthenticated-path DEBUG log verbatim, so an
-            // un-sanitized iss would let a caller forge log lines (CWE-117).
+            // interpolation by the library's ErrorTextSanitizer: this message reaches an
+            // unauthenticated-path DEBUG log verbatim, so an un-sanitized iss would let a caller
+            // forge log lines (CWE-117). The escaping form keeps the hostile value readable for the
+            // operator while neutralising line breaks, U+2028/U+2029 and the bidi controls.
             throw reject(SecurityEventCounter.EventType.NO_ISSUER_CONFIG,
-                    "No enabled issuer configuration for '" + sanitizeForLog(issuerIdentifier) + "'");
+                    "No enabled issuer configuration for '" + ErrorTextSanitizer.sanitize(issuerIdentifier) + "'");
         }
         issuer.headerValidator().validate(decoded, IdTokenRequest.of(rawToken));
         issuer.signatureValidator().validateSignature(decoded);
@@ -143,7 +146,7 @@ public final class SignatureOnlyTokenVerifier {
                 SecurityEventCounter.EventType.MISSING_CLAIM,
                 "Signature-verified token carries an empty body"));
         LOGGER.debug("Token signature verified against issuer %s — claim validation is the caller's",
-                sanitizeForLog(issuerIdentifier));
+                ErrorTextSanitizer.sanitize(issuerIdentifier));
         return new VerifiedToken(verified, decoded.header().getTyp().orElse(null));
     }
 
@@ -169,21 +172,6 @@ public final class SignatureOnlyTokenVerifier {
     private TokenValidationException reject(SecurityEventCounter.EventType eventType, String detail) {
         securityEventCounter.increment(eventType);
         return new TokenValidationException(eventType, detail);
-    }
-
-    /**
-     * Bounds and strips control characters from an attacker-controlled value before it reaches a log
-     * line, so a forged {@code iss} claim cannot inject CR/LF-delimited fake log entries (CWE-117).
-     *
-     * @param value the raw, signature-unverified value to sanitize
-     * @return {@code value} with every control character removed, truncated to 128 characters
-     */
-    private static String sanitizeForLog(String value) {
-        String stripped = value.chars()
-                .filter(c -> !Character.isISOControl(c))
-                .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
-                .toString();
-        return stripped.length() > 128 ? stripped.substring(0, 128) : stripped;
     }
 
     /**

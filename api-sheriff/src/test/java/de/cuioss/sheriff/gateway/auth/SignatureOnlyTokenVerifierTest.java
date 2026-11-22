@@ -30,6 +30,8 @@ import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
+import de.cuioss.sheriff.token.commons.error.ErrorTextSanitizer;
+import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.TokenType;
 import de.cuioss.sheriff.token.validation.TokenValidator;
@@ -39,6 +41,7 @@ import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 import de.cuioss.sheriff.token.validation.test.JwtTokenTamperingUtil;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.ClaimControlParameter;
+import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -60,7 +63,8 @@ import org.junit.jupiter.api.Test;
  *       old seam had never been a problem, and the whole fix would read as unnecessary.</li>
  * </ul>
  * The security properties that must <em>not</em> have been relaxed are asserted alongside: a tampered
- * signature, an unknown issuer and a malformed token are all still refused.
+ * signature, an unknown issuer and a malformed token are all still refused, and the unknown issuer's
+ * echoed {@code iss} cannot forge log lines.
  * <p>
  * Note on {@code events}: {@link TestTokenHolder} carries a claim as a JSON <em>string</em>, so the
  * token built here exercises the string form of that claim. The object form a real identity provider
@@ -236,6 +240,78 @@ class SignatureOnlyTokenVerifierTest {
         @DisplayName("Should refuse a null token rather than treating it as absent")
         void shouldRefuseNullToken() {
             assertThrows(NullPointerException.class, () -> verifier.verify(null));
+        }
+    }
+
+    /**
+     * The refusal of an unconfigured issuer echoes the attacker-controlled {@code iss} into a message
+     * that reaches an unauthenticated-path DEBUG log, so the echo must not let a caller forge log lines
+     * (CWE-117). The token is refused on its {@code iss} before any key is consulted, so an unsigned,
+     * hand-built JWT reaches that branch exactly as a signed foreign token does.
+     */
+    @Nested
+    @DisplayName("The echoed iss of an unconfigured issuer")
+    class RefusalEcho {
+
+        private static final String MESSAGE_PREFIX = "No enabled issuer configuration for '";
+
+        @Test
+        @DisplayName("Should escape CR, LF, U+2028, U+2029 and bidi controls and truncate an over-long iss")
+        void shouldEscapeUnsafeCharactersAndTruncate() {
+            String filler = "a".repeat(300);
+            // JSON escapes, decoded by the parser into the raw characters the attacker sent.
+            String hostileIssJson = "evil\\r\\nforged\\u2028\\u2029\\u202E" + filler;
+            int rawPrefixLength = "evil\r\nforged  ‮".length();
+            String expectedEcho = "evil\\r\\nforged\\u2028\\u2029\\u202e"
+                    + "a".repeat(ErrorTextSanitizer.MAX_LENGTH - rawPrefixLength)
+                    + ErrorTextSanitizer.TRUNCATION_MARKER;
+            String raw = unsignedTokenWithIssuer(hostileIssJson);
+
+            TokenValidationException refusal = assertThrows(TokenValidationException.class,
+                    () -> verifier.verify(raw));
+
+            String message = refusal.getMessage();
+            assertAll("hostile iss echo",
+                    () -> assertEquals(SecurityEventCounter.EventType.NO_ISSUER_CONFIG, refusal.getEventType(),
+                            "the unconfigured-issuer branch is the one that echoes the iss"),
+                    () -> assertEquals(MESSAGE_PREFIX + expectedEcho + "'", message,
+                            "each unsafe character escaped, the value cut at the library bound and marked"),
+                    () -> assertFalse(message.contains("\r"), "no raw CR"),
+                    () -> assertFalse(message.contains("\n"), "no raw LF"),
+                    () -> assertFalse(message.contains(" "), "no raw LINE SEPARATOR"),
+                    () -> assertFalse(message.contains(" "), "no raw PARAGRAPH SEPARATOR"),
+                    () -> assertFalse(message.contains("‮"), "no raw RIGHT-TO-LEFT OVERRIDE"));
+        }
+
+        @Test
+        @DisplayName("Should echo a benign unconfigured iss verbatim (matched control)")
+        void shouldEchoBenignIssuerVerbatim() {
+            String benignIss = Generators.letterStrings(5, 40).next();
+            String raw = unsignedTokenWithIssuer(benignIss);
+
+            TokenValidationException refusal = assertThrows(TokenValidationException.class,
+                    () -> verifier.verify(raw));
+
+            assertAll("benign iss echo",
+                    () -> assertEquals(SecurityEventCounter.EventType.NO_ISSUER_CONFIG, refusal.getEventType()),
+                    () -> assertEquals(MESSAGE_PREFIX + benignIss + "'", refusal.getMessage(),
+                            "a value with nothing unsafe in it is echoed unchanged"));
+        }
+
+        /**
+         * Builds a compact JWT whose body carries only {@code iss}; the signature segment is a
+         * placeholder because the issuer lookup refuses the token before any signature check.
+         *
+         * @param issJsonContent the {@code iss} value as JSON string content, escapes included
+         */
+        private static String unsignedTokenWithIssuer(String issJsonContent) {
+            Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+            String header = encoder.encodeToString("{\"alg\":\"RS256\",\"typ\":\"JWT\"}"
+                    .getBytes(StandardCharsets.UTF_8));
+            String body = encoder.encodeToString(("{\"iss\":\"" + issJsonContent + "\"}")
+                    .getBytes(StandardCharsets.UTF_8));
+            String signature = encoder.encodeToString("placeholder".getBytes(StandardCharsets.UTF_8));
+            return header + "." + body + "." + signature;
         }
     }
 }
