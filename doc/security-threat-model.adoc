@@ -3531,8 +3531,8 @@ ways between a widening callback's resolve and its write ends in `403` with no `
 `Set-Cookie`, stays unresolvable and is recorded as `session-terminated`, while the same callback
 merges when nothing destroys the session (`CallbackEndpointTest`); a session destroyed in each of
 those ways during the provider exchange, on the near-expiry leg and on the scope-driven leg, is not
-written back, the request and a coalesced waiter are answered as session-ended, and nothing is
-handed to revocation -- the refresh lost a race to the destruction and abandons its rotated refresh
+written back, the request and a coalesced waiter are answered as no session (no clearing
+`Set-Cookie`), and nothing is handed to revocation -- the refresh lost a race to the destruction and abandons its rotated refresh
 token -- while the same stub against a binding whose persist fails revokes the rotated token exactly
 once (`TokenRefreshCoordinatorTest`). The cookie-mode residual is
 pinned rather than hidden: the stateless update re-seals after every destroy form

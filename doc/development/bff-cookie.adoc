@@ -95,7 +95,8 @@ the binding observed that the session is gone. `ServerSessionBinding` reports th
 destroyed the session after the caller resolved it. `CookieSessionBinding` holds nothing a logout
 could have removed, so it always re-seals and never returns empty -- a refresh or a widening that
 was in flight during a logout still produces a session cookie. Callers must handle the empty result
-(`TokenRefreshCoordinator` ends the request as session-ended, `CallbackEndpoint` answers `403`);
+(`TokenRefreshCoordinator` answers the request as no session and sends no clearing cookie,
+`CallbackEndpoint` answers `403`);
 `bind` stays the only creating write. See the updating writes in
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
 
