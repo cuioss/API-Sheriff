@@ -463,6 +463,30 @@ class BffRuntimeProducerTest {
     }
 
     /**
+     * The {@link ParClient} instances reachable from {@code root} that the engine's own
+     * {@link AuthorizationCodeFlow} does not own. Since TokenSheriff 0.9.10 that flow constructs a
+     * private {@link ParClient} for its {@code authorizePushed} seam. The gateway never calls that
+     * seam — it pushes through {@link PushedAuthorizationRequests} over the one client its producer
+     * builds — so the engine's instance is dormant and not a second client the runtime dials the
+     * identity provider with. Excluding it by owner, rather than by count, keeps every other
+     * {@link ParClient} the producer or a collaborator might build visible to the caller's
+     * exactly-one assertion. The exclusion is kept honest by
+     * {@code engineFlowOwnsADormantPushedRequestClient}: it fails if the engine stops owning one, or
+     * shares the gateway's.
+     *
+     * @param root the assembled object graph to search
+     * @return every reachable {@link ParClient} not held by an {@link AuthorizationCodeFlow}, in walk order
+     */
+    private static List<ParClient> gatewayParClients(Object root) {
+        Set<ParClient> engineOwned = Collections.newSetFromMap(new IdentityHashMap<>());
+        reachableInstancesOf(root, AuthorizationCodeFlow.class)
+                .forEach(flow -> engineOwned.addAll(reachableInstancesOf(flow, ParClient.class)));
+        return reachableInstancesOf(root, ParClient.class).stream()
+                .filter(client -> !engineOwned.contains(client))
+                .toList();
+    }
+
+    /**
      * The produced runtime tracks a long-lived relay under its session. In server mode the session
      * store the producer built reports every session it ends to the registry the runtime tracks in —
      * the two are wired together by the producer and nowhere else, so these cases reach the store
@@ -2213,6 +2237,38 @@ class BffRuntimeProducerTest {
         }
 
         /**
+         * The control for {@link #gatewayParClients(Object)}, which leaves out the {@link ParClient}
+         * the engine's {@link AuthorizationCodeFlow} owns. Without this case that exclusion could
+         * outlive its reason, or hide a gateway client that merely happens to sit behind the flow.
+         * The engine flow owns exactly one {@link ParClient}, it is not the one the gateway's
+         * {@link PushedAuthorizationRequests} adapter pushes through, and the adapter's is not
+         * reachable from the engine flow. Should a TokenSheriff release stop building the extra client,
+         * this fails and the exclusion is deleted with it.
+         */
+        @Test
+        @DisplayName("the engine's authorization-code flow owns a dormant pushed-authorization-request client the gateway does not push through")
+        void engineFlowOwnsADormantPushedRequestClient() {
+            BffRuntime runtime = producer(serverModeOidc()).bffRuntime();
+
+            AuthorizationCodeFlow engineFlow = single(reachableInstancesOf(runtime, AuthorizationCodeFlow.class),
+                    "engine authorization-code flow");
+            ParClient engineOwned = single(reachableInstancesOf(engineFlow, ParClient.class),
+                    "pushed-authorization-request client the engine flow owns");
+            ParClient gatewayOwned = single(gatewayParClients(runtime), "pushed-authorization-request client");
+            PushedAuthorizationRequests adapter = single(
+                    reachableInstancesOf(runtime, PushedAuthorizationRequests.class), "pushed-request adapter");
+
+            assertAll("two distinct clients, only one of them on the gateway's push path",
+                    () -> assertNotSame(engineOwned, gatewayOwned,
+                            "the engine flow's client is not the gateway's"),
+                    () -> assertSame(gatewayOwned, single(reachableInstancesOf(adapter, ParClient.class),
+                            "client behind the pushed-request adapter"),
+                            "the adapter the gateway pushes through holds the gateway's client"),
+                    () -> assertEquals(0, reachableInstancesOf(adapter, AuthorizationCodeFlow.class).size(),
+                            "and the push path does not run through the engine flow"));
+        }
+
+        /**
          * The pushed authorization request has to carry the hostname and trust posture of every other
          * back-channel leg (ADR-0045), which it does by riding the base back-channel configuration.
          * The assertion is type-directed, in the style of the query-mode builder walk: it collects the
@@ -2233,8 +2289,7 @@ class BffRuntimeProducerTest {
 
             BffRuntime runtime = recording.bffRuntime();
 
-            ParClient parClient = single(reachableInstancesOf(runtime, ParClient.class),
-                    "pushed-authorization-request client");
+            ParClient parClient = single(gatewayParClients(runtime), "pushed-authorization-request client");
             ClientConfiguration dialled = single(reachableInstancesOf(parClient, ClientConfiguration.class),
                     "client configuration the pushed-authorization-request client holds");
             assertAll("the configuration the push dials the identity provider with",
@@ -3232,7 +3287,7 @@ class BffRuntimeProducerTest {
             List<TokenEndpointClient> tokenEndpointClients = reachableInstancesOf(runtime, TokenEndpointClient.class);
 
             assertAll("one identity-provider client of each kind for the whole runtime",
-                    () -> assertEquals(1, reachableInstancesOf(runtime, ParClient.class).size(),
+                    () -> assertEquals(1, gatewayParClients(runtime).size(),
                             "exactly one pushed-authorization-request client is constructed"),
                     () -> assertSame(adapter, single(reachableInstancesOf(widening, PushedAuthorizationRequests.class),
                             "pushed-request adapter behind the widening seam"),
