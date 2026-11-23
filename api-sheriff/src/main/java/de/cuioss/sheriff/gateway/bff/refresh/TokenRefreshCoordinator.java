@@ -633,11 +633,7 @@ public final class TokenRefreshCoordinator {
      * refresh of the kept session would then fail is reasoning, not asserted by a test. The rotated token
      * is never sent to the browser and no copy is held, so it lapses under the provider's own
      * refresh-token lifetime — exactly as the rotated token of a refresh a widening overwrites after it
-     * persisted. A refresh that lost a race to a session destruction abandons its rotated token on the
-     * same ground (the terminated-at-the-persist disposition): that the session it belonged to has ended
-     * does not make a revocation safe, because a session that replaced it may share the identity
-     * provider's user session. Revocation stays on the dispositions in which the refresh itself ends the
-     * session — a refused redeemed response and a persist failure.
+     * persisted.
      */
     private Disposition superseded(String sessionId) {
         retryNotBefore.remove(sessionId);

@@ -250,6 +250,30 @@ class TokenRefreshCoordinatorTest {
         return resolveById(store, SESSION_ID, at).isPresent();
     }
 
+    /**
+     * The persist-failure matched control of the two lost-race suites: refreshes {@code live} near expiry
+     * through {@code exchange} against a binding whose persist fails, and asserts that the refresh itself
+     * ends the session and revokes the rotated token exactly once.
+     */
+    private void assertPersistFailureRevokesRotatedToken(SessionRecord live, RefreshExchange exchange,
+            AtomicInteger calls) {
+        TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange,
+                new PersistFailingBinding(binding), revoked::add, DIRECT, EndedRefreshTokens.inert());
+
+        RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+        assertAll("the same stub revokes when the refresh's own persist ends the session",
+                () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                () -> assertEquals(1, calls.get(), "the exchange ran"),
+                () -> assertFalse(sessionResolvable(NOW), "the session holding the burned token is destroyed"),
+                () -> assertEquals(0, store.size(), "the store holds no session at all"),
+                () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                        "the persist-failure path revokes the rotated token exactly once"));
+        LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
+        LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+    }
+
     private static RefreshExchange throwing(RuntimeException failure) {
         return (presented, _) -> {
             throw failure;
@@ -1550,31 +1574,14 @@ class TokenRefreshCoordinatorTest {
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
         }
 
-        /**
-         * The same stub with no termination, against a binding whose persist fails: the refresh itself ends
-         * the session, so the rotated token is revoked. It pins that the abandonment above belongs to the
-         * terminated-session disposition alone and not to the stub or the rotation.
-         */
         @Test
         @DisplayName("Should end the session and revoke the rotated token once when the same stub's persist fails instead (matched control)")
         void shouldRevokeRotatedTokenWhenPersistFailsWithoutTermination() {
             SessionRecord live = storedSessionWithSid();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
-                    terminatingExchange(live, NO_TERMINATION, rotation(), calls), new PersistFailingBinding(binding),
-                    revoked::add, DIRECT, EndedRefreshTokens.inert());
 
-            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
-
-            assertAll("the same stub revokes when the refresh's own persist ends the session",
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
-                    () -> assertEquals(1, calls.get(), "the exchange ran"),
-                    () -> assertFalse(sessionResolvable(NOW), "the session holding the burned token is destroyed"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
-                            "the persist-failure path revokes the rotated token exactly once"));
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
-                    TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
-            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+            assertPersistFailureRevokesRotatedToken(live, terminatingExchange(live, NO_TERMINATION, rotation(), calls),
+                    calls);
         }
 
         @Test
@@ -1855,20 +1862,9 @@ class TokenRefreshCoordinatorTest {
         void shouldRevokeRotatedTokenWhenPersistFails() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
-                    exchangeWith(live, NO_CONCURRENT_WRITE, rotation(), calls), new PersistFailingBinding(binding),
-                    revoked::add, DIRECT, EndedRefreshTokens.inert());
 
-            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
-
-            assertAll("the same stub revokes when the refresh's own persist ends the session",
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
-                    () -> assertEquals(1, calls.get(), "the exchange ran"),
-                    () -> assertEquals(0, store.size(), "the session holding the burned token is destroyed"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
-                            "the persist-failure path revokes the rotated token exactly once"));
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
-                    TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
+            assertPersistFailureRevokesRotatedToken(live, exchangeWith(live, NO_CONCURRENT_WRITE, rotation(), calls),
+                    calls);
         }
 
         @Test
