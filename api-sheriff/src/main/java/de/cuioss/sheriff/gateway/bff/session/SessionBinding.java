@@ -114,7 +114,8 @@ public interface SessionBinding {
      *   <li><strong>The session may be gone</strong> — a logout, a back-channel logout, a login callback
      *       that replaced the session, an expiry sweep or an eviction ended it. The result is
      *       {@link PersistResult.Gone}: nothing was written, and the caller must treat the session as
-     *       ended rather than hand out the new token material.</li>
+     *       ended rather than hand out the new token material. Whatever destroyed the session ended it,
+     *       so the caller does not end it a second time.</li>
      *   <li><strong>The session may have moved on</strong> — a widening or a step-up replaced its record
      *       through {@link #persistReissuingCookie}. The result is {@link PersistResult.Superseded}:
      *       nothing was written, so the later grant's scopes, refresh token, {@code acr} and

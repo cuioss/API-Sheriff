@@ -241,8 +241,7 @@ import org.jspecify.annotations.Nullable;
  * stage's refresh seams degrade to the unwired binding — session unchanged, no cookies — and no refresh
  * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
  * With the switch on, each coordinator outcome reaches the stage as one of three dispositions: an
- * outcome carrying a session is mediated; a failed refresh — the session was destroyed, or in server
- * mode was found already terminated when the rotation was to be persisted —
+ * outcome carrying a session is mediated; a failed refresh — the refresh itself ended the session —
  * clears the session cookie before the refresh-failure response; an unavailable refresh — the identity
  * provider was unreachable and the access token has expired, but the session is kept — answers the
  * refresh-failure response without clearing the cookie. That response is
@@ -259,9 +258,13 @@ import org.jspecify.annotations.Nullable;
  * failing request never waits for the revocation endpoint. RP-initiated logout revokes through that
  * same client independently of this switch, but only a refresh token the session holds: with the
  * switch off none is retained, so such a logout sends no revocation request. A fourth outcome
- * carries no session and ends none: the refresh leader could not resolve a session from the request's
- * own cookie a second time. It answers the refresh-failure response <em>without</em> a clearing cookie, because in server
- * mode that cookie value may just have been re-issued by a step-up while the session lives on.
+ * carries no session and ends none, the no-session outcome: the refresh leader could not resolve a
+ * session from the request's own cookie a second time; its persist or its refusal was superseded by a
+ * concurrent widening or step-up; or its persist or its refusal found the session already gone,
+ * destroyed by a logout, a back-channel logout, a login callback, an expiry sweep or an eviction (server
+ * mode). It answers the refresh-failure response <em>without</em> a clearing cookie, because in server
+ * mode that cookie value may just have been re-issued by a step-up while the session lives on, or a
+ * login callback may just have given the browser a replacement session's cookie.
  * <p>
  * <strong>Idle timeout, in both modes.</strong> {@code oidc.session.idle_timeout_seconds} is resolved
  * once through {@link OidcConfig.Session#effectiveIdleTimeoutSeconds()} — the resolution boot
@@ -1166,10 +1169,11 @@ public class BffRuntimeProducer {
      * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
      * seam. {@code CURRENT}, {@code REFRESHED}, {@code DEFERRED} and {@code SCOPE_REFUSED} carry a
      * session and are mediated with whatever {@code Set-Cookie} the re-bind produced; {@code FAILED} —
-     * the session was destroyed, or in server mode was found already terminated when the rotation was to
-     * be persisted — ends the session so the stage clears the cookie; {@code UNAVAILABLE} —
-     * the session was kept but its access token has expired — fails only this request, so the cookie
-     * survives for the next attempt.
+     * the refresh itself ended the session — ends the session so the stage clears the cookie;
+     * {@code UNAVAILABLE} — the session was kept but its access token has expired — fails only this
+     * request, so the cookie survives for the next attempt; {@code NO_SESSION} — the refresh ended
+     * nothing, and in server mode the session may have been ended by something else while the refresh
+     * was in flight — fails this request without clearing the cookie.
      * <p>
      * {@code SCOPE_REFUSED} reaches this leg only when the near-expiry request coalesced with a concurrent
      * scope-driven refresh of the same session; it always carries the kept session and any cookie the
@@ -1216,8 +1220,9 @@ public class BffRuntimeProducer {
      * <p>
      * {@code NO_SESSION} is kept apart from {@code FAILED} all the way to the stage: {@code FAILED} means
      * the coordinator ended the session and the browser's cookie must go, {@code NO_SESSION} means it
-     * found none for this request and ended nothing, so the browser's cookie — possibly one a step-up
-     * has just re-issued — must stay.
+     * ended nothing — it found no session for this request, its write was superseded, or something else
+     * had already ended the session — so the browser's cookie must stay: it may be one a step-up has just
+     * re-issued, or one a login callback has just set for a replacement session.
      */
     private static SessionAuthenticationStage.RefreshResult refreshResult(
             TokenRefreshCoordinator.RefreshOutcome outcome) {

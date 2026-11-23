@@ -34,10 +34,12 @@
  *       rotation), a refused redeemed response, or a failure to persist the rotated session destroys
  *       it, the latter two revoking a refresh token that is still live where one is known, so the
  *       caller treats the request as unauthenticated. In server mode a session that a logout, a
- *       back-channel logout or a login callback terminated while its refresh was in flight is not
- *       written back: the refresh ends the same way, but it lost a race to that destruction, so its
- *       rotated refresh token is abandoned, not revoked — a session that replaced the destroyed one may
- *       share the identity provider's user session. A refused refresh ends only the session it read: when
+ *       back-channel logout, a login callback, an expiry sweep or an eviction terminated while its
+ *       refresh was in flight is not written back, and the refresh ends nothing itself: it records no
+ *       session end and answers the request as holding no session, so no clearing cookie can delete the
+ *       cookie a login callback has just set for a replacement session. It lost a race to that
+ *       destruction, so its rotated refresh token is abandoned, not revoked — a session that replaced the
+ *       destroyed one may share the identity provider's user session. A refused refresh ends only the session it read: when
  *       a widening or a step-up replaced the record, or the session was already ended, it destroys,
  *       marks and revokes nothing and answers the request as holding no session.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens} is the coordinator's bounded,

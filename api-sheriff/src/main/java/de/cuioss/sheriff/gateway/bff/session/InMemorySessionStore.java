@@ -49,9 +49,11 @@ import de.cuioss.tools.logging.CuiLogger;
  * widening makes. Neither updating write stores anything when the id is not held, so a write that was
  * in flight while the session was destroyed does not bring it back, and {@link #replaceIfCurrent}
  * stores nothing either when a widening replaced the record since its caller read it. In each of them
- * the check and the write run under the same monitor as {@link #destroyById}, {@link #destroyBySid},
- * {@link #destroyBySub} and the other updating write, so no destruction and no other write can take
- * effect between them.
+ * the check and the write run under the same monitor as every path that removes a session — the four
+ * destroy methods ({@link #destroyById}, {@link #destroyBySid}, {@link #destroyBySub} and
+ * {@link #destroyIfCurrent}), the lazy eviction in {@link #resolve}, the sweep ({@link #sweepExpired})
+ * and the per-subject eviction of a {@link #create} — and as the other updating write, so no
+ * destruction, no eviction and no other write can take effect between them.
  * <p>
  * <strong>The handle is store-side state, not a component of the record.</strong> A refresh that
  * resolved the session before a re-issue and replaces the record after it writes the record only: the

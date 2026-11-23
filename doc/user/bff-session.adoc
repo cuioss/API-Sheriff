@@ -990,10 +990,14 @@ and the two signing keys, any replica serves any session.
   `idle_timeout_seconds` ends a session nobody uses. On either the user re-authenticates. See
   <<session-lifetime>>.
 * *A logout is not undone by a request that was already running.* A logout through
-  `oidc.logout.path`, a back-channel logout, or a new login in the same browser can end the session
-  while a token refresh or a widening for it is in flight. The ending wins: the refreshed or widened
-  session is not stored, and the refreshing request is answered as unauthenticated with the session
-  cookie cleared. The refresh token the IdP had just issued is abandoned, not revoked: after a new
+  `oidc.logout.path`, a back-channel logout, a new login in the same browser, the expiry sweep or an
+  eviction can end the session while a token refresh or a widening for it is in flight. The ending
+  wins: the refreshed or widened session is not stored. The refreshing request is answered as
+  unauthenticated *without* clearing the session cookie: the refresh did not end the session, and
+  after a new login in the same browser a clearing cookie could arrive after the login's own response
+  and delete the new session's cookie. The browser's next request presents the cookie of a session
+  that no longer exists and is answered like any unauthenticated request. The refresh token the IdP
+  had just issued is abandoned, not revoked: after a new
   login that reused the IdP's session, revoking it could end the new session at the IdP, and the
   gateway cannot tell that case from a logout. This is a residual risk. `oidc.logout.path` revokes
   the refresh token of the session it found, which the refresh had already spent, and a back-channel
@@ -1001,9 +1005,10 @@ and the two signing keys, any replica serves any session.
   issued refresh token is the IdP's own policy (RFC 7009 allows it but does not require it). The
   abandoned token is held by nobody -- it never reaches the browser and no copy is kept -- but it can
   stay valid at the IdP until the IdP's refresh-token lifetime ends. A refresh that a widening
-  overtook leaves the same residual. The log shows `ApiSheriff-111` with
-  the reason `session-terminated` for a refresh and `ApiSheriff-131` with the same reason for a
-  widening. Neither is a fault; `persist-failure` is the reason to look into.
+  overtook leaves the same residual. Such a refresh logs nothing above `DEBUG` -- the session's end
+  belongs to whatever ended it -- and a widening logs `ApiSheriff-131` with the reason
+  `session-terminated`. Neither is a fault; an `ApiSheriff-111` with `persist-failure` is the one to
+  look into.
 * *Refresh failures, IdP reachability and a private-CA IdP* are the same in both variants; see
   link:bff-oidc-common.adoc#_operate[Shared Setup -- Operate],
   link:bff-oidc-common.adoc#_configure_strict_refresh_token_rotation_at_the_idp[strict refresh-token

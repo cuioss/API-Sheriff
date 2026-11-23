@@ -3251,11 +3251,16 @@ record while the exchange was in flight, or a logout, a back-channel logout, a l
 expiry sweep or an eviction already ended the session, the refusal ends nothing -- nothing is
 destroyed or revoked, the request is answered as "no session", and `ApiSheriff-111` is not logged
 for it -- because the refusal lost a race, and a grant-level revocation could end a replacement or
-widened session that shares the identity provider's user session. In server mode one more case ends the
-same way without being a failure of the refresh: a logout, a back-channel logout or a login callback
-that replaced the session destroyed it while its refresh was in flight. The rotated session is then
-not written back (<<bff-09>>), the request is answered as session-ended, and `ApiSheriff-111` records
-`session-terminated`, but the refresh token the exchange returned is abandoned, not revoked: the
+widened session that shares the identity provider's user session. In server mode one more case ends
+nothing in the same way without being a failure of the refresh: a logout, a back-channel logout, a
+login callback that replaced the session, an expiry sweep or an eviction destroyed it while its
+refresh was in flight. The rotated session is then not written back (<<bff-09>>), and the refresh
+ends nothing itself: the request is answered as "no session", without a clearing cookie, and
+`ApiSheriff-111` is not logged for it. A clearing cookie would be harmful here: a login callback in the
+same browser sets a cookie for its replacement session, and a clearing response from the overtaken
+refresh could arrive after it and delete that cookie. A genuine logout still leaves the browser
+unauthenticated, because the next request presents the cookie of a session that is gone and resolves
+none. The refresh token the exchange returned is abandoned, not revoked: the
 refresh lost a race to the destruction, and a login callback's replacement session may share the
 identity provider's user session, which a grant-level revocation could end. *Residual risk
 (accepted):* on a genuine logout the RP-initiated leg revokes the refresh token of the record it
@@ -3353,19 +3358,20 @@ leave the gateway session usable.
 *A termination wins over an in-flight write (server mode).* Two writers update a session that
 already exists: the token refresh, on both of its legs (<<bff-08>>), and the widening callback
 (<<bff-17>>). Each resolves the session, calls the identity provider and writes the result back. A
-logout, a validated back-channel logout or a login callback that replaces the session can destroy it
-between that resolve and that
+logout, a validated back-channel logout, a login callback that replaces the session, the expiry sweep
+or an eviction can destroy it between that resolve and that
 write, and an unconditional write would then store the session again, holding newly issued tokens,
 after it was ended. The `SessionBinding` seam therefore has one creating write, used by the login,
 and one updating write that never creates
 (link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 In server mode the store checks for the session and replaces its record as one atomic step, under
 the lock every destroy operation takes, so a destruction either precedes the check -- and nothing is
-written -- or follows the replacement and removes it. A write that finds the session gone is
-answered as the session having ended: the refresh returns its session-ended outcome to the request
-and to every request coalesced with it, abandons the refresh token the exchange returned without
-revoking it (<<bff-08>>), and records `ApiSheriff-111` with `session-terminated`; the widening
-callback answers `403` with no
+written -- or follows the replacement and removes it. A write that finds the session gone ends
+nothing itself, because whatever destroyed the session ended it: the refresh returns its
+"no session" outcome to the request and to every request coalesced with it, sends no clearing cookie
+-- one could delete the cookie a login callback has just set for a replacement session -- records no
+`ApiSheriff-111`, and abandons the refresh token the exchange returned without revoking it
+(<<bff-08>>); the widening callback answers `403` with no
 `Location` and no `Set-Cookie`, stores nothing, and records `ApiSheriff-131` with
 `session-terminated`. The tokens of a refused widening grant are dropped unstored and are not
 revoked, as with the callback's other refusals.
@@ -3478,8 +3484,9 @@ RP-initiated logout and nothing else:
 * *Anything on the back-channel path.* The receiver destroys the sessions a logout token names and
   revokes nothing: the identity provider initiated that logout and has already ended its own session.
 * *The rotated token of a refresh the logout overtook.* A server-mode refresh in flight when a
-  logout, a back-channel logout or a login callback destroys its session is answered as
-  session-ended and abandons the refresh token its exchange returned without revoking it
+  logout, a back-channel logout or a login callback destroys its session ends nothing itself, is
+  answered as "no session" without a clearing cookie, and abandons the refresh token its exchange
+  returned without revoking it
   (<<bff-08>>), because after a login callback a revocation could end the replacement session at the
   provider. The RP-initiated leg revokes the refresh token of the record it resolved, which the
   rotation had already spent; whether the provider also invalidates the rotated successor is provider

@@ -271,7 +271,6 @@ class TokenRefreshCoordinatorTest {
                         "the persist-failure path revokes the rotated token exactly once"));
         LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
                 TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
-        LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
     }
 
     private static RefreshExchange throwing(RuntimeException failure) {
@@ -1418,19 +1417,24 @@ class TokenRefreshCoordinatorTest {
      * in flight — after the leader resolved it, before the rotated session is persisted. In server mode
      * the rotated session must not be written back.
      * <p>
-     * The refresh lost a race to a session destruction, so it abandons the rotated refresh token rather
-     * than revoking it: a login callback's replacement session may share the identity provider's user
-     * session, and a grant-level revocation could end it. A genuine logout needs no revocation from here
-     * either — RP-initiated logout revokes the session's own refresh token itself, and a back-channel
-     * logout comes from an identity provider that already ended the session.
+     * This refresh did not end the session; whatever destroyed it did. So the refresh ends nothing
+     * either: it is answered {@code NO_SESSION}, which the stage answers without a clearing cookie — a
+     * clearing cookie here could reach the browser after a login callback's response and delete the
+     * replacement session's new cookie. Nothing is marked ended and no {@code ApiSheriff-111} is
+     * recorded. The rotated refresh token is abandoned rather than revoked: a login callback's
+     * replacement session may share the identity provider's user session, and a grant-level revocation
+     * could end it. A genuine logout needs no revocation from here either — RP-initiated logout revokes
+     * the session's own refresh token itself, and a back-channel logout comes from an identity provider
+     * that already ended the session.
      * <p>
      * The interleaving is driven from the {@link RefreshExchange} stub, which runs on the leader's own
      * thread between the resolve and the persist: it terminates the session through the binding's own
      * destroy methods and then returns the rotation. Nothing depends on timing. Each leg carries a
-     * matched control running the same stub with a termination that does nothing, so the refusal is
+     * matched control running the same stub with a termination that does nothing, so the outcome is
      * caused by the termination and not by the stub. A further control runs the same stub against a
-     * binding whose persist fails, so the session-ending path that does revoke still revokes the rotated
-     * token exactly once and the missing revocation here is caused by the termination alone.
+     * binding whose persist fails, so the path on which the refresh itself ends the session still ends
+     * it and revokes the rotated token exactly once, and the missing session end here is caused by the
+     * termination alone.
      */
     @Nested
     @DisplayName("Session terminated while the refresh is in flight (server mode)")
@@ -1446,6 +1450,15 @@ class TokenRefreshCoordinatorTest {
         private static final BiConsumer<SessionBinding, SessionRecord> NO_TERMINATION = (target, session) -> {
             // Deliberately empty: the control runs the same stub and leaves the session in place.
         };
+
+        /** The ended-token marker of these cases, so a session end the refresh did not cause stays observable. */
+        private final EndedRefreshTokens marker = EndedRefreshTokens.bounded();
+
+        /** A coordinator over the real binding that marks ended refresh tokens into {@link #marker}. */
+        private TokenRefreshCoordinator markingCoordinator(Instant accessExpiry, RefreshExchange exchange) {
+            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT,
+                    marker);
+        }
 
         static Stream<Arguments> terminations() {
             BiConsumer<SessionBinding, SessionRecord> bySessionIdentity = SessionBinding::destroy;
@@ -1490,36 +1503,38 @@ class TokenRefreshCoordinatorTest {
 
         @ParameterizedTest(name = "near-expiry leg: {0}")
         @MethodSource("terminations")
-        @DisplayName("Should not write the rotated session back on the near-expiry leg, return FAILED and revoke nothing")
+        @DisplayName("Should not write the rotated session back on the near-expiry leg, answer NO_SESSION and end, mark or revoke nothing")
         void shouldNotRecreateOnNearExpiryLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
             SessionRecord live = storedSessionWithSid();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+            TokenRefreshCoordinator coordinator = markingCoordinator(NEAR,
                     terminatingExchange(live, termination, rotation(), calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
-            assertTerminated(label, outcome, calls.get());
+            assertLostToDestruction(label, outcome, calls.get());
         }
 
         @ParameterizedTest(name = "scope-driven leg: {0}")
         @MethodSource("terminations")
-        @DisplayName("Should not write the rotated session back on the scope-driven leg, return FAILED rather than SCOPE_REFUSED or REFRESHED and revoke nothing")
+        @DisplayName("Should not write the rotated session back on the scope-driven leg, answer NO_SESSION rather than SCOPE_REFUSED or REFRESHED and end, mark or revoke nothing")
         void shouldNotRecreateOnScopeLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
             SessionRecord live = storedSessionWithSid();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, terminatingExchange(live, termination,
+            TokenRefreshCoordinator coordinator = markingCoordinator(NOT_NEAR, terminatingExchange(live, termination,
                     rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL), calls));
 
             RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
 
-            assertTerminated(label, outcome, calls.get());
+            assertLostToDestruction(label, outcome, calls.get());
         }
 
-        private void assertTerminated(String label, RefreshOutcome outcome, int engineCalls) {
+        private void assertLostToDestruction(String label, RefreshOutcome outcome, int engineCalls) {
             assertAll(label,
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind(),
-                            "the request is answered as unauthenticated and the stage clears the cookie"),
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, outcome.kind(),
+                            "the request is unauthenticated, and the stage must not clear the cookie: it could "
+                                    + "delete a replacement session's new cookie"),
+                    () -> assertFalse(outcome.isFailure(), "this refresh destroyed nothing"),
                     () -> assertNull(outcome.session(), "no session is handed on"),
                     () -> assertTrue(outcome.setCookieHeaders().isEmpty(), "nothing was re-bound"),
                     () -> assertEquals(1, engineCalls, "the exchange ran, so the termination struck in flight"),
@@ -1527,15 +1542,11 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(0, store.size(), "the store holds no session at all"),
                     () -> assertEquals(List.of(), revoked,
                             "nothing is revoked: the rotated token is abandoned, because a session that replaced the "
-                                    + "destroyed one may share the identity provider's user session"));
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
-                    TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
-            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
+                                    + "destroyed one may share the identity provider's user session"),
+                    () -> assertFalse(marker.isEnded(CURRENT_REFRESH, NOW),
+                            "the refresh did not end the session, so it marks no ended token"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, REFRESHED_ID);
-            assertTrue(TestLoggerFactory.getTestHandler().resolveLogMessages(TestLogLevel.WARN).stream()
-                            .filter(entry -> String.valueOf(entry.getMessage()).contains(REFRESH_FAILED_ID))
-                            .allMatch(entry -> entry.getThrown() == null),
-                    "a termination that overtook the refresh is no fault, so the record carries no exception");
         }
 
         @Test
@@ -1585,7 +1596,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should hand a coalesced near-expiry waiter the leader's FAILED outcome and revoke nothing")
+        @DisplayName("Should hand a coalesced near-expiry waiter the leader's NO_SESSION outcome and revoke nothing")
         void shouldShareTerminatedOutcomeWithCoalescedWaiter() throws Exception {
             SessionRecord live = storedSessionWithSid();
 
@@ -1596,7 +1607,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should hand a coalesced scope waiter the leader's FAILED outcome, never SCOPE_REFUSED, and revoke nothing")
+        @DisplayName("Should hand a coalesced scope waiter the leader's NO_SESSION outcome, never SCOPE_REFUSED, and revoke nothing")
         void shouldShareTerminatedOutcomeWithCoalescedScopeWaiter() throws Exception {
             SessionRecord live = storedSessionWithSid();
 
@@ -1608,16 +1619,16 @@ class TokenRefreshCoordinatorTest {
         }
 
         private void assertCoalescedTermination(CoalescedRun run) {
-            assertAll("the waiter shares the leader's session-ended outcome",
+            assertAll("the waiter shares the leader's no-session outcome",
                     () -> assertEquals(1, run.calls(), "one exchange served both requests"),
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, run.leader().kind()),
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, run.follower().kind(),
-                            "the coalesced waiter is answered as unauthenticated too"),
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, run.leader().kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, run.follower().kind(),
+                            "the coalesced waiter is answered as unauthenticated too, without a clearing cookie"),
                     () -> assertFalse(sessionResolvable(NOW), "the terminated session is not written back"),
                     () -> assertEquals(List.of(), revoked,
-                            "nothing is revoked: the refresh lost a race to the destruction and abandons its token"));
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
-                    TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+                            "nothing is revoked: the refresh lost a race to the destruction and abandons its token"),
+                    () -> assertFalse(marker.isEnded(CURRENT_REFRESH, NOW), "nothing is marked ended"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
         }
 
         /**
@@ -1632,7 +1643,7 @@ class TokenRefreshCoordinatorTest {
             AtomicInteger calls = new AtomicInteger();
             CountDownLatch exchangeEntered = new CountDownLatch(1);
             AtomicReference<Thread> waiterThread = new AtomicReference<>();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, (presented, _) -> {
+            TokenRefreshCoordinator coordinator = markingCoordinator(NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 exchangeEntered.countDown();
                 awaitParked(waiterThread);
@@ -1683,8 +1694,9 @@ class TokenRefreshCoordinatorTest {
      * widening is a grant for the same client on the identity provider's session, and a grant-level
      * revocation could end the client session the widened grant shares. A matched control runs the same
      * stub with a concurrent write that does nothing, so the refusal is caused by the widening and not by
-     * the stub; a second runs it with a concurrent destroy, which ends the session yet abandons the rotated
-     * token just the same, because that refresh lost a race to a session destruction; a third runs it
+     * the stub; a second runs it with a concurrent destroy, which is answered {@code NO_SESSION} as well
+     * and abandons the rotated token just the same, because that refresh lost a race to a session
+     * destruction and ended nothing itself; a third runs it
      * against a binding whose persist fails, so the session-ending path that does revoke still revokes the
      * rotated token exactly once and the missing revocation is caused by the lost race alone. The
      * single-flight cases show that a coalesced waiter shares the superseded outcome over one exchange,
@@ -1852,23 +1864,26 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should end the session and still revoke nothing when the same stub destroys the session instead (matched control)")
-        void shouldRevokeNothingWhenConcurrentDestroyEndsSession() {
+        @DisplayName("Should answer NO_SESSION and still write and revoke nothing when the same stub destroys the session instead (matched control)")
+        void shouldRevokeNothingWhenConcurrentDestroyRemovesSession() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+            EndedRefreshTokens marker = EndedRefreshTokens.bounded();
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
                     exchangeWith(live, binding::destroy, rotation(), calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
-            assertAll("the same stub ends the session when the record at the persist is gone, not superseded",
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+            assertAll("the same stub finds the record at the persist gone, not superseded, and ends nothing itself",
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, outcome.kind(),
+                            "the session was ended by the destruction, not by this refresh"),
+                    () -> assertFalse(outcome.isFailure(), "this refresh destroyed nothing"),
                     () -> assertEquals(1, calls.get(), "the exchange ran, so the destroy landed in flight"),
                     () -> assertEquals(0, store.size(), "the destroyed session is not written back"),
                     () -> assertEquals(List.of(), revoked,
-                            "a refresh that lost a race to a session destruction abandons its rotated token too"));
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
-                    TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+                            "a refresh that lost a race to a session destruction abandons its rotated token too"),
+                    () -> assertFalse(marker.isEnded(CURRENT_REFRESH, NOW), "nothing is marked ended"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
         }
 
         @Test

@@ -1234,13 +1234,15 @@ token is answered.
 | `ApiSheriff-111` (`persist-failure`)
 
 | *Session terminated meanwhile* (`session.mode: server` only) -- the exchange succeeded, but a
-  logout, a back-channel logout or a login callback that replaced the session destroyed it while the
-  refresh was in flight
-| *Stays ended.* The rotated session is not written back; the session cookie is cleared and the
-  request is answered through `on_failure`.
+  logout, a back-channel logout, a login callback that replaced the session, an expiry sweep or an
+  eviction destroyed it while the refresh was in flight
+| *Stays ended*, by whatever destroyed it; the refresh itself ends nothing. The rotated session is not
+  written back, the session cookie is *not* cleared -- a clearing cookie could delete the cookie a
+  login callback has just set for the replacement session -- and the request is answered through
+  `on_failure` as "no session".
 | None -- the refresh token the exchange returned is abandoned, not revoked: a session that replaced
   the destroyed one may share the IdP's user session, and a revocation could end it.
-| `ApiSheriff-111` (`session-terminated`)
+| Not logged above `DEBUG`
 |===
 
 *A refusal ends only the session it read* (`session.mode: server` only). A *credential rejected* or
@@ -1257,8 +1259,10 @@ revokes; a refresh that lost a race to a session replacement or destruction aban
 which lapses under the IdP's refresh-token lifetime.
 
 *A logout wins over a refresh in server mode.* The rotated session is written only while the store
-still holds the session, so a session destroyed by `oidc.logout.path`, a back-channel logout or a
-login callback during the refresh stays ended (last row, its own reason, no exception). The refresh
+still holds the session, so a session destroyed by `oidc.logout.path`, a back-channel logout, a
+login callback, an expiry sweep or an eviction during the refresh stays ended (last row). The refresh
+ends nothing itself and clears no cookie; the browser's next request presents the cookie of a session
+that is gone, which resolves no session and is answered like any unauthenticated request. The refresh
 revokes nothing, and that leaves a residual: `oidc.logout.path` revokes the refresh token of the
 session it resolved, which the rotation had already spent, and a back-channel logout comes from an IdP
 that has ended its own session. Whether the IdP also invalidates the rotated successor is its own

@@ -207,11 +207,12 @@ Neither updating write extends the absolute lifetime. A binding that can observe
 destroyed since the caller resolved it writes nothing and reports the session gone. In server mode
 the store checks for the session and replaces its record in one atomic step, under the lock every
 destroy takes. A logout therefore precedes the check, and nothing is written, or it follows the
-write and removes the result. Both callers treat a session reported gone as ended. The widening
-callback answers its terminal `403` and stores nothing. The refresh coordinator ends the request as
-session-ended and abandons the refresh token the exchange returned without revoking it: the refresh
-lost a race to the destruction, and a session that replaced the destroyed one may share the identity
-provider's user session
+write and removes the result. Both callers treat a session reported gone as ended, and neither ends
+it a second time. The widening callback answers its terminal `403` and stores nothing. The refresh
+coordinator answers the request as *no session*, without a clearing cookie -- one could delete the
+cookie a login callback has just set for a replacement session -- and abandons the refresh token the
+exchange returned without revoking it: the refresh lost a race to the destruction, and a session that
+replaced the destroyed one may share the identity provider's user session
 (link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
 
 *Cookie mode cannot observe a termination.* `CookieSessionBinding` holds no server-side state. Its

@@ -103,8 +103,10 @@ public interface SessionStore {
      *       {@code replacement}.</li>
      *   <li>{@link ReplaceOutcome#ABSENT} — no record is stored under the id. Nothing is written. That
      *       is what keeps a destroyed session destroyed: a writer that resolved the session, was
-     *       overtaken by {@link #destroyById}, {@link #destroyBySid} or {@link #destroyBySub}, and then
-     *       writes, replaces nothing.</li>
+     *       overtaken by any path that removes it — {@link #destroyById}, {@link #destroyBySid},
+     *       {@link #destroyBySub} or {@link #destroyIfCurrent}, the expiry eviction in {@link #resolve} or
+     *       {@link #sweepExpired}, or the per-subject eviction of a {@link #create} — and then writes,
+     *       replaces nothing.</li>
      *   <li>{@link ReplaceOutcome#SUPERSEDED} — a record is stored under the id but it is no longer
      *       {@code basis}: another updating write — a widening or a step-up through
      *       {@link #replaceAndReissueHandle} — replaced it after the caller read it. Nothing is written,

@@ -117,12 +117,17 @@ not the container, because a bearer-only gateway must not have one.
 
 Neither updating write stores anything when the session identity is no longer held: `persist`
 answers `Gone` and `persistReissuingCookie` an empty result, and the caller must treat the session
-as ended and must not hand out the new tokens. On `Gone`, `TokenRefreshCoordinator` ends the
-request as session-ended and abandons the refresh token its exchange returned without revoking it:
-the refresh lost a race to a logout, a back-channel logout or a login callback, and a session that
-replaced the destroyed one may share the identity provider's user session (ADR-0046). Only a
-refresh that itself ends the session -- a persist failure, or a refused redeemed response that
-destroyed the record it read -- revokes.
+as ended and must not hand out the new tokens. On `Gone` the refresh did not end the session --
+a logout, a back-channel logout, a login callback, an expiry sweep or an eviction did -- so
+`TokenRefreshCoordinator` ends nothing either: it answers the request `NO_SESSION`, marks nothing
+ended, records no `ApiSheriff-111` and sends no clearing cookie, because a clearing response from
+this refresh could reach the browser after a login callback's own response and delete the
+replacement session's new cookie. A request carrying the cookie of a session that is really gone is
+then answered by the ordinary no-session path. The refresh abandons the refresh token its exchange
+returned without revoking it: it lost a race to that destruction, and a session that replaced the
+destroyed one may share the identity provider's user session (ADR-0046). Only a refresh that itself
+ends the session -- a persist failure, or a refused redeemed response that destroyed the record it
+read -- revokes.
 `persist` has a third answer, `Superseded`: the
 session is still held, but its record is no longer the basis the caller passed -- a widening or a
 step-up replaced it after the refresh resolved it. Nothing is written then either, and the caller
@@ -141,8 +146,9 @@ by one question: does the privilege of the session change? If it does, re-issue.
 
 | `destroy`
 | `destroyById`
-| `LogoutEndpoint`, and `TokenRefreshCoordinator` when a persist failed or found the session gone,
-  and when the presented refresh token is already marked ended, which only the cookie mode marks.
+| `LogoutEndpoint`, and `TokenRefreshCoordinator` when a persist failed, and when the presented
+  refresh token is already marked ended, which only the cookie mode marks. A persist that found the
+  session gone destroys nothing.
   Removes the session whatever record it holds and hands back the record it removed.
 
 | `destroyIfCurrent`
@@ -195,8 +201,10 @@ Three rules follow for code that touches sessions:
 Every public method of `InMemorySessionStore` runs under the instance monitor, and no operation is
 split across two calls. The updating writes are the reason: "is the session still there" -- and, for
 `replaceIfCurrent`, "is it still the record I read" -- and "write it" must be one step under the lock
-`destroyById`, `destroyBySid`, `destroyBySub` and the other updating write take, or a logout between
-the two would be undone and a widening between them overwritten. `destroyIfCurrent` follows the same
+every removal path takes -- the four destroy methods (`destroyById`, `destroyBySid`, `destroyBySub`
+and `destroyIfCurrent`), the lazy eviction in `resolve`, the sweep and the per-subject eviction --
+and the other updating write takes too, or a logout or an eviction between the two would be undone
+and a widening between them overwritten. `destroyIfCurrent` follows the same
 rule for a destruction: "is it still the record I read" and "remove it" are one step, or a widening
 between them would be destroyed. Keep it that way when you add an
 operation: a check-then-act across two store calls reopens that window. Three consequences:

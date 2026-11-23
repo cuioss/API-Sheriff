@@ -197,10 +197,14 @@ attached. Same-origin deployments need neither.
   `404` there) and logs no such warning. This path revokes no token: the IdP initiated the logout and has already ended its own session.
   What the IdP must send is in link:../user/bff-session.adoc#backchannel-logout[the operator guide].
 * *Logout wins over in-flight work.* A refresh or scope widening running when the session is
-  destroyed -- by a logout, a back-channel logout or a login callback that replaced it -- does not
-  write it back: the refresh is answered as session-ended (`ApiSheriff-111`, `session-terminated`)
-  and abandons the refresh token it just obtained without revoking it, because a session that
-  replaced the destroyed one may share the IdP's user session and a revocation could end it. That
+  destroyed -- by a logout, a back-channel logout, a login callback that replaced it, the expiry
+  sweep or an eviction -- does not write it back. The refresh ends nothing itself: it is answered as
+  *no session*, without a clearing cookie and with nothing logged above `DEBUG`, because a clearing
+  cookie could reach the browser after a login callback's own response and delete the replacement
+  session's new cookie; the browser's next request finds no session and is answered as
+  unauthenticated. The refresh abandons the refresh token it just obtained without revoking it,
+  because a session that replaced the destroyed one may share the IdP's user session and a
+  revocation could end it. That
   leaves a residual risk: RP-initiated logout revokes the refresh token of the session it found,
   which the refresh had already spent, and a back-channel logout comes from an IdP that has ended its
   own session; whether the IdP also invalidates the newly obtained token is its own policy (RFC 7009
@@ -214,7 +218,10 @@ attached. Same-origin deployments need neither.
 
 Near expiry, the gateway refreshes the access token with rotation during a normal request, asking
 for the session's active scope set. A refused refresh keeps the session when the IdP never processed
-the grant, and ends it when the IdP rejected the refresh token or the gateway refused the response.
+the grant, and ends it when the IdP rejected the refresh token or the gateway refused the response --
+unless a widening or a step-up replaced the session's record, or something else already ended the
+session, while the exchange was in flight; then the refusal ends nothing and the request is answered
+as *no session*, without a clearing cookie.
 How a request left without a token is answered is set by `oidc.session.refresh.on_failure` (see
 link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the per-kind table]).
 
