@@ -990,10 +990,14 @@ and the two signing keys, any replica serves any session.
   `idle_timeout_seconds` ends a session nobody uses. On either the user re-authenticates. See
   <<session-lifetime>>.
 * *A logout is not undone by a request that was already running.* A logout through
-  `oidc.logout.path`, or a back-channel logout, can arrive while a token refresh or a widening for
-  the same session is in flight. The logout wins: the refreshed or widened session is not stored,
-  the refreshing request is answered as unauthenticated with the session cookie cleared, and the
-  refresh token the IdP had just issued is revoked best-effort. The log shows `ApiSheriff-111` with
+  `oidc.logout.path`, a back-channel logout, or a new login in the same browser can end the session
+  while a token refresh or a widening for it is in flight. The ending wins: the refreshed or widened
+  session is not stored, and the refreshing request is answered as unauthenticated with the session
+  cookie cleared. The refresh token the IdP had just issued is abandoned, not revoked: after a new
+  login that reused the IdP's session, revoking it could end the new session at the IdP, and a
+  logout needs no revocation from the refresh because `oidc.logout.path` revokes the session's own
+  refresh token and a back-channel logout comes from an IdP that has already ended the session. The
+  abandoned token is held nowhere and expires under the IdP's refresh-token lifetime. The log shows `ApiSheriff-111` with
   the reason `session-terminated` for a refresh and `ApiSheriff-131` with the same reason for a
   widening. Neither is a fault; `persist-failure` is the reason to look into.
 * *Refresh failures, IdP reachability and a private-CA IdP* are the same in both variants; see

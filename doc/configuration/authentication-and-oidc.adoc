@@ -1234,18 +1234,24 @@ token is answered.
 | `ApiSheriff-111` (`persist-failure`)
 
 | *Session terminated meanwhile* (`session.mode: server` only) -- the exchange succeeded, but a
-  logout or a back-channel logout destroyed the session while the refresh was in flight
+  logout, a back-channel logout or a login callback that replaced the session destroyed it while the
+  refresh was in flight
 | *Stays ended.* The rotated session is not written back; the session cookie is cleared and the
   request is answered through `on_failure`.
-| Best-effort, the refresh token the exchange returned.
+| None -- the refresh token the exchange returned is abandoned, not revoked: a session that replaced
+  the destroyed one may share the IdP's user session, and a revocation could end it.
 | `ApiSheriff-111` (`session-terminated`)
 |===
 
-Revocation is best-effort; a failed revocation never changes the disposition.
+Revocation is best-effort; a failed revocation never changes the disposition. Only a refresh that
+itself ends the session -- *redeemed* and *persist failure* -- revokes; a refresh that lost a race to
+a session destruction abandons its rotated token, which lapses under the IdP's refresh-token lifetime.
 
 *A logout wins over a refresh in server mode.* The rotated session is written only while the store
-still holds the session, so a session destroyed by `oidc.logout.path` or a back-channel logout during
-the refresh stays ended (last row, its own reason, no exception). In `cookie` mode the row never
+still holds the session, so a session destroyed by `oidc.logout.path`, a back-channel logout or a
+login callback during the refresh stays ended (last row, its own reason, no exception). A logout
+needs no revocation from the refresh: `oidc.logout.path` revokes the session's own refresh token, and
+a back-channel logout comes from an IdP that has already ended the session. In `cookie` mode the row never
 applies: the gateway cannot observe a logout and re-seals the rotated session -- see
 link:../variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout].
 

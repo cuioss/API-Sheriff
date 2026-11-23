@@ -249,9 +249,12 @@ import org.jspecify.annotations.Nullable;
  * {@code oidc.session.refresh.on_failure}, resolved here and handed to the stage:
  * {@code reauthenticate} (also when omitted) re-drives the login negotiation, {@code reject} answers
  * {@code 401} for every request. Where the gateway can name a refresh token still live at the identity
- * provider after a session ends on a refused redemption, on a persist failure or, in server mode, on a
- * session terminated while the refresh was in flight, it is revoked, best-effort, through the engine's
- * RFC 7009 {@link RevocationClient} built from the same back-channel configuration — dispatched on the
+ * provider after the refresh itself ended the session — on a refused redemption or a persist failure —
+ * it is revoked, best-effort, through the engine's RFC 7009 {@link RevocationClient} built from the same
+ * back-channel configuration. A refresh whose session was terminated while it was in flight (server
+ * mode) revokes nothing: it lost a race to that destruction and abandons its rotated refresh token,
+ * because a session that replaced the destroyed one may share the identity provider's user session.
+ * The revocation is dispatched on the
  * Quarkus-managed virtual-thread executor after the session-ended outcome has been published, so the
  * failing request never waits for the revocation endpoint. RP-initiated logout revokes through that
  * same client independently of this switch, but only a refresh token the session holds: with the

@@ -1390,15 +1390,23 @@ class TokenRefreshCoordinatorTest {
     }
 
     /**
-     * A logout or a back-channel logout that destroys the session while its refresh is in flight —
-     * after the leader resolved it, before the rotated session is persisted. In server mode the
-     * rotated session must not be written back.
+     * A logout, a back-channel logout or a login callback that destroys the session while its refresh is
+     * in flight — after the leader resolved it, before the rotated session is persisted. In server mode
+     * the rotated session must not be written back.
+     * <p>
+     * The refresh lost a race to a session destruction, so it abandons the rotated refresh token rather
+     * than revoking it: a login callback's replacement session may share the identity provider's user
+     * session, and a grant-level revocation could end it. A genuine logout needs no revocation from here
+     * either — RP-initiated logout revokes the session's own refresh token itself, and a back-channel
+     * logout comes from an identity provider that already ended the session.
      * <p>
      * The interleaving is driven from the {@link RefreshExchange} stub, which runs on the leader's own
      * thread between the resolve and the persist: it terminates the session through the binding's own
      * destroy methods and then returns the rotation. Nothing depends on timing. Each leg carries a
      * matched control running the same stub with a termination that does nothing, so the refusal is
-     * caused by the termination and not by the stub.
+     * caused by the termination and not by the stub. A further control runs the same stub against a
+     * binding whose persist fails, so the session-ending path that does revoke still revokes the rotated
+     * token exactly once and the missing revocation here is caused by the termination alone.
      */
     @Nested
     @DisplayName("Session terminated while the refresh is in flight (server mode)")
@@ -1458,7 +1466,7 @@ class TokenRefreshCoordinatorTest {
 
         @ParameterizedTest(name = "near-expiry leg: {0}")
         @MethodSource("terminations")
-        @DisplayName("Should not write the rotated session back on the near-expiry leg, return FAILED and revoke the rotated token")
+        @DisplayName("Should not write the rotated session back on the near-expiry leg, return FAILED and revoke nothing")
         void shouldNotRecreateOnNearExpiryLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
             SessionRecord live = storedSessionWithSid();
             AtomicInteger calls = new AtomicInteger();
@@ -1472,7 +1480,7 @@ class TokenRefreshCoordinatorTest {
 
         @ParameterizedTest(name = "scope-driven leg: {0}")
         @MethodSource("terminations")
-        @DisplayName("Should not write the rotated session back on the scope-driven leg, and return FAILED rather than SCOPE_REFUSED or REFRESHED")
+        @DisplayName("Should not write the rotated session back on the scope-driven leg, return FAILED rather than SCOPE_REFUSED or REFRESHED and revoke nothing")
         void shouldNotRecreateOnScopeLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
             SessionRecord live = storedSessionWithSid();
             AtomicInteger calls = new AtomicInteger();
@@ -1493,8 +1501,9 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(1, engineCalls, "the exchange ran, so the termination struck in flight"),
                     () -> assertFalse(sessionResolvable(NOW), "the terminated session is not written back"),
                     () -> assertEquals(0, store.size(), "the store holds no session at all"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
-                            "the rotated refresh token is live at the identity provider and held nowhere, so it is revoked"));
+                    () -> assertEquals(List.of(), revoked,
+                            "nothing is revoked: the rotated token is abandoned, because a session that replaced the "
+                                    + "destroyed one may share the identity provider's user session"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
                     TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
@@ -1541,9 +1550,35 @@ class TokenRefreshCoordinatorTest {
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
         }
 
+        /**
+         * The same stub with no termination, against a binding whose persist fails: the refresh itself ends
+         * the session, so the rotated token is revoked. It pins that the abandonment above belongs to the
+         * terminated-session disposition alone and not to the stub or the rotation.
+         */
+        @Test
+        @DisplayName("Should end the session and revoke the rotated token once when the same stub's persist fails instead (matched control)")
+        void shouldRevokeRotatedTokenWhenPersistFailsWithoutTermination() {
+            SessionRecord live = storedSessionWithSid();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    terminatingExchange(live, NO_TERMINATION, rotation(), calls), new PersistFailingBinding(binding),
+                    revoked::add, DIRECT, EndedRefreshTokens.inert());
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll("the same stub revokes when the refresh's own persist ends the session",
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                    () -> assertEquals(1, calls.get(), "the exchange ran"),
+                    () -> assertFalse(sessionResolvable(NOW), "the session holding the burned token is destroyed"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "the persist-failure path revokes the rotated token exactly once"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+        }
 
         @Test
-        @DisplayName("Should hand a coalesced near-expiry waiter the leader's FAILED outcome and revoke the rotated token once")
+        @DisplayName("Should hand a coalesced near-expiry waiter the leader's FAILED outcome and revoke nothing")
         void shouldShareTerminatedOutcomeWithCoalescedWaiter() throws Exception {
             SessionRecord live = storedSessionWithSid();
 
@@ -1554,7 +1589,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should hand a coalesced scope waiter the leader's FAILED outcome, never SCOPE_REFUSED")
+        @DisplayName("Should hand a coalesced scope waiter the leader's FAILED outcome, never SCOPE_REFUSED, and revoke nothing")
         void shouldShareTerminatedOutcomeWithCoalescedScopeWaiter() throws Exception {
             SessionRecord live = storedSessionWithSid();
 
@@ -1572,7 +1607,8 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(RefreshOutcome.Kind.FAILED, run.follower().kind(),
                             "the coalesced waiter is answered as unauthenticated too"),
                     () -> assertFalse(sessionResolvable(NOW), "the terminated session is not written back"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked, "the rotated token is revoked exactly once"));
+                    () -> assertEquals(List.of(), revoked,
+                            "nothing is revoked: the refresh lost a race to the destruction and abandons its token"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
                     TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
         }
@@ -1640,8 +1676,10 @@ class TokenRefreshCoordinatorTest {
      * widening is a grant for the same client on the identity provider's session, and a grant-level
      * revocation could end the client session the widened grant shares. A matched control runs the same
      * stub with a concurrent write that does nothing, so the refusal is caused by the widening and not by
-     * the stub; a second runs it with a concurrent destroy, so the session-ending path still revokes the
-     * rotated token exactly once and the missing revocation is caused by the supersession alone. The
+     * the stub; a second runs it with a concurrent destroy, which ends the session yet abandons the rotated
+     * token just the same, because that refresh lost a race to a session destruction; a third runs it
+     * against a binding whose persist fails, so the session-ending path that does revoke still revokes the
+     * rotated token exactly once and the missing revocation is caused by the lost race alone. The
      * single-flight cases show that a coalesced waiter shares the superseded outcome over one exchange,
      * and that the in-flight entry is released so the widened session refreshes next.
      */
@@ -1793,8 +1831,8 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should end the session and revoke the rotated token once when the same stub destroys the session instead (matched control)")
-        void shouldRevokeRotatedTokenWhenConcurrentDestroyEndsSession() {
+        @DisplayName("Should end the session and still revoke nothing when the same stub destroys the session instead (matched control)")
+        void shouldRevokeNothingWhenConcurrentDestroyEndsSession() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
             TokenRefreshCoordinator coordinator = coordinator(NEAR,
@@ -1806,10 +1844,31 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
                     () -> assertEquals(1, calls.get(), "the exchange ran, so the destroy landed in flight"),
                     () -> assertEquals(0, store.size(), "the destroyed session is not written back"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
-                            "the session-ending path revokes the rotated token exactly once"));
+                    () -> assertEquals(List.of(), revoked,
+                            "a refresh that lost a race to a session destruction abandons its rotated token too"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
                     TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
+        }
+
+        @Test
+        @DisplayName("Should end the session and revoke the rotated token once when the same stub's persist fails instead (matched control)")
+        void shouldRevokeRotatedTokenWhenPersistFails() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    exchangeWith(live, NO_CONCURRENT_WRITE, rotation(), calls), new PersistFailingBinding(binding),
+                    revoked::add, DIRECT, EndedRefreshTokens.inert());
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll("the same stub revokes when the refresh's own persist ends the session",
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                    () -> assertEquals(1, calls.get(), "the exchange ran"),
+                    () -> assertEquals(0, store.size(), "the session holding the burned token is destroyed"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "the persist-failure path revokes the rotated token exactly once"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_PERSIST_FAILURE);
         }
 
         @Test

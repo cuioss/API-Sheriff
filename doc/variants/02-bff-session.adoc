@@ -197,9 +197,13 @@ attached. Same-origin deployments need neither.
   `404` there) and logs no such warning. This path revokes no token: the IdP initiated the logout and has already ended its own session.
   What the IdP must send is in link:../user/bff-session.adoc#backchannel-logout[the operator guide].
 * *Logout wins over in-flight work.* A refresh or scope widening running when the session is
-  destroyed does not write it back: the refresh is answered as session-ended and revokes the refresh
-  token it just obtained (`ApiSheriff-111`, `session-terminated`); the widening callback answers
-  `403` (`ApiSheriff-131`)
+  destroyed -- by a logout, a back-channel logout or a login callback that replaced it -- does not
+  write it back: the refresh is answered as session-ended (`ApiSheriff-111`, `session-terminated`)
+  and abandons the refresh token it just obtained without revoking it, because a session that
+  replaced the destroyed one may share the IdP's user session and a revocation could end it; a
+  logout needs no revocation from the refresh, since RP-initiated logout revokes the session's own
+  refresh token and a back-channel logout comes from an IdP that has already ended the session. The
+  widening callback answers `403` (`ApiSheriff-131`)
   (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
 [[_transparent_token_refresh]]
